@@ -33,8 +33,8 @@ pub(super) fn truncate_to_width(s: &str, max_width: usize) -> String {
 /// `ChatState::render_cache`. Covers every message mutation in the
 /// codebase (push, last-message streaming append, clear) — messages are
 /// never edited in place mid-history. The cache is additionally reset on
-/// `open()` so a cross-thread collision (same count/lengths/timestamp)
-/// can never serve the previous thread's lines.
+/// `open()` so a cross-topic collision (same count/lengths/timestamp)
+/// can never serve the previous topic's lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenderFingerprint {
     count: usize,
@@ -212,14 +212,14 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     let mut tail_lines: Vec<Line> = Vec::new();
 
     // Show progress indicator
-    // Determine if the thread is processing: prefer the live processing
+    // Determine if the topic is processing: prefer the live processing
     // status (updated via WS `processing` events), fall back to the polled
     // overview state, fall back to local `awaiting_response`.
     let live_processing = app
         .chat
         .channel
         .as_deref()
-        .zip(app.chat.thread.as_deref())
+        .zip(app.chat.topic.as_deref())
         .and_then(|(c, t)| app.chat.live_processing_for(c, t));
     let server_processing = match live_processing {
         Some((p, _)) => p,
@@ -227,10 +227,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             .state
             .as_ref()
             .and_then(|s| {
-                let chat_name = app.chat.thread.as_deref()?;
-                s.threads.iter().find(|t| t.name == chat_name)
+                let chat_name = app.chat.topic.as_deref()?;
+                s.topics.iter().find(|t| t.name == chat_name)
             })
-            .is_some_and(|ct| ct.status == ThreadStatus::Processing),
+            .is_some_and(|ct| ct.status == TopicStatus::Processing),
     };
 
     // Show progress if the server reports processing OR we've sent a message
@@ -243,10 +243,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         // logic below is byte-for-byte identical to before — only the data
         // source changed.
         let live_chan = app.chat.channel.clone();
-        let live_thread = app.chat.thread.clone();
+        let live_topic = app.chat.topic.clone();
         let activity_entries: Vec<jyc_types::ActivityEntry> = live_chan
             .as_deref()
-            .zip(live_thread.as_deref())
+            .zip(live_topic.as_deref())
             .map(|(c, t)| {
                 app.chat
                     .live_activity_for(c, t)
@@ -262,7 +262,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
 
         let thinking_text: Option<String> = live_chan
             .as_deref()
-            .zip(live_thread.as_deref())
+            .zip(live_topic.as_deref())
             .and_then(|(c, t)| app.chat.live_thinking_for(c, t))
             .map(|s| s.to_string());
 
@@ -273,11 +273,11 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         // back to the polled value when no tick has arrived yet.
         let live_tick_ms: Option<u64> = live_chan
             .as_deref()
-            .zip(live_thread.as_deref())
+            .zip(live_topic.as_deref())
             .and_then(|(c, t)| app.chat.live_tick_ms_for(c, t));
 
         // Render thinking text first (same wrap + indent as before).
-        // This comes from ThreadEvent::Thinking events and is NOT stored
+        // This comes from TopicEvent::Thinking events and is NOT stored
         // in the activity buffer or activity.jsonl.
         if let Some(thinking) = thinking_text.as_deref()
             && !thinking.is_empty()
@@ -513,7 +513,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             .areas(body_area);
     let focused = app.chat.focus == ChatFocus::ChatPane;
     // Resolve mode/channel/pattern/model/tokens for the header line, all
-    // from the polled overview (same source as the Thread Info pane).
+    // from the polled overview (same source as the Topic Info pane).
     let header_ctx = resolve_header_ctx(app);
     // Header info text: sapphire + bold when focused, otherwise the same
     // inactive #393552 as the line-drawing characters.

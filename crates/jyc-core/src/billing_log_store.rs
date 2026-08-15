@@ -1,10 +1,10 @@
-//! Durable per-thread billing ledger.
+//! Durable per-topic billing ledger.
 //!
 //! One line is appended per completed LLM call to
 //! `.jyc/bill-YYYY-MM-DD.jsonl`. Unlike `agent-session.json`s
 //! `session_cost` -- which is scoped to the session and zeroed on every
 //! reset -- this ledger is never reset, rotated, or truncated, so it
-//! remains the authoritative record of what a thread actually cost.
+//! remains the authoritative record of what a topic actually cost.
 //!
 //! Why date-stamped files rather than one `bill.jsonl`: the dashboard
 //! polls twice per second, and each poll needs todays total. A single
@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-/// Rendered when a threads entries span more than one currency, where
+/// Rendered when a topics entries span more than one currency, where
 /// summing the amounts would produce a meaningless figure.
 pub const MIXED_CURRENCY: &str = "mixed";
 
@@ -85,13 +85,13 @@ fn default_kind() -> String {
     KIND_CALL.to_string()
 }
 
-/// Append-only billing ledger, one file per UTC day per thread.
+/// Append-only billing ledger, one file per UTC day per topic.
 pub struct BillingLogStore;
 
 impl BillingLogStore {
     /// Path to the ledger file for a given `YYYY-MM-DD` date string.
-    fn path_for_date(thread_path: &Path, date: &str) -> PathBuf {
-        thread_path.join(".jyc").join(format!("bill-{date}.jsonl"))
+    fn path_for_date(topic_path: &Path, date: &str) -> PathBuf {
+        topic_path.join(".jyc").join(format!("bill-{date}.jsonl"))
     }
 
     /// Todays date as `YYYY-MM-DD` in UTC.
@@ -103,8 +103,8 @@ impl BillingLogStore {
     }
 
     /// Append one entry to todays ledger, creating `.jyc/` if needed.
-    pub fn append(thread_path: &Path, entry: &BillingEntry) -> anyhow::Result<()> {
-        let path = Self::path_for_date(thread_path, &Self::today());
+    pub fn append(topic_path: &Path, entry: &BillingEntry) -> anyhow::Result<()> {
+        let path = Self::path_for_date(topic_path, &Self::today());
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -120,8 +120,8 @@ impl BillingLogStore {
     /// lines are skipped rather than failing the whole read, so a single
     /// truncated write (e.g. from a hard kill mid-append) cannot make a
     /// days costs unreadable.
-    pub fn load_date(thread_path: &Path, date: &str) -> Vec<BillingEntry> {
-        let path = Self::path_for_date(thread_path, date);
+    pub fn load_date(topic_path: &Path, date: &str) -> Vec<BillingEntry> {
+        let path = Self::path_for_date(topic_path, date);
         let Ok(file) = File::open(&path) else {
             return Vec::new();
         };
@@ -139,13 +139,13 @@ impl BillingLogStore {
     /// entries span multiple currencies the amounts are still summed but
     /// the currency is reported as [`MIXED_CURRENCY`], since adding
     /// unlike units would otherwise be presented as a real figure.
-    pub fn today_total(thread_path: &Path) -> Option<(f64, String)> {
-        Self::date_total(thread_path, &Self::today())
+    pub fn today_total(topic_path: &Path) -> Option<(f64, String)> {
+        Self::date_total(topic_path, &Self::today())
     }
 
     /// Total cost for a specific date, with its currency.
-    pub fn date_total(thread_path: &Path, date: &str) -> Option<(f64, String)> {
-        let entries = Self::load_date(thread_path, date);
+    pub fn date_total(topic_path: &Path, date: &str) -> Option<(f64, String)> {
+        let entries = Self::load_date(topic_path, date);
         if entries.is_empty() {
             return None;
         }
@@ -190,11 +190,11 @@ mod tests {
         assert_eq!(loaded[0], e);
     }
 
-    /// `.jyc/` is created on demand -- a brand-new thread must not error.
+    /// `.jyc/` is created on demand -- a brand-new topic must not error.
     #[test]
     fn append_creates_jyc_dir() {
         let dir = tempdir().unwrap();
-        let nested = dir.path().join("fresh-thread");
+        let nested = dir.path().join("fresh-topic");
         BillingLogStore::append(&nested, &entry(0.01, "USD")).unwrap();
         assert!(nested.join(".jyc").is_dir());
     }

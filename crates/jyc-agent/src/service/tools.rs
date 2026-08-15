@@ -5,8 +5,8 @@
 use anyhow::Result;
 use std::path::Path;
 
-use jyc_core::thread_event_bus::ThreadEventBusRef;
-use jyc_types::{McpServerConfig, ThreadConfig};
+use jyc_core::topic_event_bus::TopicEventBusRef;
+use jyc_types::{McpServerConfig, TopicConfig};
 
 use crate::provider;
 use crate::tools::registry::ToolRegistry;
@@ -14,19 +14,19 @@ use crate::tools::registry::ToolRegistry;
 use super::JycAgentService;
 
 /// Source layer of an MCP server after the L1 (global) / L2 (channel) /
-/// L3 (thread-local) overlay resolution. Used only to tag entries for the
-/// per-thread observability log; it does not affect tool registration.
+/// L3 (topic-local) overlay resolution. Used only to tag entries for the
+/// per-topic observability log; it does not affect tool registration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum McpLayer {
     Global,
     Channel,
     Pattern,
-    ThreadOverride,
-    ThreadReplace,
+    TopicOverride,
+    TopicReplace,
 }
 
 impl JycAgentService {
-    /// Create the tool registry for a thread.
+    /// Create the tool registry for a topic.
     ///
     /// `supports_images` gates the `read_image` built-in: when the active
     /// model can accept image content blocks, the agent gets a way to load
@@ -40,9 +40,9 @@ impl JycAgentService {
     /// compatible fallback).
     pub(crate) async fn build_tool_registry(
         &self,
-        thread_name: &str,
-        thread_path: &Path,
-        thread_cfg: Option<&ThreadConfig>,
+        topic_name: &str,
+        topic_path: &Path,
+        topic_cfg: Option<&TopicConfig>,
         supports_images: bool,
         matched_pattern_name: Option<&str>,
     ) -> ToolRegistry {
@@ -78,31 +78,31 @@ impl JycAgentService {
         let matched_pattern =
             matched_pattern_name.and_then(|name| self.patterns.iter().find(|p| p.name == name));
 
-        // --- L3 thread-local config lifecycle log ---
+        // --- L3 topic-local config lifecycle log ---
         // Always emit one of three outcomes so a remote-deploy grep on
-        // "thread-local MCP" or "thread config loaded" reveals whether the
+        // "topic-local MCP" or "topic config loaded" reveals whether the
         // L3 file was found, valid, and applied. This is the only signal
-        // that tells operators whether the thread-local overlay engaged.
-        let thread_cfg_path = thread_path.join(".jyc").join("config.toml");
-        let configured_mcps = thread_cfg
+        // that tells operators whether the topic-local overlay engaged.
+        let topic_cfg_path = topic_path.join(".jyc").join("config.toml");
+        let configured_mcps = topic_cfg
             .and_then(|t| t.mcps.as_ref())
             .map(|v| v.len())
             .unwrap_or(0);
-        let mcps_replace = thread_cfg.map(|t| t.mcps_replace).unwrap_or(false);
-        match thread_cfg {
+        let mcps_replace = topic_cfg.map(|t| t.mcps_replace).unwrap_or(false);
+        match topic_cfg {
             None => tracing::debug!(
                 channel = %self.channel_name,
-                thread = %thread_name,
-                path = %thread_cfg_path.display(),
-                "no thread-local MCP overlay (L3 file absent or unreadable)"
+                topic = %topic_name,
+                path = %topic_cfg_path.display(),
+                "no topic-local MCP overlay (L3 file absent or unreadable)"
             ),
             Some(cfg) if cfg.mcps.is_none() && !cfg.mcps_replace => tracing::debug!(
                 channel = %self.channel_name,
-                thread = %thread_name,
-                path = %thread_cfg_path.display(),
+                topic = %topic_name,
+                path = %topic_cfg_path.display(),
                 configured_mcps = configured_mcps,
                 mcps_replace = mcps_replace,
-                "thread config loaded but has no [[mcps]]; L3 is a no-op"
+                "topic config loaded but has no [[mcps]]; L3 is a no-op"
             ),
             Some(cfg) => {
                 let names: Vec<&str> = cfg
@@ -112,12 +112,12 @@ impl JycAgentService {
                     .unwrap_or_default();
                 tracing::info!(
                     channel = %self.channel_name,
-                    thread = %thread_name,
-                    path = %thread_cfg_path.display(),
+                    topic = %topic_name,
+                    path = %topic_cfg_path.display(),
                     configured_mcps = configured_mcps,
                     mcps_replace = mcps_replace,
-                    thread_mcp_names = ?names,
-                    "Applied thread-local MCP overlay (L3)"
+                    topic_mcp_names = ?names,
+                    "Applied topic-local MCP overlay (L3)"
                 );
             }
         }
@@ -142,7 +142,7 @@ impl JycAgentService {
         };
 
         // Resolve MCP configs: pattern → channel → global. Tag each baseline
-        // entry with its source layer so the per-thread log can show exactly
+        // entry with its source layer so the per-topic log can show exactly
         // which MCP came from which config layer.
         let (base_mcps, base_layer): (&[McpServerConfig], McpLayer) =
             if let Some(p) = matched_pattern.and_then(|p| p.mcps.as_ref()) {
@@ -153,22 +153,22 @@ impl JycAgentService {
                 (self.mcp_configs.as_slice(), McpLayer::Global)
             };
 
-        // Layer thread (L3) MCPs from the pre-loaded <thread_path>/.jyc/config.toml
+        // Layer topic (L3) MCPs from the pre-loaded <topic_path>/.jyc/config.toml
         // on top: additive by default, opt-in full replace via `mcps_replace = true`.
-        // (Caller in `process` loads thread_cfg once per message and shares it
+        // (Caller in `process` loads topic_cfg once per message and shares it
         //  with the [agent] model-resolution block, avoiding a duplicate disk read.)
         let effective_mcps: Vec<McpServerConfig> =
-            jyc_types::apply_thread_mcp_overlay(base_mcps, thread_cfg);
+            jyc_types::apply_topic_mcp_overlay(base_mcps, topic_cfg);
 
         // Re-tag the resolved list with the source layer each MCP came from.
-        // `apply_thread_mcp_overlay` keeps base entries in place for unchanged
+        // `apply_topic_mcp_overlay` keeps base entries in place for unchanged
         // names and appends new ones; we attribute each by comparing against
         // the baseline. When `mcps_replace=true` every entry is from the L3.
         let mut filtered_mcp_configs: Vec<(McpServerConfig, McpLayer)> = effective_mcps
             .into_iter()
             .map(|c| {
                 let layer = if mcps_replace || !base_mcps.iter().any(|b| b.name == c.name) {
-                    McpLayer::ThreadOverride
+                    McpLayer::TopicOverride
                 } else {
                     base_layer
                 };
@@ -219,12 +219,12 @@ impl JycAgentService {
         let (disabled_server_tools, disabled_plain_tools): (Vec<&str>, Vec<&str>) =
             disabled_tools.into_iter().partition(|t| t.contains('/'));
 
-        // Per-thread structured log: which MCPs were actually loaded and
+        // Per-topic structured log: which MCPs were actually loaded and
         // which config layer each originated from. Replaces the previous
         // count-only "Loading external MCP tools" line.
         if mcps_replace {
             for (_, l) in filtered_mcp_configs.iter_mut() {
-                *l = McpLayer::ThreadReplace;
+                *l = McpLayer::TopicReplace;
             }
         }
         let mcps_total = filtered_mcp_configs.len();
@@ -235,22 +235,22 @@ impl JycAgentService {
                     McpLayer::Global => format!("{}:global", c.name),
                     McpLayer::Channel => format!("{}:channel", c.name),
                     McpLayer::Pattern => format!("{}:pattern", c.name),
-                    McpLayer::ThreadOverride => format!("{}:thread", c.name),
-                    McpLayer::ThreadReplace => format!("{}:thread-replace", c.name),
+                    McpLayer::TopicOverride => format!("{}:topic", c.name),
+                    McpLayer::TopicReplace => format!("{}:topic-replace", c.name),
                 })
                 .collect();
             tracing::info!(
                 channel = %self.channel_name,
-                thread = %thread_name,
+                topic = %topic_name,
                 pattern = ?matched_pattern_name,
                 mcps_total = mcps_total,
                 from_global = mcps.iter().filter(|s| s.ends_with(":global")).count(),
                 from_channel = mcps.iter().filter(|s| s.ends_with(":channel")).count(),
                 from_pattern = mcps.iter().filter(|s| s.ends_with(":pattern")).count(),
-                from_thread = mcps.iter().filter(|s| s.ends_with(":thread")).count(),
-                from_thread_replace = mcps.iter().filter(|s| s.ends_with(":thread-replace")).count(),
+                from_topic = mcps.iter().filter(|s| s.ends_with(":topic")).count(),
+                from_topic_replace = mcps.iter().filter(|s| s.ends_with(":topic-replace")).count(),
                 mcps = ?mcps,
-                "Resolved MCP servers for thread"
+                "Resolved MCP servers for topic"
             );
         }
 
@@ -319,8 +319,8 @@ impl JycAgentService {
         provider::create_provider(model, &agent_cfg.providers)
     }
 
-    /// Get event bus for a thread.
-    pub(crate) async fn get_event_bus(&self, thread_name: &str) -> Option<ThreadEventBusRef> {
-        self.event_buses.lock().await.get(thread_name).cloned()
+    /// Get event bus for a topic.
+    pub(crate) async fn get_event_bus(&self, topic_name: &str) -> Option<TopicEventBusRef> {
+        self.event_buses.lock().await.get(topic_name).cloned()
     }
 }

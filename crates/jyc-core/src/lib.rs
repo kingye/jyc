@@ -17,17 +17,17 @@ pub mod state_manager;
 pub mod static_agent;
 pub mod template_dirs;
 pub mod template_utils;
-pub mod thread_event;
-pub mod thread_event_bus;
-pub mod thread_json;
-pub mod thread_manager;
-pub mod thread_path;
+pub mod topic_event;
+pub mod topic_event_bus;
+pub mod topic_json;
+pub mod topic_manager;
+pub mod topic_path;
 
-/// Directory under `<thread>/.jyc/` holding agent-published files that are
-/// served over HTTP at `/exchange/<channel>/<thread>/<name>`.
+/// Directory under `<topic>/.jyc/` holding agent-published files that are
+/// served over HTTP at `/exchange/<channel>/<topic>/<name>`.
 pub const EXCHANGE_DIR_NAME: &str = "exchange";
 
-/// Per-thread token file under `<thread>/.jyc/` guarding `/exchange/...` URLs.
+/// Per-topic token file under `<topic>/.jyc/` guarding `/exchange/...` URLs.
 /// Created on first `jyc_publish_file` call; deleted by `/reset` so links die.
 pub const EXCHANGE_TOKEN_FILENAME: &str = "exchange-token";
 
@@ -37,11 +37,11 @@ pub const EXCHANGE_TOKEN_FILENAME: &str = "exchange-token";
 /// and the `/exchange` command can never disagree. `base` is an opaque prefix
 /// (scheme + host, optionally port and subpath) with no trailing slash — see
 /// `InspectConfig::effective_base_url`.
-pub fn exchange_url(base: &str, channel: &str, thread: &str, name: &str, token: &str) -> String {
+pub fn exchange_url(base: &str, channel: &str, topic: &str, name: &str, token: &str) -> String {
     format!(
         "{base}/exchange/{}/{}/{}?token={token}",
         url_encode_segment(channel),
-        url_encode_segment(thread),
+        url_encode_segment(topic),
         url_encode_segment(name),
     )
 }
@@ -95,9 +95,9 @@ mod exchange_url_tests {
         );
     }
 
-    /// Channel and thread names reach the URL too, so they need encoding.
+    /// Channel and topic names reach the URL too, so they need encoding.
     #[test]
-    fn channel_and_thread_are_encoded() {
+    fn channel_and_topic_are_encoded() {
         assert_eq!(
             exchange_url("http://h:1", "my chan", "issue #7", "a.txt", "tok"),
             "http://h:1/exchange/my%20chan/issue%20%237/a.txt?token=tok"

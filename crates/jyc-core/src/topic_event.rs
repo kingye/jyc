@@ -1,18 +1,18 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Events that can be published to a thread's event bus.
+/// Events that can be published to a topic's event bus.
 ///
-/// These events are specific to a single thread and are completely
-/// isolated from events in other threads.
+/// These events are specific to a single topic and are completely
+/// isolated from events in other topics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ThreadEvent {
+pub enum TopicEvent {
     /// Processing started event.
     ///
     /// Sent when the agent begins processing a message.
     ProcessingStarted {
-        /// Name of the thread
-        thread_name: String,
+        /// Name of the topic
+        topic_name: String,
         /// ID of the message being processed
         message_id: String,
         /// When processing started
@@ -23,8 +23,8 @@ pub enum ThreadEvent {
     ///
     /// Sent periodically during processing to report progress.
     ProcessingProgress {
-        /// Name of the thread
-        thread_name: String,
+        /// Name of the topic
+        topic_name: String,
         /// How long processing has been running (in seconds)
         elapsed_secs: u64,
         /// Current activity
@@ -43,8 +43,8 @@ pub enum ThreadEvent {
     ///
     /// Sent when the agent finishes processing a message.
     ProcessingCompleted {
-        /// Name of the thread
-        thread_name: String,
+        /// Name of the topic
+        topic_name: String,
         /// ID of the message that was processed
         message_id: String,
         /// Whether processing was successful
@@ -64,8 +64,8 @@ pub enum ThreadEvent {
     /// inspect server so it doesn't pollute the activity pane or
     /// activity.jsonl.
     LoopTick {
-        /// Name of the thread
-        thread_name: String,
+        /// Name of the topic
+        topic_name: String,
         /// Wall-clock milliseconds since the current agent loop started.
         elapsed_ms: u64,
         /// When the tick was generated
@@ -76,8 +76,8 @@ pub enum ThreadEvent {
     ///
     /// Sent when the agent starts executing a tool.
     ToolStarted {
-        /// Name of the thread
-        thread_name: String,
+        /// Name of the topic
+        topic_name: String,
         /// Name of the tool being executed
         tool_name: String,
         /// Preview of the tool input (truncated)
@@ -90,8 +90,8 @@ pub enum ThreadEvent {
     ///
     /// Sent when the agent finishes executing a tool.
     ToolCompleted {
-        /// Name of the thread
-        thread_name: String,
+        /// Name of the topic
+        topic_name: String,
         /// Name of the tool that was executed
         tool_name: String,
         /// Whether the tool execution was successful
@@ -113,8 +113,8 @@ pub enum ThreadEvent {
     /// for the response. Lets the activity panel show "Thinking..." or
     /// "Sending to LLM..." between tool execution and response.
     LLMRequestStarted {
-        /// Name of the thread
-        thread_name: String,
+        /// Name of the topic
+        topic_name: String,
         /// Iteration number within the current agent loop run
         iteration: usize,
         /// When the request was sent
@@ -126,8 +126,8 @@ pub enum ThreadEvent {
     /// Sent when the AI model produces reasoning/thinking content
     /// (e.g., chain-of-thought before generating a response).
     Thinking {
-        /// Name of the thread
-        thread_name: String,
+        /// Name of the topic
+        topic_name: String,
         /// Full thinking text (untruncated).
         text: String,
         /// Length of the thinking text in characters.
@@ -137,15 +137,15 @@ pub enum ThreadEvent {
         timestamp: DateTime<Utc>,
     },
 
-    /// A new message arrived in this thread.
+    /// A new message arrived in this topic.
     ///
-    /// Published when `ThreadManager::enqueue()` receives a message from any
-    /// source (remote user, scheduled job, dashboard injection, cross-thread).
+    /// Published when `TopicManager::enqueue()` receives a message from any
+    /// source (remote user, scheduled job, dashboard injection, cross-topic).
     /// Enables the dashboard to display live chat messages for non-WebSocket
-    /// threads.
+    /// topics.
     IncomingMessage {
-        /// Name of the thread
-        thread_name: String,
+        /// Name of the topic
+        topic_name: String,
         /// Sender identifier (e.g., "user", display name, "job")
         sender: String,
         /// Message body preview (may be truncated)
@@ -154,13 +154,13 @@ pub enum ThreadEvent {
         timestamp: DateTime<Utc>,
     },
 
-    /// The AI sent a reply for this thread.
+    /// The AI sent a reply for this topic.
     ///
     /// Published after `outbound.send_reply()` succeeds. Enables the dashboard
-    /// to display live AI replies for non-WebSocket threads.
+    /// to display live AI replies for non-WebSocket topics.
     ReplySent {
-        /// Name of the thread
-        thread_name: String,
+        /// Name of the topic
+        topic_name: String,
         /// The AI reply text
         text: String,
         /// When the reply was sent
@@ -173,8 +173,8 @@ pub enum ThreadEvent {
     /// error, rate limit). Surfaces transient issues in the Activity panel
     /// so operators can see what's happening without checking journalctl.
     SessionStatus {
-        /// Name of the thread
-        thread_name: String,
+        /// Name of the topic
+        topic_name: String,
         /// Status type (e.g., "retry", "error", "rate_limit")
         status_type: String,
         /// Retry attempt number (if applicable)
@@ -186,21 +186,21 @@ pub enum ThreadEvent {
     },
 }
 
-impl ThreadEvent {
-    /// Get the thread name from the event.
-    pub fn thread_name(&self) -> &str {
+impl TopicEvent {
+    /// Get the topic name from the event.
+    pub fn topic_name(&self) -> &str {
         match self {
-            ThreadEvent::ProcessingStarted { thread_name, .. } => thread_name,
-            ThreadEvent::ProcessingProgress { thread_name, .. } => thread_name,
-            ThreadEvent::ProcessingCompleted { thread_name, .. } => thread_name,
-            ThreadEvent::LoopTick { thread_name, .. } => thread_name,
-            ThreadEvent::ToolStarted { thread_name, .. } => thread_name,
-            ThreadEvent::ToolCompleted { thread_name, .. } => thread_name,
-            ThreadEvent::LLMRequestStarted { thread_name, .. } => thread_name,
-            ThreadEvent::Thinking { thread_name, .. } => thread_name,
-            ThreadEvent::IncomingMessage { thread_name, .. } => thread_name,
-            ThreadEvent::ReplySent { thread_name, .. } => thread_name,
-            ThreadEvent::SessionStatus { thread_name, .. } => thread_name,
+            TopicEvent::ProcessingStarted { topic_name, .. } => topic_name,
+            TopicEvent::ProcessingProgress { topic_name, .. } => topic_name,
+            TopicEvent::ProcessingCompleted { topic_name, .. } => topic_name,
+            TopicEvent::LoopTick { topic_name, .. } => topic_name,
+            TopicEvent::ToolStarted { topic_name, .. } => topic_name,
+            TopicEvent::ToolCompleted { topic_name, .. } => topic_name,
+            TopicEvent::LLMRequestStarted { topic_name, .. } => topic_name,
+            TopicEvent::Thinking { topic_name, .. } => topic_name,
+            TopicEvent::IncomingMessage { topic_name, .. } => topic_name,
+            TopicEvent::ReplySent { topic_name, .. } => topic_name,
+            TopicEvent::SessionStatus { topic_name, .. } => topic_name,
         }
     }
 
@@ -208,17 +208,17 @@ impl ThreadEvent {
     #[allow(dead_code)]
     pub fn timestamp(&self) -> DateTime<Utc> {
         match self {
-            ThreadEvent::ProcessingStarted { timestamp, .. } => *timestamp,
-            ThreadEvent::ProcessingProgress { timestamp, .. } => *timestamp,
-            ThreadEvent::ProcessingCompleted { timestamp, .. } => *timestamp,
-            ThreadEvent::LoopTick { timestamp, .. } => *timestamp,
-            ThreadEvent::ToolStarted { timestamp, .. } => *timestamp,
-            ThreadEvent::ToolCompleted { timestamp, .. } => *timestamp,
-            ThreadEvent::LLMRequestStarted { timestamp, .. } => *timestamp,
-            ThreadEvent::Thinking { timestamp, .. } => *timestamp,
-            ThreadEvent::IncomingMessage { timestamp, .. } => *timestamp,
-            ThreadEvent::ReplySent { timestamp, .. } => *timestamp,
-            ThreadEvent::SessionStatus { timestamp, .. } => *timestamp,
+            TopicEvent::ProcessingStarted { timestamp, .. } => *timestamp,
+            TopicEvent::ProcessingProgress { timestamp, .. } => *timestamp,
+            TopicEvent::ProcessingCompleted { timestamp, .. } => *timestamp,
+            TopicEvent::LoopTick { timestamp, .. } => *timestamp,
+            TopicEvent::ToolStarted { timestamp, .. } => *timestamp,
+            TopicEvent::ToolCompleted { timestamp, .. } => *timestamp,
+            TopicEvent::LLMRequestStarted { timestamp, .. } => *timestamp,
+            TopicEvent::Thinking { timestamp, .. } => *timestamp,
+            TopicEvent::IncomingMessage { timestamp, .. } => *timestamp,
+            TopicEvent::ReplySent { timestamp, .. } => *timestamp,
+            TopicEvent::SessionStatus { timestamp, .. } => *timestamp,
         }
     }
 }
@@ -234,20 +234,20 @@ mod tests {
     #[test]
     fn processing_started_event() {
         let ts = dummy_time();
-        let ev = ThreadEvent::ProcessingStarted {
-            thread_name: "t1".to_string(),
+        let ev = TopicEvent::ProcessingStarted {
+            topic_name: "t1".to_string(),
             message_id: "m1".to_string(),
             timestamp: ts,
         };
-        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.topic_name(), "t1");
         assert_eq!(ev.timestamp(), ts);
     }
 
     #[test]
     fn processing_progress_event() {
         let ts = dummy_time();
-        let ev = ThreadEvent::ProcessingProgress {
-            thread_name: "t1".to_string(),
+        let ev = TopicEvent::ProcessingProgress {
+            topic_name: "t1".to_string(),
             elapsed_secs: 10,
             activity: "working".to_string(),
             progress: Some("50%".to_string()),
@@ -255,54 +255,54 @@ mod tests {
             output_length: 100,
             timestamp: ts,
         };
-        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.topic_name(), "t1");
         assert_eq!(ev.timestamp(), ts);
     }
 
     #[test]
     fn processing_completed_event() {
         let ts = dummy_time();
-        let ev = ThreadEvent::ProcessingCompleted {
-            thread_name: "t1".to_string(),
+        let ev = TopicEvent::ProcessingCompleted {
+            topic_name: "t1".to_string(),
             message_id: "m1".to_string(),
             success: true,
             duration_secs: 5,
             timestamp: ts,
         };
-        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.topic_name(), "t1");
         assert_eq!(ev.timestamp(), ts);
     }
 
     #[test]
     fn loop_tick_event() {
         let ts = dummy_time();
-        let ev = ThreadEvent::LoopTick {
-            thread_name: "t1".to_string(),
+        let ev = TopicEvent::LoopTick {
+            topic_name: "t1".to_string(),
             elapsed_ms: 12_400,
             timestamp: ts,
         };
-        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.topic_name(), "t1");
         assert_eq!(ev.timestamp(), ts);
     }
 
     #[test]
     fn tool_started_event() {
         let ts = dummy_time();
-        let ev = ThreadEvent::ToolStarted {
-            thread_name: "t1".to_string(),
+        let ev = TopicEvent::ToolStarted {
+            topic_name: "t1".to_string(),
             tool_name: "bash".to_string(),
             input: Some("echo hi".to_string()),
             timestamp: ts,
         };
-        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.topic_name(), "t1");
         assert_eq!(ev.timestamp(), ts);
     }
 
     #[test]
     fn tool_completed_event() {
         let ts = dummy_time();
-        let ev = ThreadEvent::ToolCompleted {
-            thread_name: "t1".to_string(),
+        let ev = TopicEvent::ToolCompleted {
+            topic_name: "t1".to_string(),
             tool_name: "bash".to_string(),
             success: true,
             duration_secs: 1,
@@ -310,46 +310,46 @@ mod tests {
             input: Some(r#"{"command":"ls"}"#.to_string()),
             timestamp: ts,
         };
-        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.topic_name(), "t1");
         assert_eq!(ev.timestamp(), ts);
     }
 
     #[test]
     fn llm_request_started_event() {
         let ts = dummy_time();
-        let ev = ThreadEvent::LLMRequestStarted {
-            thread_name: "t1".to_string(),
+        let ev = TopicEvent::LLMRequestStarted {
+            topic_name: "t1".to_string(),
             iteration: 3,
             timestamp: ts,
         };
-        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.topic_name(), "t1");
         assert_eq!(ev.timestamp(), ts);
     }
 
     #[test]
     fn thinking_event() {
         let ts = dummy_time();
-        let ev = ThreadEvent::Thinking {
-            thread_name: "t1".to_string(),
+        let ev = TopicEvent::Thinking {
+            topic_name: "t1".to_string(),
             text: "thinking...".to_string(),
             full_length: 100,
             timestamp: ts,
         };
-        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.topic_name(), "t1");
         assert_eq!(ev.timestamp(), ts);
     }
 
     #[test]
     fn session_status_event() {
         let ts = dummy_time();
-        let ev = ThreadEvent::SessionStatus {
-            thread_name: "t1".to_string(),
+        let ev = TopicEvent::SessionStatus {
+            topic_name: "t1".to_string(),
             status_type: "retry".to_string(),
             attempt: Some(1),
             message: Some("retrying".to_string()),
             timestamp: ts,
         };
-        assert_eq!(ev.thread_name(), "t1");
+        assert_eq!(ev.topic_name(), "t1");
         assert_eq!(ev.timestamp(), ts);
     }
 }

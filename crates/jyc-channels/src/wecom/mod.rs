@@ -8,7 +8,7 @@
 //! - Inbound: Shared axum HTTP server at `/webhook/{channel_name}`, all channels
 //!   share one server instance (global `wecom.bind_addr`).
 //! - Outbound: POST to Bot webhook URL for each channel.
-//! - One channel = one Bot = one fixed thread (similar to WeChat).
+//! - One channel = one Bot = one fixed topic (similar to WeChat).
 
 pub mod crypto;
 pub mod inbound;

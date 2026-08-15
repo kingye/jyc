@@ -1,6 +1,6 @@
 //! Channel-agnostic attachment storage utilities.
 //!
-//! Provides shared logic for saving attachments to thread directories,
+//! Provides shared logic for saving attachments to topic directories,
 //! generating unique filenames, and sanitizing user-provided filenames.
 //! Used by both email and Feishu inbound adapters.
 
@@ -16,15 +16,15 @@ use jyc_utils::helpers::sanitize_for_filesystem;
 /// Rules:
 /// - If `attachment_config.save_path` is set and absolute, return it as-is.
 /// - If `attachment_config.save_path` is set and relative, join under
-///   `thread_path`.
-/// - If unset, return `thread_path/attachments/`.
+///   `topic_path`.
+/// - If unset, return `topic_path/attachments/`.
 ///
 /// Centralizes the attachment-path-resolution logic so callers (channel
 /// adapters that save attachments, agent code that needs to know which
 /// absolute roots to widen its filesystem boundary checks against) agree
 /// on exactly one rule.
 pub fn resolve_attachment_save_dir(
-    thread_path: &Path,
+    topic_path: &Path,
     attachment_config: Option<&InboundAttachmentConfig>,
 ) -> PathBuf {
     match attachment_config.and_then(|c| c.save_path.as_deref()) {
@@ -33,10 +33,10 @@ pub fn resolve_attachment_save_dir(
             if path_buf.is_absolute() {
                 path_buf
             } else {
-                thread_path.join(path_buf)
+                topic_path.join(path_buf)
             }
         }
-        None => thread_path.join("attachments"),
+        None => topic_path.join("attachments"),
     }
 }
 
@@ -111,13 +111,13 @@ pub fn generate_attachment_filename(attachment: &MessageAttachment) -> String {
     final_name
 }
 
-/// Save attachments from an inbound message directly to a thread directory.
+/// Save attachments from an inbound message directly to a topic directory.
 ///
-/// Simpler version that takes the resolved thread path directly.
-/// Used by the thread manager where the thread path is already known.
+/// Simpler version that takes the resolved topic path directly.
+/// Used by the topic manager where the topic path is already known.
 pub async fn save_attachments_to_dir(
     message: &mut InboundMessage,
-    thread_path: &Path,
+    topic_path: &Path,
     attachment_config: Option<&InboundAttachmentConfig>,
 ) -> Result<()> {
     if message.attachments.is_empty() {
@@ -125,7 +125,7 @@ pub async fn save_attachments_to_dir(
         return Ok(());
     }
 
-    let save_dir = resolve_attachment_save_dir(thread_path, attachment_config);
+    let save_dir = resolve_attachment_save_dir(topic_path, attachment_config);
 
     tracing::debug!("Attachment save directory: {}", save_dir.display());
     tokio::fs::create_dir_all(&save_dir)
@@ -165,19 +165,19 @@ pub async fn save_attachments_to_dir(
     Ok(())
 }
 
-/// Save attachments from an inbound message to the thread directory.
+/// Save attachments from an inbound message to the topic directory.
 ///
 /// This is the shared implementation used by all channel adapters.
-/// The thread directory path is constructed from workspace_root, channel_name,
-/// and thread_name following the convention:
-///   `<workspace_root>/<channel_name>/workspace/<thread_name>/attachments/`
+/// The topic directory path is constructed from workspace_root, channel_name,
+/// and topic_name following the convention:
+///   `<workspace_root>/<channel_name>/workspace/<topic_name>/attachments/`
 ///
 /// The save path can be overridden via `InboundAttachmentConfig.save_path`.
-pub async fn save_attachments_to_thread_directory(
+pub async fn save_attachments_to_topic_directory(
     message: &mut InboundMessage,
     workspace_root: &Path,
     channel_name: &str,
-    thread_name: &str,
+    topic_name: &str,
     attachment_config: Option<&InboundAttachmentConfig>,
 ) -> Result<()> {
     if message.attachments.is_empty() {
@@ -186,18 +186,18 @@ pub async fn save_attachments_to_thread_directory(
     }
 
     tracing::debug!(
-        "Saving {} attachments to thread directory for thread: {}",
+        "Saving {} attachments to topic directory for topic: {}",
         message.attachments.len(),
-        thread_name
+        topic_name
     );
 
-    // Determine the thread directory
-    let thread_dir = workspace_root
+    // Determine the topic directory
+    let topic_dir = workspace_root
         .join(channel_name)
         .join("workspace")
-        .join(thread_name);
+        .join(topic_name);
 
-    let save_dir = resolve_attachment_save_dir(&thread_dir, attachment_config);
+    let save_dir = resolve_attachment_save_dir(&topic_dir, attachment_config);
 
     tracing::debug!("Attachment save directory: {}", save_dir.display());
 
@@ -363,7 +363,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_save_attachments_to_thread_directory() {
+    async fn test_save_attachments_to_topic_directory() {
         let tmp = tempdir().unwrap();
         let workspace_root = tmp.path().to_path_buf();
 
@@ -377,7 +377,7 @@ mod tests {
             topic: "Test Subject".to_string(),
             content: MessageContent::default(),
             timestamp: Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![MessageAttachment {
@@ -391,11 +391,11 @@ mod tests {
             matched_pattern: None,
         };
 
-        let result = save_attachments_to_thread_directory(
+        let result = save_attachments_to_topic_directory(
             &mut message,
             &workspace_root,
             "test_channel",
-            "test_thread",
+            "test_topic",
             None,
         )
         .await;
@@ -406,7 +406,7 @@ mod tests {
         let expected_dir = workspace_root
             .join("test_channel")
             .join("workspace")
-            .join("test_thread")
+            .join("test_topic")
             .join("attachments");
         assert!(expected_dir.exists());
 

@@ -147,7 +147,7 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
         &self,
         original: &InboundMessage,
         reply_text: &str,
-        thread_path: &Path,
+        topic_path: &Path,
         message_dir: &str,
         attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
@@ -161,13 +161,13 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
         let chat_id = original.channel_uid.as_str();
 
         // 1. Read model/mode from reply context file (if available)
-        let reply_ctx = jyc_mcp::context::load_reply_context(thread_path).await.ok();
+        let reply_ctx = jyc_mcp::context::load_reply_context(topic_path).await.ok();
         let model = reply_ctx.as_ref().and_then(|c| c.model.as_deref());
         let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
 
         // Read current input tokens from session state
         let (input_tokens, max_tokens) =
-            jyc_core::session_state::read_input_tokens(thread_path).await;
+            jyc_core::session_state::read_input_tokens(topic_path).await;
 
         // 2. Build footer with model/mode/tokens information
         let footer =
@@ -215,7 +215,7 @@ impl jyc_types::OutboundAdapter for FeishuOutboundAdapter {
 
         // 5. Store reply to chat log
         self.storage
-            .store_reply(thread_path, &full_reply, message_dir)
+            .store_reply(topic_path, &full_reply, message_dir)
             .await?;
 
         tracing::debug!(

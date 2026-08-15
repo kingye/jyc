@@ -1,15 +1,15 @@
-//! `ThreadProxyHandler` — dashboard-side WebSocket handler for **any**
-//! (channel, thread) pair.
+//! `TopicProxyHandler` — dashboard-side WebSocket handler for **any**
+//! (channel, topic) pair.
 //!
 //! Used by the inspect server to expose a unified WebSocket endpoint for the
-//! dashboard to chat with threads regardless of channel type. The handler is
-//! constructed per-connection with the (channel, thread) pair bound from the
-//! URL path (`/ws/<channel>/<thread>`), so the WebSocket protocol no longer
+//! dashboard to chat with topics regardless of channel type. The handler is
+//! constructed per-connection with the (channel, topic) pair bound from the
+//! URL path (`/ws/<channel>/<topic>`), so the WebSocket protocol no longer
 //! needs to carry these fields in the payload.
 //!
-//! Inbound messages are routed to the channel's `ThreadManager::enqueue` after
-//! loading routing metadata (channel_uid, external_id, thread_refs) from
-//! `.jyc/thread-meta.json`. Outbound events come from the per-channel
+//! Inbound messages are routed to the channel's `TopicManager::enqueue` after
+//! loading routing metadata (channel_uid, external_id, references) from
+//! `.jyc/topic-meta.json`. Outbound events come from the per-channel
 //! `InspectContext.broadcast` bus populated by the `ActivityTracker`.
 
 use std::path::PathBuf;
@@ -18,7 +18,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
-use jyc_core::thread_manager::ThreadManager;
+use jyc_core::topic_manager::TopicManager;
 use jyc_types::{InboundMessage, MessageContent, PatternMatch};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -26,15 +26,15 @@ use tokio::sync::broadcast;
 
 use crate::server::WebsocketHandler;
 
-/// WebSocket messages accepted by `ThreadProxyHandler`.
+/// WebSocket messages accepted by `TopicProxyHandler`.
 ///
-/// `channel` and `thread` are bound at handler construction time from
+/// `channel` and `topic` are bound at handler construction time from
 /// the URL path. The payload carries only message-specific fields like
 /// `text`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
-    /// Inject a message into the thread for AI processing.
+    /// Inject a message into the topic for AI processing.
     #[serde(rename = "message")]
     Message { text: String },
     /// Close the WebSocket connection cleanly.
@@ -45,78 +45,76 @@ enum ClientMessage {
     Ping,
 }
 
-/// Per-channel routing metadata persisted in `.jyc/thread-meta.json` on the
-/// first inbound message. Loaded by `ThreadProxyHandler` to restore
+/// Per-channel routing metadata persisted in `.jyc/topic-meta.json` on the
+/// first inbound message. Loaded by `TopicProxyHandler` to restore
 /// channel-specific fields (github_number, chat_id, etc.) when injecting
 /// messages from the dashboard.
 #[derive(Debug, Default, Clone, serde::Deserialize)]
 #[serde(default)]
-struct ThreadMeta {
+struct TopicMeta {
     channel_uid: String,
     external_id: Option<String>,
-    thread_refs: Option<Vec<String>>,
+    references: Option<Vec<String>>,
     metadata: HashMap<String, serde_json::Value>,
 }
 
 /// WebSocket handler that proxies between the dashboard and a specific
-/// `(channel, thread)` pair via the channel's `ThreadManager` and the
+/// `(channel, topic)` pair via the channel's `TopicManager` and the
 /// `InspectContext.broadcast` bus.
-pub struct ThreadProxyHandler {
+pub struct TopicProxyHandler {
     channel: String,
-    thread: String,
-    thread_managers: Arc<ArcSwap<Vec<Arc<ThreadManager>>>>,
+    topic: String,
+    topic_managers: Arc<ArcSwap<Vec<Arc<TopicManager>>>>,
     inspect_broadcast: Arc<broadcast::Sender<String>>,
 }
 
-impl ThreadProxyHandler {
+impl TopicProxyHandler {
     pub fn new(
         channel: String,
-        thread: String,
-        thread_managers: Arc<ArcSwap<Vec<Arc<ThreadManager>>>>,
+        topic: String,
+        topic_managers: Arc<ArcSwap<Vec<Arc<TopicManager>>>>,
         inspect_broadcast: Arc<broadcast::Sender<String>>,
     ) -> Self {
         Self {
             channel,
-            thread,
-            thread_managers,
+            topic,
+            topic_managers,
             inspect_broadcast,
         }
     }
 
-    /// Find the `ThreadManager` for `channel`, returning a descriptive error
+    /// Find the `TopicManager` for `channel`, returning a descriptive error
     /// if no such channel is registered.
-    fn find_thread_manager(&self) -> anyhow::Result<Arc<ThreadManager>> {
-        let tms = self.thread_managers.load();
+    fn find_topic_manager(&self) -> anyhow::Result<Arc<TopicManager>> {
+        let tms = self.topic_managers.load();
         tms.iter()
             .find(|tm| tm.channel_name() == self.channel)
             .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!("no thread manager found for channel '{}'", self.channel)
-            })
+            .ok_or_else(|| anyhow::anyhow!("no topic manager found for channel '{}'", self.channel))
     }
 
-    /// Load routing metadata for this thread from `.jyc/thread-meta.json`.
+    /// Load routing metadata for this topic from `.jyc/topic-meta.json`.
     /// Returns sensible defaults if the file doesn't exist (e.g., for a
-    /// never-before-seen thread).
-    async fn load_thread_meta(&self, tm: &Arc<ThreadManager>) -> ThreadMeta {
-        let Some(thread_path) = tm.thread_path(&self.thread).await else {
-            return ThreadMeta::default();
+    /// never-before-seen topic).
+    async fn load_topic_meta(&self, tm: &Arc<TopicManager>) -> TopicMeta {
+        let Some(topic_path) = tm.topic_path(&self.topic).await else {
+            return TopicMeta::default();
         };
-        let meta_path: PathBuf = thread_path.join(".jyc").join("thread-meta.json");
+        let meta_path: PathBuf = topic_path.join(".jyc").join("topic-meta.json");
         let Ok(content) = tokio::fs::read_to_string(&meta_path).await else {
-            return ThreadMeta::default();
+            return TopicMeta::default();
         };
         serde_json::from_str(&content).unwrap_or_default()
     }
 
     /// Handle an inbound `Message { text }` by constructing a synthetic
-    /// `InboundMessage` and enqueueing it via `ThreadManager::enqueue`.
+    /// `InboundMessage` and enqueueing it via `TopicManager::enqueue`.
     async fn handle_inbound_message(
         &self,
-        tm: &Arc<ThreadManager>,
+        tm: &Arc<TopicManager>,
         text: String,
     ) -> anyhow::Result<()> {
-        let meta = self.load_thread_meta(tm).await;
+        let meta = self.load_topic_meta(tm).await;
 
         let now = chrono::Utc::now();
         let message = InboundMessage {
@@ -130,14 +128,14 @@ impl ThreadProxyHandler {
             sender: "dashboard".to_string(),
             sender_address: "dashboard@inspect".to_string(),
             recipients: vec![],
-            topic: self.thread.clone(),
+            topic: self.topic.clone(),
             content: MessageContent {
                 text: Some(text),
                 html: None,
                 markdown: None,
             },
             timestamp: now,
-            thread_refs: meta.thread_refs,
+            references: meta.references,
             reply_to_id: None,
             external_id: meta.external_id,
             attachments: vec![],
@@ -151,40 +149,33 @@ impl ThreadProxyHandler {
             matches: HashMap::new(),
         };
 
-        tm.enqueue(
-            message,
-            self.thread.clone(),
-            pattern_match,
-            None,
-            true,
-            None,
-        )
-        .await;
+        tm.enqueue(message, self.topic.clone(), pattern_match, None, true, None)
+            .await;
         Ok(())
     }
 }
 
 #[async_trait]
-impl WebsocketHandler for ThreadProxyHandler {
+impl WebsocketHandler for TopicProxyHandler {
     async fn handle(
         &self,
         ws: axum::extract::ws::WebSocket,
         addr: std::net::SocketAddr,
-        // This handler binds `channel` + `thread` at construction time from
-        // the URL (`/ws/<channel>/<thread>`), so the `scoped_thread` passed
+        // This handler binds `channel` + `topic` at construction time from
+        // the URL (`/ws/<channel>/<topic>`), so the `scoped_topic` passed
         // by the inspect server is intentionally ignored.
-        _scoped_thread: Option<&str>,
+        _scoped_topic: Option<&str>,
     ) -> anyhow::Result<()> {
-        let tm = self.find_thread_manager()?;
+        let tm = self.find_topic_manager()?;
         let mut broadcast_rx = self.inspect_broadcast.subscribe();
         let channel = self.channel.clone();
-        let thread = self.thread.clone();
+        let topic = self.topic.clone();
 
         tracing::info!(
             addr = %addr,
             channel = %channel,
-            thread = %thread,
-            "ThreadProxyHandler: dashboard client connected"
+            topic = %topic,
+            "TopicProxyHandler: dashboard client connected"
         );
 
         // Split the WebSocket into independent read/write halves so the
@@ -210,7 +201,7 @@ impl WebsocketHandler for ThreadProxyHandler {
                                 Ok(ClientMessage::Disconnect) => {
                                     tracing::info!(
                                         channel = %channel,
-                                        thread = %thread,
+                                        topic = %topic,
                                         "Dashboard sent disconnect"
                                     );
                                     break;
@@ -223,7 +214,7 @@ impl WebsocketHandler for ThreadProxyHandler {
                                     tracing::debug!(
                                         error = %e,
                                         text = %text,
-                                        "Invalid ThreadProxy message (ignored)"
+                                        "Invalid TopicProxy message (ignored)"
                                     );
                                 }
                             }
@@ -241,9 +232,9 @@ impl WebsocketHandler for ThreadProxyHandler {
                 broadcast = broadcast_rx.recv() => {
                     match broadcast {
                         Ok(payload) => {
-                            // Filter to events for this (channel, thread) only.
-                            // Payload format: {"type":..., "channel":..., "thread":..., ...}
-                            if let Some(filtered) = filter_for_thread(&payload, &channel, &thread)
+                            // Filter to events for this (channel, topic) only.
+                            // Payload format: {"type":..., "channel":..., "topic":..., ...}
+                            if let Some(filtered) = filter_for_topic(&payload, &channel, &topic)
                                 && let Err(e) = write
                                     .send(axum::extract::ws::Message::Text(filtered.into()))
                                     .await
@@ -257,7 +248,7 @@ impl WebsocketHandler for ThreadProxyHandler {
                             let resync = serde_json::json!({
                                 "type": "resync",
                                 "channel": channel,
-                                "thread": thread,
+                                "topic": topic,
                                 "dropped": n,
                             });
                             if let Err(e) = write
@@ -277,23 +268,23 @@ impl WebsocketHandler for ThreadProxyHandler {
         tracing::info!(
             addr = %addr,
             channel = %channel,
-            thread = %thread,
-            "ThreadProxyHandler: dashboard client disconnected"
+            topic = %topic,
+            "TopicProxyHandler: dashboard client disconnected"
         );
         Ok(())
     }
 }
 
 /// Filter a broadcast payload to only include events for the given
-/// `(channel, thread)`. Returns Some(payload) if it matches, None otherwise.
+/// `(channel, topic)`. Returns Some(payload) if it matches, None otherwise.
 ///
 /// All payloads on the bus have the shape:
-///   {"type": "...", "channel": "...", "thread": "...", ...}
-fn filter_for_thread(payload: &str, channel: &str, thread: &str) -> Option<String> {
+///   {"type": "...", "channel": "...", "topic": "...", ...}
+fn filter_for_topic(payload: &str, channel: &str, topic: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(payload).ok()?;
     let p_channel = v.get("channel").and_then(|c| c.as_str())?;
-    let p_thread = v.get("thread").and_then(|c| c.as_str())?;
-    if p_channel == channel && p_thread == thread {
+    let p_topic = v.get("topic").and_then(|c| c.as_str())?;
+    if p_channel == channel && p_topic == topic {
         Some(payload.to_string())
     } else {
         None
@@ -305,25 +296,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn filter_matches_channel_and_thread() {
-        let payload = r#"{"type":"activity","channel":"c1","thread":"t1","entry":{}}"#;
+    fn filter_matches_channel_and_topic() {
+        let payload = r#"{"type":"activity","channel":"c1","topic":"t1","entry":{}}"#;
         assert_eq!(
-            filter_for_thread(payload, "c1", "t1").as_deref(),
+            filter_for_topic(payload, "c1", "t1").as_deref(),
             Some(payload)
         );
     }
 
     #[test]
-    fn filter_rejects_other_thread() {
-        let payload = r#"{"type":"activity","channel":"c1","thread":"t1","entry":{}}"#;
-        assert!(filter_for_thread(payload, "c1", "t2").is_none());
-        assert!(filter_for_thread(payload, "c2", "t1").is_none());
-        assert!(filter_for_thread(payload, "c2", "t2").is_none());
+    fn filter_rejects_other_topic() {
+        let payload = r#"{"type":"activity","channel":"c1","topic":"t1","entry":{}}"#;
+        assert!(filter_for_topic(payload, "c1", "t2").is_none());
+        assert!(filter_for_topic(payload, "c2", "t1").is_none());
+        assert!(filter_for_topic(payload, "c2", "t2").is_none());
     }
 
     #[test]
     fn filter_rejects_malformed_payload() {
-        assert!(filter_for_thread("not json", "c", "t").is_none());
-        assert!(filter_for_thread(r#"{"type":"x"}"#, "c", "t").is_none());
+        assert!(filter_for_topic("not json", "c", "t").is_none());
+        assert!(filter_for_topic(r#"{"type":"x"}"#, "c", "t").is_none());
     }
 }

@@ -40,10 +40,10 @@ This document outlines the phased implementation plan for building JYC, the Rust
 | # | Task | Files | Description | Test Strategy |
 |---|------|-------|-------------|---------------|
 | 2.1 | IMAP client wrapper | `src/services/imap/client.rs` | Wrap `async-imap`: connect with TLS, login, select mailbox, fetch by UID range, fetch by sequence range, IDLE support, disconnect. Handle `async-imap`'s `runtime-tokio` feature | Integration test: connect to real IMAP (behind feature flag) |
-| 2.2 | Email parser | `src/core/email_parser.rs` | `strip_reply_prefix(subject)` — strip Re:/Fwd:/回复:/转发:. `clean_email_body(text)` — fix bracket nesting, normalize. `strip_quoted_history(text)` — line-by-line scan for reply headers, dividers, `>>` quotes. `truncate_text(text, max)`. `derive_thread_name(subject, prefixes)` — strip reply prefixes, strip pattern prefixes (sorted longest-first), sanitize for filesystem | Unit tests: port all cases from jiny-m's email-parser.test.ts |
-| 2.3 | Email inbound adapter | `src/channels/email/inbound.rs` | Implement `InboundAdapter` trait. `mail-parser` → `InboundMessage` conversion. `match_message()`: sender exact/domain/regex + subject prefix/regex (AND logic). `derive_thread_name()`: channel-specific implementation | Unit tests: message conversion, pattern matching |
+| 2.2 | Email parser | `src/core/email_parser.rs` | `strip_reply_prefix(subject)` — strip Re:/Fwd:/回复:/转发:. `clean_email_body(text)` — fix bracket nesting, normalize. `strip_quoted_history(text)` — line-by-line scan for reply headers, dividers, `>>` quotes. `truncate_text(text, max)`. `derive_topic_name(subject, prefixes)` — strip reply prefixes, strip pattern prefixes (sorted longest-first), sanitize for filesystem | Unit tests: port all cases from jiny-m's email-parser.test.ts |
+| 2.3 | Email inbound adapter | `src/channels/email/inbound.rs` | Implement `InboundAdapter` trait. `mail-parser` → `InboundMessage` conversion. `match_message()`: sender exact/domain/regex + subject prefix/regex (AND logic). `derive_topic_name()`: channel-specific implementation | Unit tests: message conversion, pattern matching |
 | 2.4 | SMTP client | `src/services/smtp/client.rs` | Wrap `lettre`: connect with TLS/STARTTLS, send email with HTML body (markdown→HTML via `comrak`), set `In-Reply-To`, `References`, `Message-ID` headers, `Re:` subject prefix. Auto-reconnect on connection errors (one retry) | Integration test: send test email (behind feature flag) |
-| 2.5 | Email outbound adapter | `src/channels/email/outbound.rs` | Implement `OutboundAdapter` trait. `send_reply()`: builds full email from `InboundMessage` + reply text. `send_alert()`: fresh email without threading headers. `send_progress_update()`: progress email in same thread | Unit test: email construction (headers, body) |
+| 2.5 | Email outbound adapter | `src/channels/email/outbound.rs` | Implement `OutboundAdapter` trait. `send_reply()`: builds full email from `InboundMessage` + reply text. `send_alert()`: fresh email without References headers. `send_progress_update()`: progress email in same topic | Unit test: email construction (headers, body) |
 | 2.6 | State manager | `src/core/state_manager.rs` | Per-channel state persistence: `state.json` (last_sequence_number, last_processed_uid, uid_validity) + `processed-uids.txt` (append-only). `StateManager::for_channel(name)` constructor. Load/save/track_uid/reset | Unit test: state persistence round-trip |
 | 2.7 | HTML to Markdown | `src/services/smtp/client.rs` | `comrak` for MD→HTML (GFM mode: tables, autolinks, strikethrough). `htmd` for HTML→MD (used when storing HTML-only emails) | Unit test: round-trip sample content |
 
@@ -53,22 +53,22 @@ This document outlines the phased implementation plan for building JYC, the Rust
 
 ## Phase 3: Core Processing Pipeline
 
-**Goal:** Messages flow from IMAP through pattern matching, thread queuing, and storage. No AI yet — replies are static text.
+**Goal:** Messages flow from IMAP through pattern matching, topic queuing, and storage. No AI yet — replies are static text.
 
 ### Tasks
 
 | # | Task | Files | Description | Test Strategy |
 |---|------|-------|-------------|---------------|
-| 3.1 | Message storage | `src/core/message_storage.rs` | `store(msg, thread_name)` → append to daily chat log (`chat_history_YYYY-MM-DD.jsonl`). `store_reply(thread_path, reply_text, message_dir)` → append reply to chat log. Attachments saved by inbound adapter before reaching MessageRouter | Unit test: write/read round-trip |
-| 3.2 | Thread trail builder | `src/core/email_parser.rs` | `build_full_reply_text(thread_path, ...)` — build reply with quoted history from `chat_history_*.jsonl` files. `prepare_body_for_quoting(thread_path, current_msg)` — format trail as quoted markdown blocks | Unit test: trail ordering, formatting |
+| 3.1 | Message storage | `src/core/message_storage.rs` | `store(msg, topic_name)` → append to daily chat log (`chat_history_YYYY-MM-DD.jsonl`). `store_reply(topic_path, reply_text, message_dir)` → append reply to chat log. Attachments saved by inbound adapter before reaching MessageRouter | Unit test: write/read round-trip |
+| 3.2 | Topic trail builder | `src/core/email_parser.rs` | `build_full_reply_text(topic_path, ...)` — build reply with quoted history from `chat_history_*.jsonl` files. `prepare_body_for_quoting(topic_path, current_msg)` — format trail as quoted markdown blocks | Unit test: trail ordering, formatting |
 | 3.3 | Channel registry | `src/channels/registry.rs` | `HashMap<String, Arc<dyn InboundAdapter>>` + `HashMap<String, Arc<dyn OutboundAdapter>>`. Register/lookup by channel name | Unit test: register and retrieve adapters |
-| 3.4 | Message router | `src/core/message_router.rs` | Receives `InboundMessage` via mpsc. Looks up adapter from registry. Calls `adapter.match_message()`. Calls `adapter.derive_thread_name()`. Sends to `ThreadManager::enqueue()` | Unit test with mock adapters |
-| 3.5 | Thread manager | `src/core/thread_manager.rs` | `Semaphore` + per-thread `mpsc` channels. `enqueue()`, `spawn_worker()`, process loop. Graceful shutdown via `CancellationToken`. Stats reporting (`get_stats()`) | Unit test: concurrency limiting, queue overflow, ordering |
+| 3.4 | Message router | `src/core/message_router.rs` | Receives `InboundMessage` via mpsc. Looks up adapter from registry. Calls `adapter.match_message()`. Calls `adapter.derive_topic_name()`. Sends to `TopicManager::enqueue()` | Unit test with mock adapters |
+| 3.5 | Topic manager | `src/core/topic_manager.rs` | `Semaphore` + per-topic `mpsc` channels. `enqueue()`, `spawn_worker()`, process loop. Graceful shutdown via `CancellationToken`. Stats reporting (`get_stats()`) | Unit test: concurrency limiting, queue overflow, ordering |
 | 3.6 | IMAP monitor | `src/services/imap/monitor.rs` | Main monitoring loop: connect → check_for_new → IDLE/poll → loop. Recovery mode on deletion/suspicious jump. Uses `StateManager` for tracking. `CancellationToken` for shutdown. Exponential backoff on errors | Integration test with real IMAP (feature flag) |
-| 3.7 | Monitor command wiring | `src/cli/monitor.rs` | Wire everything: load config → create registry → register adapters → create storage + router + thread_manager → start all inbound adapters as tokio tasks → await shutdown signal | Manual: `jyc monitor` connects and processes |
+| 3.7 | Monitor command wiring | `src/cli/monitor.rs` | Wire everything: load config → create registry → register adapters → create storage + router + topic_manager → start all inbound adapters as tokio tasks → await shutdown signal | Manual: `jyc monitor` connects and processes |
 | 3.8 | Security: PathValidator | `src/security/path_validator.rs` | File path validation: no traversal, no hidden files, no null bytes, max length, Unicode NFC. Extension allowlist. Size limit check | Unit tests: various attack patterns |
 
-**Deliverable:** `jyc monitor` connects to IMAP, matches emails, queues them per-thread, stores as markdown, and sends a static reply.
+**Deliverable:** `jyc monitor` connects to IMAP, matches emails, queues them per-topic, stores as markdown, and sends a static reply.
 
 ---
 
@@ -84,11 +84,11 @@ This document outlines the phased implementation plan for building JYC, the Rust
 | 4.2 | agent HTTP client | `src/services/agent/client.rs` | `reqwest`-based client: `create_session()`, `prompt_async()`, `prompt_blocking()`, `get_session()`. JSON request/response types matching the agent API | Unit test with mock HTTP server |
 | 4.3 | SSE streaming | `src/services/agent/client.rs` | `subscribe_events(directory)` → `reqwest-eventsource` stream. Event parsing: `server.connected`, `message.updated`, `message.part.updated`, `session.status`, `session.idle`, `session.error`. Part accumulation with dedup by ID | Unit test: parse sample SSE events |
 | 4.4 | Activity-based timeout | `src/services/agent/client.rs` | `tokio::select!` with `tokio::time::interval(5s)`. Check `last_activity` vs now. 30min default, 60min when tool running. Progress logging every 10s | Unit test: timeout triggers correctly |
-| 4.5 | Session management | `src/services/agent/session.rs` | Per-thread session persistence (`agent-session.json`). `get_or_create_session()`, `delete_session()`. Thread in-process agent config (`agent config`) generation with staleness detection | Unit test: session create/read/delete, config staleness |
-| 4.6 | Prompt builder | `src/services/agent/prompt_builder.rs` | `build_system_prompt(thread_path)` — base prompt + optional `system.md`. `build_prompt(msg, thread_path, message_dir)` — incoming message body (stripped of quoted history). Reply context saved to `.jyc/reply-context.json` on disk. Respects token budget constants | Unit test: prompt construction with various inputs |
+| 4.5 | Session management | `src/services/agent/session.rs` | Per-topic session persistence (`agent-session.json`). `get_or_create_session()`, `delete_session()`. Topic in-process agent config (`agent config`) generation with staleness detection | Unit test: session create/read/delete, config staleness |
+| 4.6 | Prompt builder | `src/services/agent/prompt_builder.rs` | `build_system_prompt(topic_path)` — base prompt + optional `system.md`. `build_prompt(msg, topic_path, message_dir)` — incoming message body (stripped of quoted history). Reply context saved to `.jyc/reply-context.json` on disk. Respects token budget constants | Unit test: prompt construction with various inputs |
 | 4.7 | Stale session detection | `src/services/agent/client.rs` | If SSE reports tool success but signal file missing → delete session → retry once with fresh session. Signal file cleanup before each prompt | Unit test: detection logic |
 | 4.8 | ContextOverflow recovery | `src/services/agent/client.rs` | On `session.error` with ContextOverflow → create new session → retry with blocking prompt | Unit test: recovery flow |
-| 4.9 | Wire AI into workers | `src/core/thread_manager.rs` | Replace static reply with `AgentService::generate_reply()`. Handle reply-sent-by-tool vs fallback | Manual: end-to-end AI reply |
+| 4.9 | Wire AI into workers | `src/core/topic_manager.rs` | Replace static reply with `AgentService::generate_reply()`. Handle reply-sent-by-tool vs fallback | Manual: end-to-end AI reply |
 
 **Deliverable:** `jyc monitor` processes emails with AI-generated replies via in-process agent SSE streaming.
 
@@ -106,15 +106,15 @@ This document outlines the phased implementation plan for building JYC, the Rust
 | 5.2 | MCP reply tool (rmcp) | `src/mcp/reply_tool.rs` | `rmcp` stdio server with `reply_message` tool. Load reply-context.json from cwd → load config → write reply to .jyc/reply.md → write signal file. Monitor reads reply and sends via outbound adapter. Log to `reply-tool.log` | Manual: invoke via MCP client |
 | 5.3 | Hidden subcommand | `src/cli/mcp_reply.rs` | `jyc mcp-reply-tool` starts the rmcp stdio server. Reads `JYC_ROOT` env var | Manual: `echo '...' \| jyc mcp-reply-tool` |
 | 5.4 | Reply tool command resolution | `src/services/agent/session.rs` | `get_reply_tool_command()`: find `jyc` binary path → `["/path/to/jyc", "mcp-reply-tool"]`. Write into `agent config` MCP config | Unit test: path resolution |
-| 5.5 | Unified command processing | `src/core/command/registry.rs`, `src/core/command/handler.rs` | `CommandRegistry::process_commands(body, ctx)`: single-pass parse, execute, and strip commands from body. Returns `CommandOutput { results, cleaned_body, body_empty }`. Defines `CommandHandler` trait, `CommandContext`, `CommandResult`, `CommandOutput` types. Unlike jiny-m's split design (parseCommands + separate stripping in thread-manager), all command logic lives here | Unit test: parse various formats, body stripping, empty body detection |
+| 5.5 | Unified command processing | `src/core/command/registry.rs`, `src/core/command/handler.rs` | `CommandRegistry::process_commands(body, ctx)`: single-pass parse, execute, and strip commands from body. Returns `CommandOutput { results, cleaned_body, body_empty }`. Defines `CommandHandler` trait, `CommandContext`, `CommandResult`, `CommandOutput` types. Unlike jiny-m's split design (parseCommands + separate stripping in topic-manager), all command logic lives here | Unit test: parse various formats, body stripping, empty body detection |
 | 5.6 | /model command | `src/core/command/model_handler.rs` | Write `.jyc/model-override`, delete `agent-session.json`, return result. `/model reset` removes override | Unit test: file operations |
 | 5.7 | /plan and /build commands | `src/core/command/mode_handler.rs` | Write/remove `.jyc/mode-override`. Pass `agent: "plan"` to in-process agent prompt when active | Unit test: mode switching |
-| 5.8 | Wire commands into workers | `src/core/thread_manager.rs` | After store, before prompt: call `command_registry.process_commands()`. Check `body_empty` + results → direct reply or continue with `cleaned_body`. ThreadManager has no knowledge of command syntax | Manual: send email with /model command |
+| 5.8 | Wire commands into workers | `src/core/topic_manager.rs` | After store, before prompt: call `command_registry.process_commands()`. Check `body_empty` + results → direct reply or continue with `cleaned_body`. TopicManager has no knowledge of command syntax | Manual: send email with /model command |
 
-**Deliverable:** Full MCP reply tool pipeline. Email commands change AI model and mode per-thread.
+**Deliverable:** Full MCP reply tool pipeline. Email commands change AI model and mode per-topic.
 
 **Additional changes implemented during Phase 5:**
-- `AgentService` trait (`src/services/agent.rs`) — ThreadManager dispatches via `Arc<dyn AgentService>` instead of `match` on mode
+- `AgentService` trait (`src/services/agent.rs`) — TopicManager dispatches via `Arc<dyn AgentService>` instead of `match` on mode
 - `StaticAgentService` (`src/services/static_agent.rs`) — implements `AgentService` for static reply mode
 - `AgentService` implements `AgentService` — owns full reply lifecycle (building, sending, storing)
 - File attachment support in SMTP client (`MultiPart::mixed` + `Attachment` parts)
@@ -134,14 +134,14 @@ This document outlines the phased implementation plan for building JYC, the Rust
 | # | Task | Files | Description | Test Strategy |
 |---|------|-------|-------------|---------------|
 | 6.1 | Alert service | `src/core/alert_service.rs` | Custom `tracing::Layer` captures ERROR events → mpsc channel → alert task. Error buffering with rolling context window. Periodic flush → digest email via outbound adapter. Self-protection (skip `_alert_internal` events) | Unit test: buffering, digest formatting |
-| 6.2 | Health check | `src/core/alert_service.rs` | Stats tracking from tracing events (pattern-match on known messages). Periodic health report email. Per-thread breakdown. Queue stats from `ThreadManager::get_stats()`. Stats reset after report | Unit test: stats tracking, report formatting |
+| 6.2 | Health check | `src/core/alert_service.rs` | Stats tracking from tracing events (pattern-match on known messages). Periodic health report email. Per-topic breakdown. Queue stats from `TopicManager::get_stats()`. Stats reset after report | Unit test: stats tracking, report formatting |
 | 6.3 | Progress tracker | `src/core/progress_tracker.rs` | Background `tokio::time::interval`. Sends progress update emails at configured intervals during long AI operations. Uses outbound adapter's `send_progress_update()` | Unit test: timing logic |
 | 6.4 | Startup health check | `src/cli/monitor.rs` | Send one-time startup notification email with version and timestamp | Manual: startup email received |
 | 6.5 | `patterns list` command | `src/cli/patterns.rs` | Load config, display all patterns with their rules in formatted output | Manual: `jyc patterns list` shows patterns |
 | 6.6 | `state` command | `src/cli/state.rs` | Load per-channel state files, display last sequence number, last processed UID, timestamp | Manual: `jyc state` shows state |
 | 6.7 | Graceful shutdown | `src/main.rs`, all components | `tokio::signal::ctrl_c()` → `CancellationToken::cancel()`. Await all worker join handles. Alert service final flush. in-process agent session cleanup. SMTP disconnect | Manual: Ctrl+C exits cleanly, no orphan processes |
 | 6.8 | Comprehensive error handling | All files | Audit all `unwrap()` calls → replace with `?` or proper error handling. Ensure all errors have context via `anyhow::Context` | Code review pass |
-| 6.9 | Logging audit | All files | Ensure structured fields (`thread`, `channel`, `message_id`) on all log lines. Consistent log levels. Sensitive data redacted | Code review pass |
+| 6.9 | Logging audit | All files | Ensure structured fields (`topic`, `channel`, `message_id`) on all log lines. Consistent log levels. Sensitive data redacted | Code review pass |
 
 **Deliverable:** Production-ready binary with alerting, health checks, progress tracking, graceful shutdown, and all CLI commands functional.
 
@@ -154,9 +154,9 @@ This document outlines the phased implementation plan for building JYC, the Rust
 - **Email parser**: Port all test cases from jiny-m's `email-parser.test.ts` (669 lines — the most comprehensive test file)
 - **Config parsing**: Valid/invalid TOML, env var substitution, validation errors
 - **Pattern matching**: Sender exact/domain/regex, subject prefix/regex, AND logic
-- **Thread name derivation**: Reply prefix stripping, pattern prefix stripping, filesystem sanitization
+- **Topic name derivation**: Reply prefix stripping, pattern prefix stripping, filesystem sanitization
 - **Message storage**: Write/read round-trip, collision handling, frontmatter parsing
-- **Thread trail**: Ordering, stripping, formatting
+- **Topic trail**: Ordering, stripping, formatting
 - **Reply context**: Serialization round-trip, tamper detection, nonce validation
 - **Command parsing**: Various formats, edge cases
 - **Utility functions**: `parse_file_size`, regex validation, date formatting
@@ -171,7 +171,7 @@ This document outlines the phased implementation plan for building JYC, the Rust
 
 - Run `jyc monitor` against a real email account
 - Send test emails with various patterns, commands, attachments
-- Verify AI replies, thread continuity, model switching
+- Verify AI replies, topic continuity, model switching
 
 ---
 
@@ -204,7 +204,7 @@ JYC uses a fresh TOML config format. Users migrating from jiny-m need to:
 1. Convert `.jyc/config.json` → `config.toml` (manual, one-time)
 2. Existing workspace data (`messages/`, `.jyc/` state) is compatible — same directory structure
 3. Per-channel state files (`.state.json`, `.processed-uids.txt`) are compatible
-4. `agent config` per-thread is regenerated automatically
+4. `agent config` per-topic is regenerated automatically
 
 A future `jyc migrate` command could automate config conversion.
 
@@ -272,7 +272,7 @@ The Feishu channel was implemented in a series of focused iterations:
 
 **Phase 7.4: Complete Adapter Implementation**
 * **FeishuInboundAdapter** - Full InboundAdapter trait implementation
-  * Message matching and thread derivation
+  * Message matching and topic derivation
   * WebSocket integration for real-time updates
   * Conversion of Feishu events to InboundMessage
 * **FeishuOutboundAdapter** - Full OutboundAdapter trait implementation
@@ -300,7 +300,7 @@ The Feishu channel was implemented in a series of focused iterations:
 2. **WebSocket Protocol** - Implements Feishu's custom WebSocket protocol for real-time events
 3. **Token Management** - Automatic app token refresh with caching and error handling
 4. **Message Formatting** - Support for Feishu's rich message formats including markdown cards
-5. **Thread Compatibility** - Seamless integration with existing thread management system
+5. **Topic Compatibility** - Seamless integration with existing topic management system
 
 ### Configuration Example
 
@@ -335,7 +335,7 @@ The Feishu channel implementation demonstrates the extensibility of JYC's channe
 
 ## Phase 8: Post-1.0 Enhancements (v0.1.1 — v0.1.9)
 
-**Goal:** Improve session management, add MCP tools, enhance thread lifecycle, and support invoice processing.
+**Goal:** Improve session management, add MCP tools, enhance topic lifecycle, and support invoice processing.
 
 ### Key Features
 
@@ -345,13 +345,13 @@ The Feishu channel implementation demonstrates the extensibility of JYC's channe
 | 8.2 | Token-based session management | v0.1.3 | Replace time-based sessions with input token counting. Reset when approaching context limit. |
 | 8.3 | Vision MCP tool | v0.1.5 | `analyze_image` tool for image analysis via OpenAI-compatible vision APIs |
 | 8.4 | Unified attachment config | v0.1.5 | Global `[attachments]` config section for all channels |
-| 8.5 | Thread name override | v0.1.7 | `thread_name` field on `ChannelPattern` for fixed thread names |
-| 8.6 | Thread templates | v0.1.7 | Initialize new threads with predefined files from `templates/` |
+| 8.5 | Topic name override | v0.1.7 | `topic_name` field on `ChannelPattern` for fixed topic names |
+| 8.6 | Topic templates | v0.1.7 | Initialize new topics with predefined files from `templates/` |
 | 8.7 | MCP question tool | v0.1.8 | `ask_user` tool — send question, wait for reply (up to 5 min) |
 | 8.8 | Pending delivery watcher | v0.1.8 | Background task delivers MCP reply tool messages during SSE processing |
-| 8.9 | Thread close/cleanup | v0.1.8 | `/close` command, Feishu `chat.disbanded` event, `on_thread_close` callback |
+| 8.9 | Topic close/cleanup | v0.1.8 | `/close` command, Feishu `chat.disbanded` event, `on_topic_close` callback |
 | 8.10 | Invoice processing skill | v0.1.8 | Chinese invoice extraction, SQLite storage, Excel template |
-| 8.11 | Central path resolution | v0.1.8 | `thread_path.rs` — unified path derivation for all thread-related files |
+| 8.11 | Central path resolution | v0.1.8 | `topic_path.rs` — unified path derivation for all topic-related files |
 | 8.12 | Live message injection toggle | v0.1.9 | `live_injection` field on `ChannelPattern` (default: true) |
 
 ### Status
@@ -375,7 +375,7 @@ The Feishu channel implementation demonstrates the extensibility of JYC's channe
 | 9.5 | Mention-driven routing | `channels/github/inbound.rs` | `@j:<role>` mention extraction, role-based pattern matching |
 | 9.6 | Self-loop prevention | `channels/github/inbound.rs` | Skip patterns where comment's `[Role]` prefix matches target role |
 | 9.7 | Pattern rule filtering | `channels/github/inbound.rs` | Enforce `github_type`, `labels`, `assignees` rules in `GithubMatcher::rules_match()` (AND/OR logic) |
-| 9.8 | Close detection | `channels/github/inbound.rs` | Detect closed issues by comparing cached open set; trigger thread cleanup |
+| 9.8 | Close detection | `channels/github/inbound.rs` | Detect closed issues by comparing cached open set; trigger topic cleanup |
 | 9.9 | Multi-agent templates | `templates/github-{planner,developer,reviewer}/` | Planner (analyze + create PR), Developer (implement), Reviewer (review + approve/reject) |
 | 9.10 | Planner: copy issue metadata to PR | `templates/github-planner/AGENTS.md` | Read assignees/labels from issue, copy to PR via `--assignee`/`--label` flags |
 | 9.11 | CLI patterns list enhancement | `cli/patterns.rs` | Display all rule fields: github_type, labels, assignees, mentions, keywords, chat_name, role, template |
@@ -416,14 +416,14 @@ The Feishu channel implementation demonstrates the extensibility of JYC's channe
 
 | # | Task | Files | Description |
 |---|------|-------|-------------|
-| 11.1 | Inspect types | `inspect/types.rs` | `InspectState`, `ChannelInfo`, `ThreadInfo`, `ThreadStatus`, `GlobalStats`, JSON protocol types |
+| 11.1 | Inspect types | `inspect/types.rs` | `InspectState`, `ChannelInfo`, `TopicInfo`, `TopicStatus`, `GlobalStats`, JSON protocol types |
 | 11.2 | MetricsCollector | `core/metrics.rs` | Replace AlertService with lightweight stats accumulator. `MetricsHandle` for event reporting, `SharedHealthStats` for querying. |
 | 11.3 | Remove AlertService | `core/alert_service.rs` (deleted) | Remove startup email, error digest, health report. Remove `[alerting]` config. |
 | 11.4 | InspectConfig | `config/types.rs` | `[inspect]` section: `enabled`, `bind` (default `127.0.0.1:9876`) |
-| 11.5 | Thread introspection | `core/thread_manager.rs` | `list_threads()`, `channel_name()`, `max_concurrent()`. Reads `.jyc/` files for session/model/token info. |
-| 11.6 | TCP inspect server | `inspect/server.rs` | `TcpListener`, JSON line protocol, queries ThreadManagers + MetricsCollector. Multi-client support. |
+| 11.5 | Topic introspection | `core/topic_manager.rs` | `list_topics()`, `channel_name()`, `max_concurrent()`. Reads `.jyc/` files for session/model/token info. |
+| 11.6 | TCP inspect server | `inspect/server.rs` | `TcpListener`, JSON line protocol, queries TopicManagers + MetricsCollector. Multi-client support. |
 | 11.7 | TCP inspect client | `inspect/client.rs` | Persistent TCP connection, auto-reconnect on disconnect. |
-| 11.8 | TUI dashboard | `cli/dashboard.rs` | `jyc dashboard` command. ratatui TUI: channels bar, threads table (selectable), detail panel, status bar. |
+| 11.8 | TUI dashboard | `cli/dashboard.rs` | `jyc dashboard` command. ratatui TUI: channels bar, topics table (selectable), detail panel, status bar. |
 | 11.9 | Podman tunnel | `jyc-podman-tunnel.sh` | SSH tunnel script for macOS Podman Machine port forwarding. |
 
 ### Status
@@ -459,7 +459,7 @@ v0.2.0 introduces a major architectural shift from single-shot agent invocations
 - Nested arrays `[["bug", "enhancement"], ["test"]]` use CNF: outer AND, inner OR
 
 **New Features:**
-- Dashboard TUI shows thread last active time
+- Dashboard TUI shows topic last active time
 - deploy-templates supports `--as` flag for custom naming
 - Comment filtering for closed issues/PRs
 - Main branch protection

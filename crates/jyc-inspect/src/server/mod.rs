@@ -10,12 +10,12 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::scoped_ws::ScopedWsHandler;
-use crate::thread_proxy::ThreadProxyHandler;
+use crate::topic_proxy::TopicProxyHandler;
 use jyc_core::activity_log_store::ActivityLogStore;
 use jyc_core::command::list_available_models;
 use jyc_core::command::{all_commands, all_commands_with};
 use jyc_core::metrics::SharedHealthStats;
-use jyc_core::thread_manager::ThreadManager;
+use jyc_core::topic_manager::TopicManager;
 use jyc_types::AppConfig;
 use jyc_types::*;
 
@@ -28,16 +28,16 @@ use jyc_types::*;
 pub trait WebsocketHandler: Send + Sync {
     /// Handle a single WebSocket connection.
     ///
-    /// `scoped_thread` is the thread name bound from the URL path
-    /// (`/ws/<channel>/<thread>`). Handlers that route by URL may use
+    /// `scoped_topic` is the topic name bound from the URL path
+    /// (`/ws/<channel>/<topic>`). Handlers that route by URL may use
     /// this to populate per-connection state without requiring the client
-    /// to repeat the thread name in the payload. Pass-through handlers
+    /// to repeat the topic name in the payload. Pass-through handlers
     /// (e.g. `WebsocketInboundAdapter`) can ignore it.
     async fn handle(
         &self,
         ws: axum::extract::ws::WebSocket,
         addr: std::net::SocketAddr,
-        scoped_thread: Option<&str>,
+        scoped_topic: Option<&str>,
     ) -> anyhow::Result<()>;
 }
 
@@ -50,30 +50,30 @@ pub type DynWebsocketHandler = Arc<dyn WebsocketHandler>;
 pub enum WsRoute {
     /// `GET /ws` — use the first available websocket channel's handler.
     Bare,
-    /// `GET /ws/<channel>` — adhoc thread on a websocket-type channel.
+    /// `GET /ws/<channel>` — adhoc topic on a websocket-type channel.
     Channel(String),
-    /// `GET /ws/<channel>/<thread>` — proxy to a specific thread. For
+    /// `GET /ws/<channel>/<topic>` — proxy to a specific topic. For
     /// websocket-type channels, the inner handler is wrapped in
     /// `ScopedWsHandler` to auto-subscribe. For other channels, a
-    /// `ThreadProxyHandler` is used.
-    Thread { channel: String, name: String },
+    /// `TopicProxyHandler` is used.
+    Topic { channel: String, name: String },
 }
 
-/// Max activity entries kept per thread.
+/// Max activity entries kept per topic.
 pub(crate) const MAX_ACTIVITY_ENTRIES: usize = 180;
 
-/// Max recent chat messages kept per thread for live dashboard display.
+/// Max recent chat messages kept per topic for live dashboard display.
 pub(crate) const MAX_RECENT_MESSAGES: usize = 50;
 
-/// Per-thread activity buffer, shared between the activity tracker and the server.
+/// Per-topic activity buffer, shared between the activity tracker and the server.
 ///
-/// Key is `(channel_name, thread_name)` so that two channels with same-named
-/// threads (e.g. both have `issue-20`) do not collide.
-pub type SharedActivityMap = Arc<Mutex<HashMap<(String, String), ThreadActivityState>>>;
+/// Key is `(channel_name, topic_name)` so that two channels with same-named
+/// topics (e.g. both have `issue-20`) do not collide.
+pub type SharedActivityMap = Arc<Mutex<HashMap<(String, String), TopicActivityState>>>;
 
-/// Per-thread activity state: bounded event log + processing flag.
+/// Per-topic activity state: bounded event log + processing flag.
 #[derive(Debug, Default)]
-pub struct ThreadActivityState {
+pub struct TopicActivityState {
     pub entries: VecDeque<ActivityEntry>,
     pub is_processing: bool,
     pub has_error: bool,
@@ -82,7 +82,7 @@ pub struct ThreadActivityState {
     pub recent_messages: VecDeque<ChatMessageEntry>,
     /// Latest AI thinking/reasoning text (full, untruncated).
     pub thinking_text: Option<String>,
-    /// Monotonic per-thread counter used to assign unique `id` to each entry
+    /// Monotonic per-topic counter used to assign unique `id` to each entry
     /// and chat message. Wraps to 0 after `u64::MAX` (effectively never).
     pub next_id: u64,
 }
@@ -95,13 +95,13 @@ pub type ReloadCallback =
 
 /// Shared state accessible by the inspect server.
 pub struct InspectContext {
-    /// Per-channel thread managers (dynamic — updated on reload)
-    pub thread_managers: Arc<ArcSwap<Vec<Arc<ThreadManager>>>>,
+    /// Per-channel topic managers (dynamic — updated on reload)
+    pub topic_managers: Arc<ArcSwap<Vec<Arc<TopicManager>>>>,
     /// Channel info (name, type) (dynamic — updated on reload)
     pub channels: Arc<ArcSwap<Vec<ChannelInfo>>>,
     /// Shared health stats from MetricsCollector
     pub health_stats: SharedHealthStats,
-    /// Per-thread activity logs from SSE events
+    /// Per-topic activity logs from SSE events
     pub activity_map: SharedActivityMap,
     /// When the monitor started
     pub start_time: Instant,
@@ -122,7 +122,7 @@ pub struct InspectContext {
     /// Optional authorization token required by inspect clients.
     pub auth_token: Option<String>,
     /// Per-channel broadcast bus fed by `ActivityTracker` — used by
-    /// `ThreadProxyHandler` to forward activity/chat/thinking events to
+    /// `TopicProxyHandler` to forward activity/chat/thinking events to
     /// dashboard WebSocket clients. Capacity 256 (configured at creation).
     pub inspect_broadcast: Arc<tokio::sync::broadcast::Sender<String>>,
 }
@@ -171,11 +171,11 @@ impl InspectServer {
     }
 
     /// Resolve the right `WebsocketHandler` for a given route:
-    /// - `WsRoute::Thread { channel, name }`:
+    /// - `WsRoute::Topic { channel, name }`:
     ///   - If `<channel>` is a websocket-type channel, use `ScopedWsHandler`
     ///     to wrap its `WebsocketInboundAdapter` and pre-send `subscribe`.
-    ///   - Otherwise, construct a `ThreadProxyHandler` that routes through
-    ///     the channel's `ThreadManager` and the inspect-broadcast bus.
+    ///   - Otherwise, construct a `TopicProxyHandler` that routes through
+    ///     the channel's `TopicManager` and the inspect-broadcast bus.
     /// - `WsRoute::Channel(name)`: use the channel's own handler (must be a
     ///   websocket-type channel, else error).
     /// - `WsRoute::Bare`: use the first available handler; error if none.
@@ -186,7 +186,7 @@ impl InspectServer {
         let handlers = context.websocket_handlers.as_ref();
 
         match route {
-            WsRoute::Thread { channel, name } => {
+            WsRoute::Topic { channel, name } => {
                 // If the channel has a websocket handler, use the scoped wrapper.
                 // Otherwise, fall through to the proxy (works for any channel type).
                 if let Some(handlers) = handlers
@@ -194,10 +194,10 @@ impl InspectServer {
                 {
                     return Ok(Arc::new(ScopedWsHandler::new(handler.clone())));
                 }
-                Ok(Arc::new(ThreadProxyHandler::new(
+                Ok(Arc::new(TopicProxyHandler::new(
                     channel,
                     name,
-                    context.thread_managers.clone(),
+                    context.topic_managers.clone(),
                     context.inspect_broadcast.clone(),
                 )))
             }
@@ -221,35 +221,35 @@ impl InspectServer {
     }
 
     /// Build a slim overview snapshot — same shape as `build_state` but with
-    /// `ThreadSummary` instead of `ThreadInfo`, dropping `activity`, `recent_messages`,
+    /// `TopicSummary` instead of `TopicInfo`, dropping `activity`, `recent_messages`,
     /// and `thinking_text`. Used by the dashboard's polling loop to keep payloads small.
     pub async fn build_overview_state(context: &InspectContext) -> InspectOverview {
         let uptime = context.start_time.elapsed().as_secs();
-        let (mut threads, total_threads, active_workers, max_concurrent, per_channel_workers) =
-            collect_thread_snapshot(context).await;
+        let (mut topics, total_topics, active_workers, max_concurrent, per_channel_workers) =
+            collect_topic_snapshot(context).await;
 
         // Override status from activity_map (Processing / Error flags) but skip
         // copying activity/messages/thinking — that's the whole point.
         let activity_map = context.activity_map.lock().await;
-        for thread in &mut threads {
-            let key = (thread.channel.clone(), thread.name.clone());
+        for topic in &mut topics {
+            let key = (topic.channel.clone(), topic.name.clone());
             if let Some(state) = activity_map.get(&key) {
                 if state.is_processing {
-                    thread.status = ThreadStatus::Processing;
+                    topic.status = TopicStatus::Processing;
                 } else if state.has_error {
-                    thread.status = ThreadStatus::Error;
+                    topic.status = TopicStatus::Error;
                 }
                 if let Some(last_active) = state.last_active_at {
-                    thread.last_active_at = Some(last_active.to_rfc3339());
+                    topic.last_active_at = Some(last_active.to_rfc3339());
                 }
             }
         }
         drop(activity_map);
 
-        // Slim each ThreadInfo down to a ThreadSummary.
-        let mut summaries: Vec<ThreadSummary> = threads
+        // Slim each TopicInfo down to a TopicSummary.
+        let mut summaries: Vec<TopicSummary> = topics
             .into_iter()
-            .map(|t| ThreadSummary {
+            .map(|t| TopicSummary {
                 name: t.name,
                 channel: t.channel,
                 pattern: t.pattern,
@@ -264,26 +264,26 @@ impl InspectServer {
                 total_cache_creation_tokens: t.total_cache_creation_tokens,
                 last_active_at: t.last_active_at,
                 skills: t.skills,
-                thread_path: t.thread_path,
+                topic_path: t.topic_path,
                 branch: t.branch,
                 changed_files: t.changed_files,
                 cost: t.cost,
             })
             .collect();
-        // list_threads() sorts within each channel, but threads from multiple
+        // list_topics() sorts within each channel, but topics from multiple
         // channels are concatenated above — re-sort globally by (name, channel)
         // so the dashboard table and chat explorer show one alphabetical list.
         summaries.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.channel.cmp(&b.channel)));
 
         let stats =
-            compute_global_stats(context, active_workers, total_threads, max_concurrent).await;
+            compute_global_stats(context, active_workers, total_topics, max_concurrent).await;
         let channels = build_channels(context, &per_channel_workers);
 
         InspectOverview {
             uptime_secs: uptime,
             version: env!("CARGO_PKG_VERSION").to_string(),
             channels,
-            threads: summaries,
+            topics: summaries,
             stats,
             commands: context
                 .config
@@ -299,38 +299,38 @@ impl InspectServer {
     }
     pub async fn build_state(context: &InspectContext) -> InspectState {
         let uptime = context.start_time.elapsed().as_secs();
-        let (mut threads, total_threads, active_workers, max_concurrent, per_channel_workers) =
-            collect_thread_snapshot(context).await;
+        let (mut topics, total_topics, active_workers, max_concurrent, per_channel_workers) =
+            collect_topic_snapshot(context).await;
 
-        // Merge activity logs and status into threads
+        // Merge activity logs and status into topics
         let activity_map = context.activity_map.lock().await;
-        for thread in &mut threads {
-            let key = (thread.channel.clone(), thread.name.clone());
+        for topic in &mut topics {
+            let key = (topic.channel.clone(), topic.name.clone());
             if let Some(state) = activity_map.get(&key) {
-                thread.activity = state.entries.iter().cloned().collect();
-                thread.recent_messages = state.recent_messages.iter().cloned().collect();
-                thread.thinking_text = state.thinking_text.clone();
+                topic.activity = state.entries.iter().cloned().collect();
+                topic.recent_messages = state.recent_messages.iter().cloned().collect();
+                topic.thinking_text = state.thinking_text.clone();
                 if state.is_processing {
-                    thread.status = ThreadStatus::Processing;
+                    topic.status = TopicStatus::Processing;
                 } else if state.has_error {
-                    thread.status = ThreadStatus::Error;
+                    topic.status = TopicStatus::Error;
                 }
                 if let Some(last_active) = state.last_active_at {
-                    thread.last_active_at = Some(last_active.to_rfc3339());
+                    topic.last_active_at = Some(last_active.to_rfc3339());
                 }
             }
         }
         drop(activity_map);
 
         let stats =
-            compute_global_stats(context, active_workers, total_threads, max_concurrent).await;
+            compute_global_stats(context, active_workers, total_topics, max_concurrent).await;
         let channels = build_channels(context, &per_channel_workers);
 
         InspectState {
             uptime_secs: uptime,
             version: env!("CARGO_PKG_VERSION").to_string(),
             channels,
-            threads,
+            topics,
             stats,
             commands: context
                 .config
@@ -346,29 +346,29 @@ impl InspectServer {
     }
 }
 
-/// Collect threads from all thread managers plus aggregate worker statistics.
+/// Collect topics from all topic managers plus aggregate worker statistics.
 ///
-/// Returns `(threads, total_threads, active_workers, max_concurrent,
+/// Returns `(topics, total_topics, active_workers, max_concurrent,
 /// per_channel_workers)`.
-pub(crate) async fn collect_thread_snapshot(
+pub(crate) async fn collect_topic_snapshot(
     context: &InspectContext,
 ) -> (
-    Vec<ThreadInfo>,
+    Vec<TopicInfo>,
     usize,
     usize,
     usize,
     HashMap<String, (usize, usize)>,
 ) {
-    let mut threads = Vec::new();
-    let mut total_threads = 0;
+    let mut topics = Vec::new();
+    let mut total_topics = 0;
     let mut active_workers = 0;
     let mut max_concurrent = 0;
     let mut per_channel_workers: HashMap<String, (usize, usize)> = HashMap::new();
 
-    let tms = context.thread_managers.load();
+    let tms = context.topic_managers.load();
     for tm in tms.iter() {
-        let tm_threads = tm.list_threads().await;
-        total_threads += tm_threads.len();
+        let tm_topics = tm.list_topics().await;
+        total_topics += tm_topics.len();
         let stats = tm.get_stats().await;
         active_workers += stats.active_workers;
         max_concurrent += tm.max_concurrent();
@@ -376,13 +376,13 @@ pub(crate) async fn collect_thread_snapshot(
             tm.channel_name().to_string(),
             (stats.active_workers, tm.max_concurrent()),
         );
-        threads.extend(tm_threads);
+        topics.extend(tm_topics);
     }
     drop(tms);
 
     (
-        threads,
-        total_threads,
+        topics,
+        total_topics,
         active_workers,
         max_concurrent,
         per_channel_workers,
@@ -393,13 +393,13 @@ pub(crate) async fn collect_thread_snapshot(
 pub(crate) async fn compute_global_stats(
     context: &InspectContext,
     active_workers: usize,
-    total_threads: usize,
+    total_topics: usize,
     max_concurrent: usize,
 ) -> GlobalStats {
     let health = context.health_stats.lock().await;
     GlobalStats {
         active_workers,
-        total_threads,
+        total_topics,
         max_concurrent,
         available_workers: max_concurrent.saturating_sub(active_workers),
         messages_received: health.messages_received,
@@ -443,7 +443,7 @@ pub fn filter_by_since(mut entries: Vec<ActivityEntry>, since: Option<&str>) -> 
 /// across monitor restarts. If the in-memory buffer already has historical
 /// entries loaded from disk, use their max id; otherwise read the last entry
 /// from `.jyc/activity.jsonl`. Falls back to 1 when no history exists.
-pub(crate) fn seed_next_id_from_disk(state: &mut ThreadActivityState, thread_path: Option<&Path>) {
+pub(crate) fn seed_next_id_from_disk(state: &mut TopicActivityState, topic_path: Option<&Path>) {
     if state.next_id != 0 {
         return;
     }
@@ -452,7 +452,7 @@ pub(crate) fn seed_next_id_from_disk(state: &mut ThreadActivityState, thread_pat
         state.next_id = mem_max + 1;
         return;
     }
-    if let Some(path) = thread_path
+    if let Some(path) = topic_path
         && let Ok(last) = ActivityLogStore::load_recent(path, 1)
         && let Some(max_entry) = last.iter().max_by_key(|e| e.id)
     {
@@ -487,11 +487,11 @@ pub fn is_user_visible_activity(entry: &ActivityEntry) -> bool {
 mod no_reply_rendering_tests {
     use super::*;
     use chrono::Utc;
-    use jyc_core::thread_event::ThreadEvent;
+    use jyc_core::topic_event::TopicEvent;
 
-    fn no_reply_event() -> ThreadEvent {
-        ThreadEvent::SessionStatus {
-            thread_name: "t1".to_string(),
+    fn no_reply_event() -> TopicEvent {
+        TopicEvent::SessionStatus {
+            topic_name: "t1".to_string(),
             status_type: "no_reply".to_string(),
             attempt: None,
             message: Some("AI produced no text and no tool call".to_string()),
@@ -518,8 +518,8 @@ mod no_reply_rendering_tests {
 
     #[test]
     fn other_session_statuses_unchanged() {
-        let retry = ThreadEvent::SessionStatus {
-            thread_name: "t1".to_string(),
+        let retry = TopicEvent::SessionStatus {
+            topic_name: "t1".to_string(),
             status_type: "retry".to_string(),
             attempt: Some(2),
             message: None,
@@ -539,14 +539,14 @@ mod next_id_tests {
 
     #[test]
     fn seed_next_id_from_empty_state_starts_at_one() {
-        let mut state = ThreadActivityState::default();
+        let mut state = TopicActivityState::default();
         seed_next_id_from_disk(&mut state, None);
         assert_eq!(state.next_id, 1);
     }
 
     #[test]
     fn seed_next_id_uses_in_memory_max_id() {
-        let mut state = ThreadActivityState::default();
+        let mut state = TopicActivityState::default();
         state.entries.push_back(ActivityEntry {
             id: 42,
             text: "old".to_string(),
@@ -561,8 +561,8 @@ mod next_id_tests {
     #[test]
     fn seed_next_id_falls_back_to_disk_when_memory_is_empty() {
         let tmp = TempDir::new().unwrap();
-        let thread_path = tmp.path().to_path_buf();
-        let jyc_dir = thread_path.join(".jyc");
+        let topic_path = tmp.path().to_path_buf();
+        let jyc_dir = topic_path.join(".jyc");
         fs::create_dir_all(&jyc_dir).unwrap();
         let entry = ActivityEntry {
             id: 7,
@@ -576,14 +576,14 @@ mod next_id_tests {
             serde_json::to_string(&entry).unwrap(),
         )
         .unwrap();
-        let mut state = ThreadActivityState::default();
-        seed_next_id_from_disk(&mut state, Some(&thread_path));
+        let mut state = TopicActivityState::default();
+        seed_next_id_from_disk(&mut state, Some(&topic_path));
         assert_eq!(state.next_id, 8);
     }
 
     #[test]
     fn seed_next_id_noop_once_initialized() {
-        let mut state = ThreadActivityState {
+        let mut state = TopicActivityState {
             next_id: 99,
             ..Default::default()
         };
@@ -602,7 +602,7 @@ mod exchange_route_auth_tests {
 
     fn ctx_with_token(token: Option<&str>) -> Arc<InspectContext> {
         Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            topic_managers: Arc::new(ArcSwap::from_pointee(vec![])),
             channels: Arc::new(ArcSwap::from_pointee(vec![])),
             health_stats: Arc::new(Mutex::new(HealthStats::default())),
             activity_map: Arc::new(Mutex::new(HashMap::new())),
@@ -619,7 +619,7 @@ mod exchange_route_auth_tests {
     }
 
     /// `/exchange/*` must NOT be gated by the bearer middleware — access
-    /// control is the per-thread `?token=`. With no thread manager the
+    /// control is the per-topic `?token=`. With no topic manager the
     /// handler 403s; the point is that it is not a 401.
     #[tokio::test]
     async fn exchange_route_bypasses_bearer_middleware() {

@@ -12,7 +12,7 @@ This document lists all tools available to the AI agent in JYC, including built-
 |----------|-------------|---------------|
 | **Built-in** | Core file system and execution tools. Always available unless explicitly disabled. | Hardcoded in `jyc-agent` |
 | **MCP Bridge** | In-process wrappers for JYC-specific MCP tools (reply, send message). | Always registered |
-| **Cross-Thread** | Cross-channel thread communication tool. | Registered when cross-channel `thread_managers` available |
+| **Cross-Topic** | Cross-channel topic communication tool. | Registered when cross-channel `topic_managers` available |
 | **External MCP** | Optional tools provided by external MCP servers configured in `config.toml`. | `[[mcps]]` config |
 
 ---
@@ -181,7 +181,7 @@ Send a reply back through the originating channel. This is the standard way for 
 
 **Parameters:**
 - `message` (string, required): The reply text to send
-- `attachments` (string[], optional): List of filenames within the thread directory to attach
+- `attachments` (string[], optional): List of filenames within the topic directory to attach
 - `stop_after` (boolean, optional, default true): Whether to stop working after this reply
 
 **Behavior:** Writes `reply.md` and `reply-sent.flag` signal files; the monitor process detects the signal and delivers the message via the pre-warmed outbound adapter.
@@ -190,7 +190,7 @@ Send a reply back through the originating channel. This is the standard way for 
 - **Final reply** (`stop_after: true` or omitted): Agent stops immediately after sending. Use for the definitive response to the user.
 - **Progress update** (`stop_after: false`): Agent sends the message as a checkpoint and continues working. Use for long-running tasks to keep the user informed.
 
-**Constraints:** The agent must use this tool for in-thread replies.
+**Constraints:** The agent must use this tool for in-topic replies.
 
 **Examples:**
 ```json
@@ -204,7 +204,7 @@ Send a reply back through the originating channel. This is the standard way for 
 
 ### `jyc_send_message`
 
-Send a proactive out-of-thread message to an arbitrary recipient.
+Send a proactive out-of-topic message to an arbitrary recipient.
 
 **Parameters:**
 - `recipient` (string, required): Channel-specific recipient identifier
@@ -218,7 +218,7 @@ Send a proactive out-of-thread message to an arbitrary recipient.
 
 **Constraints:**
 - Use ONLY for alerts and notifications
-- NEVER use for in-thread replies (use `jyc_reply_message` instead)
+- NEVER use for in-topic replies (use `jyc_reply_message` instead)
 - Requires a pre-warmed outbound adapter (`ToolContext.outbound`)
 
 **Example:**
@@ -228,41 +228,41 @@ Send a proactive out-of-thread message to an arbitrary recipient.
 
 ---
 
-## Cross-Thread Communication Tools
+## Cross-Topic Communication Tools
 
-### `jyc_send_to_thread`
+### `jyc_send_to_topic`
 
-Send a message to a thread in another channel for agent processing. The target thread will be auto-created if it doesn't exist.
+Send a message to a topic in another channel for agent processing. The target topic will be auto-created if it doesn't exist.
 
-Unlike `jyc_send_message` (which bypasses agent processing for direct outbound delivery), `jyc_send_to_thread` injects the message into the target thread's queue so the target thread's agent picks it up and processes it.
+Unlike `jyc_send_message` (which bypasses agent processing for direct outbound delivery), `jyc_send_to_topic` injects the message into the target topic's queue so the target topic's agent picks it up and processes it.
 
 **Parameters:**
 - `channel` (string, required): Target channel name (e.g. `"jin283"`, `"feishu_bot"`)
-- `thread` (string, required): Target thread name (e.g. `"invoice-processing"`)
-- `message` (string, required): Message body to inject into the target thread
-- `attachments` (string[], optional): List of filenames within the current thread directory to attach
+- `topic` (string, required): Target topic name (e.g. `"invoice-processing"`)
+- `message` (string, required): Message body to inject into the target topic
+- `attachments` (string[], optional): List of filenames within the current topic directory to attach
 - `recipient` (string, optional): Recipient address/ID. Sets the sender_address on the injected message for channel-appropriate reply routing
-- `require_reply` (boolean, optional, default false): When `true`, the target agent is instructed to send results back to the source channel/thread via `jyc_send_to_thread`
+- `require_reply` (boolean, optional, default false): When `true`, the target agent is instructed to send results back to the source channel/topic via `jyc_send_to_topic`
 
 **Behavior:**
-- Looks up the target channel's `ThreadManager` from the shared cross-channel map
-- Builds an `InboundMessage` with source metadata (`source_channel`, `source_thread`, `require_reply`)
-- Enqueues the message into the target thread's queue
+- Looks up the target channel's `TopicManager` from the shared cross-channel map
+- Builds an `InboundMessage` with source metadata (`source_channel`, `source_topic`, `require_reply`)
+- Enqueues the message into the target topic's queue
 - The target agent sees a `**Source:**` header in its incoming message prompt
 
 **`require_reply` flow:**
-- When `true`, the target agent's prompt includes: `⚠️ Reply requested - use jyc_send_to_thread to send results back`
-- The target agent should call `jyc_send_to_thread` back to the source channel/thread when done
+- When `true`, the target agent's prompt includes: `⚠️ Reply requested - use jyc_send_to_topic to send results back`
+- The target agent should call `jyc_send_to_topic` back to the source channel/topic when done
 
 **Constraints:**
-- Requires cross-channel thread managers (`ToolContext.thread_managers`)
-- Attachments must be within the current thread's working directory
+- Requires cross-channel topic managers (`ToolContext.topic_managers`)
+- Attachments must be within the current topic's working directory
 
 **Example:**
 ```json
 {
   "channel": "jin283",
-  "thread": "invoice-processing",
+  "topic": "invoice-processing",
   "message": "Please process the attached invoice.",
   "attachments": ["invoice.pdf"],
   "require_reply": true
@@ -394,9 +394,9 @@ disabled_mcp_servers = ["*"]  # Disables all external MCP servers
 | `grep` | `check_path_boundary()` only when explicit `path` provided | Default working_dir is trusted |
 | `webfetch` | None (network tool) | HTTPS only; 30s default timeout |
 | `read_image` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | URL mode requires http(s) |
-| `jyc_reply_message` | Attachment path validation | Must be within thread directory |
+| `jyc_reply_message` | Attachment path validation | Must be within topic directory |
 | `jyc_send_message` | Recipient format validation | Channel-specific format check |
-| `jyc_send_to_thread` | Attachment path validation | Must be within thread directory; target channel must exist |
+| `jyc_send_to_topic` | Attachment path validation | Must be within topic directory; target channel must exist |
 
 `check_path_boundary()` itself only iterates `additional_read_roots`; write paths
 appear readable because `resolve_additional_read_roots()` merges `access.write`
@@ -432,22 +432,22 @@ write = ["/tmp/jyc-builds"]         # writable + readable (write implies read)
 
 ### `jyc_publish_file`
 
-Publish a file from the thread directory to make it accessible via an exchange
+Publish a file from the topic directory to make it accessible via an exchange
 HTTP link served by the inspect server.
 
 **Parameters:**
-- `path` (string, required): File to publish, relative to the thread directory
+- `path` (string, required): File to publish, relative to the topic directory
 - `name` (string, optional): Published filename; defaults to the source basename
 - `move` (boolean, optional, default false): When `true`, the file is moved
   (source disappears); when `false`, it is copied
 
 **Behavior:**
-- The file is placed in `<thread>/.jyc/exchange/<name>`
-- On first publish a per-thread access token (256-bit hex) is generated and
-  stored in `<thread>/.jyc/exchange-token` (owner-only permissions); subsequent
+- The file is placed in `<topic>/.jyc/exchange/<name>`
+- On first publish a per-topic access token (256-bit hex) is generated and
+  stored in `<topic>/.jyc/exchange-token` (owner-only permissions); subsequent
   publishes reuse it
 - Returns a shareable URL:
-  `{base}/exchange/{channel}/{thread}/{name}?token={token}` where `base` comes
+  `{base}/exchange/{channel}/{topic}/{name}?token={token}` where `base` comes
   from `[inspect] base_url`. When unset, `base` falls back to
   `http://<inspect.bind>`, with a wildcard bind host (`0.0.0.0`, `[::]`)
   replaced by this host's primary LAN IP — a wildcard address is not reachable
@@ -455,15 +455,15 @@ HTTP link served by the inspect server.
   `base_url` to the URL clients actually use (scheme required; port
   and subpath allowed)
 - Files are served by the inspect server at `GET /exchange/...`; the bearer
-  middleware does not apply — the per-thread `?token=` is the access control
+  middleware does not apply — the per-topic `?token=` is the access control
 - `/reset` and `/new` delete `.jyc/exchange/` and `.jyc/exchange-token`, killing all
   previously shared links (a fresh token is generated on the next publish)
 - The `/exchange` command re-prints the URLs of everything already published in
-  the thread (`/exchange <name>` for a single file), so links can be recovered
+  the topic (`/exchange <name>` for a single file), so links can be recovered
   without publishing again
 
 **Constraints:**
-- Source must be a file inside the thread working directory
+- Source must be a file inside the topic working directory
 - `name` must be a plain filename (no `/`, `\`, or `..`)
 
 **Example:**
@@ -481,7 +481,7 @@ build_tool_registry()
   ├─ Register read_image (when model supports images OR vision_client configured)
   ├─ Register jyc_publish_file (base URL from [inspect] base_url)
   ├─ Register MCP bridge tools: jyc_reply_message, jyc_send_message
-  ├─ Register jyc_send_to_thread (when cross-channel thread_managers available)
+  ├─ Register jyc_send_to_topic (when cross-channel topic_managers available)
   ├─ Load external MCP tools (filtered by disabled_mcp_servers)
   └─ Apply exclusions: remove tools matching disabled_tools
 ```

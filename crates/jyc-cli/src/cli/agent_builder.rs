@@ -37,7 +37,7 @@ pub struct AgentServiceResult {
 ///
 /// # Parameters
 /// - `live_config` – shared `Arc<ArcSwap<AppConfig>>` (single source of truth,
-///   same handle the inspect server, `MessageRouter`, and `ThreadManager` use).
+///   same handle the inspect server, `MessageRouter`, and `TopicManager` use).
 ///   Reloading the config in the TUI atomically swaps in a new `AppConfig`,
 ///   and the agent service reads the new values on each request — no restart
 ///   needed.

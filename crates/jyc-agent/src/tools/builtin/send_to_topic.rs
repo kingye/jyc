@@ -1,8 +1,8 @@
-//! Builtin tool: `jyc_send_to_thread` — cross-thread/channel communication.
+//! Builtin tool: `jyc_send_to_topic` — cross-topic/channel communication.
 //!
-//! Allows AI agents to inject messages into threads in other channels.
-//! For example, an agent in a Feishu thread can generate a PDF and inject it
-//! into an email channel's invoice_processing thread.
+//! Allows AI agents to inject messages into topics in other channels.
+//! For example, an agent in a Feishu topic can generate a PDF and inject it
+//! into an email channel's invoice_processing topic.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -13,22 +13,22 @@ use tracing;
 use crate::tools::{Tool, ToolContext, ToolOutput};
 use jyc_types::{InboundMessage, MessageAttachment, MessageContent, PatternMatch};
 
-/// Tool for sending messages to threads in other channels.
+/// Tool for sending messages to topics in other channels.
 pub struct SendToThreadTool;
 
 #[async_trait]
 impl Tool for SendToThreadTool {
     fn name(&self) -> &str {
-        "jyc_send_to_thread"
+        "jyc_send_to_topic"
     }
 
     fn description(&self) -> &str {
-        "Send a message to a thread in another channel. \
-         Use this for cross-thread/channel communication, e.g. sending a \
-         generated PDF to an invoice processing thread in another channel. \
-         The target thread will be auto-created if it doesn't exist yet. \
+        "Send a message to a topic in another channel. \
+         Use this for cross-topic/channel communication, e.g. sending a \
+         generated PDF to an invoice processing topic in another channel. \
+         The target topic will be auto-created if it doesn't exist yet. \
          Set require_reply=true to request the target agent to send results \
-         back to the source thread."
+         back to the source topic."
     }
 
     fn input_schema(&self) -> Value {
@@ -39,18 +39,18 @@ impl Tool for SendToThreadTool {
                     "type": "string",
                     "description": "Target channel name, e.g. \"jin283\" or \"feishu_work\""
                 },
-                "thread": {
+                "topic": {
                     "type": "string",
-                    "description": "Target thread name, e.g. \"invoice_processing\" or \"support\""
+                    "description": "Target topic name, e.g. \"invoice_processing\" or \"support\""
                 },
                 "message": {
                     "type": "string",
-                    "description": "Message body to inject into the target thread"
+                    "description": "Message body to inject into the target topic"
                 },
                 "attachments": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional list of filenames within the current thread directory to attach"
+                    "description": "Optional list of filenames within the current topic directory to attach"
                 },
                 "recipient": {
                     "type": "string",
@@ -58,10 +58,10 @@ impl Tool for SendToThreadTool {
                 },
                 "require_reply": {
                     "type": "boolean",
-                    "description": "Whether to request the target agent to reply back with results. When true, the target agent will be instructed to use jyc_send_to_thread to send results back to the source channel/thread. Default: false."
+                    "description": "Whether to request the target agent to reply back with results. When true, the target agent will be instructed to use jyc_send_to_topic to send results back to the source channel/topic. Default: false."
                 }
             },
-            "required": ["channel", "thread", "message"]
+            "required": ["channel", "topic", "message"]
         })
     }
 
@@ -71,10 +71,10 @@ impl Tool for SendToThreadTool {
             .and_then(|c| c.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'channel' parameter"))?;
 
-        let thread_name = input
-            .get("thread")
+        let topic_name = input
+            .get("topic")
             .and_then(|t| t.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'thread' parameter"))?;
+            .ok_or_else(|| anyhow::anyhow!("Missing 'topic' parameter"))?;
 
         let message = input
             .get("message")
@@ -96,8 +96,8 @@ impl Tool for SendToThreadTool {
         if channel.trim().is_empty() {
             return Ok(ToolOutput::error("Channel cannot be empty"));
         }
-        if thread_name.trim().is_empty() {
-            return Ok(ToolOutput::error("Thread cannot be empty"));
+        if topic_name.trim().is_empty() {
+            return Ok(ToolOutput::error("Topic cannot be empty"));
         }
         if message.trim().is_empty() {
             return Ok(ToolOutput::error("Message cannot be empty"));
@@ -134,17 +134,17 @@ impl Tool for SendToThreadTool {
             vec![]
         };
 
-        // Look up the target channel's ThreadManager
-        let thread_managers = match ctx.thread_managers.as_ref() {
+        // Look up the target channel's TopicManager
+        let topic_managers = match ctx.topic_managers.as_ref() {
             Some(tm) => tm,
             None => {
                 return Ok(ToolOutput::error(
-                    "No thread managers available for cross-channel communication",
+                    "No topic managers available for cross-channel communication",
                 ));
             }
         };
 
-        let tm_map = thread_managers.lock().await;
+        let tm_map = topic_managers.lock().await;
         let target_tm = match tm_map.get(channel) {
             Some(tm) => tm.clone(),
             None => {
@@ -165,18 +165,18 @@ impl Tool for SendToThreadTool {
         let mut inbound = InboundMessage {
             id: uuid::Uuid::new_v4().to_string(),
             channel: channel.to_string(),
-            channel_uid: format!("jyc-send-to-thread-{}", uuid::Uuid::new_v4()),
+            channel_uid: format!("jyc-send-to-topic-{}", uuid::Uuid::new_v4()),
             sender: "Agent".to_string(),
             sender_address: recipient.unwrap_or("agent@jyc").to_string(),
             recipients: vec![],
-            topic: thread_name.to_string(),
+            topic: topic_name.to_string(),
             content: MessageContent {
                 text: Some(message.to_string()),
                 html: None,
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: validated_attachments
@@ -204,9 +204,9 @@ impl Tool for SendToThreadTool {
                         serde_json::Value::String(src_ch.clone()),
                     );
                 }
-                if let Some(ref src_th) = ctx.current_thread {
+                if let Some(ref src_th) = ctx.current_topic {
                     m.insert(
-                        "source_thread".to_string(),
+                        "source_topic".to_string(),
                         serde_json::Value::String(src_th.clone()),
                     );
                 }
@@ -219,13 +219,13 @@ impl Tool for SendToThreadTool {
             matched_pattern: None,
         };
 
-        // Enqueue the message into the target thread. Resolve the pattern
-        // named after the thread (when one exists) so injected messages
+        // Enqueue the message into the target topic. Resolve the pattern
+        // named after the topic (when one exists) so injected messages
         // carry the same pattern identity — name, template/role metadata,
-        // attachment config, live_injection, custom thread_path — as
+        // attachment config, live_injection, custom topic_path — as
         // router-matched messages (mirrors MessageRouter, #542).
-        let pattern = target_tm.pattern_for_thread(thread_name);
-        let (pattern_name, attachment_config, live_injection, thread_path_override) = match &pattern
+        let pattern = target_tm.pattern_for_topic(topic_name);
+        let (pattern_name, attachment_config, live_injection, topic_path_override) = match &pattern
         {
             Some(p) => {
                 if let Some(ref template) = p.template {
@@ -242,8 +242,8 @@ impl Tool for SendToThreadTool {
                     p.name.clone(),
                     p.attachments.clone(),
                     p.live_injection,
-                    p.thread_path.as_ref().map(|tp| {
-                        jyc_core::thread_path::resolve_thread_path(tp, target_tm.data_root())
+                    p.topic_path.as_ref().map(|tp| {
+                        jyc_core::topic_path::resolve_topic_path(tp, target_tm.data_root())
                     }),
                 )
             }
@@ -258,11 +258,11 @@ impl Tool for SendToThreadTool {
         target_tm
             .enqueue(
                 inbound,
-                thread_name.to_string(),
+                topic_name.to_string(),
                 pattern_match,
                 attachment_config,
                 live_injection,
-                thread_path_override,
+                topic_path_override,
             )
             .await;
 
@@ -274,10 +274,10 @@ impl Tool for SendToThreadTool {
 
         tracing::info!(
             target_channel = %channel,
-            target_thread = %thread_name,
+            target_topic = %topic_name,
             attachment_count = validated_attachments.len(),
             require_reply,
-            "Cross-thread message sent"
+            "Cross-topic message sent"
         );
 
         let reply_info = if require_reply {
@@ -287,8 +287,8 @@ impl Tool for SendToThreadTool {
         };
 
         Ok(ToolOutput::success(format!(
-            "Message sent to channel '{}', thread '{}'{}{}. The target thread will process it.",
-            channel, thread_name, attachment_info, reply_info
+            "Message sent to channel '{}', topic '{}'{}{}. The target topic will process it.",
+            channel, topic_name, attachment_info, reply_info
         )))
     }
 }

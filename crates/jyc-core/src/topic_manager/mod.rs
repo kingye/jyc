@@ -6,7 +6,7 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::thread_event_bus::ThreadEventBusRef;
+use crate::topic_event_bus::TopicEventBusRef;
 
 use crate::agent::AgentService;
 use crate::message_storage::MessageStorage;
@@ -18,19 +18,19 @@ mod git;
 mod lifecycle;
 mod queue;
 mod template;
-mod threads;
+mod topics;
 mod worker;
 
-/// Per-thread queue stats.
+/// Per-topic queue stats.
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct QueueStats {
     pub active_workers: usize,
-    pub total_threads: usize,
+    pub total_topics: usize,
     pub pending_messages: usize,
 }
 
-/// Manages per-thread message queues with bounded concurrency.
+/// Manages per-topic message queues with bounded concurrency.
 ///
 /// Responsible for:
 /// - Queue management, concurrency control (semaphore + mpsc)
@@ -41,8 +41,8 @@ pub struct QueueStats {
 ///
 /// NOT responsible for: AI logic, sessions, prompts, reply building, sending —
 /// those are owned by the AgentService implementation.
-pub struct ThreadManager {
-    thread_queues: Mutex<HashMap<String, mpsc::Sender<QueueItem>>>,
+pub struct TopicManager {
+    topic_queues: Mutex<HashMap<String, mpsc::Sender<QueueItem>>>,
     semaphore: Arc<Semaphore>,
     max_queue_size: usize,
 
@@ -51,20 +51,20 @@ pub struct ThreadManager {
     outbound: Arc<dyn OutboundAdapter>,
     agent: Arc<dyn AgentService>,
 
-    // Thread-isolated event buses (optional feature)
-    event_buses: Mutex<HashMap<String, ThreadEventBusRef>>,
+    // Topic-isolated event buses (optional feature)
+    event_buses: Mutex<HashMap<String, TopicEventBusRef>>,
     enable_events: bool,
 
-    // Per-thread cancellation tokens (used by close_thread/cancel_thread to
-    // stop workers). Shared via Arc so the per-worker ThreadManager clone
+    // Per-topic cancellation tokens (used by close_topic/cancel_topic to
+    // stop workers). Shared via Arc so the per-worker TopicManager clone
     // sees the same map — otherwise /cancel and /close look up an empty map
     // and silently fail to cancel the running worker.
-    pub(crate) thread_cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    pub(crate) topic_cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
 
-    // Template directories for thread initialization (layered: L1 global < L2 workdir)
+    // Template directories for topic initialization (layered: L1 global < L2 workdir)
     template_dirs: crate::template_dirs::TemplateDirs,
 
-    // Channel name this ThreadManager belongs to
+    // Channel name this TopicManager belongs to
     channel_name: String,
     // Channel type (e.g., "email", "wecom_bot")
     channel_type: String,
@@ -89,14 +89,14 @@ pub struct ThreadManager {
 
     repo_group_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 
-    // Custom thread paths (from pattern thread_path override), shared with
-    // worker clones so list_threads() on the main TM sees paths from workers.
-    pub(crate) thread_paths: Arc<Mutex<HashMap<String, PathBuf>>>,
+    // Custom topic paths (from pattern topic_path override), shared with
+    // worker clones so list_topics() on the main TM sees paths from workers.
+    pub(crate) topic_paths: Arc<Mutex<HashMap<String, PathBuf>>>,
 }
 
 #[allow(dead_code)]
-impl ThreadManager {
-    /// Create a new ThreadManager with event support enabled by default.
+impl TopicManager {
+    /// Create a new TopicManager with event support enabled by default.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         max_concurrent: usize,
@@ -132,7 +132,7 @@ impl ThreadManager {
         )
     }
 
-    /// Create a new ThreadManager with configurable event support.
+    /// Create a new TopicManager with configurable event support.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_options(
         max_concurrent: usize,
@@ -152,7 +152,7 @@ impl ThreadManager {
         config_path: Option<PathBuf>,
     ) -> Self {
         Self {
-            thread_queues: Mutex::new(HashMap::new()),
+            topic_queues: Mutex::new(HashMap::new()),
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             max_queue_size,
             storage,
@@ -160,7 +160,7 @@ impl ThreadManager {
             agent,
             event_buses: Mutex::new(HashMap::new()),
             enable_events,
-            thread_cancels: Arc::new(Mutex::new(HashMap::new())),
+            topic_cancels: Arc::new(Mutex::new(HashMap::new())),
             template_dirs: template_dirs.into(),
             channel_name,
             channel_type,
@@ -172,22 +172,22 @@ impl ThreadManager {
             cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
             repo_group_locks: Arc::new(Mutex::new(HashMap::new())),
-            thread_paths: Arc::new(Mutex::new(HashMap::new())),
+            topic_paths: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub async fn get_stats(&self) -> QueueStats {
-        let queues = self.thread_queues.lock().await;
-        let total_threads = queues.len();
+        let queues = self.topic_queues.lock().await;
+        let total_topics = queues.len();
         let active_workers = self.active_worker_count();
         QueueStats {
             active_workers,
-            total_threads,
+            total_topics,
             pending_messages: 0,
         }
     }
 
-    /// Return the channel name this ThreadManager belongs to.
+    /// Return the channel name this TopicManager belongs to.
     pub fn channel_name(&self) -> &str {
         &self.channel_name
     }
@@ -202,7 +202,7 @@ impl ThreadManager {
         &self.workdir
     }
 
-    /// Return the max concurrent threads (semaphore capacity).
+    /// Return the max concurrent topics (semaphore capacity).
     pub fn max_concurrent(&self) -> usize {
         self.semaphore.available_permits() + self.active_worker_count()
     }
@@ -211,11 +211,11 @@ impl ThreadManager {
     pub fn active_worker_count(&self) -> usize {
         // This is an approximation: semaphore total - available = active
         // We stored the capacity in the constructor but Semaphore doesn't expose it.
-        // We use config's max_concurrent_threads as the total.
+        // We use config's max_concurrent_topics as the total.
         self.config
             .load()
             .general
-            .max_concurrent_threads
+            .max_concurrent_topics
             .saturating_sub(self.semaphore.available_permits())
     }
 }

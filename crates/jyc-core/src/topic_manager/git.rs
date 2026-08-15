@@ -1,6 +1,6 @@
-//! Git helpers: branch detection and changed-file diffing for thread dirs.
+//! Git helpers: branch detection and changed-file diffing for topic dirs.
 //!
-//! Extracted from the monolithic `thread_manager.rs`.
+//! Extracted from the monolithic `topic_manager.rs`.
 
 use std::path::Path;
 
@@ -17,7 +17,7 @@ use jyc_types::{ChangeKind, ChangedFileEntry};
 ///
 /// No `git` CLI — `.git/HEAD` is git's stable on-disk format and
 /// `std::fs::read_to_string` follows the `repo/` symlink for us.
-pub(crate) fn branch_for_thread_path(path: &Path) -> Option<String> {
+pub(crate) fn branch_for_topic_path(path: &Path) -> Option<String> {
     let head_path = if path.join(".git").join("HEAD").is_file() {
         path.join(".git").join("HEAD")
     } else if path.join("repo").join(".git").join("HEAD").is_file() {
@@ -104,7 +104,7 @@ fn run_git_diff_name_status(cwd: &Path, revspec: &str) -> Option<Vec<(ChangeKind
 /// List files changed relative to `main`, with per-file `uncommitted`
 /// flag and `change` kind.
 ///
-/// Runs two `git diff` invocations against the thread's working directory:
+/// Runs two `git diff` invocations against the topic's working directory:
 /// 1. `git diff --name-status main...HEAD` — files committed on the
 ///    branch vs `main`, with status letter parsed into
 ///    [`ChangeKind`].
@@ -119,7 +119,7 @@ fn run_git_diff_name_status(cwd: &Path, revspec: &str) -> Option<Vec<(ChangeKind
 /// alone doesn't reveal whether the file was Added / Modified /
 /// Deleted on the branch).
 ///
-/// Mirrors [`branch_for_thread_path`]: looks first at `<path>/.git/HEAD`,
+/// Mirrors [`branch_for_topic_path`]: looks first at `<path>/.git/HEAD`,
 /// then falls back at `<path>/repo/.git/HEAD`. Returns:
 ///
 /// - `None` when neither `.git/HEAD` exists (not a git repo).
@@ -130,9 +130,9 @@ fn run_git_diff_name_status(cwd: &Path, revspec: &str) -> Option<Vec<(ChangeKind
 /// - `Some(vec![{path, change, uncommitted}, ...])` for the union,
 ///   sorted alphabetically by path.
 ///
-/// Synchronous `std::process::Command` to match `branch_for_thread_path`'s
+/// Synchronous `std::process::Command` to match `branch_for_topic_path`'s
 /// style.
-pub(crate) fn changed_files_for_thread_path(path: &Path) -> Option<Vec<ChangedFileEntry>> {
+pub(crate) fn changed_files_for_topic_path(path: &Path) -> Option<Vec<ChangedFileEntry>> {
     let cwd = if path.join(".git").join("HEAD").is_file() {
         path.to_path_buf()
     } else if path.join("repo").join(".git").join("HEAD").is_file() {
@@ -179,7 +179,7 @@ pub(crate) fn changed_files_for_thread_path(path: &Path) -> Option<Vec<ChangedFi
 
 #[cfg(test)]
 mod branch_resolution_tests {
-    use super::branch_for_thread_path;
+    use super::branch_for_topic_path;
     use tempfile::tempdir;
 
     #[test]
@@ -188,7 +188,7 @@ mod branch_resolution_tests {
         let git = dir.path().join(".git");
         std::fs::create_dir_all(&git).unwrap();
         std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
-        assert_eq!(branch_for_thread_path(dir.path()).as_deref(), Some("main"));
+        assert_eq!(branch_for_topic_path(dir.path()).as_deref(), Some("main"));
     }
 
     #[test]
@@ -198,7 +198,7 @@ mod branch_resolution_tests {
         std::fs::create_dir_all(&git).unwrap();
         std::fs::write(git.join("HEAD"), "0123456789abcdef0123456789abcdef01234567").unwrap();
         assert_eq!(
-            branch_for_thread_path(dir.path()).as_deref(),
+            branch_for_topic_path(dir.path()).as_deref(),
             Some("(detached)")
         );
     }
@@ -206,7 +206,7 @@ mod branch_resolution_tests {
     #[test]
     fn returns_none_when_no_git() {
         let dir = tempdir().unwrap();
-        assert!(branch_for_thread_path(dir.path()).is_none());
+        assert!(branch_for_topic_path(dir.path()).is_none());
     }
 
     #[test]
@@ -217,7 +217,7 @@ mod branch_resolution_tests {
         std::fs::create_dir_all(&git).unwrap();
         std::fs::write(git.join("HEAD"), "ref: refs/heads/feature-x\n").unwrap();
         assert_eq!(
-            branch_for_thread_path(dir.path()).as_deref(),
+            branch_for_topic_path(dir.path()).as_deref(),
             Some("feature-x")
         );
     }
@@ -228,13 +228,13 @@ mod branch_resolution_tests {
         let git = dir.path().join(".git");
         std::fs::create_dir_all(&git).unwrap();
         std::fs::write(git.join("HEAD"), "garbage content\n").unwrap();
-        assert!(branch_for_thread_path(dir.path()).is_none());
+        assert!(branch_for_topic_path(dir.path()).is_none());
     }
 }
 
 #[cfg(test)]
 mod changed_files_resolution_tests {
-    use super::changed_files_for_thread_path;
+    use super::changed_files_for_topic_path;
     use jyc_types::{ChangeKind, ChangedFileEntry};
     use std::process::Command;
     use tempfile::tempdir;
@@ -270,14 +270,14 @@ mod changed_files_resolution_tests {
     #[test]
     fn returns_none_when_no_git() {
         let dir = tempdir().unwrap();
-        assert!(changed_files_for_thread_path(dir.path()).is_none());
+        assert!(changed_files_for_topic_path(dir.path()).is_none());
     }
 
     #[test]
     fn returns_empty_vec_when_branch_is_main() {
         let dir = git_init_with_main();
         // HEAD == main → diff main...HEAD is empty.
-        let files = changed_files_for_thread_path(dir.path());
+        let files = changed_files_for_topic_path(dir.path());
         assert_eq!(files, Some(vec![]));
     }
 
@@ -318,7 +318,7 @@ mod changed_files_resolution_tests {
             "beta",
         ]);
 
-        let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
+        let files = changed_files_for_topic_path(dir.path()).expect("git diff must run");
         assert_eq!(
             files,
             vec![
@@ -338,8 +338,8 @@ mod changed_files_resolution_tests {
 
     #[test]
     fn follows_repo_subdir_layout() {
-        // Shared-repo layout: thread dir contains a `repo/` subdir that
-        // holds the actual git working tree (see `branch_for_thread_path`).
+        // Shared-repo layout: topic dir contains a `repo/` subdir that
+        // holds the actual git working tree (see `branch_for_topic_path`).
         let outer = tempdir().unwrap();
         let repo = outer.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -376,7 +376,7 @@ mod changed_files_resolution_tests {
             "gamma",
         ]);
 
-        let files = changed_files_for_thread_path(outer.path()).expect("must read repo/");
+        let files = changed_files_for_topic_path(outer.path()).expect("must read repo/");
         assert_eq!(
             files,
             vec![ChangedFileEntry {
@@ -406,7 +406,7 @@ mod changed_files_resolution_tests {
         // Drop `main` so the branch-diff fails, but keep HEAD valid.
         run(&["branch", "-D", "main"]);
         assert_eq!(
-            changed_files_for_thread_path(dir.path()),
+            changed_files_for_topic_path(dir.path()),
             Some(vec![]),
             "missing main must not collapse to None when HEAD diff succeeds"
         );
@@ -429,7 +429,7 @@ mod changed_files_resolution_tests {
         // Stage but don't commit — leaves it tracked + dirty.
         run(&["add", "draft.rs"]);
 
-        let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
+        let files = changed_files_for_topic_path(dir.path()).expect("git diff must run");
         assert_eq!(
             files,
             vec![ChangedFileEntry {
@@ -468,7 +468,7 @@ mod changed_files_resolution_tests {
         // Now edit the same path again — leaves it dirty in the tree.
         std::fs::write(dir.path().join("shared.rs"), "fn s() { /*x*/ }\n").unwrap();
 
-        let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
+        let files = changed_files_for_topic_path(dir.path()).expect("git diff must run");
         assert_eq!(files.len(), 1, "must dedupe to one entry");
         assert_eq!(files[0].path, "shared.rs");
         assert!(files[0].uncommitted, "more-noisy state must win");
@@ -514,7 +514,7 @@ mod changed_files_resolution_tests {
             "kill",
         ]);
 
-        let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
+        let files = changed_files_for_topic_path(dir.path()).expect("git diff must run");
         assert_eq!(
             files,
             vec![ChangedFileEntry {
@@ -566,7 +566,7 @@ mod changed_files_resolution_tests {
             "rename",
         ]);
 
-        let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
+        let files = changed_files_for_topic_path(dir.path()).expect("git diff must run");
         assert_eq!(
             files,
             vec![ChangedFileEntry {
@@ -607,7 +607,7 @@ mod changed_files_resolution_tests {
         // Edit locally without committing.
         std::fs::write(dir.path().join("existing.rs"), "fn e() { /*x*/ }\n").unwrap();
 
-        let files = changed_files_for_thread_path(dir.path()).expect("git diff must run");
+        let files = changed_files_for_topic_path(dir.path()).expect("git diff must run");
         assert_eq!(
             files,
             vec![ChangedFileEntry {

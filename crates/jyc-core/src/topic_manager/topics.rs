@@ -1,69 +1,69 @@
-//! `ThreadManager` impl block: threads.rs methods.
+//! `TopicManager` impl block: topics.rs methods.
 //!
-//! Extracted from the monolithic `thread_manager.rs`.
+//! Extracted from the monolithic `topic_manager.rs`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use jyc_types::{ThreadCost, ThreadInfo, ThreadStatus};
+use jyc_types::{TopicCost, TopicInfo, TopicStatus};
 
-use super::ThreadManager;
-/// Per-thread queue stats.
-use super::git::{branch_for_thread_path, changed_files_for_thread_path};
+use super::TopicManager;
+/// Per-topic queue stats.
+use super::git::{branch_for_topic_path, changed_files_for_topic_path};
 use super::worker::read_skills;
 
-impl ThreadManager {
-    pub async fn thread_path(&self, thread_name: &str) -> Option<PathBuf> {
-        let paths = self.thread_paths.lock().await;
-        if let Some(path) = paths.get(thread_name) {
+impl TopicManager {
+    pub async fn topic_path(&self, topic_name: &str) -> Option<PathBuf> {
+        let paths = self.topic_paths.lock().await;
+        if let Some(path) = paths.get(topic_name) {
             return Some(path.clone());
         }
         // Fallback: try the default workspace path
-        let default_path = self.workspace_dir.join(thread_name);
+        let default_path = self.workspace_dir.join(topic_name);
         if tokio::fs::metadata(&default_path).await.is_ok() {
             return Some(default_path);
         }
         None
     }
 
-    /// Get all custom thread paths (from pattern `thread_path` overrides).
-    pub async fn custom_thread_paths(&self) -> HashMap<String, PathBuf> {
-        self.thread_paths.lock().await.clone()
+    /// Get all custom topic paths (from pattern `topic_path` overrides).
+    pub async fn custom_topic_paths(&self) -> HashMap<String, PathBuf> {
+        self.topic_paths.lock().await.clone()
     }
 
-    /// Register a custom thread path (e.g. from `jyc dashboard open <path>`
-    /// or REST `create_thread`).
+    /// Register a custom topic path (e.g. from `jyc dashboard open <path>`
+    /// or REST `create_topic`).
     ///
-    /// Subsequent calls to `thread_path(thread_name)` will return this path
-    /// instead of the default `<workspace>/<thread_name>/`. The directory
-    /// is created if it does not already exist. `.jyc/thread-name` is also
-    /// written so `list_threads` recognises the entry — without it, the
-    /// `path.join(".jyc").is_dir()` filter in `list_threads` drops the
-    /// entry and `wait_for_thread` times out for fresh ad-hoc threads.
-    pub async fn set_thread_path(&self, thread_name: &str, path: PathBuf) -> std::io::Result<()> {
+    /// Subsequent calls to `topic_path(topic_name)` will return this path
+    /// instead of the default `<workspace>/<topic_name>/`. The directory
+    /// is created if it does not already exist. `.jyc/topic-name` is also
+    /// written so `list_topics` recognises the entry — without it, the
+    /// `path.join(".jyc").is_dir()` filter in `list_topics` drops the
+    /// entry and `wait_for_topic` times out for fresh ad-hoc topics.
+    pub async fn set_topic_path(&self, topic_name: &str, path: PathBuf) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&path).await?;
         let jyc_dir = path.join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await?;
-        tokio::fs::write(jyc_dir.join("thread-name"), thread_name)
+        tokio::fs::write(jyc_dir.join("topic-name"), topic_name)
             .await
             .ok();
-        let mut paths = self.thread_paths.lock().await;
-        paths.insert(thread_name.to_string(), path);
+        let mut paths = self.topic_paths.lock().await;
+        paths.insert(topic_name.to_string(), path);
         Ok(())
     }
 
-    /// Resolve the enabled pattern whose name matches `thread_name`.
+    /// Resolve the enabled pattern whose name matches `topic_name`.
     ///
-    /// Used by cross-thread injection (`jyc_send_to_thread`) so injected
+    /// Used by cross-topic injection (`jyc_send_to_topic`) so injected
     /// messages carry the same pattern identity — name, template/role
-    /// metadata, live_injection, custom `thread_path` — as router-matched
+    /// metadata, live_injection, custom `topic_path` — as router-matched
     /// messages (#542).
-    pub fn pattern_for_thread(&self, thread_name: &str) -> Option<jyc_types::ChannelPattern> {
+    pub fn pattern_for_topic(&self, topic_name: &str) -> Option<jyc_types::ChannelPattern> {
         let cfg = self.config.load();
         cfg.channels
             .get(&self.channel_name)
             .and_then(|c| c.patterns.as_ref())
-            .and_then(|pats| pats.iter().find(|p| p.enabled && p.name == thread_name))
+            .and_then(|pats| pats.iter().find(|p| p.enabled && p.name == topic_name))
             .cloned()
     }
 
@@ -85,20 +85,20 @@ impl ThreadManager {
             .unwrap_or_default()
     }
 
-    /// Restore custom `thread_path` mappings from disk.
+    /// Restore custom `topic_path` mappings from disk.
     ///
-    /// Scans this ThreadManager's channel patterns for `thread_path` overrides.
-    /// For each, checks if the directory exists and contains a `.jyc/thread-name`
-    /// file. If so, restores the mapping into the in-memory `thread_paths` map
+    /// Scans this TopicManager's channel patterns for `topic_path` overrides.
+    /// For each, checks if the directory exists and contains a `.jyc/topic-name`
+    /// file. If so, restores the mapping into the in-memory `topic_paths` map
     /// and pre-creates an event bus so the ActivityTracker can subscribe before
     /// any messages arrive.
     ///
     /// Only patterns belonging to this TM's channel are scanned — each TM only
-    /// restores its own threads to avoid cross-channel contamination.
+    /// restores its own topics to avoid cross-channel contamination.
     ///
-    /// This is called at startup so that threads with custom paths survive
+    /// This is called at startup so that topics with custom paths survive
     /// process restarts (e.g. Docker container restart).
-    pub async fn restore_custom_thread_paths(&self) {
+    pub async fn restore_custom_topic_paths(&self) {
         let config = self.config.load();
         let Some(channel_cfg) = config.channels.get(&self.channel_name) else {
             return;
@@ -107,22 +107,25 @@ impl ThreadManager {
             return;
         };
         for pattern in patterns {
-            let Some(tp) = &pattern.thread_path else {
+            let Some(tp) = &pattern.topic_path else {
                 continue;
             };
-            let resolved = crate::thread_path::resolve_thread_path(tp, self.data_root());
-            let thread_name_file = resolved.join(".jyc").join("thread-name");
-            match tokio::fs::read_to_string(&thread_name_file).await {
+            let resolved = crate::topic_path::resolve_topic_path(tp, self.data_root());
+            let jyc_dir = resolved.join(".jyc");
+            // One-time migration for the topic → topic rename.
+            crate::topic_path::migrate_topic_name_file(&jyc_dir);
+            let topic_name_file = jyc_dir.join("topic-name");
+            match tokio::fs::read_to_string(&topic_name_file).await {
                 Ok(name) => {
                     let name = name.trim().to_string();
                     if name.is_empty() {
                         continue;
                     }
-                    let mut paths = self.thread_paths.lock().await;
+                    let mut paths = self.topic_paths.lock().await;
                     paths.entry(name.clone()).or_insert_with(|| {
                         tracing::info!(
                             path = %resolved.display(),
-                            "Restored custom thread_path from disk"
+                            "Restored custom topic_path from disk"
                         );
                         resolved
                     });
@@ -136,35 +139,35 @@ impl ThreadManager {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // Directory exists but no thread-name file — not yet
-                    // initialized, or pre-this-feature thread. Skip.
+                    // Directory exists but no topic-name file — not yet
+                    // initialized, or pre-this-feature topic. Skip.
                 }
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
-                        path = %thread_name_file.display(),
-                        "Failed to read thread-name file during restore"
+                        path = %topic_name_file.display(),
+                        "Failed to read topic-name file during restore"
                     );
                 }
             }
         }
     }
 
-    /// List all open threads with their info, reading state from disk.
+    /// List all open topics with their info, reading state from disk.
     ///
-    /// Scans the workspace directory for thread directories containing `.jyc/pattern`.
-    /// This includes both actively queued threads and idle threads that have been
+    /// Scans the workspace directory for topic directories containing `.jyc/pattern`.
+    /// This includes both actively queued topics and idle topics that have been
     /// created but have no messages pending.
-    pub async fn list_threads(&self) -> Vec<ThreadInfo> {
+    pub async fn list_topics(&self) -> Vec<TopicInfo> {
         use crate::session_state::{read_mode_override, read_session_cost, read_token_state};
 
-        // Collect names of actively queued threads
-        let queues = self.thread_queues.lock().await;
+        // Collect names of actively queued topics
+        let queues = self.topic_queues.lock().await;
         let active_names: std::collections::HashSet<String> = queues.keys().cloned().collect();
         drop(queues);
 
-        // Scan workspace for all thread directories with .jyc/ subdirectory
-        let mut thread_names: Vec<String> = Vec::new();
+        // Scan workspace for all topic directories with .jyc/ subdirectory
+        let mut topic_names: Vec<String> = Vec::new();
         if let Ok(mut entries) = tokio::fs::read_dir(&self.workspace_dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
@@ -172,49 +175,49 @@ impl ThreadManager {
                     && path.join(".jyc").is_dir()
                     && let Some(name) = entry.file_name().to_str()
                 {
-                    thread_names.push(name.to_string());
+                    topic_names.push(name.to_string());
                 }
             }
         }
 
-        // Also include threads with custom `thread_path` overrides that live
+        // Also include topics with custom `topic_path` overrides that live
         // outside the workspace directory (e.g. `~/projects/jyc`).
-        // Clean up entries whose directory has been deleted (e.g. thread closed).
+        // Clean up entries whose directory has been deleted (e.g. topic closed).
         {
-            let mut paths = self.thread_paths.lock().await;
+            let mut paths = self.topic_paths.lock().await;
             paths.retain(|name, path| {
                 let exists = path.join(".jyc").is_dir();
                 if !exists {
                     tracing::info!(
-                        thread = %name,
+                        topic = %name,
                         path = %path.display(),
-                        "Removed stale thread_path entry (directory no longer exists)"
+                        "Removed stale topic_path entry (directory no longer exists)"
                     );
                 }
                 exists
             });
             for name in paths.keys() {
-                if !thread_names.contains(name) {
-                    thread_names.push(name.clone());
+                if !topic_names.contains(name) {
+                    topic_names.push(name.clone());
                 }
             }
         }
 
-        thread_names.sort();
+        topic_names.sort();
 
-        let mut threads = Vec::with_capacity(thread_names.len());
+        let mut topics = Vec::with_capacity(topic_names.len());
 
-        for name in thread_names {
-            // Check for custom thread_path from pattern override first
-            let paths = self.thread_paths.lock().await;
-            let thread_path = paths
+        for name in topic_names {
+            // Check for custom topic_path from pattern override first
+            let paths = self.topic_paths.lock().await;
+            let topic_path = paths
                 .get(&name)
                 .cloned()
                 .unwrap_or_else(|| self.workspace_dir.join(&name));
             drop(paths);
 
             // Read pattern from .jyc/pattern
-            let pattern = tokio::fs::read_to_string(thread_path.join(".jyc").join("pattern"))
+            let pattern = tokio::fs::read_to_string(topic_path.join(".jyc").join("pattern"))
                 .await
                 .ok()
                 .map(|s| s.trim().to_string())
@@ -228,10 +231,10 @@ impl ThreadManager {
                 total_input_tokens,
                 total_cache_hit_tokens,
                 total_cache_creation_tokens,
-            ) = read_token_state(&thread_path).await;
+            ) = read_token_state(&topic_path).await;
 
             // Read mode first — needed to resolve mode-specific model overrides.
-            let mode = read_mode_override(&thread_path).await;
+            let mode = read_mode_override(&topic_path).await;
 
             // Read mode-specific override file first, fallback to legacy.
             let file_override = {
@@ -242,9 +245,9 @@ impl ThreadManager {
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                 }
-                let plan_path = thread_path.join(".jyc").join("plan-model-override");
-                let build_path = thread_path.join(".jyc").join("build-model-override");
-                let legacy_path = thread_path.join(".jyc").join("model-override");
+                let plan_path = topic_path.join(".jyc").join("plan-model-override");
+                let build_path = topic_path.join(".jyc").join("build-model-override");
+                let legacy_path = topic_path.join(".jyc").join("model-override");
 
                 let mode_specific = match mode.as_deref() {
                     Some("plan") => read_trimmed(&plan_path).await,
@@ -298,21 +301,21 @@ impl ThreadManager {
             .or_else(|| self.config.load().agent.model.clone());
 
             // Read skills from .jyc/skills.json
-            let skills = read_skills(&thread_path).await;
+            let skills = read_skills(&topic_path).await;
 
             // Determine status
-            let status = if thread_path.join(".jyc").join("question-sent.flag").exists() {
-                ThreadStatus::WaitingForAnswer
+            let status = if topic_path.join(".jyc").join("question-sent.flag").exists() {
+                TopicStatus::WaitingForAnswer
             } else if active_names.contains(&name) {
-                // Thread has an active queue — it's either processing or waiting for messages
-                ThreadStatus::Idle
+                // Topic has an active queue — it's either processing or waiting for messages
+                TopicStatus::Idle
             } else {
-                // Thread exists on disk but has no active queue — it's dormant
-                ThreadStatus::Idle
+                // Topic exists on disk but has no active queue — it's dormant
+                TopicStatus::Idle
             };
 
             // Fallback: read .jyc directory mtime if no activity tracker data
-            let last_active_at = match tokio::fs::metadata(thread_path.join(".jyc")).await {
+            let last_active_at = match tokio::fs::metadata(topic_path.join(".jyc")).await {
                 Ok(meta) => match meta.modified() {
                     Ok(mtime) => {
                         let dt: chrono::DateTime<chrono::Utc> = mtime.into();
@@ -328,8 +331,8 @@ impl ThreadManager {
             // absent when the model has no configured pricing, in which case
             // `cost` stays `None` and the dashboard omits the row.
             let cost = {
-                let session = read_session_cost(&thread_path).await;
-                let today = crate::billing_log_store::BillingLogStore::today_total(&thread_path);
+                let session = read_session_cost(&topic_path).await;
+                let today = crate::billing_log_store::BillingLogStore::today_total(&topic_path);
                 match (session, today) {
                     (None, None) => None,
                     (session, today) => {
@@ -342,7 +345,7 @@ impl ThreadManager {
                         // worse than showing nothing.
                         //
                         // The ledger's own label is still preferred when it
-                        // reports `mixed` — a thread that switched between
+                        // reports `mixed` — a topic that switched between
                         // differently-priced models in one day is a real
                         // signal that config alone cannot express.
                         let ledger_currency = today.as_ref().map(|(_, c)| c.clone());
@@ -360,7 +363,7 @@ impl ThreadManager {
                                 .or(ledger_currency)
                                 .unwrap_or_else(|| jyc_types::DEFAULT_CURRENCY.to_string())
                         };
-                        Some(ThreadCost {
+                        Some(TopicCost {
                             session: session.unwrap_or(0.0),
                             today: today.map(|(amount, _)| amount).unwrap_or(0.0),
                             currency,
@@ -369,7 +372,7 @@ impl ThreadManager {
                 }
             };
 
-            threads.push(ThreadInfo {
+            topics.push(TopicInfo {
                 name,
                 channel: self.channel_name.clone(),
                 pattern,
@@ -387,13 +390,13 @@ impl ThreadManager {
                 skills,
                 recent_messages: vec![], // Filled by InspectServer from event bus
                 thinking_text: None,     // Filled by InspectServer from event bus
-                thread_path: Some(thread_path.clone()),
-                branch: branch_for_thread_path(&thread_path),
-                changed_files: changed_files_for_thread_path(&thread_path),
+                topic_path: Some(topic_path.clone()),
+                branch: branch_for_topic_path(&topic_path),
+                changed_files: changed_files_for_topic_path(&topic_path),
                 cost,
             });
         }
 
-        threads
+        topics
     }
 }

@@ -16,7 +16,7 @@ use jyc_types::channel::OutboundAttachment;
 ///
 /// This is the in-process equivalent of the `jyc_reply` MCP tool.
 /// It writes `reply.md` and `reply-sent.flag` signal files that the
-/// thread manager's delivery system picks up.
+/// topic manager's delivery system picks up.
 pub struct ReplyMessageTool;
 
 #[async_trait]
@@ -44,7 +44,7 @@ impl Tool for ReplyMessageTool {
                 "attachments": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Optional list of filenames within the thread directory to attach"
+                    "description": "Optional list of filenames within the topic directory to attach"
                 },
                 "stop_after": {
                     "type": "boolean",
@@ -76,29 +76,29 @@ impl Tool for ReplyMessageTool {
             return Ok(ToolOutput::error("Message cannot be empty"));
         }
 
-        let thread_path = ctx.working_dir;
-        let jyc_dir = thread_path.join(".jyc");
+        let topic_path = ctx.working_dir;
+        let jyc_dir = topic_path.join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.ok();
 
         // Validate attachments
         let validated_attachments = if let Some(ref filenames) = attachments {
             let mut valid = Vec::new();
             for filename in filenames {
-                let file_path = thread_path.join(filename);
+                let file_path = topic_path.join(filename);
                 if !file_path.exists() {
                     return Ok(ToolOutput::error(format!(
                         "Attachment not found: '{}'",
                         filename
                     )));
                 }
-                // Security: ensure within thread directory
+                // Security: ensure within topic directory
                 if let Ok(canonical) = file_path.canonicalize() {
-                    let thread_canonical = thread_path
+                    let topic_canonical = topic_path
                         .canonicalize()
-                        .unwrap_or_else(|_| thread_path.to_path_buf());
-                    if !canonical.starts_with(&thread_canonical) {
+                        .unwrap_or_else(|_| topic_path.to_path_buf());
+                    if !canonical.starts_with(&topic_canonical) {
                         return Ok(ToolOutput::error(format!(
-                            "Attachment '{}' is outside thread directory",
+                            "Attachment '{}' is outside topic directory",
                             filename
                         )));
                     }
@@ -149,11 +149,11 @@ impl Tool for ReplyMessageTool {
     }
 }
 
-/// Send message tool — sends a proactive out-of-thread message via the
+/// Send message tool — sends a proactive out-of-topic message via the
 /// pre-warmed outbound adapter.
 ///
 /// This is the in-process equivalent of the `jyc_send_message` MCP tool.
-/// Unlike `ReplyMessageTool` which replies within the current thread, this
+/// Unlike `ReplyMessageTool` which replies within the current topic, this
 /// tool sends messages to arbitrary recipients for alerts and notifications.
 ///
 /// Supports:
@@ -172,7 +172,7 @@ impl Tool for SendMessageTool {
 
     fn description(&self) -> &str {
         "Send a proactive message to an arbitrary recipient. \
-         Use ONLY for alerts and notifications — NEVER for in-thread replies. \
+         Use ONLY for alerts and notifications — NEVER for in-topic replies. \
          The recipient format is channel-specific (e.g. \"wecomkf:kf001:user123\")."
     }
 

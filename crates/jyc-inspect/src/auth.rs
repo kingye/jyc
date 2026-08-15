@@ -91,7 +91,7 @@ mod tests {
 
     fn ctx_with_token(token: Option<&str>) -> Arc<InspectContext> {
         Arc::new(InspectContext {
-            thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            topic_managers: Arc::new(ArcSwap::from_pointee(vec![])),
             channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
                 name: "ch".into(),
                 channel_type: "email".into(),

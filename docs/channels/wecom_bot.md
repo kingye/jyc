@@ -166,7 +166,7 @@ Supported mappings:
 Configuration uses the generic `[attachments.outbound]` settings (same as Feishu
 and email): `enabled`, `allowed_extensions`, `max_file_size`, `max_per_message`.
 
-## Thread Naming
+## Topic Naming
 
 - **Single chat**: `bot-{userid}`
 - **Group chat**: `bot-{chatid}`

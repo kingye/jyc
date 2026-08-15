@@ -1,6 +1,6 @@
 //! Chat log storage for persisting conversation history in JSONL format.
 //!
-//! Each thread gets its own chat history files named `chat_history_YYYY-MM-DD.jsonl`.
+//! Each topic gets its own chat history files named `chat_history_YYYY-MM-DD.jsonl`.
 //! Each line is a JSON object representing one message or reply.
 
 use anyhow::{Context, Result};
@@ -22,27 +22,27 @@ pub struct ReplyMetadata {
     pub mode: Option<String>,
 }
 
-/// Chat log store for a single thread.
+/// Chat log store for a single topic.
 pub struct ChatLogStore {
-    thread_path: PathBuf,
+    topic_path: PathBuf,
     current_file: RwLock<Option<File>>,
     current_date: String,
     max_file_size: u64,
 }
 
-/// List chat history JSONL files in a thread directory.
+/// List chat history JSONL files in a topic directory.
 ///
-/// Tries `.jyc/` first (new location), falls back to thread root (legacy).
+/// Tries `.jyc/` first (new location), falls back to topic root (legacy).
 /// Returns sorted paths (oldest first) and the directory they were found in.
-pub fn list_chat_history_files(thread_path: &Path) -> (Vec<PathBuf>, PathBuf) {
-    let new_dir = thread_path.join(".jyc");
+pub fn list_chat_history_files(topic_path: &Path) -> (Vec<PathBuf>, PathBuf) {
+    let new_dir = topic_path.join(".jyc");
     let files = read_chat_history_dir(&new_dir);
     if !files.is_empty() {
         return (files, new_dir);
     }
-    // Fallback: legacy location (thread root)
-    let files = read_chat_history_dir(thread_path);
-    (files, thread_path.to_path_buf())
+    // Fallback: legacy location (topic root)
+    let files = read_chat_history_dir(topic_path);
+    (files, topic_path.to_path_buf())
 }
 
 fn read_chat_history_dir(dir: &Path) -> Vec<PathBuf> {
@@ -62,17 +62,17 @@ fn read_chat_history_dir(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// Load recent chat history entries from a thread directory.
+/// Load recent chat history entries from a topic directory.
 ///
-/// Reads `chat_history_*.jsonl` files (`.jyc/` first, falls back to thread root),
+/// Reads `chat_history_*.jsonl` files (`.jyc/` first, falls back to topic root),
 /// parses each line, and returns up to `max_messages` most recent entries.
 /// Entries are mapped: `"received"` → sender `"user"`, `"reply"` → sender `"ai"`.
-pub fn load_recent_chat_history(thread_path: &Path, max_messages: usize) -> Vec<ChatMessageEntry> {
-    if !thread_path.exists() {
+pub fn load_recent_chat_history(topic_path: &Path, max_messages: usize) -> Vec<ChatMessageEntry> {
+    if !topic_path.exists() {
         return vec![];
     }
 
-    let (mut files, _dir) = list_chat_history_files(thread_path);
+    let (mut files, _dir) = list_chat_history_files(topic_path);
     files.sort_by(|a, b| b.cmp(a)); // newest first
 
     let mut entries = Vec::new();
@@ -119,12 +119,12 @@ pub fn load_recent_chat_history(thread_path: &Path, max_messages: usize) -> Vec<
 }
 
 impl ChatLogStore {
-    /// Create a new chat log store for the given thread.
-    pub fn new(thread_path: &Path) -> Self {
+    /// Create a new chat log store for the given topic.
+    pub fn new(topic_path: &Path) -> Self {
         let current_date = Utc::now().format("%Y-%m-%d").to_string();
 
         Self {
-            thread_path: thread_path.to_path_buf(),
+            topic_path: topic_path.to_path_buf(),
             current_file: RwLock::new(None),
             current_date,
             max_file_size: 100 * 1024 * 1024, // 100 MB default
@@ -134,7 +134,7 @@ impl ChatLogStore {
     /// Get the path for today's chat history file.
     /// New location: `.jyc/chat_history_YYYY-MM-DD.jsonl`
     fn get_today_file_path(&self) -> PathBuf {
-        self.thread_path
+        self.topic_path
             .join(".jyc")
             .join(format!("chat_history_{}.jsonl", self.current_date))
     }
@@ -177,12 +177,12 @@ impl ChatLogStore {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
-        // Fallback: read from thread.json if metadata lacks user_name
+        // Fallback: read from topic.json if metadata lacks user_name
         let user_name = user_name.or_else(|| {
             if message.channel == "wecomkf"
-                && let Ok(Some(thread_json)) =
-                    crate::thread_json::ThreadJson::read_sync(&self.thread_path)
-                && let Some(data) = thread_json.data
+                && let Ok(Some(topic_json)) =
+                    crate::topic_json::TopicJson::read_sync(&self.topic_path)
+                && let Some(data) = topic_json.data
                 && let Some(name) = data.get("user_name").and_then(|v| v.as_str())
             {
                 Some(name.to_string())
@@ -328,7 +328,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: Some("om_test".to_string()),
             attachments: vec![],
@@ -342,7 +342,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let store = ChatLogStore::new(temp_dir.path());
 
-        assert_eq!(store.thread_path, temp_dir.path());
+        assert_eq!(store.topic_path, temp_dir.path());
         assert!(store.current_file.read().unwrap().is_none());
     }
 
@@ -454,12 +454,12 @@ mod tests {
     }
 
     #[test]
-    fn test_append_message_with_thread_json_fallback() {
+    fn test_append_message_with_topic_json_fallback() {
         let temp_dir = tempdir().unwrap();
         let mut store = ChatLogStore::new(temp_dir.path());
 
-        // Write thread.json with user_name
-        let thread_json = crate::thread_json::ThreadJson {
+        // Write topic.json with user_name
+        let topic_json = crate::topic_json::TopicJson {
             channel_type: "wecomkf".to_string(),
             version: 1,
             data: Some(serde_json::json!({
@@ -467,7 +467,7 @@ mod tests {
                 "user_name": "张三",
             })),
         };
-        thread_json.write_sync(temp_dir.path()).unwrap();
+        topic_json.write_sync(temp_dir.path()).unwrap();
 
         // Create message WITHOUT user_name in metadata
         let mut message = create_test_message();
@@ -481,7 +481,7 @@ mod tests {
         let file_path = store.get_today_file_path();
         let content = std::fs::read_to_string(&file_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
-        // Should use user_name from thread.json
+        // Should use user_name from topic.json
         assert_eq!(parsed["sender_name"], "张三");
         assert_eq!(parsed["from"], "张三 (wecomkf:wm123)");
     }

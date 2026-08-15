@@ -12,7 +12,7 @@ use super::skills::{format_skills_section, persist_skill_names};
 impl JycAgentService {
     pub(crate) async fn build_system_prompt(
         &self,
-        thread_path: &Path,
+        topic_path: &Path,
         matched_pattern: Option<&str>,
     ) -> String {
         let mut prompt = String::new();
@@ -20,13 +20,13 @@ impl JycAgentService {
         // Security: directory boundaries
         prompt.push_str(&format!(
             "Your working directory is \"{}\". You MUST only read, write, and access files within this directory.\n\n",
-            thread_path.display()
+            topic_path.display()
         ));
 
         // Read mode override early (plan mode injected at end for recency)
-        let mode_override = jyc_core::session_state::read_mode_override(thread_path).await;
+        let mode_override = jyc_core::session_state::read_mode_override(topic_path).await;
         tracing::info!(
-            thread = %thread_path.display(),
+            topic = %topic_path.display(),
             mode = ?mode_override,
             "Read mode override"
         );
@@ -61,19 +61,19 @@ impl JycAgentService {
 
         // Discover and inject skill metadata (before AGENTS.md so instructions
         // to read SKILL.md files are seen first)
-        let skills = self.discover_skills(thread_path, include_list, exclude_slice);
+        let skills = self.discover_skills(topic_path, include_list, exclude_slice);
         if !skills.is_empty() {
             prompt.push_str(&format_skills_section(&skills));
         }
 
         // Persist skill names to .jyc/skills.json for dashboard inspection
         let skill_names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-        if let Err(e) = persist_skill_names(thread_path, &skill_names) {
+        if let Err(e) = persist_skill_names(topic_path, &skill_names) {
             tracing::warn!(error = %e, "Failed to persist skill names to skills.json");
         }
 
         // Load AGENTS.md if present in the working directory
-        let agents_md = thread_path.join("AGENTS.md");
+        let agents_md = topic_path.join("AGENTS.md");
         if agents_md.exists()
             && let Ok(content) = std::fs::read_to_string(&agents_md)
         {
@@ -83,7 +83,7 @@ impl JycAgentService {
         }
 
         // Load repo/AGENTS.md if present (for GitHub channel)
-        let repo_agents_md = thread_path.join("repo").join("AGENTS.md");
+        let repo_agents_md = topic_path.join("repo").join("AGENTS.md");
         if repo_agents_md.exists()
             && let Ok(content) = std::fs::read_to_string(&repo_agents_md)
         {
@@ -110,27 +110,27 @@ impl JycAgentService {
         // Chat history access instructions
         prompt.push_str(
             "## Chat History\n\
-             This thread maintains a chronological chat history in `.jyc/chat_history_YYYY-MM-DD.jsonl`.\n\
+             This topic maintains a chronological chat history in `.jyc/chat_history_YYYY-MM-DD.jsonl`.\n\
              Each line is a JSON object (one message or reply per line). You can read it with the\n\
              `read` tool if you need context from prior conversations, or use `grep` to search.\n",
         );
 
-        // Cross-Thread Communication section (when thread managers are available)
+        // Cross-Topic Communication section (when topic managers are available)
         let tm_map_opt = self
-            .thread_managers
+            .topic_managers
             .lock()
-            .expect("thread_managers poisoned")
+            .expect("topic_managers poisoned")
             .clone();
         let outbounds_configured = self.outbounds.lock().expect("outbounds poisoned").is_some();
         if let Some(ref tm_map) = tm_map_opt {
             prompt.push_str(
-                "\n## Cross-Thread Communication\n\n\
-                 You can send messages to threads in other channels using the `jyc_send_to_thread` tool.\n\
+                "\n## Cross-Topic Communication\n\n\
+                 You can send messages to topics in other channels using the `jyc_send_to_topic` tool.\n\
                  Set `require_reply=true` when you need the target agent to send results back to you.\n\n\
-                 When you receive a message with a **Source:** header, it came from another thread. \
+                 When you receive a message with a **Source:** header, it came from another topic. \
                  Process the content normally and use `jyc_reply_message` to display results in the \
-                 current thread. If it includes \"⚠️ Reply requested\", you MUST ALSO use \
-                 `jyc_send_to_thread` to send your results back to the source channel/thread.\n",
+                 current topic. If it includes \"⚠️ Reply requested\", you MUST ALSO use \
+                 `jyc_send_to_topic` to send your results back to the source channel/topic.\n",
             );
 
             // Note about direct outbound messaging via jyc_send_message
@@ -140,12 +140,12 @@ impl JycAgentService {
                      use `jyc_send_message` with the optional `channel` parameter set to \
                      a target channel name.\n\
                      `jyc_send_message` sends directly through the channel's outbound adapter \
-                     without agent processing. `jyc_send_to_thread` injects into a thread queue \
+                     without agent processing. `jyc_send_to_topic` injects into a topic queue \
                      for agent processing.\n\n",
                 );
             }
 
-            prompt.push_str("Available channels and their active threads:\n");
+            prompt.push_str("Available channels and their active topics:\n");
             let map = tm_map.lock().await;
             for (channel_name, tm) in map.iter() {
                 let channel_type = tm.channel_type();
@@ -153,13 +153,13 @@ impl JycAgentService {
                     "- Channel \"{}\" ({})\n",
                     channel_name, channel_type
                 ));
-                // List active threads for this channel
-                let threads = tm.list_threads().await;
-                if threads.is_empty() {
-                    prompt.push_str("    (no active threads)\n");
+                // List active topics for this channel
+                let topics = tm.list_topics().await;
+                if topics.is_empty() {
+                    prompt.push_str("    (no active topics)\n");
                 } else {
-                    for thread_info in &threads {
-                        prompt.push_str(&format!("  - {}\n", thread_info.name));
+                    for topic_info in &topics {
+                        prompt.push_str(&format!("  - {}\n", topic_info.name));
                     }
                 }
             }
@@ -169,7 +169,7 @@ impl JycAgentService {
         // Plan mode: inject at END for maximum recency before conversation
         if mode_override.as_deref() == Some("plan") {
             tracing::info!(
-                thread = %thread_path.display(),
+                topic = %topic_path.display(),
                 "Injecting PLAN MODE constraint at end of system prompt"
             );
             prompt.push_str(
@@ -228,14 +228,14 @@ impl JycAgentService {
         prompt.push_str(&format!("**Subject:** {}\n", message.topic));
         prompt.push_str(&format!("**Date:** {}\n", message.timestamp.to_rfc3339()));
 
-        // Display cross-thread source info if present
+        // Display cross-topic source info if present
         if let Some(src_ch) = message
             .metadata
             .get("source_channel")
             .and_then(|v| v.as_str())
             && let Some(src_th) = message
                 .metadata
-                .get("source_thread")
+                .get("source_topic")
                 .and_then(|v| v.as_str())
         {
             let require_reply = message
@@ -245,20 +245,20 @@ impl JycAgentService {
                 .unwrap_or(false);
             if require_reply {
                 prompt.push_str(&format!(
-                    "**Source:** channel \"{}\", thread \"{}\" \
+                    "**Source:** channel \"{}\", topic \"{}\" \
                      (⚠️ Reply requested)\n\n\
                      ⚠️ ACTION REQUIRED — DO THIS FIRST:\n\
-                     1. Call `jyc_send_to_thread` with channel=\"{}\", thread=\"{}\" \
-                     to send your results back to the source thread.\n\
+                     1. Call `jyc_send_to_topic` with channel=\"{}\", topic=\"{}\" \
+                     to send your results back to the source topic.\n\
                      2. Then call `jyc_reply_message` with `stop_after=true` to \
-                     display results in this thread.\n\
-                     CRITICAL: Do NOT miss step 1. The source thread is waiting for \
+                     display results in this topic.\n\
+                     CRITICAL: Do NOT miss step 1. The source topic is waiting for \
                      your reply.\n",
                     src_ch, src_th, src_ch, src_th
                 ));
             } else {
                 prompt.push_str(&format!(
-                    "**Source:** channel \"{}\", thread \"{}\"\n",
+                    "**Source:** channel \"{}\", topic \"{}\"\n",
                     src_ch, src_th
                 ));
             }
@@ -350,7 +350,7 @@ impl JycAgentService {
     /// Resolve the additional absolute read-roots for tools that enforce a
     /// path boundary. Returns at most one root: the resolved attachment
     /// save directory (per-pattern override beats global) when it points
-    /// outside `thread_path`. Relative values resolve inside `thread_path`
+    /// outside `topic_path`. Relative values resolve inside `topic_path`
     /// and need no widening.
     ///
     /// Reuses `jyc_core::attachment_storage::resolve_attachment_save_dir`
@@ -359,23 +359,23 @@ impl JycAgentService {
     pub(crate) fn resolve_additional_read_roots(
         &self,
         message: &InboundMessage,
-        thread_path: &Path,
+        topic_path: &Path,
     ) -> Vec<PathBuf> {
         let mut roots = Vec::new();
 
-        // 1. Attachment save directory (if outside thread_path)
+        // 1. Attachment save directory (if outside topic_path)
         let pattern_cfg = message
             .matched_pattern
             .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.attachments.as_ref());
         let cfg = pattern_cfg.or(self.global_inbound_attachments.as_ref());
-        let resolved = jyc_core::attachment_storage::resolve_attachment_save_dir(thread_path, cfg);
-        if !resolved.starts_with(thread_path) {
+        let resolved = jyc_core::attachment_storage::resolve_attachment_save_dir(topic_path, cfg);
+        if !resolved.starts_with(topic_path) {
             roots.push(resolved);
         }
 
-        // 2. External skill directories (outside thread_path)
+        // 2. External skill directories (outside topic_path)
         // These paths match the scan logic in discover_skills().
         if let Ok(home) = std::env::var("HOME") {
             let home_skills = [
@@ -570,13 +570,13 @@ impl JycAgentService {
     }
 }
 
-/// Read the thinking-display state from `.jyc/thinking-state` in the thread directory.
+/// Read the thinking-display state from `.jyc/thinking-state` in the topic directory.
 ///
 /// Returns `true` (default) if the file is missing or contains anything other
 /// than `"hide"`. The `/thinking hide` command writes `"hide"` to this file;
 /// `/thinking show` writes `"show"`.
-pub(crate) fn read_thinking_enabled(thread_path: &Path) -> bool {
-    match std::fs::read_to_string(thread_path.join(".jyc").join("thinking-state")) {
+pub(crate) fn read_thinking_enabled(topic_path: &Path) -> bool {
+    match std::fs::read_to_string(topic_path.join(".jyc").join("thinking-state")) {
         Ok(content) => content.trim() != "hide",
         Err(_) => true,
     }

@@ -9,8 +9,8 @@ use std::path::Path;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-use crate::thread_event::ThreadEvent;
-use crate::thread_event_bus::ThreadEventBusRef;
+use crate::topic_event::TopicEvent;
+use crate::topic_event_bus::TopicEventBusRef;
 use jyc_types::{InboundMessage, OutboundAdapter};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -22,21 +22,21 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// via the outbound adapter, without waiting for the SSE stream to complete.
 ///
 /// When delivery succeeds, the watcher also publishes a `ReplySent` event on
-/// the provided thread event bus so dashboard clients can display the reply
+/// the provided topic event bus so dashboard clients can display the reply
 /// live. If the bus is omitted, the reply is still delivered but not fanned
 /// out to the dashboard.
 ///
 /// The watcher runs until cancelled (when the agent finishes processing).
 pub async fn watch_pending_deliveries(
-    thread_path: &Path,
+    topic_path: &Path,
     message_dir: &str,
     message: &InboundMessage,
     outbound: &dyn OutboundAdapter,
     cancel: CancellationToken,
-    event_bus: Option<ThreadEventBusRef>,
-    thread_name: &str,
+    event_bus: Option<TopicEventBusRef>,
+    topic_name: &str,
 ) {
-    let jyc_dir = thread_path.join(".jyc");
+    let jyc_dir = topic_path.join(".jyc");
     let signal_path = jyc_dir.join("reply-sent.flag");
     let reply_path = jyc_dir.join("reply.md");
 
@@ -64,7 +64,7 @@ pub async fn watch_pending_deliveries(
 
         // Deliver via outbound adapter (channel-agnostic)
         if let Err(e) = outbound
-            .send_reply(message, &reply_text, thread_path, message_dir, None)
+            .send_reply(message, &reply_text, topic_path, message_dir, None)
             .await
         {
             tracing::error!(error = %e, "Failed to deliver pending message");
@@ -74,15 +74,15 @@ pub async fn watch_pending_deliveries(
             // reply live. The main post-SSE delivery path does this too;
             // when the watcher wins the race we must still emit it.
             if let Some(bus) = &event_bus {
-                let event = ThreadEvent::ReplySent {
-                    thread_name: thread_name.to_string(),
+                let event = TopicEvent::ReplySent {
+                    topic_name: topic_name.to_string(),
                     text: reply_text.clone(),
                     timestamp: Utc::now(),
                 };
                 if let Err(e) = bus.publish(event).await {
                     tracing::warn!(
                         error = %e,
-                        thread = %thread_name,
+                        topic = %topic_name,
                         "Failed to publish ReplySent event from pending delivery watcher"
                     );
                 }
@@ -99,8 +99,8 @@ pub async fn watch_pending_deliveries(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::thread_event::ThreadEvent;
-    use crate::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
+    use crate::topic_event::TopicEvent;
+    use crate::topic_event_bus::{SimpleThreadEventBus, TopicEventBusRef};
     use async_trait::async_trait;
     use jyc_types::{
         InboundMessage, MessageContent, OutboundAdapter, OutboundAttachment, SendResult,
@@ -147,7 +147,7 @@ mod tests {
             &self,
             _original: &InboundMessage,
             reply_text: &str,
-            _thread_path: &Path,
+            _topic_path: &Path,
             _message_dir: &str,
             _attachments: Option<&[OutboundAttachment]>,
         ) -> anyhow::Result<SendResult> {
@@ -180,7 +180,7 @@ mod tests {
             topic: "Test".to_string(),
             content: MessageContent::default(),
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -192,11 +192,11 @@ mod tests {
     #[tokio::test]
     async fn test_delivers_when_signal_and_reply_exist() {
         let tmp = tempdir().unwrap();
-        let thread_path = tmp.path().to_path_buf();
+        let topic_path = tmp.path().to_path_buf();
         let message_dir = "2026-01-01_00-00-00";
 
         // Create directories
-        let jyc_dir = thread_path.join(".jyc");
+        let jyc_dir = topic_path.join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
         // Write signal and reply files to .jyc/
@@ -211,7 +211,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        let tp = thread_path.clone();
+        let tp = topic_path.clone();
         let handle = tokio::spawn(async move {
             watch_pending_deliveries(
                 &tp,
@@ -243,10 +243,10 @@ mod tests {
     #[tokio::test]
     async fn test_no_delivery_without_signal() {
         let tmp = tempdir().unwrap();
-        let thread_path = tmp.path().to_path_buf();
+        let topic_path = tmp.path().to_path_buf();
         let message_dir = "2026-01-01_00-00-00";
 
-        let jyc_dir = thread_path.join(".jyc");
+        let jyc_dir = topic_path.join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         // reply.md exists but no signal file
         tokio::fs::write(jyc_dir.join("reply.md"), "test")
@@ -257,7 +257,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        let tp = thread_path.clone();
+        let tp = topic_path.clone();
         let handle = tokio::spawn(async move {
             watch_pending_deliveries(
                 &tp,
@@ -281,10 +281,10 @@ mod tests {
     #[tokio::test]
     async fn test_no_delivery_with_empty_reply() {
         let tmp = tempdir().unwrap();
-        let thread_path = tmp.path().to_path_buf();
+        let topic_path = tmp.path().to_path_buf();
         let message_dir = "2026-01-01_00-00-00";
 
-        let jyc_dir = thread_path.join(".jyc");
+        let jyc_dir = topic_path.join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
         tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}")
@@ -298,7 +298,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        let tp = thread_path.clone();
+        let tp = topic_path.clone();
         let handle = tokio::spawn(async move {
             watch_pending_deliveries(
                 &tp,
@@ -322,10 +322,10 @@ mod tests {
     #[tokio::test]
     async fn test_cancellation_stops_watcher() {
         let tmp = tempdir().unwrap();
-        let thread_path = tmp.path().to_path_buf();
+        let topic_path = tmp.path().to_path_buf();
         let message_dir = "2026-01-01_00-00-00";
 
-        tokio::fs::create_dir_all(thread_path.join(".jyc"))
+        tokio::fs::create_dir_all(topic_path.join(".jyc"))
             .await
             .unwrap();
 
@@ -335,7 +335,7 @@ mod tests {
 
         let handle = tokio::spawn(async move {
             watch_pending_deliveries(
-                &thread_path,
+                &topic_path,
                 message_dir,
                 &test_message(),
                 &outbound,
@@ -356,9 +356,9 @@ mod tests {
     #[tokio::test]
     async fn test_publishes_reply_sent_event_on_delivery() {
         let tmp = tempdir().unwrap();
-        let thread_path = tmp.path().to_path_buf();
+        let topic_path = tmp.path().to_path_buf();
         let message_dir = "2026-01-01_00-00-00";
-        let jyc_dir = thread_path.join(".jyc");
+        let jyc_dir = topic_path.join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}")
             .await
@@ -368,12 +368,12 @@ mod tests {
             .unwrap();
 
         let (outbound, delivered) = MockOutbound::new();
-        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        let tp = thread_path.clone();
+        let tp = topic_path.clone();
         let bus_for_watcher = bus.clone();
         let handle = tokio::spawn(async move {
             watch_pending_deliveries(
@@ -383,7 +383,7 @@ mod tests {
                 &outbound,
                 cancel_clone,
                 Some(bus_for_watcher),
-                "test-thread",
+                "test-topic",
             )
             .await;
         });
@@ -397,7 +397,7 @@ mod tests {
         let _ = handle.await;
 
         assert!(
-            matches!(event, ThreadEvent::ReplySent { ref text, .. } if text == "Hi from watcher"),
+            matches!(event, TopicEvent::ReplySent { ref text, .. } if text == "Hi from watcher"),
             "Expected ReplySent event, got {:?}",
             event
         );

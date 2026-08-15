@@ -27,7 +27,7 @@ pub(crate) fn make_message(github_type: &str, number: u64) -> InboundMessage {
             markdown: None,
         },
         timestamp: chrono::Utc::now(),
-        thread_refs: None,
+        references: None,
         reply_to_id: None,
         external_id: None,
         attachments: vec![],
@@ -71,33 +71,33 @@ pub(crate) fn make_patterns() -> Vec<ChannelPattern> {
     ]
 }
 
-// --- Thread name derivation ---
+// --- Topic name derivation ---
 
 #[test]
-fn test_derive_thread_name_issue() {
+fn test_derive_topic_name_issue() {
     let msg = make_message("issue", 42);
-    let name = GithubMatcher.derive_thread_name(&msg, &[], None);
+    let name = GithubMatcher.derive_topic_name(&msg, &[], None);
     assert_eq!(name, "issue-42");
 }
 
 #[test]
-fn test_derive_thread_name_pr() {
+fn test_derive_topic_name_pr() {
     let msg = make_message("pull_request", 43);
-    let name = GithubMatcher.derive_thread_name(&msg, &[], None);
+    let name = GithubMatcher.derive_topic_name(&msg, &[], None);
     assert_eq!(name, "pr-43");
 }
 
 #[test]
-fn test_derive_thread_name_reviewer() {
+fn test_derive_topic_name_reviewer() {
     // The reviewer pattern no longer has a hardcoded special case; it
-    // must declare `thread_prefix = "review-pr"` in config to keep the
-    // historical thread name. With the prefix configured, the resolver
+    // must declare `topic_prefix = "review-pr"` in config to keep the
+    // historical topic name. With the prefix configured, the resolver
     // returns `review-pr-{N}`.
     let msg = make_message("pull_request", 43);
     let patterns = vec![ChannelPattern {
         name: "reviewer".to_string(),
         template: Some("github-reviewer".to_string()),
-        thread_prefix: Some("review-pr".to_string()),
+        topic_prefix: Some("review-pr".to_string()),
         rules: PatternRules {
             github_type: Some(vec!["pull_request".to_string()]),
             ..Default::default()
@@ -109,21 +109,21 @@ fn test_derive_thread_name_reviewer() {
         channel: "github".to_string(),
         matches: HashMap::new(),
     };
-    let name = GithubMatcher.derive_thread_name(&msg, &patterns, Some(&pm));
+    let name = GithubMatcher.derive_topic_name(&msg, &patterns, Some(&pm));
     assert_eq!(name, "review-pr-43");
 }
 
 #[test]
-fn test_derive_thread_name_reviewer_legacy_fallback() {
+fn test_derive_topic_name_reviewer_legacy_fallback() {
     // Backwards-compat: a pattern literally named "reviewer" without an
-    // explicit `thread_prefix` still routes to `review-pr-{N}` so existing
+    // explicit `topic_prefix` still routes to `review-pr-{N}` so existing
     // deployments don't break. A deprecation warning is logged at runtime;
-    // users should migrate to `thread_prefix = "review-pr"` explicitly.
+    // users should migrate to `topic_prefix = "review-pr"` explicitly.
     let msg = make_message("pull_request", 43);
     let patterns = vec![ChannelPattern {
         name: "reviewer".to_string(),
         template: Some("github-reviewer".to_string()),
-        // No thread_prefix → legacy fallback kicks in.
+        // No topic_prefix → legacy fallback kicks in.
         rules: PatternRules {
             github_type: Some(vec!["pull_request".to_string()]),
             ..Default::default()
@@ -135,14 +135,14 @@ fn test_derive_thread_name_reviewer_legacy_fallback() {
         channel: "github".to_string(),
         matches: HashMap::new(),
     };
-    let name = GithubMatcher.derive_thread_name(&msg, &patterns, Some(&pm));
+    let name = GithubMatcher.derive_topic_name(&msg, &patterns, Some(&pm));
     assert_eq!(name, "review-pr-43");
 }
 
 #[test]
-fn test_derive_thread_name_non_reviewer_no_prefix_falls_back_to_default() {
+fn test_derive_topic_name_non_reviewer_no_prefix_falls_back_to_default() {
     // The legacy fallback is scoped to the literal pattern name "reviewer".
-    // Any other pattern name without `thread_prefix` falls through to the
+    // Any other pattern name without `topic_prefix` falls through to the
     // event-type default.
     let msg = make_message("pull_request", 43);
     let patterns = vec![ChannelPattern {
@@ -159,20 +159,20 @@ fn test_derive_thread_name_non_reviewer_no_prefix_falls_back_to_default() {
         channel: "github".to_string(),
         matches: HashMap::new(),
     };
-    let name = GithubMatcher.derive_thread_name(&msg, &patterns, Some(&pm));
+    let name = GithubMatcher.derive_topic_name(&msg, &patterns, Some(&pm));
     assert_eq!(name, "pr-43");
 }
 
 #[test]
-fn test_derive_thread_name_high_level_planner_prefix() {
+fn test_derive_topic_name_high_level_planner_prefix() {
     // Two issue patterns, distinguished by labels, must declare distinct
-    // `thread_prefix` values to avoid sharing a workspace dir.
+    // `topic_prefix` values to avoid sharing a workspace dir.
     let msg = make_message("issue", 42);
     let patterns = vec![
         ChannelPattern {
             name: "high-level-planner".to_string(),
             template: Some("github-high-level-planner".to_string()),
-            thread_prefix: Some("plan".to_string()),
+            topic_prefix: Some("plan".to_string()),
             rules: PatternRules {
                 github_type: Some(vec!["issue".to_string()]),
                 labels: Some(LabelRule::Flat(vec!["feature-plan".to_string()])),
@@ -197,7 +197,7 @@ fn test_derive_thread_name_high_level_planner_prefix() {
         matches: HashMap::new(),
     };
     assert_eq!(
-        GithubMatcher.derive_thread_name(&msg, &patterns, Some(&pm_hl)),
+        GithubMatcher.derive_topic_name(&msg, &patterns, Some(&pm_hl)),
         "plan-42"
     );
 
@@ -208,20 +208,20 @@ fn test_derive_thread_name_high_level_planner_prefix() {
         matches: HashMap::new(),
     };
     assert_eq!(
-        GithubMatcher.derive_thread_name(&msg, &patterns, Some(&pm_detail)),
+        GithubMatcher.derive_topic_name(&msg, &patterns, Some(&pm_detail)),
         "issue-42"
     );
 }
 
 #[test]
-fn test_derive_thread_name_developer() {
+fn test_derive_topic_name_developer() {
     let msg = make_message("pull_request", 43);
     let pm = PatternMatch {
         pattern_name: "developer".to_string(),
         channel: "github".to_string(),
         matches: HashMap::new(),
     };
-    let name = GithubMatcher.derive_thread_name(&msg, &[], Some(&pm));
+    let name = GithubMatcher.derive_topic_name(&msg, &[], Some(&pm));
     assert_eq!(name, "pr-43");
 }
 

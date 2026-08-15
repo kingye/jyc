@@ -1,7 +1,7 @@
 //! Per-message processing pipeline (`process_message`) and its helpers.
 //!
-//! Extracted from the monolithic `thread_manager.rs`; the worker is the
-//! free-function half of the module, while `ThreadManager` (struct + impl)
+//! Extracted from the monolithic `topic_manager.rs`; the worker is the
+//! free-function half of the module, while `TopicManager` (struct + impl)
 //! lives in `mod.rs`.
 
 use anyhow::Result;
@@ -29,15 +29,15 @@ use crate::command::thinking_handler::ThinkingCommandHandler;
 use crate::command::unpin_handler::UnpinCommandHandler;
 use crate::message_storage::{MessageStorage, StoreResult};
 use crate::pending_delivery::watch_pending_deliveries;
-use crate::thread_json::ThreadJson;
+use crate::topic_json::TopicJson;
 use jyc_types::{InboundMessage, OutboundAdapter, QueueItem};
 
-use super::ThreadManager;
+use super::TopicManager;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn process_message(
     item: &mut QueueItem,
-    thread_name: &str,
+    topic_name: &str,
     storage: &MessageStorage,
     outbound: Arc<dyn OutboundAdapter>,
     agent: Arc<dyn AgentService>,
@@ -45,12 +45,12 @@ pub(crate) async fn process_message(
     template_dirs: &crate::template_dirs::TemplateDirs,
     config: &Arc<ArcSwap<jyc_types::AppConfig>>,
     tx_for_reenqueue: &mpsc::Sender<QueueItem>,
-    thread_manager: Arc<ThreadManager>,
-    thread_cancel: CancellationToken,
+    topic_manager: Arc<TopicManager>,
+    topic_cancel: CancellationToken,
 ) -> Result<()> {
     // ── 1. STORE ──────────────────────────────────────────────────────
     let is_matched = !item.pattern_match.pattern_name.is_empty();
-    let store_result: StoreResult = match &item.thread_path_override {
+    let store_result: StoreResult = match &item.topic_path_override {
         Some(path) => {
             storage
                 .store_at_path(&item.message, path, is_matched)
@@ -60,7 +60,7 @@ pub(crate) async fn process_message(
             storage
                 .store_with_match(
                     &item.message,
-                    thread_name,
+                    topic_name,
                     is_matched,
                     item.attachment_config.as_ref(),
                 )
@@ -76,45 +76,42 @@ pub(crate) async fn process_message(
 
     // ── 1.1. WRITE THREAD.JSON (if channel provides metadata) ─────────
     // Channels like wecomkf embed customer info in message metadata.
-    // Persist it once per thread so subsequent messages can read cached data.
+    // Persist it once per topic so subsequent messages can read cached data.
     if item.message.channel == "wecomkf" {
-        let thread_json_path = store_result.thread_path.join(".jyc").join("thread.json");
-        if !thread_json_path.exists() {
-            write_wecomkf_thread_json(&item.message, &store_result.thread_path, thread_name).await;
+        let topic_json_path = store_result.topic_path.join(".jyc").join("topic.json");
+        if !topic_json_path.exists() {
+            write_wecomkf_topic_json(&item.message, &store_result.topic_path, topic_name).await;
         }
     }
 
     // ── 1.2. WRITE THREAD ROUTING METADATA ────────────────────────────
-    // Persist routing metadata on the first message for a thread so that
-    // the dashboard's `ThreadProxyHandler` (via /ws/<channel>/<thread>)
+    // Persist routing metadata on the first message for a topic so that
+    // the dashboard's `TopicProxyHandler` (via /ws/<channel>/<topic>)
     // can restore it when constructing a synthetic InboundMessage.
     // Without this, the proxy's InboundMessage has empty metadata and
     // channel-specific reply routing fails (e.g., github_number missing → 404).
-    let thread_meta_path = store_result
-        .thread_path
-        .join(".jyc")
-        .join("thread-meta.json");
-    if !thread_meta_path.exists() && item.message.channel_uid != "dashboard" {
+    let topic_meta_path = store_result.topic_path.join(".jyc").join("topic-meta.json");
+    if !topic_meta_path.exists() && item.message.channel_uid != "dashboard" {
         let meta = serde_json::json!({
             "channel_uid": item.message.channel_uid,
             "external_id": item.message.external_id,
-            "thread_refs": item.message.thread_refs,
+            "references": item.message.references,
             "metadata": item.message.metadata,
         });
         if let Ok(json) = serde_json::to_string_pretty(&meta) {
-            let _ = tokio::fs::create_dir_all(store_result.thread_path.join(".jyc")).await;
-            if let Err(e) = tokio::fs::write(&thread_meta_path, json).await {
-                tracing::warn!(error = %e, "Failed to write thread-meta.json");
+            let _ = tokio::fs::create_dir_all(store_result.topic_path.join(".jyc")).await;
+            if let Err(e) = tokio::fs::write(&topic_meta_path, json).await {
+                tracing::warn!(error = %e, "Failed to write topic-meta.json");
             } else {
-                tracing::debug!(thread = %thread_name, "Wrote thread-meta.json");
+                tracing::debug!(topic = %topic_name, "Wrote topic-meta.json");
             }
         }
     }
 
     // ── 1.5. SAVE ATTACHMENTS ─────────────────────────────────────────
-    // Save attachments AFTER thread name resolution (not before).
-    // This ensures attachments go to the correct thread directory when
-    // thread_name override is configured on the pattern.
+    // Save attachments AFTER topic name resolution (not before).
+    // This ensures attachments go to the correct topic directory when
+    // topic_name override is configured on the pattern.
     //
     // The save populates `MessageAttachment.saved_path` on every saved
     // entry — required by the agent's `build_user_blocks` so it can read
@@ -125,7 +122,7 @@ pub(crate) async fn process_message(
     if !item.message.attachments.is_empty()
         && let Err(e) = crate::attachment_storage::save_attachments_to_dir(
             &mut item.message,
-            &store_result.thread_path,
+            &store_result.topic_path,
             item.attachment_config.as_ref(),
         )
         .await
@@ -152,14 +149,12 @@ pub(crate) async fn process_message(
     command_registry.register(Box::new(ResetCommandHandler));
     command_registry.register(Box::new(NewCommandHandler));
     command_registry.register(Box::new(TemplateCommandHandler));
-    command_registry.register(Box::new(CloseCommandHandler::new(thread_manager.clone())));
-    command_registry.register(Box::new(CancelCommandHandler::new(thread_manager.clone())));
-    command_registry.register(Box::new(PinCommandHandler::new(thread_manager.clone())));
-    command_registry.register(Box::new(UnpinCommandHandler::new(thread_manager.clone())));
+    command_registry.register(Box::new(CloseCommandHandler::new(topic_manager.clone())));
+    command_registry.register(Box::new(CancelCommandHandler::new(topic_manager.clone())));
+    command_registry.register(Box::new(PinCommandHandler::new(topic_manager.clone())));
+    command_registry.register(Box::new(UnpinCommandHandler::new(topic_manager.clone())));
     command_registry.register(Box::new(ThinkingCommandHandler));
-    command_registry.register(Box::new(ExchangeCommandHandler::new(
-        thread_manager.clone(),
-    )));
+    command_registry.register(Box::new(ExchangeCommandHandler::new(topic_manager.clone())));
 
     // User-defined commands from config.toml `[[commands]]`. Registered last,
     // but `register()` warns on collisions and config validation rejects
@@ -170,13 +165,13 @@ pub(crate) async fn process_message(
 
     let cmd_context = CommandContext {
         args: vec![],
-        thread_path: store_result.thread_path.clone(),
+        topic_path: store_result.topic_path.clone(),
         config: config.load_full(),
         channel: message.channel.clone(),
-        channel_type: thread_manager.channel_type.clone(),
+        channel_type: topic_manager.channel_type.clone(),
         agent: Some(agent.clone()),
         template_dirs: template_dirs.clone(),
-        config_path: thread_manager.config_path.clone(),
+        config_path: topic_manager.config_path.clone(),
     };
 
     let cmd_output = command_registry
@@ -196,7 +191,7 @@ pub(crate) async fn process_message(
             .send_reply(
                 message,
                 &summary,
-                &store_result.thread_path,
+                &store_result.topic_path,
                 &store_result.message_dir,
                 None,
             )
@@ -205,9 +200,7 @@ pub(crate) async fn process_message(
         // fans it out as a chat_message to dashboard WS clients. Without
         // this, command results are persisted to disk (visible on re-enter)
         // but never appear live in the chat pane.
-        thread_manager
-            .publish_reply_sent(thread_name, &summary)
-            .await;
+        topic_manager.publish_reply_sent(topic_name, &summary).await;
     }
 
     // ── 4. CHECK BODY ─────────────────────────────────────────────────
@@ -251,13 +244,13 @@ pub(crate) async fn process_message(
     // the next user message is the answer — route it to the answer file
     // instead of creating a new AI prompt.
     let question_flag = store_result
-        .thread_path
+        .topic_path
         .join(".jyc")
         .join("question-sent.flag");
     if question_flag.exists() {
-        tracing::info!("Thread is waiting for question answer, routing response");
+        tracing::info!("Topic is waiting for question answer, routing response");
         let answer_file = store_result
-            .thread_path
+            .topic_path
             .join(".jyc")
             .join("question-answer.json");
         let answer = serde_json::json!({
@@ -292,7 +285,7 @@ pub(crate) async fn process_message(
     // For wecom_bot, spawn a background task that updates the processing
     // indicator with a rotating spinner every 3 seconds.
     let progress_cancel = tokio_util::sync::CancellationToken::new();
-    let progress_handle = if thread_manager.channel_type() == "wecom_bot" {
+    let progress_handle = if topic_manager.channel_type() == "wecom_bot" {
         if let Some(ref stream_id) = indicator_handle {
             let progress_outbound = outbound.clone();
             let progress_message = message.clone();
@@ -328,24 +321,24 @@ pub(crate) async fn process_message(
     // without waiting for the SSE stream to complete.
     let delivery_cancel = tokio_util::sync::CancellationToken::new();
     let delivery_cancel_child = delivery_cancel.clone();
-    let delivery_thread_path = store_result.thread_path.clone();
+    let delivery_topic_path = store_result.topic_path.clone();
     let delivery_message_dir = store_result.message_dir.clone();
     let delivery_message = message.clone();
     let delivery_outbound = outbound.clone();
-    let delivery_thread_manager = thread_manager.clone();
-    let delivery_thread_name = thread_name.to_string();
+    let delivery_topic_manager = topic_manager.clone();
+    let delivery_topic_name = topic_name.to_string();
     let delivery_handle = tokio::spawn(async move {
-        let event_bus = delivery_thread_manager
-            .get_event_bus(&delivery_thread_name)
+        let event_bus = delivery_topic_manager
+            .get_event_bus(&delivery_topic_name)
             .await;
         watch_pending_deliveries(
-            &delivery_thread_path,
+            &delivery_topic_path,
             &delivery_message_dir,
             &delivery_message,
             &*delivery_outbound,
             delivery_cancel_child,
             event_bus,
-            &delivery_thread_name,
+            &delivery_topic_name,
         )
         .await;
     });
@@ -361,11 +354,11 @@ pub(crate) async fn process_message(
 
     let agent_fut = agent.process(
         &message,
-        thread_name,
-        &store_result.thread_path,
+        topic_name,
+        &store_result.topic_path,
         &store_result.message_dir,
         &mut dummy_rx,
-        thread_cancel.clone(),
+        topic_cancel.clone(),
     );
     tokio::pin!(agent_fut);
 
@@ -391,19 +384,19 @@ pub(crate) async fn process_message(
                         // registry instead of buffering — the user expects
                         // instant feedback even during AI processing.
                         tracing::info!(
-                            thread = %thread_name,
+                            topic = %topic_name,
                             command = %trimmed,
                             "Executing slash command during AI processing"
                         );
                         let cmd_ctx = CommandContext {
                             args: vec![],
-                            thread_path: store_result.thread_path.clone(),
+                            topic_path: store_result.topic_path.clone(),
                             config: config.load_full(),
                             channel: qi.message.channel.clone(),
-                            channel_type: thread_manager.channel_type.clone(),
+                            channel_type: topic_manager.channel_type.clone(),
                             agent: Some(agent.clone()),
                             template_dirs: template_dirs.clone(),
-                            config_path: thread_manager.config_path.clone(),
+                            config_path: topic_manager.config_path.clone(),
                         };
                         match command_registry.process_commands(trimmed, &cmd_ctx).await {
                             Ok(output) => {
@@ -413,7 +406,7 @@ pub(crate) async fn process_message(
                                         .send_reply(
                                             &qi.message,
                                             &summary,
-                                            &store_result.thread_path,
+                                            &store_result.topic_path,
                                             &store_result.message_dir,
                                             None,
                                         )
@@ -427,8 +420,8 @@ pub(crate) async fn process_message(
                                     // Publish ReplySent so the dashboard
                                     // sees the command result live (same as
                                     // the main command-result path above).
-                                    thread_manager
-                                        .publish_reply_sent(thread_name, &summary)
+                                    topic_manager
+                                        .publish_reply_sent(topic_name, &summary)
                                         .await;
                                 }
 
@@ -450,7 +443,7 @@ pub(crate) async fn process_message(
                                         Some(output.cleaned_body.clone());
                                     requeued.message.content.markdown = None;
                                     tracing::info!(
-                                        thread = %thread_name,
+                                        topic = %topic_name,
                                         "Re-enqueueing command-injected body for post-AI processing"
                                     );
                                     buffered.push(requeued);
@@ -482,10 +475,10 @@ pub(crate) async fn process_message(
     // Re-enqueue buffered messages so they are processed after the current AI call.
     // Uses direct try_send to the original mpsc channel rather than going
     // through enqueue(), which would create a new worker with an orphaned
-    // event bus on the ThreadManager clone.
+    // event bus on the TopicManager clone.
     for qi in buffered {
         if let Err(e) = tx_for_reenqueue.try_send(qi) {
-            tracing::warn!(thread = %thread_name, error = %e, "Failed to re-enqueue buffered message");
+            tracing::warn!(topic = %topic_name, error = %e, "Failed to re-enqueue buffered message");
         }
     }
 
@@ -507,14 +500,14 @@ pub(crate) async fn process_message(
     // even when no task is running).
     let result = result?;
 
-    // ── 5.5. GUARD: skip reply if thread directory no longer exists ──
-    // If the thread was closed while AI was processing, the directory gets
+    // ── 5.5. GUARD: skip reply if topic directory no longer exists ──
+    // If the topic was closed while AI was processing, the directory gets
     // deleted. Even with SSE cancellation, there's a small race window.
     // This guard prevents posting comments to closed issues/PRs.
-    if !store_result.thread_path.exists() {
+    if !store_result.topic_path.exists() {
         tracing::warn!(
-            thread_path = %store_result.thread_path.display(),
-            "Thread directory no longer exists — skipping reply delivery"
+            topic_path = %store_result.topic_path.display(),
+            "Topic directory no longer exists — skipping reply delivery"
         );
         return Ok(());
     }
@@ -526,10 +519,7 @@ pub(crate) async fn process_message(
     if result.reply_sent_by_tool {
         // Check if the background delivery watcher already delivered the reply.
         // The watcher deletes reply-sent.flag after successful delivery.
-        let signal_path = store_result
-            .thread_path
-            .join(".jyc")
-            .join("reply-sent.flag");
+        let signal_path = store_result.topic_path.join(".jyc").join("reply-sent.flag");
         if !signal_path.exists() {
             tracing::info!(
                 "Reply already delivered by background watcher, skipping post-SSE delivery"
@@ -547,7 +537,7 @@ pub(crate) async fn process_message(
                 Some(t) => Some(t),
                 None => {
                     // Fallback: read from .jyc/reply.md (written by question tool or other MCP tools)
-                    let reply_md = store_result.thread_path.join(".jyc").join("reply.md");
+                    let reply_md = store_result.topic_path.join(".jyc").join("reply.md");
                     if reply_md.exists() {
                         tokio::fs::read_to_string(&reply_md)
                             .await
@@ -567,26 +557,26 @@ pub(crate) async fn process_message(
 
                 // Read signal file for attachment info
                 let attachments =
-                    read_signal_attachments(&signal_path, &store_result.thread_path).await;
+                    read_signal_attachments(&signal_path, &store_result.topic_path).await;
 
                 outbound
                     .send_reply(
                         &message,
                         reply_text,
-                        &store_result.thread_path,
+                        &store_result.topic_path,
                         &store_result.message_dir,
                         attachments.as_deref(),
                     )
                     .await?;
                 tracing::info!("Reply delivered via outbound adapter");
-                thread_manager
-                    .publish_reply_sent(thread_name, reply_text)
+                topic_manager
+                    .publish_reply_sent(topic_name, reply_text)
                     .await;
                 // Clean up signal files after successful delivery to prevent re-delivery on restart
                 tokio::fs::remove_file(&signal_path).await.ok();
-                let reply_md_path = store_result.thread_path.join(".jyc").join("reply.md");
+                let reply_md_path = store_result.topic_path.join(".jyc").join("reply.md");
                 tokio::fs::remove_file(&reply_md_path).await.ok();
-                thread_manager.metrics.reply_by_tool(thread_name);
+                topic_manager.metrics.reply_by_tool(topic_name);
             } else {
                 tracing::warn!("MCP tool signaled reply but no reply text available");
             }
@@ -600,14 +590,14 @@ pub(crate) async fn process_message(
             .send_reply(
                 &message,
                 text,
-                &store_result.thread_path,
+                &store_result.topic_path,
                 &store_result.message_dir,
                 None,
             )
             .await?;
         tracing::info!("Fallback reply sent");
-        thread_manager.publish_reply_sent(thread_name, text).await;
-        thread_manager.metrics.reply_by_fallback(thread_name);
+        topic_manager.publish_reply_sent(topic_name, text).await;
+        topic_manager.metrics.reply_by_fallback(topic_name);
     } else {
         tracing::warn!("No reply text from AI");
         // Clear the processing indicator so it doesn't remain stuck
@@ -669,7 +659,7 @@ async fn update_progress_indicator(
 /// Returns OutboundAttachment list, or None if no attachments.
 async fn read_signal_attachments(
     signal_path: &std::path::Path,
-    thread_path: &std::path::Path,
+    topic_path: &std::path::Path,
 ) -> Option<Vec<jyc_types::OutboundAttachment>> {
     let content = tokio::fs::read_to_string(signal_path).await.ok()?;
     let signal: serde_json::Value = serde_json::from_str(&content).ok()?;
@@ -683,7 +673,7 @@ async fn read_signal_attachments(
         .iter()
         .filter_map(|v| v.as_str())
         .map(|filename| {
-            let path = thread_path.join(filename);
+            let path = topic_path.join(filename);
             let ext = path
                 .extension()
                 .map(|e| e.to_string_lossy().to_lowercase())
@@ -711,30 +701,30 @@ async fn read_signal_attachments(
     Some(attachments)
 }
 
-/// Read skills from thread's .jyc/skills.json file.
-pub(crate) async fn read_skills(thread_path: &Path) -> Vec<String> {
-    let skills_path = thread_path.join(".jyc").join("skills.json");
+/// Read skills from topic's .jyc/skills.json file.
+pub(crate) async fn read_skills(topic_path: &Path) -> Vec<String> {
+    let skills_path = topic_path.join(".jyc").join("skills.json");
     match tokio::fs::read_to_string(&skills_path).await {
         Ok(content) => serde_json::from_str::<Vec<String>>(&content).unwrap_or_default(),
         Err(_) => Vec::new(),
     }
 }
 
-/// Error returned when an existing thread directory was created from a
+/// Error returned when an existing topic directory was created from a
 /// different template than the one the current message is requesting. The
-/// thread manager surfaces this and drops the message rather than risk
+/// topic manager surfaces this and drops the message rather than risk
 /// overwriting AGENTS.md / template files in place.
 #[cfg(test)]
-mod thread_json_tests {
+mod topic_json_tests {
     use super::*;
     use jyc_types::{InboundMessage, MessageContent};
     use std::collections::HashMap;
     use tempfile::tempdir;
 
     #[tokio::test]
-    async fn test_write_wecomkf_thread_json_creates_file() {
+    async fn test_write_wecomkf_topic_json_creates_file() {
         let tmp = tempdir().unwrap();
-        let thread_path = tmp.path().join("test-thread");
+        let topic_path = tmp.path().join("test-topic");
 
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -764,7 +754,7 @@ mod thread_json_tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -772,13 +762,13 @@ mod thread_json_tests {
             matched_pattern: None,
         };
 
-        write_wecomkf_thread_json(&message, &thread_path, "test-thread").await;
+        write_wecomkf_topic_json(&message, &topic_path, "test-topic").await;
 
-        let thread_json = ThreadJson::read(&thread_path).await.unwrap().unwrap();
-        assert_eq!(thread_json.channel_type, "wecomkf");
-        assert_eq!(thread_json.version, 1);
+        let topic_json = TopicJson::read(&topic_path).await.unwrap().unwrap();
+        assert_eq!(topic_json.channel_type, "wecomkf");
+        assert_eq!(topic_json.version, 1);
 
-        let data = thread_json.data_as::<serde_json::Value>().unwrap().unwrap();
+        let data = topic_json.data_as::<serde_json::Value>().unwrap().unwrap();
         assert_eq!(
             data.get("external_userid").and_then(|v| v.as_str()),
             Some("wm123")
@@ -792,9 +782,9 @@ mod thread_json_tests {
     }
 
     #[tokio::test]
-    async fn test_write_wecomkf_thread_json_skips_without_external_userid() {
+    async fn test_write_wecomkf_topic_json_skips_without_external_userid() {
         let tmp = tempdir().unwrap();
-        let thread_path = tmp.path().join("test-thread");
+        let topic_path = tmp.path().join("test-topic");
 
         let message = InboundMessage {
             id: "test-1".to_string(),
@@ -810,7 +800,7 @@ mod thread_json_tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -818,16 +808,16 @@ mod thread_json_tests {
             matched_pattern: None,
         };
 
-        write_wecomkf_thread_json(&message, &thread_path, "test-thread").await;
+        write_wecomkf_topic_json(&message, &topic_path, "test-topic").await;
 
         // No external_userid in metadata → file should not be created
-        assert!(!thread_path.join(".jyc/thread.json").exists());
+        assert!(!topic_path.join(".jyc/topic.json").exists());
     }
 
     #[tokio::test]
-    async fn test_write_wecomkf_thread_json_fallback_user_name() {
+    async fn test_write_wecomkf_topic_json_fallback_user_name() {
         let tmp = tempdir().unwrap();
-        let thread_path = tmp.path().join("test-thread");
+        let topic_path = tmp.path().join("test-topic");
 
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -850,7 +840,7 @@ mod thread_json_tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -858,10 +848,10 @@ mod thread_json_tests {
             matched_pattern: None,
         };
 
-        write_wecomkf_thread_json(&message, &thread_path, "test-thread").await;
+        write_wecomkf_topic_json(&message, &topic_path, "test-topic").await;
 
-        let thread_json = ThreadJson::read(&thread_path).await.unwrap().unwrap();
-        let data = thread_json.data_as::<serde_json::Value>().unwrap().unwrap();
+        let topic_json = TopicJson::read(&topic_path).await.unwrap().unwrap();
+        let data = topic_json.data_as::<serde_json::Value>().unwrap().unwrap();
         assert_eq!(
             data.get("user_name").and_then(|v| v.as_str()),
             Some("wm456")
@@ -869,15 +859,11 @@ mod thread_json_tests {
     }
 }
 
-/// Write `thread.json` for a WeCom KF thread from message metadata.
+/// Write `topic.json` for a WeCom KF topic from message metadata.
 ///
 /// Extracts `external_userid`, `user_name`, and `open_kfid` from the
-/// message metadata and persists them in `.jyc/thread.json`.
-async fn write_wecomkf_thread_json(
-    message: &InboundMessage,
-    thread_path: &Path,
-    thread_name: &str,
-) {
+/// message metadata and persists them in `.jyc/topic.json`.
+async fn write_wecomkf_topic_json(message: &InboundMessage, topic_path: &Path, topic_name: &str) {
     if let Some(external_userid) = message
         .metadata
         .get("external_userid")
@@ -893,7 +879,7 @@ async fn write_wecomkf_thread_json(
             .get("open_kfid")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let thread_json = ThreadJson {
+        let topic_json = TopicJson {
             channel_type: "wecomkf".to_string(),
             version: 1,
             data: Some(serde_json::json!({
@@ -903,14 +889,14 @@ async fn write_wecomkf_thread_json(
                 "first_message_at": chrono::Utc::now().to_rfc3339(),
             })),
         };
-        if let Err(e) = thread_json.write(thread_path).await {
+        if let Err(e) = topic_json.write(topic_path).await {
             tracing::warn!(
                 error = %e,
-                thread = %thread_name,
-                "Failed to write thread.json"
+                topic = %topic_name,
+                "Failed to write topic.json"
             );
         } else {
-            tracing::info!(thread = %thread_name, "Wrote thread.json");
+            tracing::info!(topic = %topic_name, "Wrote topic.json");
         }
     }
 }

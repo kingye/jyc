@@ -10,8 +10,8 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use jyc_core::activity_log_store::ActivityLogStore;
-use jyc_core::thread_event::ThreadEvent;
-use jyc_core::thread_manager::ThreadManager;
+use jyc_core::topic_event::TopicEvent;
+use jyc_core::topic_manager::TopicManager;
 use jyc_types::*;
 
 use super::{MAX_ACTIVITY_ENTRIES, MAX_RECENT_MESSAGES, SharedActivityMap, seed_next_id_from_disk};
@@ -34,17 +34,17 @@ pub(crate) fn filter_chat_by_since(
 /// Publish an activity entry to the inspect-broadcast bus.
 ///
 /// Payload format:
-///   {"type":"activity","channel":"...","thread":"...","id":N,"entry":{...}}
+///   {"type":"activity","channel":"...","topic":"...","id":N,"entry":{...}}
 fn publish_activity_event(
     bus: &tokio::sync::broadcast::Sender<String>,
     channel: &str,
-    thread: &str,
+    topic: &str,
     entry: &ActivityEntry,
 ) {
     let payload = serde_json::json!({
         "type": "activity",
         "channel": channel,
-        "thread": thread,
+        "topic": topic,
         "id": entry.id,
         "entry": entry,
     });
@@ -54,17 +54,17 @@ fn publish_activity_event(
 /// Publish a chat message to the inspect-broadcast bus.
 ///
 /// Payload format:
-///   {"type":"chat_message","channel":"...","thread":"...","id":N,"entry":{...}}
+///   {"type":"chat_message","channel":"...","topic":"...","id":N,"entry":{...}}
 fn publish_chat_message_event(
     bus: &tokio::sync::broadcast::Sender<String>,
     channel: &str,
-    thread: &str,
+    topic: &str,
     msg: &ChatMessageEntry,
 ) {
     let payload = serde_json::json!({
         "type": "chat_message",
         "channel": channel,
-        "thread": thread,
+        "topic": topic,
         "id": msg.id,
         "entry": msg,
     });
@@ -74,17 +74,17 @@ fn publish_chat_message_event(
 /// Publish a thinking event to the inspect-broadcast bus.
 ///
 /// Payload format:
-///   {"type":"thinking","channel":"...","thread":"...","text":"..."}
+///   {"type":"thinking","channel":"...","topic":"...","text":"..."}
 fn publish_thinking_event(
     bus: &tokio::sync::broadcast::Sender<String>,
     channel: &str,
-    thread: &str,
+    topic: &str,
     text: &str,
 ) {
     let payload = serde_json::json!({
         "type": "thinking",
         "channel": channel,
-        "thread": thread,
+        "topic": topic,
         "text": text,
     });
     let _ = bus.send(payload.to_string());
@@ -93,18 +93,18 @@ fn publish_thinking_event(
 /// Publish a processing-status event to the inspect-broadcast bus.
 ///
 /// Payload format:
-///   {"type":"processing","channel":"...","thread":"...","is_processing":bool,"has_error":bool}
+///   {"type":"processing","channel":"...","topic":"...","is_processing":bool,"has_error":bool}
 fn publish_processing_event(
     bus: &tokio::sync::broadcast::Sender<String>,
     channel: &str,
-    thread: &str,
+    topic: &str,
     is_processing: bool,
     has_error: bool,
 ) {
     let payload = serde_json::json!({
         "type": "processing",
         "channel": channel,
-        "thread": thread,
+        "topic": topic,
         "is_processing": is_processing,
         "has_error": has_error,
     });
@@ -119,17 +119,17 @@ fn publish_processing_event(
 /// `is_internal`).
 ///
 /// Payload format:
-///   {"type":"loop_tick","channel":"...","thread":"...","elapsed_ms":u64}
+///   {"type":"loop_tick","channel":"...","topic":"...","elapsed_ms":u64}
 fn publish_loop_tick_event(
     bus: &tokio::sync::broadcast::Sender<String>,
     channel: &str,
-    thread: &str,
+    topic: &str,
     elapsed_ms: u64,
 ) {
     let payload = serde_json::json!({
         "type": "loop_tick",
         "channel": channel,
-        "thread": thread,
+        "topic": topic,
         "elapsed_ms": elapsed_ms,
     });
     let _ = bus.send(payload.to_string());
@@ -138,13 +138,13 @@ fn publish_loop_tick_event(
 pub struct ActivityTracker;
 
 impl ActivityTracker {
-    /// Start tracking activity for all thread managers.
-    /// Periodically discovers new threads and subscribes to their event buses.
-    /// Persists activity entries to `.jyc/activity.jsonl` per thread.
+    /// Start tracking activity for all topic managers.
+    /// Periodically discovers new topics and subscribes to their event buses.
+    /// Persists activity entries to `.jyc/activity.jsonl` per topic.
     /// Fans out events to the inspect-broadcast bus for dashboard WS clients.
     /// On startup, loads historical activity from disk.
     pub fn start(
-        thread_managers: Arc<ArcSwap<Vec<Arc<ThreadManager>>>>,
+        topic_managers: Arc<ArcSwap<Vec<Arc<TopicManager>>>>,
         activity_map: SharedActivityMap,
         _workspace_dirs: Arc<ArcSwap<Vec<PathBuf>>>,
         inspect_broadcast: Arc<tokio::sync::broadcast::Sender<String>>,
@@ -155,21 +155,21 @@ impl ActivityTracker {
                 Arc::new(Mutex::new(HashSet::new()));
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
 
-            // Load historical activity from disk for all existing threads
-            let tms = thread_managers.load();
+            // Load historical activity from disk for all existing topics
+            let tms = topic_managers.load();
             for tm in tms.iter() {
                 let channel = tm.channel_name().to_string();
-                let threads = tm.list_threads().await;
-                for thread in &threads {
-                    let thread_path = thread.thread_path.clone();
-                    if let Some(ref path) = thread_path
+                let topics = tm.list_topics().await;
+                for topic in &topics {
+                    let topic_path = topic.topic_path.clone();
+                    if let Some(ref path) = topic_path
                         && let Ok(entries) =
                             ActivityLogStore::load_recent(path, MAX_ACTIVITY_ENTRIES)
                         && !entries.is_empty()
                     {
                         let mut map = activity_map.lock().await;
                         let state = map
-                            .entry((channel.clone(), thread.name.clone()))
+                            .entry((channel.clone(), topic.name.clone()))
                             .or_default();
                         state.entries = entries.into_iter().collect();
                         state.is_processing = false;
@@ -187,13 +187,13 @@ impl ActivityTracker {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        // Discover new threads and subscribe to their event buses
-                        let tms = thread_managers.load();
+                        // Discover new topics and subscribe to their event buses
+                        let tms = topic_managers.load();
                         for tm in tms.iter() {
                             let channel = tm.channel_name().to_string();
-                            let threads = tm.list_threads().await;
-                            for thread in threads {
-                                let key = (channel.clone(), thread.name.clone());
+                            let topics = tm.list_topics().await;
+                            for topic in topics {
+                                let key = (channel.clone(), topic.name.clone());
                                 {
                                     let sub = subscribed.lock().await;
                                     if sub.contains(&key) {
@@ -201,26 +201,26 @@ impl ActivityTracker {
                                     }
                                 }
                                 // Try to get an existing event bus. If none exists but
-                                // the thread has an active queue (worker running or
+                                // the topic has an active queue (worker running or
                                 // pending messages), force-create one so we don't miss
-                                // events. If no active queue, the thread is idle — clear
+                                // events. If no active queue, the topic is idle — clear
                                 // any stale `is_processing` flag and mark as subscribed
                                 // to avoid retrying every 2s.
-                                let bus = match tm.get_event_bus(&thread.name).await {
+                                let bus = match tm.get_event_bus(&topic.name).await {
                                     Some(b) => Some(b),
-                                    None if tm.has_active_queue(&thread.name).await => {
+                                    None if tm.has_active_queue(&topic.name).await => {
                                         tracing::info!(
-                                            thread = %thread.name,
+                                            topic = %topic.name,
                                             "Event bus missing but queue active, force-creating event bus"
                                         );
-                                        tm.get_or_create_event_bus(&thread.name).await
+                                        tm.get_or_create_event_bus(&topic.name).await
                                     }
                                     None => {
-                                        // Thread is idle (no active queue, no event bus).
+                                        // Topic is idle (no active queue, no event bus).
                                         // Clear any stale processing state so the dashboard
                                         // doesn't get stuck showing "Processing" forever.
                                         // Do NOT insert into `subscribed` — that would
-                                        // permanently exclude this thread from future checks,
+                                        // permanently exclude this topic from future checks,
                                         // so if the event bus is created just after this tick
                                         // (race with create_and_enqueue), the ActivityTracker
                                         // would never subscribe.
@@ -240,9 +240,9 @@ impl ActivityTracker {
                                             sub.insert(key.clone());
                                         }
                                         let map = activity_map.clone();
-                                        let name = thread.name.clone();
+                                        let name = topic.name.clone();
                                         let channel_for_task = channel.clone();
-                                        let thread_path = thread.thread_path.clone();
+                                        let topic_path = topic.topic_path.clone();
                                         let cancel_inner = cancel.clone();
                                         let subscribed_clone = subscribed.clone();
                                         let key_clone = key.clone();
@@ -259,19 +259,19 @@ impl ActivityTracker {
                                                                 Some(event) => {
                                                                     let is_processing = matches!(
                                                                         &event,
-                                                                        ThreadEvent::ProcessingStarted { .. }
-                                                                        | ThreadEvent::ProcessingProgress { .. }
-                                                                        | ThreadEvent::ToolStarted { .. }
-                                                                        | ThreadEvent::LLMRequestStarted { .. }
+                                                                        TopicEvent::ProcessingStarted { .. }
+                                                                        | TopicEvent::ProcessingProgress { .. }
+                                                                        | TopicEvent::ToolStarted { .. }
+                                                                        | TopicEvent::LLMRequestStarted { .. }
                                                                     );
                                                                     let is_completed = matches!(
                                                                         &event,
-                                                                        ThreadEvent::ProcessingCompleted { .. }
+                                                                        TopicEvent::ProcessingCompleted { .. }
                                                                     );
 
                                                                     // Capture chat messages for live dashboard display
                                                                     let chat_msg: Option<ChatMessageEntry> = match &event {
-                                                                        ThreadEvent::IncomingMessage { sender, text, timestamp, .. } => {
+                                                                        TopicEvent::IncomingMessage { sender, text, timestamp, .. } => {
                                                                             Some(ChatMessageEntry {
                                                                                 sender: sender.clone(),
                                                                                 text: text.clone(),
@@ -279,7 +279,7 @@ impl ActivityTracker {
                                                                                 id: 0, // assigned below in the fanout step
                                                                             })
                                                                         }
-                                                                        ThreadEvent::ReplySent { text, timestamp, .. } => {
+                                                                        TopicEvent::ReplySent { text, timestamp, .. } => {
                                                                             Some(ChatMessageEntry {
                                                                                 sender: "ai".to_string(),
                                                                                 text: text.clone(),
@@ -291,7 +291,7 @@ impl ActivityTracker {
                                                                     };
 
                                                                     let is_thinking =
-                                                                        matches!(&event, ThreadEvent::Thinking { .. });
+                                                                        matches!(&event, TopicEvent::Thinking { .. });
 
                                                                     // Thinking events are NOT persisted to
                                                                     // activity.jsonl or the activity buffer.
@@ -310,17 +310,17 @@ impl ActivityTracker {
                                                                         let state = map
                                                                             .entry((channel_for_task.clone(), name.clone()))
                                                                             .or_default();
-                                                                        seed_next_id_from_disk(state, thread_path.as_deref());
+                                                                        seed_next_id_from_disk(state, topic_path.as_deref());
                                                                         if !is_internal {
-                                                                            // Assign monotonic per-thread id BEFORE persisting to
+                                                                            // Assign monotonic per-topic id BEFORE persisting to
                                                                             // disk and pushing to the in-memory buffer, so the log
                                                                             // carries the same ids the dashboard uses for dedup.
                                                                             entry.id = state.next_id;
                                                                             state.next_id = state.next_id.wrapping_add(1);
-                                                                            if let Some(ref path) = thread_path
+                                                                            if let Some(ref path) = topic_path
                                                                                 && let Err(e) = ActivityLogStore::append(path, &entry)
                                                                             {
-                                                                                tracing::warn!(error = %e, thread = %name, "Failed to persist activity entry");
+                                                                                tracing::warn!(error = %e, topic = %name, "Failed to persist activity entry");
                                                                             }
                                                                             state.entries.push_back(entry.clone());
                                                                             if state.entries.len() > MAX_ACTIVITY_ENTRIES {
@@ -358,8 +358,8 @@ impl ActivityTracker {
                                                                         // display visible.
                                                                         if matches!(
                                                                             &event,
-                                                                            ThreadEvent::ProcessingStarted { .. }
-                                                                            | ThreadEvent::ProcessingCompleted { .. }
+                                                                            TopicEvent::ProcessingStarted { .. }
+                                                                            | TopicEvent::ProcessingCompleted { .. }
                                                                         ) {
                                                                             state.thinking_text = None;
                                                                         }
@@ -378,8 +378,8 @@ impl ActivityTracker {
                                                                         // is_processing=false, not the stale true value.
                                                                         if matches!(
                                                                             &event,
-                                                                            ThreadEvent::ProcessingStarted { .. }
-                                                                            | ThreadEvent::ProcessingCompleted { .. }
+                                                                            TopicEvent::ProcessingStarted { .. }
+                                                                            | TopicEvent::ProcessingCompleted { .. }
                                                                         ) {
                                                                             publish_processing_event(
                                                                                 &inspect_broadcast_for_task,
@@ -391,7 +391,7 @@ impl ActivityTracker {
                                                                         }
                                                                     } else {
                                                                         // Thinking event: update thinking_text and fan out.
-                                                                        if let ThreadEvent::Thinking { ref text, .. } = event {
+                                                                        if let TopicEvent::Thinking { ref text, .. } = event {
                                                                             let mut map = map.lock().await;
                                                                             let state = map
                                                                                 .entry((channel_for_task.clone(), name.clone()))
@@ -414,7 +414,7 @@ impl ActivityTracker {
                                                                     // "12.4s" indicator. LoopTick fires at 1 Hz (with
                                                                     // the first tick at t=0); the elapsed_ms value
                                                                     // on the variant is what we forward.
-                                                                    if let ThreadEvent::LoopTick { elapsed_ms, .. } = &event {
+                                                                    if let TopicEvent::LoopTick { elapsed_ms, .. } = &event {
                                                                         publish_loop_tick_event(
                                                                             &inspect_broadcast_for_task,
                                                                             &channel_for_task,
@@ -433,7 +433,7 @@ impl ActivityTracker {
 
                                             // Always clean up subscribed on exit — whether normal
                                             // (event bus replaced, cancel) or panic. Without this,
-                                            // the key stays in `subscribed` forever and the thread
+                                            // the key stays in `subscribed` forever and the topic
                                             // is never re-subscribed, causing activity events to
                                             // silently stop appearing in the dashboard.
                                             let mut sub = subscribed_clone.lock().await;
@@ -441,7 +441,7 @@ impl ActivityTracker {
 
                                             if let Err(panic) = result {
                                                 tracing::error!(
-                                                    thread = %name,
+                                                    topic = %name,
                                                     panic = ?panic,
                                                     "Activity tracker task panicked; will re-subscribe on next interval"
                                                 );
@@ -458,9 +458,9 @@ impl ActivityTracker {
     }
 }
 
-/// Whether a `ThreadEvent` should be marked internal (filtered from
+/// Whether a `TopicEvent` should be marked internal (filtered from
 /// user-facing surfaces like the activity pane and REST API).
-pub(crate) fn is_event_internal(event: &ThreadEvent) -> bool {
+pub(crate) fn is_event_internal(event: &TopicEvent) -> bool {
     // ProcessingProgress heartbeats are emitted frequently during long
     // tool runs to indicate the agent is still working. They're useful
     // for debug logs but noisy in the UI - filter them.
@@ -471,26 +471,26 @@ pub(crate) fn is_event_internal(event: &ThreadEvent) -> bool {
     // payload, not for the activity pane.
     matches!(
         event,
-        ThreadEvent::ProcessingProgress { .. } | ThreadEvent::LoopTick { .. }
+        TopicEvent::ProcessingProgress { .. } | TopicEvent::LoopTick { .. }
     )
 }
 
-/// Convert a ThreadEvent into a human-readable ActivityEntry.
-pub(crate) fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
+/// Convert a TopicEvent into a human-readable ActivityEntry.
+pub(crate) fn event_to_activity(event: &TopicEvent) -> ActivityEntry {
     let severity = match event {
-        ThreadEvent::SessionStatus { status_type, .. } => match status_type.as_str() {
+        TopicEvent::SessionStatus { status_type, .. } => match status_type.as_str() {
             "error" | "timeout" => Severity::Error,
             "retry" | "rate_limit" | "no_reply" => Severity::Warning,
             _ => Severity::Info,
         },
-        ThreadEvent::ToolCompleted { success: false, .. } => Severity::Error,
-        ThreadEvent::ProcessingCompleted { success: false, .. } => Severity::Error,
+        TopicEvent::ToolCompleted { success: false, .. } => Severity::Error,
+        TopicEvent::ProcessingCompleted { success: false, .. } => Severity::Error,
         _ => Severity::Info,
     };
 
     let text = match event {
-        ThreadEvent::ProcessingStarted { .. } => "Processing started".to_string(),
-        ThreadEvent::ProcessingProgress {
+        TopicEvent::ProcessingStarted { .. } => "Processing started".to_string(),
+        TopicEvent::ProcessingProgress {
             elapsed_secs,
             activity,
             output_length,
@@ -498,7 +498,7 @@ pub(crate) fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         } => {
             format!("{activity} ({elapsed_secs}s, {output_length} chars)")
         }
-        ThreadEvent::ProcessingCompleted {
+        TopicEvent::ProcessingCompleted {
             success,
             duration_secs,
             ..
@@ -509,10 +509,10 @@ pub(crate) fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                 format!("Failed ({duration_secs}s)")
             }
         }
-        ThreadEvent::LLMRequestStarted { iteration, .. } => {
+        TopicEvent::LLMRequestStarted { iteration, .. } => {
             format!("Thinking... (iteration {iteration})")
         }
-        ThreadEvent::ToolStarted {
+        TopicEvent::ToolStarted {
             tool_name, input, ..
         } => {
             if tool_name == "edit" {
@@ -570,7 +570,7 @@ pub(crate) fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                 }
             }
         }
-        ThreadEvent::ToolCompleted {
+        TopicEvent::ToolCompleted {
             tool_name,
             success,
             duration_secs,
@@ -658,7 +658,7 @@ pub(crate) fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                 }
             }
         }
-        ThreadEvent::Thinking {
+        TopicEvent::Thinking {
             text, full_length, ..
         } => {
             if *full_length > text.len() {
@@ -667,16 +667,16 @@ pub(crate) fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
                 format!("Thinking: {text}")
             }
         }
-        ThreadEvent::IncomingMessage { sender, text, .. } => {
+        TopicEvent::IncomingMessage { sender, text, .. } => {
             let oneline = text.replace('\n', " ");
             format!("Message from {sender}: {oneline}")
         }
-        ThreadEvent::ReplySent { text, .. } => {
+        TopicEvent::ReplySent { text, .. } => {
             let oneline = text.replace('\n', " ");
             let preview: String = oneline.chars().take(100).collect();
             format!("Reply sent: {preview}")
         }
-        ThreadEvent::SessionStatus {
+        TopicEvent::SessionStatus {
             status_type,
             attempt,
             message,
@@ -704,7 +704,7 @@ pub(crate) fn event_to_activity(event: &ThreadEvent) -> ActivityEntry {
         // practice, but the match must be exhaustive. Format it as a
         // short debug string so a future regression doesn't produce a
         // confusing fall-through.
-        ThreadEvent::LoopTick { elapsed_ms, .. } => {
+        TopicEvent::LoopTick { elapsed_ms, .. } => {
             format!("LoopTick ({elapsed_ms}ms)")
         }
     };

@@ -13,7 +13,7 @@ impl CommandHandler for TemplateCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Manage thread templates. Subcommands: update (overwrite existing files)"
+        "Manage topic templates. Subcommands: update (overwrite existing files)"
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
@@ -29,9 +29,9 @@ impl CommandHandler for TemplateCommandHandler {
 impl TemplateCommandHandler {
     /// `/template` (no subcommand) — apply template, skip existing files
     async fn execute_apply(&self, context: &CommandContext) -> Result<CommandResult> {
-        let thread_path = &context.thread_path;
+        let topic_path = &context.topic_path;
 
-        let pattern_file = thread_path.join(".jyc").join("pattern");
+        let pattern_file = topic_path.join(".jyc").join("pattern");
         let pattern_name = if pattern_file.exists() {
             tokio::fs::read_to_string(&pattern_file)
                 .await?
@@ -71,7 +71,7 @@ impl TemplateCommandHandler {
 
         let Some(template_src) = context
             .template_dirs
-            .resolve_with_thread(&context.thread_path, &template_name)
+            .resolve_with_topic(&context.topic_path, &template_name)
         else {
             return Ok(CommandResult {
                 success: false,
@@ -84,7 +84,7 @@ impl TemplateCommandHandler {
             });
         };
 
-        let copied = copy_template_files(&template_src, thread_path).await?;
+        let copied = copy_template_files(&template_src, topic_path).await?;
 
         Ok(CommandResult {
             success: true,
@@ -99,9 +99,9 @@ impl TemplateCommandHandler {
 
     /// `/template update` — re-apply template, overwrite existing files
     async fn execute_update(&self, context: &CommandContext) -> Result<CommandResult> {
-        let thread_path = &context.thread_path;
+        let topic_path = &context.topic_path;
 
-        let pattern_file = thread_path.join(".jyc").join("pattern");
+        let pattern_file = topic_path.join(".jyc").join("pattern");
         let pattern_name = if pattern_file.exists() {
             tokio::fs::read_to_string(&pattern_file)
                 .await?
@@ -158,7 +158,7 @@ impl TemplateCommandHandler {
 
         let Some(template_src) = context
             .template_dirs
-            .resolve_with_thread(&context.thread_path, &template_name)
+            .resolve_with_topic(&context.topic_path, &template_name)
         else {
             return Ok(CommandResult {
                 success: false,
@@ -171,7 +171,7 @@ impl TemplateCommandHandler {
             });
         };
 
-        let copied = overwrite_template_files(&template_src, thread_path).await?;
+        let copied = overwrite_template_files(&template_src, topic_path).await?;
 
         Ok(CommandResult {
             success: true,
@@ -194,7 +194,7 @@ mod tests {
     fn test_context(tmp_dir: &Path) -> CommandContext {
         CommandContext {
             args: vec![],
-            thread_path: tmp_dir.to_path_buf(),
+            topic_path: tmp_dir.to_path_buf(),
             config: Arc::new(
                 jyc_types::load_config_from_str(
                     r#"
@@ -226,13 +226,13 @@ mode = "agent"
     async fn test_template_no_pattern_file() {
         let tmp = tempfile::tempdir().unwrap();
 
-        // Create empty thread dir (no .jyc/pattern)
-        let thread_dir = tmp.path().join("thread1");
-        tokio::fs::create_dir_all(&thread_dir).await.unwrap();
+        // Create empty topic dir (no .jyc/pattern)
+        let topic_dir = tmp.path().join("topic1");
+        tokio::fs::create_dir_all(&topic_dir).await.unwrap();
 
         let handler = TemplateCommandHandler;
         let mut ctx = test_context(tmp.path());
-        ctx.thread_path = thread_dir;
+        ctx.topic_path = topic_dir;
 
         let result = handler.execute(ctx).await.unwrap();
 
@@ -258,9 +258,9 @@ mode = "agent"
             template_src.join("test.txt").exists()
         );
 
-        // Create thread dir with .jyc/pattern file
-        let thread_dir = tmp.path().join("thread1");
-        let jyc_dir = thread_dir.join(".jyc");
+        // Create topic dir with .jyc/pattern file
+        let topic_dir = tmp.path().join("topic1");
+        let jyc_dir = topic_dir.join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(jyc_dir.join("pattern"), "test_pattern")
             .await
@@ -268,7 +268,7 @@ mode = "agent"
 
         let handler = TemplateCommandHandler;
         let mut ctx = test_context(tmp.path());
-        ctx.thread_path = thread_dir.clone();
+        ctx.topic_path = topic_dir.clone();
 
         println!("Template dir in ctx: {:?}", ctx.template_dirs);
 
@@ -278,8 +278,8 @@ mode = "agent"
             "Result: success={}, message={}",
             result.success, result.message
         );
-        println!("Thread dir: {:?}", thread_dir);
-        println!("Test file exists: {}", thread_dir.join("test.txt").exists());
+        println!("Topic dir: {:?}", topic_dir);
+        println!("Test file exists: {}", topic_dir.join("test.txt").exists());
 
         assert!(
             result.success,
@@ -287,13 +287,13 @@ mode = "agent"
             result.message
         );
         assert!(result.message.contains("test_template"));
-        // Template files go to thread root, not .jyc/
+        // Template files go to topic root, not .jyc/
         assert!(
-            thread_dir.join("test.txt").exists(),
-            "Template file should be copied to thread dir"
+            topic_dir.join("test.txt").exists(),
+            "Template file should be copied to topic dir"
         );
 
         // Also verify .jyc/pattern is preserved
-        assert!(thread_dir.join(".jyc").join("pattern").exists());
+        assert!(topic_dir.join(".jyc").join("pattern").exists());
     }
 }

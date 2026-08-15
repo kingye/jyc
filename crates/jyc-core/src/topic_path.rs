@@ -1,7 +1,7 @@
-//! Central thread path resolution.
+//! Central topic path resolution.
 //!
-//! The thread directory follows the convention:
-//!   `<workdir>/<channel>/workspace/<thread_name>/`
+//! The topic directory follows the convention:
+//!   `<workdir>/<channel>/workspace/<topic_name>/`
 
 use std::path::{Path, PathBuf};
 
@@ -19,12 +19,12 @@ pub fn resolve_shared_repo_dir(workspace: &Path, group_key: &str) -> PathBuf {
     workspace.join("repos").join(group_key)
 }
 
-/// Resolve a custom thread path from a pattern's `thread_path` config.
+/// Resolve a custom topic path from a pattern's `topic_path` config.
 ///
 /// - `~` is expanded to `$HOME`
 /// - Absolute paths are used as-is
 /// - Relative paths are resolved against the data root (workdir)
-pub fn resolve_thread_path(path: &str, data_root: &Path) -> PathBuf {
+pub fn resolve_topic_path(path: &str, data_root: &Path) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = std::env::var_os("HOME") {
             PathBuf::from(home).join(rest)
@@ -53,6 +53,26 @@ pub fn compute_repo_group_key(repo_group: &str, number: &str) -> String {
     format!("{}-{}", repo_group, number)
 }
 
+/// One-time migration for the `topic` → `topic` rename.
+///
+/// Pre-rename topic directories carry a `.jyc/thread-name` file. If a
+/// directory has that legacy file but no `.jyc/topic-name`, rename it so
+/// existing topics keep their identity across restarts.
+///
+/// NOTE: the legacy filename must stay "thread-name" here — this is the
+/// pre-rename on-disk name, not the (renamed) current concept.
+pub fn migrate_topic_name_file(jyc_dir: &Path) {
+    let old = jyc_dir.join("thread-name");
+    let new = jyc_dir.join("topic-name");
+    if !new.exists() && old.exists() {
+        if let Ok(name) = std::fs::read_to_string(&old) {
+            let _ = std::fs::write(&new, name);
+            tracing::info!(path = %jyc_dir.display(), "Migrated legacy .jyc/thread-name to .jyc/topic-name");
+        }
+        let _ = std::fs::remove_file(&old);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,7 +93,7 @@ mod tests {
             topic: topic.to_string(),
             content: MessageContent::default(),
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -94,14 +114,14 @@ mod tests {
     // === resolve_workspace (used by cli/serve.rs) ===
 
     #[test]
-    fn test_resolve_thread_path_absolute() {
-        let p = resolve_thread_path("/home/jiny/my-project", Path::new("/data"));
+    fn test_resolve_topic_path_absolute() {
+        let p = resolve_topic_path("/home/jiny/my-project", Path::new("/data"));
         assert_eq!(p, PathBuf::from("/home/jiny/my-project"));
     }
 
     #[test]
-    fn test_resolve_thread_path_tilde() {
-        let p = resolve_thread_path("~/my-project", Path::new("/data"));
+    fn test_resolve_topic_path_tilde() {
+        let p = resolve_topic_path("~/my-project", Path::new("/data"));
         if let Some(home) = std::env::var_os("HOME") {
             assert_eq!(p, PathBuf::from(home).join("my-project"));
         } else {
@@ -144,12 +164,12 @@ mod tests {
 
         let group_key = compute_repo_group_key("pr", "42");
         let shared_repo_dir = resolve_shared_repo_dir(&workspace, &group_key);
-        let thread_path = workspace.join("pr-42");
+        let topic_path = workspace.join("pr-42");
 
         tokio::fs::create_dir_all(&shared_repo_dir).await.unwrap();
-        tokio::fs::create_dir_all(&thread_path).await.unwrap();
+        tokio::fs::create_dir_all(&topic_path).await.unwrap();
 
-        let symlink_path = thread_path.join("repo");
+        let symlink_path = topic_path.join("repo");
         assert!(!symlink_path.exists());
 
         std::os::unix::fs::symlink(&shared_repo_dir, &symlink_path).unwrap();
@@ -197,7 +217,7 @@ mod tests {
     // === MessageStorage.store_with_match (real production path) ===
 
     #[tokio::test]
-    async fn test_storage_thread_path_from_email_subject() {
+    async fn test_storage_topic_path_from_email_subject() {
         let tmp = tempdir().unwrap();
         let ws = resolve_workspace(tmp.path(), "jiny283a");
         tokio::fs::create_dir_all(&ws).await.unwrap();
@@ -205,73 +225,68 @@ mod tests {
         let storage = MessageStorage::new(&ws);
         let msg = make_message("jiny283a", "Test Subject");
 
-        // derive_thread_name (email) strips Re:/Fw: prefixes
-        let thread_name = email_parser::derive_thread_name("Re: Test Subject", &[]);
-        assert_eq!(thread_name, "Test Subject");
+        // derive_topic_name (email) strips Re:/Fw: prefixes
+        let topic_name = email_parser::derive_topic_name("Re: Test Subject", &[]);
+        assert_eq!(topic_name, "Test Subject");
 
         let result = storage
-            .store_with_match(&msg, &thread_name, true, None)
+            .store_with_match(&msg, &topic_name, true, None)
             .await
             .unwrap();
 
         // Verify: <workdir>/jiny283a/workspace/Test Subject/
-        assert_eq!(result.thread_path, ws.join("Test Subject"));
-        assert!(result.thread_path.exists());
+        assert_eq!(result.topic_path, ws.join("Test Subject"));
+        assert!(result.topic_path.exists());
         // No double nesting
         assert!(
             !result
-                .thread_path
+                .topic_path
                 .to_string_lossy()
                 .contains("workspace/jiny283a")
         );
     }
 
     #[tokio::test]
-    async fn test_storage_thread_path_from_chinese_subject() {
+    async fn test_storage_topic_path_from_chinese_subject() {
         let tmp = tempdir().unwrap();
         let ws = resolve_workspace(tmp.path(), "jiny283a");
         tokio::fs::create_dir_all(&ws).await.unwrap();
 
         let storage = MessageStorage::new(&ws);
-        let thread_name = email_parser::derive_thread_name(
+        let topic_name = email_parser::derive_topic_name(
             "Fw: 您收到来自上海栋菁餐饮管理有限公司的电子发票",
             &[],
         );
-        let msg = make_message("jiny283a", &thread_name);
+        let msg = make_message("jiny283a", &topic_name);
 
         let result = storage
-            .store_with_match(&msg, &thread_name, true, None)
+            .store_with_match(&msg, &topic_name, true, None)
             .await
             .unwrap();
-        assert!(result.thread_path.exists());
-        assert!(
-            result
-                .thread_path
-                .to_string_lossy()
-                .contains("上海栋菁餐饮")
-        );
+        assert!(result.topic_path.exists());
+        assert!(result.topic_path.to_string_lossy().contains("上海栋菁餐饮"));
     }
 
     #[tokio::test]
-    async fn test_storage_thread_path_from_config_override() {
+    async fn test_storage_topic_path_from_config_override() {
         let tmp = tempdir().unwrap();
         let ws = resolve_workspace(tmp.path(), "jiny283a");
         tokio::fs::create_dir_all(&ws).await.unwrap();
 
         let storage = MessageStorage::new(&ws);
 
-        // Pattern has thread_name override
+        // Pattern has topic_name override
         let pattern = ChannelPattern {
             name: "invoices".to_string(),
-            thread_name: Some("invoice-processing".to_string()),
+            topic_name: Some("invoice-processing".to_string()),
             ..Default::default()
         };
 
-        // Different subjects all go to same thread
+        // Different subjects all go to same topic
         for subject in &["Invoice food", "发票 office", "Receipt hotel"] {
-            let derived = email_parser::derive_thread_name(subject, &[]);
-            let thread_name = pattern.thread_name.as_deref().unwrap_or(&derived);
-            assert_eq!(thread_name, "invoice-processing");
+            let derived = email_parser::derive_topic_name(subject, &[]);
+            let topic_name = pattern.topic_name.as_deref().unwrap_or(&derived);
+            assert_eq!(topic_name, "invoice-processing");
         }
 
         let msg = make_message("jiny283a", "Invoice food");
@@ -280,12 +295,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.thread_path, ws.join("invoice-processing"));
-        assert!(result.thread_path.exists());
+        assert_eq!(result.topic_path, ws.join("invoice-processing"));
+        assert!(result.topic_path.exists());
     }
 
     #[tokio::test]
-    async fn test_storage_thread_path_from_feishu_with_config_override() {
+    async fn test_storage_topic_path_from_feishu_with_config_override() {
         let tmp = tempdir().unwrap();
         let ws = resolve_workspace(tmp.path(), "feishu_bot");
         tokio::fs::create_dir_all(&ws).await.unwrap();
@@ -294,32 +309,32 @@ mod tests {
 
         let pattern = ChannelPattern {
             name: "invoices".to_string(),
-            thread_name: Some("invoice-processing".to_string()),
+            topic_name: Some("invoice-processing".to_string()),
             ..Default::default()
         };
 
         // Feishu chat_name would be "发票群" but config overrides
-        let thread_name = pattern.thread_name.as_deref().unwrap_or("发票群");
-        assert_eq!(thread_name, "invoice-processing");
+        let topic_name = pattern.topic_name.as_deref().unwrap_or("发票群");
+        assert_eq!(topic_name, "invoice-processing");
 
         let msg = make_feishu_message("发票群", "group");
         let result = storage
-            .store_with_match(&msg, thread_name, true, None)
+            .store_with_match(&msg, topic_name, true, None)
             .await
             .unwrap();
-        assert_eq!(result.thread_path, ws.join("invoice-processing"));
+        assert_eq!(result.topic_path, ws.join("invoice-processing"));
     }
 
     // === Attachment path (real production path) ===
 
     #[tokio::test]
-    async fn test_attachment_saves_to_correct_thread_dir() {
+    async fn test_attachment_saves_to_correct_topic_dir() {
         use jyc_types::MessageAttachment;
 
         let tmp = tempdir().unwrap();
         let ws = resolve_workspace(tmp.path(), "jiny283a");
-        let thread_path = ws.join("invoice-processing");
-        tokio::fs::create_dir_all(&thread_path).await.unwrap();
+        let topic_path = ws.join("invoice-processing");
+        tokio::fs::create_dir_all(&topic_path).await.unwrap();
 
         let mut msg = make_message("jiny283a", "Invoice");
         msg.attachments.push(MessageAttachment {
@@ -330,12 +345,12 @@ mod tests {
             saved_path: None,
         });
 
-        crate::attachment_storage::save_attachments_to_dir(&mut msg, &thread_path, None)
+        crate::attachment_storage::save_attachments_to_dir(&mut msg, &topic_path, None)
             .await
             .unwrap();
 
-        // Verify attachment saved under thread_path/attachments/
-        let att_dir = thread_path.join("attachments");
+        // Verify attachment saved under topic_path/attachments/
+        let att_dir = topic_path.join("attachments");
         assert!(att_dir.exists());
 
         // No double nesting
@@ -348,7 +363,7 @@ mod tests {
         assert!(msg.attachments[0].saved_path.as_ref().unwrap().exists());
     }
 
-    // === store_at_path (custom thread_path override) ===
+    // === store_at_path (custom topic_path override) ===
 
     #[tokio::test]
     async fn test_store_at_path_writes_to_custom_directory() {
@@ -358,7 +373,7 @@ mod tests {
 
         let storage = MessageStorage::new(&ws);
 
-        // Custom thread path OUTSIDE the workspace
+        // Custom topic path OUTSIDE the workspace
         let custom_path = tmp.path().join("custom-projects").join("my-project");
         tokio::fs::create_dir_all(&custom_path).await.unwrap();
 
@@ -368,9 +383,9 @@ mod tests {
             .await
             .unwrap();
 
-        // Thread path should be the custom path, not workspace-joined
-        assert_eq!(result.thread_path, custom_path);
-        assert!(result.thread_path.exists());
+        // Topic path should be the custom path, not workspace-joined
+        assert_eq!(result.topic_path, custom_path);
+        assert!(result.topic_path.exists());
 
         // Chat log should be inside the custom path .jyc/ directory
         let jyc_dir = custom_path.join(".jyc");
@@ -386,13 +401,13 @@ mod tests {
 
         // Should NOT be under workspace
         assert!(
-            !result.thread_path.starts_with(&ws),
-            "custom thread path should not be under workspace"
+            !result.topic_path.starts_with(&ws),
+            "custom topic path should not be under workspace"
         );
     }
 
     #[tokio::test]
-    async fn test_store_at_path_creates_thread_dir_if_missing() {
+    async fn test_store_at_path_creates_topic_dir_if_missing() {
         let tmp = tempdir().unwrap();
         let ws = resolve_workspace(tmp.path(), "jiny283a");
         tokio::fs::create_dir_all(&ws).await.unwrap();
@@ -400,7 +415,7 @@ mod tests {
         let storage = MessageStorage::new(&ws);
 
         // Custom path that doesn't exist yet
-        let custom_path = tmp.path().join("new-external-dir").join("thread-1");
+        let custom_path = tmp.path().join("new-external-dir").join("topic-1");
 
         let msg = make_message("jiny283a", "Test Subject");
         let result = storage
@@ -408,16 +423,16 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.thread_path, custom_path);
-        assert!(result.thread_path.exists());
-        assert!(result.thread_path.is_dir());
+        assert_eq!(result.topic_path, custom_path);
+        assert!(result.topic_path.exists());
+        assert!(result.topic_path.is_dir());
     }
 
-    // === resolve_thread_path edge cases ===
+    // === resolve_topic_path edge cases ===
 
     #[test]
-    fn test_resolve_thread_path_home_only() {
-        let p = resolve_thread_path("~", Path::new("/data"));
+    fn test_resolve_topic_path_home_only() {
+        let p = resolve_topic_path("~", Path::new("/data"));
         if let Some(home) = std::env::var_os("HOME") {
             assert_eq!(p, PathBuf::from(home));
         } else {
@@ -426,14 +441,14 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_thread_path_relative() {
+    fn test_resolve_topic_path_relative() {
         // Relative paths are resolved against the data root (workdir)
-        let p = resolve_thread_path("my-project", Path::new("/data"));
+        let p = resolve_topic_path("my-project", Path::new("/data"));
         assert_eq!(p, PathBuf::from("/data/my-project"));
     }
 
     #[tokio::test]
-    async fn test_thread_path_override_not_under_workspace() {
+    async fn test_topic_path_override_not_under_workspace() {
         // Verify that store_at_path produces a path completely outside
         // the standard workspace hierarchy.
         let tmp = tempdir().unwrap();
@@ -446,10 +461,10 @@ mod tests {
         let msg = make_feishu_message("发票群", "group");
         let result = storage.store_at_path(&msg, &custom, true).await.unwrap();
 
-        assert_eq!(result.thread_path, custom);
+        assert_eq!(result.topic_path, custom);
         // Ensure path doesn't contain "workspace" segment at all
         assert!(
-            !result.thread_path.to_string_lossy().contains("workspace"),
+            !result.topic_path.to_string_lossy().contains("workspace"),
             "custom path should not contain 'workspace'"
         );
     }

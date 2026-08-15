@@ -3,7 +3,7 @@
 //! Templates are looked up across three levels (see issue #393):
 //! - **L1 (global)**: `<config_home>/templates/` (e.g. `~/.config/jyc/templates`)
 //! - **L2 (workdir/data root)**: `<workdir>/templates/`
-//! - **L3 (thread)**: `<thread_path>/.jyc/templates/`
+//! - **L3 (topic)**: `<topic_path>/.jyc/templates/`
 //!
 //! Higher levels win when a template with the same name exists in multiple
 //! levels.
@@ -39,12 +39,12 @@ impl TemplateDirs {
         None
     }
 
-    /// Resolve a template by name, checking the thread-level (L3)
+    /// Resolve a template by name, checking the topic-level (L3)
     /// `.jyc/templates/` directory first, then the configured layers.
-    pub fn resolve_with_thread(&self, thread_path: &Path, name: &str) -> Option<PathBuf> {
-        let thread_level = thread_path.join(".jyc").join("templates").join(name);
-        if thread_level.is_dir() {
-            return Some(thread_level);
+    pub fn resolve_with_topic(&self, topic_path: &Path, name: &str) -> Option<PathBuf> {
+        let topic_level = topic_path.join(".jyc").join("templates").join(name);
+        if topic_level.is_dir() {
+            return Some(topic_level);
         }
         self.resolve(name)
     }
@@ -92,29 +92,29 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_with_thread_level_first() {
+    fn test_resolve_with_topic_level_first() {
         let tmp = tempfile::tempdir().unwrap();
         let workdir = tmp.path().join("workdir");
-        let thread = tmp.path().join("thread");
+        let topic = tmp.path().join("topic");
         make_template(&workdir, "alpha");
-        make_template(&thread.join(".jyc").join("templates"), "alpha");
-        make_template(&thread.join(".jyc").join("templates"), "gamma");
+        make_template(&topic.join(".jyc").join("templates"), "alpha");
+        make_template(&topic.join(".jyc").join("templates"), "gamma");
 
         let dirs = TemplateDirs::single(workdir.clone());
-        // Thread level wins over workdir
+        // Topic level wins over workdir
         assert_eq!(
-            dirs.resolve_with_thread(&thread, "alpha"),
-            Some(thread.join(".jyc/templates/alpha"))
+            dirs.resolve_with_topic(&topic, "alpha"),
+            Some(topic.join(".jyc/templates/alpha"))
         );
-        // Only at thread level
+        // Only at topic level
         assert_eq!(
-            dirs.resolve_with_thread(&thread, "gamma"),
-            Some(thread.join(".jyc/templates/gamma"))
+            dirs.resolve_with_topic(&topic, "gamma"),
+            Some(topic.join(".jyc/templates/gamma"))
         );
         // Only at workdir level
         make_template(&workdir, "beta");
         assert_eq!(
-            dirs.resolve_with_thread(&thread, "beta"),
+            dirs.resolve_with_topic(&topic, "beta"),
             Some(workdir.join("beta"))
         );
     }

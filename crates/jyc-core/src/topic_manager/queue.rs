@@ -1,6 +1,6 @@
-//! `ThreadManager` impl block: queue.rs methods.
+//! `TopicManager` impl block: queue.rs methods.
 //!
-//! Extracted from the monolithic `thread_manager.rs`.
+//! Extracted from the monolithic `topic_manager.rs`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,46 +10,46 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use crate::thread_event::ThreadEvent;
-use crate::thread_event_bus::ThreadEventBusRef;
+use crate::topic_event::TopicEvent;
+use crate::topic_event_bus::TopicEventBusRef;
 
 use jyc_types::InboundAttachmentConfig;
 use jyc_types::{InboundMessage, PatternMatch, QueueItem};
 
-use super::ThreadManager;
-/// Per-thread queue stats.
-use super::template::{TemplateMismatch, initialize_thread_from_template};
+use super::TopicManager;
+/// Per-topic queue stats.
+use super::template::{TemplateMismatch, initialize_topic_from_template};
 use super::worker::process_message;
 
-impl ThreadManager {
+impl TopicManager {
     pub async fn enqueue(
         &self,
         message: InboundMessage,
-        thread_name: String,
+        topic_name: String,
         pattern_match: PatternMatch,
         attachment_config: Option<InboundAttachmentConfig>,
         live_injection: bool,
-        thread_path_override: Option<PathBuf>,
+        topic_path_override: Option<PathBuf>,
     ) {
-        let mut queues = self.thread_queues.lock().await;
+        let mut queues = self.topic_queues.lock().await;
 
         // Periodic cleanup: remove closed senders to prevent unbounded HashMap growth.
         // This is cheap (O(n) scan) and only retains senders that are still open.
-        let mut closed_threads = Vec::new();
+        let mut closed_topics = Vec::new();
         queues.retain(|name, sender| {
             let is_open = !sender.is_closed();
             if !is_open {
-                closed_threads.push(name.clone());
+                closed_topics.push(name.clone());
             }
             is_open
         });
 
-        // Clean up event buses for closed threads
-        if !closed_threads.is_empty() && self.enable_events {
+        // Clean up event buses for closed topics
+        if !closed_topics.is_empty() && self.enable_events {
             let mut event_buses = self.event_buses.lock().await;
-            for thread_name in closed_threads {
-                event_buses.remove(&thread_name);
-                tracing::debug!(thread = %thread_name, "Cleaned up event bus for closed thread");
+            for topic_name in closed_topics {
+                event_buses.remove(&topic_name);
+                tracing::debug!(topic = %topic_name, "Cleaned up event bus for closed topic");
             }
         }
 
@@ -66,81 +66,81 @@ impl ThreadManager {
             .map(|s| s.to_string());
 
         tracing::debug!(
-            thread = %thread_name,
+            topic = %topic_name,
             ?template,
-            "ThreadManager::enqueue: extracted template from message metadata"
+            "TopicManager::enqueue: extracted template from message metadata"
         );
 
-        // Resolve thread_path_override: prefer the ThreadManager's registered
-        // custom path (set by a prior message for this thread, e.g. an ad-hoc
-        // create_thread via jyc dashboard open) over the router-provided value
+        // Resolve topic_path_override: prefer the TopicManager's registered
+        // custom path (set by a prior message for this topic, e.g. an ad-hoc
+        // create_topic via jyc dashboard open) over the router-provided value
         // (which may be a pattern fallback that doesn't apply to this specific
-        // thread instance).
-        let thread_path_override = self
-            .thread_paths
+        // topic instance).
+        let topic_path_override = self
+            .topic_paths
             .lock()
             .await
-            .get(&thread_name)
+            .get(&topic_name)
             .cloned()
-            .or(thread_path_override);
+            .or(topic_path_override);
 
         let item = QueueItem {
-            thread_name: thread_name.clone(),
+            topic_name: topic_name.clone(),
             message,
             pattern_match,
             attachment_config,
             template,
             live_injection,
-            thread_path_override,
+            topic_path_override,
         };
 
-        self.metrics.message_received(&thread_name);
+        self.metrics.message_received(&topic_name);
 
-        if let Some(sender) = queues.get(&thread_name) {
+        if let Some(sender) = queues.get(&topic_name) {
             match sender.try_send(item) {
                 Ok(()) => {
-                    tracing::debug!(thread = %thread_name, "Message enqueued");
-                    self.publish_incoming_message(&thread_name, &event_sender, &event_text)
+                    tracing::debug!(topic = %topic_name, "Message enqueued");
+                    self.publish_incoming_message(&topic_name, &event_sender, &event_text)
                         .await;
                     return;
                 }
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    tracing::warn!(thread = %thread_name, "Queue full, dropping message");
-                    self.metrics.queue_dropped(&thread_name);
+                    tracing::warn!(topic = %topic_name, "Queue full, dropping message");
+                    self.metrics.queue_dropped(&topic_name);
                     return;
                 }
                 Err(mpsc::error::TrySendError::Closed(item)) => {
-                    queues.remove(&thread_name);
-                    // Clean up event bus for this thread
+                    queues.remove(&topic_name);
+                    // Clean up event bus for this topic
                     if self.enable_events {
                         let mut event_buses = self.event_buses.lock().await;
-                        event_buses.remove(&thread_name);
-                        tracing::debug!(thread = %thread_name, "Cleaned up event bus for closed queue");
+                        event_buses.remove(&topic_name);
+                        tracing::debug!(topic = %topic_name, "Cleaned up event bus for closed queue");
                     }
-                    self.create_and_enqueue(&mut queues, thread_name.clone(), item)
+                    self.create_and_enqueue(&mut queues, topic_name.clone(), item)
                         .await;
-                    self.publish_incoming_message(&thread_name, &event_sender, &event_text)
+                    self.publish_incoming_message(&topic_name, &event_sender, &event_text)
                         .await;
                     return;
                 }
             }
         }
 
-        self.create_and_enqueue(&mut queues, thread_name.clone(), item)
+        self.create_and_enqueue(&mut queues, topic_name.clone(), item)
             .await;
-        self.publish_incoming_message(&thread_name, &event_sender, &event_text)
+        self.publish_incoming_message(&topic_name, &event_sender, &event_text)
             .await;
     }
 
-    /// Build the per-worker ThreadManager clone used inside a thread worker.
+    /// Build the per-worker TopicManager clone used inside a topic worker.
     ///
-    /// Shares `thread_cancels` (and other Arc-backed fields) with the parent
+    /// Shares `topic_cancels` (and other Arc-backed fields) with the parent
     /// so /cancel and /close invoked through the command registry reach the
     /// running worker's real cancellation token. A fresh empty map here made
     /// /cancel report success without cancelling anything.
-    pub(crate) fn worker_clone(&self) -> ThreadManager {
-        ThreadManager {
-            thread_queues: Mutex::new(HashMap::new()),
+    pub(crate) fn worker_clone(&self) -> TopicManager {
+        TopicManager {
+            topic_queues: Mutex::new(HashMap::new()),
             semaphore: self.semaphore.clone(),
             max_queue_size: self.max_queue_size,
             storage: self.storage.clone(),
@@ -148,7 +148,7 @@ impl ThreadManager {
             agent: self.agent.clone(),
             event_buses: Mutex::new(HashMap::new()),
             enable_events: self.enable_events,
-            thread_cancels: self.thread_cancels.clone(),
+            topic_cancels: self.topic_cancels.clone(),
             template_dirs: self.template_dirs.clone(),
             channel_name: self.channel_name.clone(),
             channel_type: self.channel_type.clone(),
@@ -160,14 +160,14 @@ impl ThreadManager {
             cancel: self.cancel.clone(),
             worker_handles: Mutex::new(vec![]),
             repo_group_locks: self.repo_group_locks.clone(),
-            thread_paths: self.thread_paths.clone(),
+            topic_paths: self.topic_paths.clone(),
         }
     }
 
     async fn create_and_enqueue(
         &self,
         queues: &mut HashMap<String, mpsc::Sender<QueueItem>>,
-        thread_name: String,
+        topic_name: String,
         item: QueueItem,
     ) {
         let (tx, rx) = mpsc::channel(self.max_queue_size);
@@ -175,28 +175,28 @@ impl ThreadManager {
         // Clone the sender for re-enqueuing buffered messages within
         // process_message(). Direct try_send bypasses the clone's enqueue()
         // path entirely, avoiding creation of orphaned event buses or stale
-        // sender entries in the clone's thread_queues.
+        // sender entries in the clone's topic_queues.
         let tx_for_reenqueue = tx.clone();
-        queues.insert(thread_name.clone(), tx);
+        queues.insert(topic_name.clone(), tx);
 
-        // Create event bus for this thread if events are enabled
+        // Create event bus for this topic if events are enabled
         let event_bus = if self.enable_events {
-            self.get_or_create_event_bus(&thread_name).await
+            self.get_or_create_event_bus(&topic_name).await
         } else {
             None
         };
 
-        // Create per-thread cancellation token so close_thread can stop this worker
-        let thread_cancel = CancellationToken::new();
+        // Create per-topic cancellation token so close_topic can stop this worker
+        let topic_cancel = CancellationToken::new();
         {
-            let mut cancels = self.thread_cancels.lock().await;
-            cancels.insert(thread_name.clone(), thread_cancel.clone());
+            let mut cancels = self.topic_cancels.lock().await;
+            cancels.insert(topic_name.clone(), topic_cancel.clone());
         }
 
         let tm = Arc::new(self.worker_clone());
 
         // Share the event bus with the clone so publish_reply_sent() can find it.
-        // The event bus was created in `self` (the original ThreadManager), but
+        // The event bus was created in `self` (the original TopicManager), but
         // publish_reply_sent() looks up the bus via `self.get_event_bus()` on the
         // worker's clone, which has an empty event_buses HashMap. Without this,
         // ReplySent events are silently dropped and the dashboard never sees them.
@@ -204,16 +204,16 @@ impl ThreadManager {
             tm.event_buses
                 .lock()
                 .await
-                .insert(thread_name.clone(), bus.clone());
+                .insert(topic_name.clone(), bus.clone());
         }
 
-        let handle = ThreadManager::spawn_worker(
+        let handle = TopicManager::spawn_worker(
             tm,
-            thread_name,
+            topic_name,
             rx,
             tx_for_reenqueue,
             event_bus,
-            thread_cancel,
+            topic_cancel,
         );
 
         // Drain completed worker handles to prevent unbounded Vec growth.
@@ -229,22 +229,22 @@ impl ThreadManager {
     }
 
     fn spawn_worker(
-        thread_manager: Arc<ThreadManager>,
-        thread_name: String,
+        topic_manager: Arc<TopicManager>,
+        topic_name: String,
         mut rx: mpsc::Receiver<QueueItem>,
         tx_for_reenqueue: mpsc::Sender<QueueItem>,
-        event_bus: Option<ThreadEventBusRef>,
-        thread_cancel: CancellationToken,
+        event_bus: Option<TopicEventBusRef>,
+        topic_cancel: CancellationToken,
     ) -> JoinHandle<()> {
-        let semaphore = thread_manager.semaphore.clone();
-        let cancel = thread_manager.cancel.clone();
-        let storage = thread_manager.storage.clone();
-        let outbound = thread_manager.outbound.clone();
-        let agent = thread_manager.agent.clone();
-        let template_dirs = thread_manager.template_dirs.clone();
-        let config = thread_manager.config.clone();
-        let tm = thread_manager;
-        let tm_span = tracing::info_span!("tm", t = %thread_name);
+        let semaphore = topic_manager.semaphore.clone();
+        let cancel = topic_manager.cancel.clone();
+        let storage = topic_manager.storage.clone();
+        let outbound = topic_manager.outbound.clone();
+        let agent = topic_manager.agent.clone();
+        let template_dirs = topic_manager.template_dirs.clone();
+        let config = topic_manager.config.clone();
+        let tm = topic_manager;
+        let tm_span = tracing::info_span!("tm", t = %topic_name);
 
         tokio::spawn(async move {
             let mut _permit = tokio::select! {
@@ -253,13 +253,13 @@ impl ThreadManager {
                     Err(_) => return,
                 },
                 _ = cancel.cancelled() => return,
-                _ = thread_cancel.cancelled() => return,
+                _ = topic_cancel.cancelled() => return,
             };
 
             tracing::info!("Worker started");
 
-            // Set thread event bus for agent service
-            let _ = agent.set_thread_event_bus(&thread_name, event_bus.clone()).await;
+            // Set topic event bus for agent service
+            let _ = agent.set_topic_event_bus(&topic_name, event_bus.clone()).await;
 
             // Keep event_bus available for error propagation in the dispatch path below
             let event_bus_for_error = event_bus.clone();
@@ -278,33 +278,33 @@ impl ThreadManager {
                             tracing::info!("Worker cancelled");
                             break;
                         }
-                        _ = thread_cancel.cancelled() => {
-                            tracing::info!("Worker cancelled (thread closed)");
+                        _ = topic_cancel.cancelled() => {
+                            tracing::info!("Worker cancelled (topic closed)");
                             break;
                         }
                     },
                 };
 
-                // Compute the effective thread path (custom override or default)
+                // Compute the effective topic path (custom override or default)
                 let workspace = storage.workspace();
-                let thread_path = item
-                    .thread_path_override
+                let topic_path = item
+                    .topic_path_override
                     .clone()
-                    .unwrap_or_else(|| workspace.join(&thread_name));
+                    .unwrap_or_else(|| workspace.join(&topic_name));
 
-                // Store the resolved thread path so it can be returned by
-                // list_threads() and used by the ActivityTracker.
+                // Store the resolved topic path so it can be returned by
+                // list_topics() and used by the ActivityTracker.
                 {
-                    let mut paths = tm.thread_paths.lock().await;
-                    paths.insert(thread_name.clone(), thread_path.clone());
+                    let mut paths = tm.topic_paths.lock().await;
+                    paths.insert(topic_name.clone(), topic_path.clone());
                 }
 
-                // Initialize thread from template if needed
+                // Initialize topic from template if needed
                 if let Some(ref template_name) = item.template {
-                    let thread_path = thread_path.clone();
+                    let topic_path = topic_path.clone();
 
-                    match initialize_thread_from_template(
-                        &thread_path,
+                    match initialize_topic_from_template(
+                        &topic_path,
                         template_name,
                         &template_dirs,
                     ).await {
@@ -316,25 +316,25 @@ impl ThreadManager {
                             if e.downcast_ref::<TemplateMismatch>().is_some() {
                                 tracing::error!(
                                     error = %e,
-                                    thread = %thread_name,
+                                    topic = %topic_name,
                                     template = %template_name,
-                                    "Template mismatch on existing thread; dropping message. \
-                                     Two patterns likely share a thread_prefix but use different templates."
+                                    "Template mismatch on existing topic; dropping message. \
+                                     Two patterns likely share a topic_prefix but use different templates."
                                 );
-                                tm.metrics.processing_error(&thread_name, "template_mismatch");
+                                tm.metrics.processing_error(&topic_name, "template_mismatch");
                                 continue;
                             }
                             tracing::warn!(
                                 error = %e,
                                 template = %template_name,
-                                "Failed to initialize thread from template"
+                                "Failed to initialize topic from template"
                             );
                         }
                     }
 
                     if let Some(repo_group_key) = item.message.metadata.get("repo_group_key").and_then(|v| v.as_str()) {
-                        let shared_repo_dir = crate::thread_path::resolve_shared_repo_dir(workspace, repo_group_key);
-                        let symlink_path = thread_path.join("repo");
+                        let shared_repo_dir = crate::topic_path::resolve_shared_repo_dir(workspace, repo_group_key);
+                        let symlink_path = topic_path.join("repo");
 
                         if let Err(e) = tokio::fs::create_dir_all(&shared_repo_dir).await {
                             tracing::warn!(
@@ -354,7 +354,7 @@ impl ThreadManager {
                                 );
                             } else {
                                 tracing::info!(
-                                    thread = %thread_name,
+                                    topic = %topic_name,
                                     group_key = %repo_group_key,
                                     shared_repo = %shared_repo_dir.display(),
                                     "Created shared repo symlink"
@@ -366,26 +366,26 @@ impl ThreadManager {
 
                 // Always ensure .jyc/ directory and metadata files exist,
                 // even when no template is configured. This is critical for
-                // custom thread_path directories to be rediscovered after
-                // restart (via .jyc/thread-name).
-                let jyc_dir = thread_path.join(".jyc");
+                // custom topic_path directories to be rediscovered after
+                // restart (via .jyc/topic-name).
+                let jyc_dir = topic_path.join(".jyc");
                 if let Err(e) = tokio::fs::create_dir_all(&jyc_dir).await {
                     tracing::warn!(error = %e, "Failed to create .jyc directory");
                 }
-                // Injected messages (jyc_send_to_thread, dashboard thread
+                // Injected messages (jyc_send_to_topic, dashboard topic
                 // proxy) carry an empty pattern_name when no pattern could be
-                // resolved; don't let them erase the thread's real pattern.
+                // resolved; don't let them erase the topic's real pattern.
                 if !item.pattern_match.pattern_name.is_empty() {
                     let pattern_file = jyc_dir.join("pattern");
                     if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
                         tracing::warn!(error = %e, "Failed to write pattern file");
                     }
                 }
-                // Persist the logical thread name so custom thread_path
+                // Persist the logical topic name so custom topic_path
                 // directories can be rediscovered after restart.
-                let thread_name_file = jyc_dir.join("thread-name");
-                if let Err(e) = tokio::fs::write(&thread_name_file, &thread_name).await {
-                    tracing::warn!(error = %e, "Failed to write thread-name file");
+                let topic_name_file = jyc_dir.join("topic-name");
+                if let Err(e) = tokio::fs::write(&topic_name_file, &topic_name).await {
+                    tracing::warn!(error = %e, "Failed to write topic-name file");
                 }
 
                 // Acquire repo group lock to prevent concurrent initialization
@@ -402,7 +402,7 @@ impl ThreadManager {
                     };
 
                     let workspace = storage.workspace();
-                    let shared_repo_dir = crate::thread_path::resolve_shared_repo_dir(workspace, repo_group_key);
+                    let shared_repo_dir = crate::topic_path::resolve_shared_repo_dir(workspace, repo_group_key);
 
                     if let Ok(guard) = lock.clone().try_lock_owned() {
                         let is_empty = match tokio::fs::read_dir(&shared_repo_dir).await {
@@ -412,7 +412,7 @@ impl ThreadManager {
 
                         if is_empty {
                             tracing::info!(
-                                thread = %thread_name,
+                                topic = %topic_name,
                                 group_key = %repo_group_key,
                                 "Shared repo dir empty, holding repo group lock for 120s"
                             );
@@ -424,7 +424,7 @@ impl ThreadManager {
                             });
                         } else {
                             tracing::debug!(
-                                thread = %thread_name,
+                                topic = %topic_name,
                                 group_key = %repo_group_key,
                                 "Shared repo dir already initialized, proceeding immediately"
                             );
@@ -432,13 +432,13 @@ impl ThreadManager {
                         }
                     } else {
                         tracing::info!(
-                            thread = %thread_name,
+                            topic = %topic_name,
                             group_key = %repo_group_key,
                             "Repo group lock held by another worker, waiting..."
                         );
                         let _guard = lock.lock().await;
                         tracing::info!(
-                            thread = %thread_name,
+                            topic = %topic_name,
                             group_key = %repo_group_key,
                             "Repo group lock acquired, proceeding"
                         );
@@ -448,7 +448,7 @@ impl ThreadManager {
                 let processing_started = std::time::Instant::now();
                 if let Err(e) = process_message(
                     &mut item,
-                    &thread_name,
+                    &topic_name,
                     &storage,
                     outbound.clone(),
                     agent.clone(),
@@ -457,18 +457,18 @@ impl ThreadManager {
                     &config,
                     &tx_for_reenqueue,
                     tm.clone(),
-                    thread_cancel.clone(),
+                    topic_cancel.clone(),
                 ).await {
                     let err_display = format!("{:#}", e);
                     tracing::error!(
                         error = %err_display,
                         "Failed to process message"
                     );
-                    tm.metrics.processing_error(&thread_name, &err_display);
+                    tm.metrics.processing_error(&topic_name, &err_display);
 
                     if let Some(event_bus) = event_bus_for_error.clone() {
                         let truncated: String = err_display.chars().take(200).collect();
-                        let thread_name_clone = thread_name.clone();
+                        let topic_name_clone = topic_name.clone();
                         let duration_secs = processing_started.elapsed().as_secs();
                         tokio::spawn(async move {
                             // The error report is always followed by
@@ -479,15 +479,15 @@ impl ThreadManager {
                             // stuck at "AI thinking..." forever. Duplicate
                             // completions are idempotent.
                             let events = [
-                                ThreadEvent::SessionStatus {
-                                    thread_name: thread_name_clone.clone(),
+                                TopicEvent::SessionStatus {
+                                    topic_name: topic_name_clone.clone(),
                                     status_type: "error".to_string(),
                                     attempt: None,
                                     message: Some(truncated),
                                     timestamp: chrono::Utc::now(),
                                 },
-                                ThreadEvent::ProcessingCompleted {
-                                    thread_name: thread_name_clone,
+                                TopicEvent::ProcessingCompleted {
+                                    topic_name: topic_name_clone,
                                     message_id: "processing-error".to_string(),
                                     success: false,
                                     duration_secs,
@@ -505,18 +505,18 @@ impl ThreadManager {
 
                 // Check symlink integrity after AI processing completes
                 if let Some(repo_group_key) = item.message.metadata.get("repo_group_key").and_then(|v| v.as_str()) {
-                    let thread_path = item
-                        .thread_path_override
+                    let topic_path = item
+                        .topic_path_override
                         .clone()
-                        .unwrap_or_else(|| storage.workspace().join(&thread_name));
-                    let symlink_path = thread_path.join("repo");
+                        .unwrap_or_else(|| storage.workspace().join(&topic_name));
+                    let symlink_path = topic_path.join("repo");
                     match tokio::fs::symlink_metadata(&symlink_path).await {
                         Ok(meta) if meta.file_type().is_symlink() => {
                             // Symlink intact — good
                         }
                         Ok(_) => {
                             tracing::warn!(
-                                thread = %thread_name,
+                                topic = %topic_name,
                                 group_key = %repo_group_key,
                                 path = %symlink_path.display(),
                                 "Shared repo symlink was replaced by a regular directory (agent likely ran rm -rf repo && mkdir repo)"
@@ -524,7 +524,7 @@ impl ThreadManager {
                         }
                         Err(_) => {
                             tracing::warn!(
-                                thread = %thread_name,
+                                topic = %topic_name,
                                 group_key = %repo_group_key,
                                 path = %symlink_path.display(),
                                 "Shared repo symlink is missing after processing"
@@ -545,8 +545,8 @@ impl ThreadManager {
                         tracing::info!("Worker cancelled");
                         break;
                     }
-                    _ = thread_cancel.cancelled() => {
-                        tracing::info!("Worker cancelled (thread closed)");
+                    _ = topic_cancel.cancelled() => {
+                        tracing::info!("Worker cancelled (topic closed)");
                         break;
                     }
                 };
@@ -560,8 +560,8 @@ impl ThreadManager {
                         tracing::trace!("Worker cancelled while waiting for permit after receiving message");
                         break;
                     }
-                    _ = thread_cancel.cancelled() => {
-                        tracing::trace!("Worker cancelled (thread closed) while waiting for permit after receiving message");
+                    _ = topic_cancel.cancelled() => {
+                        tracing::trace!("Worker cancelled (topic closed) while waiting for permit after receiving message");
                         break;
                     }
                 };

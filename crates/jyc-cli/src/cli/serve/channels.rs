@@ -44,7 +44,7 @@ use jyc_core::channel_orchestrator::ChannelOrchestrator;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::state_manager::StateManager;
-use jyc_core::thread_manager::ThreadManager;
+use jyc_core::topic_manager::TopicManager;
 use jyc_services::imap::monitor::ImapMonitor;
 use jyc_types::{
     ChannelConfig, ChannelInfo, ChannelMatcher, InboundAdapter, InboundAttachmentConfig,
@@ -208,12 +208,12 @@ pub(crate) fn build_outbound_adapter(
     };
     Ok(Some(outbound))
 }
-/// Re-target a piped inbound message into the target channel/thread, applying
-/// the target channel's pattern (template/role) for that thread.
+/// Re-target a piped inbound message into the target channel/topic, applying
+/// the target channel's pattern (template/role) for that topic.
 ///
-/// The target channel's `pattern_for_thread` resolves the pattern named after
-/// the thread (= the feishu chat name); its template/role are injected as
-/// metadata so the target worker initializes the thread with them.
+/// The target channel's `pattern_for_topic` resolves the pattern named after
+/// the topic (= the feishu chat name); its template/role are injected as
+/// metadata so the target worker initializes the topic with them.
 /// Wait (bounded) for a websocket channel's broadcast sender to be registered.
 ///
 /// The target's broadcast is inserted into `ws_broadcasts` when its outbound
@@ -247,7 +247,7 @@ pub(crate) struct InboundSpawner<'a> {
     pub(crate) workspace_dir: PathBuf,
     pub(crate) args: &'a crate::cli::serve::ServeArgs,
     pub(crate) inbound_attachment_config: Option<InboundAttachmentConfig>,
-    pub(crate) thread_manager: Arc<ThreadManager>,
+    pub(crate) topic_manager: Arc<TopicManager>,
     pub(crate) router: Arc<MessageRouter>,
     pub(crate) state_manager: StateManager,
     pub(crate) cancel: CancellationToken,
@@ -282,7 +282,7 @@ impl InboundSpawner<'_> {
             workspace_dir,
             args,
             inbound_attachment_config,
-            thread_manager,
+            topic_manager,
             router,
             state_manager,
             cancel,
@@ -300,7 +300,7 @@ impl InboundSpawner<'_> {
             routers,
         } = self;
         let channel_name_owned = channel_name.clone();
-        let tm = thread_manager.clone();
+        let tm = topic_manager.clone();
         let channel_span = tracing::info_span!("in", ch = %channel_name);
         match channel_type {
             "email" => {
@@ -343,7 +343,7 @@ impl InboundSpawner<'_> {
                             );
                         }
 
-                        // Shutdown thread manager for this channel
+                        // Shutdown topic manager for this channel
                         tm.shutdown().await;
                     }
                     .instrument(channel_span),
@@ -355,7 +355,7 @@ impl InboundSpawner<'_> {
                         jyc_core::channel_orchestrator::ChannelHandle {
                             cancel: cancel.clone(),
 
-                            thread_manager: thread_manager.clone(),
+                            topic_manager: topic_manager.clone(),
 
                             channel_info: channel_info.clone(),
 
@@ -376,7 +376,7 @@ impl InboundSpawner<'_> {
                     .clone();
                 // `pipe` targets: patterns can forward matching messages into
                 // another (websocket) channel instead of this channel's own
-                // ThreadManager. Collect the distinct target channels for
+                // TopicManager. Collect the distinct target channels for
                 // reply relaying.
                 let pipe_channels: std::collections::HashSet<String> = channel_config
                     .patterns
@@ -387,7 +387,7 @@ impl InboundSpawner<'_> {
                     .collect();
 
                 let router_for_callback = router.clone();
-                let thread_manager_for_task = thread_manager.clone();
+                let topic_manager_for_task = topic_manager.clone();
                 let routers_for_pipe = routers.clone();
                 let config_for_pipe = config_for_spawn.clone();
                 let channel_name_for_pipe = channel_name.clone();
@@ -398,11 +398,11 @@ impl InboundSpawner<'_> {
 
                 let adapter = FeishuInboundAdapter::new(&feishu_config_cloned, channel_name_owned.clone());
 
-                let thread_manager_clone = thread_manager_for_task.clone();
+                let topic_manager_clone = topic_manager_for_task.clone();
 
-                // Shared feishu client + thread->chat_id map for pipe relaying.
+                // Shared feishu client + topic->chat_id map for pipe relaying.
                 let feishu_client = std::sync::Arc::new(FeishuClient::new(feishu_config_cloned.clone()));
-                let thread_chat: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>> =
+                let topic_chat: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>> =
                     std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
 
                 // One reply forwarder per distinct pipe target channel:
@@ -410,7 +410,7 @@ impl InboundSpawner<'_> {
                 // replies back to feishu.
                 for channel in &pipe_channels {
                     let ws_broadcasts = ws_broadcasts.clone();
-                    let thread_chat = thread_chat.clone();
+                    let topic_chat = topic_chat.clone();
                     let feishu_client = feishu_client.clone();
                     let channel = channel.clone();
                     tokio::spawn(async move {
@@ -431,14 +431,14 @@ impl InboundSpawner<'_> {
                             if v.get("type").and_then(|t| t.as_str()) != Some("reply") {
                                 continue;
                             }
-                            let (Some(thread), Some(text)) = (
-                                v.get("thread").and_then(|t| t.as_str()),
+                            let (Some(topic), Some(text)) = (
+                                v.get("topic").and_then(|t| t.as_str()),
                                 v.get("text").and_then(|t| t.as_str()),
                             ) else {
                                 continue;
                             };
-                            let Some(chat_id) = thread_chat.lock().unwrap().get(thread).cloned() else {
-                                tracing::debug!(thread = %thread, "feishu pipe: no chat mapping for reply, skipping");
+                            let Some(chat_id) = topic_chat.lock().unwrap().get(topic).cloned() else {
+                                tracing::debug!(topic = %topic, "feishu pipe: no chat mapping for reply, skipping");
                                 continue;
                             };
                             if let Err(e) = feishu_client.send_text_message(&chat_id, text).await {
@@ -451,7 +451,7 @@ impl InboundSpawner<'_> {
                 let options = jyc_types::InboundAdapterOptions {
                     on_message: Box::new(move |message| {
                         let config_for_pipe = config_for_pipe.clone();
-                        let thread_chat = thread_chat.clone();
+                        let topic_chat = topic_chat.clone();
                         let channel_name_self = channel_name_for_pipe.clone();
                         let router = router_for_callback.clone();
                         let routers = routers_for_pipe.clone();
@@ -471,41 +471,41 @@ impl InboundSpawner<'_> {
                             let matched = patterns.iter().find(|p| p.name == pm.pattern_name);
                             let Some(pipe) = matched.and_then(|p| p.pipe.as_ref()) else {
                                 // No pipe on the matched pattern: route normally
-                                // through this channel's own ThreadManager.
+                                // through this channel's own TopicManager.
                                 router.route(&FeishuMatcher, message).await;
                                 return;
                             };
-                            // 3. Record thread -> chat_id for reply relay.
+                            // 3. Record topic -> chat_id for reply relay.
                             if let Some(chat_id) = message.metadata.get("chat_id").and_then(|v| v.as_str()) {
-                                thread_chat.lock().unwrap().insert(pipe.thread.clone(), chat_id.to_string());
+                                topic_chat.lock().unwrap().insert(pipe.topic.clone(), chat_id.to_string());
                             }
-                            // 4. Re-target into the target channel/thread and
+                            // 4. Re-target into the target channel/topic and
                             //    route through the target's own MessageRouter —
                             //    the exact same path as a chat-pane message, so
-                            //    thread_path/template/skills apply identically.
+                            //    topic_path/template/skills apply identically.
                             let Some(target_router) = routers.lock().unwrap().get(&pipe.channel).cloned() else {
                                 tracing::warn!(channel = %pipe.channel, "feishu pipe: target channel router not found, dropping");
                                 return;
                             };
                             let mut msg = message;
                             msg.channel = pipe.channel.clone();
-                            msg.topic = pipe.thread.clone();
+                            msg.topic = pipe.topic.clone();
                             target_router
                                 .route(&WebsocketMatcher::new(pipe.channel.clone()), msg)
                                 .await;
                         });
                         Ok(())
                     }),
-                    on_thread_close: Some(Box::new(move |thread_name: String| {
-                        // Always close in this channel's own ThreadManager:
-                        // correct for non-pipe threads, a safe no-op for piped
-                        // threads (they live in the target channel, whose
-                        // threads are not auto-closed — the explicit pipe
+                    on_topic_close: Some(Box::new(move |topic_name: String| {
+                        // Always close in this channel's own TopicManager:
+                        // correct for non-pipe topics, a safe no-op for piped
+                        // topics (they live in the target channel, whose
+                        // topics are not auto-closed — the explicit pipe
                         // mapping can't be reversed from the derived name).
-                        let tm = thread_manager_clone.clone();
+                        let tm = topic_manager_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_thread(&thread_name).await {
-                                tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                            if let Err(e) = tm.close_topic(&topic_name).await {
+                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
                             }
                         });
                         Ok(())
@@ -523,7 +523,7 @@ impl InboundSpawner<'_> {
                     );
                 }
 
-                // Shutdown thread manager for this channel
+                // Shutdown topic manager for this channel
                 tm.shutdown().await;
             }.instrument(channel_span));
 
@@ -533,7 +533,7 @@ impl InboundSpawner<'_> {
                         jyc_core::channel_orchestrator::ChannelHandle {
                             cancel: cancel.clone(),
 
-                            thread_manager: thread_manager.clone(),
+                            topic_manager: topic_manager.clone(),
 
                             channel_info: channel_info.clone(),
 
@@ -556,14 +556,14 @@ impl InboundSpawner<'_> {
                 let router_for_callback = router.clone();
                 let workdir_owned = workdir.to_path_buf();
 
-                let thread_manager_for_task = thread_manager.clone();
+                let topic_manager_for_task = topic_manager.clone();
 
                 let task = tokio::spawn(async move {
                 use jyc_channels::gitee::inbound::GiteeInboundAdapter;
 
                 let adapter = GiteeInboundAdapter::new(&gitee_config, channel_name_owned.clone(), &workdir_owned);
 
-                let thread_manager_clone = thread_manager_for_task.clone();
+                let topic_manager_clone = topic_manager_for_task.clone();
                 let options = jyc_types::InboundAdapterOptions {
                     on_message: Box::new(move |message| {
                         let router = router_for_callback.clone();
@@ -574,11 +574,11 @@ impl InboundSpawner<'_> {
 
                         Ok(())
                     }),
-                    on_thread_close: Some(Box::new(move |thread_name: String| {
-                        let tm = thread_manager_clone.clone();
+                    on_topic_close: Some(Box::new(move |topic_name: String| {
+                        let tm = topic_manager_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_thread(&thread_name).await {
-                                tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                            if let Err(e) = tm.close_topic(&topic_name).await {
+                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
                             }
                         });
                         Ok(())
@@ -602,7 +602,7 @@ impl InboundSpawner<'_> {
                         jyc_core::channel_orchestrator::ChannelHandle {
                             cancel: cancel.clone(),
 
-                            thread_manager: thread_manager.clone(),
+                            topic_manager: topic_manager.clone(),
 
                             channel_info: channel_info.clone(),
 
@@ -626,14 +626,14 @@ impl InboundSpawner<'_> {
                 let router_for_callback = router.clone();
                 let workdir_owned = workdir.to_path_buf();
 
-                let thread_manager_for_task = thread_manager.clone();
+                let topic_manager_for_task = topic_manager.clone();
 
                 let task = tokio::spawn(async move {
                 use jyc_channels::github::inbound::GithubInboundAdapter;
 
                 let adapter = GithubInboundAdapter::new(&github_config, channel_name_owned.clone(), &workdir_owned, Some(config_for_adapter));
 
-                let thread_manager_clone = thread_manager_for_task.clone();
+                let topic_manager_clone = topic_manager_for_task.clone();
                 let options = jyc_types::InboundAdapterOptions {
                     on_message: Box::new(move |message| {
                         let router = router_for_callback.clone();
@@ -644,11 +644,11 @@ impl InboundSpawner<'_> {
 
                         Ok(())
                     }),
-                    on_thread_close: Some(Box::new(move |thread_name: String| {
-                        let tm = thread_manager_clone.clone();
+                    on_topic_close: Some(Box::new(move |topic_name: String| {
+                        let tm = topic_manager_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_thread(&thread_name).await {
-                                tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                            if let Err(e) = tm.close_topic(&topic_name).await {
+                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
                             }
                         });
                         Ok(())
@@ -666,7 +666,7 @@ impl InboundSpawner<'_> {
                     );
                 }
 
-                // Shutdown thread manager for this channel
+                // Shutdown topic manager for this channel
                 tm.shutdown().await;
             }.instrument(channel_span));
 
@@ -676,7 +676,7 @@ impl InboundSpawner<'_> {
                         jyc_core::channel_orchestrator::ChannelHandle {
                             cancel: cancel.clone(),
 
-                            thread_manager: thread_manager.clone(),
+                            topic_manager: topic_manager.clone(),
 
                             channel_info: channel_info.clone(),
 
@@ -699,7 +699,7 @@ impl InboundSpawner<'_> {
                 let router_for_callback = router.clone();
                 let wechat_sender_arc_clone = wechat_sender_arc.clone().unwrap();
 
-                let thread_manager_for_task = thread_manager.clone();
+                let topic_manager_for_task = topic_manager.clone();
 
                 let task = tokio::spawn(async move {
                 use jyc_channels::wechat::inbound::WechatMatcher;
@@ -712,7 +712,7 @@ impl InboundSpawner<'_> {
                     wechat_sender_arc_clone,
                 );
 
-                let thread_manager_clone = thread_manager_for_task.clone();
+                let topic_manager_clone = topic_manager_for_task.clone();
                 let options = jyc_types::InboundAdapterOptions {
                     on_message: Box::new(move |message| {
                         let router = router_for_callback.clone();
@@ -723,11 +723,11 @@ impl InboundSpawner<'_> {
 
                         Ok(())
                     }),
-                    on_thread_close: Some(Box::new(move |thread_name: String| {
-                        let tm = thread_manager_clone.clone();
+                    on_topic_close: Some(Box::new(move |topic_name: String| {
+                        let tm = topic_manager_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_thread(&thread_name).await {
-                                tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                            if let Err(e) = tm.close_topic(&topic_name).await {
+                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
                             }
                         });
                         Ok(())
@@ -745,7 +745,7 @@ impl InboundSpawner<'_> {
                     );
                 }
 
-                // Shutdown thread manager for this channel
+                // Shutdown topic manager for this channel
                 tm.shutdown().await;
             }.instrument(channel_span));
 
@@ -755,7 +755,7 @@ impl InboundSpawner<'_> {
                         jyc_core::channel_orchestrator::ChannelHandle {
                             cancel: cancel.clone(),
 
-                            thread_manager: thread_manager.clone(),
+                            topic_manager: topic_manager.clone(),
 
                             channel_info: channel_info.clone(),
 
@@ -778,7 +778,7 @@ impl InboundSpawner<'_> {
                 let router_for_callback = router.clone();
                 let wecom_bot_handle_arc_clone = wecom_bot_handle_arc.clone().unwrap();
 
-                let thread_manager_for_task = thread_manager.clone();
+                let topic_manager_for_task = topic_manager.clone();
 
                 let task = tokio::spawn(async move {
 
@@ -788,7 +788,7 @@ impl InboundSpawner<'_> {
                     wecom_bot_handle_arc_clone,
                 );
 
-                let thread_manager_clone = thread_manager_for_task.clone();
+                let topic_manager_clone = topic_manager_for_task.clone();
                 let options = jyc_types::InboundAdapterOptions {
                     on_message: Box::new(move |message| {
                         let router = router_for_callback.clone();
@@ -799,11 +799,11 @@ impl InboundSpawner<'_> {
 
                         Ok(())
                     }),
-                    on_thread_close: Some(Box::new(move |thread_name: String| {
-                        let tm = thread_manager_clone.clone();
+                    on_topic_close: Some(Box::new(move |topic_name: String| {
+                        let tm = topic_manager_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_thread(&thread_name).await {
-                                tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                            if let Err(e) = tm.close_topic(&topic_name).await {
+                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
                             }
                         });
                         Ok(())
@@ -830,7 +830,7 @@ impl InboundSpawner<'_> {
                         jyc_core::channel_orchestrator::ChannelHandle {
                             cancel: cancel.clone(),
 
-                            thread_manager: thread_manager.clone(),
+                            topic_manager: topic_manager.clone(),
 
                             channel_info: channel_info.clone(),
 
@@ -856,7 +856,7 @@ impl InboundSpawner<'_> {
                 let router_for_callback = router.clone();
                 let channel_name_owned = channel_name.clone();
 
-                let thread_manager_for_task = thread_manager.clone();
+                let topic_manager_for_task = topic_manager.clone();
 
                 let task = tokio::spawn(async move {
                 use jyc_channels::wecom::inbound::WecomMatcher;
@@ -867,7 +867,7 @@ impl InboundSpawner<'_> {
                     wecom_server,
                 );
 
-                let thread_manager_clone = thread_manager_for_task.clone();
+                let topic_manager_clone = topic_manager_for_task.clone();
                 let options = jyc_types::InboundAdapterOptions {
                     on_message: Box::new(move |message| {
                         let router = router_for_callback.clone();
@@ -878,11 +878,11 @@ impl InboundSpawner<'_> {
 
                         Ok(())
                     }),
-                    on_thread_close: Some(Box::new(move |thread_name: String| {
-                        let tm = thread_manager_clone.clone();
+                    on_topic_close: Some(Box::new(move |topic_name: String| {
+                        let tm = topic_manager_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_thread(&thread_name).await {
-                                tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                            if let Err(e) = tm.close_topic(&topic_name).await {
+                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
                             }
                         });
                         Ok(())
@@ -900,7 +900,7 @@ impl InboundSpawner<'_> {
                     );
                 }
 
-                // Shutdown thread manager for this channel
+                // Shutdown topic manager for this channel
                 tm.shutdown().await;
             }.instrument(channel_span));
 
@@ -910,7 +910,7 @@ impl InboundSpawner<'_> {
                         jyc_core::channel_orchestrator::ChannelHandle {
                             cancel: cancel.clone(),
 
-                            thread_manager: thread_manager.clone(),
+                            topic_manager: topic_manager.clone(),
 
                             channel_info: channel_info.clone(),
 
@@ -948,7 +948,7 @@ impl InboundSpawner<'_> {
                 ));
                 let dedup_store = Arc::new(KfDedupStore::new());
 
-                let thread_manager_for_task = thread_manager.clone();
+                let topic_manager_for_task = topic_manager.clone();
 
                 let task = tokio::spawn(async move {
 
@@ -961,7 +961,7 @@ impl InboundSpawner<'_> {
                     dedup_store,
                 );
 
-                let thread_manager_clone = thread_manager_for_task.clone();
+                let topic_manager_clone = topic_manager_for_task.clone();
                 let options = jyc_types::InboundAdapterOptions {
                     on_message: Box::new(move |message| {
                         let router = router_for_callback.clone();
@@ -972,11 +972,11 @@ impl InboundSpawner<'_> {
 
                         Ok(())
                     }),
-                    on_thread_close: Some(Box::new(move |thread_name: String| {
-                        let tm = thread_manager_clone.clone();
+                    on_topic_close: Some(Box::new(move |topic_name: String| {
+                        let tm = topic_manager_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_thread(&thread_name).await {
-                                tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                            if let Err(e) = tm.close_topic(&topic_name).await {
+                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
                             }
                         });
                         Ok(())
@@ -994,7 +994,7 @@ impl InboundSpawner<'_> {
                     );
                 }
 
-                // Shutdown thread manager for this channel
+                // Shutdown topic manager for this channel
                 tm.shutdown().await;
             }.instrument(channel_span));
 
@@ -1004,7 +1004,7 @@ impl InboundSpawner<'_> {
                         jyc_core::channel_orchestrator::ChannelHandle {
                             cancel: cancel.clone(),
 
-                            thread_manager: thread_manager.clone(),
+                            topic_manager: topic_manager.clone(),
 
                             channel_info: channel_info.clone(),
 
@@ -1025,7 +1025,7 @@ impl InboundSpawner<'_> {
                     anyhow::anyhow!("channel '{channel_name}': websocket handler not found")
                 })?;
 
-                let thread_manager_clone = thread_manager.clone();
+                let topic_manager_clone = topic_manager.clone();
                 let options = jyc_types::InboundAdapterOptions {
                     on_message: Box::new(move |message| {
                         let router = router_for_callback.clone();
@@ -1039,11 +1039,11 @@ impl InboundSpawner<'_> {
 
                         Ok(())
                     }),
-                    on_thread_close: Some(Box::new(move |thread_name: String| {
-                        let tm = thread_manager_clone.clone();
+                    on_topic_close: Some(Box::new(move |topic_name: String| {
+                        let tm = topic_manager_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_thread(&thread_name).await {
-                                tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
+                            if let Err(e) = tm.close_topic(&topic_name).await {
+                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
                             }
                         });
                         Ok(())
@@ -1063,7 +1063,7 @@ impl InboundSpawner<'_> {
                 }
 
                 // WebSocket channel does not need a background task (handler is registered on the inspect server)
-                // But we still need to keep the thread_manager alive, so we push a no-op task
+                // But we still need to keep the topic_manager alive, so we push a no-op task
                 let task = tokio::spawn(
                     async move {
                         // Wait for cancellation
@@ -1079,7 +1079,7 @@ impl InboundSpawner<'_> {
                         jyc_core::channel_orchestrator::ChannelHandle {
                             cancel: cancel.clone(),
 
-                            thread_manager: thread_manager.clone(),
+                            topic_manager: topic_manager.clone(),
 
                             channel_info: channel_info.clone(),
 

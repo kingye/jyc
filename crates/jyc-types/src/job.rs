@@ -1,9 +1,9 @@
 //! Scheduled job types for the channel-agnostic job system.
 //!
-//! A "job" is a recurring or one-time task created by the AI in any thread.
+//! A "job" is a recurring or one-time task created by the AI in any topic.
 //! Jobs are defined by cron expressions (recurring) or absolute timestamps
 //! (one-time), and fire by injecting an `InboundMessage` into the
-//! originating thread via `ThreadManager::enqueue`.
+//! originating topic via `TopicManager::enqueue`.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -31,13 +31,13 @@ pub struct JobConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// The thread name to inject the fired job message into.
-    pub thread_name: String,
+    /// The topic name to inject the fired job message into.
+    pub topic_name: String,
 
-    /// The channel type (e.g. "email", "wecom_bot") for the target thread.
+    /// The channel type (e.g. "email", "wecom_bot") for the target topic.
     pub channel: String,
 
-    /// The channel name (config key) for the target thread.
+    /// The channel name (config key) for the target topic.
     pub channel_name: String,
 
     /// The prompt/instructions for the AI to execute when the job fires.
@@ -61,7 +61,7 @@ impl JobConfig {
     /// Create a new recurring job from a cron expression.
     pub fn new_recurring(
         cron_expr: &str,
-        thread_name: String,
+        topic_name: String,
         channel: String,
         channel_name: String,
         prompt: String,
@@ -77,7 +77,7 @@ impl JobConfig {
             cron: Some(cron_expr.to_string()),
             at: None,
             enabled: true,
-            thread_name,
+            topic_name,
             channel,
             channel_name,
             prompt,
@@ -91,7 +91,7 @@ impl JobConfig {
     /// Create a new one-time job that fires at the given timestamp.
     pub fn new_one_time(
         at: DateTime<Utc>,
-        thread_name: String,
+        topic_name: String,
         channel: String,
         channel_name: String,
         prompt: String,
@@ -103,7 +103,7 @@ impl JobConfig {
             cron: None,
             at: Some(at),
             enabled: true,
-            thread_name,
+            topic_name,
             channel,
             channel_name,
             prompt,
@@ -153,7 +153,7 @@ mod tests {
         // Every day at 8 AM UTC (7-field cron: sec min hour dom mon dow year)
         let job = JobConfig::new_recurring(
             "0 0 8 * * * *",
-            "test-thread".to_string(),
+            "test-topic".to_string(),
             "email".to_string(),
             "work".to_string(),
             "Send me the daily summary".to_string(),
@@ -162,7 +162,7 @@ mod tests {
         assert!(job.enabled);
         assert_eq!(job.cron.as_deref(), Some("0 0 8 * * * *"));
         assert!(job.at.is_none());
-        assert_eq!(job.thread_name, "test-thread");
+        assert_eq!(job.topic_name, "test-topic");
         assert_eq!(job.channel, "email");
         assert_eq!(job.channel_name, "work");
         assert_eq!(job.prompt, "Send me the daily summary");
@@ -175,7 +175,7 @@ mod tests {
         let future = Utc::now() + chrono::Duration::hours(1);
         let job = JobConfig::new_one_time(
             future,
-            "test-thread".to_string(),
+            "test-topic".to_string(),
             "wecom_bot".to_string(),
             "general".to_string(),
             "Remind me about the meeting".to_string(),

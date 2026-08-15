@@ -128,7 +128,7 @@ JYC_BINARY (e.g., /home/user/bin/jyc)
 target/release/jyc (built by cargo)
     ↑ cargo build --release
     |
-jyc/ (cloned repo in thread directory)
+jyc/ (cloned repo in topic directory)
 ```
 
 `deploy.sh` auto-detects paths:
@@ -162,9 +162,9 @@ See the `jyc-deploy-bare` skill for AI-specific deployment instructions.
 
 <JYC_WORKDIR>/               # jyc data directory
 ├── config.toml              # jyc configuration
-├── <channel>/workspace/     # per-channel thread workspaces
-│   └── <thread>/
-│       └── jyc/             # cloned jyc repo (per-thread)
+├── <channel>/workspace/     # per-channel topic workspaces
+│   └── <topic>/
+│       └── jyc/             # cloned jyc repo (per-topic)
 
 <JYC_BINARY>                 # installed jyc binary
 ```

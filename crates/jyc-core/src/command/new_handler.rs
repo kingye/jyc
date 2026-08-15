@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
 /// /new command — reset session, clear chat history, and clear
-/// exchange-published files (+ token) for this thread.
+/// exchange-published files (+ token) for this topic.
 ///
 /// Usage:
 ///   /new    Delete session state files and chat history; next AI prompt will start completely fresh
@@ -51,13 +51,13 @@ impl CommandHandler for NewCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Reset session and clear chat history for this thread"
+        "Reset session and clear chat history for this topic"
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let agent_path = context.thread_path.join(".jyc/agent-session.json");
-        let context_path = context.thread_path.join(".jyc/agent-context.json");
-        let activity_path = context.thread_path.join(".jyc/activity.jsonl");
+        let agent_path = context.topic_path.join(".jyc/agent-session.json");
+        let context_path = context.topic_path.join(".jyc/agent-context.json");
+        let activity_path = context.topic_path.join(".jyc/activity.jsonl");
 
         let mut deleted_session = false;
         if agent_path.exists() {
@@ -75,7 +75,7 @@ impl CommandHandler for NewCommandHandler {
 
         // Clear exchange-published files and the exchange token, mirroring
         // /reset: /new starts fresh, so previously shared links must die.
-        let jyc_dir = context.thread_path.join(".jyc");
+        let jyc_dir = context.topic_path.join(".jyc");
         tokio::fs::remove_dir_all(jyc_dir.join(crate::EXCHANGE_DIR_NAME))
             .await
             .ok();
@@ -83,18 +83,15 @@ impl CommandHandler for NewCommandHandler {
             .await
             .ok();
 
-        // Delete all chat_history_*.jsonl files in the thread directory (both locations)
+        // Delete all chat_history_*.jsonl files in the topic directory (both locations)
         let mut deleted_history = 0u64;
 
         // New location: .jyc/
-        let new_pattern = context
-            .thread_path
-            .join(".jyc")
-            .join("chat_history_*.jsonl");
+        let new_pattern = context.topic_path.join(".jyc").join("chat_history_*.jsonl");
         deleted_history += delete_glob_files(&new_pattern).await;
 
-        // Legacy location: thread root
-        let root_pattern = context.thread_path.join("chat_history_*.jsonl");
+        // Legacy location: topic root
+        let root_pattern = context.topic_path.join("chat_history_*.jsonl");
         deleted_history += delete_glob_files(&root_pattern).await;
 
         let msg = if deleted_session || deleted_history > 0 {
@@ -107,10 +104,10 @@ impl CommandHandler for NewCommandHandler {
         };
 
         tracing::info!(
-            thread = %context.thread_path.display(),
+            topic = %context.topic_path.display(),
             deleted_session,
             deleted_history,
-            "Thread refreshed via /new command"
+            "Topic refreshed via /new command"
         );
 
         Ok(CommandResult {
@@ -128,10 +125,10 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    fn test_context(thread_path: &Path) -> CommandContext {
+    fn test_context(topic_path: &Path) -> CommandContext {
         CommandContext {
             args: vec![],
-            thread_path: thread_path.to_path_buf(),
+            topic_path: topic_path.to_path_buf(),
             config: Arc::new(
                 jyc_types::load_config_from_str(
                     r#"

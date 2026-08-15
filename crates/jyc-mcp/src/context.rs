@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 
 const REPLY_CONTEXT_FILENAME: &str = "reply-context.json";
 
-/// Reply context — saved to disk per-thread, read by the MCP reply tool.
+/// Reply context — saved to disk per-topic, read by the MCP reply tool.
 ///
 /// Written by the agent service before sending the prompt.
-/// Read by reply_tool from cwd (= thread directory).
+/// Read by reply_tool from cwd (= topic directory).
 /// Overwritten on each new incoming message; persists between replies
-/// to allow multiple replies in the same thread.
+/// to allow multiple replies in the same topic.
 ///
 /// This replaces the old REPLY_TOKEN approach where context was passed
 /// through the AI as a base64 token (prone to corruption by AI models).
@@ -18,9 +18,9 @@ const REPLY_CONTEXT_FILENAME: &str = "reply-context.json";
 pub struct ReplyContext {
     /// Config channel name (e.g., "jiny283") — routing key
     pub channel: String,
-    /// Thread directory name (e.g., "weather")
-    #[serde(rename = "threadName")]
-    pub thread_name: String,
+    /// Topic directory name (e.g., "weather")
+    #[serde(rename = "topicName")]
+    pub topic_name: String,
     /// Timestamp identifier for this message (e.g., "2026-03-27_10-00-00")
     #[serde(rename = "incomingMessageDir")]
     pub incoming_message_dir: String,
@@ -37,11 +37,11 @@ pub struct ReplyContext {
     pub created_at: String,
 }
 
-/// Save reply context to `.jyc/reply-context.json` in the thread directory.
+/// Save reply context to `.jyc/reply-context.json` in the topic directory.
 ///
 /// Called by agent service before sending the prompt.
-pub async fn save_reply_context(thread_path: &Path, ctx: &ReplyContext) -> Result<()> {
-    let jyc_dir = thread_path.join(".jyc");
+pub async fn save_reply_context(topic_path: &Path, ctx: &ReplyContext) -> Result<()> {
+    let jyc_dir = topic_path.join(".jyc");
     tokio::fs::create_dir_all(&jyc_dir).await?;
 
     let path = jyc_dir.join(REPLY_CONTEXT_FILENAME);
@@ -58,12 +58,12 @@ pub async fn save_reply_context(thread_path: &Path, ctx: &ReplyContext) -> Resul
 
 /// Load reply context from `.jyc/reply-context.json` in the given directory.
 ///
-/// Called by the MCP reply tool from its cwd (= thread directory).
-pub async fn load_reply_context(thread_path: &Path) -> Result<ReplyContext> {
-    let path = thread_path.join(".jyc").join(REPLY_CONTEXT_FILENAME);
+/// Called by the MCP reply tool from its cwd (= topic directory).
+pub async fn load_reply_context(topic_path: &Path) -> Result<ReplyContext> {
+    let path = topic_path.join(".jyc").join(REPLY_CONTEXT_FILENAME);
 
     if !path.exists() {
-        bail!("reply-context.json not found in {}", thread_path.display());
+        bail!("reply-context.json not found in {}", topic_path.display());
     }
 
     let content = tokio::fs::read_to_string(&path).await?;
@@ -83,21 +83,21 @@ pub async fn load_reply_context(thread_path: &Path) -> Result<ReplyContext> {
 /// Delete the reply context file (used for tests and manual cleanup).
 ///
 /// Note: Not called during normal operation; context persists to
-/// support multiple replies in the same thread.
+/// support multiple replies in the same topic.
 #[allow(dead_code)]
-pub async fn cleanup_reply_context(thread_path: &Path) {
-    let path = thread_path.join(".jyc").join(REPLY_CONTEXT_FILENAME);
+pub async fn cleanup_reply_context(topic_path: &Path) {
+    let path = topic_path.join(".jyc").join(REPLY_CONTEXT_FILENAME);
     if path.exists() {
         tokio::fs::remove_file(&path).await.ok();
     }
 }
 
-/// Resolve the thread directory for MCP tools.
+/// Resolve the topic directory for MCP tools.
 ///
 /// Reads `JYC_THREAD_DIR` environment variable (set by agent MCP config).
 /// Falls back to `std::env::current_dir()` for backward compatibility.
 /// Returns an empty PathBuf only if both fail (should never happen in practice).
-pub fn resolve_thread_dir() -> PathBuf {
+pub fn resolve_topic_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("JYC_THREAD_DIR")
         && !dir.is_empty()
     {
@@ -115,7 +115,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = ReplyContext {
             channel: "jiny283".to_string(),
-            thread_name: "weather".to_string(),
+            topic_name: "weather".to_string(),
             incoming_message_dir: "2026-03-27_10-00-00".to_string(),
             uid: "42".to_string(),
             model: Some("ark/deepseek-v3.2".to_string()),
@@ -127,7 +127,7 @@ mod tests {
         let loaded = load_reply_context(tmp.path()).await.unwrap();
 
         assert_eq!(loaded.channel, "jiny283");
-        assert_eq!(loaded.thread_name, "weather");
+        assert_eq!(loaded.topic_name, "weather");
         assert_eq!(loaded.incoming_message_dir, "2026-03-27_10-00-00");
         assert_eq!(loaded.uid, "42");
         assert_eq!(loaded.model.as_deref(), Some("ark/deepseek-v3.2"));
@@ -145,7 +145,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = ReplyContext {
             channel: "ch".to_string(),
-            thread_name: "t".to_string(),
+            topic_name: "t".to_string(),
             incoming_message_dir: "d".to_string(),
             uid: "1".to_string(),
             model: None,
@@ -167,7 +167,7 @@ mod tests {
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
             jyc_dir.join("reply-context.json"),
-            r#"{"channel":"","threadName":"t","incomingMessageDir":"d","uid":"1","createdAt":"now"}"#,
+            r#"{"channel":"","topicName":"t","incomingMessageDir":"d","uid":"1","createdAt":"now"}"#,
         ).await.unwrap();
         assert!(load_reply_context(tmp.path()).await.is_err());
     }

@@ -5,7 +5,7 @@ repositories through issue discussion, PR development, and code review.
 
 ## repo_group — Shared Repo Directories
 
-When multiple GitHub agent threads (e.g., Developer and Reviewer) work on the
+When multiple GitHub agent topics (e.g., Developer and Reviewer) work on the
 same PR, each normally clones the repository independently, wasting disk space.
 The `repo_group` field on `ChannelPattern` enables shared repo directories via
 symlinks.
@@ -14,11 +14,11 @@ symlinks.
 
 1. Add `repo_group = "pr"` to patterns that should share a repo clone
 2. JYC computes a group key: `"{repo_group}-{github_number}"` (e.g., `"pr-42"`)
-3. On thread init, JYC creates `<workspace>/repos/<group_key>/` and symlinks
-   `<thread_path>/repo` → the shared directory
+3. On topic init, JYC creates `<workspace>/repos/<group_key>/` and symlinks
+   `<topic_path>/repo` → the shared directory
 4. Agents are group-agnostic — they just `cd repo` and clone if `.git` is missing
-5. When a thread is closed, the symlink is removed first (before `remove_dir_all`)
-6. Shared repos are cleaned up when no remaining thread references them
+5. When a topic is closed, the symlink is removed first (before `remove_dir_all`)
+6. Shared repos are cleaned up when no remaining topic references them
 
 ### Directory Structure
 
@@ -71,9 +71,9 @@ Patterns without `repo_group` keep existing behavior — no symlink, no sharing.
    prefix comments with `[Planner]`, `[Developer]`, `[Reviewer]`. Each pattern
    only skips comments from its **own** role (self-loop prevention), but allows
    comments from other roles through for cross-agent visibility.
-4. **Independent Threads** — Each agent role gets its own thread with separate
+4. **Independent Topics** — Each agent role gets its own topic with separate
    repo clone, AGENTS.md, and context.
-5. **Immediate Close + Delete** — When issue/PR closes, thread is immediately
+5. **Immediate Close + Delete** — When issue/PR closes, topic is immediately
    terminated and directory deleted.
 
 ## Architecture
@@ -97,15 +97,15 @@ GitHub API (polling)
 │                                                                 │
 │ Route via ChannelMatcher                                        │
 │   ├─ Match by github_type + labels                             │
-│   └─ Derive thread name from pattern's `thread_prefix` (or     │
+│   └─ Derive topic name from pattern's `topic_prefix` (or     │
 │      default `issue-{N}`/`pr-{N}` based on event type)         │
 └─────────────────────────────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ ThreadManager (existing)                                        │
-│   ├─ Thread: issue-42  (Planner agent)                         │
-│   ├─ Thread: pr-43     (Developer agent)                       │
-│   └─ Thread: review-pr-43 (Reviewer agent)                     │
+│ TopicManager (existing)                                        │
+│   ├─ Topic: issue-42  (Planner agent)                         │
+│   ├─ Topic: pr-43     (Developer agent)                       │
+│   └─ Topic: review-pr-43 (Reviewer agent)                     │
 └─────────────────────────────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────────────────────────────┐
@@ -169,22 +169,22 @@ InboundMessage {
 | Review Comments | `GET /repos/{o}/{r}/pulls/{n}/comments` | created (inline code comments) |
 | Close | `GET /repos/{o}/{r}/issues?state=closed&since=...` | closed, merged |
 
-### Event → Thread Routing
+### Event → Topic Routing
 
-| Event | Condition | Thread | Action |
+| Event | Condition | Topic | Action |
 |-------|-----------|--------|--------|
-| issue.opened | Labels match pattern | `issue-{N}` | Create thread, trigger agent |
+| issue.opened | Labels match pattern | `issue-{N}` | Create topic, trigger agent |
 | issue.commented | Not self-loop | `issue-{N}` | Trigger agent |
 | issue.labeled | New labels match pattern | `issue-{N}` | Trigger agent (re-route) |
-| issue.closed | — | `issue-{N}` | **Close + delete thread** |
-| pr.opened | Labels match pattern | `pr-{N}` | Create thread, trigger agent |
+| issue.closed | — | `issue-{N}` | **Close + delete topic** |
+| pr.opened | Labels match pattern | `pr-{N}` | Create topic, trigger agent |
 | pr.commented | Not self-loop | `pr-{N}` | Trigger agent |
 | pr.labeled | New labels match pattern | `pr-{N}` | Trigger agent (re-route) |
 | pr.review_submitted | — | `pr-{N}` | Trigger developer agent |
 | pr.review_comment | — | `pr-{N}` | Trigger developer agent (inline feedback) |
 | pr.ci_failure | Check run conclusion = "failure" | `pr-{N}` | Trigger developer agent (auto-fix CI failures) |
-| pr.merged | — | every `*-{N}` thread (default `pr-{N}`, `review-pr-{N}`, plus any user-defined prefix) | **Close + delete all** |
-| pr.closed (not merged) | — | every `*-{N}` thread for this PR | **Close + delete all** |
+| pr.merged | — | every `*-{N}` topic (default `pr-{N}`, `review-pr-{N}`, plus any user-defined prefix) | **Close + delete all** |
+| pr.closed (not merged) | — | every `*-{N}` topic for this PR | **Close + delete all** |
 
 **Label change detection**: On each poll cycle, the adapter compares the current
 labels on each issue/PR against the previously cached labels. If new labels were
@@ -299,30 +299,30 @@ github_type = ["pull_request"]
 # Auto-label "jyc:review" is implicit from role = "Reviewer"
 ```
 
-## Thread Naming
+## Topic Naming
 
-Thread name is `{prefix}-{N}` where `{prefix}` comes from the matched
-pattern's `thread_prefix` config field, falling back to `issue` for issue
+Topic name is `{prefix}-{N}` where `{prefix}` comes from the matched
+pattern's `topic_prefix` config field, falling back to `issue` for issue
 events and `pr` for pull-request events when no prefix is configured.
 
-| Pattern config                 | Thread Name           | Example          |
+| Pattern config                 | Topic Name           | Example          |
 | ------------------------------ | --------------------- | ---------------- |
-| Issue, no `thread_prefix`      | `issue-{number}`      | `issue-42`       |
-| PR, no `thread_prefix`         | `pr-{number}`         | `pr-43`          |
-| `thread_prefix = "plan"`       | `plan-{number}`       | `plan-42`        |
-| `thread_prefix = "review-pr"`  | `review-pr-{number}`  | `review-pr-43`   |
+| Issue, no `topic_prefix`      | `issue-{number}`      | `issue-42`       |
+| PR, no `topic_prefix`         | `pr-{number}`         | `pr-43`          |
+| `topic_prefix = "plan"`       | `plan-{number}`       | `plan-42`        |
+| `topic_prefix = "review-pr"`  | `review-pr-{number}`  | `review-pr-43`   |
 
 Two patterns that can match the same GitHub identity (e.g., both target
-issues but are split by labels) MUST declare distinct `thread_prefix` values.
+issues but are split by labels) MUST declare distinct `topic_prefix` values.
 If they don't, both patterns route to the same workspace directory and the
 second pattern's template / `AGENTS.md` would be silently dropped — jyc
 detects this and refuses to dispatch with a `TemplateMismatch` error.
 
 The reviewer pattern is the canonical example: developer (default `pr-{N}`)
-and reviewer (`thread_prefix = "review-pr"`) both run on the same PR in
+and reviewer (`topic_prefix = "review-pr"`) both run on the same PR in
 parallel, each with its own workspace and AGENTS.md.
 
-Each thread gets its own directory:
+Each topic gets its own directory:
 ```
 <workdir>/<channel_name>/workspace/
   issue-42/           ← Planner agent
@@ -376,7 +376,7 @@ gh pr edit 43 --add-label "ready-for-dev"
 
 ### Agent A: Planner (github-planner)
 
-**Thread**: `issue-{N}`
+**Topic**: `issue-{N}`
 **Role**: Discuss requirements with user, create PR with spec when ready.
 **Trigger**: Auto-triggered on new issues via pattern matching (github_type, labels)
 
@@ -393,7 +393,7 @@ gh pr edit 43 --add-label "ready-for-dev"
 
 ### Agent B: Developer (github-developer)
 
-**Thread**: `pr-{N}`
+**Topic**: `pr-{N}`
 **Role**: Implement code based on PR spec, address review feedback.
 **Trigger**: Auto-triggered on new PRs via pattern matching (github_type, labels)
 
@@ -412,7 +412,7 @@ gh pr edit 43 --add-label "ready-for-dev"
 
 ### Agent C: Reviewer (github-reviewer)
 
-**Thread**: `review-pr-{N}`
+**Topic**: `review-pr-{N}`
 **Role**: Review PR code quality, approve or request changes.
 **Trigger**: Auto-triggered when PR has `ready-for-review` label via pattern matching
 
@@ -429,17 +429,17 @@ gh pr edit 43 --add-label "ready-for-dev"
 
 ### Close Behavior
 
-Threads are closed **immediately** with no agent notification. The entire
-thread directory is deleted.
+Topics are closed **immediately** with no agent notification. The entire
+topic directory is deleted.
 
 ### Close Event Matrix
 
-On any close event, jyc enumerates the workspace and closes every thread
+On any close event, jyc enumerates the workspace and closes every topic
 directory whose name matches `*-{N}` for the closed identity. This works
 uniformly across the default prefixes (`issue`, `pr`, `review-pr`) and any
-user-defined `thread_prefix` values.
+user-defined `topic_prefix` values.
 
-| Event | Threads Closed & Deleted |
+| Event | Topics Closed & Deleted |
 |-------|--------------------------|
 | Issue closed (manually) | every `*-{N}` for that issue (e.g. `issue-{N}`, `plan-{N}`) |
 | Issue closed (by PR merge "Fixes #N") | every `*-{N}` for that issue |
@@ -451,10 +451,10 @@ user-defined `thread_prefix` values.
 ```
 Close event detected
     ↓
-1. Stop accepting new messages for thread (remove from queue map)
+1. Stop accepting new messages for topic (remove from queue map)
 2. Wait for current message processing to finish (if any)
-3. Delete thread directory: rm -rf workspace/{thread_name}/
-4. Log: "Thread {thread_name} closed and deleted"
+3. Delete topic directory: rm -rf workspace/{topic_name}/
+4. Log: "Topic {topic_name} closed and deleted"
 ```
 
 ### PR Merge Cascade
@@ -486,7 +486,7 @@ async fn send_reply(&self, original, reply_text, ...) -> Result<SendResult> {
 }
 ```
 
-**Role prefix**: The OutboundAdapter reads the agent role from the thread's
+**Role prefix**: The OutboundAdapter reads the agent role from the topic's
 template/config and prepends `[Planner]`, `[Developer]`, or `[Reviewer]`.
 These prefixes are used for self-loop prevention: each pattern skips comments
 from its own role but allows comments from other roles through.
@@ -495,7 +495,7 @@ from its own role but allows comments from other roles through.
 
 Agents can also interact with GitHub directly via `gh` CLI (not through
 OutboundAdapter). This is used for:
-- Cross-thread communication (planner commenting on PR)
+- Cross-topic communication (planner commenting on PR)
 - Creating PRs, branches
 - Adding/removing labels
 - Submitting reviews
@@ -668,20 +668,20 @@ the current phase passes human testing.
 - Bot's own comments skipped
 - Create a comment on a test issue → verify it appears in logs
 
-### Phase 3: Routing — Events to Threads
+### Phase 3: Routing — Events to Topics
 
-**Goal**: Events create InboundMessages and route to threads.
+**Goal**: Events create InboundMessages and route to topics.
 
 **Implement**:
 - Event classification (issue/PR/comment/review)
 - Build minimal InboundMessage from event
 - `GitHubMatcher::match_message()` — pattern matching
-- `GitHubMatcher::derive_thread_name()` — thread naming
+- `GitHubMatcher::derive_topic_name()` — topic naming
 - Deduplication (skip already-processed events)
 
 **Test**: Configure one pattern (issues → planner). Create issue on GitHub.
 Verify:
-- Thread `issue-42` is created
+- Topic `issue-42` is created
 - Agent receives the trigger message
 - Agent can use `gh issue view 42` to read content
 - Comment on issue → agent is triggered again
@@ -711,23 +711,23 @@ with `[Planner]` prefix. Reply to a PR → verify comment appears.
 **Test**:
 - Create issue → planner agent discusses
 - User comments `/develop` → label `ready-for-dev` added
-- PR created with that label → developer thread created
+- PR created with that label → developer topic created
 - Agent B triggered
 
 ### Phase 6: Close + Cleanup
 
-**Goal**: Closing issues/PRs deletes threads.
+**Goal**: Closing issues/PRs deletes topics.
 
 **Implement**:
 - Close event detection in polling
-- `on_thread_close` callback
+- `on_topic_close` callback
 - Directory deletion
-- PR merge cascade (close PR + review + linked issue threads)
+- PR merge cascade (close PR + review + linked issue topics)
 
 **Test**:
-- Close an issue → verify thread directory deleted
-- Merge a PR → verify PR, review, and linked issue threads deleted
-- Close PR without merge → verify issue thread preserved
+- Close an issue → verify topic directory deleted
+- Merge a PR → verify PR, review, and linked issue topics deleted
+- Close PR without merge → verify issue topic preserved
 
 ### Phase 7: Skills + Templates
 
@@ -744,7 +744,7 @@ with `[Planner]` prefix. Reply to a PR → verify comment appears.
 2. Developer implements → requests review
 3. Reviewer reviews → requests changes
 4. Developer fixes → Reviewer approves
-5. Merge → all threads cleaned up
+5. Merge → all topics cleaned up
 
 ## References
 

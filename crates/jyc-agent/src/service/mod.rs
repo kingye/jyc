@@ -12,14 +12,14 @@ use tokio_util::sync::CancellationToken;
 use tracing;
 
 use jyc_core::agent::{AgentResult, AgentService};
-use jyc_core::thread_event_bus::ThreadEventBusRef;
+use jyc_core::topic_event_bus::TopicEventBusRef;
 use jyc_types::{ChannelPattern, InboundMessage, McpServerConfig, QueueItem};
 
 use crate::agent_loop::{self, AgentLoopConfig};
 use crate::provider;
 use crate::session;
 use crate::tools::OutboundsMap;
-use crate::tools::ThreadManagersMap;
+use crate::tools::TopicManagersMap;
 use crate::vision::VisionClient;
 use std::sync::Arc;
 
@@ -43,8 +43,8 @@ pub struct JycAgentService {
     /// All per-model/agent fields are derived from this on demand via
     /// [`Self::agent_config`].
     config: Arc<ArcSwap<jyc_types::AppConfig>>,
-    /// Per-thread event bus map.
-    event_buses: Mutex<HashMap<String, ThreadEventBusRef>>,
+    /// Per-topic event bus map.
+    event_buses: Mutex<HashMap<String, TopicEventBusRef>>,
     /// JYC workdir (for discovering global skills).
     workdir: PathBuf,
     /// MCP server configurations for dynamic tool loading.
@@ -71,13 +71,13 @@ pub struct JycAgentService {
     channel_skills: Option<Vec<String>>,
     /// Channel-level skills to disable (merged with pattern-level).
     channel_disabled_skills: Option<Vec<String>>,
-    /// Cross-channel thread managers keyed by channel name.
-    /// Passed through to `AgentLoopConfig` so the `jyc_send_to_thread` tool
-    /// can inject messages into threads in other channels.
+    /// Cross-channel topic managers keyed by channel name.
+    /// Passed through to `AgentLoopConfig` so the `jyc_send_to_topic` tool
+    /// can inject messages into topics in other channels.
     /// Uses `std::sync::Mutex` for interior mutability (set after construction
-    /// via `set_thread_managers()` on an `Arc<Self>`).
-    thread_managers: std::sync::Mutex<Option<ThreadManagersMap>>,
-    /// Current channel name for source context in cross-thread tools.
+    /// via `set_topic_managers()` on an `Arc<Self>`).
+    topic_managers: std::sync::Mutex<Option<TopicManagersMap>>,
+    /// Current channel name for source context in cross-topic tools.
     channel_name: String,
     /// Cross-channel outbound adapters keyed by channel name.
     /// Passed through to `AgentLoopConfig` so the `jyc_send_message` tool
@@ -118,7 +118,7 @@ impl JycAgentService {
             channel_disabled_mcp_servers,
             channel_skills,
             channel_disabled_skills,
-            thread_managers: std::sync::Mutex::new(None),
+            topic_managers: std::sync::Mutex::new(None),
             channel_name,
             outbounds: std::sync::Mutex::new(None),
         }
@@ -140,15 +140,12 @@ impl JycAgentService {
         derive_agent_config(&self.config.load(), &self.channel_name)
     }
 
-    /// Set the cross-channel thread managers map.
+    /// Set the cross-channel topic managers map.
     ///
-    /// Called by the monitor during startup to inject the thread manager map
+    /// Called by the monitor during startup to inject the topic manager map
     /// into each agent service after all channels have been initialized.
-    pub fn set_thread_managers(&self, tm: ThreadManagersMap) {
-        *self
-            .thread_managers
-            .lock()
-            .expect("thread_managers poisoned") = Some(tm);
+    pub fn set_topic_managers(&self, tm: TopicManagersMap) {
+        *self.topic_managers.lock().expect("topic_managers poisoned") = Some(tm);
     }
 
     /// Set the cross-channel outbound adapters map.
@@ -170,14 +167,14 @@ impl AgentService for JycAgentService {
     async fn process(
         &self,
         message: &InboundMessage,
-        thread_name: &str,
-        thread_path: &Path,
+        topic_name: &str,
+        topic_path: &Path,
         message_dir: &str,
         _pending_rx: &mut mpsc::Receiver<QueueItem>,
-        thread_cancel: CancellationToken,
+        topic_cancel: CancellationToken,
     ) -> Result<AgentResult> {
         tracing::info!(
-            thread = %thread_name,
+            topic = %topic_name,
             message_dir = %message_dir,
             "Processing message with in-process agent"
         );
@@ -187,19 +184,19 @@ impl AgentService for JycAgentService {
         //    config reload (TUI `reload config`) takes effect immediately.
         let agent_cfg = self.agent_config();
 
-        // 0b. Load thread-level (L3) `<thread>/.jyc/config.toml` once and
+        // 0b. Load topic-level (L3) `<topic>/.jyc/config.toml` once and
         //     share the result with both the [agent] model-resolution block
         //     below and `build_tool_registry` — avoids a duplicate disk read.
-        let thread_cfg = jyc_types::load_thread_config(thread_path);
+        let topic_cfg = jyc_types::load_topic_config(topic_path);
 
-        // 1. Read mode override for this thread (used to select mode-specific model)
-        let mode_override = jyc_core::session_state::read_mode_override(thread_path).await;
+        // 1. Read mode override for this topic (used to select mode-specific model)
+        let mode_override = jyc_core::session_state::read_mode_override(topic_path).await;
 
         // 1b. Model resolution priority:
         //     For plan/build mode:
         //       a) .jyc/<mode>-model-override (mode-specific runtime override)
         //       b) .jyc/model-override (legacy fallback, for migration)
-        //       c) .jyc/config.toml [agent] (thread-level, L3)
+        //       c) .jyc/config.toml [agent] (topic-level, L3)
         //       d) Pattern-level plan_model / build_model / model
         //       e) Config-level plan_model / build_model / model
         //     For default mode (no override):
@@ -212,10 +209,10 @@ impl AgentService for JycAgentService {
                 Some("plan") => "plan",
                 _ => "build", // default = build mode
             };
-            let mode_specific_path = thread_path
+            let mode_specific_path = topic_path
                 .join(".jyc")
                 .join(format!("{mode_suffix}-model-override"));
-            let legacy_path = thread_path.join(".jyc").join("model-override");
+            let legacy_path = topic_path.join(".jyc").join("model-override");
             if mode_specific_path.exists() {
                 tokio::fs::read_to_string(&mode_specific_path)
                     .await
@@ -238,18 +235,18 @@ impl AgentService for JycAgentService {
             .and_then(|name| self.patterns.iter().find(|p| p.name == name));
         // Mode resolution chain: .jyc/mode-override file > pattern.mode > default "build"
         let mode_override = mode_override.or_else(|| pattern.and_then(|p| p.mode.clone()));
-        // Thread-level (L3) .jyc/config.toml — [agent] model overrides.
-        // Priority: file overrides > thread config > pattern > config.
-        // `thread_cfg` was loaded once at the top of `process` and shared with
+        // Topic-level (L3) .jyc/config.toml — [agent] model overrides.
+        // Priority: file overrides > topic config > pattern > config.
+        // `topic_cfg` was loaded once at the top of `process` and shared with
         // `build_tool_registry` (avoids a duplicate disk read per message).
-        let thread_agent_cfg = thread_cfg.as_ref().and_then(|c| c.agent.as_ref());
-        let thread_cfg_override = thread_agent_cfg
+        let topic_agent_cfg = topic_cfg.as_ref().and_then(|c| c.agent.as_ref());
+        let topic_cfg_override = topic_agent_cfg
             .as_ref()
             .and_then(|a| match mode_override.as_deref() {
                 Some("plan") => a.plan_model.as_deref(),
                 _ => a.build_model.as_deref(), // default = build
             })
-            .or_else(|| thread_agent_cfg.as_ref().and_then(|a| a.model.as_deref()));
+            .or_else(|| topic_agent_cfg.as_ref().and_then(|a| a.model.as_deref()));
         // Pattern: try mode-specific field first, then generic model
         let pattern_override = pattern
             .and_then(|p| match mode_override.as_deref() {
@@ -265,7 +262,7 @@ impl AgentService for JycAgentService {
         .or(agent_cfg.model.as_deref());
         let model_override = file_override
             .clone()
-            .or_else(|| thread_cfg_override.map(|s| s.to_string()))
+            .or_else(|| topic_cfg_override.map(|s| s.to_string()))
             .or_else(|| pattern_override.map(|s| s.to_string()))
             .or_else(|| config_override.map(|s| s.to_string()));
 
@@ -281,7 +278,7 @@ impl AgentService for JycAgentService {
         );
 
         // 2b. Resolve small_model with priority:
-        //     1. Thread-level .jyc/config.toml [agent] small_model (L3)
+        //     1. Topic-level .jyc/config.toml [agent] small_model (L3)
         //     2. Pattern-level small_model (from matched pattern config)
         //     3. Config-level small_model (from self.config.small_model, already
         //        channel-resolved or global fallback)
@@ -291,7 +288,7 @@ impl AgentService for JycAgentService {
             .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name))
             .and_then(|p| p.small_model.as_deref());
-        let small_model_resolved = thread_agent_cfg
+        let small_model_resolved = topic_agent_cfg
             .as_ref()
             .and_then(|a| a.small_model.as_deref())
             .or(pattern_small_model)
@@ -327,7 +324,7 @@ impl AgentService for JycAgentService {
             });
 
         // 3. Load session and prior raw context
-        let (prior_history, prior_raw_context) = session::load_context(thread_path).await;
+        let (prior_history, prior_raw_context) = session::load_context(topic_path).await;
 
         tracing::debug!(
             prior_messages = prior_history.len(),
@@ -339,20 +336,20 @@ impl AgentService for JycAgentService {
         //    per-model `supports_images`)
         // 3a. Build system prompt (available channels, skills, AGENTS.md, etc.)
         let system_prompt = self
-            .build_system_prompt(thread_path, message.matched_pattern.as_deref())
+            .build_system_prompt(topic_path, message.matched_pattern.as_deref())
             .await;
         tracing::debug!(
-            thread = %thread_name,
+            topic = %topic_name,
             prompt_len = system_prompt.len(),
             has_plan_mode = system_prompt.contains("PLAN MODE"),
             "System prompt built"
         );
         tracing::trace!(
-            thread = %thread_name,
+            topic = %topic_name,
             prompt = %system_prompt,
             "Full system prompt (enable RUST_LOG=trace to see)"
         );
-        let current_mode = jyc_core::session_state::read_mode_override(thread_path).await;
+        let current_mode = jyc_core::session_state::read_mode_override(topic_path).await;
         // Mode resolution chain: .jyc/mode-override file > pattern.mode > default "build"
         let current_mode = current_mode.or_else(|| pattern.and_then(|p| p.mode.clone()));
         let user_blocks =
@@ -361,16 +358,16 @@ impl AgentService for JycAgentService {
         // 5. Build tool registry
         let tools = self
             .build_tool_registry(
-                thread_name,
-                thread_path,
-                thread_cfg.as_ref(),
+                topic_name,
+                topic_path,
+                topic_cfg.as_ref(),
                 provider.supports_images(),
                 message.matched_pattern.as_deref(),
             )
             .await;
 
-        // 6. Get event bus for this thread
-        let event_bus = self.get_event_bus(thread_name).await;
+        // 6. Get event bus for this topic
+        let event_bus = self.get_event_bus(topic_name).await;
 
         // 6b. Determine per-pattern image injection flag for consistency
         // between `build_user_blocks` and the `read_image` tool's
@@ -429,7 +426,7 @@ impl AgentService for JycAgentService {
         if let Some(cw) = context_window {
             let new_max = (cw as f64 * auto_reset_threshold) as u64;
             session::maybe_reset_for_new_context(
-                thread_path,
+                topic_path,
                 new_max,
                 &compression_config,
                 Some(provider.as_ref()),
@@ -445,14 +442,14 @@ impl AgentService for JycAgentService {
         // window between "user sends message" and "first LLM response
         // arrives + persist_tokens writes". The helper is a no-op when
         // the file already exists, so existing token data is preserved.
-        session::ensure_session_file(thread_path, context_window, auto_reset_threshold).await;
+        session::ensure_session_file(topic_path, context_window, auto_reset_threshold).await;
 
-        let additional_read_roots = self.resolve_additional_read_roots(message, thread_path);
+        let additional_read_roots = self.resolve_additional_read_roots(message, topic_path);
         let additional_write_roots = self.resolve_additional_write_roots(message);
-        let thread_managers = self
-            .thread_managers
+        let topic_managers = self
+            .topic_managers
             .lock()
-            .expect("thread_managers poisoned")
+            .expect("topic_managers poisoned")
             .clone();
         let outbounds = self.outbounds.lock().expect("outbounds poisoned").clone();
         let result = agent_loop::run(AgentLoopConfig {
@@ -463,10 +460,10 @@ impl AgentService for JycAgentService {
             tools: &tools,
             system_prompt: &system_prompt,
             user_blocks,
-            working_dir: thread_path,
-            thread_path,
-            cancel: thread_cancel,
-            thread_name,
+            working_dir: topic_path,
+            topic_path,
+            cancel: topic_cancel,
+            topic_name,
             event_bus: event_bus.as_ref(),
             prior_history,
             prior_raw_context,
@@ -476,12 +473,12 @@ impl AgentService for JycAgentService {
             additional_write_roots,
             pattern_inject_images: pattern_inject,
             outbound: self.outbound.clone(),
-            thread_managers: thread_managers.clone(),
+            topic_managers: topic_managers.clone(),
             current_channel: Some(self.channel_name.clone()),
             outbounds,
             context_window,
             auto_reset_threshold,
-            thinking_enabled: read_thinking_enabled(thread_path),
+            thinking_enabled: read_thinking_enabled(topic_path),
             pricing,
             model_label: model_str,
         })
@@ -496,7 +493,7 @@ impl AgentService for JycAgentService {
         );
 
         // 8. Save raw context (preserves provider-specific fields for round-tripping)
-        session::save_raw_context(thread_path, &result.raw_context).await;
+        session::save_raw_context(topic_path, &result.raw_context).await;
 
         // 9. Update session token tracking
         // Provider used for the between-message context-reset summary (when
@@ -508,7 +505,7 @@ impl AgentService for JycAgentService {
             .map(|p| p as &dyn provider::Provider)
             .unwrap_or(provider.as_ref());
         session::update_tokens(
-            thread_path,
+            topic_path,
             result.input_tokens,
             result.total_input_tokens,
             result.output_tokens,
@@ -540,22 +537,22 @@ impl AgentService for JycAgentService {
         }
     }
 
-    async fn set_thread_event_bus(&self, thread_name: &str, event_bus: Option<ThreadEventBusRef>) {
+    async fn set_topic_event_bus(&self, topic_name: &str, event_bus: Option<TopicEventBusRef>) {
         let mut buses = self.event_buses.lock().await;
         match event_bus {
             Some(bus) => {
-                buses.insert(thread_name.to_string(), bus);
+                buses.insert(topic_name.to_string(), bus);
             }
             None => {
-                buses.remove(thread_name);
+                buses.remove(topic_name);
             }
         }
     }
 
     async fn reset_session(
         &self,
-        thread_path: &Path,
-        thread_name: &str,
+        topic_path: &Path,
+        topic_name: &str,
         config: &jyc_types::channel::ResetCompressionConfig,
     ) -> Result<()> {
         // Read the live agent config so reload of small_model / providers
@@ -569,7 +566,7 @@ impl AgentService for JycAgentService {
         // Resolve compression config: pattern (not available here) -> agent config
         let resolved_config = config.clone();
 
-        // Bill the compression call against the thread's effective model so
+        // Bill the compression call against the topic's effective model so
         // a manual `/reset` still lands in the ledger. Resolved from the
         // configured model since no per-message override is in scope here.
         let billing_ctx = agent_cfg.model.as_deref().and_then(|m| {
@@ -582,7 +579,7 @@ impl AgentService for JycAgentService {
         });
 
         session::reset_session(
-            thread_path,
+            topic_path,
             &resolved_config,
             provider.as_deref().map(|p| p as &dyn provider::Provider),
             billing_ctx.as_ref(),
@@ -595,11 +592,11 @@ impl AgentService for JycAgentService {
             jyc_types::channel::CompressionMode::Heuristic => "heuristic",
             jyc_types::channel::CompressionMode::Llm => "llm",
         };
-        let event_bus = self.get_event_bus(thread_name).await;
+        let event_bus = self.get_event_bus(topic_name).await;
         if let Some(bus) = event_bus {
             let _ = bus
-                .publish(jyc_core::thread_event::ThreadEvent::SessionStatus {
-                    thread_name: thread_name.to_string(),
+                .publish(jyc_core::topic_event::TopicEvent::SessionStatus {
+                    topic_name: topic_name.to_string(),
                     status_type: "session_reset".to_string(),
                     attempt: None,
                     message: Some(format!("mode={mode_str}")),

@@ -4,22 +4,22 @@ use anyhow::{Context, Result};
 use toml_edit::DocumentMut;
 
 use super::handler::CommandContext;
-use crate::thread_manager::ThreadManager;
+use crate::topic_manager::TopicManager;
 
 /// Shared result of resolving pin/unpin context from a command context.
 pub struct PinContext {
     pub config_path: PathBuf,
-    pub thread_name: String,
+    pub topic_name: String,
     pub adhoc_path: PathBuf,
     pub doc: DocumentMut,
     pub ws_channels: Vec<String>,
 }
 
 /// Build a `PinContext` from the command context, validating that this is a
-/// websocket thread with a known config file path.
+/// websocket topic with a known config file path.
 pub async fn build_pin_context(
     context: &CommandContext,
-    thread_manager: &ThreadManager,
+    topic_manager: &TopicManager,
 ) -> Result<PinContext> {
     let config_path = context.config_path.clone().context("config_path is None")?;
 
@@ -29,19 +29,19 @@ pub async fn build_pin_context(
         context.channel_type
     );
 
-    let thread_name = context
-        .thread_path
+    let topic_name = context
+        .topic_path
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("unknown-thread")
+        .unwrap_or("unknown-topic")
         .to_string();
 
     let adhoc_path = {
-        let paths = thread_manager.thread_paths.lock().await;
+        let paths = topic_manager.topic_paths.lock().await;
         paths
-            .get(&thread_name)
+            .get(&topic_name)
             .cloned()
-            .unwrap_or_else(|| context.thread_path.clone())
+            .unwrap_or_else(|| context.topic_path.clone())
     };
 
     let content = tokio::fs::read_to_string(&config_path)
@@ -66,7 +66,7 @@ pub async fn build_pin_context(
 
     Ok(PinContext {
         config_path,
-        thread_name,
+        topic_name,
         adhoc_path,
         doc,
         ws_channels,
@@ -79,16 +79,16 @@ pub async fn append_pattern_to_config(
     config_path: &std::path::Path,
     channel_name: &str,
     pattern_name: &str,
-    thread_path: &std::path::Path,
+    topic_path: &std::path::Path,
 ) -> Result<()> {
     let raw = tokio::fs::read_to_string(config_path)
         .await
         .with_context(|| format!("failed to read config: {}", config_path.display()))?;
 
     // Create the new TOML section
-    let escaped_path = thread_path.to_string_lossy().replace('\\', "\\\\");
+    let escaped_path = topic_path.to_string_lossy().replace('\\', "\\\\");
     let section = format!(
-        "\n# Added by /pin command\n[[channels.{}.patterns]]\nname = \"{}\"\nenabled = true\nthread_path = \"{}\"\n",
+        "\n# Added by /pin command\n[[channels.{}.patterns]]\nname = \"{}\"\nenabled = true\ntopic_path = \"{}\"\n",
         channel_name, pattern_name, escaped_path
     );
 
@@ -102,17 +102,17 @@ pub async fn append_pattern_to_config(
     Ok(())
 }
 
-/// Remove a pattern section matching the given thread_path from the config file.
+/// Remove a pattern section matching the given topic_path from the config file.
 /// Returns true if a section was removed.
 pub async fn remove_pattern_from_config(
     config_path: &std::path::Path,
-    thread_path: &std::path::Path,
+    topic_path: &std::path::Path,
 ) -> Result<bool> {
     let raw = tokio::fs::read_to_string(config_path)
         .await
         .with_context(|| format!("failed to read config: {}", config_path.display()))?;
 
-    let target = normalize_path_line(&thread_path.to_string_lossy());
+    let target = normalize_path_line(&topic_path.to_string_lossy());
     let mut lines: Vec<String> = raw.lines().map(|l| l.to_string()).collect();
     let mut i = 0;
     let mut removed = false;
@@ -166,7 +166,7 @@ pub async fn remove_pattern_from_config(
     Ok(removed)
 }
 
-/// Check if a pattern section (starting at `lines[start]`) has a matching thread_path.
+/// Check if a pattern section (starting at `lines[start]`) has a matching topic_path.
 fn is_pattern_matching(lines: &[&str], target_path: &str) -> bool {
     // Skip the first line (the section header like `[[...]]`)
     let start = if lines
@@ -179,8 +179,8 @@ fn is_pattern_matching(lines: &[&str], target_path: &str) -> bool {
     };
     for line in &lines[start..] {
         let trimmed = line.trim();
-        if trimmed.starts_with("thread_path") {
-            // Extract the value: thread_path = "..."
+        if trimmed.starts_with("topic_path") {
+            // Extract the value: topic_path = "..."
             if let Some(val_start) = trimmed.find('"')
                 && let Some(val_end) = trimmed[val_start + 1..].find('"')
             {
@@ -297,7 +297,7 @@ enabled = true
             .unwrap();
 
         let content = tokio::fs::read_to_string(&config_path).await.unwrap();
-        assert!(content.contains("thread_path"));
+        assert!(content.contains("topic_path"));
     }
 
     #[tokio::test]
@@ -317,11 +317,11 @@ type = "websocket"
 
 [[channels.my_ws.patterns]]
 name = "a"
-thread_path = "{}"
+topic_path = "{}"
 
 [[channels.my_ws.patterns]]
 name = "b"
-thread_path = "{}"
+topic_path = "{}"
 "#,
                 tp1.to_string_lossy(),
                 tp2.to_string_lossy()

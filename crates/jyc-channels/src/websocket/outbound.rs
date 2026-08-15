@@ -39,10 +39,10 @@ impl WebsocketOutboundAdapter {
     }
 
     /// Broadcast a reply to all connected clients.
-    async fn broadcast_reply(&self, thread: &str, text: &str) -> Result<()> {
+    async fn broadcast_reply(&self, topic: &str, text: &str) -> Result<()> {
         let payload = serde_json::json!({
             "type": "reply",
-            "thread": thread,
+            "topic": topic,
             "text": text,
         })
         .to_string();
@@ -78,29 +78,29 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         &self,
         original: &InboundMessage,
         reply_text: &str,
-        thread_path: &Path,
+        topic_path: &Path,
         _message_dir: &str,
         _attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
         // Use the original message topic as the broadcast key for normal
-        // messages (topic = thread name from the WebSocket protocol).
-        // Fall back to the thread directory name for scheduled jobs, where
+        // messages (topic = topic name from the WebSocket protocol).
+        // Fall back to the topic directory name for scheduled jobs, where
         // `topic` is a descriptive string like "Scheduled job: ...".
-        let thread = if original.topic.starts_with("Scheduled job:") {
-            thread_path
+        let topic = if original.topic.starts_with("Scheduled job:") {
+            topic_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(original.topic.as_str())
         } else {
             original.topic.as_str()
         };
-        self.broadcast_reply(thread, reply_text).await?;
+        self.broadcast_reply(topic, reply_text).await?;
         let message_id = uuid::Uuid::new_v4().to_string();
 
         // Persist reply to chat log for history loading
         if let Err(e) = self
             .storage
-            .store_reply(thread_path, reply_text, _message_dir)
+            .store_reply(topic_path, reply_text, _message_dir)
             .await
         {
             tracing::warn!(error = %e, "Failed to store WebSocket reply to chat log");
@@ -131,9 +131,9 @@ mod tests {
     async fn test_send_reply_broadcasts() {
         let (tx, mut rx) = broadcast::channel(16);
         let tmp = tempfile::TempDir::new().unwrap();
-        let thread_path = tmp.path().join("general");
-        tokio::fs::create_dir_all(&thread_path).await.unwrap();
-        let storage = Arc::new(MessageStorage::new(&thread_path));
+        let topic_path = tmp.path().join("general");
+        tokio::fs::create_dir_all(&topic_path).await.unwrap();
+        let storage = Arc::new(MessageStorage::new(&topic_path));
         let adapter = WebsocketOutboundAdapter::new(tx, storage);
 
         let message = InboundMessage {
@@ -150,7 +150,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -159,31 +159,31 @@ mod tests {
         };
 
         let result = adapter
-            .send_reply(&message, "AI reply", &thread_path, "msg_001", None)
+            .send_reply(&message, "AI reply", &topic_path, "msg_001", None)
             .await;
         assert!(result.is_ok());
 
         let sent = rx.recv().await.expect("should receive broadcast");
         let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
         assert_eq!(parsed["type"], "reply");
-        assert_eq!(parsed["thread"], "general");
+        assert_eq!(parsed["topic"], "general");
         assert_eq!(parsed["text"], "AI reply");
     }
 
     /// Regression test: scheduled jobs set `topic` to a descriptive string
-    /// ("Scheduled job: ...") rather than the thread name. The broadcast
-    /// must use the thread directory name so WebSocket clients subscribed
-    /// to the thread actually receive the reply.
+    /// ("Scheduled job: ...") rather than the topic name. The broadcast
+    /// must use the topic directory name so WebSocket clients subscribed
+    /// to the topic actually receive the reply.
     #[tokio::test]
-    async fn test_send_reply_uses_thread_path_not_topic_for_job() {
+    async fn test_send_reply_uses_topic_path_not_topic_for_job() {
         let (tx, mut rx) = broadcast::channel(16);
         let tmp = tempfile::TempDir::new().unwrap();
-        let thread_path = tmp.path().join("dev");
-        tokio::fs::create_dir_all(&thread_path).await.unwrap();
-        let storage = Arc::new(MessageStorage::new(&thread_path));
+        let topic_path = tmp.path().join("dev");
+        tokio::fs::create_dir_all(&topic_path).await.unwrap();
+        let storage = Arc::new(MessageStorage::new(&topic_path));
         let adapter = WebsocketOutboundAdapter::new(tx, storage);
 
-        // Simulate a scheduled job message: topic is descriptive, not the thread name
+        // Simulate a scheduled job message: topic is descriptive, not the topic name
         let message = InboundMessage {
             id: "job-123".to_string(),
             channel: "websocket".to_string(),
@@ -198,7 +198,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -207,15 +207,15 @@ mod tests {
         };
 
         let result = adapter
-            .send_reply(&message, "CI passed!", &thread_path, "msg_001", None)
+            .send_reply(&message, "CI passed!", &topic_path, "msg_001", None)
             .await;
         assert!(result.is_ok());
 
         let sent = rx.recv().await.expect("should receive broadcast");
         let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
         assert_eq!(parsed["type"], "reply");
-        // Thread must be "dev" (from thread_path), NOT "Scheduled job: ..."
-        assert_eq!(parsed["thread"], "dev");
+        // Topic must be "dev" (from topic_path), NOT "Scheduled job: ..."
+        assert_eq!(parsed["topic"], "dev");
         assert_eq!(parsed["text"], "CI passed!");
     }
 
@@ -224,9 +224,9 @@ mod tests {
         // broadcast with no receivers should still succeed
         let tx = broadcast::channel(16).0;
         let tmp = tempfile::TempDir::new().unwrap();
-        let thread_path = tmp.path().join("general");
-        tokio::fs::create_dir_all(&thread_path).await.unwrap();
-        let storage = Arc::new(MessageStorage::new(&thread_path));
+        let topic_path = tmp.path().join("general");
+        tokio::fs::create_dir_all(&topic_path).await.unwrap();
+        let storage = Arc::new(MessageStorage::new(&topic_path));
         let adapter = WebsocketOutboundAdapter::new(tx, storage);
 
         let message = InboundMessage {
@@ -243,7 +243,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -252,7 +252,7 @@ mod tests {
         };
 
         let result = adapter
-            .send_reply(&message, "AI reply", &thread_path, "msg_001", None)
+            .send_reply(&message, "AI reply", &topic_path, "msg_001", None)
             .await;
         assert!(result.is_ok());
     }
@@ -260,9 +260,9 @@ mod tests {
     #[test]
     fn test_clean_body_passthrough() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let thread_path = tmp.path().join("general");
-        std::fs::create_dir_all(&thread_path).unwrap();
-        let storage = Arc::new(MessageStorage::new(&thread_path));
+        let topic_path = tmp.path().join("general");
+        std::fs::create_dir_all(&topic_path).unwrap();
+        let storage = Arc::new(MessageStorage::new(&topic_path));
         let adapter = WebsocketOutboundAdapter::new(broadcast::channel(16).0, storage);
         assert_eq!(adapter.clean_body("hello\nworld"), "hello\nworld");
     }

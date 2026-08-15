@@ -4,49 +4,49 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 
-use crate::thread_event::ThreadEvent;
+use crate::topic_event::TopicEvent;
 
 /// Maximum number of events to buffer for late subscribers.
 ///
-/// A small buffer suffices because the ActivityTracker discovers new threads
+/// A small buffer suffices because the ActivityTracker discovers new topics
 /// within 2 seconds. The buffer prevents events from being permanently lost
 /// when no subscriber has yet subscribed (e.g., AI replies faster than the
 /// ActivityTracker's discovery interval).
 const EVENT_LOG_CAPACITY: usize = 20;
 
-/// Thread-isolated event bus trait.
+/// Topic-isolated event bus trait.
 ///
-/// Each thread has its own event bus instance to ensure complete isolation
-/// between threads. Events from one thread never leak to another.
+/// Each topic has its own event bus instance to ensure complete isolation
+/// between topics. Events from one topic never leak to another.
 #[async_trait]
-pub trait ThreadEventBus: Send + Sync {
-    /// Publish an event to this thread's event bus.
+pub trait TopicEventBus: Send + Sync {
+    /// Publish an event to this topic's event bus.
     ///
     /// Returns an error if the event bus is closed or the channel is full.
-    async fn publish(&self, event: ThreadEvent) -> Result<()>;
+    async fn publish(&self, event: TopicEvent) -> Result<()>;
 
-    /// Subscribe to events from this thread's event bus.
+    /// Subscribe to events from this topic's event bus.
     ///
     /// Returns a receiver that will receive events published to this bus.
     /// Each subscriber gets its own copy of events (broadcast semantics).
     /// Late subscribers receive previously published events from the buffer.
-    async fn subscribe(&self) -> Result<mpsc::Receiver<ThreadEvent>>;
+    async fn subscribe(&self) -> Result<mpsc::Receiver<TopicEvent>>;
 }
 
-/// Simple implementation of a thread-isolated event bus.
+/// Simple implementation of a topic-isolated event bus.
 ///
 /// Uses a broadcast channel to support multiple subscribers.
 /// Events are sent to all active subscribers.
 ///
 /// Buffers recent events so that late subscribers (e.g., ActivityTracker
-/// discovering a thread after events were published) do not miss them.
+/// discovering a topic after events were published) do not miss them.
 pub struct SimpleThreadEventBus {
-    subscribers: Mutex<Vec<mpsc::Sender<ThreadEvent>>>,
-    event_log: Mutex<VecDeque<ThreadEvent>>,
+    subscribers: Mutex<Vec<mpsc::Sender<TopicEvent>>>,
+    event_log: Mutex<VecDeque<TopicEvent>>,
 }
 
 impl SimpleThreadEventBus {
-    /// Create a new thread event bus with the given capacity.
+    /// Create a new topic event bus with the given capacity.
     ///
     /// The capacity determines how many events can be queued before
     /// `publish` starts blocking or returning errors.
@@ -62,7 +62,7 @@ impl SimpleThreadEventBus {
     /// Sends events sequentially (awaited) to preserve ordering. The mpsc channel
     /// capacity (10) provides backpressure — if a subscriber falls behind, the
     /// agent will slow down rather than send events out of order.
-    async fn forward_to_subscribers(&self, event: &ThreadEvent) {
+    async fn forward_to_subscribers(&self, event: &TopicEvent) {
         let mut subscribers = self.subscribers.lock().await;
 
         // Remove closed subscribers
@@ -76,9 +76,9 @@ impl SimpleThreadEventBus {
 }
 
 #[async_trait]
-impl ThreadEventBus for SimpleThreadEventBus {
-    async fn publish(&self, event: ThreadEvent) -> Result<()> {
-        tracing::trace!("Publishing event to thread event bus");
+impl TopicEventBus for SimpleThreadEventBus {
+    async fn publish(&self, event: TopicEvent) -> Result<()> {
+        tracing::trace!("Publishing event to topic event bus");
 
         // Buffer the event so late subscribers can catch up.
         // Drop oldest if buffer is full to prevent unbounded growth.
@@ -95,7 +95,7 @@ impl ThreadEventBus for SimpleThreadEventBus {
         Ok(())
     }
 
-    async fn subscribe(&self) -> Result<mpsc::Receiver<ThreadEvent>> {
+    async fn subscribe(&self) -> Result<mpsc::Receiver<TopicEvent>> {
         let (tx, rx) = mpsc::channel(10);
 
         let mut subscribers = self.subscribers.lock().await;
@@ -117,17 +117,17 @@ impl ThreadEventBus for SimpleThreadEventBus {
     }
 }
 
-/// Type alias for Arc-wrapped thread event bus.
-pub type ThreadEventBusRef = Arc<dyn ThreadEventBus>;
+/// Type alias for Arc-wrapped topic event bus.
+pub type TopicEventBusRef = Arc<dyn TopicEventBus>;
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
     use std::sync::Arc;
 
-    fn make_event(name: &str) -> ThreadEvent {
-        ThreadEvent::ProcessingStarted {
-            thread_name: name.to_string(),
+    fn make_event(name: &str) -> TopicEvent {
+        TopicEvent::ProcessingStarted {
+            topic_name: name.to_string(),
             message_id: "test".to_string(),
             timestamp: Utc::now(),
         }
@@ -138,7 +138,7 @@ mod tests {
     /// (e.g., ProcessingCompleted arriving before ToolStarted).
     #[tokio::test]
     async fn events_delivered_in_order() {
-        let bus: Arc<dyn ThreadEventBus> = Arc::new(SimpleThreadEventBus::new(10));
+        let bus: Arc<dyn TopicEventBus> = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
         // Publish 5 events rapidly
@@ -152,9 +152,9 @@ mod tests {
         for i in 0..5 {
             let event = rx.recv().await.expect("Expected event");
             match event {
-                ThreadEvent::ProcessingStarted { thread_name, .. } => {
+                TopicEvent::ProcessingStarted { topic_name, .. } => {
                     assert_eq!(
-                        thread_name,
+                        topic_name,
                         format!("event-{}", i),
                         "Event {} out of order",
                         i
@@ -167,7 +167,7 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_subscribers_receive_all_events() {
-        let bus: Arc<dyn ThreadEventBus> = Arc::new(SimpleThreadEventBus::new(10));
+        let bus: Arc<dyn TopicEventBus> = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx1 = bus.subscribe().await.unwrap();
         let mut rx2 = bus.subscribe().await.unwrap();
 
@@ -178,10 +178,10 @@ mod tests {
             let e1 = rx.recv().await.unwrap();
             let e2 = rx.recv().await.unwrap();
             assert!(
-                matches!(&e1, ThreadEvent::ProcessingStarted { thread_name, .. } if thread_name == "first")
+                matches!(&e1, TopicEvent::ProcessingStarted { topic_name, .. } if topic_name == "first")
             );
             assert!(
-                matches!(&e2, ThreadEvent::ProcessingStarted { thread_name, .. } if thread_name == "second")
+                matches!(&e2, TopicEvent::ProcessingStarted { topic_name, .. } if topic_name == "second")
             );
         }
     }
@@ -201,11 +201,11 @@ mod tests {
 
     #[tokio::test]
     async fn late_subscriber_receives_buffered_events() {
-        // Regression test: the ActivityTracker discovers threads every 2 seconds,
+        // Regression test: the ActivityTracker discovers topics every 2 seconds,
         // but an AI reply can be generated within that window. When no subscriber
         // has yet subscribed, events must be buffered so the late subscriber
         // receives them on subscribe().
-        let bus: Arc<dyn ThreadEventBus> = Arc::new(SimpleThreadEventBus::new(10));
+        let bus: Arc<dyn TopicEventBus> = Arc::new(SimpleThreadEventBus::new(10));
 
         // Publish events BEFORE any subscriber exists (simulating the race)
         bus.publish(make_event("alpha")).await.unwrap();
@@ -216,16 +216,16 @@ mod tests {
 
         let e1 = rx.recv().await.expect("Expected buffered event");
         match e1 {
-            ThreadEvent::ProcessingStarted { thread_name, .. } => {
-                assert_eq!(thread_name, "alpha");
+            TopicEvent::ProcessingStarted { topic_name, .. } => {
+                assert_eq!(topic_name, "alpha");
             }
             _ => panic!("Unexpected event type"),
         }
 
         let e2 = rx.recv().await.expect("Expected buffered event");
         match e2 {
-            ThreadEvent::ProcessingStarted { thread_name, .. } => {
-                assert_eq!(thread_name, "beta");
+            TopicEvent::ProcessingStarted { topic_name, .. } => {
+                assert_eq!(topic_name, "beta");
             }
             _ => panic!("Unexpected event type"),
         }
@@ -234,8 +234,8 @@ mod tests {
         bus.publish(make_event("gamma")).await.unwrap();
         let e3 = rx.recv().await.expect("Expected live event");
         match e3 {
-            ThreadEvent::ProcessingStarted { thread_name, .. } => {
-                assert_eq!(thread_name, "gamma");
+            TopicEvent::ProcessingStarted { topic_name, .. } => {
+                assert_eq!(topic_name, "gamma");
             }
             _ => panic!("Unexpected event type"),
         }

@@ -65,7 +65,7 @@ impl OutboundAdapter for GiteeOutboundAdapter {
         &self,
         original: &jyc_types::InboundMessage,
         reply_text: &str,
-        thread_path: &Path,
+        topic_path: &Path,
         message_dir: &str,
         _attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
@@ -92,12 +92,12 @@ impl OutboundAdapter for GiteeOutboundAdapter {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let reply_ctx = jyc_mcp::context::load_reply_context(thread_path).await.ok();
+        let reply_ctx = jyc_mcp::context::load_reply_context(topic_path).await.ok();
         let model = reply_ctx.as_ref().and_then(|c| c.model.as_deref());
         let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
 
         let (input_tokens, max_tokens) =
-            jyc_core::session_state::read_input_tokens(thread_path).await;
+            jyc_core::session_state::read_input_tokens(topic_path).await;
 
         let footer = jyc_core::email_parser::build_footer(
             model,
@@ -124,7 +124,7 @@ impl OutboundAdapter for GiteeOutboundAdapter {
         );
 
         self.storage
-            .store_reply(thread_path, reply_text, message_dir)
+            .store_reply(topic_path, reply_text, message_dir)
             .await?;
 
         Ok(SendResult {

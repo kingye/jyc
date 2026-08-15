@@ -8,7 +8,7 @@
 //! 3. Deduplicates messages by `msgid`
 //! 4. Routes messages through the standard pattern matching
 //!
-//! Thread name follows the pattern `{channel_name}_{sanitized_open_kfid}_{sanitized_external_userid}`.
+//! Topic name follows the pattern `{channel_name}_{sanitized_open_kfid}_{sanitized_external_userid}`.
 //!
 //! Reference: https://developer.work.weixin.qq.com/document/path/94677
 
@@ -132,7 +132,7 @@ fn kf_message_to_inbound(
             markdown: None,
         },
         timestamp: chrono::Utc::now(),
-        thread_refs: None,
+        references: None,
         reply_to_id: None,
         external_id: Some(msg.msgid.clone()),
         attachments: vec![],
@@ -251,7 +251,7 @@ fn handle_kf_event(
 
                         dedup_store.mark_seen(&msg.msgid);
 
-                        // Fetch customer display name for readable thread names.
+                        // Fetch customer display name for readable topic names.
                         // Falls back to external_userid prefix (10 chars) if API fails or
                         // lacks permission (48002 api forbidden).
                         let user_name = kf_client
@@ -259,7 +259,7 @@ fn handle_kf_event(
                             .await;
                         let user_name = if user_name == msg.external_userid {
                             // API returned the userid itself (failure or no permission).
-                            // Use a short prefix for stable, readable thread names.
+                            // Use a short prefix for stable, readable topic names.
                             if msg.external_userid.len() > 10 {
                                 msg.external_userid[..10].to_string()
                             } else {
@@ -323,14 +323,14 @@ fn handle_kf_event(
     Ok(())
 }
 
-/// Shared helper to derive a KF thread name from message metadata.
+/// Shared helper to derive a KF topic name from message metadata.
 ///
 /// Format: `{sanitized_user_name}`
-/// One thread per customer (regardless of which KF account they contact).
+/// One topic per customer (regardless of which KF account they contact).
 ///
 /// Uses the customer's display name from WeCom's externalcontact/get API.
 /// Falls back to external_userid prefix if name is not available.
-fn wecomkf_derive_thread_name(message: &InboundMessage, _default_channel: &str) -> String {
+fn wecomkf_derive_topic_name(message: &InboundMessage, _default_channel: &str) -> String {
     // Prefer user_name (display name from WeCom API)
     let user_name = message
         .metadata
@@ -364,13 +364,13 @@ impl ChannelMatcher for WecomKfInboundAdapter {
         "wecomkf"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         _patterns: &[ChannelPattern],
         _pattern_match: Option<&PatternMatch>,
     ) -> String {
-        wecomkf_derive_thread_name(message, &self.channel_name)
+        wecomkf_derive_topic_name(message, &self.channel_name)
     }
 
     fn match_message(
@@ -456,13 +456,13 @@ impl ChannelMatcher for WecomKfMatcher {
         "wecomkf"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         _patterns: &[ChannelPattern],
         _pattern_match: Option<&PatternMatch>,
     ) -> String {
-        wecomkf_derive_thread_name(message, "wecomkf")
+        wecomkf_derive_topic_name(message, "wecomkf")
     }
 
     fn match_message(
@@ -481,7 +481,7 @@ mod tests {
     use crate::wecom::token_cache::AccessTokenCache;
 
     #[test]
-    fn test_derive_thread_name() {
+    fn test_derive_topic_name() {
         let config = WecomKfConfig {
             token: "test_token".to_string(),
             encoding_aes_key: "abc123abc123abc123abc123abc123abc123abc123abc123abc12".to_string(),
@@ -538,7 +538,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: Some("msg_001".to_string()),
             attachments: vec![],
@@ -546,13 +546,13 @@ mod tests {
             matched_pattern: None,
         };
 
-        let name = adapter.derive_thread_name(&message, &[], None);
+        let name = adapter.derive_topic_name(&message, &[], None);
         // external_userid "user123" is < 12 chars, so full value is used
         assert_eq!(name, "user123");
     }
 
     #[test]
-    fn test_derive_thread_name_stable_prefix() {
+    fn test_derive_topic_name_stable_prefix() {
         // WeCom external_userid has stable prefix + variable suffix
         let mut metadata = HashMap::new();
         metadata.insert(
@@ -574,7 +574,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: Some("msg_001".to_string()),
             attachments: vec![],
@@ -582,13 +582,13 @@ mod tests {
             matched_pattern: None,
         };
 
-        let name = wecomkf_derive_thread_name(&message, "my_kf_bot");
+        let name = wecomkf_derive_topic_name(&message, "my_kf_bot");
         // First 10 chars of "wmE8OcHAAA358dWFTX0hH4C_bjM15KSQ"
         assert_eq!(name, "wmE8OcHAAA");
     }
 
     #[test]
-    fn test_derive_thread_name_missing_fields() {
+    fn test_derive_topic_name_missing_fields() {
         let config = WecomKfConfig {
             token: "test_token".to_string(),
             encoding_aes_key: "abc123abc123abc123abc123abc123abc123abc123abc123abc12".to_string(),
@@ -632,7 +632,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: Some("msg_001".to_string()),
             attachments: vec![],
@@ -640,7 +640,7 @@ mod tests {
             matched_pattern: None,
         };
 
-        let name = adapter.derive_thread_name(&message, &[], None);
+        let name = adapter.derive_topic_name(&message, &[], None);
         // Falls back to "unknown_user" when external_userid is missing,
         // truncated to first 10 chars
         assert_eq!(name, "unknown_us");

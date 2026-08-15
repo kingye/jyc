@@ -20,19 +20,19 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
         .route("/api/state", get(api::get_state))
         .route("/api/state/overview", get(api::get_state_overview))
         .route(
-            "/api/threads/{channel}/{thread}/activity",
-            get(api::get_thread_activity),
+            "/api/topics/{channel}/{topic}/activity",
+            get(api::get_topic_activity),
         )
         .route(
-            "/api/threads/{channel}/{thread}/chat",
-            get(api::get_thread_chat),
+            "/api/topics/{channel}/{topic}/chat",
+            get(api::get_topic_chat),
         )
         .route("/api/channels/{channel}/patterns", get(api::get_patterns))
-        .route("/api/threads", post(api::post_thread))
+        .route("/api/topics", post(api::post_topic))
         .route("/api/config/reload", post(api::post_reload_config))
         .route("/ws", get(ws_bare))
         .route("/ws/{channel}", get(ws_channel))
-        .route("/ws/{channel}/{thread}", get(ws_thread))
+        .route("/ws/{channel}/{topic}", get(ws_topic))
         .layer(from_fn_with_state(
             context.clone(),
             crate::auth::require_bearer,
@@ -40,7 +40,7 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
 
     Router::new()
         .route(
-            "/exchange/{channel}/{thread}/{*file_path}",
+            "/exchange/{channel}/{topic}/{*file_path}",
             get(api::get_exchange_file),
         )
         .merge(authed)
@@ -55,7 +55,7 @@ async fn ws_bare(
     ws_upgrade_for_route(ws, ctx, WsRoute::Bare).await
 }
 
-/// WS upgrade for `GET /ws/<channel>` — adhoc thread on a websocket channel.
+/// WS upgrade for `GET /ws/<channel>` — adhoc topic on a websocket channel.
 async fn ws_channel(
     AxState(ctx): AxState<Arc<InspectContext>>,
     ws: WebSocketUpgrade,
@@ -64,13 +64,13 @@ async fn ws_channel(
     ws_upgrade_for_route(ws, ctx, WsRoute::Channel(channel)).await
 }
 
-/// WS upgrade for `GET /ws/<channel>/<thread>` — proxy to a thread.
-async fn ws_thread(
+/// WS upgrade for `GET /ws/<channel>/<topic>` — proxy to a topic.
+async fn ws_topic(
     AxState(ctx): AxState<Arc<InspectContext>>,
     ws: WebSocketUpgrade,
     AxPath((channel, name)): AxPath<(String, String)>,
 ) -> impl IntoResponse {
-    ws_upgrade_for_route(ws, ctx, WsRoute::Thread { channel, name }).await
+    ws_upgrade_for_route(ws, ctx, WsRoute::Topic { channel, name }).await
 }
 
 async fn ws_upgrade_for_route(
@@ -79,20 +79,20 @@ async fn ws_upgrade_for_route(
     route: WsRoute,
 ) -> axum::response::Response {
     use axum::extract::ws::Message;
-    // Extract the URL-scoped thread name (`/ws/<channel>/<thread>`) before
-    // `resolve_ws_handler` consumes `route`. Handlers that bind the thread
+    // Extract the URL-scoped topic name (`/ws/<channel>/<topic>`) before
+    // `resolve_ws_handler` consumes `route`. Handlers that bind the topic
     // from the URL (e.g. `WebsocketInboundAdapter` wrapped in
     // `ScopedWsHandler`) rely on this to route inbound chat messages
-    // without requiring a `thread` field in the payload.
-    let scoped_thread: Option<String> = match &route {
-        WsRoute::Thread { name, .. } => Some(name.clone()),
+    // without requiring a `topic` field in the payload.
+    let scoped_topic: Option<String> = match &route {
+        WsRoute::Topic { name, .. } => Some(name.clone()),
         _ => None,
     };
     match InspectServer::resolve_ws_handler(&ctx, route) {
         Ok(handler) => {
             let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
             ws.on_upgrade(move |socket| async move {
-                if let Err(e) = handler.handle(socket, addr, scoped_thread.as_deref()).await {
+                if let Err(e) = handler.handle(socket, addr, scoped_topic.as_deref()).await {
                     tracing::debug!(error = %e, "ws handler exited with error");
                 }
             })

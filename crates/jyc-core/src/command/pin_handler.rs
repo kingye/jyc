@@ -6,16 +6,16 @@ use tracing::instrument;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use super::pin_common;
-use crate::thread_manager::ThreadManager;
+use crate::topic_manager::TopicManager;
 
-/// `/pin` command — persist an ad-hoc websocket thread to config.toml.
+/// `/pin` command — persist an ad-hoc websocket topic to config.toml.
 pub struct PinCommandHandler {
-    thread_manager: Arc<ThreadManager>,
+    topic_manager: Arc<TopicManager>,
 }
 
 impl PinCommandHandler {
-    pub fn new(thread_manager: Arc<ThreadManager>) -> Self {
-        Self { thread_manager }
+    pub fn new(topic_manager: Arc<TopicManager>) -> Self {
+        Self { topic_manager }
     }
 }
 
@@ -26,13 +26,13 @@ impl CommandHandler for PinCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Pin this ad-hoc websocket thread to config.toml"
+        "Pin this ad-hoc websocket topic to config.toml"
     }
 
     #[instrument(skip(self, context))]
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         // Build the shared pin/unpin context (validates websocket channel type, etc.)
-        let ctx = match pin_common::build_pin_context(&context, &self.thread_manager).await {
+        let ctx = match pin_common::build_pin_context(&context, &self.topic_manager).await {
             Ok(c) => c,
             Err(e) => {
                 return Ok(CommandResult {
@@ -48,7 +48,7 @@ impl CommandHandler for PinCommandHandler {
 
         if ctx.ws_channels.is_empty() {
             // No websocket channel — add a new channel section + pattern to file
-            channel_name = ctx.thread_name.clone();
+            channel_name = ctx.topic_name.clone();
 
             // First add channel to file
             let channel_section = format!(
@@ -66,7 +66,7 @@ impl CommandHandler for PinCommandHandler {
             pin_common::append_pattern_to_config(
                 &ctx.config_path,
                 &channel_name,
-                &ctx.thread_name,
+                &ctx.topic_name,
                 &ctx.adhoc_path,
             )
             .await?;
@@ -82,8 +82,8 @@ impl CommandHandler for PinCommandHandler {
                 return Ok(CommandResult {
                     success: true,
                     message: format!(
-                        "Thread '{}' is already pinned to channel '{}'.",
-                        ctx.thread_name, channel_name
+                        "Topic '{}' is already pinned to channel '{}'.",
+                        ctx.topic_name, channel_name
                     ),
                     error: None,
                     append_body: None,
@@ -93,7 +93,7 @@ impl CommandHandler for PinCommandHandler {
             pin_common::append_pattern_to_config(
                 &ctx.config_path,
                 &channel_name,
-                &ctx.thread_name,
+                &ctx.topic_name,
                 &ctx.adhoc_path,
             )
             .await?;
@@ -103,8 +103,8 @@ impl CommandHandler for PinCommandHandler {
         Ok(CommandResult {
             success: true,
             message: format!(
-                "✅ Pinned thread '{}' to channel '{}' with thread_path '{}'.\n⚠️ Restart `jyc serve` for the change to take effect.",
-                ctx.thread_name, channel_name, display_path
+                "✅ Pinned topic '{}' to channel '{}' with topic_path '{}'.\n⚠️ Restart `jyc serve` for the change to take effect.",
+                ctx.topic_name, channel_name, display_path
             ),
             error: None,
             append_body: None,

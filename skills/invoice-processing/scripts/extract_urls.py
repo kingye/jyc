@@ -5,7 +5,7 @@ The full email body including forwarded URLs is saved in chat_history_*.jsonl.
 This script reads the LATEST received message and extracts invoice URLs.
 
 Usage:
-    python3 extract_urls.py [<thread_directory>]
+    python3 extract_urls.py [<topic_directory>]
 
     If no directory given, uses the current working directory.
 
@@ -26,13 +26,13 @@ import sys
 from pathlib import Path
 
 
-def extract_urls(thread_dir: str = ".") -> list[tuple[str, str]]:
+def extract_urls(topic_dir: str = ".") -> list[tuple[str, str]]:
     """Extract invoice URLs from the latest received message.
 
     Returns list of (type, url) tuples where type is INVOICE_URL or FILE_URL.
     """
     # Find the latest chat history file (.jsonl)
-    pattern = str(Path(thread_dir) / "chat_history_*.jsonl")
+    pattern = str(Path(topic_dir) / "chat_history_*.jsonl")
     files = sorted(glob.glob(pattern))
     if not files:
         return [("NO_CHAT_HISTORY", "")]
@@ -100,8 +100,8 @@ def extract_urls(thread_dir: str = ".") -> list[tuple[str, str]]:
 
 
 def main():
-    thread_dir = sys.argv[1] if len(sys.argv) > 1 else "."
-    results = extract_urls(thread_dir)
+    topic_dir = sys.argv[1] if len(sys.argv) > 1 else "."
+    results = extract_urls(topic_dir)
     for tag, url in results:
         if url:
             print(f"{tag}: {url}")

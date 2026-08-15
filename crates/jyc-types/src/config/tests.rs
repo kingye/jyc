@@ -211,10 +211,16 @@ mode = "agent"
 "#,
         )
         .unwrap_err();
-        let msg = err.to_string();
+        // anyhow's Display shows only the outermost context; the serde
+        // "unknown field" message lives in the error chain.
+        let chain = err
+            .chain()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join(" | ");
         assert!(
-            msg.contains("max_concurrent_threads"),
-            "error should name the unknown key: {msg}"
+            chain.contains("max_concurrent_threads"),
+            "error chain should name the unknown key: {chain}"
         );
     }
 
@@ -236,10 +242,14 @@ mode = "agent"
 "#,
         )
         .unwrap_err();
-        let msg = err.to_string();
+        let chain = err
+            .chain()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join(" | ");
         assert!(
-            msg.contains("thread_name"),
-            "error should name the unknown key: {msg}"
+            chain.contains("thread_name"),
+            "error chain should name the unknown key: {chain}"
         );
     }
 

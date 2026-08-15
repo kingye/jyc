@@ -175,7 +175,7 @@ app_secret = "b"
 
 [[channels.feishu_bot.patterns]]
 name = "piped"
-pipe = "local_dev"
+pipe = { channel = "local_dev", thread = "jyc" }
 
 [[channels.feishu_bot.patterns]]
 name = "plain"
@@ -187,8 +187,10 @@ mode = "agent"
         )
         .unwrap();
         let patterns = config.channels["feishu_bot"].patterns.as_ref().unwrap();
-        // Set explicitly -> parsed on the pattern.
-        assert_eq!(patterns[0].pipe.as_deref(), Some("local_dev"));
+        // Set explicitly -> parsed as the (channel, thread) mapping.
+        let pipe = patterns[0].pipe.as_ref().unwrap();
+        assert_eq!(pipe.channel, "local_dev");
+        assert_eq!(pipe.thread, "jyc");
         // Omitted -> default None (routed normally).
         assert!(patterns[1].pipe.is_none());
     }

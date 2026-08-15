@@ -221,9 +221,10 @@ heartbeat_interval_secs = 30
 name = "feishu_bot"
 enabled = true
 # Optional: pipe messages matching this pattern into another (websocket)
-# channel. Thread name = derived chat name; template/model come from the
-# target channel's pattern; replies relay back to feishu.
-# pipe = "local_dev"
+# channel's thread. The message is re-targeted and routed through the target
+# channel's own router (identical to a chat-pane message), so the target
+# pattern's thread_path/template/skills apply.
+# pipe = { channel = "local_dev", thread = "jyc" }
 
 # Feishu-specific pattern matching (placeholder - will be implemented)
 [channels.feishu_bot.patterns.rules]

@@ -4,16 +4,17 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- **Channel pattern `pipe` — use a channel as a client of another.** A
-  pattern (e.g. on a `type = "feishu"` channel) can declare `pipe =
-  "local_dev"` to forward its matching inbound messages into a websocket
-  channel's threads instead of this channel's own: thread name = the
-  derived chat name, template/model come from the target channel's
-  pattern, and replies are relayed back to this channel's users. Patterns
-  without `pipe` keep routing normally, so a channel can mix both.
-  Backward compatible — omitting `pipe` keeps the existing behavior.
+- **Channel pattern `pipe` now takes an explicit mapping**
+  (`pipe = { channel = "local_dev", thread = "jyc" }` instead of a bare
+  target channel). Matching messages are re-targeted to the target
+  channel/thread and routed through the target's own `MessageRouter` —
+  the exact same path as a chat-pane message — so the target pattern's
+  `thread_path`, template, skills and model apply identically; replies
+  are relayed back to this channel's users. Patterns without `pipe`
+  keep routing normally, so a channel can mix both. The former
+  `pipe = "<channel>"` string form is replaced by this mapping.
 
 ## [0.3.15] - 2026-08-14
 

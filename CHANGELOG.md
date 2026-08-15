@@ -6,13 +6,20 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
-- **Terminology: "topic" → "topic".** The conversation-workspace concept
-  (formerly "topic") is now "topic" everywhere — `TopicManager`,
+- **Terminology: "thread" → "topic".** The conversation-workspace concept
+  (formerly "thread") is now "topic" everywhere — `TopicManager`,
   `topic_name`/`topic_path`/`topic_prefix`, the WebSocket `topic` field,
   the `pipe = { channel, topic }` mapping, `.jyc/topic-name`, and all docs —
-  to avoid confusion with OS topics. The email `topic_refs` field became
+  to avoid confusion with OS threads. The email `topic_refs` field became
   `references` (it maps to the `References` header). A one-time migration
-  renames existing `.jyc/topic-name` files to `.jyc/topic-name`.
+  renames existing `.jyc/thread-name` files to `.jyc/topic-name`.
+
+- **Config now rejects unknown keys.** `[general]` and channel patterns use
+  `#[serde(deny_unknown_fields)]`, so a typo or a legacy `thread_*` key
+  (`max_concurrent_threads`, `max_queue_size_per_thread`, `thread_name`,
+  `thread_path`) fails at startup with an error naming the key and the
+  correct `topic_*` field — instead of being silently ignored and falling
+  back to defaults.
 
 ### Fixed
 

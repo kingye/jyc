@@ -195,6 +195,64 @@ mode = "agent"
         assert!(patterns[1].pipe.is_none());
     }
 
+    /// Legacy `thread_*` keys in `[general]` must fail loudly instead of
+    /// being silently ignored (which previously fell back to defaults).
+    #[test]
+    fn test_general_rejects_legacy_thread_keys() {
+        let err = load_config_from_str(
+            r#"
+[general]
+max_concurrent_threads = 5
+max_queue_size_per_thread = 20
+
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        )
+        .unwrap_err();
+        // anyhow's Display shows only the outermost context; the serde
+        // "unknown field" message lives in the error chain.
+        let chain = err
+            .chain()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            chain.contains("max_concurrent_threads"),
+            "error chain should name the unknown key: {chain}"
+        );
+    }
+
+    /// Legacy pattern-level `thread_*` keys must fail loudly too.
+    #[test]
+    fn test_pattern_rejects_legacy_thread_keys() {
+        let err = load_config_from_str(
+            r#"
+[channels.work]
+type = "email"
+
+[[channels.work.patterns]]
+name = "p"
+thread_name = "t"
+
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        )
+        .unwrap_err();
+        let chain = err
+            .chain()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            chain.contains("thread_name"),
+            "error chain should name the unknown key: {chain}"
+        );
+    }
+
     /// End-to-end: `api_key = "${VAR}"` round-trips through the TOML
     /// loader. `${VAR}` expands at load time; the resolved value lands
     /// in the `api_key` field.

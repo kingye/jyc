@@ -290,6 +290,7 @@ pub struct PipeTarget {
 
 /// A channel pattern defines matching rules for a specific channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChannelPattern {
     /// Pattern name (used as identifier)
     pub name: String,

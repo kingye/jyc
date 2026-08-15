@@ -195,6 +195,54 @@ mode = "agent"
         assert!(patterns[1].pipe.is_none());
     }
 
+    /// Legacy `thread_*` keys in `[general]` must fail loudly instead of
+    /// being silently ignored (which previously fell back to defaults).
+    #[test]
+    fn test_general_rejects_legacy_thread_keys() {
+        let err = load_config_from_str(
+            r#"
+[general]
+max_concurrent_threads = 5
+max_queue_size_per_thread = 20
+
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("max_concurrent_threads"),
+            "error should name the unknown key: {msg}"
+        );
+    }
+
+    /// Legacy pattern-level `thread_*` keys must fail loudly too.
+    #[test]
+    fn test_pattern_rejects_legacy_thread_keys() {
+        let err = load_config_from_str(
+            r#"
+[channels.work]
+type = "email"
+
+[[channels.work.patterns]]
+name = "p"
+thread_name = "t"
+
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("thread_name"),
+            "error should name the unknown key: {msg}"
+        );
+    }
+
     /// End-to-end: `api_key = "${VAR}"` round-trips through the TOML
     /// loader. `${VAR}` expands at load time; the resolved value lands
     /// in the `api_key` field.

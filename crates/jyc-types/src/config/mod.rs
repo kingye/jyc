@@ -175,6 +175,7 @@ pub const BUILTIN_COMMAND_NAMES: &[&str] = &[
 
 /// General application settings.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GeneralConfig {
     /// Max concurrent topic workers (default: 3)
     #[serde(default = "default_3")]

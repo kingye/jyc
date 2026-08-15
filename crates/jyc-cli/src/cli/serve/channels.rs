@@ -243,6 +243,19 @@ fn loopback_addr(bind: &str) -> String {
         .replace("[::]", "127.0.0.1")
 }
 
+/// Re-target a piped inbound message into the target channel/topic.
+///
+/// Attachments and metadata ride along untouched — only the routing
+/// identity (channel + topic) is rewritten.
+fn apply_pipe_retarget(
+    mut msg: jyc_types::InboundMessage,
+    pipe: &jyc_types::PipeTarget,
+) -> jyc_types::InboundMessage {
+    msg.channel = pipe.channel.clone();
+    msg.topic = pipe.topic.clone();
+    msg
+}
+
 /// One attachment entry parsed from a websocket `reply` broadcast payload.
 #[derive(Debug, PartialEq, Eq)]
 struct ReplyAttachmentRef {
@@ -618,11 +631,11 @@ impl InboundSpawner<'_> {
                                 tracing::warn!(channel = %pipe.channel, "feishu pipe: target channel router not found, dropping");
                                 return;
                             };
-                            let mut msg = message;
-                            msg.channel = pipe.channel.clone();
-                            msg.topic = pipe.topic.clone();
                             target_router
-                                .route(&WebsocketMatcher::new(pipe.channel.clone()), msg)
+                                .route(
+                                    &WebsocketMatcher::new(pipe.channel.clone()),
+                                    apply_pipe_retarget(message, pipe),
+                                )
                                 .await;
                         });
                         Ok(())
@@ -1267,5 +1280,56 @@ mod tests {
         assert_eq!(loopback_addr("127.0.0.1:9876"), "127.0.0.1:9876");
         assert_eq!(loopback_addr("0.0.0.0:9876"), "127.0.0.1:9876");
         assert_eq!(loopback_addr("[::]:9876"), "127.0.0.1:9876");
+    }
+
+    /// Regression: piping re-targets only channel/topic — attachment bytes
+    /// and metadata (chat_id, sender identity) must survive the forward.
+    #[test]
+    fn pipe_retarget_preserves_attachments_and_metadata() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("chat_id".to_string(), serde_json::json!("oc_abc"));
+        let msg = jyc_types::InboundMessage {
+            id: "m1".to_string(),
+            channel: "feishu_bot".to_string(),
+            channel_uid: "om_x".to_string(),
+            sender: "金晔".to_string(),
+            sender_address: "ou_abc".to_string(),
+            recipients: vec![],
+            topic: "greenfield 下单".to_string(),
+            content: jyc_types::MessageContent {
+                text: Some("[File: a.pdf]".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            references: None,
+            reply_to_id: None,
+            external_id: Some("om_x".to_string()),
+            attachments: vec![jyc_types::MessageAttachment {
+                filename: "a.pdf".to_string(),
+                content_type: "application/pdf".to_string(),
+                size: 3,
+                content: Some(vec![1, 2, 3]),
+                saved_path: None,
+            }],
+            metadata,
+            matched_pattern: None,
+        };
+        let pipe = jyc_types::PipeTarget {
+            channel: "local_dev".to_string(),
+            topic: "jyc".to_string(),
+        };
+
+        let out = apply_pipe_retarget(msg, &pipe);
+
+        assert_eq!(out.channel, "local_dev");
+        assert_eq!(out.topic, "jyc");
+        assert_eq!(out.sender, "金晔");
+        assert_eq!(out.attachments.len(), 1);
+        assert_eq!(out.attachments[0].content.as_deref(), Some(&[1, 2, 3][..]));
+        assert_eq!(
+            out.metadata.get("chat_id").and_then(|v| v.as_str()),
+            Some("oc_abc")
+        );
     }
 }

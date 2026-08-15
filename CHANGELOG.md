@@ -4,6 +4,14 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Chat pane renders piped-channel messages on the human side.** The chat
+  render treated only `sender == "user"` as the human side; a message piped
+  from another channel (e.g. feishu via `pipe`) carries the remote user's
+  display name and was mislabeled "AI:". Anything that is not the agent's
+  reply (`sender != "ai"`) now renders on the human side.
+
 ### Changed
 
 - **Channel pattern `pipe` now takes an explicit mapping**

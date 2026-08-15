@@ -10,7 +10,7 @@ Unlike the old standalone `jyc local` command, the websocket channel is a first-
 - **Runs inside `jyc serve`** — no separate process needed
 - **Multi-client support** — multiple dashboard clients via `tokio::sync::broadcast`
 - **Real-time bidirectional chat** — type messages and see AI replies stream in the dashboard
-- **Pattern-based thread selection** — patterns serve as entry points for conversations
+- **Pattern-based topic selection** — patterns serve as entry points for conversations
 - **Supports all agent features** — skills, MCP tools, model overrides work normally
 
 ## Configuration
@@ -69,15 +69,15 @@ jyc serve --workdir /path/to/data
 jyc dashboard --workdir /path/to/data
 ```
 
-Or create an ad-hoc thread directly from the CLI:
+Or create an ad-hoc topic directly from the CLI:
 
 ```bash
 cd /path/to/project
 jyc open --workdir /path/to/data
 ```
 
-The `open` command creates a websocket thread named after the current
-folder and opens it in chat mode. Use `-t/--thread`, `-p/--path`, and
+The `open` command creates a websocket topic named after the current
+folder and opens it in chat mode. Use `-t/--topic`, `-p/--path`, and
 `-c/--channel` to override the defaults.
 
 3. Press `c` to open the chat pane:
@@ -93,23 +93,23 @@ undo/redo, and standard readline-style editing keys.
 
 | Key | Action |
 |-----|--------|
-| `c` | Open chat pane (from thread list) |
+| `c` | Open chat pane (from topic list) |
 | `↑` / `↓` or `j` / `k` | Select pattern (pattern select); scroll messages (message-area focus); move cursor / recall history (input, when empty) |
 | `gg` / `G` | Jump to top / bottom of the focused pane (message-area focus) |
 | `Enter` | Select pattern / send message (chat input) |
 | `Shift+Enter` / `Alt+Enter` | Insert a newline in the chat input |
 | `Esc` | Message-area/explorer focus → back to input. Does not close the chat — use the palette (`open dashboard`) |
-| `Ctrl+P` | Open the leader-key popup: navigation (`open dashboard`, `new chat`, `reload config`, `quit`), pane actions (`z` zen, `e` explorer, `a` activity, `s` status bar, `i` thread info, `o` editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
+| `Ctrl+P` | Open the leader-key popup: navigation (`open dashboard`, `new chat`, `reload config`, `quit`), pane actions (`z` zen, `e` explorer, `a` activity, `s` status bar, `i` topic info, `o` editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
 | `Ctrl+P` → `o` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
 | `Ctrl+P` → `/` | Open the `/` command popup (same as typing `/` in an empty input, but works from any focus) |
 | `Tab` | Cycle focus: Input → Message area → Info pane → Activity pane → Explorer pane (each skipped when hidden) |
 | `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane |
 | `Ctrl+P` → `a` | Toggle activity pane: hidden ↔ bottom 20% |
-| `Ctrl+P` → `e` | Toggle the thread explorer pane (left side); `Enter` in it switches the chat to the selected thread |
+| `Ctrl+P` → `e` | Toggle the topic explorer pane (left side); `Enter` in it switches the chat to the selected topic |
 | `Ctrl+P` → `s` | Toggle the bottom status bar |
-| `Ctrl+P` → `i` | Toggle the thread info pane (right side) |
+| `Ctrl+P` → `i` | Toggle the topic info pane (right side) |
 | `Ctrl+P` → `c` | Focus the chat message area (j/k/arrow scroll); pressing any key returns focus to the input (the key itself is consumed) |
-| `Ctrl+P` → `z` | Toggle zen mode: snapshot and hide all aux panes (activity, thread info, status bar, explorer); pressing again restores the exact pre-zen state |
+| `Ctrl+P` → `z` | Toggle zen mode: snapshot and hide all aux panes (activity, topic info, status bar, explorer); pressing again restores the exact pre-zen state |
 | `Ctrl+C` | Cancel current AI processing |
 | `Shift+Tab` | Toggle plan / build mode |
 | `Ctrl+Q` | Quit the dashboard |
@@ -131,7 +131,7 @@ Normal mode (default):
 ┌────────────────────────┐
 │ Channels bar           │
 ├────────────────────────┤
-│ Threads table          │
+│ Topics table          │
 ├────────────────────────┤
 │ Detail panel (8 lines) │
 ├────────────────────────┤
@@ -141,13 +141,13 @@ Normal mode (default):
 └────────────────────────┘
 ```
 
-Chat mode (`c` toggled on). The channel bar is hidden; chat, thread info
+Chat mode (`c` toggled on). The channel bar is hidden; chat, topic info
 pane, activity pane, explorer pane, and status bar are individually
-togglable (`Ctrl+P` then `i` / `a` / `e` / `s`). The thread info pane
+togglable (`Ctrl+P` then `i` / `a` / `e` / `s`). The topic info pane
 and status bar are visible by default; zen mode (`Ctrl+P` then `z`)
 hides all auxiliary UI and restores the previous state when pressed
 again. `Ctrl+P` then `c` focuses the message area for keyboard
-scrolling; from any focused pane (message area, thread info, activity,
+scrolling; from any focused pane (message area, topic info, activity,
 explorer) pressing any key refocuses the input; the first keypress is
 consumed, so no stray characters land in the input. Each chat round has
 only a top time rule and a bottom right-aligned duration rule — there
@@ -157,7 +157,7 @@ are no side borders or middle dividers.
 Default (info + status shown):
 ┌────────────────────────┐
 │ Chat conversation      │┌─────────────┐
-│ (borderless)           ││ Thread Info │
+│ (borderless)           ││ Topic Info │
 │                        ││  (20% wide) │
 │                        ││             │
 └────────────────────────┘└─────────────┘
@@ -191,14 +191,14 @@ JSON envelope over WebSocket:
 |-----------|---------|---------|
 | Client→Server | `{"type":"list_patterns"}` | Get available patterns |
 | Server→Client | `{"type":"patterns","patterns":["general","coding-help"]}` | Pattern list response |
-| Client→Server | `{"type":"subscribe","thread":"general"}` | Subscribe to thread replies |
-| Client→Server | `{"type":"message","thread":"general","text":"hello"}` | Send message |
+| Client→Server | `{"type":"subscribe","topic":"general"}` | Subscribe to topic replies |
+| Client→Server | `{"type":"message","topic":"general","text":"hello"}` | Send message |
 
 `message` frames accept two optional fields for channel-native identity:
 `sender` (display name, default `"user"`) and `sender_address` (canonical
 address, default the connection address). Bridge processes use them to
 carry the remote user's identity (e.g. a feishu user name / open_id).
-| Server→Client | `{"type":"reply","thread":"general","text":"AI reply..."}` | Broadcast reply |
+| Server→Client | `{"type":"reply","topic":"general","text":"AI reply..."}` | Broadcast reply |
 
 ## Architecture
 
@@ -221,7 +221,7 @@ carry the remote user's identity (e.g. a feishu user name / open_id).
 │  └──────────┬────────────────────────────┘  │
 │             │                               │
 │  ┌──────────▼────────────────────────────┐  │
-│  │  MessageRouter / ThreadManager        │  │
+│  │  MessageRouter / TopicManager        │  │
 │  │  (same as other channels)             │  │
 │  └──────────┬────────────────────────────┘  │
 │             │                               │
@@ -251,16 +251,16 @@ Dashboard ◄── WebSocket ◄────── OutboundAdapter ◄───
 
 All connected dashboard clients receive broadcast replies via `tokio::sync::broadcast`.
 
-## Thread Naming
+## Topic Naming
 
-WebSocket thread names are derived from the `thread` field in client messages:
+WebSocket topic names are derived from the `topic` field in client messages:
 
 ```json
-{"type":"message","thread":"general","text":"hello"}
-{"type":"subscribe","thread":"general"}
+{"type":"message","topic":"general","text":"hello"}
+{"type":"subscribe","topic":"general"}
 ```
 
-When a message's `thread` field is non-empty, it is used as the thread name. When empty, the thread name falls back to the channel name (e.g., `my_ws`).
+When a message's `topic` field is non-empty, it is used as the topic name. When empty, the topic name falls back to the channel name (e.g., `my_ws`).
 
 Workspace files are stored under:
 
@@ -268,23 +268,23 @@ Workspace files are stored under:
 {workdir}/workspace/{channel_name}/
 ```
 
-### Multi-Thread Workspace Isolation
+### Multi-Topic Workspace Isolation
 
-Each unique `thread` value creates a separate workspace directory:
+Each unique `topic` value creates a separate workspace directory:
 
 ```
 {workdir}/workspace/{channel_name}/
-├── general/                 # thread="general"
+├── general/                 # topic="general"
 │   ├── message_001/
 │   └── .jyc/
-├── coding/                  # thread="coding"
+├── coding/                  # topic="coding"
 │   ├── message_001/
 │   └── .jyc/
-└── review/                  # thread="review"
+└── review/                  # topic="review"
     └── ...
 ```
 
-This enables completely isolated conversation contexts, skills, and file systems per thread — different threads within the same websocket channel behave like independent channels. When no `thread` is specified, the channel name is used as fallback (backward compatible).
+This enables completely isolated conversation contexts, skills, and file systems per topic — different topics within the same websocket channel behave like independent channels. When no `topic` is specified, the channel name is used as fallback (backward compatible).
 
 ## Pattern Matching
 
@@ -314,7 +314,7 @@ The full resolution chain for websocket channels (highest to lowest priority):
 | Setup complexity | High | High | Medium | Low |
 | Real-time | Polling | Webhook/WebSocket | WebSocket | Instant |
 | Multi-client | No | No | No | Yes |
-| Workspace isolation | Per-thread | Per-thread | Per-thread | Per-thread |
+| Workspace isolation | Per-topic | Per-topic | Per-topic | Per-topic |
 
 ## Workspace Layout
 

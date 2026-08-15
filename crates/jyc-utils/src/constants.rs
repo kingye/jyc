@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-// --- Thread Manager ---
+// --- Topic Manager ---
 pub const DEFAULT_MAX_CONCURRENT_THREADS: usize = 3;
 pub const DEFAULT_MAX_QUEUE_SIZE_PER_THREAD: usize = 10;
 

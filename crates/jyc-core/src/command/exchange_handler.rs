@@ -4,9 +4,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
-use crate::thread_manager::ThreadManager;
+use crate::topic_manager::TopicManager;
 
-/// /exchange command — show shareable URLs for this thread's published files.
+/// /exchange command — show shareable URLs for this topic's published files.
 ///
 /// Usage:
 ///   /exchange           List every published file as `name: url`
@@ -14,34 +14,34 @@ use crate::thread_manager::ThreadManager;
 ///
 /// Output is plain text (never a markdown link) so URLs can be copied
 /// verbatim. Reads the existing exchange token but never creates one:
-/// listing must not grant access to a thread that has published nothing.
+/// listing must not grant access to a topic that has published nothing.
 pub struct ExchangeCommandHandler {
-    thread_manager: Arc<ThreadManager>,
+    topic_manager: Arc<TopicManager>,
 }
 
 impl ExchangeCommandHandler {
-    pub fn new(thread_manager: Arc<ThreadManager>) -> Self {
-        Self { thread_manager }
+    pub fn new(topic_manager: Arc<TopicManager>) -> Self {
+        Self { topic_manager }
     }
 
-    /// Thread name as the `/exchange/...` route expects it.
+    /// Topic name as the `/exchange/...` route expects it.
     ///
-    /// The directory basename is NOT always the thread name — a pattern with
-    /// a `thread_path` override or a shared repo layout puts thread
-    /// `issue-197` in `.../repos/jin-197`. `thread_paths` holds the
+    /// The directory basename is NOT always the topic name — a pattern with
+    /// a `topic_path` override or a shared repo layout puts topic
+    /// `issue-197` in `.../repos/jin-197`. `topic_paths` holds the
     /// authoritative name→path map; fall back to the basename when the
-    /// thread has no override registered.
-    async fn thread_name(&self, thread_path: &Path) -> String {
+    /// topic has no override registered.
+    async fn topic_name(&self, topic_path: &Path) -> String {
         let registered = self
-            .thread_manager
-            .custom_thread_paths()
+            .topic_manager
+            .custom_topic_paths()
             .await
             .into_iter()
-            .find(|(_, path)| path == thread_path)
+            .find(|(_, path)| path == topic_path)
             .map(|(name, _)| name);
 
         registered.unwrap_or_else(|| {
-            thread_path
+            topic_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
@@ -57,11 +57,11 @@ impl CommandHandler for ExchangeCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Show shareable URLs for this thread's published files"
+        "Show shareable URLs for this topic's published files"
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let jyc_dir = context.thread_path.join(".jyc");
+        let jyc_dir = context.topic_path.join(".jyc");
 
         // No token means nothing was ever published (or /reset killed the
         // links). Never mint one here.
@@ -84,7 +84,7 @@ impl CommandHandler for ExchangeCommandHandler {
                     success: false,
                     message: format!("/exchange: '{wanted}' is not published"),
                     error: Some(format!(
-                        "'{wanted}' is not published in this thread. Published files: {}",
+                        "'{wanted}' is not published in this topic. Published files: {}",
                         names.join(", ")
                     )),
                     append_body: None,
@@ -100,15 +100,15 @@ impl CommandHandler for ExchangeCommandHandler {
             .unwrap_or_default()
             .effective_base_url();
         let channel = &context.channel;
-        let thread = self.thread_name(&context.thread_path).await;
+        let topic = self.topic_name(&context.topic_path).await;
 
-        Ok(ok(format_lines(&names, &base, channel, &thread, &token)))
+        Ok(ok(format_lines(&names, &base, channel, &topic, &token)))
     }
 }
 
 /// Message used both when no token exists and when the directory is empty —
 /// from the user's side these are the same situation.
-const NO_FILES: &str = "/exchange: no published files in this thread.";
+const NO_FILES: &str = "/exchange: no published files in this topic.";
 
 /// Wrap a message as a successful result.
 fn ok(message: String) -> CommandResult {
@@ -141,13 +141,13 @@ async fn read_published_names(exchange_dir: &Path) -> Vec<String> {
 
 /// Render one `name: url` line per file — no header, no markdown, so the
 /// URLs stay copy-pasteable.
-fn format_lines(names: &[String], base: &str, channel: &str, thread: &str, token: &str) -> String {
+fn format_lines(names: &[String], base: &str, channel: &str, topic: &str, token: &str) -> String {
     names
         .iter()
         .map(|name| {
             format!(
                 "{name}: {}",
-                crate::exchange_url(base, channel, thread, name, token)
+                crate::exchange_url(base, channel, topic, name, token)
             )
         })
         .collect::<Vec<_>>()

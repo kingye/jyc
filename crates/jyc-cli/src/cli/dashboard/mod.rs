@@ -29,7 +29,7 @@ use tokio::process::Command;
 use unicode_width::UnicodeWidthStr;
 
 use jyc_inspect::client::InspectClient;
-use jyc_types::{CommandInfo, InspectOverview, ModelInfo, Severity, ThreadStatus};
+use jyc_types::{CommandInfo, InspectOverview, ModelInfo, Severity, TopicStatus};
 
 use super::command_popup::*;
 
@@ -58,25 +58,25 @@ pub struct DashboardArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum DashboardCommand {
-    /// Open a directory as an ad-hoc thread and launch chat mode.
+    /// Open a directory as an ad-hoc topic and launch chat mode.
     #[command(name = "open")]
     Open(OpenArgs),
 }
 
-/// Arguments for opening a directory as an ad-hoc thread.
+/// Arguments for opening a directory as an ad-hoc topic.
 ///
 /// Shared by `jyc dashboard open` and the top-level `jyc open` shortcut.
 #[derive(Args, Debug)]
 pub struct OpenArgs {
-    /// Thread name (defaults to folder name of --path or current directory)
+    /// Topic name (defaults to folder name of --path or current directory)
     #[arg(short = 't', long)]
-    pub thread: Option<String>,
+    pub topic: Option<String>,
 
     /// Websocket channel name (auto-detected if only one exists)
     #[arg(short = 'c', long)]
     pub channel: Option<String>,
 
-    /// Thread working directory (defaults to current directory)
+    /// Topic working directory (defaults to current directory)
     #[arg(short = 'p', long)]
     pub path: Option<String>,
 }
@@ -89,8 +89,8 @@ struct App {
     should_quit: bool,
     status_message: Option<(String, std::time::Instant)>,
     /// Set by the explorer pane when it switches the chat to a new
-    /// thread; the async poll loop picks it up and hydrates the live
-    /// buffers so the chat pane shows the new thread's history.
+    /// topic; the async poll loop picks it up and hydrates the live
+    /// buffers so the chat pane shows the new topic's history.
     pending_hydrate: Option<(String, String)>,
 
     /// Set by the leader `new chat` action; the async poll loop runs the
@@ -117,14 +117,14 @@ struct App {
     /// Authorization token propagated to the WebSocket upgrade requests.
     token: Option<String>,
 
-    /// WS connection for the currently-selected overview thread.
+    /// WS connection for the currently-selected overview topic.
     /// Live-feeds `live_activity` so the activity pane updates without polling.
     overview_ws_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     overview_ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>,
-    /// (channel, thread) the overview WS is currently scoped to.
+    /// (channel, topic) the overview WS is currently scoped to.
     overview_ws_target: Option<(String, String)>,
 
-    /// Chat pane state (WebSocket thread chat for any channel type).
+    /// Chat pane state (WebSocket topic chat for any channel type).
     chat: ChatState,
 }
 
@@ -180,7 +180,7 @@ impl App {
     /// Emit the terminal escape sequence that matches the current
     /// `mouse_capture_enabled` state. Writes to an arbitrary writer so
     /// tests can pass a `Vec<u8>` and assert the emitted bytes; the
-    /// thin `apply_mouse_capture` wrapper below threads through stdout.
+    /// thin `apply_mouse_capture` wrapper below topics through stdout.
     /// Crossterm mouse toggles don't go through the ratatui backend, so
     /// we write directly here (matches the `EnableMouseCapture` /
     /// `DisableMouseCapture` usage at startup and shutdown).
@@ -197,8 +197,8 @@ impl App {
         self.apply_mouse_capture_to(std::io::stdout().lock())
     }
 
-    fn next_thread(&mut self) {
-        let count = self.state.as_ref().map(|s| s.threads.len()).unwrap_or(0);
+    fn next_topic(&mut self) {
+        let count = self.state.as_ref().map(|s| s.topics.len()).unwrap_or(0);
         if count == 0 {
             return;
         }
@@ -209,8 +209,8 @@ impl App {
         self.table_state.select(Some(i));
     }
 
-    fn prev_thread(&mut self) {
-        let count = self.state.as_ref().map(|s| s.threads.len()).unwrap_or(0);
+    fn prev_topic(&mut self) {
+        let count = self.state.as_ref().map(|s| s.topics.len()).unwrap_or(0);
         if count == 0 {
             return;
         }
@@ -233,7 +233,7 @@ impl App {
                 self.chat.ws_connected = true;
                 // The WS protocol no longer carries `list_patterns` or
                 // `subscribe` commands — history is loaded via REST and
-                // thread scope comes from the URL. Nothing to do here.
+                // topic scope comes from the URL. Nothing to do here.
             }
             WsEvent::Disconnected => {
                 self.chat.ws_connected = false;
@@ -461,7 +461,7 @@ impl MouseFragmentFilter {
 pub async fn run(
     args: &DashboardArgs,
     workdir: &std::path::Path,
-    initial_thread: Option<&str>,
+    initial_topic: Option<&str>,
     initial_channel: Option<&str>,
 ) -> Result<()> {
     // Auto-spawn jyc serve FIRST - it writes <workdir>/auth.token on
@@ -527,12 +527,12 @@ pub async fn run(
             tokio::sync::mpsc::unbounded_channel::<Result<InspectOverview>>();
         let mut poll_in_flight = false;
 
-        // If a thread was requested on the CLI, open chat directly.
-        if let Some(thread) = initial_thread {
+        // If a topic was requested on the CLI, open chat directly.
+        if let Some(topic) = initial_topic {
             let channel = initial_channel.unwrap_or("");
             app.chat
-                .open(&args.addr, initial_channel, Some(thread), app.token.clone());
-            hydrate_live(&client, &mut app, channel, thread).await;
+                .open(&args.addr, initial_channel, Some(topic), app.token.clone());
+            hydrate_live(&client, &mut app, channel, topic).await;
         }
 
         loop {
@@ -551,15 +551,15 @@ pub async fn run(
                 last_poll = std::time::Instant::now();
                 match result {
                     Ok(overview) => {
-                        // Clear awaiting_response once the server confirms the thread
+                        // Clear awaiting_response once the server confirms the topic
                         // is no longer processing (with a small grace period to avoid
                         // flicker between the local flag and server state).
                         if app.chat.awaiting_response
-                            && let Some(ref chat_name) = app.chat.thread
+                            && let Some(ref chat_name) = app.chat.topic
                         {
-                            let ct = overview.threads.iter().find(|t| t.name == *chat_name);
+                            let ct = overview.topics.iter().find(|t| t.name == *chat_name);
                             if let Some(ct) = ct
-                                && ct.status != ThreadStatus::Processing
+                                && ct.status != TopicStatus::Processing
                             {
                                 app.chat.awaiting_response = false;
                             }
@@ -570,13 +570,13 @@ pub async fn run(
                         // populated by REST hydrate on selection and updated by
                         // WS `chat_message` events.
                         if let Some(channel) = app.chat.channel.as_deref()
-                            && let Some(thread) = app.chat.thread.as_deref()
+                            && let Some(topic) = app.chat.topic.as_deref()
                         {
                             // Collect into a Vec first to release the immutable
                             // borrow on app.chat.live_chat before mutating
                             // app.chat.messages.
                             let live_msgs: Vec<jyc_types::ChatMessageEntry> =
-                                app.chat.live_chat_for(channel, thread).cloned().collect();
+                                app.chat.live_chat_for(channel, topic).cloned().collect();
                             let mut new_msg = false;
                             for msg in &live_msgs {
                                 // Dedup by (sender, text) instead of
@@ -607,18 +607,18 @@ pub async fn run(
 
                         app.state = Some(overview);
                         if let Some(ref s) = app.state {
-                            // Auto-select the first thread on initial load so the
+                            // Auto-select the first topic on initial load so the
                             // activity pane is populated immediately via the existing
                             // hydrate + ensure_overview_ws paths. The user can still
-                            // navigate to a different thread (↑/↓).
-                            if app.table_state.selected().is_none() && !s.threads.is_empty() {
+                            // navigate to a different topic (↑/↓).
+                            if app.table_state.selected().is_none() && !s.topics.is_empty() {
                                 app.table_state.select(Some(0));
                             }
                             app.chat.commands = s.commands.clone();
                             app.chat.models = s.models.clone();
 
                             // Hydrate the live buffers when the table-selected
-                            // thread changes (so the overview's activity pane
+                            // topic changes (so the overview's activity pane
                             // shows recent entries without requiring the user
                             // to open chat first). Skip if we're in chat mode
                             // — the open() flow already triggered hydrate.
@@ -626,10 +626,10 @@ pub async fn run(
                                 let selected = app
                                     .table_state
                                     .selected()
-                                    .and_then(|idx| s.threads.get(idx))
+                                    .and_then(|idx| s.topics.get(idx))
                                     .map(|t| (t.channel.clone(), t.name.clone()));
-                                if let Some((channel, thread)) = selected {
-                                    let key = (channel.clone(), thread.clone());
+                                if let Some((channel, topic)) = selected {
+                                    let key = (channel.clone(), topic.clone());
                                     let needs_hydrate =
                                         app.chat.last_hydrated_key.as_ref() != Some(&key);
                                     if needs_hydrate {
@@ -637,9 +637,9 @@ pub async fn run(
                                     }
                                     let _ = s; // drop the immutable borrow on app.state
                                     if needs_hydrate {
-                                        hydrate_live(&client, &mut app, &channel, &thread).await;
+                                        hydrate_live(&client, &mut app, &channel, &topic).await;
                                     }
-                                    ensure_overview_ws(&mut app, &args.addr, &channel, &thread);
+                                    ensure_overview_ws(&mut app, &args.addr, &channel, &topic);
                                 }
                             }
                         }
@@ -651,11 +651,11 @@ pub async fn run(
                 }
             }
 
-            // Hydrate the new thread's history when the explorer pane
+            // Hydrate the new topic's history when the explorer pane
             // switches the chat. Deferred here because the sync key
             // handler can't await on InspectClient.
-            if let Some((channel, thread)) = app.pending_hydrate.take() {
-                hydrate_live(&client, &mut app, &channel, &thread).await;
+            if let Some((channel, topic)) = app.pending_hydrate.take() {
+                hydrate_live(&client, &mut app, &channel, &topic).await;
             }
 
             // Leader actions deferred for the same reason.
@@ -758,21 +758,21 @@ pub async fn run(
     result
 }
 
-/// Open a directory as an ad-hoc websocket thread and launch chat mode.
+/// Open a directory as an ad-hoc websocket topic and launch chat mode.
 ///
-/// Resolves the thread name (from explicit `-t` or the folder name of `-p`),
+/// Resolves the topic name (from explicit `-t` or the folder name of `-p`),
 /// the websocket channel (explicit `-c` or auto-detected when only one
-/// exists), and the absolute thread path. Sends a `create_thread` message
-/// over the websocket, waits for the inspect server to report the thread,
-/// then opens the dashboard with chat already focused on the thread.
+/// exists), and the absolute topic path. Sends a `create_topic` message
+/// over the websocket, waits for the inspect server to report the topic,
+/// then opens the dashboard with chat already focused on the topic.
 ///
 /// The target directory may be brand new or already contain a `.jyc`
-/// subdirectory; in either case the path is registered as the thread's
+/// subdirectory; in either case the path is registered as the topic's
 /// working directory.
 pub async fn run_open(
     addr: &str,
     workdir: &std::path::Path,
-    thread: Option<&str>,
+    topic: Option<&str>,
     channel: Option<&str>,
     path: Option<&str>,
     explicit_token: Option<&str>,
@@ -784,14 +784,14 @@ pub async fn run_open(
 
     let token = resolve_dashboard_token(explicit_token, workdir)?;
 
-    // Resolve thread path and name
-    let path = resolve_thread_path(path)?;
-    let thread = derive_thread_name(&path, thread);
+    // Resolve topic path and name
+    let path = resolve_topic_path(path)?;
+    let topic = derive_topic_name(&path, topic);
 
-    // If the directory was previously opened as a thread, the thread-name file
+    // If the directory was previously opened as a topic, the topic-name file
     // records the canonical name. Refuse to re-open it under a different name
     // to avoid diverging history and storage paths.
-    check_existing_thread_name(&path, &thread)?;
+    check_existing_topic_name(&path, &topic)?;
 
     // Resolve websocket channel using inspect state
     let client = match &token {
@@ -801,30 +801,30 @@ pub async fn run_open(
     let channel = resolve_websocket_channel(&client, channel).await?;
 
     tracing::info!(
-        thread = %thread,
+        topic = %topic,
         channel = %channel,
         path = %path,
-        "Opening directory as ad-hoc thread via dashboard CLI"
+        "Opening directory as ad-hoc topic via dashboard CLI"
     );
 
-    // Register the ad-hoc thread via REST. Replaces the old WebSocket
-    // `create_thread` command.
-    match client.create_thread(&channel, &thread, &path).await {
+    // Register the ad-hoc topic via REST. Replaces the old WebSocket
+    // `create_topic` command.
+    match client.create_topic(&channel, &topic, &path).await {
         Ok((true, msg)) => {
-            tracing::debug!(message = %msg, "Thread created via REST");
+            tracing::debug!(message = %msg, "Topic created via REST");
         }
         Ok((false, msg)) => {
-            anyhow::bail!("create_thread failed: {msg}");
+            anyhow::bail!("create_topic failed: {msg}");
         }
         Err(e) => {
-            anyhow::bail!("create_thread error: {e:#}");
+            anyhow::bail!("create_topic error: {e:#}");
         }
     }
 
-    // Wait for the inspect server to report the thread
-    wait_for_thread(&client, &thread, &channel).await?;
+    // Wait for the inspect server to report the topic
+    wait_for_topic(&client, &topic, &channel).await?;
 
-    // Open dashboard directly in chat mode for the thread
+    // Open dashboard directly in chat mode for the topic
     run(
         &DashboardArgs {
             addr: addr.to_string(),
@@ -832,7 +832,7 @@ pub async fn run_open(
             command: None,
         },
         workdir,
-        Some(&thread),
+        Some(&topic),
         Some(&channel),
     )
     .await
@@ -864,13 +864,13 @@ fn resolve_dashboard_token(
     }
 }
 
-/// Resolve the thread path to an absolute filesystem path.
+/// Resolve the topic path to an absolute filesystem path.
 ///
 /// Expands a leading `~` to `$HOME`. Relative paths are resolved against the
 /// current working directory. If the path exists, it is canonicalized; otherwise
 /// the absolute path is returned as-is so that new directories can be created
 /// later by the storage layer.
-fn resolve_thread_path(path: Option<&str>) -> Result<String> {
+fn resolve_topic_path(path: Option<&str>) -> Result<String> {
     let path = path.unwrap_or(".");
     let expanded = if let Some(stripped) = path.strip_prefix("~") {
         dirs_home()
@@ -896,9 +896,9 @@ fn dirs_home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-/// Derive the thread name from explicit input or the folder name of the path.
-fn derive_thread_name(path: &str, thread: Option<&str>) -> String {
-    if let Some(name) = thread {
+/// Derive the topic name from explicit input or the folder name of the path.
+fn derive_topic_name(path: &str, topic: Option<&str>) -> String {
+    if let Some(name) = topic {
         return name.to_string();
     }
     PathBuf::from(path)
@@ -909,24 +909,27 @@ fn derive_thread_name(path: &str, thread: Option<&str>) -> String {
 }
 
 /// Verify that the directory has not already been registered under a
-/// different thread name.
+/// different topic name.
 ///
-/// If `<path>/.jyc/thread-name` exists and contains a non-empty name that
-/// differs from `thread`, returns an error to prevent diverging history and
+/// If `<path>/.jyc/topic-name` exists and contains a non-empty name that
+/// differs from `topic`, returns an error to prevent diverging history and
 /// storage paths.
-fn check_existing_thread_name(path: &str, thread: &str) -> Result<()> {
-    let thread_name_file = PathBuf::from(path).join(".jyc").join("thread-name");
-    if thread_name_file.exists() {
-        let existing = std::fs::read_to_string(&thread_name_file)
-            .with_context(|| format!("failed to read {}", thread_name_file.display()))?;
+fn check_existing_topic_name(path: &str, topic: &str) -> Result<()> {
+    let jyc_dir = PathBuf::from(path).join(".jyc");
+    // One-time migration for the topic → topic rename.
+    jyc_core::topic_path::migrate_topic_name_file(&jyc_dir);
+    let topic_name_file = jyc_dir.join("topic-name");
+    if topic_name_file.exists() {
+        let existing = std::fs::read_to_string(&topic_name_file)
+            .with_context(|| format!("failed to read {}", topic_name_file.display()))?;
         let existing = existing.trim();
-        if !existing.is_empty() && existing != thread {
+        if !existing.is_empty() && existing != topic {
             anyhow::bail!(
-                "directory '{}' is already registered as thread '{}'; \
+                "directory '{}' is already registered as topic '{}'; \
                  cannot open as '{}'. Use 'jyc open -t {} -p {}' instead",
                 path,
                 existing,
-                thread,
+                topic,
                 existing,
                 path
             );
@@ -967,66 +970,63 @@ async fn resolve_websocket_channel(
     }
 }
 
-/// Poll the inspect server until the newly created thread appears in state.
-async fn wait_for_thread(client: &InspectClient, thread: &str, channel: &str) -> Result<()> {
+/// Poll the inspect server until the newly created topic appears in state.
+async fn wait_for_topic(client: &InspectClient, topic: &str, channel: &str) -> Result<()> {
     for _ in 0..50 {
         let overview = client.get_overview().await?;
         if overview
-            .threads
+            .topics
             .iter()
-            .any(|t| t.name == thread && t.channel == channel)
+            .any(|t| t.name == topic && t.channel == channel)
         {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    anyhow::bail!("Timeout waiting for thread {thread} to be created")
+    anyhow::bail!("Timeout waiting for topic {topic} to be created")
 }
 
-/// REST hydrate the live activity + chat buffers for the given thread.
+/// REST hydrate the live activity + chat buffers for the given topic.
 ///
-/// Called after the user opens a chat (Enter on a thread, `c` to start fresh,
-/// or `--thread` on the CLI). Subsequent live updates arrive over the
+/// Called after the user opens a chat (Enter on a topic, `c` to start fresh,
+/// or `--topic` on the CLI). Subsequent live updates arrive over the
 /// WebSocket and are appended to the same buffers; the activity pane and
 /// chat progress read exclusively from these buffers.
 ///
 /// Errors are logged but not propagated — the buffers will simply be empty
 /// (the activity pane shows "No activity" until the next WS event arrives).
-async fn hydrate_live(client: &InspectClient, app: &mut App, channel: &str, thread: &str) {
-    // Drop stale WS-fed processing/thinking state for this thread (it may
+async fn hydrate_live(client: &InspectClient, app: &mut App, channel: &str, topic: &str) {
+    // Drop stale WS-fed processing/thinking state for this topic (it may
     // have changed while unwatched); the renderer falls back to the polled
     // overview status until fresh WS events arrive.
-    app.chat.clear_live_transient(channel, thread);
+    app.chat.clear_live_transient(channel, topic);
     // Activity first (chat pane progress depends on it).
     match client
-        .get_thread_activity(channel, thread, None, Some(180))
+        .get_topic_activity(channel, topic, None, Some(180))
         .await
     {
         Ok(activity) => {
             // Chat second.
-            match client
-                .get_thread_chat(channel, thread, None, Some(100))
-                .await
-            {
+            match client.get_topic_chat(channel, topic, None, Some(100)).await {
                 Ok(chat) => {
-                    app.chat.seed_live(channel, thread, activity, chat);
+                    app.chat.seed_live(channel, topic, activity, chat);
                 }
                 Err(e) => {
                     tracing::warn!(
                         channel = %channel,
-                        thread = %thread,
+                        topic = %topic,
                         error = %e,
                         "failed to hydrate chat history (activity pane may be empty)"
                     );
                     // Still seed activity so the activity pane at least has entries.
-                    app.chat.seed_live(channel, thread, activity, Vec::new());
+                    app.chat.seed_live(channel, topic, activity, Vec::new());
                 }
             }
         }
         Err(e) => {
             tracing::warn!(
                 channel = %channel,
-                thread = %thread,
+                topic = %topic,
                 error = %e,
                 "failed to hydrate activity (activity pane will be empty until WS events arrive)"
             );
@@ -1053,21 +1053,21 @@ async fn start_new_chat(app: &mut App, addr: &str, client: &InspectClient) {
     }
 }
 
-/// Open the chat screen for the table-selected thread. All channel types
-/// use the unified `/ws/<channel>/<thread>` endpoint. Used by the Enter key
+/// Open the chat screen for the table-selected topic. All channel types
+/// use the unified `/ws/<channel>/<topic>` endpoint. Used by the Enter key
 /// and the leader `open chat` action.
-async fn open_selected_thread_chat(app: &mut App, client: &InspectClient, addr: &str) {
-    let thread_info = app.state.as_ref().and_then(|s| {
+async fn open_selected_topic_chat(app: &mut App, client: &InspectClient, addr: &str) {
+    let topic_info = app.state.as_ref().and_then(|s| {
         app.table_state
             .selected()
-            .and_then(|i| s.threads.get(i))
+            .and_then(|i| s.topics.get(i))
             .map(|t| (t.name.clone(), t.channel.clone()))
     });
-    if let Some((name, channel)) = thread_info {
+    if let Some((name, channel)) = topic_info {
         app.chat
             .open(addr, Some(&channel), Some(&name), app.token.clone());
         // Chat WS takes over live events. Close the overview WS
-        // so we don't have two connections to the same thread.
+        // so we don't have two connections to the same topic.
         close_overview_ws(app);
         // REST hydrate the live buffers (activity + chat) so the
         // activity pane and chat progress show recent entries
@@ -1119,7 +1119,7 @@ async fn handle_normal_keys(
                 app.leader = None;
                 use local_commands::LocalAction;
                 match action {
-                    LocalAction::OpenChat => open_selected_thread_chat(app, client, addr).await,
+                    LocalAction::OpenChat => open_selected_topic_chat(app, client, addr).await,
                     LocalAction::NewChat => start_new_chat(app, addr, client).await,
                     LocalAction::ReloadConfig => reload_server_config(app, client, last_poll).await,
                     LocalAction::Quit => app.should_quit = true,
@@ -1142,17 +1142,17 @@ async fn handle_normal_keys(
     match key.code {
         KeyCode::Char('c') => {
             // After the user picks a pattern, `select_pattern` opens a
-            // scoped WS to `/ws/<channel>/<thread>`.
+            // scoped WS to `/ws/<channel>/<topic>`.
             start_new_chat(app, addr, client).await;
         }
         KeyCode::Enter => {
-            open_selected_thread_chat(app, client, addr).await;
+            open_selected_topic_chat(app, client, addr).await;
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            app.next_thread();
+            app.next_topic();
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            app.prev_thread();
+            app.prev_topic();
         }
         KeyCode::Char('R') => {
             reload_server_config(app, client, last_poll).await;
@@ -1192,19 +1192,19 @@ fn ui(frame: &mut Frame, app: &mut App) {
 }
 
 fn ui_normal_mode(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Main layout: channels bar | threads table | detail panel | status bar
+    // Main layout: channels bar | topics table | detail panel | status bar
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),      // Channels bar
-            Constraint::Percentage(40), // Threads table
+            Constraint::Percentage(40), // Topics table
             Constraint::Percentage(60), // Detail panel + activity log
             Constraint::Length(1),      // Status bar
         ])
         .split(area);
 
     render_channels(frame, chunks[0], app);
-    render_threads(frame, chunks[1], app);
+    render_topics(frame, chunks[1], app);
     render_details(frame, chunks[2], app);
     render_status_bar(frame, chunks[3], app);
 
@@ -1269,18 +1269,18 @@ fn render_channels(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(channels_para, inner);
 }
 
-fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {
+fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
     let state = match &app.state {
         Some(s) => s,
         None => {
-            let block = Block::default().title(" Threads ").borders(Borders::ALL);
+            let block = Block::default().title(" Topics ").borders(Borders::ALL);
             frame.render_widget(block, area);
             return;
         }
     };
 
     let header = Row::new(vec![
-        Cell::from("Thread"),
+        Cell::from("Topic"),
         Cell::from("Channel"),
         Cell::from("Pattern"),
         Cell::from("Status"),
@@ -1291,15 +1291,15 @@ fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {
     .height(1);
 
     let rows: Vec<Row> = state
-        .threads
+        .topics
         .iter()
         .map(|t| {
             let status_style = match t.status {
-                ThreadStatus::Processing => Style::default().fg(Color::Green),
-                ThreadStatus::Queued => Style::default().fg(Color::Yellow),
-                ThreadStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
-                ThreadStatus::Idle => Style::default().fg(Color::DarkGray),
-                ThreadStatus::Error => Style::default().fg(Color::Red),
+                TopicStatus::Processing => Style::default().fg(Color::Green),
+                TopicStatus::Queued => Style::default().fg(Color::Yellow),
+                TopicStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
+                TopicStatus::Idle => Style::default().fg(Color::DarkGray),
+                TopicStatus::Error => Style::default().fg(Color::Red),
             };
 
             let tokens = match (t.context_input_tokens, t.max_tokens) {
@@ -1332,7 +1332,7 @@ fn render_threads(frame: &mut Frame, area: Rect, app: &mut App) {
         .header(header)
         .block(
             Block::default()
-                .title(format!(" Threads ({}) ", state.threads.len()))
+                .title(format!(" Topics ({}) ", state.topics.len()))
                 .borders(Borders::ALL),
         )
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
@@ -1350,16 +1350,13 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    let selected = app
-        .table_state
-        .selected()
-        .and_then(|i| state.threads.get(i));
+    let selected = app.table_state.selected().and_then(|i| state.topics.get(i));
 
     let selected = match selected {
         Some(t) => t,
         None => {
             let block = Block::default().title(" Details ").borders(Borders::ALL);
-            let text = Paragraph::new("Select a thread with ↑/↓").block(block);
+            let text = Paragraph::new("Select a topic with ↑/↓").block(block);
             frame.render_widget(text, area);
             return;
         }
@@ -1369,21 +1366,21 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     let detail_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(9), // Thread info (Branch row conditionally added)
+            Constraint::Length(9), // Topic info (Branch row conditionally added)
             Constraint::Min(4),    // Activity log
         ])
         .split(area);
 
-    // Thread info panel
+    // Topic info panel
     let info_block = Block::default()
         .title(format!(" {} ", selected.name))
         .borders(Borders::LEFT);
 
     let mut info_lines = vec![];
 
-    // Branch is resolved server-side and shipped on ThreadSummary.branch.
-    // Render only when present — most chat-channel threads (feishu/wecom)
-    // have a thread_path that isn't a git repo, so an absent row keeps
+    // Branch is resolved server-side and shipped on TopicSummary.branch.
+    // Render only when present — most chat-channel topics (feishu/wecom)
+    // have a topic_path that isn't a git repo, so an absent row keeps
     // noise down for them.
     if let Some(branch) = selected.branch.as_deref() {
         info_lines.push(Line::from(vec![
@@ -1429,18 +1426,18 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(
             format!("{}", selected.status),
             match selected.status {
-                ThreadStatus::Processing => Style::default().fg(Color::Green),
-                ThreadStatus::Queued => Style::default().fg(Color::Yellow),
-                ThreadStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
-                ThreadStatus::Idle => Style::default().fg(Color::DarkGray),
-                ThreadStatus::Error => Style::default().fg(Color::Red),
+                TopicStatus::Processing => Style::default().fg(Color::Green),
+                TopicStatus::Queued => Style::default().fg(Color::Yellow),
+                TopicStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
+                TopicStatus::Idle => Style::default().fg(Color::DarkGray),
+                TopicStatus::Error => Style::default().fg(Color::Red),
             },
         ),
     ];
     // Live-duration ticker. While the agent loop is alive, append a
     // yellow italic `(12.4s)` suffix to the status chip so the dashboard
     // shows wall-clock elapsed time even during silent LLM/tool work.
-    if selected.status == ThreadStatus::Processing
+    if selected.status == TopicStatus::Processing
         && let Some(ms) = app.chat.live_tick_ms_for(&selected.channel, &selected.name)
     {
         status_line.push(Span::styled(
@@ -1491,7 +1488,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     let info = Paragraph::new(info_lines).block(info_block);
     frame.render_widget(info, detail_chunks[0]);
 
-    // Activity log panel — read from the WS-fed live buffer for this thread.
+    // Activity log panel — read from the WS-fed live buffer for this topic.
     let activity_vec: Vec<jyc_types::ActivityEntry> = app
         .chat
         .live_activity_for(&selected.channel, &selected.name)
@@ -1500,20 +1497,20 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     render_activity_log_inner(frame, detail_chunks[1], &activity_vec, 0, 0, false);
 }
 
-/// Open (or swap to a new) overview WS for the selected thread.
+/// Open (or swap to a new) overview WS for the selected topic.
 ///
-/// If `app.overview_ws_target` already matches the new (channel, thread),
+/// If `app.overview_ws_target` already matches the new (channel, topic),
 /// this is a no-op. Otherwise the previous overview WS is gracefully
 /// closed (sends `disconnect` so the spawned task exits), and a new WS
-/// task is spawned against `/ws/<channel>/<thread>`.
+/// task is spawned against `/ws/<channel>/<topic>`.
 ///
 /// `cmd_tx` is kept in `App.overview_ws_tx` so the task can keep
 /// reconnecting on transient errors (the `cmd_rx.recv() = None` path
 /// only triggers on graceful close, not idle timeouts).
-fn ensure_overview_ws(app: &mut App, addr: &str, channel: &str, thread: &str) {
+fn ensure_overview_ws(app: &mut App, addr: &str, channel: &str, topic: &str) {
     if let Some((c, t)) = app.overview_ws_target.as_ref()
         && c == channel
-        && t == thread
+        && t == topic
     {
         return;
     }
@@ -1522,14 +1519,14 @@ fn ensure_overview_ws(app: &mut App, addr: &str, channel: &str, thread: &str) {
     if let Some(tx) = app.overview_ws_tx.take() {
         let _ = tx.send(r#"{"type":"disconnect"}"#.to_string());
     }
-    let url = format!("ws://{}/ws/{}/{}", addr, channel, thread);
+    let url = format!("ws://{}/ws/{}/{}", addr, channel, topic);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     // Store the sender so we can send disconnect on close/swap. The task
     // reads cmd_rx and exits cleanly when the channel closes.
     app.overview_ws_tx = Some(cmd_tx);
     app.overview_ws_rx = event_rx;
-    app.overview_ws_target = Some((channel.to_string(), thread.to_string()));
+    app.overview_ws_target = Some((channel.to_string(), topic.to_string()));
     tokio::spawn(ws::ws_client_task(url, cmd_rx, event_tx, app.token.clone()));
 }
 
@@ -1573,7 +1570,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
         Span::raw(format!(
             "{} active / {} thr │ {} recv │ {} err │ up {} │ jyc ai v{}",
             stats.active_workers,
-            stats.total_threads,
+            stats.total_topics,
             stats.messages_received,
             stats.errors,
             format_duration(state.uptime_secs),
@@ -1779,8 +1776,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_thread_path_defaults_to_cwd() {
-        let resolved = resolve_thread_path(None).expect("should resolve");
+    fn resolve_topic_path_defaults_to_cwd() {
+        let resolved = resolve_topic_path(None).expect("should resolve");
         let cwd = std::env::current_dir()
             .unwrap()
             .to_string_lossy()
@@ -1789,8 +1786,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_thread_path_makes_relative_absolute() {
-        let resolved = resolve_thread_path(Some(".")).expect("should resolve");
+    fn resolve_topic_path_makes_relative_absolute() {
+        let resolved = resolve_topic_path(Some(".")).expect("should resolve");
         assert!(
             PathBuf::from(&resolved).is_absolute(),
             "relative path should be resolved to absolute: {resolved}"
@@ -1798,61 +1795,58 @@ mod tests {
     }
 
     #[test]
-    fn resolve_thread_path_canonicalizes_existing_path() {
+    fn resolve_topic_path_canonicalizes_existing_path() {
         let tmp = tempfile::TempDir::new().unwrap();
         let sub = tmp.path().join("a").join("b");
         std::fs::create_dir_all(&sub).unwrap();
 
         let input = tmp.path().join("a").join(".").join("b");
-        let resolved = resolve_thread_path(Some(input.to_str().unwrap())).expect("should resolve");
+        let resolved = resolve_topic_path(Some(input.to_str().unwrap())).expect("should resolve");
         assert_eq!(resolved, sub.to_string_lossy().to_string());
     }
 
     #[test]
-    fn derive_thread_name_uses_explicit_value() {
-        assert_eq!(
-            derive_thread_name("/any/path", Some("my-thread")),
-            "my-thread"
-        );
+    fn derive_topic_name_uses_explicit_value() {
+        assert_eq!(derive_topic_name("/any/path", Some("my-topic")), "my-topic");
     }
 
     #[test]
-    fn derive_thread_name_uses_folder_name() {
-        assert_eq!(derive_thread_name("/home/user/foo", None), "foo");
+    fn derive_topic_name_uses_folder_name() {
+        assert_eq!(derive_topic_name("/home/user/foo", None), "foo");
     }
 
     #[test]
-    fn derive_thread_name_falls_back_to_adhoc() {
-        assert_eq!(derive_thread_name("", None), "adhoc");
+    fn derive_topic_name_falls_back_to_adhoc() {
+        assert_eq!(derive_topic_name("", None), "adhoc");
     }
 
     #[test]
-    fn check_existing_thread_name_succeeds_when_no_file() {
+    fn check_existing_topic_name_succeeds_when_no_file() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().to_string_lossy().to_string();
-        check_existing_thread_name(&path, "any-thread").expect("should pass when no file exists");
+        check_existing_topic_name(&path, "any-topic").expect("should pass when no file exists");
     }
 
     #[test]
-    fn check_existing_thread_name_succeeds_when_matching() {
+    fn check_existing_topic_name_succeeds_when_matching() {
         let tmp = tempfile::TempDir::new().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
-        std::fs::write(jyc_dir.join("thread-name"), "abc").unwrap();
+        std::fs::write(jyc_dir.join("topic-name"), "abc").unwrap();
 
         let path = tmp.path().to_string_lossy().to_string();
-        check_existing_thread_name(&path, "abc").expect("should pass when names match");
+        check_existing_topic_name(&path, "abc").expect("should pass when names match");
     }
 
     #[test]
-    fn check_existing_thread_name_fails_when_mismatch() {
+    fn check_existing_topic_name_fails_when_mismatch() {
         let tmp = tempfile::TempDir::new().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
-        std::fs::write(jyc_dir.join("thread-name"), "existing").unwrap();
+        std::fs::write(jyc_dir.join("topic-name"), "existing").unwrap();
 
         let path = tmp.path().to_string_lossy().to_string();
-        let err = check_existing_thread_name(&path, "abc").expect_err("should fail on mismatch");
+        let err = check_existing_topic_name(&path, "abc").expect_err("should fail on mismatch");
         let msg = err.to_string();
         assert!(
             msg.contains("existing"),
@@ -1865,14 +1859,14 @@ mod tests {
     }
 
     #[test]
-    fn check_existing_thread_name_succeeds_when_file_empty() {
+    fn check_existing_topic_name_succeeds_when_file_empty() {
         let tmp = tempfile::TempDir::new().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
-        std::fs::write(jyc_dir.join("thread-name"), "").unwrap();
+        std::fs::write(jyc_dir.join("topic-name"), "").unwrap();
 
         let path = tmp.path().to_string_lossy().to_string();
-        check_existing_thread_name(&path, "new-thread").expect("should pass when file is empty");
+        check_existing_topic_name(&path, "new-topic").expect("should pass when file is empty");
     }
 
     fn make_test_app() -> App {
@@ -1900,7 +1894,7 @@ mod tests {
     #[tokio::test]
     async fn ensure_overview_ws_swaps_when_target_changes() {
         let mut app = make_test_app();
-        // Seed: pretend a previous WS exists for thread A.
+        // Seed: pretend a previous WS exists for topic A.
         app.overview_ws_target = Some(("chan".to_string(), "old".to_string()));
         // Call for a different target.
         ensure_overview_ws(&mut app, "127.0.0.1:9876", "chan", "new");
@@ -1932,10 +1926,10 @@ mod tests {
         assert!(app.overview_ws_tx.is_none());
     }
 
-    // --- auto-select first thread on initial load ---
+    // --- auto-select first topic on initial load ---
 
-    fn make_overview_with_threads(names: &[&str]) -> jyc_types::InspectOverview {
-        use jyc_types::{ChannelInfo, InspectOverview, ThreadStatus, ThreadSummary};
+    fn make_overview_with_topics(names: &[&str]) -> jyc_types::InspectOverview {
+        use jyc_types::{ChannelInfo, InspectOverview, TopicStatus, TopicSummary};
         InspectOverview {
             uptime_secs: 0,
             version: "test".to_string(),
@@ -1945,13 +1939,13 @@ mod tests {
                 active_workers: 0,
                 max_concurrent: 0,
             }],
-            threads: names
+            topics: names
                 .iter()
-                .map(|n| ThreadSummary {
+                .map(|n| TopicSummary {
                     name: (*n).to_string(),
                     channel: "chan".to_string(),
                     pattern: None,
-                    status: ThreadStatus::Idle,
+                    status: TopicStatus::Idle,
                     model: None,
                     mode: None,
                     branch: None,
@@ -1964,7 +1958,7 @@ mod tests {
                     output_tokens: None,
                     last_active_at: None,
                     skills: vec![],
-                    thread_path: None,
+                    topic_path: None,
                     cost: None,
                 })
                 .collect(),
@@ -1975,15 +1969,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_select_first_thread_when_no_selection() {
+    async fn auto_select_first_topic_when_no_selection() {
         let mut app = make_test_app();
-        app.state = Some(make_overview_with_threads(&["alpha", "beta"]));
+        app.state = Some(make_overview_with_topics(&["alpha", "beta"]));
         assert!(app.table_state.selected().is_none());
 
         // Simulate the auto-select block from the poll loop.
         if let Some(ref s) = app.state
             && app.table_state.selected().is_none()
-            && !s.threads.is_empty()
+            && !s.topics.is_empty()
         {
             app.table_state.select(Some(0));
         }
@@ -1994,13 +1988,13 @@ mod tests {
     #[tokio::test]
     async fn auto_select_noop_when_already_selected() {
         let mut app = make_test_app();
-        app.state = Some(make_overview_with_threads(&["alpha", "beta"]));
+        app.state = Some(make_overview_with_topics(&["alpha", "beta"]));
         app.table_state.select(Some(1));
 
         // Simulate the auto-select block from the poll loop.
         if let Some(ref s) = app.state
             && app.table_state.selected().is_none()
-            && !s.threads.is_empty()
+            && !s.topics.is_empty()
         {
             app.table_state.select(Some(0));
         }
@@ -2010,20 +2004,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn auto_select_noop_when_no_threads() {
+    async fn auto_select_noop_when_no_topics() {
         let mut app = make_test_app();
-        app.state = Some(make_overview_with_threads(&[]));
+        app.state = Some(make_overview_with_topics(&[]));
         assert!(app.table_state.selected().is_none());
 
         // Simulate the auto-select block.
         if let Some(ref s) = app.state
             && app.table_state.selected().is_none()
-            && !s.threads.is_empty()
+            && !s.topics.is_empty()
         {
             app.table_state.select(Some(0));
         }
 
-        // No threads -> no auto-select.
+        // No topics -> no auto-select.
         assert!(app.table_state.selected().is_none());
     }
 }

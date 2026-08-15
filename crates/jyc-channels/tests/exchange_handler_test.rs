@@ -1,6 +1,6 @@
-//! End-to-end `/exchange` tests that need a real `ThreadManager`.
+//! End-to-end `/exchange` tests that need a real `TopicManager`.
 //!
-//! The unit tests in `jyc-core` cover formatting; these cover thread-name
+//! The unit tests in `jyc-core` cover formatting; these cover topic-name
 //! resolution, which is the part that can silently emit a 403 link.
 
 use arc_swap::ArcSwap;
@@ -14,7 +14,7 @@ use jyc_core::command::handler::{CommandContext, CommandHandler};
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsHandle;
 use jyc_core::static_agent::StaticAgentService;
-use jyc_core::thread_manager::ThreadManager;
+use jyc_core::topic_manager::TopicManager;
 use jyc_types::{AppConfig, SmtpConfig, load_config_from_str};
 
 fn test_config() -> Arc<AppConfig> {
@@ -46,10 +46,10 @@ base_url = "https://jyc.example.com"
     )
 }
 
-fn test_context(thread_path: &Path, args: &[&str]) -> CommandContext {
+fn test_context(topic_path: &Path, args: &[&str]) -> CommandContext {
     CommandContext {
         args: args.iter().map(|s| s.to_string()).collect(),
-        thread_path: thread_path.to_path_buf(),
+        topic_path: topic_path.to_path_buf(),
         config: test_config(),
         channel: "test".into(),
         channel_type: "email".to_string(),
@@ -59,9 +59,9 @@ fn test_context(thread_path: &Path, args: &[&str]) -> CommandContext {
     }
 }
 
-fn make_thread_manager(tmp: &TempDir, workspace: &Path) -> Arc<ThreadManager> {
+fn make_topic_manager(tmp: &TempDir, workspace: &Path) -> Arc<TopicManager> {
     let storage = Arc::new(MessageStorage::new(workspace));
-    Arc::new(ThreadManager::new(
+    Arc::new(TopicManager::new(
         3,
         10,
         storage.clone(),
@@ -90,36 +90,36 @@ fn make_thread_manager(tmp: &TempDir, workspace: &Path) -> Arc<ThreadManager> {
 }
 
 /// Seed a published file plus the token that guards it.
-async fn seed_published(thread_dir: &Path, name: &str, token: &str) {
-    let exchange = thread_dir.join(".jyc").join("exchange");
+async fn seed_published(topic_dir: &Path, name: &str, token: &str) {
+    let exchange = topic_dir.join(".jyc").join("exchange");
     tokio::fs::create_dir_all(&exchange).await.unwrap();
     tokio::fs::write(exchange.join(name), b"bytes")
         .await
         .unwrap();
-    tokio::fs::write(thread_dir.join(".jyc").join("exchange-token"), token)
+    tokio::fs::write(topic_dir.join(".jyc").join("exchange-token"), token)
         .await
         .unwrap();
 }
 
-/// The regression this test exists for: a thread whose directory basename
-/// differs from its thread name (shared-repo layout — thread `issue-197`
-/// lives in `.../repos/jin-197`). The URL must carry the registered thread
+/// The regression this test exists for: a topic whose directory basename
+/// differs from its topic name (shared-repo layout — topic `issue-197`
+/// lives in `.../repos/jin-197`). The URL must carry the registered topic
 /// name, otherwise the link 403s.
 #[tokio::test]
-async fn url_uses_registered_thread_name_not_directory_basename() {
+async fn url_uses_registered_topic_name_not_directory_basename() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let thread_dir = workspace.join("repos").join("jin-197");
+    let topic_dir = workspace.join("repos").join("jin-197");
 
-    let tm = make_thread_manager(&tmp, &workspace);
-    tm.set_thread_path("issue-197", thread_dir.clone())
+    let tm = make_topic_manager(&tmp, &workspace);
+    tm.set_topic_path("issue-197", topic_dir.clone())
         .await
         .unwrap();
-    seed_published(&thread_dir, "report.pdf", "tok123").await;
+    seed_published(&topic_dir, "report.pdf", "tok123").await;
 
     let result = ExchangeCommandHandler::new(tm)
-        .execute(test_context(&thread_dir, &[]))
+        .execute(test_context(&topic_dir, &[]))
         .await
         .unwrap();
 
@@ -135,21 +135,21 @@ async fn url_uses_registered_thread_name_not_directory_basename() {
     );
 }
 
-/// Plain workspace thread: basename *is* the thread name, and multiple files
+/// Plain workspace topic: basename *is* the topic name, and multiple files
 /// list one per line, sorted.
 #[tokio::test]
 async fn lists_all_published_files_sorted() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
-    let thread_dir = workspace.join("weather");
-    std::fs::create_dir_all(&thread_dir).unwrap();
+    let topic_dir = workspace.join("weather");
+    std::fs::create_dir_all(&topic_dir).unwrap();
 
-    let tm = make_thread_manager(&tmp, &workspace);
-    seed_published(&thread_dir, "b.txt", "tok123").await;
-    seed_published(&thread_dir, "a.txt", "tok123").await;
+    let tm = make_topic_manager(&tmp, &workspace);
+    seed_published(&topic_dir, "b.txt", "tok123").await;
+    seed_published(&topic_dir, "a.txt", "tok123").await;
 
     let result = ExchangeCommandHandler::new(tm)
-        .execute(test_context(&thread_dir, &[]))
+        .execute(test_context(&topic_dir, &[]))
         .await
         .unwrap();
 
@@ -164,15 +164,15 @@ async fn lists_all_published_files_sorted() {
 async fn argument_narrows_output_to_one_file() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
-    let thread_dir = workspace.join("weather");
-    std::fs::create_dir_all(&thread_dir).unwrap();
+    let topic_dir = workspace.join("weather");
+    std::fs::create_dir_all(&topic_dir).unwrap();
 
-    let tm = make_thread_manager(&tmp, &workspace);
-    seed_published(&thread_dir, "a.txt", "tok123").await;
-    seed_published(&thread_dir, "report.pdf", "tok123").await;
+    let tm = make_topic_manager(&tmp, &workspace);
+    seed_published(&topic_dir, "a.txt", "tok123").await;
+    seed_published(&topic_dir, "report.pdf", "tok123").await;
 
     let result = ExchangeCommandHandler::new(tm)
-        .execute(test_context(&thread_dir, &["report.pdf"]))
+        .execute(test_context(&topic_dir, &["report.pdf"]))
         .await
         .unwrap();
 
@@ -186,14 +186,14 @@ async fn argument_narrows_output_to_one_file() {
 async fn unknown_filename_reports_what_is_published() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
-    let thread_dir = workspace.join("weather");
-    std::fs::create_dir_all(&thread_dir).unwrap();
+    let topic_dir = workspace.join("weather");
+    std::fs::create_dir_all(&topic_dir).unwrap();
 
-    let tm = make_thread_manager(&tmp, &workspace);
-    seed_published(&thread_dir, "a.txt", "tok123").await;
+    let tm = make_topic_manager(&tmp, &workspace);
+    seed_published(&topic_dir, "a.txt", "tok123").await;
 
     let result = ExchangeCommandHandler::new(tm)
-        .execute(test_context(&thread_dir, &["missing.pdf"]))
+        .execute(test_context(&topic_dir, &["missing.pdf"]))
         .await
         .unwrap();
 
@@ -207,20 +207,20 @@ async fn unknown_filename_reports_what_is_published() {
 async fn no_token_reports_nothing_published_and_creates_no_token() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
-    let thread_dir = workspace.join("weather");
-    std::fs::create_dir_all(thread_dir.join(".jyc")).unwrap();
+    let topic_dir = workspace.join("weather");
+    std::fs::create_dir_all(topic_dir.join(".jyc")).unwrap();
 
-    let tm = make_thread_manager(&tmp, &workspace);
+    let tm = make_topic_manager(&tmp, &workspace);
 
     let result = ExchangeCommandHandler::new(tm)
-        .execute(test_context(&thread_dir, &[]))
+        .execute(test_context(&topic_dir, &[]))
         .await
         .unwrap();
 
     assert!(result.success);
     assert!(result.message.contains("no published files"));
     assert!(
-        !thread_dir.join(".jyc").join("exchange-token").exists(),
+        !topic_dir.join(".jyc").join("exchange-token").exists(),
         "/exchange must never create a token"
     );
 }

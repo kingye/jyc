@@ -284,12 +284,12 @@ impl ImapMonitor {
             "Message received"
         );
 
-        // Note: Attachments are saved later by the thread manager after
-        // pattern matching determines the correct thread name.
+        // Note: Attachments are saved later by the topic manager after
+        // pattern matching determines the correct topic name.
         // This ensures attachments go to the right directory when
-        // thread_name override is configured on the pattern.
+        // topic_name override is configured on the pattern.
 
-        // Route through the message router (pattern match → thread queue)
+        // Route through the message router (pattern match → topic queue)
         self.router.route(&*self.matcher, message).await;
 
         Ok(())

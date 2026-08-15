@@ -2,7 +2,7 @@
 //!
 //! The KF `sync_msg` API uses cursor-based pagination. Cursors must persist
 //! across restarts to avoid re-syncing all historical messages. This module
-//! provides a thread-safe cursor store with optional file-based persistence.
+//! provides a topic-safe cursor store with optional file-based persistence.
 //!
 //! If no `persist_path` is configured, cursors are kept in memory only
 //! (lost on restart, but dedup prevents double-processing).
@@ -14,7 +14,7 @@ use std::sync::RwLock;
 use anyhow::Result;
 use tokio::sync::Mutex as TokioMutex;
 
-/// Thread-safe cursor store for KF sync cursors.
+/// Topic-safe cursor store for KF sync cursors.
 ///
 /// Maps `open_kfid` → cursor string. Supports optional file persistence
 /// via JSON file for durability across restarts. File writes use `tokio::fs`
@@ -96,7 +96,7 @@ impl KfCursorStore {
         // Serialize flushes — only one write at a time
         let _guard = self.flush_lock.lock().await;
 
-        // Re-check dirty flag (another thread may have flushed)
+        // Re-check dirty flag (another topic may have flushed)
         {
             let d = self.dirty.lock().unwrap();
             if !*d {

@@ -6,16 +6,16 @@ use tracing::instrument;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use super::pin_common;
-use crate::thread_manager::ThreadManager;
+use crate::topic_manager::TopicManager;
 
-/// `/unpin` command — remove a pinned thread configuration from config.toml.
+/// `/unpin` command — remove a pinned topic configuration from config.toml.
 pub struct UnpinCommandHandler {
-    thread_manager: Arc<ThreadManager>,
+    topic_manager: Arc<TopicManager>,
 }
 
 impl UnpinCommandHandler {
-    pub fn new(thread_manager: Arc<ThreadManager>) -> Self {
-        Self { thread_manager }
+    pub fn new(topic_manager: Arc<TopicManager>) -> Self {
+        Self { topic_manager }
     }
 }
 
@@ -26,13 +26,13 @@ impl CommandHandler for UnpinCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Remove pinned thread configuration from config.toml"
+        "Remove pinned topic configuration from config.toml"
     }
 
     #[instrument(skip(self, context))]
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         // Build the shared pin/unpin context (validates websocket channel type, etc.)
-        let ctx = match pin_common::build_pin_context(&context, &self.thread_manager).await {
+        let ctx = match pin_common::build_pin_context(&context, &self.topic_manager).await {
             Ok(c) => c,
             Err(e) => {
                 return Ok(CommandResult {
@@ -60,8 +60,8 @@ impl CommandHandler for UnpinCommandHandler {
             return Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "Thread '{}' is not pinned. No matching pattern found.",
-                    ctx.thread_name
+                    "Topic '{}' is not pinned. No matching pattern found.",
+                    ctx.topic_name
                 ),
                 error: Some("pattern not found".into()),
                 append_body: None,
@@ -71,8 +71,8 @@ impl CommandHandler for UnpinCommandHandler {
         Ok(CommandResult {
             success: true,
             message: format!(
-                "✅ Unpinned thread '{}'.\n⚠️ Restart `jyc serve` for the change to take effect.",
-                ctx.thread_name
+                "✅ Unpinned topic '{}'.\n⚠️ Restart `jyc serve` for the change to take effect.",
+                ctx.topic_name
             ),
             error: None,
             append_body: None,

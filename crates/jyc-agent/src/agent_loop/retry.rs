@@ -10,8 +10,8 @@ use super::publish_event;
 use super::response::{CollectedResponse, collect_response};
 use crate::provider::{Provider, RetryClass, classify_retry, extract_retry_after};
 use crate::types::ToolDefinition;
-use jyc_core::thread_event::ThreadEvent;
-use jyc_core::thread_event_bus::ThreadEventBusRef;
+use jyc_core::topic_event::TopicEvent;
+use jyc_core::topic_event_bus::TopicEventBusRef;
 
 const SSE_MAX_ATTEMPTS: u32 = 3;
 
@@ -32,7 +32,7 @@ const THROTTLED_RETRY_BACKOFF_MS: &[u64] = &[5000, 15000, 30000, 60000];
 
 /// Cap on any single backoff, including waits derived from the provider's
 /// `Retry-After` header — bounds how long a pathological value can stall
-/// a thread.
+/// a topic.
 const MAX_BACKOFF_MS: u64 = 120_000;
 
 /// Maximum attempts for the given retry class (includes the initial call).
@@ -86,8 +86,8 @@ pub(crate) async fn complete_with_retry(
     raw_context: &[serde_json::Value],
     tools: &[ToolDefinition],
     system_prompt: &str,
-    thread_name: &str,
-    event_bus: Option<&ThreadEventBusRef>,
+    topic_name: &str,
+    event_bus: Option<&TopicEventBusRef>,
     sse_read_timeout: std::time::Duration,
     cancel: &CancellationToken,
     thinking_enabled: bool,
@@ -114,7 +114,7 @@ pub(crate) async fn complete_with_retry(
                     stream,
                     sse_read_timeout,
                     event_bus,
-                    thread_name,
+                    topic_name,
                     thinking_enabled,
                 )
                 .await
@@ -165,8 +165,8 @@ pub(crate) async fn complete_with_retry(
 
         publish_event(
             event_bus,
-            ThreadEvent::SessionStatus {
-                thread_name: thread_name.to_string(),
+            TopicEvent::SessionStatus {
+                topic_name: topic_name.to_string(),
                 status_type: "retry".to_string(),
                 attempt: Some(next_attempt),
                 message: Some(format!(
@@ -201,7 +201,7 @@ mod retry_tests {
     use crate::types::{Message, StreamEvent, ToolDefinition};
     use async_trait::async_trait;
     use futures::stream;
-    use jyc_core::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
+    use jyc_core::topic_event_bus::{SimpleThreadEventBus, TopicEventBusRef};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -295,7 +295,7 @@ mod retry_tests {
             fail_message: "error decoding response body".to_string(),
             calls: AtomicUsize::new(0),
         };
-        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
         // Override backoff via a test-fast version: we still pay the real
@@ -307,7 +307,7 @@ mod retry_tests {
             &[],
             &[],
             "system",
-            "thread-x",
+            "topic-x",
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
@@ -328,7 +328,7 @@ mod retry_tests {
         let retry_events: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
-                ThreadEvent::SessionStatus {
+                TopicEvent::SessionStatus {
                     status_type,
                     attempt,
                     ..
@@ -352,7 +352,7 @@ mod retry_tests {
             fail_message: "error decoding response body".to_string(),
             calls: AtomicUsize::new(0),
         };
-        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
         let result = complete_with_retry(
@@ -360,7 +360,7 @@ mod retry_tests {
             &[],
             &[],
             "system",
-            "thread-x",
+            "topic-x",
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
@@ -378,7 +378,7 @@ mod retry_tests {
         let events = drain_events(&mut rx).await;
         let retry_count = events
             .iter()
-            .filter(|e| matches!(e, ThreadEvent::SessionStatus { status_type, .. } if status_type == "retry"))
+            .filter(|e| matches!(e, TopicEvent::SessionStatus { status_type, .. } if status_type == "retry"))
             .count();
         assert_eq!(
             retry_count,
@@ -397,7 +397,7 @@ mod retry_tests {
                 .to_string(),
             calls: AtomicUsize::new(0),
         };
-        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
         let result = complete_with_retry(
@@ -405,7 +405,7 @@ mod retry_tests {
             &[],
             &[],
             "system",
-            "thread-x",
+            "topic-x",
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
@@ -423,7 +423,7 @@ mod retry_tests {
         let events = drain_events(&mut rx).await;
         let retry_count = events
             .iter()
-            .filter(|e| matches!(e, ThreadEvent::SessionStatus { status_type, .. } if status_type == "retry"))
+            .filter(|e| matches!(e, TopicEvent::SessionStatus { status_type, .. } if status_type == "retry"))
             .count();
         assert_eq!(
             retry_count, 0,
@@ -438,7 +438,7 @@ mod retry_tests {
     /// re-POST issued by `fetch_error_body` came back HTTP 200 with a
     /// healthy first chunk. The previous classifier wrongly treated ANY
     /// `(HTTP <code> body:)` suffix as terminal and refused to retry,
-    /// causing the thread to die after one attempt.
+    /// causing the topic to die after one attempt.
     ///
     /// After this fix, a 2xx diag status confirms the upstream is fine
     /// and the original transport error is transient → retry.
@@ -452,7 +452,7 @@ mod retry_tests {
                 .to_string(),
             calls: AtomicUsize::new(0),
         };
-        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
         let result = complete_with_retry(
@@ -460,7 +460,7 @@ mod retry_tests {
             &[],
             &[],
             "system",
-            "thread-x",
+            "topic-x",
             Some(&bus),
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
@@ -483,7 +483,7 @@ mod retry_tests {
         let retry_attempts: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
-                ThreadEvent::SessionStatus {
+                TopicEvent::SessionStatus {
                     status_type,
                     attempt,
                     ..

@@ -53,17 +53,17 @@ impl InspectClient {
         self.get_json("/api/state").await
     }
 
-    /// Slim state snapshot (no per-thread activity/messages).
+    /// Slim state snapshot (no per-topic activity/messages).
     pub async fn get_overview(&self) -> Result<InspectOverview> {
         self.get_json("/api/state/overview").await
     }
 
-    /// Recent activity entries for a thread. Filters internal entries
+    /// Recent activity entries for a topic. Filters internal entries
     /// server-side.
-    pub async fn get_thread_activity(
+    pub async fn get_topic_activity(
         &self,
         channel: &str,
-        thread: &str,
+        topic: &str,
         since: Option<&str>,
         limit: Option<usize>,
     ) -> Result<Vec<ActivityEntry>> {
@@ -74,15 +74,15 @@ impl InspectClient {
         if let Some(n) = limit {
             q.push(("limit", n.to_string()));
         }
-        let path = format!("/api/threads/{}/{}/activity", channel, thread);
+        let path = format!("/api/topics/{}/{}/activity", channel, topic);
         self.get_json_query(&path, &q).await
     }
 
-    /// Recent chat messages for a thread.
-    pub async fn get_thread_chat(
+    /// Recent chat messages for a topic.
+    pub async fn get_topic_chat(
         &self,
         channel: &str,
-        thread: &str,
+        topic: &str,
         since: Option<&str>,
         limit: Option<usize>,
     ) -> Result<Vec<ChatMessageEntry>> {
@@ -93,7 +93,7 @@ impl InspectClient {
         if let Some(n) = limit {
             q.push(("limit", n.to_string()));
         }
-        let path = format!("/api/threads/{}/{}/chat", channel, thread);
+        let path = format!("/api/topics/{}/{}/chat", channel, topic);
         self.get_json_query(&path, &q).await
     }
 
@@ -109,33 +109,33 @@ impl InspectClient {
         Ok(r.patterns)
     }
 
-    /// Register a new ad-hoc thread. Returns `(success, message)`.
-    pub async fn create_thread(
+    /// Register a new ad-hoc topic. Returns `(success, message)`.
+    pub async fn create_topic(
         &self,
         channel: &str,
-        thread: &str,
+        topic: &str,
         path: &str,
     ) -> Result<(bool, String)> {
         #[derive(serde::Serialize)]
         struct B<'a> {
             channel: &'a str,
-            thread: &'a str,
+            topic: &'a str,
             path: &'a str,
         }
-        // `created_thread` endpoint returns 201 + {message: ...}; we use
+        // `created_topic` endpoint returns 201 + {message: ...}; we use
         // the message field for both success and failure.
-        let url = self.url("/api/threads");
+        let url = self.url("/api/topics");
         let resp = self
             .http
             .post(url)
             .json(&B {
                 channel,
-                thread,
+                topic,
                 path,
             })
             .send()
             .await
-            .context("POST /api/threads request failed")?;
+            .context("POST /api/topics request failed")?;
         let status = resp.status();
         #[derive(serde::Deserialize, Default)]
         struct R {

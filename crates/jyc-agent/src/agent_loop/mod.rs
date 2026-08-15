@@ -12,12 +12,12 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing;
 
-use jyc_core::thread_event::ThreadEvent;
-use jyc_core::thread_event_bus::ThreadEventBusRef;
+use jyc_core::topic_event::TopicEvent;
+use jyc_core::topic_event_bus::TopicEventBusRef;
 
 use crate::provider::Provider;
 use crate::tools::{
-    OutboundsMap, ThreadManagersMap, ToolContext, ToolOutput, registry::ToolRegistry,
+    OutboundsMap, ToolContext, ToolOutput, TopicManagersMap, registry::ToolRegistry,
 };
 use crate::types::{AgentLoopResult, ContentBlock, Message, Role};
 
@@ -25,7 +25,7 @@ use crate::types::{AgentLoopResult, ContentBlock, Message, Role};
 /// Can be overridden via AgentLoopConfig.max_iterations.
 const DEFAULT_MAX_ITERATIONS: usize = 100;
 
-/// Interval between `ThreadEvent::LoopTick` heartbeats while the agent
+/// Interval between `TopicEvent::LoopTick` heartbeats while the agent
 /// loop is running. 1 s = 1 Hz — coarse on purpose so the WS bus and the
 /// dashboard's render loop don't churn. The dashboard re-renders on every
 /// tick; at 1 Hz that's once per second, which matches the cadence of
@@ -47,15 +47,15 @@ pub struct AgentLoopConfig<'a> {
     /// Use a single `ContentBlock::Text` for text-only prompts.
     pub user_blocks: Vec<ContentBlock>,
     pub working_dir: &'a Path,
-    /// Thread directory on disk. Used to persist token counts after every
+    /// Topic directory on disk. Used to persist token counts after every
     /// LLM call via `session::persist_tokens`. The post-loop
     /// `update_tokens` is still the owner of the auto-reset.
-    pub thread_path: &'a Path,
+    pub topic_path: &'a Path,
     pub cancel: CancellationToken,
-    /// Thread name (for event publishing).
-    pub thread_name: &'a str,
+    /// Topic name (for event publishing).
+    pub topic_name: &'a str,
     /// Optional event bus for dashboard propagation.
-    pub event_bus: Option<&'a ThreadEventBusRef>,
+    pub event_bus: Option<&'a TopicEventBusRef>,
     /// Prior conversation history (internal format, for logic).
     pub prior_history: Vec<Message>,
     /// Prior raw context (provider-formatted JSON, for API calls).
@@ -83,12 +83,12 @@ pub struct AgentLoopConfig<'a> {
     /// `jyc_send_message`). Passed through to `ToolContext` so tools
     /// can send messages directly without signal-file indirection.
     pub outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
-    /// Cross-channel thread managers keyed by channel name.
-    /// Passed through to `ToolContext` so the `jyc_send_to_thread` tool
-    /// can inject messages into threads in other channels.
-    pub thread_managers: Option<ThreadManagersMap>,
+    /// Cross-channel topic managers keyed by channel name.
+    /// Passed through to `ToolContext` so the `jyc_send_to_topic` tool
+    /// can inject messages into topics in other channels.
+    pub topic_managers: Option<TopicManagersMap>,
     /// Current channel name, for tools that need source context
-    /// (e.g. `jyc_send_to_thread` sets `source_channel` metadata from this).
+    /// (e.g. `jyc_send_to_topic` sets `source_channel` metadata from this).
     pub current_channel: Option<String>,
     /// Cross-channel outbound adapters keyed by channel name.
     /// Passed through to `ToolContext` so the `jyc_send_message` tool can
@@ -101,7 +101,7 @@ pub struct AgentLoopConfig<'a> {
     /// Auto-reset threshold as a fraction of context window (0.0~1.0).
     /// Default: 0.95.
     pub auto_reset_threshold: f64,
-    /// Whether to publish `ThreadEvent::Thinking` events for dashboard display.
+    /// Whether to publish `TopicEvent::Thinking` events for dashboard display.
     /// Controlled by the `/thinking show/hide` command. Default: `true`.
     pub thinking_enabled: bool,
     /// Billing rates for the active model. `None` when the model has no
@@ -125,9 +125,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         system_prompt,
         user_blocks,
         working_dir,
-        thread_path,
+        topic_path,
         cancel,
-        thread_name,
+        topic_name,
         event_bus,
         prior_history,
         prior_raw_context,
@@ -137,7 +137,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         additional_write_roots,
         pattern_inject_images,
         outbound,
-        thread_managers,
+        topic_managers,
         current_channel,
         outbounds,
         context_window,
@@ -181,7 +181,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
     // RAII guard: the spawned ticker task is terminated on every return
     // path (success, error, cancel, no-reply guard, etc.). Without this,
-    // the ticker leaks on natural completion — the thread-level cancel
+    // the ticker leaks on natural completion — the topic-level cancel
     // token only fires on explicit `/cancel` or shutdown.
     let _ticker_guard = if let Some(bus) = event_bus {
         let ticker_cancel = cancel.child_token();
@@ -190,7 +190,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             LOOP_TICK_INTERVAL,
             ticker_cancel.clone(),
             Some(bus),
-            thread_name.to_string(),
+            topic_name.to_string(),
         );
         Some(TickerGuard::new(handle, ticker_cancel))
     } else {
@@ -220,8 +220,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // Publish ProcessingStarted
     publish_event(
         event_bus,
-        ThreadEvent::ProcessingStarted {
-            thread_name: thread_name.to_string(),
+        TopicEvent::ProcessingStarted {
+            topic_name: topic_name.to_string(),
             message_id: "agent-loop".to_string(),
             timestamp: Utc::now(),
         },
@@ -260,7 +260,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 &raw_context,
                 cycle_count,
                 total_iterations,
-                thread_name,
+                topic_name,
                 event_bus,
                 sse_read_timeout,
             ).await.unwrap_or_else(|e| {
@@ -282,7 +282,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             // model, so on a default setup this bills at main-model rates.
             let summary_cost = bill_call(
                 pricing.as_ref(),
-                thread_path,
+                topic_path,
                 model_label,
                 jyc_core::billing_log_store::KIND_SUMMARY,
                 summary_usage.input_tokens,
@@ -291,7 +291,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 summary_usage.cache_creation_tokens,
             );
             if summary_cost > 0.0 {
-                crate::session::add_session_cost(thread_path, summary_cost).await;
+                crate::session::add_session_cost(topic_path, summary_cost).await;
             }
 
             // 2. Post the progress reply to the user via the reply tool.
@@ -306,8 +306,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
             publish_event(
                 event_bus,
-                ThreadEvent::ToolStarted {
-                    thread_name: thread_name.to_string(),
+                TopicEvent::ToolStarted {
+                    topic_name: topic_name.to_string(),
                     tool_name: "jyc_reply_message".to_string(),
                     input: Some(synthetic_args.clone()),
                     timestamp: Utc::now(),
@@ -320,9 +320,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             ctx.additional_write_roots = additional_write_roots.clone();
             ctx.pattern_inject_images = pattern_inject_images;
             ctx.outbound = outbound.clone();
-            ctx.thread_managers = thread_managers.clone();
+            ctx.topic_managers = topic_managers.clone();
             ctx.current_channel = current_channel.clone();
-            ctx.current_thread = Some(thread_name.to_string());
+            ctx.current_topic = Some(topic_name.to_string());
             ctx.outbounds = outbounds.clone();
             let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
@@ -339,8 +339,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
             publish_event(
                 event_bus,
-                ThreadEvent::ToolCompleted {
-                    thread_name: thread_name.to_string(),
+                TopicEvent::ToolCompleted {
+                    topic_name: topic_name.to_string(),
                     tool_name: "jyc_reply_message".to_string(),
                     success: !synthetic_output.is_error,
                     duration_secs: tool_start.elapsed().as_secs(),
@@ -394,8 +394,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // "Thinking..." between tool execution and LLM response.
         publish_event(
             event_bus,
-            ThreadEvent::LLMRequestStarted {
-                thread_name: thread_name.to_string(),
+            TopicEvent::LLMRequestStarted {
+                topic_name: topic_name.to_string(),
                 iteration: total_iterations,
                 timestamp: Utc::now(),
             },
@@ -407,7 +407,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         //
         // Wrapped in a bounded retry loop: transient SSE failures (TCP RST
         // mid-stream, body decode glitch, idle timeout) get a few automatic
-        // retries with backoff before the thread is failed. See
+        // retries with backoff before the topic is failed. See
         // `complete_with_retry` for classifier and policy.
         //
         // A failure while `cancel` is already fired is a user-initiated
@@ -419,7 +419,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             &raw_context,
             &tools.definitions(),
             system_prompt,
-            thread_name,
+            topic_name,
             event_bus,
             sse_read_timeout,
             &cancel,
@@ -457,7 +457,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // mid-round model switch bills each call at its own rate.
         let call_cost = bill_call(
             pricing.as_ref(),
-            thread_path,
+            topic_path,
             model_label,
             jyc_core::billing_log_store::KIND_CALL,
             response.input_tokens,
@@ -499,8 +499,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
             publish_event(
                 event_bus,
-                ThreadEvent::SessionStatus {
-                    thread_name: thread_name.to_string(),
+                TopicEvent::SessionStatus {
+                    topic_name: topic_name.to_string(),
                     status_type: "session_reset".to_string(),
                     attempt: None,
                     message: Some(format!(
@@ -519,7 +519,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // trigger auto-reset — that decision belongs to the post-loop
         // `update_tokens` call in `service.rs`.
         crate::session::persist_tokens(
-            thread_path,
+            topic_path,
             context_input_tokens,
             total_input_tokens,
             total_output_tokens,
@@ -557,8 +557,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             if text_len == 0 && !reply_sent_by_tool {
                 publish_event(
                     event_bus,
-                    ThreadEvent::SessionStatus {
-                        thread_name: thread_name.to_string(),
+                    TopicEvent::SessionStatus {
+                        topic_name: topic_name.to_string(),
                         status_type: "no_reply".to_string(),
                         attempt: None,
                         message: Some(format!(
@@ -601,8 +601,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let duration = start_time.elapsed();
             publish_event(
                 event_bus,
-                ThreadEvent::ProcessingCompleted {
-                    thread_name: thread_name.to_string(),
+                TopicEvent::ProcessingCompleted {
+                    topic_name: topic_name.to_string(),
                     message_id: "agent-loop".to_string(),
                     success: true,
                     duration_secs: duration.as_secs(),
@@ -660,9 +660,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         ctx.additional_write_roots = additional_write_roots.clone();
         ctx.pattern_inject_images = pattern_inject_images;
         ctx.outbound = outbound.clone();
-        ctx.thread_managers = thread_managers.clone();
+        ctx.topic_managers = topic_managers.clone();
         ctx.current_channel = current_channel.clone();
-        ctx.current_thread = Some(thread_name.to_string());
+        ctx.current_topic = Some(topic_name.to_string());
         ctx.outbounds = outbounds.clone();
 
         let mut cancelled_during_tools = false;
@@ -680,8 +680,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             // Publish ToolStarted
             publish_event(
                 event_bus,
-                ThreadEvent::ToolStarted {
-                    thread_name: thread_name.to_string(),
+                TopicEvent::ToolStarted {
+                    topic_name: topic_name.to_string(),
                     tool_name: tool_call.name.clone(),
                     input: Some(tool_call.arguments.clone()),
                     timestamp: Utc::now(),
@@ -723,8 +723,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             // Publish ToolCompleted
             publish_event(
                 event_bus,
-                ThreadEvent::ToolCompleted {
-                    thread_name: thread_name.to_string(),
+                TopicEvent::ToolCompleted {
+                    topic_name: topic_name.to_string(),
                     tool_name: tool_call.name.clone(),
                     success: !output.is_error,
                     duration_secs: tool_duration.as_secs(),
@@ -841,8 +841,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let duration = start_time.elapsed();
             publish_event(
                 event_bus,
-                ThreadEvent::ProcessingCompleted {
-                    thread_name: thread_name.to_string(),
+                TopicEvent::ProcessingCompleted {
+                    topic_name: topic_name.to_string(),
                     message_id: "agent-loop".to_string(),
                     success: true,
                     duration_secs: duration.as_secs(),
@@ -869,8 +869,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         let elapsed = start_time.elapsed();
         publish_event(
             event_bus,
-            ThreadEvent::ProcessingProgress {
-                thread_name: thread_name.to_string(),
+            TopicEvent::ProcessingProgress {
+                topic_name: topic_name.to_string(),
                 elapsed_secs: elapsed.as_secs(),
                 activity: "tool execution".to_string(),
                 progress: Some(format!(
@@ -895,8 +895,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let duration = start_time.elapsed();
     publish_event(
         event_bus,
-        ThreadEvent::ProcessingCompleted {
-            thread_name: thread_name.to_string(),
+        TopicEvent::ProcessingCompleted {
+            topic_name: topic_name.to_string(),
             message_id: "agent-loop".to_string(),
             success: false,
             duration_secs: duration.as_secs(),
@@ -950,7 +950,7 @@ struct CallUsage {
 #[allow(clippy::too_many_arguments)]
 fn bill_call(
     pricing: Option<&jyc_types::ModelPricing>,
-    thread_path: &Path,
+    topic_path: &Path,
     model_label: &str,
     kind: &str,
     input_tokens: u64,
@@ -985,7 +985,7 @@ fn bill_call(
         currency: p.currency_label().to_string(),
         kind: kind.to_string(),
     };
-    if let Err(e) = jyc_core::billing_log_store::BillingLogStore::append(thread_path, &entry) {
+    if let Err(e) = jyc_core::billing_log_store::BillingLogStore::append(topic_path, &entry) {
         tracing::warn!(error = %e, kind, "Failed to append billing entry");
     }
     cost
@@ -1013,8 +1013,8 @@ async fn generate_summary_from_joined_history(
     raw_context: &[serde_json::Value],
     cycle_count: usize,
     total_iterations: usize,
-    thread_name: &str,
-    event_bus: Option<&ThreadEventBusRef>,
+    topic_name: &str,
+    event_bus: Option<&TopicEventBusRef>,
     sse_read_timeout: std::time::Duration,
 ) -> Result<(String, CallUsage)> {
     let summary_system = format!(
@@ -1039,7 +1039,7 @@ async fn generate_summary_from_joined_history(
         &[user_msg],
         &[],
         &summary_system,
-        thread_name,
+        topic_name,
         event_bus,
         sse_read_timeout,
         &dummy_cancel,
@@ -1060,21 +1060,21 @@ async fn generate_summary_from_joined_history(
     Ok((response.text, usage))
 }
 
-pub(crate) async fn publish_event(event_bus: Option<&ThreadEventBusRef>, event: ThreadEvent) {
+pub(crate) async fn publish_event(event_bus: Option<&TopicEventBusRef>, event: TopicEvent) {
     if let Some(bus) = event_bus {
         let _ = bus.publish(event).await;
     }
 }
 
 /// Spawn the live-duration ticker. While the agent loop is alive, the
-/// spawned task publishes a `ThreadEvent::LoopTick` every `interval`
+/// spawned task publishes a `TopicEvent::LoopTick` every `interval`
 /// (with the very first tick fired immediately at t=0) so the dashboard
 /// can show the wall-clock elapsed time even during silent LLM/tool work
 /// (when no iteration has produced a `ProcessingProgress` event yet).
 /// Returns the task's `JoinHandle` so the caller can cancel it on
 /// natural loop completion.
 ///
-/// The cancel token here is the *thread-level* token. On explicit cancel
+/// The cancel token here is the *topic-level* token. On explicit cancel
 /// or shutdown it fires and the task exits — but on natural completion
 /// (success / no_reply guard) nothing fires it. Without a `JoinHandle`
 /// the spawned task would leak, broadcasting stale `LoopTick` events at
@@ -1088,8 +1088,8 @@ fn run_ticker(
     start_time: Instant,
     interval: std::time::Duration,
     cancel: CancellationToken,
-    event_bus: Option<&ThreadEventBusRef>,
-    thread_name: String,
+    event_bus: Option<&TopicEventBusRef>,
+    topic_name: String,
 ) -> JoinHandle<()> {
     let bus = event_bus.cloned();
     tokio::spawn(async move {
@@ -1099,8 +1099,8 @@ fn run_ticker(
             // until the first `interval` elapses, leaving short
             // sub-second loops invisible.
             let elapsed_ms = start_time.elapsed().as_millis() as u64;
-            let event = ThreadEvent::LoopTick {
-                thread_name: thread_name.clone(),
+            let event = TopicEvent::LoopTick {
+                topic_name: topic_name.clone(),
                 elapsed_ms,
                 timestamp: Utc::now(),
             };
@@ -1120,7 +1120,7 @@ fn run_ticker(
 /// error from `complete_with_retry`, the no-reply guard, the success
 /// returns, the cycle-boundary continue, the cancellation break, the
 /// dangling-tool-call cleanup — terminates the ticker cleanly. Without
-/// this, the ticker task leaks on natural completion (the thread-level
+/// this, the ticker task leaks on natural completion (the topic-level
 /// cancel token only fires on explicit `/cancel` or shutdown).
 struct TickerGuard {
     handle: Option<JoinHandle<()>>,
@@ -1171,7 +1171,7 @@ mod no_reply_tests {
     use crate::types::{Message, StreamEvent, ToolDefinition};
     use async_trait::async_trait;
     use futures::stream;
-    use jyc_core::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
+    use jyc_core::topic_event_bus::{SimpleThreadEventBus, TopicEventBusRef};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
@@ -1254,7 +1254,7 @@ mod no_reply_tests {
         let tmp = TempDir::new().unwrap();
         let working_dir = tmp.path().to_path_buf();
         let tools = crate::tools::builtin::create_builtin_registry();
-        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
         let mut rx = bus.subscribe().await.unwrap();
         let cancel = CancellationToken::new();
 
@@ -1267,9 +1267,9 @@ mod no_reply_tests {
                 text: "hello".to_string(),
             }],
             working_dir: &working_dir,
-            thread_path: &working_dir,
+            topic_path: &working_dir,
             cancel: cancel.clone(),
-            thread_name: "no-reply-test",
+            topic_name: "no-reply-test",
             event_bus: Some(&bus),
             prior_history: vec![],
             prior_raw_context: vec![],
@@ -1279,7 +1279,7 @@ mod no_reply_tests {
             additional_write_roots: vec![],
             pattern_inject_images: false,
             outbound: None,
-            thread_managers: None,
+            topic_managers: None,
             current_channel: None,
             outbounds: None,
             context_window: None,
@@ -1309,7 +1309,7 @@ mod no_reply_tests {
         let no_reply_events: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
-                ThreadEvent::SessionStatus { status_type, .. } if status_type == "no_reply" => {
+                TopicEvent::SessionStatus { status_type, .. } if status_type == "no_reply" => {
                     Some(())
                 }
                 _ => None,
@@ -1328,13 +1328,13 @@ mod no_reply_tests {
 /// sibling `#[cfg(test)]` mods via `pub(super)`.
 #[cfg(test)]
 mod event_test_helpers {
-    use jyc_core::thread_event::ThreadEvent;
+    use jyc_core::topic_event::TopicEvent;
 
     /// Drain a receiver synchronously to a Vec, with a small grace timeout
     /// so any in-flight publishes complete.
     pub(super) async fn drain_events(
-        rx: &mut tokio::sync::mpsc::Receiver<ThreadEvent>,
-    ) -> Vec<ThreadEvent> {
+        rx: &mut tokio::sync::mpsc::Receiver<TopicEvent>,
+    ) -> Vec<TopicEvent> {
         let mut out = Vec::new();
         loop {
             match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
@@ -1398,7 +1398,7 @@ mod guardrail_tests {
 /// Regression tests for tool-execution cancellation.
 ///
 /// Verifies the contract added by the `tokio::select!` around
-/// `tools.execute(...)`: when the per-thread CancellationToken is fired
+/// `tools.execute(...)`: when the per-topic CancellationToken is fired
 /// while a tool is running, the agent loop returns within seconds
 /// (not the tool's own timeout), and no reply text is produced.
 #[cfg(test)]
@@ -1555,18 +1555,18 @@ mod cancel_during_tool_tests {
     /// `ProcessingCompleted { success: false }`.
     ///
     /// That event is the only signal the inspect server uses to clear its
-    /// per-thread `is_processing` flag; skipping it left the dashboard
+    /// per-topic `is_processing` flag; skipping it left the dashboard
     /// stuck at "AI thinking..." forever after a `/cancel`.
     #[tokio::test]
     async fn cancel_during_llm_call_publishes_processing_completed() {
-        use jyc_core::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
+        use jyc_core::topic_event_bus::{SimpleThreadEventBus, TopicEventBusRef};
         use std::sync::Arc;
 
         let tmp = TempDir::new().unwrap();
         let working_dir = tmp.path().to_path_buf();
         let provider = HangingProvider;
         let tools: ToolRegistry = create_builtin_registry();
-        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(256));
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(256));
         let mut rx = bus.subscribe().await.unwrap();
 
         let cancel = CancellationToken::new();
@@ -1590,9 +1590,9 @@ mod cancel_during_tool_tests {
                     text: "test".to_string(),
                 }],
                 working_dir: &working_dir,
-                thread_path: &working_dir,
+                topic_path: &working_dir,
                 cancel: cancel.clone(),
-                thread_name: "cancel-during-llm",
+                topic_name: "cancel-during-llm",
                 event_bus: Some(&bus),
                 prior_history: vec![],
                 prior_raw_context: vec![],
@@ -1602,7 +1602,7 @@ mod cancel_during_tool_tests {
                 additional_write_roots: vec![],
                 pattern_inject_images: false,
                 outbound: None,
-                thread_managers: None,
+                topic_managers: None,
                 current_channel: None,
                 outbounds: None,
                 context_window: None,
@@ -1626,7 +1626,7 @@ mod cancel_during_tool_tests {
         while let Ok(Some(event)) =
             tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
         {
-            if let ThreadEvent::ProcessingCompleted { success, .. } = event {
+            if let TopicEvent::ProcessingCompleted { success, .. } = event {
                 assert!(!success, "cancelled round must report success=false");
                 saw_completed = true;
             }
@@ -1680,9 +1680,9 @@ mod cancel_during_tool_tests {
                     text: "test".to_string(),
                 }],
                 working_dir: &working_dir,
-                thread_path: &working_dir,
+                topic_path: &working_dir,
                 cancel: cancel.clone(),
-                thread_name: "cancel-during-tool",
+                topic_name: "cancel-during-tool",
                 event_bus: None,
                 prior_history: vec![],
                 prior_raw_context: vec![],
@@ -1692,7 +1692,7 @@ mod cancel_during_tool_tests {
                 additional_write_roots: vec![],
                 pattern_inject_images: false,
                 outbound: None,
-                thread_managers: None,
+                topic_managers: None,
                 current_channel: None,
                 outbounds: None,
                 context_window: None,
@@ -1736,14 +1736,14 @@ mod cancel_during_tool_tests {
 #[cfg(test)]
 mod ticker_tests {
     use super::*;
-    use jyc_core::thread_event::ThreadEvent;
-    use jyc_core::thread_event_bus::{SimpleThreadEventBus, ThreadEventBusRef};
+    use jyc_core::topic_event::TopicEvent;
+    use jyc_core::topic_event_bus::{SimpleThreadEventBus, TopicEventBusRef};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     #[tokio::test]
     async fn run_ticker_publishes_then_exits_on_cancel() {
-        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
         let mut rx = bus.subscribe().await.unwrap();
         let cancel = CancellationToken::new();
         let start = Instant::now();
@@ -1755,7 +1755,7 @@ mod ticker_tests {
             Duration::from_millis(50),
             cancel.clone(),
             Some(&bus),
-            "thread-x".to_string(),
+            "topic-x".to_string(),
         );
 
         // Wait for at least 3 ticks before cancelling (~150 ms at 50 ms
@@ -1766,7 +1766,7 @@ mod ticker_tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while got < 3 && std::time::Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
-                Ok(Some(ThreadEvent::LoopTick { .. })) => got += 1,
+                Ok(Some(TopicEvent::LoopTick { .. })) => got += 1,
                 Ok(Some(_)) => {}
                 Ok(None) => break,
                 Err(_) => break,
@@ -1776,7 +1776,7 @@ mod ticker_tests {
 
         // Cancel and verify no further tick arrives within 200 ms.
         cancel.cancel();
-        if let Ok(Some(ThreadEvent::LoopTick { .. })) =
+        if let Ok(Some(TopicEvent::LoopTick { .. })) =
             tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
         {
             panic!("ticker should not publish after cancel")
@@ -1790,7 +1790,7 @@ mod ticker_tests {
     /// dashboard shows nothing.
     #[tokio::test]
     async fn run_ticker_publishes_immediately_at_t_zero() {
-        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
         let mut rx = bus.subscribe().await.unwrap();
         let cancel = CancellationToken::new();
         let start = Instant::now();
@@ -1803,11 +1803,11 @@ mod ticker_tests {
             Duration::from_secs(1),
             cancel.clone(),
             Some(&bus),
-            "thread-x".to_string(),
+            "topic-x".to_string(),
         );
 
         match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
-            Ok(Some(ThreadEvent::LoopTick { elapsed_ms, .. })) => {
+            Ok(Some(TopicEvent::LoopTick { elapsed_ms, .. })) => {
                 assert!(
                     elapsed_ms < 50,
                     "first tick should fire near t=0, got elapsed_ms={elapsed_ms}"
@@ -1826,7 +1826,7 @@ mod ticker_tests {
     /// added, this test would hang forever.
     #[tokio::test]
     async fn ticker_exits_on_handle_abort_when_cancel_not_fired() {
-        let bus: ThreadEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
         let mut rx = bus.subscribe().await.unwrap();
         let cancel = CancellationToken::new();
         let start = Instant::now();
@@ -1836,12 +1836,12 @@ mod ticker_tests {
             Duration::from_millis(50),
             cancel.clone(),
             Some(&bus),
-            "thread-x".to_string(),
+            "topic-x".to_string(),
         );
 
         // Drain one tick to confirm it's actually running.
         match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
-            Ok(Some(ThreadEvent::LoopTick { .. })) => {}
+            Ok(Some(TopicEvent::LoopTick { .. })) => {}
             other => panic!("expected a LoopTick, got {other:?}"),
         }
 
@@ -1863,7 +1863,7 @@ mod ticker_tests {
         .await;
         assert!(joined.is_ok(), "drop guard should not hang");
 
-        if let Ok(Some(ThreadEvent::LoopTick { .. })) =
+        if let Ok(Some(TopicEvent::LoopTick { .. })) =
             tokio::time::timeout(Duration::from_millis(100), rx.recv()).await
         {
             panic!("ticker should not publish after TickerGuard drop")

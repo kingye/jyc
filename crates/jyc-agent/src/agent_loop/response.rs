@@ -6,8 +6,8 @@ use anyhow::Result;
 use chrono::Utc;
 use futures::StreamExt;
 
-use jyc_core::thread_event::ThreadEvent;
-use jyc_core::thread_event_bus::ThreadEventBusRef;
+use jyc_core::topic_event::TopicEvent;
+use jyc_core::topic_event_bus::TopicEventBusRef;
 
 use crate::types::{ContentBlock, Message, Role, StreamEvent};
 
@@ -79,8 +79,8 @@ const THINKING_PUBLISH_INTERVAL: std::time::Duration = std::time::Duration::from
 pub(crate) async fn collect_response(
     stream: crate::provider::EventStream,
     sse_read_timeout: std::time::Duration,
-    event_bus: Option<&ThreadEventBusRef>,
-    thread_name: &str,
+    event_bus: Option<&TopicEventBusRef>,
+    topic_name: &str,
     thinking_enabled: bool,
 ) -> Result<CollectedResponse> {
     let mut response = CollectedResponse::default();
@@ -124,8 +124,8 @@ pub(crate) async fn collect_response(
                         let text = response.reasoning_content.clone();
                         publish_event(
                             event_bus,
-                            ThreadEvent::Thinking {
-                                thread_name: thread_name.to_string(),
+                            TopicEvent::Thinking {
+                                topic_name: topic_name.to_string(),
                                 text,
                                 full_length: response.reasoning_content.len(),
                                 timestamp: Utc::now(),

@@ -1,4 +1,4 @@
-//! Thread-safe WeCom access token cache.
+//! Topic-safe WeCom access token cache.
 //!
 //! Stores the token and its expiry [`std::time::Instant`]. Refreshes automatically
 //! when the token is missing or will expire within 5 minutes.
@@ -15,7 +15,7 @@ const TOKEN_API: &str = "https://qyapi.weixin.qq.com/cgi-bin/gettoken";
 /// The number of seconds before token expiry to proactively refresh.
 const TOKEN_REFRESH_MARGIN_SECS: u64 = 300;
 
-/// Thread-safe access token cache.
+/// Topic-safe access token cache.
 ///
 /// Stores the token and its expiry Instant. Refreshes automatically
 /// when the token is missing or will expire within 5 minutes.

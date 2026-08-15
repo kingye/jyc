@@ -18,7 +18,7 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 
 fn ctx() -> Arc<InspectContext> {
     Arc::new(InspectContext {
-        thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+        topic_managers: Arc::new(ArcSwap::from_pointee(vec![])),
         channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
             name: "demo".into(),
             channel_type: "email".into(),
@@ -73,15 +73,15 @@ async fn client_get_overview_works() {
     let client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
     let overview = client.get_overview().await.unwrap();
     assert_eq!(overview.channels.len(), 1);
-    assert!(overview.threads.is_empty());
+    assert!(overview.topics.is_empty());
 }
 
 #[tokio::test]
-async fn client_get_thread_activity_unknown_thread_404() {
+async fn client_get_topic_activity_unknown_topic_404() {
     let (addr, _h) = start_server().await;
     let client = InspectClient::with_token(&addr.to_string(), Some("topsecret"));
     let r: Result<Vec<ActivityEntry>, _> = client
-        .get_thread_activity("demo", "no-such-thread", None, None)
+        .get_topic_activity("demo", "no-such-topic", None, None)
         .await;
     assert!(r.is_err());
     let err = format!("{}", r.unwrap_err());
@@ -105,10 +105,10 @@ async fn client_list_patterns_unknown_channel_404() {
     assert!(r.is_err());
 }
 
-/// Stub `WebsocketHandler` that records the `scoped_thread` it is invoked
+/// Stub `WebsocketHandler` that records the `scoped_topic` it is invoked
 /// with, then keeps the connection open until the client disconnects.
 struct RecordingWsHandler {
-    scoped_thread: Arc<Mutex<Option<String>>>,
+    scoped_topic: Arc<Mutex<Option<String>>>,
 }
 
 #[async_trait]
@@ -117,31 +117,31 @@ impl WebsocketHandler for RecordingWsHandler {
         &self,
         ws: axum::extract::ws::WebSocket,
         _addr: std::net::SocketAddr,
-        scoped_thread: Option<&str>,
+        scoped_topic: Option<&str>,
     ) -> anyhow::Result<()> {
-        *self.scoped_thread.lock().await = scoped_thread.map(|s| s.to_string());
+        *self.scoped_topic.lock().await = scoped_topic.map(|s| s.to_string());
         let (_mut_tx, mut rx) = ws.split();
         while let Some(Ok(_)) = rx.next().await {}
         Ok(())
     }
 }
 
-/// Regression test: connecting to `/ws/<channel>/<thread>` must propagate the
-/// URL thread name to the handler as `scoped_thread`. Previously
+/// Regression test: connecting to `/ws/<channel>/<topic>` must propagate the
+/// URL topic name to the handler as `scoped_topic`. Previously
 /// `ws_upgrade_for_route` always passed `None`, so websocket-channel chat
-/// panes (which omit `thread` from the payload) had their messages dropped
-/// with "WebSocket Message without thread; ignoring".
+/// panes (which omit `topic` from the payload) had their messages dropped
+/// with "WebSocket Message without topic; ignoring".
 #[tokio::test]
-async fn ws_thread_route_propagates_scoped_thread() {
+async fn ws_topic_route_propagates_scoped_topic() {
     let recorded = Arc::new(Mutex::new(None));
     let handler = Arc::new(RecordingWsHandler {
-        scoped_thread: recorded.clone(),
+        scoped_topic: recorded.clone(),
     });
     let mut handlers: HashMap<String, DynWebsocketHandler> = HashMap::new();
     handlers.insert("test_channel".to_string(), handler);
 
     let context = Arc::new(InspectContext {
-        thread_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+        topic_managers: Arc::new(ArcSwap::from_pointee(vec![])),
         channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
             name: "test_channel".into(),
             channel_type: "websocket".into(),
@@ -168,8 +168,8 @@ async fn ws_thread_route_propagates_scoped_thread() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    // Connect to /ws/<channel>/<thread> with the same auth the dashboard uses.
-    let url = format!("ws://{}/ws/test_channel/my-thread", addr);
+    // Connect to /ws/<channel>/<topic> with the same auth the dashboard uses.
+    let url = format!("ws://{}/ws/test_channel/my-topic", addr);
     let mut request = url.as_str().into_client_request().unwrap();
     request.headers_mut().insert(
         "Authorization",
@@ -188,5 +188,5 @@ async fn ws_thread_route_propagates_scoped_thread() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     };
-    assert_eq!(got.as_deref(), Some("my-thread"));
+    assert_eq!(got.as_deref(), Some("my-topic"));
 }

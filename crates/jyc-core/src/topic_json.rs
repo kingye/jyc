@@ -1,6 +1,6 @@
-//! Thread-level metadata persistence in `.jyc/thread.json`.
+//! Topic-level metadata persistence in `.jyc/topic.json`.
 //!
-//! Each thread directory stores a `thread.json` file under `.jyc/` that holds
+//! Each topic directory stores a `topic.json` file under `.jyc/` that holds
 //! channel-specific metadata. The top-level structure is generic (`channel_type`,
 //! `version`), while the `data` field is opaque and channel-specific.
 //!
@@ -11,10 +11,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Generic thread metadata stored in `.jyc/thread.json`.
+/// Generic topic metadata stored in `.jyc/topic.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ThreadJson {
-    /// Channel type that created this thread (e.g., "wecomkf", "email", "feishu").
+pub struct TopicJson {
+    /// Channel type that created this topic (e.g., "wecomkf", "email", "feishu").
     pub channel_type: String,
     /// Schema version for forward compatibility.
     pub version: u32,
@@ -23,69 +23,69 @@ pub struct ThreadJson {
     pub data: Option<serde_json::Value>,
 }
 
-impl ThreadJson {
+impl TopicJson {
     /// File name within the `.jyc/` directory.
-    pub const FILENAME: &'static str = "thread.json";
+    pub const FILENAME: &'static str = "topic.json";
 
-    /// Construct the full path to `thread.json` for a given thread directory.
-    pub fn path(thread_path: &Path) -> PathBuf {
-        thread_path.join(".jyc").join(Self::FILENAME)
+    /// Construct the full path to `topic.json` for a given topic directory.
+    pub fn path(topic_path: &Path) -> PathBuf {
+        topic_path.join(".jyc").join(Self::FILENAME)
     }
 
-    /// Write `thread.json` to disk, creating `.jyc/` if needed (async).
-    pub async fn write(&self, thread_path: &Path) -> Result<()> {
-        let path = Self::path(thread_path);
+    /// Write `topic.json` to disk, creating `.jyc/` if needed (async).
+    pub async fn write(&self, topic_path: &Path) -> Result<()> {
+        let path = Self::path(topic_path);
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .with_context(|| format!("failed to create .jyc dir: {}", parent.display()))?;
         }
         let content =
-            serde_json::to_string_pretty(self).context("failed to serialize thread.json")?;
+            serde_json::to_string_pretty(self).context("failed to serialize topic.json")?;
         tokio::fs::write(&path, content)
             .await
-            .with_context(|| format!("failed to write thread.json: {}", path.display()))?;
+            .with_context(|| format!("failed to write topic.json: {}", path.display()))?;
         Ok(())
     }
 
-    /// Write `thread.json` to disk, creating `.jyc/` if needed (sync).
-    pub fn write_sync(&self, thread_path: &Path) -> Result<()> {
-        let path = Self::path(thread_path);
+    /// Write `topic.json` to disk, creating `.jyc/` if needed (sync).
+    pub fn write_sync(&self, topic_path: &Path) -> Result<()> {
+        let path = Self::path(topic_path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create .jyc dir: {}", parent.display()))?;
         }
         let content =
-            serde_json::to_string_pretty(self).context("failed to serialize thread.json")?;
+            serde_json::to_string_pretty(self).context("failed to serialize topic.json")?;
         std::fs::write(&path, content)
-            .with_context(|| format!("failed to write thread.json: {}", path.display()))?;
+            .with_context(|| format!("failed to write topic.json: {}", path.display()))?;
         Ok(())
     }
 
-    /// Read `thread.json` from disk if it exists (async).
-    pub async fn read(thread_path: &Path) -> Result<Option<Self>> {
-        let path = Self::path(thread_path);
+    /// Read `topic.json` from disk if it exists (async).
+    pub async fn read(topic_path: &Path) -> Result<Option<Self>> {
+        let path = Self::path(topic_path);
         if !path.exists() {
             return Ok(None);
         }
         let content = tokio::fs::read_to_string(&path)
             .await
-            .with_context(|| format!("failed to read thread.json: {}", path.display()))?;
+            .with_context(|| format!("failed to read topic.json: {}", path.display()))?;
         let value: Self = serde_json::from_str(&content)
-            .with_context(|| format!("failed to parse thread.json: {}", path.display()))?;
+            .with_context(|| format!("failed to parse topic.json: {}", path.display()))?;
         Ok(Some(value))
     }
 
-    /// Read `thread.json` from disk if it exists (sync).
-    pub fn read_sync(thread_path: &Path) -> Result<Option<Self>> {
-        let path = Self::path(thread_path);
+    /// Read `topic.json` from disk if it exists (sync).
+    pub fn read_sync(topic_path: &Path) -> Result<Option<Self>> {
+        let path = Self::path(topic_path);
         if !path.exists() {
             return Ok(None);
         }
         let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read thread.json: {}", path.display()))?;
+            .with_context(|| format!("failed to read topic.json: {}", path.display()))?;
         let value: Self = serde_json::from_str(&content)
-            .with_context(|| format!("failed to parse thread.json: {}", path.display()))?;
+            .with_context(|| format!("failed to parse topic.json: {}", path.display()))?;
         Ok(Some(value))
     }
 
@@ -94,7 +94,7 @@ impl ThreadJson {
         match &self.data {
             Some(v) => serde_json::from_value(v.clone())
                 .map(Some)
-                .context("failed to deserialize thread.json data field"),
+                .context("failed to deserialize topic.json data field"),
             None => Ok(None),
         }
     }
@@ -113,7 +113,7 @@ mod tests {
     #[tokio::test]
     async fn test_write_and_read_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        let meta = ThreadJson {
+        let meta = TopicJson {
             channel_type: "wecomkf".to_string(),
             version: 1,
             data: Some(serde_json::json!({
@@ -124,7 +124,7 @@ mod tests {
 
         meta.write(tmp.path()).await.unwrap();
 
-        let read_back = ThreadJson::read(tmp.path()).await.unwrap().unwrap();
+        let read_back = TopicJson::read(tmp.path()).await.unwrap().unwrap();
         assert_eq!(read_back.channel_type, "wecomkf");
         assert_eq!(read_back.version, 1);
         assert_eq!(
@@ -139,14 +139,14 @@ mod tests {
     #[tokio::test]
     async fn test_read_missing_file_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = ThreadJson::read(tmp.path()).await.unwrap();
+        let result = TopicJson::read(tmp.path()).await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_write_creates_jyc_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        let meta = ThreadJson {
+        let meta = TopicJson {
             channel_type: "email".to_string(),
             version: 1,
             data: None,
@@ -154,12 +154,12 @@ mod tests {
 
         meta.write(tmp.path()).await.unwrap();
         assert!(tmp.path().join(".jyc").is_dir());
-        assert!(tmp.path().join(".jyc/thread.json").is_file());
+        assert!(tmp.path().join(".jyc/topic.json").is_file());
     }
 
     #[tokio::test]
     async fn test_data_as_none_when_data_missing() {
-        let meta = ThreadJson {
+        let meta = TopicJson {
             channel_type: "github".to_string(),
             version: 1,
             data: None,

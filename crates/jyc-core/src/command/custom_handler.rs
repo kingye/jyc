@@ -7,7 +7,7 @@ use jyc_types::CustomCommand;
 
 /// Handler for a user-defined command declared in `config.toml` `[[commands]]`.
 ///
-/// On invocation it switches the thread mode (when the command declares one)
+/// On invocation it switches the topic mode (when the command declares one)
 /// and injects the command's skills + `user_prompt` into the message body via
 /// [`CommandResult::append_body`], so the agent receives them as part of the
 /// user turn.
@@ -121,14 +121,14 @@ mod tests {
         }
     }
 
-    fn test_context(thread_path: &Path) -> CommandContext {
-        test_context_with_args(thread_path, vec![])
+    fn test_context(topic_path: &Path) -> CommandContext {
+        test_context_with_args(topic_path, vec![])
     }
 
-    fn test_context_with_args(thread_path: &Path, args: Vec<&str>) -> CommandContext {
+    fn test_context_with_args(topic_path: &Path, args: Vec<&str>) -> CommandContext {
         CommandContext {
             args: args.into_iter().map(|s| s.to_string()).collect(),
-            thread_path: thread_path.to_path_buf(),
+            topic_path: topic_path.to_path_buf(),
             config: Arc::new(
                 jyc_types::load_config_from_str(
                     r#"

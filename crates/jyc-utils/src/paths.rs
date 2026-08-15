@@ -17,7 +17,7 @@
 //!
 //! The **config dir** (L1) holds user-edited files: `config.toml`,
 //! `skills/`, `templates/`. The **data dir** (default workdir, L2) holds
-//! generated state: channel state, workspaces, threads.
+//! generated state: channel state, workspaces, topics.
 
 use std::path::PathBuf;
 

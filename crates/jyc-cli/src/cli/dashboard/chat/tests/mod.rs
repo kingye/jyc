@@ -96,7 +96,7 @@ fn live_tick_ms_for_round_trip() {
     let payload = serde_json::json!({
         "type": "loop_tick",
         "channel": "chan",
-        "thread": "t1",
+        "topic": "t1",
         "elapsed_ms": 12_400,
     });
     chat.handle_live_event(&payload);
@@ -107,7 +107,7 @@ fn live_tick_ms_for_round_trip() {
     chat.handle_live_event(&serde_json::json!({
         "type": "processing",
         "channel": "chan",
-        "thread": "t1",
+        "topic": "t1",
         "is_processing": false,
         "has_error": false,
     }));
@@ -117,7 +117,7 @@ fn live_tick_ms_for_round_trip() {
     chat.handle_live_event(&serde_json::json!({
         "type": "loop_tick",
         "channel": "chan",
-        "thread": "t1",
+        "topic": "t1",
         "elapsed_ms": 7_500,
     }));
     assert_eq!(chat.live_tick_ms_for("chan", "t1"), Some(7_500));
@@ -128,25 +128,25 @@ fn select_pattern_clears_chat_messages() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
 
-    // Simulate messages from a previous thread
+    // Simulate messages from a previous topic
     app.chat.messages.push(ChatMessage {
         sender: "user".to_string(),
-        text: "hello from thread A".to_string(),
+        text: "hello from topic A".to_string(),
         timestamp: None,
     });
     app.chat.messages.push(ChatMessage {
         sender: "ai".to_string(),
-        text: "reply from thread A".to_string(),
+        text: "reply from topic A".to_string(),
         timestamp: None,
     });
     assert_eq!(app.chat.messages.len(), 2);
 
-    // Switch to a new thread
-    app.chat.select_pattern_inner("thread-b".to_string());
+    // Switch to a new topic
+    app.chat.select_pattern_inner("topic-b".to_string());
 
-    // Messages must be cleared so stale content doesn't leak across threads
+    // Messages must be cleared so stale content doesn't leak across topics
     assert!(app.chat.messages.is_empty());
-    assert_eq!(app.chat.thread.as_deref(), Some("thread-b"));
+    assert_eq!(app.chat.topic.as_deref(), Some("topic-b"));
 }
 
 #[test]
@@ -436,23 +436,23 @@ fn select_pattern_clears_input_history() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
 
-    app.chat.input_history = vec!["msg from thread A".to_string()];
+    app.chat.input_history = vec!["msg from topic A".to_string()];
     app.chat.history_pos = Some(0);
 
-    // Switch to a new thread
-    app.chat.select_pattern_inner("thread-b".to_string());
+    // Switch to a new topic
+    app.chat.select_pattern_inner("topic-b".to_string());
 
-    // History must be cleared so it doesn't leak across threads
+    // History must be cleared so it doesn't leak across topics
     assert!(app.chat.input_history.is_empty());
     assert!(app.chat.history_pos.is_none());
 }
 
 #[test]
-fn clear_live_transient_removes_stale_state_for_switched_thread() {
+fn clear_live_transient_removes_stale_state_for_switched_topic() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
 
-    // Stale entries from earlier watches of two threads:
+    // Stale entries from earlier watches of two topics:
     // - "done": missed completion event → phantom (true) progress
     // - "busy": missed start event → false suppresses overview fallback
     let done = ("chan".to_string(), "done".to_string());
@@ -476,7 +476,7 @@ fn clear_live_transient_removes_stale_state_for_switched_thread() {
     assert!(app.chat.live_thinking_for("chan", "done").is_none());
     // Activity/chat buffers are preserved (re-seeded by REST hydrate).
     assert!(app.chat.live_activity.contains_key(&done));
-    // Other threads' live state is untouched.
+    // Other topics' live state is untouched.
     assert_eq!(
         app.chat.live_processing_for("chan", "busy"),
         Some((false, false))
@@ -497,7 +497,7 @@ fn esc_does_not_close_chat_with_input_focused() {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.phase = ChatPhase::Chatting;
-    app.chat.thread = Some("jyc".to_string());
+    app.chat.topic = Some("jyc".to_string());
     app.chat.focus = ChatFocus::ChatPane;
 
     handle_chat_keys(&mut app, esc_key(), &mut test_terminal());
@@ -510,7 +510,7 @@ fn esc_does_not_close_chat_in_activity_pane() {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.phase = ChatPhase::Chatting;
-    app.chat.thread = Some("jyc".to_string());
+    app.chat.topic = Some("jyc".to_string());
     app.chat.focus = ChatFocus::ActivityPane;
 
     handle_chat_keys(&mut app, esc_key(), &mut test_terminal());
@@ -523,7 +523,7 @@ fn chatting_app() -> App {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.phase = ChatPhase::Chatting;
-    app.chat.thread = Some("jyc".to_string());
+    app.chat.topic = Some("jyc".to_string());
     app
 }
 
@@ -630,7 +630,7 @@ fn mouse_scroll_in_message_area_advances_scroll_offset() {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.phase = ChatPhase::Chatting;
-    app.chat.thread = Some("jyc".to_string());
+    app.chat.topic = Some("jyc".to_string());
     // Focus the input so the wheel hit-test is the only thing moving
     // focus, mirroring the user experience of scrolling with the
     // cursor over the message area while typing into the input.
@@ -729,7 +729,7 @@ fn mouse_scroll_ignored_when_capture_disabled() {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.phase = ChatPhase::Chatting;
-    app.chat.thread = Some("jyc".to_string());
+    app.chat.topic = Some("jyc".to_string());
     app.chat.focus = ChatFocus::ChatPane;
     app.chat.scroll = 0;
     app.chat.messages.push(ChatMessage {
@@ -804,7 +804,7 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.phase = ChatPhase::Chatting;
-    app.chat.thread = Some("jyc".to_string());
+    app.chat.topic = Some("jyc".to_string());
     // Enough messages to overflow the pane, so the rendered scroll
     // maximum (last_max_scroll) is non-zero.
     for i in 0..100 {
@@ -840,7 +840,7 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
     let mut app2 = App::new(rx2, None);
     app2.chat.visible = true;
     app2.chat.phase = ChatPhase::Chatting;
-    app2.chat.thread = Some("jyc".to_string());
+    app2.chat.topic = Some("jyc".to_string());
     for i in 0..100 {
         app2.chat.messages.push(ChatMessage {
             sender: "user".into(),
@@ -884,7 +884,7 @@ fn leader_open_dashboard_closes_chat() {
     let mut app = App::new(rx, None);
     app.chat.visible = true;
     app.chat.phase = ChatPhase::Chatting;
-    app.chat.thread = Some("jyc".to_string());
+    app.chat.topic = Some("jyc".to_string());
 
     execute_local_action(
         &mut app,
@@ -904,14 +904,14 @@ fn close_returns_to_overview_from_ws_chat() {
     // spawns a tokio task requiring a runtime.
     app.chat.visible = true;
     app.chat.phase = ChatPhase::Chatting;
-    app.chat.thread = Some("jyc".to_string());
+    app.chat.topic = Some("jyc".to_string());
     app.chat.focus = ChatFocus::ChatPane;
     let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     app.chat.ws_tx = Some(cmd_tx);
 
     assert!(app.chat.visible);
     assert_eq!(app.chat.phase, ChatPhase::Chatting);
-    assert_eq!(app.chat.thread.as_deref(), Some("jyc"));
+    assert_eq!(app.chat.topic.as_deref(), Some("jyc"));
 
     // close() is what Esc invokes — must return to overview
     app.chat.close();
@@ -1064,7 +1064,7 @@ fn handle_ws_message_routes_activity_events_to_live_buffer() {
     let payload = serde_json::json!({
         "type": "activity",
         "channel": "github",
-        "thread": "pr-1",
+        "topic": "pr-1",
         "id": 43,
         "entry": {
             "text": "Completed",
@@ -1080,7 +1080,7 @@ fn handle_ws_message_routes_activity_events_to_live_buffer() {
     let payload = serde_json::json!({
         "type": "activity",
         "channel": "github",
-        "thread": "pr-1",
+        "topic": "pr-1",
         "id": 42,
         "entry": {
             "text": "Old",
@@ -1101,7 +1101,7 @@ fn handle_ws_message_routes_chat_message_to_live_buffer() {
     let payload = serde_json::json!({
         "type": "chat_message",
         "channel": "github",
-        "thread": "pr-1",
+        "topic": "pr-1",
         "id": 1,
         "entry": {
             "sender": "ai",
@@ -1122,7 +1122,7 @@ fn handle_ws_message_routes_thinking_to_live_buffer() {
     let payload = serde_json::json!({
         "type": "thinking",
         "channel": "github",
-        "thread": "pr-1",
+        "topic": "pr-1",
         "text": "I am thinking about the problem"
     });
     app.chat.handle_ws_message(&payload.to_string());
@@ -1156,7 +1156,7 @@ fn handle_ws_message_routes_resync_clears_buffer() {
     let payload = serde_json::json!({
         "type": "resync",
         "channel": "github",
-        "thread": "pr-1",
+        "topic": "pr-1",
         "dropped": 5
     });
     app.chat.handle_ws_message(&payload.to_string());

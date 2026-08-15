@@ -9,7 +9,7 @@ use jyc_core::command::handler::{CommandContext, CommandHandler};
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsHandle;
 use jyc_core::static_agent::StaticAgentService;
-use jyc_core::thread_manager::ThreadManager;
+use jyc_core::topic_manager::TopicManager;
 use jyc_types::{AppConfig, SmtpConfig, load_config_from_str};
 
 fn test_config() -> Arc<AppConfig> {
@@ -42,14 +42,14 @@ fn test_config_swap() -> Arc<ArcSwap<AppConfig>> {
     Arc::new(ArcSwap::new(test_config()))
 }
 
-fn test_context(thread_path: &std::path::Path) -> CommandContext {
-    test_context_with_args(thread_path, &["--confirm"])
+fn test_context(topic_path: &std::path::Path) -> CommandContext {
+    test_context_with_args(topic_path, &["--confirm"])
 }
 
-fn test_context_with_args(thread_path: &std::path::Path, args: &[&str]) -> CommandContext {
+fn test_context_with_args(topic_path: &std::path::Path, args: &[&str]) -> CommandContext {
     CommandContext {
         args: args.iter().map(|s| s.to_string()).collect(),
-        thread_path: thread_path.to_path_buf(),
+        topic_path: topic_path.to_path_buf(),
         config: test_config(),
         channel: "test".into(),
         channel_type: "websocket".to_string(),
@@ -60,17 +60,17 @@ fn test_context_with_args(thread_path: &std::path::Path, args: &[&str]) -> Comma
 }
 
 #[tokio::test]
-async fn test_close_command_deletes_thread_directory() {
+async fn test_close_command_deletes_topic_directory() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let thread_dir = workspace.join("test_thread");
-    std::fs::create_dir_all(&thread_dir).unwrap();
-    std::fs::write(thread_dir.join("test.txt"), "content").unwrap();
+    let topic_dir = workspace.join("test_topic");
+    std::fs::create_dir_all(&topic_dir).unwrap();
+    std::fs::write(topic_dir.join("test.txt"), "content").unwrap();
 
     let storage = Arc::new(MessageStorage::new(&workspace));
 
-    let thread_manager = Arc::new(ThreadManager::new(
+    let topic_manager = Arc::new(TopicManager::new(
         3,
         10,
         storage.clone(),
@@ -97,25 +97,25 @@ async fn test_close_command_deletes_thread_directory() {
         MetricsHandle::noop(),
     ));
 
-    let handler = CloseCommandHandler::new(thread_manager);
-    let ctx = test_context(&thread_dir);
+    let handler = CloseCommandHandler::new(topic_manager);
+    let ctx = test_context(&topic_dir);
 
     let result = handler.execute(ctx).await.unwrap();
     assert!(result.success);
-    assert!(!thread_dir.exists());
-    assert!(result.message.contains("test_thread"));
+    assert!(!topic_dir.exists());
+    assert!(result.message.contains("test_topic"));
 }
 
 #[tokio::test]
-async fn test_close_command_nonexistent_thread_succeeds() {
+async fn test_close_command_nonexistent_topic_succeeds() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let thread_dir = workspace.join("nonexistent_thread");
+    let topic_dir = workspace.join("nonexistent_topic");
 
     let storage = Arc::new(MessageStorage::new(&workspace));
 
-    let thread_manager = Arc::new(ThreadManager::new(
+    let topic_manager = Arc::new(TopicManager::new(
         3,
         10,
         storage.clone(),
@@ -142,22 +142,22 @@ async fn test_close_command_nonexistent_thread_succeeds() {
         MetricsHandle::noop(),
     ));
 
-    let handler = CloseCommandHandler::new(thread_manager);
-    let ctx = test_context(&thread_dir);
+    let handler = CloseCommandHandler::new(topic_manager);
+    let ctx = test_context(&topic_dir);
 
     let result = handler.execute(ctx).await.unwrap();
     assert!(result.success);
 }
 
 #[tokio::test]
-async fn test_close_command_invalid_thread_path() {
+async fn test_close_command_invalid_topic_path() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 
     let storage = Arc::new(MessageStorage::new(&workspace));
 
-    let thread_manager = Arc::new(ThreadManager::new(
+    let topic_manager = Arc::new(TopicManager::new(
         3,
         10,
         storage.clone(),
@@ -184,11 +184,11 @@ async fn test_close_command_invalid_thread_path() {
         MetricsHandle::noop(),
     ));
 
-    let handler = CloseCommandHandler::new(thread_manager);
+    let handler = CloseCommandHandler::new(topic_manager);
 
     let ctx = CommandContext {
         args: vec!["--confirm".into()],
-        thread_path: PathBuf::from("/"),
+        topic_path: PathBuf::from("/"),
         config: test_config(),
         channel: "test".into(),
         channel_type: "websocket".to_string(),
@@ -207,13 +207,13 @@ async fn test_close_command_without_confirm_keeps_directory() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let thread_dir = workspace.join("test_thread");
-    std::fs::create_dir_all(&thread_dir).unwrap();
-    std::fs::write(thread_dir.join("test.txt"), "content").unwrap();
+    let topic_dir = workspace.join("test_topic");
+    std::fs::create_dir_all(&topic_dir).unwrap();
+    std::fs::write(topic_dir.join("test.txt"), "content").unwrap();
 
     let storage = Arc::new(MessageStorage::new(&workspace));
 
-    let thread_manager = Arc::new(ThreadManager::new(
+    let topic_manager = Arc::new(TopicManager::new(
         3,
         10,
         storage.clone(),
@@ -240,9 +240,9 @@ async fn test_close_command_without_confirm_keeps_directory() {
         MetricsHandle::noop(),
     ));
 
-    let handler = CloseCommandHandler::new(thread_manager);
+    let handler = CloseCommandHandler::new(topic_manager);
     // Plain `/close` (no args) — must NOT delete
-    let ctx = test_context_with_args(&thread_dir, &[]);
+    let ctx = test_context_with_args(&topic_dir, &[]);
 
     let result = handler.execute(ctx).await.unwrap();
     assert!(
@@ -255,11 +255,11 @@ async fn test_close_command_without_confirm_keeps_directory() {
         result.message
     );
     assert!(
-        thread_dir.exists(),
-        "thread dir must still exist after plain /close"
+        topic_dir.exists(),
+        "topic dir must still exist after plain /close"
     );
     assert!(
-        thread_dir.join("test.txt").exists(),
-        "thread contents must be preserved"
+        topic_dir.join("test.txt").exists(),
+        "topic contents must be preserved"
     );
 }

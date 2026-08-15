@@ -1,8 +1,8 @@
 //! File-based store for scheduled jobs.
 //!
-//! Each job is stored as `<thread_path>/.jyc/jobs/<id>.json`. The store
+//! Each job is stored as `<topic_path>/.jyc/jobs/<id>.json`. The store
 //! provides CRUD operations and is used by both the `JobScheduler` and
-//! the agent job management tools. Each thread has its own isolated store.
+//! the agent job management tools. Each topic has its own isolated store.
 
 use anyhow::{Context, Result};
 use jyc_types::JobConfig;
@@ -11,36 +11,36 @@ use tokio::fs;
 
 /// File-based job store with per-file JSON persistence.
 ///
-/// Jobs are stored as individual JSON files under the thread's
+/// Jobs are stored as individual JSON files under the topic's
 /// `.jyc/jobs/` directory. This avoids SQLite dependency while
 /// providing atomic per-file operations.
 #[derive(Clone)]
 pub struct JobStore {
-    /// Thread directory path. Jobs are stored at `{.jyc/jobs/<id>.json`.
-    thread_path: PathBuf,
-    /// Maximum number of jobs allowed per thread.
+    /// Topic directory path. Jobs are stored at `{.jyc/jobs/<id>.json`.
+    topic_path: PathBuf,
+    /// Maximum number of jobs allowed per topic.
     max_jobs: usize,
 }
 
 impl JobStore {
-    /// Create a new JobStore for the given thread path.
+    /// Create a new JobStore for the given topic path.
     ///
     /// The jobs directory (`.jyc/jobs/`) is created if it doesn't exist.
-    pub async fn new(thread_path: &Path, max_jobs: usize) -> Result<Self> {
-        let jobs_dir = thread_path.join(".jyc").join("jobs");
+    pub async fn new(topic_path: &Path, max_jobs: usize) -> Result<Self> {
+        let jobs_dir = topic_path.join(".jyc").join("jobs");
         fs::create_dir_all(&jobs_dir)
             .await
             .with_context(|| format!("failed to create jobs directory: {}", jobs_dir.display()))?;
 
         Ok(Self {
-            thread_path: thread_path.to_path_buf(),
+            topic_path: topic_path.to_path_buf(),
             max_jobs,
         })
     }
 
     /// Return the path to the jobs directory.
     pub fn jobs_dir(&self) -> PathBuf {
-        self.thread_path.join(".jyc").join("jobs")
+        self.topic_path.join(".jyc").join("jobs")
     }
 
     /// Return the path to the job file for the given ID.
@@ -91,18 +91,18 @@ impl JobStore {
     /// Create a new job by writing its JSON file.
     ///
     /// Returns an error if a job with the same ID already exists or if
-    /// the job count for this thread would exceed `max_jobs`.
+    /// the job count for this topic would exceed `max_jobs`.
     pub async fn create(&self, job: &JobConfig) -> Result<()> {
         let path = self.job_path(&job.id);
         if path.exists() {
             anyhow::bail!("job '{}' already exists", job.id);
         }
 
-        // Enforce per-thread job limit
+        // Enforce per-topic job limit
         let current = self.list().await?.len();
         if current >= self.max_jobs {
             anyhow::bail!(
-                "job limit per thread reached ({} max). Delete an existing job first.",
+                "job limit per topic reached ({} max). Delete an existing job first.",
                 self.max_jobs
             );
         }
@@ -181,7 +181,7 @@ mod tests {
             cron: Some("0 0 8 * * * *".to_string()),
             at: None,
             enabled: true,
-            thread_name: "test-thread".to_string(),
+            topic_name: "test-topic".to_string(),
             channel: "email".to_string(),
             channel_name: "work".to_string(),
             prompt: "Send daily summary".to_string(),

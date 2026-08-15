@@ -28,7 +28,7 @@ pub enum CommandScope {
 pub enum LocalAction {
     /// Close the chat screen and return to the dashboard.
     OpenDashboard,
-    /// Open the chat screen for the selected thread (dashboard only).
+    /// Open the chat screen for the selected topic (dashboard only).
     OpenChat,
     /// Start a new chat (pattern select).
     NewChat,
@@ -36,7 +36,7 @@ pub enum LocalAction {
     ReloadConfig,
     /// Quit the TUI.
     Quit,
-    /// Toggle the thread explorer pane (left side).
+    /// Toggle the topic explorer pane (left side).
     ToggleExplorer,
     /// Toggle zen mode (hide all aux panes; restore the snapshot on exit).
     ToggleZen,
@@ -44,7 +44,7 @@ pub enum LocalAction {
     ToggleActivity,
     /// Show/hide the bottom status bar.
     ToggleStatus,
-    /// Show/hide the thread info pane (right side).
+    /// Show/hide the topic info pane (right side).
     ToggleInfo,
     /// Open the chat input in an external editor ($EDITOR).
     OpenExternalEditor,
@@ -103,7 +103,7 @@ pub fn local_commands() -> &'static [LocalCommand] {
         },
         LocalCommand {
             name: "open chat",
-            description: "Open chat for the selected thread",
+            description: "Open chat for the selected topic",
             scope: Dashboard,
             action: LocalAction::OpenChat,
             leader_keys: "c",
@@ -131,7 +131,7 @@ pub fn local_commands() -> &'static [LocalCommand] {
         },
         LocalCommand {
             name: "toggle explorer",
-            description: "Show/hide thread explorer pane",
+            description: "Show/hide topic explorer pane",
             scope: Chat,
             action: LocalAction::ToggleExplorer,
             leader_keys: "e",
@@ -159,7 +159,7 @@ pub fn local_commands() -> &'static [LocalCommand] {
         },
         LocalCommand {
             name: "toggle info",
-            description: "Show/hide thread info pane",
+            description: "Show/hide topic info pane",
             scope: Chat,
             action: LocalAction::ToggleInfo,
             leader_keys: "i",

@@ -15,11 +15,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::types::{ImageSource, ToolDefinition};
-use jyc_core::thread_manager::ThreadManager;
+use jyc_core::topic_manager::TopicManager;
 use jyc_types::channel::OutboundAdapter;
 
-/// Shared thread managers map keyed by channel name.
-pub type ThreadManagersMap = Arc<tokio::sync::Mutex<HashMap<String, Arc<ThreadManager>>>>;
+/// Shared topic managers map keyed by channel name.
+pub type TopicManagersMap = Arc<tokio::sync::Mutex<HashMap<String, Arc<TopicManager>>>>;
 
 /// Shared outbound adapters map keyed by channel name.
 /// Used by `jyc_send_message` to support the `channel` parameter for
@@ -60,17 +60,17 @@ pub struct ToolContext<'a> {
     /// the tool registry. `None` when the agent runs in contexts without
     /// a pre-warmed outbound adapter.
     pub outbound: Option<Arc<dyn OutboundAdapter>>,
-    /// Cross-channel thread managers keyed by channel name.
-    /// Used by `jyc_send_to_thread` tool to inject messages into threads
+    /// Cross-channel topic managers keyed by channel name.
+    /// Used by `jyc_send_to_topic` tool to inject messages into topics
     /// in other channels. `None` when running in contexts without
     /// cross-channel communication (e.g. unit tests).
-    pub thread_managers: Option<ThreadManagersMap>,
+    pub topic_managers: Option<TopicManagersMap>,
     /// Current channel name, for tools that need source context (e.g.
-    /// `jyc_send_to_thread` sets `source_channel` metadata from this).
+    /// `jyc_send_to_topic` sets `source_channel` metadata from this).
     pub current_channel: Option<String>,
-    /// Current thread name, for tools that need source context (e.g.
-    /// `jyc_send_to_thread` sets `source_thread` metadata from this).
-    pub current_thread: Option<String>,
+    /// Current topic name, for tools that need source context (e.g.
+    /// `jyc_send_to_topic` sets `source_topic` metadata from this).
+    pub current_topic: Option<String>,
     /// Cross-channel outbound adapters keyed by channel name.
     /// Used by `jyc_send_message` to support the `channel` parameter for
     /// sending proactive messages through any channel's outbound adapter.
@@ -108,9 +108,9 @@ impl<'a> ToolContext<'a> {
             pending_images: Mutex::new(Vec::new()),
             pattern_inject_images: false,
             outbound: None,
-            thread_managers: None,
+            topic_managers: None,
             current_channel: None,
-            current_thread: None,
+            current_topic: None,
             outbounds: None,
         }
     }
@@ -124,9 +124,9 @@ impl<'a> ToolContext<'a> {
             pending_images: Mutex::new(Vec::new()),
             pattern_inject_images: false,
             outbound: None,
-            thread_managers: None,
+            topic_managers: None,
             current_channel: None,
-            current_thread: None,
+            current_topic: None,
             outbounds: None,
         }
     }

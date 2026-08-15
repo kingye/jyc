@@ -3,4 +3,4 @@ pub mod auth;
 pub mod client;
 pub mod scoped_ws;
 pub mod server;
-pub mod thread_proxy;
+pub mod topic_proxy;

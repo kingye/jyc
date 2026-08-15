@@ -9,8 +9,8 @@ pub const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
 
 /// Read input tokens from the agent session state file.
 /// Returns (current_tokens, max_tokens).
-pub async fn read_input_tokens(thread_path: &Path) -> (Option<u64>, Option<u64>) {
-    let (cur, max, _, _, _, _) = read_token_state(thread_path).await;
+pub async fn read_input_tokens(topic_path: &Path) -> (Option<u64>, Option<u64>) {
+    let (cur, max, _, _, _, _) = read_token_state(topic_path).await;
     (cur, max)
 }
 
@@ -18,8 +18,8 @@ pub async fn read_input_tokens(thread_path: &Path) -> (Option<u64>, Option<u64>)
 /// Returns `None` when the file is missing, malformed, or the value is zero.
 /// The session file already deserializes `total_output_tokens` — this just
 /// surfaces it. Output tokens accumulate across LLM calls in a round.
-pub async fn read_output_tokens(thread_path: &Path) -> Option<u64> {
-    let (_, _, out, _, _, _) = read_token_state(thread_path).await;
+pub async fn read_output_tokens(topic_path: &Path) -> Option<u64> {
+    let (_, _, out, _, _, _) = read_token_state(topic_path).await;
     out
 }
 
@@ -27,8 +27,8 @@ pub async fn read_output_tokens(thread_path: &Path) -> Option<u64> {
 /// Returns `None` when the file is missing, malformed, or the value is zero.
 /// Distinct from `read_input_tokens` (which returns the current context
 /// size); this is the running sum across all LLM calls in the session.
-pub async fn read_total_input_tokens(thread_path: &Path) -> Option<u64> {
-    let (_, _, _, total, _, _) = read_token_state(thread_path).await;
+pub async fn read_total_input_tokens(topic_path: &Path) -> Option<u64> {
+    let (_, _, _, total, _, _) = read_token_state(topic_path).await;
     total
 }
 
@@ -36,8 +36,8 @@ pub async fn read_total_input_tokens(thread_path: &Path) -> Option<u64> {
 /// file. Returns `None` when the file is missing, malformed, or the
 /// accumulated value is zero. Mirrors `read_total_input_tokens`; zero
 /// covers both "no calls yet" and "provider didn't surface cache hits".
-pub async fn read_total_cache_hit_tokens(thread_path: &Path) -> Option<u64> {
-    let (_, _, _, _, cache_hit, _) = read_token_state(thread_path).await;
+pub async fn read_total_cache_hit_tokens(topic_path: &Path) -> Option<u64> {
+    let (_, _, _, _, cache_hit, _) = read_token_state(topic_path).await;
     cache_hit
 }
 
@@ -50,8 +50,8 @@ pub async fn read_total_cache_hit_tokens(thread_path: &Path) -> Option<u64> {
 /// Anthropic is the only provider that reports writes separately from
 /// reads; for every other vendor this is always `None` unless the
 /// caller actively fills it.
-pub async fn read_total_cache_creation_tokens(thread_path: &Path) -> Option<u64> {
-    let (_, _, _, _, _, cache_creation) = read_token_state(thread_path).await;
+pub async fn read_total_cache_creation_tokens(topic_path: &Path) -> Option<u64> {
+    let (_, _, _, _, _, cache_creation) = read_token_state(topic_path).await;
     cache_creation
 }
 
@@ -62,11 +62,11 @@ pub async fn read_total_cache_creation_tokens(thread_path: &Path) -> Option<u64>
 /// pricing", and in either case there is nothing meaningful to show.
 ///
 /// Kept separate from `read_token_state` rather than widening its
-/// tuple: cost has a single caller, and threading a sixth element
+/// tuple: cost has a single caller, and References a sixth element
 /// through four existing helpers would be a much larger change than
 /// one extra read of an already page-cached file.
-pub async fn read_session_cost(thread_path: &Path) -> Option<f64> {
-    let agent_path = thread_path.join(".jyc").join("agent-session.json");
+pub async fn read_session_cost(topic_path: &Path) -> Option<f64> {
+    let agent_path = topic_path.join(".jyc").join("agent-session.json");
     let content = tokio::fs::read_to_string(&agent_path).await.ok()?;
     let state = serde_json::from_str::<AgentSessionState>(&content).ok()?;
     (state.session_cost > 0.0).then_some(state.session_cost)
@@ -80,11 +80,11 @@ pub async fn read_session_cost(thread_path: &Path) -> Option<f64> {
 /// (`total_cache_creation_tokens` is also `None` when the field is
 /// absent — sessions written before it existed deserialize as `None`).
 ///
-/// Callers that need all six fields (e.g. `thread_manager::list_threads`)
+/// Callers that need all six fields (e.g. `topic_manager::list_topics`)
 /// should use this rather than calling the single-purpose helpers above
 /// separately — saves one file open + JSON parse per call.
 pub async fn read_token_state(
-    thread_path: &Path,
+    topic_path: &Path,
 ) -> (
     Option<u64>,
     Option<u64>,
@@ -93,7 +93,7 @@ pub async fn read_token_state(
     Option<u64>,
     Option<u64>,
 ) {
-    let agent_path = thread_path.join(".jyc").join("agent-session.json");
+    let agent_path = topic_path.join(".jyc").join("agent-session.json");
     let Ok(content) = tokio::fs::read_to_string(&agent_path).await else {
         return (None, None, None, None, None, None);
     };
@@ -142,8 +142,8 @@ struct AgentSessionState {
 }
 
 /// Read the model override file if it exists.
-pub async fn read_model_override(thread_path: &Path) -> Option<String> {
-    let override_path = thread_path.join(".jyc").join("model-override");
+pub async fn read_model_override(topic_path: &Path) -> Option<String> {
+    let override_path = topic_path.join(".jyc").join("model-override");
     tokio::fs::read_to_string(override_path)
         .await
         .ok()
@@ -152,8 +152,8 @@ pub async fn read_model_override(thread_path: &Path) -> Option<String> {
 }
 
 /// Read the mode override file if it exists.
-pub async fn read_mode_override(thread_path: &Path) -> Option<String> {
-    let override_path = thread_path.join(".jyc").join("mode-override");
+pub async fn read_mode_override(topic_path: &Path) -> Option<String> {
+    let override_path = topic_path.join(".jyc").join("mode-override");
     tokio::fs::read_to_string(override_path)
         .await
         .ok()
@@ -162,8 +162,8 @@ pub async fn read_mode_override(thread_path: &Path) -> Option<String> {
 }
 
 /// Read the matched pattern file if it exists.
-pub async fn read_pattern(thread_path: &Path) -> Option<String> {
-    let pattern_path = thread_path.join(".jyc").join("pattern");
+pub async fn read_pattern(topic_path: &Path) -> Option<String> {
+    let pattern_path = topic_path.join(".jyc").join("pattern");
     tokio::fs::read_to_string(pattern_path)
         .await
         .ok()
@@ -171,12 +171,12 @@ pub async fn read_pattern(thread_path: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Resolve the `ResetCompressionConfig` for a thread.
+/// Resolve the `ResetCompressionConfig` for a topic.
 ///
 /// Priority: matched pattern > first pattern > global `[agent].reset_compression` > default.
 ///
 /// Pass `matched_pattern = Some(name)` when the caller has access to the
-/// pattern that created the thread (e.g. `process()` with
+/// pattern that created the topic (e.g. `process()` with
 /// `message.matched_pattern`). Pass `None` when the caller doesn't (e.g.
 /// `/reset` command handler) — in that case the first pattern on the
 /// channel is used as the best available signal.
@@ -208,25 +208,25 @@ pub fn resolve_reset_compression(
 }
 
 /// Resolve the `max_input_tokens` value the session should have for the
-/// currently active model on this thread.
+/// currently active model on this topic.
 ///
 /// Returns `None` if no model can be resolved (no config, no providers, etc.).
 /// Callers should treat `None` as a no-op.
 pub async fn resolve_active_context_window(
-    thread_path: &Path,
+    topic_path: &Path,
     config: &AppConfig,
     channel: &str,
     auto_reset_threshold: f64,
 ) -> Option<u64> {
-    let model_override = resolve_active_model(thread_path, config, channel).await?;
+    let model_override = resolve_active_model(topic_path, config, channel).await?;
     let context_window = context_window_for_model(&model_override, config)?;
     Some((context_window as f64 * auto_reset_threshold) as u64)
 }
 
 /// Idempotently write `max_input_tokens` to `.jyc/agent-session.json`.
 /// No-op if the value would not change (avoids disk churn).
-pub async fn write_max_input_tokens(thread_path: &Path, new_max: u64) {
-    let session_path = thread_path.join(".jyc").join("agent-session.json");
+pub async fn write_max_input_tokens(topic_path: &Path, new_max: u64) {
+    let session_path = topic_path.join(".jyc").join("agent-session.json");
     let content = tokio::fs::read_to_string(&session_path)
         .await
         .unwrap_or_default();
@@ -248,15 +248,15 @@ pub async fn write_max_input_tokens(thread_path: &Path, new_max: u64) {
     }
 }
 
-/// Resolve the active model string (`<provider>/<model-id>`) for this thread.
+/// Resolve the active model string (`<provider>/<model-id>`) for this topic.
 /// Mirrors the chain in `jyc-agent::service::process()` (lines 1191-1263).
 async fn resolve_active_model(
-    thread_path: &Path,
+    topic_path: &Path,
     config: &AppConfig,
     channel: &str,
 ) -> Option<String> {
-    let mode_override = read_mode_override(thread_path).await;
-    let pattern_name = read_pattern(thread_path).await;
+    let mode_override = read_mode_override(topic_path).await;
+    let pattern_name = read_pattern(topic_path).await;
 
     // 1. Mode-specific file override
     let file_override = {
@@ -264,10 +264,10 @@ async fn resolve_active_model(
             Some("plan") => "plan",
             _ => "build",
         };
-        let mode_specific = thread_path
+        let mode_specific = topic_path
             .join(".jyc")
             .join(format!("{mode_suffix}-model-override"));
-        let legacy = thread_path.join(".jyc").join("model-override");
+        let legacy = topic_path.join(".jyc").join("model-override");
         let path = if mode_specific.exists() {
             Some(mode_specific)
         } else if legacy.exists() {
@@ -285,17 +285,17 @@ async fn resolve_active_model(
         }
     };
 
-    // 2. Thread config (`.jyc/config.toml`) — read once, then check both
+    // 2. Topic config (`.jyc/config.toml`) — read once, then check both
     //    the mode-specific and the generic `model` field against the same
     //    loaded value (avoids re-reading the file in the common no-config case).
-    let thread_cfg = jyc_types::load_thread_config(thread_path).and_then(|c| c.agent);
-    let thread_cfg_override = thread_cfg
+    let topic_cfg = jyc_types::load_topic_config(topic_path).and_then(|c| c.agent);
+    let topic_cfg_override = topic_cfg
         .as_ref()
         .and_then(|a| match mode_override.as_deref() {
             Some("plan") => a.plan_model.clone(),
             _ => a.build_model.clone(),
         })
-        .or_else(|| thread_cfg.as_ref().and_then(|a| a.model.clone()));
+        .or_else(|| topic_cfg.as_ref().and_then(|a| a.model.clone()));
 
     // 3. Pattern (matched or first) — resolved from `config.channels[channel].patterns`
     let pattern_override = {
@@ -326,7 +326,7 @@ async fn resolve_active_model(
     .or(effective_agent.model);
 
     file_override
-        .or(thread_cfg_override)
+        .or(topic_cfg_override)
         .or(pattern_override)
         .or(config_override)
 }

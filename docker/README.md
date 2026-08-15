@@ -66,7 +66,7 @@ cd docker && docker compose up --build -d
 ├── .env                     ← Environment variables for secrets
 ├── <channel>/
 │   ├── .imap/               ← IMAP state
-│   └── workspace/           ← Thread workspaces
+│   └── workspace/           ← Topic workspaces
 ├── .netrc                   ← Git credentials
 └── gh_hosts.yml             ← GitHub CLI auth
 
@@ -136,11 +136,11 @@ docker compose restart jyc
 ### Project Source Mounts
 
 To give the AI agent access to project source code, mount directories into
-the thread workspace. Customize per your channel/thread layout:
+the topic workspace. Customize per your channel/topic layout:
 
 ```yaml
 volumes:
-  - /path/to/project:/opt/jyc/<channel>/workspace/<thread>/project
+  - /path/to/project:/opt/jyc/<channel>/workspace/<topic>/project
 ```
 
 ## Troubleshooting

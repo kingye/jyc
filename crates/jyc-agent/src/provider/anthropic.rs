@@ -638,9 +638,9 @@ fn mark_last_block_cached(msg: &mut serde_json::Value) {
 /// system tail, and messages `n-3` and `n-2`.
 ///
 /// Breakpoints #1 and #2 are kept separate rather than collapsed into one:
-/// the tools array is identical across every thread, while the system prompt
-/// varies per thread (working directory, skills, AGENTS.md), so a
-/// tools-only prefix stays shareable between threads.
+/// the tools array is identical across every topic, while the system prompt
+/// varies per topic (working directory, skills, AGENTS.md), so a
+/// tools-only prefix stays shareable between topics.
 ///
 /// The newest message is deliberately left unmarked — it changes on every
 /// request, so a breakpoint there would be written and immediately orphaned.

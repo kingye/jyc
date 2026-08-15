@@ -1,15 +1,15 @@
 //! Background JobScheduler — fires due jobs by injecting InboundMessage
-//! into the originating thread via ThreadManager.
+//! into the originating topic via TopicManager.
 //!
-//! Jobs are stored per-thread in `<thread>/.jyc/jobs/<id>.json`. The scheduler
-//! scans all channel workspace directories for thread directories that contain
+//! Jobs are stored per-topic in `<topic>/.jyc/jobs/<id>.json`. The scheduler
+//! scans all channel workspace directories for topic directories that contain
 //! a `.jyc/jobs/` subdirectory, discovers due jobs, fires them, and updates
 //! their state.
 
 use anyhow::Result;
 use chrono::Utc;
 use jyc_core::job_store::JobStore;
-use jyc_core::thread_manager::ThreadManager;
+use jyc_core::topic_manager::TopicManager;
 use jyc_types::{InboundMessage, MessageContent, PatternMatch};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,33 +17,33 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-/// A due job discovered during a scan cycle, scoped to its thread.
+/// A due job discovered during a scan cycle, scoped to its topic.
 struct DueJob {
     job: jyc_types::JobConfig,
     store: JobStore,
-    thread_name: String,
+    topic_name: String,
     channel_name: String,
 }
 
 /// Background job scheduler that fires due jobs.
 ///
 /// Runs as a single async task alongside the per-channel inbound monitors.
-/// Scans workspace directories for threads with `.jyc/jobs/` subdirectories,
-/// discovers due jobs, fires them via ThreadManager::enqueue, and persists
+/// Scans workspace directories for topics with `.jyc/jobs/` subdirectories,
+/// discovers due jobs, fires them via TopicManager::enqueue, and persists
 /// the updated state.
 pub struct JobScheduler {
-    /// Thread managers indexed by channel name.
+    /// Topic managers indexed by channel name.
     /// The scheduler looks up the correct TM when firing a job.
-    thread_managers: Arc<Mutex<HashMap<String, Arc<ThreadManager>>>>,
+    topic_managers: Arc<Mutex<HashMap<String, Arc<TopicManager>>>>,
 
-    /// Workspace directories to scan for threads (one per channel).
+    /// Workspace directories to scan for topics (one per channel).
     workspace_dirs: Vec<PathBuf>,
 
     /// Scan interval in seconds (from config).
     scan_interval: std::time::Duration,
 
-    /// Maximum jobs per thread (from config).
-    max_jobs_per_thread: usize,
+    /// Maximum jobs per topic (from config).
+    max_jobs_per_topic: usize,
 
     /// Whether the scheduler is enabled.
     enabled: bool,
@@ -52,17 +52,17 @@ pub struct JobScheduler {
 impl JobScheduler {
     /// Create a new JobScheduler.
     pub fn new(
-        thread_managers: Arc<Mutex<HashMap<String, Arc<ThreadManager>>>>,
+        topic_managers: Arc<Mutex<HashMap<String, Arc<TopicManager>>>>,
         workspace_dirs: Vec<PathBuf>,
         scan_interval_secs: u64,
-        max_jobs_per_thread: usize,
+        max_jobs_per_topic: usize,
         enabled: bool,
     ) -> Self {
         Self {
-            thread_managers,
+            topic_managers,
             workspace_dirs,
             scan_interval: std::time::Duration::from_secs(scan_interval_secs),
-            max_jobs_per_thread,
+            max_jobs_per_topic,
             enabled,
         }
     }
@@ -107,7 +107,7 @@ impl JobScheduler {
 
     /// Run a single scan-and-fire cycle.
     ///
-    /// Scans all workspace directories for threads with `.jyc/jobs/`,
+    /// Scans all workspace directories for topics with `.jyc/jobs/`,
     /// discovers due (enabled + next_fire_at <= now) jobs, fires them,
     /// and updates their state.
     async fn run_cycle(&self) {
@@ -120,8 +120,8 @@ impl JobScheduler {
         tracing::info!(count = due.len(), "Firing due jobs");
 
         for mut item in due {
-            // Fire first: inject InboundMessage into the thread.
-            // If this fails (e.g. ThreadManager not found), we do NOT
+            // Fire first: inject InboundMessage into the topic.
+            // If this fails (e.g. TopicManager not found), we do NOT
             // mark the job as fired — it will be retried on the next scan.
             if let Err(e) = self.fire_job(&item.job).await {
                 tracing::error!(job_id = %item.job.id, error = %e, "Failed to fire job");
@@ -142,42 +142,42 @@ impl JobScheduler {
 
             tracing::info!(
                 job_id = %item.job.id,
-                thread = %item.thread_name,
+                topic = %item.topic_name,
                 channel = %item.channel_name,
                 "Job fired successfully"
             );
         }
     }
 
-    /// Discover all due (enabled + next_fire_at <= now) jobs across all threads.
+    /// Discover all due (enabled + next_fire_at <= now) jobs across all topics.
     async fn discover_due_jobs(&self) -> Vec<DueJob> {
         let now = Utc::now();
         let mut due = Vec::new();
 
         for workspace_dir in &self.workspace_dirs {
-            let mut thread_entries = match tokio::fs::read_dir(workspace_dir).await {
+            let mut topic_entries = match tokio::fs::read_dir(workspace_dir).await {
                 Ok(entries) => entries,
                 Err(_) => continue,
             };
 
-            while let Ok(Some(entry)) = thread_entries.next_entry().await {
-                let thread_path = entry.path();
-                if !thread_path.is_dir() {
+            while let Ok(Some(entry)) = topic_entries.next_entry().await {
+                let topic_path = entry.path();
+                if !topic_path.is_dir() {
                     continue;
                 }
 
-                let jobs_dir = thread_path.join(".jyc").join("jobs");
+                let jobs_dir = topic_path.join(".jyc").join("jobs");
                 if !jobs_dir.exists() {
                     continue;
                 }
 
-                let thread_name = match thread_path.file_name().and_then(|n| n.to_str()) {
+                let topic_name = match topic_path.file_name().and_then(|n| n.to_str()) {
                     Some(name) => name.to_string(),
                     None => continue,
                 };
 
                 // Extract channel_name from workspace directory structure:
-                // <workdir>/<channel_name>/workspace/<thread_name>/
+                // <workdir>/<channel_name>/workspace/<topic_name>/
                 let channel_name = match workspace_dir.parent() {
                     Some(p) => p
                         .file_name()
@@ -187,14 +187,14 @@ impl JobScheduler {
                     None => String::new(),
                 };
 
-                // Build scoped JobStore for this thread
-                let store = match JobStore::new(&thread_path, self.max_jobs_per_thread).await {
+                // Build scoped JobStore for this topic
+                let store = match JobStore::new(&topic_path, self.max_jobs_per_topic).await {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::warn!(
-                            thread = %thread_name,
+                            topic = %topic_name,
                             error = %e,
-                            "Failed to open job store for thread"
+                            "Failed to open job store for topic"
                         );
                         continue;
                     }
@@ -204,9 +204,9 @@ impl JobScheduler {
                     Ok(jobs) => jobs,
                     Err(e) => {
                         tracing::warn!(
-                            thread = %thread_name,
+                            topic = %topic_name,
                             error = %e,
-                            "Failed to list jobs for thread"
+                            "Failed to list jobs for topic"
                         );
                         continue;
                     }
@@ -222,34 +222,34 @@ impl JobScheduler {
                     due.push(DueJob {
                         job: job.clone(),
                         store: store.clone(),
-                        thread_name: thread_name.clone(),
+                        topic_name: topic_name.clone(),
                         channel_name: channel_name.clone(),
                     });
                 }
             }
         }
 
-        // Also scan custom thread paths from pattern `thread_path` overrides.
+        // Also scan custom topic paths from pattern `topic_path` overrides.
         // These are not under any workspace_dir so the standard scan misses them.
-        let tms = self.thread_managers.lock().await;
+        let tms = self.topic_managers.lock().await;
         for (channel_name, tm) in tms.iter() {
-            let custom_paths = tm.custom_thread_paths().await;
-            for (thread_name, thread_path) in &custom_paths {
-                let jobs_dir = thread_path.join(".jyc").join("jobs");
+            let custom_paths = tm.custom_topic_paths().await;
+            for (topic_name, topic_path) in &custom_paths {
+                let jobs_dir = topic_path.join(".jyc").join("jobs");
                 if !jobs_dir.exists() {
                     continue;
                 }
-                let store = match JobStore::new(thread_path, self.max_jobs_per_thread).await {
+                let store = match JobStore::new(topic_path, self.max_jobs_per_topic).await {
                     Ok(s) => s,
                     Err(e) => {
-                        tracing::warn!(thread = %thread_name, error = %e, "Failed to open job store for custom-path thread");
+                        tracing::warn!(topic = %topic_name, error = %e, "Failed to open job store for custom-path topic");
                         continue;
                     }
                 };
                 let jobs = match store.list().await {
                     Ok(jobs) => jobs,
                     Err(e) => {
-                        tracing::warn!(thread = %thread_name, error = %e, "Failed to list jobs for custom-path thread");
+                        tracing::warn!(topic = %topic_name, error = %e, "Failed to list jobs for custom-path topic");
                         continue;
                     }
                 };
@@ -260,7 +260,7 @@ impl JobScheduler {
                     due.push(DueJob {
                         job: job.clone(),
                         store: store.clone(),
-                        thread_name: thread_name.clone(),
+                        topic_name: topic_name.clone(),
                         channel_name: channel_name.clone(),
                     });
                 }
@@ -271,14 +271,11 @@ impl JobScheduler {
         due
     }
 
-    /// Fire a single job by injecting an InboundMessage into the originating thread.
+    /// Fire a single job by injecting an InboundMessage into the originating topic.
     async fn fire_job(&self, job: &jyc_types::JobConfig) -> Result<()> {
-        let tms = self.thread_managers.lock().await;
+        let tms = self.topic_managers.lock().await;
         let tm = tms.get(&job.channel_name).ok_or_else(|| {
-            anyhow::anyhow!(
-                "thread manager not found for channel '{}'",
-                job.channel_name
-            )
+            anyhow::anyhow!("topic manager not found for channel '{}'", job.channel_name)
         })?;
 
         let message = InboundMessage {
@@ -298,7 +295,7 @@ impl JobScheduler {
                 markdown: None,
             },
             timestamp: Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -321,7 +318,7 @@ impl JobScheduler {
 
         tm.enqueue(
             message,
-            job.thread_name.clone(),
+            job.topic_name.clone(),
             pattern_match,
             None,
             true,
@@ -331,7 +328,7 @@ impl JobScheduler {
 
         tracing::info!(
             job_id = %job.id,
-            thread = %job.thread_name,
+            topic = %job.topic_name,
             channel = %job.channel_name,
             "Job fired"
         );
@@ -349,23 +346,23 @@ impl JobScheduler {
         let mut earliest_next: Option<chrono::DateTime<Utc>> = None;
 
         for workspace_dir in &self.workspace_dirs {
-            let mut thread_entries = match tokio::fs::read_dir(workspace_dir).await {
+            let mut topic_entries = match tokio::fs::read_dir(workspace_dir).await {
                 Ok(entries) => entries,
                 Err(_) => continue,
             };
 
-            while let Ok(Some(entry)) = thread_entries.next_entry().await {
-                let thread_path = entry.path();
-                if !thread_path.is_dir() {
+            while let Ok(Some(entry)) = topic_entries.next_entry().await {
+                let topic_path = entry.path();
+                if !topic_path.is_dir() {
                     continue;
                 }
 
-                let jobs_dir = thread_path.join(".jyc").join("jobs");
+                let jobs_dir = topic_path.join(".jyc").join("jobs");
                 if !jobs_dir.exists() {
                     continue;
                 }
 
-                let store = match JobStore::new(&thread_path, self.max_jobs_per_thread).await {
+                let store = match JobStore::new(&topic_path, self.max_jobs_per_topic).await {
                     Ok(s) => s,
                     Err(_) => continue,
                 };
@@ -411,15 +408,15 @@ mod tests {
         JobScheduler::new(tms, workspace_dirs, 60, 10, enabled)
     }
 
-    /// Create a thread directory with a jobs store.
-    async fn make_thread_with_jobs(
+    /// Create a topic directory with a jobs store.
+    async fn make_topic_with_jobs(
         workspace: &Path,
-        thread_name: &str,
+        topic_name: &str,
         jobs: Vec<jyc_types::JobConfig>,
     ) {
-        let thread_path = workspace.join(thread_name);
-        tokio::fs::create_dir_all(&thread_path).await.unwrap();
-        let store = JobStore::new(&thread_path, 10).await.unwrap();
+        let topic_path = workspace.join(topic_name);
+        tokio::fs::create_dir_all(&topic_path).await.unwrap();
+        let store = JobStore::new(&topic_path, 10).await.unwrap();
         for job in jobs {
             store.create(&job).await.unwrap();
         }
@@ -459,7 +456,7 @@ mod tests {
             "work".to_string(),
             "future task".to_string(),
         );
-        make_thread_with_jobs(&workspace, "thread-1", vec![job]).await;
+        make_topic_with_jobs(&workspace, "topic-1", vec![job]).await;
 
         let scheduler = create_test_scheduler(vec![workspace], true).await;
         let dur = scheduler.next_sleep_duration().await;
@@ -480,81 +477,81 @@ mod tests {
             "Should not fire".to_string(),
         );
         job.enabled = false;
-        make_thread_with_jobs(&workspace, "thread-1", vec![job]).await;
+        make_topic_with_jobs(&workspace, "topic-1", vec![job]).await;
 
         let scheduler = create_test_scheduler(vec![workspace], true).await;
         scheduler.run_cycle().await;
     }
 
     #[tokio::test]
-    async fn test_run_cycle_skips_pending_thread_without_jobs_dir() {
+    async fn test_run_cycle_skips_pending_topic_without_jobs_dir() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
-        // Create a thread directory WITHOUT .jyc/jobs/ — should be silently skipped
-        let thread_path = workspace.join("no-jobs-thread");
-        tokio::fs::create_dir_all(&thread_path).await.unwrap();
+        // Create a topic directory WITHOUT .jyc/jobs/ — should be silently skipped
+        let topic_path = workspace.join("no-jobs-topic");
+        tokio::fs::create_dir_all(&topic_path).await.unwrap();
 
         let scheduler = create_test_scheduler(vec![workspace], true).await;
         // Should not panic
         scheduler.run_cycle().await;
     }
 
-    /// Happy path: multiple threads with a mix of due, future, and disabled jobs.
-    /// The scheduler should discover due jobs in the right threads, attempt to
-    /// fire them, and since no ThreadManager is registered, leave them unchanged
+    /// Happy path: multiple topics with a mix of due, future, and disabled jobs.
+    /// The scheduler should discover due jobs in the right topics, attempt to
+    /// fire them, and since no TopicManager is registered, leave them unchanged
     /// for retry.
     #[tokio::test]
-    async fn test_run_cycle_discovery_across_threads() {
+    async fn test_run_cycle_discovery_across_topics() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
-        // Thread 1: one due job (one-time, now)
+        // Topic 1: one due job (one-time, now)
         let due_job = jyc_types::JobConfig::new_one_time(
             Utc::now(),
-            "thread-1".to_string(),
+            "topic-1".to_string(),
             "email".to_string(),
             "ch-1".to_string(),
             "due job".to_string(),
         );
         let due_id = due_job.id.clone();
-        make_thread_with_jobs(&workspace, "thread-1", vec![due_job]).await;
+        make_topic_with_jobs(&workspace, "topic-1", vec![due_job]).await;
 
-        // Thread 2: one future job (should not be due)
+        // Topic 2: one future job (should not be due)
         let future_job = jyc_types::JobConfig::new_one_time(
             Utc::now() + chrono::Duration::hours(2),
-            "thread-2".to_string(),
+            "topic-2".to_string(),
             "email".to_string(),
             "ch-2".to_string(),
             "future job".to_string(),
         );
         let future_id = future_job.id.clone();
-        make_thread_with_jobs(&workspace, "thread-2", vec![future_job]).await;
+        make_topic_with_jobs(&workspace, "topic-2", vec![future_job]).await;
 
-        // Thread 3: one disabled due job (should be skipped)
+        // Topic 3: one disabled due job (should be skipped)
         let mut disabled_job = jyc_types::JobConfig::new_one_time(
             Utc::now(),
-            "thread-3".to_string(),
+            "topic-3".to_string(),
             "email".to_string(),
             "ch-3".to_string(),
             "disabled due job".to_string(),
         );
         disabled_job.enabled = false;
         let disabled_id = disabled_job.id.clone();
-        make_thread_with_jobs(&workspace, "thread-3", vec![disabled_job]).await;
+        make_topic_with_jobs(&workspace, "topic-3", vec![disabled_job]).await;
 
-        // Thread 4: no jobs dir at all (should be silently skipped)
-        let no_jobs_thread = workspace.join("thread-4");
-        tokio::fs::create_dir_all(&no_jobs_thread).await.unwrap();
+        // Topic 4: no jobs dir at all (should be silently skipped)
+        let no_jobs_topic = workspace.join("topic-4");
+        tokio::fs::create_dir_all(&no_jobs_topic).await.unwrap();
 
         let scheduler = create_test_scheduler(vec![workspace], true).await;
         scheduler.run_cycle().await;
 
-        // Due job in thread-1: fire_job fails (no TM), so it stays unchanged
-        let thread1_path = tmp.path().join("workspace/thread-1");
-        let store1 = JobStore::new(&thread1_path, 10).await.unwrap();
+        // Due job in topic-1: fire_job fails (no TM), so it stays unchanged
+        let topic1_path = tmp.path().join("workspace/topic-1");
+        let store1 = JobStore::new(&topic1_path, 10).await.unwrap();
         let updated_due = store1.get(&due_id).await.unwrap().unwrap();
         assert!(
             updated_due.enabled,
@@ -565,9 +562,9 @@ mod tests {
             "Due job should not be marked fired"
         );
 
-        // Future job in thread-2: untouched
-        let thread2_path = tmp.path().join("workspace/thread-2");
-        let store2 = JobStore::new(&thread2_path, 10).await.unwrap();
+        // Future job in topic-2: untouched
+        let topic2_path = tmp.path().join("workspace/topic-2");
+        let store2 = JobStore::new(&topic2_path, 10).await.unwrap();
         let updated_future = store2.get(&future_id).await.unwrap().unwrap();
         assert!(updated_future.enabled, "Future job should remain enabled");
         assert!(
@@ -575,9 +572,9 @@ mod tests {
             "Future job should not be fired"
         );
 
-        // Disabled job in thread-3: untouched
-        let thread3_path = tmp.path().join("workspace/thread-3");
-        let store3 = JobStore::new(&thread3_path, 10).await.unwrap();
+        // Disabled job in topic-3: untouched
+        let topic3_path = tmp.path().join("workspace/topic-3");
+        let store3 = JobStore::new(&topic3_path, 10).await.unwrap();
         let updated_disabled = store3.get(&disabled_id).await.unwrap().unwrap();
         assert!(
             !updated_disabled.enabled,
@@ -589,7 +586,7 @@ mod tests {
         );
     }
 
-    /// Happy path: due job in one thread, non-due in another, across two
+    /// Happy path: due job in one topic, non-due in another, across two
     /// workspace directories (simulating multiple channels).
     #[tokio::test]
     async fn test_run_cycle_multi_workspace_discovery() {
@@ -600,39 +597,39 @@ mod tests {
         tokio::fs::create_dir_all(&ws_a).await.unwrap();
         let due = jyc_types::JobConfig::new_one_time(
             Utc::now(),
-            "thread-a1".to_string(),
+            "topic-a1".to_string(),
             "email".to_string(),
             "channel-a".to_string(),
             "A-due".to_string(),
         );
         let due_id_a = due.id.clone();
-        make_thread_with_jobs(&ws_a, "thread-a1", vec![due]).await;
+        make_topic_with_jobs(&ws_a, "topic-a1", vec![due]).await;
 
         // Workspace B: one future job
         let ws_b = tmp.path().join("channel-b/workspace");
         tokio::fs::create_dir_all(&ws_b).await.unwrap();
         let future = jyc_types::JobConfig::new_one_time(
             Utc::now() + chrono::Duration::hours(3),
-            "thread-b1".to_string(),
+            "topic-b1".to_string(),
             "email".to_string(),
             "channel-b".to_string(),
             "B-future".to_string(),
         );
         let future_id_b = future.id.clone();
-        make_thread_with_jobs(&ws_b, "thread-b1", vec![future]).await;
+        make_topic_with_jobs(&ws_b, "topic-b1", vec![future]).await;
 
         let scheduler = create_test_scheduler(vec![ws_a, ws_b], true).await;
         scheduler.run_cycle().await;
 
         // A's due job should have been discovered (but fire_job fails)
-        let store_a = JobStore::new(&tmp.path().join("channel-a/workspace/thread-a1"), 10)
+        let store_a = JobStore::new(&tmp.path().join("channel-a/workspace/topic-a1"), 10)
             .await
             .unwrap();
         let a_job = store_a.get(&due_id_a).await.unwrap().unwrap();
         assert!(a_job.enabled, "A's job stays enabled (no TM)");
 
         // B's future job should be untouched
-        let store_b = JobStore::new(&tmp.path().join("channel-b/workspace/thread-b1"), 10)
+        let store_b = JobStore::new(&tmp.path().join("channel-b/workspace/topic-b1"), 10)
             .await
             .unwrap();
         let b_job = store_b.get(&future_id_b).await.unwrap().unwrap();
@@ -643,32 +640,32 @@ mod tests {
         );
     }
 
-    /// Verify that next_sleep_duration accounts for jobs across all threads.
+    /// Verify that next_sleep_duration accounts for jobs across all topics.
     #[tokio::test]
-    async fn test_next_sleep_duration_earliest_across_threads() {
+    async fn test_next_sleep_duration_earliest_across_topics() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
-        // Job in thread-1 fires in 30 minutes
+        // Job in topic-1 fires in 30 minutes
         let soon = jyc_types::JobConfig::new_one_time(
             Utc::now() + chrono::Duration::minutes(30),
-            "thread-1".to_string(),
+            "topic-1".to_string(),
             "email".to_string(),
             "work".to_string(),
             "soon".to_string(),
         );
-        make_thread_with_jobs(&workspace, "thread-1", vec![soon]).await;
+        make_topic_with_jobs(&workspace, "topic-1", vec![soon]).await;
 
-        // Job in thread-2 fires in 2 hours
+        // Job in topic-2 fires in 2 hours
         let later = jyc_types::JobConfig::new_one_time(
             Utc::now() + chrono::Duration::hours(2),
-            "thread-2".to_string(),
+            "topic-2".to_string(),
             "email".to_string(),
             "work".to_string(),
             "later".to_string(),
         );
-        make_thread_with_jobs(&workspace, "thread-2", vec![later]).await;
+        make_topic_with_jobs(&workspace, "topic-2", vec![later]).await;
 
         let scheduler = create_test_scheduler(vec![workspace], true).await;
         let dur = scheduler.next_sleep_duration().await;

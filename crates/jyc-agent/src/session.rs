@@ -81,8 +81,8 @@ pub struct SessionState {
 /// Called after each agent_loop::run() completes. Stores the raw API messages
 /// exactly as they were sent/received (preserves provider-specific fields like
 /// DeepSeek's reasoning_content).
-pub async fn save_raw_context(thread_path: &Path, raw_context: &[serde_json::Value]) {
-    let jyc_dir = thread_path.join(".jyc");
+pub async fn save_raw_context(topic_path: &Path, raw_context: &[serde_json::Value]) {
+    let jyc_dir = topic_path.join(".jyc");
     tokio::fs::create_dir_all(&jyc_dir).await.ok();
     let path = jyc_dir.join(CONTEXT_FILE);
 
@@ -111,8 +111,8 @@ pub async fn save_raw_context(thread_path: &Path, raw_context: &[serde_json::Val
 /// - raw_context: for sending to the API (preserves provider-specific fields)
 ///
 /// If no session file exists (fresh or after reset), returns empty.
-pub async fn load_context(thread_path: &Path) -> (Vec<Message>, Vec<serde_json::Value>) {
-    let jyc_dir = thread_path.join(".jyc");
+pub async fn load_context(topic_path: &Path) -> (Vec<Message>, Vec<serde_json::Value>) {
+    let jyc_dir = topic_path.join(".jyc");
     let session_path = jyc_dir.join(SESSION_FILE);
     let context_path = jyc_dir.join(CONTEXT_FILE);
 
@@ -277,12 +277,12 @@ fn extract_text_content(content: &serde_json::Value) -> Option<String> {
 /// prior turn), this is a no-op so existing token counts and `created_at`
 /// are preserved.
 ///
-/// Without this, a brand-new thread — or one whose session was just
+/// Without this, a brand-new topic — or one whose session was just
 /// deleted by `/reset` or `/new` — has no `agent-session.json` on disk
 /// until the first mid-loop `persist_tokens` call after the first LLM
 /// response. During that window, the dashboard and outbound-channel
 /// probes (`read_token_state` / `read_input_tokens`) all see `(None,
-/// None, None)`. Pre-creating the file here makes the thread visible
+/// None, None)`. Pre-creating the file here makes the topic visible
 /// immediately with the correct `max_input_tokens` and zeroed counters.
 ///
 /// `context_window` is used to seed `max_input_tokens = context_window *
@@ -291,11 +291,11 @@ fn extract_text_content(content: &serde_json::Value) -> Option<String> {
 /// `max_input_tokens` is left at 0 (the post-loop `update_tokens` will
 /// fill it in on the next turn).
 pub async fn ensure_session_file(
-    thread_path: &Path,
+    topic_path: &Path,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
 ) {
-    let session_path = thread_path.join(".jyc").join(SESSION_FILE);
+    let session_path = topic_path.join(".jyc").join(SESSION_FILE);
     if session_path.exists() {
         // Already there — never overwrite existing token data.
         return;
@@ -332,7 +332,7 @@ pub async fn ensure_session_file(
 /// assigned). Pass `0.0` when the model has no configured pricing.
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_tokens(
-    thread_path: &Path,
+    topic_path: &Path,
     input_tokens: u64,
     total_input_tokens: u64,
     output_tokens: u64,
@@ -343,7 +343,7 @@ pub async fn persist_tokens(
     call_cost: f64,
 ) {
     let _ = persist_tokens_returning_state(
-        thread_path,
+        topic_path,
         input_tokens,
         total_input_tokens,
         output_tokens,
@@ -361,7 +361,7 @@ pub async fn persist_tokens(
 /// can inspect threshold-crossing without a second disk read.
 #[allow(clippy::too_many_arguments)]
 async fn persist_tokens_returning_state(
-    thread_path: &Path,
+    topic_path: &Path,
     input_tokens: u64,
     total_input_tokens: u64,
     output_tokens: u64,
@@ -371,7 +371,7 @@ async fn persist_tokens_returning_state(
     auto_reset_threshold: f64,
     call_cost: f64,
 ) -> (std::path::PathBuf, SessionState) {
-    let session_path = thread_path.join(".jyc").join(SESSION_FILE);
+    let session_path = topic_path.join(".jyc").join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
 
     state.context_input_tokens = input_tokens;
@@ -405,11 +405,11 @@ async fn persist_tokens_returning_state(
 /// truthful.
 ///
 /// No-op when `cost` is zero (no pricing configured, or the call failed).
-pub async fn add_session_cost(thread_path: &Path, cost: f64) {
+pub async fn add_session_cost(topic_path: &Path, cost: f64) {
     if cost <= 0.0 {
         return;
     }
-    let session_path = thread_path.join(".jyc").join(SESSION_FILE);
+    let session_path = topic_path.join(".jyc").join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
     state.session_cost += cost;
     if state.created_at.is_empty() {
@@ -445,7 +445,7 @@ pub async fn add_session_cost(thread_path: &Path, cost: f64) {
 /// round.
 #[allow(clippy::too_many_arguments)]
 pub async fn update_tokens(
-    thread_path: &Path,
+    topic_path: &Path,
     input_tokens: u64,
     total_input_tokens: u64,
     output_tokens: u64,
@@ -461,7 +461,7 @@ pub async fn update_tokens(
     // post-mutation values so the auto-reset check below doesn't need a
     // second disk read.
     let (_, state) = persist_tokens_returning_state(
-        thread_path,
+        topic_path,
         input_tokens,
         total_input_tokens,
         output_tokens,
@@ -487,7 +487,7 @@ pub async fn update_tokens(
         );
 
         reset_session(
-            thread_path,
+            topic_path,
             compression_config,
             Some(summary_provider),
             billing,
@@ -499,7 +499,7 @@ pub async fn update_tokens(
         // starts clean. session_cost zeroes with them — it is scoped to
         // the session, and the durable ledger is bill-YYYY-MM-DD.jsonl.
         persist_tokens(
-            thread_path,
+            topic_path,
             0,
             0,
             0,
@@ -521,7 +521,7 @@ pub async fn update_tokens(
 ///
 /// Returns `true` if the session was reset.
 pub async fn maybe_reset_for_new_context(
-    thread_path: &Path,
+    topic_path: &Path,
     new_max_input_tokens: u64,
     compression_config: &ResetCompressionConfig,
     provider: Option<&dyn crate::provider::Provider>,
@@ -530,7 +530,7 @@ pub async fn maybe_reset_for_new_context(
     if new_max_input_tokens == 0 {
         return false;
     }
-    let session_path = thread_path.join(".jyc").join(SESSION_FILE);
+    let session_path = topic_path.join(".jyc").join(SESSION_FILE);
     let state = load_session_state(&session_path).await;
     if state.context_input_tokens < new_max_input_tokens {
         return false;
@@ -541,7 +541,7 @@ pub async fn maybe_reset_for_new_context(
         mode = ?compression_config.mode,
         "Loaded session exceeds new context window; resetting before agent loop",
     );
-    reset_session(thread_path, compression_config, provider, billing).await;
+    reset_session(topic_path, compression_config, provider, billing).await;
     true
 }
 
@@ -572,12 +572,12 @@ pub struct BillingContext {
 ///
 /// `config.keep_pairs` controls how many user+assistant pairs to retain in heuristic mode.
 pub async fn reset_session(
-    thread_path: &Path,
+    topic_path: &Path,
     config: &ResetCompressionConfig,
     provider: Option<&dyn crate::provider::Provider>,
     billing: Option<&BillingContext>,
 ) {
-    let jyc_dir = thread_path.join(".jyc");
+    let jyc_dir = topic_path.join(".jyc");
 
     match config.mode {
         CompressionMode::None => {
@@ -590,7 +590,7 @@ pub async fn reset_session(
         }
         CompressionMode::Heuristic => {
             // Heuristic compaction: keep last N pairs, then delete session
-            summarize_context_heuristic(thread_path, config.keep_pairs).await;
+            summarize_context_heuristic(topic_path, config.keep_pairs).await;
             let session_path = jyc_dir.join(SESSION_FILE);
             tokio::fs::remove_file(&session_path).await.ok();
             tracing::info!("Agent session reset (heuristic compression)");
@@ -598,14 +598,14 @@ pub async fn reset_session(
         CompressionMode::Llm => {
             if let Some(p) = provider {
                 // LLM summary, then delete session
-                summarize_context(thread_path, p, billing).await;
+                summarize_context(topic_path, p, billing).await;
             } else {
                 // No provider available — fallback to heuristic
                 tracing::warn!(
                     "LLM compression mode selected but no provider available, \
                      falling back to heuristic"
                 );
-                summarize_context_heuristic(thread_path, config.keep_pairs).await;
+                summarize_context_heuristic(topic_path, config.keep_pairs).await;
             }
             let session_path = jyc_dir.join(SESSION_FILE);
             tokio::fs::remove_file(&session_path).await.ok();
@@ -626,11 +626,11 @@ pub async fn reset_session(
 /// (`[agent].small_model`); the caller is responsible for passing the right
 /// provider.
 async fn summarize_context(
-    thread_path: &Path,
+    topic_path: &Path,
     provider: &dyn crate::provider::Provider,
     billing: Option<&BillingContext>,
 ) {
-    let context_path = thread_path.join(".jyc").join(CONTEXT_FILE);
+    let context_path = topic_path.join(".jyc").join(CONTEXT_FILE);
 
     if !context_path.exists() {
         return;
@@ -668,7 +668,7 @@ async fn summarize_context(
                 error = %e,
                 "LLM context summary failed, falling back to heuristic compaction"
             );
-            summarize_context_heuristic(thread_path, 3).await;
+            summarize_context_heuristic(topic_path, 3).await;
             return;
         }
     };
@@ -716,8 +716,7 @@ async fn summarize_context(
                 currency: b.pricing.currency_label().to_string(),
                 kind: jyc_core::billing_log_store::KIND_SUMMARY.to_string(),
             };
-            if let Err(e) =
-                jyc_core::billing_log_store::BillingLogStore::append(thread_path, &entry)
+            if let Err(e) = jyc_core::billing_log_store::BillingLogStore::append(topic_path, &entry)
             {
                 tracing::warn!(error = %e, "Failed to append context-compression billing entry");
             }
@@ -959,8 +958,8 @@ pub(crate) fn extract_user_assistant_pairs(
 /// provider context).
 ///
 /// `keep_pairs` controls how many user+assistant pairs to retain.
-async fn summarize_context_heuristic(thread_path: &Path, keep_pairs: usize) {
-    let context_path = thread_path.join(".jyc").join(CONTEXT_FILE);
+async fn summarize_context_heuristic(topic_path: &Path, keep_pairs: usize) {
+    let context_path = topic_path.join(".jyc").join(CONTEXT_FILE);
 
     if !context_path.exists() {
         return;
@@ -1024,13 +1023,13 @@ async fn save_session_state(path: &Path, state: &SessionState) {
 }
 
 /// Fallback: Load context from chat_history_*.jsonl files (text-only).
-/// Reads from `.jyc/` first (new location), falls back to thread root (legacy).
+/// Reads from `.jyc/` first (new location), falls back to topic root (legacy).
 #[allow(dead_code)]
 async fn load_from_chat_history(
-    thread_path: &Path,
+    topic_path: &Path,
     cutoff: Option<&chrono::DateTime<chrono::Utc>>,
 ) -> Vec<Message> {
-    let (history_files, _dir) = jyc_core::chat_log_store::list_chat_history_files(thread_path);
+    let (history_files, _dir) = jyc_core::chat_log_store::list_chat_history_files(topic_path);
 
     let mut messages: Vec<Message> = Vec::new();
 

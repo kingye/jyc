@@ -17,7 +17,7 @@ use jyc_types::{
 };
 use std::sync::Mutex as StdMutex;
 
-/// WebSocket channel-specific pattern matching and thread name derivation.
+/// WebSocket channel-specific pattern matching and topic name derivation.
 pub struct WebsocketMatcher {
     channel_name: String,
 }
@@ -34,14 +34,14 @@ impl ChannelMatcher for WebsocketMatcher {
         "websocket"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         _patterns: &[ChannelPattern],
         _pattern_match: Option<&PatternMatch>,
     ) -> String {
-        // Use the thread name specified by the client (e.g. from the WebSocket
-        // protocol's `thread` field). Fall back to the channel name when empty.
+        // Use the topic name specified by the client (e.g. from the WebSocket
+        // protocol's `topic` field). Fall back to the channel name when empty.
         if message.topic.is_empty() {
             self.channel_name.clone()
         } else {
@@ -57,11 +57,11 @@ impl ChannelMatcher for WebsocketMatcher {
         let topic = &message.topic;
 
         let pattern_name = if !topic.is_empty() {
-            // Prefer the pattern whose name matches the client's thread name.
-            // This allows per-thread config like `thread_path` to take effect.
-            // If no pattern matches the thread name, treat the thread name itself
+            // Prefer the pattern whose name matches the client's topic name.
+            // This allows per-topic config like `topic_path` to take effect.
+            // If no pattern matches the topic name, treat the topic name itself
             // as the pattern name instead of falling back to an arbitrary enabled
-            // pattern, which would leak the wrong pattern to ad-hoc threads.
+            // pattern, which would leak the wrong pattern to ad-hoc topics.
             // If the channel has no enabled patterns at all, the channel is
             // effectively inactive and we return None.
             patterns
@@ -90,11 +90,11 @@ impl ChannelMatcher for WebsocketMatcher {
 
 /// Inbound JSON protocol messages from clients.
 ///
-/// The legacy `list_patterns` / `subscribe` / `create_thread` commands
+/// The legacy `list_patterns` / `subscribe` / `create_topic` commands
 /// have been replaced by REST endpoints on the inspect server
-/// (`list_patterns` and `create_thread`). The WebSocket protocol now
+/// (`list_patterns` and `create_topic`). The WebSocket protocol now
 /// only carries the live-message stream:
-/// - `message`: send a chat message to the bound thread
+/// - `message`: send a chat message to the bound topic
 /// - `disconnect`: close the connection cleanly
 /// - `ping`: keep-alive (tokio-tungstenite also handles WS-level pings)
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -102,13 +102,13 @@ impl ChannelMatcher for WebsocketMatcher {
 enum ClientMessage {
     #[serde(rename = "message")]
     Message {
-        /// Optional: when the connection is scoped to a single thread via
-        /// `/ws/<channel>/<thread>`, the inspect server propagates the URL
-        /// thread name here so the client doesn't need to include it in
-        /// the payload. Clients connecting to `/ws/<channel>` (no thread
-        /// scope) must still include `thread` here.
+        /// Optional: when the connection is scoped to a single topic via
+        /// `/ws/<channel>/<topic>`, the inspect server propagates the URL
+        /// topic name here so the client doesn't need to include it in
+        /// the payload. Clients connecting to `/ws/<channel>` (no topic
+        /// scope) must still include `topic` here.
         #[serde(default)]
-        thread: Option<String>,
+        topic: Option<String>,
         text: String,
         /// Optional sender display name (e.g. a feishu user name). Defaults
         /// to `"user"`.
@@ -143,8 +143,8 @@ pub struct WebsocketInboundAdapter {
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
     /// Workspace directory for loading chat history (default location).
     workspace_dir: Option<PathBuf>,
-    /// ThreadManager reference for resolving custom thread_path overrides.
-    thread_manager: Arc<StdMutex<Option<Arc<jyc_core::thread_manager::ThreadManager>>>>,
+    /// TopicManager reference for resolving custom topic_path overrides.
+    topic_manager: Arc<StdMutex<Option<Arc<jyc_core::topic_manager::TopicManager>>>>,
     /// Optional inspect-broadcast bus from the inspect server.
     /// When set, events from this bus are forwarded to WebSocket clients
     /// alongside the per-channel `broadcast_tx` events. This enables live
@@ -160,7 +160,7 @@ impl WebsocketInboundAdapter {
             broadcast_tx,
             on_message: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             workspace_dir: None,
-            thread_manager: Arc::new(StdMutex::new(None)),
+            topic_manager: Arc::new(StdMutex::new(None)),
             inspect_broadcast: None,
         }
     }
@@ -175,9 +175,9 @@ impl WebsocketInboundAdapter {
         self.inspect_broadcast = Some(bus);
     }
 
-    /// Set the ThreadManager for resolving custom `thread_path` overrides.
-    pub fn set_thread_manager(&self, tm: Arc<jyc_core::thread_manager::ThreadManager>) {
-        *self.thread_manager.lock().unwrap() = Some(tm);
+    /// Set the TopicManager for resolving custom `topic_path` overrides.
+    pub fn set_topic_manager(&self, tm: Arc<jyc_core::topic_manager::TopicManager>) {
+        *self.topic_manager.lock().unwrap() = Some(tm);
     }
 
     /// Return the channel name for this adapter.
@@ -193,7 +193,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         &self,
         ws: axum::extract::ws::WebSocket,
         addr: SocketAddr,
-        scoped_thread: Option<&str>,
+        scoped_topic: Option<&str>,
     ) -> anyhow::Result<()> {
         let broadcast_rx = self.broadcast_tx.subscribe();
         let inspect_broadcast_rx = self.inspect_broadcast.as_ref().map(|s| s.subscribe());
@@ -207,7 +207,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
             broadcast_rx,
             inspect_broadcast_rx,
             on_message,
-            scoped_thread,
+            scoped_topic,
         )
         .await
     }
@@ -218,13 +218,13 @@ impl ChannelMatcher for WebsocketInboundAdapter {
         "websocket"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         patterns: &[ChannelPattern],
         pattern_match: Option<&PatternMatch>,
     ) -> String {
-        WebsocketMatcher::new(self.channel_name.clone()).derive_thread_name(
+        WebsocketMatcher::new(self.channel_name.clone()).derive_topic_name(
             message,
             patterns,
             pattern_match,
@@ -262,7 +262,7 @@ impl InboundAdapter for WebsocketInboundAdapter {
 /// directly. The loop is equivalent to the previous tungstenite-based
 /// version: read text frames and parse `ClientMessage`; forward
 /// per-channel broadcast and inspect-broadcast events to the client
-/// (filtered for the current channel/thread); handle graceful close.
+/// (filtered for the current channel/topic); handle graceful close.
 async fn handle_connection_impl(
     ws: axum::extract::ws::WebSocket,
     addr: SocketAddr,
@@ -270,7 +270,7 @@ async fn handle_connection_impl(
     mut broadcast_rx: broadcast::Receiver<String>,
     mut inspect_broadcast_rx: Option<broadcast::Receiver<String>>,
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
-    scoped_thread: Option<&str>,
+    scoped_topic: Option<&str>,
 ) -> anyhow::Result<()> {
     use axum::extract::ws::Message;
 
@@ -309,23 +309,23 @@ async fn handle_connection_impl(
 
                         match client_msg {
                             ClientMessage::Message {
-                                thread,
+                                topic,
                                 text,
                                 sender,
                                 sender_address,
                             } => {
-                                // Prefer the payload's `thread` field (an
+                                // Prefer the payload's `topic` field (an
                                 // explicit override); fall back to the
-                                // URL-scoped thread for `/ws/<channel>/<thread>`
+                                // URL-scoped topic for `/ws/<channel>/<topic>`
                                 // connections where the payload omits it.
-                                let thread_name = match thread
-                                    .or_else(|| scoped_thread.map(|s| s.to_string()))
+                                let topic_name = match topic
+                                    .or_else(|| scoped_topic.map(|s| s.to_string()))
                                 {
                                     Some(t) => t,
                                     None => {
                                         tracing::warn!(
                                             channel = %channel_name,
-                                            "WebSocket Message without thread; ignoring"
+                                            "WebSocket Message without topic; ignoring"
                                         );
                                         continue;
                                     }
@@ -338,14 +338,14 @@ async fn handle_connection_impl(
                                     sender_address: sender_address
                                         .unwrap_or_else(|| addr.to_string()),
                                     recipients: vec![],
-                                    topic: thread_name,
+                                    topic: topic_name,
                                     content: MessageContent {
                                         text: Some(text),
                                         html: None,
                                         markdown: None,
                                     },
                                     timestamp: chrono::Utc::now(),
-                                    thread_refs: None,
+                                    references: None,
                                     reply_to_id: None,
                                     external_id: None,
                                     attachments: vec![],
@@ -395,7 +395,7 @@ async fn handle_connection_impl(
                 }
             }
             // Inspect-broadcast events: activity/thinking/chat messages from
-            // the ActivityTracker. Filter by (channel, thread) and forward
+            // the ActivityTracker. Filter by (channel, topic) and forward
             // to the WebSocket client alongside the per-channel broadcasts.
             inspect = async {
                 match &mut inspect_broadcast_rx {
@@ -406,8 +406,8 @@ async fn handle_connection_impl(
                 match inspect {
                     Ok(payload) => {
                         // Only forward events for our channel. If the
-                        // connection is thread-scoped, also filter by thread.
-                        if should_forward_inspect(&payload, &channel_name, scoped_thread)
+                        // connection is topic-scoped, also filter by topic.
+                        if should_forward_inspect(&payload, &channel_name, scoped_topic)
                             && let Err(e) = ws_tx.send(Message::Text(payload.into())).await
                         {
                             tracing::warn!(error = %e, addr = %addr, "Failed to send inspect event");
@@ -435,9 +435,9 @@ async fn handle_connection_impl(
 /// client. Events are forwarded only if:
 /// - The JSON payload has a `channel` field matching `channel_name`
 /// - AND either:
-///   - `scoped_thread` is `None` (all threads for this channel), or
-///   - The payload also has a `thread` field matching `scoped_thread`
-fn should_forward_inspect(payload: &str, channel_name: &str, scoped_thread: Option<&str>) -> bool {
+///   - `scoped_topic` is `None` (all topics for this channel), or
+///   - The payload also has a `topic` field matching `scoped_topic`
+fn should_forward_inspect(payload: &str, channel_name: &str, scoped_topic: Option<&str>) -> bool {
     let v: serde_json::Value = match serde_json::from_str(payload) {
         Ok(v) => v,
         Err(_) => return false,
@@ -449,10 +449,10 @@ fn should_forward_inspect(payload: &str, channel_name: &str, scoped_thread: Opti
     if p_channel != channel_name {
         return false;
     }
-    // If thread-scoped and the payload specifies a thread, reject mismatches.
-    if let Some(st) = scoped_thread
-        && let Some(p_thread) = v.get("thread").and_then(|t| t.as_str())
-        && p_thread != st
+    // If topic-scoped and the payload specifies a topic, reject mismatches.
+    if let Some(st) = scoped_topic
+        && let Some(p_topic) = v.get("topic").and_then(|t| t.as_str())
+        && p_topic != st
     {
         return false;
     }
@@ -478,7 +478,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -488,19 +488,19 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_thread_name_uses_topic() {
+    fn test_derive_topic_name_uses_topic() {
         let matcher = WebsocketMatcher::new("my-ws".to_string());
         let msg = create_test_message();
-        let name = matcher.derive_thread_name(&msg, &[], None);
+        let name = matcher.derive_topic_name(&msg, &[], None);
         assert_eq!(name, "Test");
     }
 
     #[test]
-    fn test_derive_thread_name_empty_topic_fallback() {
+    fn test_derive_topic_name_empty_topic_fallback() {
         let matcher = WebsocketMatcher::new("my-ws".to_string());
         let mut msg = create_test_message();
         msg.topic = String::new();
-        let name = matcher.derive_thread_name(&msg, &[], None);
+        let name = matcher.derive_topic_name(&msg, &[], None);
         assert_eq!(name, "my-ws");
     }
 
@@ -580,7 +580,7 @@ mod tests {
         ];
 
         // No name match, use the topic itself as the pattern name so ad-hoc
-        // threads do not inherit an unrelated pattern.
+        // topics do not inherit an unrelated pattern.
         let result = matcher.match_message(&msg, &patterns);
         assert!(result.is_some());
         assert_eq!(result.unwrap().pattern_name, "Test");
@@ -656,21 +656,21 @@ mod tests {
 
     #[test]
     fn should_forward_inspect_for_matching_channel() {
-        let payload = r#"{"type":"activity","channel":"ws1","thread":"t1","entry":{}}"#;
+        let payload = r#"{"type":"activity","channel":"ws1","topic":"t1","entry":{}}"#;
         assert!(should_forward_inspect(payload, "ws1", None));
         assert!(should_forward_inspect(payload, "ws1", Some("t1")));
     }
 
     #[test]
     fn should_reject_inspect_wrong_channel() {
-        let payload = r#"{"type":"activity","channel":"ws1","thread":"t1","entry":{}}"#;
+        let payload = r#"{"type":"activity","channel":"ws1","topic":"t1","entry":{}}"#;
         assert!(!should_forward_inspect(payload, "ws2", None));
         assert!(!should_forward_inspect(payload, "ws2", Some("t1")));
     }
 
     #[test]
-    fn should_reject_inspect_wrong_thread_when_scoped() {
-        let payload = r#"{"type":"activity","channel":"ws1","thread":"t1","entry":{}}"#;
+    fn should_reject_inspect_wrong_topic_when_scoped() {
+        let payload = r#"{"type":"activity","channel":"ws1","topic":"t1","entry":{}}"#;
         assert!(!should_forward_inspect(payload, "ws1", Some("t2")));
         // Without scope, same payload should pass
         assert!(should_forward_inspect(payload, "ws1", None));
@@ -685,17 +685,17 @@ mod tests {
     #[test]
     fn test_client_message_parses_sender_fields() {
         let msg: ClientMessage = serde_json::from_str(
-            r#"{"type":"message","thread":"t1","text":"hi","sender":"张三","sender_address":"ou_abc"}"#,
+            r#"{"type":"message","topic":"t1","text":"hi","sender":"张三","sender_address":"ou_abc"}"#,
         )
         .unwrap();
         match msg {
             ClientMessage::Message {
-                thread,
+                topic,
                 text,
                 sender,
                 sender_address,
             } => {
-                assert_eq!(thread.as_deref(), Some("t1"));
+                assert_eq!(topic.as_deref(), Some("t1"));
                 assert_eq!(text, "hi");
                 assert_eq!(sender.as_deref(), Some("张三"));
                 assert_eq!(sender_address.as_deref(), Some("ou_abc"));
@@ -709,7 +709,7 @@ mod tests {
         // The dashboard chat pane sends the minimal frame — sender fields
         // must stay optional for backward compatibility.
         let msg: ClientMessage =
-            serde_json::from_str(r#"{"type":"message","thread":"t1","text":"hi"}"#).unwrap();
+            serde_json::from_str(r#"{"type":"message","topic":"t1","text":"hi"}"#).unwrap();
         match msg {
             ClientMessage::Message {
                 sender,

@@ -11,8 +11,8 @@ pub struct InspectState {
     pub version: String,
     /// Configured channels
     pub channels: Vec<ChannelInfo>,
-    /// Active threads across all channels
-    pub threads: Vec<ThreadInfo>,
+    /// Active topics across all channels
+    pub topics: Vec<TopicInfo>,
     /// Aggregate statistics
     pub stats: GlobalStats,
     /// Available commands (name + description), populated from server-side CommandRegistry
@@ -25,7 +25,7 @@ pub struct InspectState {
 
 /// Slim overview payload returned by `get_state_overview`.
 ///
-/// Same shape as `InspectState` but with `ThreadSummary` instead of `ThreadInfo`,
+/// Same shape as `InspectState` but with `TopicSummary` instead of `TopicInfo`,
 /// dropping `activity`, `recent_messages`, and `thinking_text` to keep the
 /// per-poll payload small.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -36,8 +36,8 @@ pub struct InspectOverview {
     pub version: String,
     /// Configured channels
     pub channels: Vec<ChannelInfo>,
-    /// Active threads across all channels (lazy summary — no activity/messages)
-    pub threads: Vec<ThreadSummary>,
+    /// Active topics across all channels (lazy summary — no activity/messages)
+    pub topics: Vec<TopicSummary>,
     /// Aggregate statistics
     pub stats: GlobalStats,
     /// Available commands (name + description), populated from server-side CommandRegistry
@@ -48,21 +48,21 @@ pub struct InspectOverview {
     pub models: Vec<ModelInfo>,
 }
 
-/// Information about an active thread — slim form for the overview page.
+/// Information about an active topic — slim form for the overview page.
 ///
 /// Excludes `activity`, `recent_messages`, and `thinking_text` so the
-/// per-poll payload stays small. Use `get_thread_activity` / `get_thread_chat`
+/// per-poll payload stays small. Use `get_topic_activity` / `get_topic_chat`
 /// to fetch these on demand.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThreadSummary {
-    /// Thread name (e.g., "issue-42", "pr-43", "support-ticket")
+pub struct TopicSummary {
+    /// Topic name (e.g., "issue-42", "pr-43", "support-ticket")
     pub name: String,
-    /// Channel this thread belongs to
+    /// Channel this topic belongs to
     pub channel: String,
-    /// Pattern that created this thread (from `.jyc/pattern`)
+    /// Pattern that created this topic (from `.jyc/pattern`)
     pub pattern: Option<String>,
     /// Current processing status
-    pub status: ThreadStatus,
+    pub status: TopicStatus,
     /// AI model in use (from model-override or default)
     pub model: Option<String>,
     /// Current mode (plan/build)
@@ -90,14 +90,14 @@ pub struct ThreadSummary {
     /// as fresh input) via `+=`. None when the session has no
     /// recorded value yet (no calls, or the provider didn't surface
     /// cache hits). Not shown in the dashboard overview list — only
-    /// in the chat info pane and the dashboard thread info area.
+    /// in the chat info pane and the dashboard topic info area.
     #[serde(default)]
     pub total_cache_hit_tokens: Option<u64>,
     /// Accumulated prompt-cache-**creation** (write) tokens across
     /// all LLM calls in this session. Anthropic is the only provider
     /// that reports writes separately from reads; for every other
     /// vendor this is `None`. Shown alongside `total_cache_hit_tokens`
-    /// in the chat info pane and dashboard thread info area when the
+    /// in the chat info pane and dashboard topic info area when the
     /// running total is non-zero — i.e., only for Anthropic.
     /// `serde(default)` so old session files (which never wrote the
     /// field) deserialize as `None`.
@@ -106,17 +106,17 @@ pub struct ThreadSummary {
     /// Last activity timestamp (RFC 3339), if known
     #[serde(default)]
     pub last_active_at: Option<String>,
-    /// Skills loaded for this thread
+    /// Skills loaded for this topic
     #[serde(default)]
     pub skills: Vec<String>,
-    /// Filesystem path for this thread (may differ from workspace/name when
-    /// a pattern's `thread_path` override is active).
+    /// Filesystem path for this topic (may differ from workspace/name when
+    /// a pattern's `topic_path` override is active).
     #[serde(default)]
-    pub thread_path: Option<std::path::PathBuf>,
-    /// Resolved git branch for the thread's working directory, when it is
+    pub topic_path: Option<std::path::PathBuf>,
+    /// Resolved git branch for the topic's working directory, when it is
     /// a git repo. `None` when the path isn't a git repo, or the server
     /// couldn't read `.git/HEAD` (perms, etc.). For the shared-repo layout
-    /// (`repo_group`), `.git/HEAD` is read under `<thread_path>/repo/`.
+    /// (`repo_group`), `.git/HEAD` is read under `<topic_path>/repo/`.
     /// `"(detached)"` is returned when HEAD is a raw SHA (no symbolic ref).
     /// `#[serde(default)]` so old payloads (pre-this-field) still load.
     #[serde(default)]
@@ -127,7 +127,7 @@ pub struct ThreadSummary {
     /// state wins, matches the yellow-render rule in the chat info pane).
     /// Resolved server-side via `git diff --name-only main...HEAD` and
     /// `git diff --name-only HEAD`, then unioned. `None` when the
-    /// thread's working directory is not a git repo, or when the `git`
+    /// topic's working directory is not a git repo, or when the `git`
     /// invocations fail (no `main` ref, missing binary). `Some(vec![])`
     /// when both lists come back empty.
     /// `#[serde(default)]` so old payloads (pre-this-field) deserialize
@@ -138,7 +138,7 @@ pub struct ThreadSummary {
     /// has no configured `pricing`, so the row is omitted entirely
     /// rather than showing a misleading zero.
     #[serde(default)]
-    pub cost: Option<ThreadCost>,
+    pub cost: Option<TopicCost>,
 }
 
 /// Per-file change kind relative to `main`, derived from the status
@@ -158,7 +158,7 @@ pub enum ChangeKind {
     Deleted,
 }
 
-/// A file in `ThreadSummary.changed_files` / `ThreadInfo.changed_files`.
+/// A file in `TopicSummary.changed_files` / `TopicInfo.changed_files`.
 ///
 /// `uncommitted == true` iff the working tree has changes vs HEAD
 /// (`git diff --name-only HEAD`); the chat info pane renders such
@@ -174,7 +174,7 @@ pub struct ChangedFileEntry {
     pub change: ChangeKind,
 }
 
-/// Accumulated cost for a thread, in `currency`.
+/// Accumulated cost for a topic, in `currency`.
 ///
 /// `session` is scoped to the current agent session and zeroes on
 /// reset (read from `agent-session.json`); `today` is the durable
@@ -182,7 +182,7 @@ pub struct ChangedFileEntry {
 /// The two are expected to differ after a reset — that is the point
 /// of keeping both.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ThreadCost {
+pub struct TopicCost {
     /// Cost of the current session so far.
     pub session: f64,
     /// Cost accumulated today (UTC day), across sessions.
@@ -208,17 +208,17 @@ pub struct ChannelInfo {
     pub max_concurrent: usize,
 }
 
-/// Information about an active thread.
+/// Information about an active topic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThreadInfo {
-    /// Thread name (e.g., "issue-42", "pr-43", "support-ticket")
+pub struct TopicInfo {
+    /// Topic name (e.g., "issue-42", "pr-43", "support-ticket")
     pub name: String,
-    /// Channel this thread belongs to
+    /// Channel this topic belongs to
     pub channel: String,
-    /// Pattern that created this thread (from `.jyc/pattern`)
+    /// Pattern that created this topic (from `.jyc/pattern`)
     pub pattern: Option<String>,
     /// Current processing status
-    pub status: ThreadStatus,
+    pub status: TopicStatus,
     /// AI model in use (from model-override or default)
     pub model: Option<String>,
     /// Current mode (plan/build)
@@ -228,22 +228,22 @@ pub struct ThreadInfo {
     /// Max input tokens for this session
     pub max_tokens: Option<u64>,
     /// Running total of output tokens generated by LLM responses in this
-    /// session. Mirrors the same field on `ThreadSummary` so the
+    /// session. Mirrors the same field on `TopicSummary` so the
     /// activity/chat pane can show it without a separate fetch.
     #[serde(default)]
     pub output_tokens: Option<u64>,
     /// Accumulated input tokens across all LLM calls in this session.
-    /// See `ThreadSummary::total_input_tokens` for the full description.
+    /// See `TopicSummary::total_input_tokens` for the full description.
     #[serde(default)]
     pub total_input_tokens: Option<u64>,
     /// Accumulated prompt-cache-hit tokens across all LLM calls in
-    /// this session. See `ThreadSummary::total_cache_hit_tokens` for
+    /// this session. See `TopicSummary::total_cache_hit_tokens` for
     /// the full description.
     #[serde(default)]
     pub total_cache_hit_tokens: Option<u64>,
     /// Accumulated prompt-cache-**creation** (write) tokens across
     /// all LLM calls in this session. See
-    /// `ThreadSummary::total_cache_creation_tokens` for the full
+    /// `TopicSummary::total_cache_creation_tokens` for the full
     /// description.
     #[serde(default)]
     pub total_cache_creation_tokens: Option<u64>,
@@ -253,26 +253,26 @@ pub struct ThreadInfo {
     /// Last activity timestamp (RFC 3339), if known
     #[serde(default)]
     pub last_active_at: Option<String>,
-    /// Skills loaded for this thread
+    /// Skills loaded for this topic
     #[serde(default)]
     pub skills: Vec<String>,
     /// Recent chat messages (incoming + replies) for live dashboard display
     #[serde(default)]
     pub recent_messages: Vec<ChatMessageEntry>,
     /// Latest AI thinking/reasoning text for live dashboard display.
-    /// Set while the thread is processing and thinking is enabled; cleared on completion.
+    /// Set while the topic is processing and thinking is enabled; cleared on completion.
     #[serde(default)]
     pub thinking_text: Option<String>,
-    /// Filesystem path for this thread (may differ from workspace/name when
-    /// a pattern's `thread_path` override is active).
+    /// Filesystem path for this topic (may differ from workspace/name when
+    /// a pattern's `topic_path` override is active).
     #[serde(default)]
-    pub thread_path: Option<std::path::PathBuf>,
-    /// Resolved git branch for the thread's working directory. See
-    /// `ThreadSummary::branch` for the full semantics.
+    pub topic_path: Option<std::path::PathBuf>,
+    /// Resolved git branch for the topic's working directory. See
+    /// `TopicSummary::branch` for the full semantics.
     #[serde(default)]
     pub branch: Option<String>,
     /// Files changed relative to `main`. See
-    /// `ThreadSummary::changed_files` for the full semantics; this field
+    /// `TopicSummary::changed_files` for the full semantics; this field
     /// uses the same `Vec<ChangedFileEntry>` shape (path + uncommitted flag).
     #[serde(default)]
     pub changed_files: Option<Vec<ChangedFileEntry>>,
@@ -280,7 +280,7 @@ pub struct ThreadInfo {
     /// has no configured `pricing`, so the row is omitted entirely
     /// rather than showing a misleading zero.
     #[serde(default)]
-    pub cost: Option<ThreadCost>,
+    pub cost: Option<TopicCost>,
 }
 
 /// Severity level for an activity entry.
@@ -294,7 +294,7 @@ pub enum Severity {
     Error,
 }
 
-/// A single activity event from the thread's SSE stream.
+/// A single activity event from the topic's SSE stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityEntry {
     /// Human-readable description
@@ -305,7 +305,7 @@ pub struct ActivityEntry {
     /// Severity level (defaults to Info for backward compat)
     #[serde(default)]
     pub severity: Severity,
-    /// Monotonic per-thread sequence number assigned by the inspect server's
+    /// Monotonic per-topic sequence number assigned by the inspect server's
     /// `ActivityTracker` on push. Used by WS clients to drop duplicate events
     /// after a reconnect / Lagged recovery. Defaults to 0 for entries from
     /// `.jyc/activity.jsonl` that predate the seq field.
@@ -313,7 +313,7 @@ pub struct ActivityEntry {
     pub id: u64,
     /// Internal events are useful for debug logs but should NOT be shown in
     /// user-facing surfaces (overview activity pane, chat activity pane,
-    /// chat progress, REST `get_thread_activity` response). Currently set
+    /// chat progress, REST `get_topic_activity` response). Currently set
     /// for `ProcessingProgress` heartbeats (e.g. "tool execution (Xs, Y
     /// chars)"). Defaults to `false` for backward compat with old log
     /// entries that predate this field.
@@ -323,8 +323,8 @@ pub struct ActivityEntry {
 
 /// A chat message entry for live display in the dashboard.
 ///
-/// Captured from `ThreadEvent::IncomingMessage` and `ThreadEvent::ReplySent`
-/// by the ActivityTracker and forwarded via `ThreadInfo.recent_messages`.
+/// Captured from `TopicEvent::IncomingMessage` and `TopicEvent::ReplySent`
+/// by the ActivityTracker and forwarded via `TopicInfo.recent_messages`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessageEntry {
     /// Sender label: "user", "ai", or a display name
@@ -334,16 +334,16 @@ pub struct ChatMessageEntry {
     /// RFC 3339 timestamp
     #[serde(default)]
     pub timestamp: Option<String>,
-    /// Monotonic per-thread sequence number (see `ActivityEntry::id`).
+    /// Monotonic per-topic sequence number (see `ActivityEntry::id`).
     #[serde(default)]
     pub id: u64,
 }
 
-/// Thread processing status.
+/// Topic processing status.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
-pub enum ThreadStatus {
+pub enum TopicStatus {
     /// Waiting for semaphore permit
     Queued,
     /// AI processing active
@@ -353,11 +353,11 @@ pub enum ThreadStatus {
     Idle,
     /// Question tool waiting for user reply
     WaitingForAnswer,
-    /// Thread encountered an error
+    /// Topic encountered an error
     Error,
 }
 
-impl std::fmt::Display for ThreadStatus {
+impl std::fmt::Display for TopicStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Queued => write!(f, "Queued"),
@@ -374,8 +374,8 @@ impl std::fmt::Display for ThreadStatus {
 pub struct GlobalStats {
     /// Number of active workers (holding semaphore permits)
     pub active_workers: usize,
-    /// Total number of open threads
-    pub total_threads: usize,
+    /// Total number of open topics
+    pub total_topics: usize,
     /// Max concurrent workers allowed
     pub max_concurrent: usize,
     /// Number of available worker slots (max_concurrent - active_workers)
@@ -393,7 +393,7 @@ pub struct GlobalStats {
 pub struct CommandInfo {
     /// Command name including slash (e.g., "/model")
     pub name: String,
-    /// Short description (e.g., "Switch AI model for this thread")
+    /// Short description (e.g., "Switch AI model for this topic")
     pub description: String,
 }
 
@@ -427,11 +427,11 @@ mod tests {
                 active_workers: 2,
                 max_concurrent: 3,
             }],
-            threads: vec![ThreadInfo {
+            topics: vec![TopicInfo {
                 name: "issue-42".to_string(),
                 channel: "emf".to_string(),
                 pattern: Some("planner".to_string()),
-                status: ThreadStatus::Processing,
+                status: TopicStatus::Processing,
                 model: Some("anthropic/claude-opus-4-6".to_string()),
                 mode: Some("build".to_string()),
                 context_input_tokens: Some(45000),
@@ -445,14 +445,14 @@ mod tests {
                 skills: vec!["coding-principles".to_string(), "dev-workflow".to_string()],
                 recent_messages: vec![],
                 thinking_text: None,
-                thread_path: None,
+                topic_path: None,
                 branch: None,
                 changed_files: None,
                 cost: None,
             }],
             stats: GlobalStats {
                 active_workers: 2,
-                total_threads: 3,
+                total_topics: 3,
                 max_concurrent: 3,
                 available_workers: 1,
                 messages_received: 156,
@@ -471,18 +471,18 @@ mod tests {
         assert_eq!(parsed.channels[0].name, "emf");
         assert_eq!(parsed.channels[0].active_workers, 2);
         assert_eq!(parsed.channels[0].max_concurrent, 3);
-        assert_eq!(parsed.threads.len(), 1);
-        assert_eq!(parsed.threads[0].status, ThreadStatus::Processing);
+        assert_eq!(parsed.topics.len(), 1);
+        assert_eq!(parsed.topics[0].status, TopicStatus::Processing);
         assert_eq!(parsed.stats.active_workers, 2);
     }
 
     #[test]
-    fn test_thread_status_display() {
-        assert_eq!(format!("{}", ThreadStatus::Queued), "Queued");
-        assert_eq!(format!("{}", ThreadStatus::Processing), "Processing");
-        assert_eq!(format!("{}", ThreadStatus::Idle), "Idle");
-        assert_eq!(format!("{}", ThreadStatus::WaitingForAnswer), "Waiting");
-        assert_eq!(format!("{}", ThreadStatus::Error), "Error");
+    fn test_topic_status_display() {
+        assert_eq!(format!("{}", TopicStatus::Queued), "Queued");
+        assert_eq!(format!("{}", TopicStatus::Processing), "Processing");
+        assert_eq!(format!("{}", TopicStatus::Idle), "Idle");
+        assert_eq!(format!("{}", TopicStatus::WaitingForAnswer), "Waiting");
+        assert_eq!(format!("{}", TopicStatus::Error), "Error");
     }
 
     #[test]
@@ -490,24 +490,24 @@ mod tests {
         let state = InspectState::default();
         assert_eq!(state.uptime_secs, 0);
         assert!(state.channels.is_empty());
-        assert!(state.threads.is_empty());
+        assert!(state.topics.is_empty());
         assert_eq!(state.stats.active_workers, 0);
     }
 
     #[test]
-    fn test_thread_status_serde() {
-        // ThreadStatus serializes to snake_case
-        let json = serde_json::to_string(&ThreadStatus::WaitingForAnswer).unwrap();
+    fn test_topic_status_serde() {
+        // TopicStatus serializes to snake_case
+        let json = serde_json::to_string(&TopicStatus::WaitingForAnswer).unwrap();
         assert_eq!(json, r#""waiting_for_answer""#);
 
-        let parsed: ThreadStatus = serde_json::from_str(r#""processing""#).unwrap();
-        assert_eq!(parsed, ThreadStatus::Processing);
+        let parsed: TopicStatus = serde_json::from_str(r#""processing""#).unwrap();
+        assert_eq!(parsed, TopicStatus::Processing);
 
-        let json = serde_json::to_string(&ThreadStatus::Error).unwrap();
+        let json = serde_json::to_string(&TopicStatus::Error).unwrap();
         assert_eq!(json, r#""error""#);
 
-        let parsed: ThreadStatus = serde_json::from_str(r#""error""#).unwrap();
-        assert_eq!(parsed, ThreadStatus::Error);
+        let parsed: TopicStatus = serde_json::from_str(r#""error""#).unwrap();
+        assert_eq!(parsed, TopicStatus::Error);
     }
 
     #[test]
@@ -602,12 +602,12 @@ mod tests {
     }
 
     #[test]
-    fn test_thread_summary_roundtrip() {
-        let summary = ThreadSummary {
+    fn test_topic_summary_roundtrip() {
+        let summary = TopicSummary {
             name: "issue-42".to_string(),
             channel: "emf".to_string(),
             pattern: Some("planner".to_string()),
-            status: ThreadStatus::Processing,
+            status: TopicStatus::Processing,
             model: Some("claude-opus".to_string()),
             mode: Some("build".to_string()),
             context_input_tokens: Some(10000),
@@ -618,16 +618,16 @@ mod tests {
             total_cache_creation_tokens: None,
             last_active_at: Some("2026-01-01T00:00:00Z".to_string()),
             skills: vec!["dev-workflow".to_string()],
-            thread_path: None,
+            topic_path: None,
             branch: None,
             changed_files: None,
             cost: None,
         };
         let json = serde_json::to_string(&summary).unwrap();
-        let parsed: ThreadSummary = serde_json::from_str(&json).unwrap();
+        let parsed: TopicSummary = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.name, "issue-42");
-        assert_eq!(parsed.status, ThreadStatus::Processing);
-        // ThreadSummary must not serialize activity/messages/thinking fields
+        assert_eq!(parsed.status, TopicStatus::Processing);
+        // TopicSummary must not serialize activity/messages/thinking fields
         assert!(!json.contains("activity"));
         assert!(!json.contains("recent_messages"));
         assert!(!json.contains("thinking_text"));
@@ -639,7 +639,7 @@ mod tests {
             uptime_secs: 100,
             version: "0.1.0".to_string(),
             channels: vec![],
-            threads: vec![],
+            topics: vec![],
             stats: GlobalStats::default(),
             commands: vec![],
             models: vec![],

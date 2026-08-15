@@ -10,8 +10,8 @@ use jyc_types::AppConfig;
 pub struct CommandContext {
     /// Command arguments (everything after the command name)
     pub args: Vec<String>,
-    /// Path to the thread directory
-    pub thread_path: PathBuf,
+    /// Path to the topic directory
+    pub topic_path: PathBuf,
     /// Application configuration
     pub config: Arc<AppConfig>,
     /// Channel name
@@ -20,7 +20,7 @@ pub struct CommandContext {
     pub channel_type: String,
     /// Agent service (optional, for commands that need to query server)
     pub agent: Option<Arc<dyn crate::agent::AgentService>>,
-    /// Template directories (layered: L1 global < L2 workdir; thread L3
+    /// Template directories (layered: L1 global < L2 workdir; topic L3
     /// `.jyc/templates/` is checked first at lookup time)
     pub template_dirs: crate::template_dirs::TemplateDirs,
     /// Path to the config.toml file (for commands that write config)
@@ -31,7 +31,7 @@ impl std::fmt::Debug for CommandContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CommandContext")
             .field("args", &self.args)
-            .field("thread_path", &self.thread_path)
+            .field("topic_path", &self.topic_path)
             .field("config", &self.config)
             .field("channel", &self.channel)
             .field("channel_type", &self.channel_type)

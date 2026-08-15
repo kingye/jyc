@@ -46,12 +46,12 @@ pub fn strip_trailing_separators(text: &str) -> String {
     }
 }
 
-/// Derive a thread name from an email subject.
+/// Derive a topic name from an email subject.
 ///
 /// 1. Strip reply/forward prefixes (Re:, Fwd:, 回复:, etc.)
 /// 2. Strip configured pattern prefixes (sorted longest-first)
 /// 3. Sanitize for use as a filesystem directory name
-pub fn derive_thread_name(subject: &str, pattern_prefixes: &[String]) -> String {
+pub fn derive_topic_name(subject: &str, pattern_prefixes: &[String]) -> String {
     let mut name = strip_reply_prefix(subject);
 
     // Strip configured prefixes (longest first to avoid partial matches)
@@ -193,7 +193,7 @@ pub struct ParsedStoredMessage {
     #[allow(dead_code)]
     pub reply_to_id: Option<String>,
     #[allow(dead_code)]
-    pub thread_refs: Option<Vec<String>>,
+    pub references: Option<Vec<String>>,
     #[allow(dead_code)]
     pub matched_pattern: Option<String>,
 }
@@ -221,7 +221,7 @@ pub fn parse_stored_message(content: &str) -> ParsedStoredMessage {
     let mut timestamp = None;
     let mut external_id = None;
     let mut reply_to_id = None;
-    let mut thread_refs = None;
+    let mut references = None;
     let mut matched_pattern = None;
     let mut body = String::new();
 
@@ -258,7 +258,7 @@ pub fn parse_stored_message(content: &str) -> ParsedStoredMessage {
                         "topic" => topic = Some(value.to_string()),
                         "external_id" => external_id = Some(value.to_string()),
                         "reply_to_id" => reply_to_id = Some(value.to_string()),
-                        "thread_refs" => {
+                        "references" => {
                             // Parse YAML-style array: ["ref1", "ref2"]
                             let refs_str = value.trim_matches(|c| c == '[' || c == ']');
                             let refs: Vec<String> = refs_str
@@ -267,7 +267,7 @@ pub fn parse_stored_message(content: &str) -> ParsedStoredMessage {
                                 .filter(|s| !s.is_empty())
                                 .collect();
                             if !refs.is_empty() {
-                                thread_refs = Some(refs);
+                                references = Some(refs);
                             }
                         }
                         "matched_pattern" => matched_pattern = Some(value.to_string()),
@@ -318,7 +318,7 @@ pub fn parse_stored_message(content: &str) -> ParsedStoredMessage {
         uid,
         external_id,
         reply_to_id,
-        thread_refs,
+        references,
         matched_pattern,
     }
 }
@@ -408,7 +408,7 @@ pub fn build_footer(
 #[allow(clippy::too_many_arguments)]
 pub async fn build_full_reply_text(
     reply_text: &str,
-    _thread_path: &std::path::Path,
+    _topic_path: &std::path::Path,
     _sender: &str,
     _timestamp: &str,
     _topic: &str,
@@ -490,50 +490,50 @@ mod tests {
         assert_eq!(strip_reply_prefix("  Re: Hello"), "Hello");
     }
 
-    // --- derive_thread_name tests ---
+    // --- derive_topic_name tests ---
 
     #[test]
     fn test_derive_simple() {
-        let name = derive_thread_name("Re: Help with feature X", &[]);
+        let name = derive_topic_name("Re: Help with feature X", &[]);
         assert_eq!(name, "Help with feature X");
     }
 
     #[test]
     fn test_derive_with_prefix_strip() {
         let prefixes = vec!["jiny".to_string()];
-        let name = derive_thread_name("Re: jiny: Build the app", &prefixes);
+        let name = derive_topic_name("Re: jiny: Build the app", &prefixes);
         assert_eq!(name, "Build the app");
     }
 
     #[test]
     fn test_derive_prefix_with_separator() {
         let prefixes = vec!["jiny".to_string()];
-        let name = derive_thread_name("jiny - My Task", &prefixes);
+        let name = derive_topic_name("jiny - My Task", &prefixes);
         assert_eq!(name, "My Task");
     }
 
     #[test]
     fn test_derive_longest_prefix_first() {
         let prefixes = vec!["dev".to_string(), "dev-team".to_string()];
-        let name = derive_thread_name("dev-team: Fix bug", &prefixes);
+        let name = derive_topic_name("dev-team: Fix bug", &prefixes);
         assert_eq!(name, "Fix bug");
     }
 
     #[test]
     fn test_derive_sanitizes_filename() {
-        let name = derive_thread_name("Re: path/to:file*name", &[]);
+        let name = derive_topic_name("Re: path/to:file*name", &[]);
         assert_eq!(name, "path_to_file_name");
     }
 
     #[test]
     fn test_derive_empty_subject() {
-        let name = derive_thread_name("", &[]);
+        let name = derive_topic_name("", &[]);
         assert_eq!(name, "unnamed");
     }
 
     #[test]
     fn test_derive_preserves_cjk() {
-        let name = derive_thread_name("Re: 你好世界", &[]);
+        let name = derive_topic_name("Re: 你好世界", &[]);
         assert_eq!(name, "你好世界");
     }
 

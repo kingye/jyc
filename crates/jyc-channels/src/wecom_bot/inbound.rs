@@ -1,7 +1,7 @@
 //! WeCom Smart Robot (wecom_bot) inbound adapter implementation.
 //!
 //! Handles receiving messages from WeCom via WebSocket long connection
-//! and provides channel-specific pattern matching and thread name derivation.
+//! and provides channel-specific pattern matching and topic name derivation.
 //!
 //! Reference: doc 101463, 100719
 
@@ -20,7 +20,7 @@ use jyc_utils::helpers::sanitize_for_filesystem;
 use super::client::{ServerMessage, WecomBotWsClient};
 use super::types::BotEvent;
 
-/// WeCom Bot-specific pattern matching and thread name derivation.
+/// WeCom Bot-specific pattern matching and topic name derivation.
 pub struct WecomBotMatcher;
 
 impl ChannelMatcher for WecomBotMatcher {
@@ -28,7 +28,7 @@ impl ChannelMatcher for WecomBotMatcher {
         "wecom_bot"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         _patterns: &[ChannelPattern],
@@ -241,13 +241,13 @@ impl ChannelMatcher for WecomBotInboundAdapter {
         "wecom_bot"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         patterns: &[ChannelPattern],
         pattern_match: Option<&PatternMatch>,
     ) -> String {
-        WecomBotMatcher.derive_thread_name(message, patterns, pattern_match)
+        WecomBotMatcher.derive_topic_name(message, patterns, pattern_match)
     }
 
     fn match_message(
@@ -443,7 +443,7 @@ fn convert_bot_message_to_inbound(
             markdown: None,
         },
         timestamp,
-        thread_refs: None,
+        references: None,
         reply_to_id: None,
         external_id: Some(bot_msg.msgid.clone()),
         attachments,
@@ -532,8 +532,8 @@ fn handle_bot_event(
                 chatid = %event.chatid,
                 "User entered WeCom Bot chat"
             );
-            // Thread close callback is for chat disbanded, not enter_chat
-            // We could extend this to create a welcome message thread in the future
+            // Topic close callback is for chat disbanded, not enter_chat
+            // We could extend this to create a welcome message topic in the future
         }
         "template_card_event" => {
             tracing::debug!("Received template_card_event");
@@ -552,13 +552,13 @@ fn handle_bot_event(
         }
     }
 
-    // Call on_thread_close if this is a thread close event (none currently)
-    if let Some(ref callback) = options.on_thread_close
+    // Call on_topic_close if this is a topic close event (none currently)
+    if let Some(ref callback) = options.on_topic_close
         && event.event == "chat_disbanded"
     {
         // Not documented in WeCom Bot events, but handle defensively
-        let thread_name = format!("bot-{}", sanitize_for_filesystem(&event.chatid));
-        callback(thread_name)?;
+        let topic_name = format!("bot-{}", sanitize_for_filesystem(&event.chatid));
+        callback(topic_name)?;
     }
 
     Ok(())
@@ -643,21 +643,21 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_thread_name_single() {
+    fn test_derive_topic_name_single() {
         let bot_msg = create_test_message("text", "Hello");
         let inbound = convert_bot_message_to_inbound(&bot_msg, "test").unwrap();
         let matcher = WecomBotMatcher;
-        let name = matcher.derive_thread_name(&inbound, &[], None);
+        let name = matcher.derive_topic_name(&inbound, &[], None);
         assert_eq!(name, "bot-user_789");
     }
 
     #[test]
-    fn test_derive_thread_name_group() {
+    fn test_derive_topic_name_group() {
         let mut bot_msg = create_test_message("text", "Hello");
         bot_msg.chattype = "groupchat".to_string();
         let inbound = convert_bot_message_to_inbound(&bot_msg, "test").unwrap();
         let matcher = WecomBotMatcher;
-        let name = matcher.derive_thread_name(&inbound, &[], None);
+        let name = matcher.derive_topic_name(&inbound, &[], None);
         assert_eq!(name, "bot-chat_456");
     }
 
@@ -676,8 +676,8 @@ mod tests {
             },
             attachments: None,
             template: None,
-            thread_name: None,
-            thread_prefix: None,
+            topic_name: None,
+            topic_prefix: None,
             role: None,
             live_injection: true,
             ..Default::default()

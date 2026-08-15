@@ -7,7 +7,7 @@ use super::handler::{CommandContext, CommandHandler, CommandOutput, CommandResul
 /// Registry of command handlers with unified parse-execute-strip processing.
 ///
 /// Unlike jiny-m, which splits parsing (CommandRegistry.parseCommands) and
-/// body stripping (thread-manager.ts) into two separate passes, JYC unifies
+/// body stripping (topic-manager.ts) into two separate passes, JYC unifies
 /// these into a single `process_commands()` method.
 pub struct CommandRegistry {
     handlers: HashMap<String, Box<dyn CommandHandler>>,
@@ -50,7 +50,7 @@ impl CommandRegistry {
     /// non-empty, non-command line ends the command block — everything from
     /// that line onward is the cleaned body.
     ///
-    /// Returns executed results + cleaned body. ThreadManager does NOT need
+    /// Returns executed results + cleaned body. TopicManager does NOT need
     /// to know about command line syntax.
     pub async fn process_commands(
         &self,
@@ -192,7 +192,7 @@ mod tests {
     fn test_context() -> CommandContext {
         CommandContext {
             args: vec![],
-            thread_path: PathBuf::from("/tmp/test"),
+            topic_path: PathBuf::from("/tmp/test"),
             config: Arc::new(
                 jyc_types::load_config_from_str(
                     r#"

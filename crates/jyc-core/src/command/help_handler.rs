@@ -54,7 +54,7 @@ mod tests {
     async fn test_help_contains_commands() {
         let ctx = CommandContext {
             args: vec![],
-            thread_path: PathBuf::from("/tmp/test"),
+            topic_path: PathBuf::from("/tmp/test"),
             config: Arc::new(
                 jyc_types::load_config_from_str(
                     r#"
@@ -134,7 +134,7 @@ user_prompt = "Review it."
 
         let ctx = CommandContext {
             args: vec![],
-            thread_path: PathBuf::from("/tmp/test"),
+            topic_path: PathBuf::from("/tmp/test"),
             config: Arc::new(config),
             channel: "test".into(),
             agent: None,

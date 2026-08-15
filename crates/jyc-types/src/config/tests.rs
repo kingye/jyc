@@ -158,8 +158,8 @@ mode = "agent"
 "#;
 
         let config = load_config_from_str(toml).unwrap();
-        assert_eq!(config.general.max_concurrent_threads, 3);
-        assert_eq!(config.general.max_queue_size_per_thread, 10);
+        assert_eq!(config.general.max_concurrent_topics, 3);
+        assert_eq!(config.general.max_queue_size_per_topic, 10);
     }
 
     #[test]
@@ -175,7 +175,7 @@ app_secret = "b"
 
 [[channels.feishu_bot.patterns]]
 name = "piped"
-pipe = { channel = "local_dev", thread = "jyc" }
+pipe = { channel = "local_dev", topic = "jyc" }
 
 [[channels.feishu_bot.patterns]]
 name = "plain"
@@ -187,10 +187,10 @@ mode = "agent"
         )
         .unwrap();
         let patterns = config.channels["feishu_bot"].patterns.as_ref().unwrap();
-        // Set explicitly -> parsed as the (channel, thread) mapping.
+        // Set explicitly -> parsed as the (channel, topic) mapping.
         let pipe = patterns[0].pipe.as_ref().unwrap();
         assert_eq!(pipe.channel, "local_dev");
-        assert_eq!(pipe.thread, "jyc");
+        assert_eq!(pipe.topic, "jyc");
         // Omitted -> default None (routed normally).
         assert!(patterns[1].pipe.is_none());
     }
@@ -332,7 +332,7 @@ enabled = true
         let base: toml::Value = toml::from_str(
             r#"
 [general]
-max_concurrent_threads = 3
+max_concurrent_topics = 3
 
 [agent]
 model = "global-model"
@@ -350,7 +350,7 @@ model = "workdir-model"
 
         let merged = merge_toml(base, overlay);
         assert_eq!(
-            merged["general"]["max_concurrent_threads"].as_integer(),
+            merged["general"]["max_concurrent_topics"].as_integer(),
             Some(3)
         );
         // Overlay wins on conflicting keys
@@ -581,13 +581,13 @@ mode = "static"
     }
 
     #[test]
-    fn test_load_thread_config_missing_file() {
+    fn test_load_topic_config_missing_file() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(load_thread_config(tmp.path()).is_none());
+        assert!(load_topic_config(tmp.path()).is_none());
     }
 
     #[test]
-    fn test_load_thread_config_agent_overrides() {
+    fn test_load_topic_config_agent_overrides() {
         let tmp = tempfile::tempdir().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
@@ -595,32 +595,32 @@ mode = "static"
             jyc_dir.join("config.toml"),
             r#"
 [agent]
-model = "provider/thread-model"
+model = "provider/topic-model"
 plan_model = "provider/plan-model"
 small_model = "provider/small-model"
 "#,
         )
         .unwrap();
 
-        let cfg = load_thread_config(tmp.path()).unwrap();
+        let cfg = load_topic_config(tmp.path()).unwrap();
         let agent = cfg.agent.unwrap();
-        assert_eq!(agent.model.as_deref(), Some("provider/thread-model"));
+        assert_eq!(agent.model.as_deref(), Some("provider/topic-model"));
         assert_eq!(agent.plan_model.as_deref(), Some("provider/plan-model"));
         assert_eq!(agent.build_model, None);
         assert_eq!(agent.small_model.as_deref(), Some("provider/small-model"));
     }
 
     #[test]
-    fn test_load_thread_config_invalid_toml_ignored() {
+    fn test_load_topic_config_invalid_toml_ignored() {
         let tmp = tempfile::tempdir().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
         std::fs::write(jyc_dir.join("config.toml"), "not [valid toml").unwrap();
-        assert!(load_thread_config(tmp.path()).is_none());
+        assert!(load_topic_config(tmp.path()).is_none());
     }
 
     #[test]
-    fn test_load_thread_config_mcps_parsed() {
+    fn test_load_topic_config_mcps_parsed() {
         let tmp = tempfile::tempdir().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
@@ -638,7 +638,7 @@ model = "anthropic/claude-opus-4-7"
         )
         .unwrap();
 
-        let cfg = load_thread_config(tmp.path()).unwrap();
+        let cfg = load_topic_config(tmp.path()).unwrap();
         let mcps = cfg.mcps.expect("mcps field should be present");
         assert_eq!(mcps.len(), 1);
         assert_eq!(mcps[0].name, "local-only");
@@ -648,7 +648,7 @@ model = "anthropic/claude-opus-4-7"
     }
 
     #[test]
-    fn test_load_thread_config_mcps_replace_flag_explicit() {
+    fn test_load_topic_config_mcps_replace_flag_explicit() {
         let tmp = tempfile::tempdir().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
@@ -665,18 +665,18 @@ url = "https://example.com/mcp"
         )
         .unwrap();
 
-        let cfg = load_thread_config(tmp.path()).unwrap();
+        let cfg = load_topic_config(tmp.path()).unwrap();
         assert!(cfg.mcps_replace);
         let mcps = cfg.mcps.unwrap();
         assert_eq!(mcps[0].name, "totally-different");
     }
 
     /// L3 bug fix regression: `${VAR}` in `[agent].model` must expand at
-    /// thread-config load. Before the shared `parse_and_deserialize`
-    /// helper, thread loader bypassed `expand_env_vars` and the literal
-    /// `${VAR}` string landed in the `ThreadConfig`.
+    /// topic-config load. Before the shared `parse_and_deserialize`
+    /// helper, topic loader bypassed `expand_env_vars` and the literal
+    /// `${VAR}` string landed in the `TopicConfig`.
     #[test]
-    fn test_load_thread_config_expands_env_vars_in_agent_model() {
+    fn test_load_topic_config_expands_env_vars_in_agent_model() {
         // SAFETY: AGENTS.md prefers no env mutation, but verifying the
         // load-time expansion end-to-end requires it. Test uses a unique
         // env-var name and cleans up; see existing test_expand_env_vars.
@@ -695,12 +695,12 @@ model = "${JYC_LOAD_THREAD_MODEL}"
         )
         .unwrap();
 
-        let cfg = load_thread_config(tmp.path()).unwrap();
+        let cfg = load_topic_config(tmp.path()).unwrap();
         let agent = cfg.agent.unwrap();
         assert_eq!(
             agent.model.as_deref(),
             Some("anthropic/claude-opus-4-7"),
-            "${{VAR}} in [agent].model must expand at thread-config load"
+            "${{VAR}} in [agent].model must expand at topic-config load"
         );
         unsafe {
             std::env::remove_var("JYC_LOAD_THREAD_MODEL");
@@ -711,7 +711,7 @@ model = "${JYC_LOAD_THREAD_MODEL}"
     /// The recursive walker descends into arrays too, so each element
     /// gets expanded.
     #[test]
-    fn test_load_thread_config_expands_env_vars_in_mcp_command() {
+    fn test_load_topic_config_expands_env_vars_in_mcp_command() {
         unsafe {
             std::env::set_var("JYC_LOAD_THREAD_MCP_BIN", "/opt/jyc/mcp-server");
             std::env::set_var("JYC_LOAD_THREAD_MCP_TOKEN", "secret-token");
@@ -733,7 +733,7 @@ TOKEN = "${JYC_LOAD_THREAD_MCP_TOKEN}"
         )
         .unwrap();
 
-        let cfg = load_thread_config(tmp.path()).unwrap();
+        let cfg = load_topic_config(tmp.path()).unwrap();
         let mcps = cfg.mcps.expect("mcps field should be present");
         assert_eq!(mcps.len(), 1);
         match &mcps[0].kind {
@@ -757,10 +757,10 @@ TOKEN = "${JYC_LOAD_THREAD_MCP_TOKEN}"
         }
     }
 
-    /// Missing env var at thread level → empty string, no panic. Matches
+    /// Missing env var at topic level → empty string, no panic. Matches
     /// the global loader's `unwrap_or_default()` behavior.
     #[test]
-    fn test_load_thread_config_missing_env_var_yields_empty() {
+    fn test_load_topic_config_missing_env_var_yields_empty() {
         // SAFETY: ensure the env var is unset before the test runs.
         unsafe {
             std::env::remove_var("JYC_LOAD_THREAD_DEFINITELY_UNSET");
@@ -777,7 +777,7 @@ model = "${JYC_LOAD_THREAD_DEFINITELY_UNSET}"
         )
         .unwrap();
 
-        let cfg = load_thread_config(tmp.path()).unwrap();
+        let cfg = load_topic_config(tmp.path()).unwrap();
         let agent = cfg.agent.unwrap();
         assert_eq!(
             agent.model.as_deref(),
@@ -803,7 +803,7 @@ mode = "static"
         assert_eq!(config.agent.mode, "static");
     }
 
-    // ---- apply_thread_mcp_overlay ----
+    // ---- apply_topic_mcp_overlay ----
 
     fn local_mcp(name: &str) -> McpServerConfig {
         McpServerConfig {
@@ -831,51 +831,51 @@ mode = "static"
     }
 
     #[test]
-    fn test_apply_thread_mcp_overlay_none_is_noop() {
+    fn test_apply_topic_mcp_overlay_none_is_noop() {
         let base = vec![local_mcp("a")];
-        let out = apply_thread_mcp_overlay(&base, None);
+        let out = apply_topic_mcp_overlay(&base, None);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].name, "a");
     }
 
     #[test]
-    fn test_apply_thread_mcp_overlay_additive_unions() {
+    fn test_apply_topic_mcp_overlay_additive_unions() {
         let base = vec![local_mcp("a")];
-        let thread = ThreadConfig {
+        let topic = TopicConfig {
             mcps: Some(vec![remote_mcp("b", "https://b")]),
             mcps_replace: false,
             ..Default::default()
         };
-        let out = apply_thread_mcp_overlay(&base, Some(&thread));
+        let out = apply_topic_mcp_overlay(&base, Some(&topic));
         let names: Vec<&str> = out.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b"]);
     }
 
     #[test]
-    fn test_apply_thread_mcp_overlay_thread_wins_on_conflict() {
+    fn test_apply_topic_mcp_overlay_topic_wins_on_conflict() {
         let base = vec![remote_mcp("a", "https://inherited")];
-        let thread = ThreadConfig {
-            mcps: Some(vec![remote_mcp("a", "https://thread")]),
+        let topic = TopicConfig {
+            mcps: Some(vec![remote_mcp("a", "https://topic")]),
             mcps_replace: false,
             ..Default::default()
         };
-        let out = apply_thread_mcp_overlay(&base, Some(&thread));
+        let out = apply_topic_mcp_overlay(&base, Some(&topic));
         assert_eq!(out.len(), 1);
         match &out[0].kind {
-            McpServerKind::Remote { url, .. } => assert_eq!(url, "https://thread"),
+            McpServerKind::Remote { url, .. } => assert_eq!(url, "https://topic"),
             _ => panic!("expected remote"),
         }
     }
 
     #[test]
-    fn test_apply_thread_mcp_overlay_replace_drops_base() {
+    fn test_apply_topic_mcp_overlay_replace_drops_base() {
         let base = vec![local_mcp("a"), local_mcp("b")];
-        let thread = ThreadConfig {
+        let topic = TopicConfig {
             mcps: Some(vec![remote_mcp("c", "https://c")]),
             mcps_replace: true,
             ..Default::default()
         };
-        let out = apply_thread_mcp_overlay(&base, Some(&thread));
+        let out = apply_topic_mcp_overlay(&base, Some(&topic));
         let names: Vec<&str> = out.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["c"]);
     }

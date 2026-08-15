@@ -106,7 +106,7 @@ Excel files are only generated on-demand when the user requests them.
 Use the invoice_init MCP tool to initialize the database.
 ```
 
-The invoice database is stored at `.invoice/invoice.db` within the thread directory.
+The invoice database is stored at `.invoice/invoice.db` within the topic directory.
 It stores all invoice records across all months in a single file.
 
 **Database management:**
@@ -131,8 +131,8 @@ The Excel files are now generated on-demand by invoice MCP tools (`invoice_expor
 using `rust_xlsxwriter` internally — no template copying needed.
 
 ```
-Thread directory structure:
-<thread_dir>/
+Topic directory structure:
+<topic_dir>/
   .invoice/                 ← invoice MCP 数据目录
     invoice.db              ← SQLite 数据库（invoice MCP 管理）
     data/                   ← 附件文件（invoice MCP 管理）

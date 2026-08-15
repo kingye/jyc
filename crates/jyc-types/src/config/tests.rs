@@ -163,27 +163,22 @@ mode = "agent"
     }
 
     #[test]
-    fn test_channel_pipe_defaults_to_none_and_parses() {
+    fn test_channel_pattern_pipe_defaults_to_none_and_parses() {
         let config = load_config_from_str(
             r#"
 [channels.feishu_bot]
 type = "feishu"
-pipe = "local_dev"
 
 [channels.feishu_bot.feishu]
 app_id = "a"
 app_secret = "b"
 
-[channels.plain]
-type = "email"
-[channels.plain.inbound]
-host = "imap.example.com"
-username = "u"
-password = "p"
-[channels.plain.outbound]
-host = "smtp.example.com"
-username = "u"
-password = "p"
+[[channels.feishu_bot.patterns]]
+name = "piped"
+pipe = "local_dev"
+
+[[channels.feishu_bot.patterns]]
+name = "plain"
 
 [agent]
 enabled = true
@@ -191,13 +186,11 @@ mode = "agent"
 "#,
         )
         .unwrap();
-        // Set explicitly -> parsed.
-        assert_eq!(
-            config.channels["feishu_bot"].pipe.as_deref(),
-            Some("local_dev")
-        );
-        // Omitted -> default None (unchanged behavior).
-        assert!(config.channels["plain"].pipe.is_none());
+        let patterns = config.channels["feishu_bot"].patterns.as_ref().unwrap();
+        // Set explicitly -> parsed on the pattern.
+        assert_eq!(patterns[0].pipe.as_deref(), Some("local_dev"));
+        // Omitted -> default None (routed normally).
+        assert!(patterns[1].pipe.is_none());
     }
 
     /// End-to-end: `api_key = "${VAR}"` round-trips through the TOML

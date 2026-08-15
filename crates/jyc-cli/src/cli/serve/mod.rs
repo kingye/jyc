@@ -152,6 +152,11 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     let ws_broadcasts: std::sync::Arc<
         std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>,
     > = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+    // Per-channel MessageRouters, keyed by channel name. Used by piped
+    // channels (e.g. feishu with `pipe`) to route re-targeted messages
+    // through the target channel's router (identical to a chat-pane message).
+    let routers: std::sync::Arc<std::sync::Mutex<HashMap<String, Arc<MessageRouter>>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
     // Create the inspect-broadcast bus that ActivityTracker publishes to.
     // Shared with websocket inbound adapters so they can forward live
     // activity/thinking events to dashboard WebSocket clients.
@@ -286,6 +291,11 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             config.clone(),
             channel_name.clone(),
         ));
+        // Expose the router so piped channels can route through it.
+        routers
+            .lock()
+            .unwrap()
+            .insert(channel_name.clone(), router.clone());
 
         let mut state_manager = StateManager::for_channel(workdir, channel_name);
         state_manager.initialize().await?;
@@ -336,6 +346,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             wecom_server: wecom_server.clone(),
             websocket_handlers: &mut websocket_handlers,
             ws_broadcasts: ws_broadcasts.clone(),
+            routers: routers.clone(),
         };
         spawner.spawn().await?;
     }

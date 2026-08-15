@@ -277,6 +277,17 @@ pub trait OutboundAdapter: Send + Sync {
 
 // --- Pattern Types ---
 
+/// Target of a `ChannelPattern.pipe`: which (channel, thread) to forward
+/// matching messages into. `thread` is the target channel's thread name,
+/// which equals its pattern name for websocket-type channels.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PipeTarget {
+    /// Target channel name (typically a websocket-type channel).
+    pub channel: String,
+    /// Target thread name (= target channel's pattern name).
+    pub thread: String,
+}
+
 /// A channel pattern defines matching rules for a specific channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelPattern {
@@ -288,16 +299,18 @@ pub struct ChannelPattern {
     /// Whether this pattern is active
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Pipe messages matching this pattern into another (websocket) channel.
+    /// Pipe messages matching this pattern into another (websocket) channel's
+    /// thread.
     ///
-    /// When set to a target channel name, matching messages act as a client
-    /// of the target channel: they are enqueued into the target's threads
-    /// (thread name = this channel's derived thread name), template/model
-    /// come from the target's pattern, and replies are relayed back. When
-    /// `None` (default), the message is routed normally through this
-    /// channel's own ThreadManager.
+    /// When set, matching messages act as a client of the target channel:
+    /// they are re-targeted to `channel`/`thread` and routed through the
+    /// target channel's own MessageRouter (identical to a chat-pane message),
+    /// so the target thread's pattern — `thread_path`, template, skills,
+    /// model — applies. Replies come back via the target channel's broadcast
+    /// and are relayed to this channel's users. When `None` (default), the
+    /// message is routed normally through this channel's own ThreadManager.
     #[serde(default)]
-    pub pipe: Option<String>,
+    pub pipe: Option<PipeTarget>,
     /// Matching rules (channel-specific)
     #[serde(default)]
     pub rules: PatternRules,

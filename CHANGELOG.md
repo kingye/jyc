@@ -2724,7 +2724,7 @@ will produce progress replies automatically for long-running tasks.
 
 **Worker Semaphore Permit Release** — Fix resource leak on topic close
 - Workers now properly release semaphore permits when closing topics
-- Prevents topic pool exhaustion
+- Prevents thread pool exhaustion
 
 **GitHub Self-Loop Prevention** — Replaces global `[Role]` prefix filter
 - Previously: ALL comments prefixed with `[Planner]`, `[Developer]`, or `[Reviewer]` were globally filtered (invisible to all patterns)
@@ -3588,7 +3588,7 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Email inbound adapter: `mail-parser` raw bytes → `InboundMessage` with boundary cleaning; pattern matching (sender exact/domain/regex + subject prefix/regex, AND logic, first match wins)
 - SMTP client (`lettre`) with TLS, References headers (`In-Reply-To`, `References`), markdown→HTML via `comrak` (GFM), auto-reconnect on connection errors
 - HTML→Markdown conversion via `htmd`
-- Email outbound adapter: `send_reply`, `send_alert`, `send_progress_update` — topic-safe via `Arc<Mutex<SmtpClient>>`
+- Email outbound adapter: `send_reply`, `send_alert`, `send_progress_update` — thread-safe via `Arc<Mutex<SmtpClient>>`
 - Per-channel state manager: `.imap/.state.json` + `.processed-uids.txt` for IMAP sequence tracking and UID deduplication
 
 **Phase 3: Core Processing Pipeline**

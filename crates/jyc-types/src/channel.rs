@@ -280,7 +280,7 @@ pub trait OutboundAdapter: Send + Sync {
 /// Target of a `ChannelPattern.pipe`: which (channel, thread) to forward
 /// matching messages into. `thread` is the target channel's thread name,
 /// which equals its pattern name for websocket-type channels.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipeTarget {
     /// Target channel name (typically a websocket-type channel).
     pub channel: String,

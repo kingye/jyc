@@ -497,16 +497,13 @@ impl InboundSpawner<'_> {
                         Ok(())
                     }),
                     on_thread_close: Some(Box::new(move |thread_name: String| {
+                        // Always close in this channel's own ThreadManager:
+                        // correct for non-pipe threads, a safe no-op for piped
+                        // threads (they live in the target channel, whose
+                        // threads are not auto-closed — the explicit pipe
+                        // mapping can't be reversed from the derived name).
                         let tm = thread_manager_clone.clone();
-                        let pipe_mode = !pipe_channels.is_empty();
                         tokio::spawn(async move {
-                            if pipe_mode {
-                                // Explicit pipe mapping: the derived thread name
-                                // does not map back to the piped thread, so
-                                // disbanded chats do not auto-close piped threads.
-                                tracing::debug!(thread = %thread_name, "feishu chat disbanded (pipe mode); piped threads are not auto-closed");
-                                return;
-                            }
                             if let Err(e) = tm.close_thread(&thread_name).await {
                                 tracing::error!(error = %e, thread = %thread_name, "Failed to close thread");
                             }

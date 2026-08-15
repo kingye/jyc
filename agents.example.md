@@ -1,11 +1,11 @@
-# JYC Self-Bootstrapping Thread
+# JYC Self-Bootstrapping Topic
 
-Copy this file to your thread workspace directory as `AGENTS.md` and
+Copy this file to your topic workspace directory as `AGENTS.md` and
 uncomment the environment section that matches your deployment.
 
 ## Setup
 
-1. Clone the jyc repository into your thread workspace (if not already present):
+1. Clone the jyc repository into your topic workspace (if not already present):
    ```bash
    git clone https://github.com/kingye/jyc.git jyc
    ```

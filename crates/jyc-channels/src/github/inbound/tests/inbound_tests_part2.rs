@@ -659,7 +659,7 @@ fn test_ci_failure_message_routing() {
         serde_json::Value::String("completed".to_string()),
     );
 
-    let name = GithubMatcher.derive_thread_name(&msg, &[], None);
+    let name = GithubMatcher.derive_topic_name(&msg, &[], None);
     assert_eq!(name, "pr-43");
 
     // CI failure with developer pattern match should also route to pr-{N}
@@ -668,7 +668,7 @@ fn test_ci_failure_message_routing() {
         channel: "github".to_string(),
         matches: HashMap::new(),
     };
-    let name_with_pattern = GithubMatcher.derive_thread_name(&msg, &[], Some(&pm));
+    let name_with_pattern = GithubMatcher.derive_topic_name(&msg, &[], Some(&pm));
     assert_eq!(name_with_pattern, "pr-43");
 }
 
@@ -752,15 +752,15 @@ fn test_safe_head_sha_truncation() {
     assert_eq!(result3, "");
 }
 
-// --- scan_active_pr_threads tests ---
+// --- scan_active_pr_topics tests ---
 
 #[test]
-fn test_scan_active_pr_threads_empty_workspace() {
+fn test_scan_active_pr_topics_empty_workspace() {
     let tmpdir = tempfile::tempdir().unwrap();
     let config = make_ci_test_config();
     let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
 
-    let result = adapter.scan_active_pr_threads();
+    let result = adapter.scan_active_pr_topics();
     assert!(
         result.is_empty(),
         "should return empty set when workspace dir does not exist"
@@ -768,15 +768,15 @@ fn test_scan_active_pr_threads_empty_workspace() {
 }
 
 #[test]
-fn test_scan_active_pr_threads_with_pr_dirs() {
+fn test_scan_active_pr_topics_with_pr_dirs() {
     let tmpdir = tempfile::tempdir().unwrap();
     let config = make_ci_test_config();
-    // Inject a reviewer pattern with `thread_prefix = "review-pr"` so the
+    // Inject a reviewer pattern with `topic_prefix = "review-pr"` so the
     // scan recognizes `review-pr-{N}` directories. Without the pattern,
     // only the default `pr-{N}` prefix is recognized.
     let reviewer_pattern = ChannelPattern {
         name: "reviewer".to_string(),
-        thread_prefix: Some("review-pr".to_string()),
+        topic_prefix: Some("review-pr".to_string()),
         rules: PatternRules {
             github_type: Some(vec!["pull_request".to_string()]),
             ..Default::default()
@@ -791,7 +791,7 @@ fn test_scan_active_pr_threads_with_pr_dirs() {
     std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
     std::fs::create_dir_all(workspace.join("issue-5")).unwrap();
 
-    let result = adapter.scan_active_pr_threads();
+    let result = adapter.scan_active_pr_topics();
     assert_eq!(result.len(), 2);
     assert!(result.contains(&42));
     assert!(result.contains(&43));
@@ -799,16 +799,16 @@ fn test_scan_active_pr_threads_with_pr_dirs() {
 }
 
 #[test]
-fn test_scan_active_pr_threads_review_prefix_legacy_fallback() {
-    // A pattern named "reviewer" without an explicit `thread_prefix` still
+fn test_scan_active_pr_topics_review_prefix_legacy_fallback() {
+    // A pattern named "reviewer" without an explicit `topic_prefix` still
     // contributes `review-pr` to the recognized PR prefix set, mirroring
-    // the legacy fallback in derive_thread_name. This keeps disk scans
+    // the legacy fallback in derive_topic_name. This keeps disk scans
     // consistent for existing deployments that haven't migrated yet.
     let tmpdir = tempfile::tempdir().unwrap();
     let config = make_ci_test_config();
     let reviewer_pattern = ChannelPattern {
         name: "reviewer".to_string(),
-        // No thread_prefix.
+        // No topic_prefix.
         rules: PatternRules {
             github_type: Some(vec!["pull_request".to_string()]),
             ..Default::default()
@@ -822,16 +822,16 @@ fn test_scan_active_pr_threads_review_prefix_legacy_fallback() {
     std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
     std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
 
-    let result = adapter.scan_active_pr_threads();
+    let result = adapter.scan_active_pr_topics();
     assert_eq!(result.len(), 2);
     assert!(result.contains(&42));
     assert!(result.contains(&43));
 }
 
 #[test]
-fn test_scan_active_pr_threads_review_prefix_unknown_pattern_ignored() {
+fn test_scan_active_pr_topics_review_prefix_unknown_pattern_ignored() {
     // The legacy fallback is keyed on the pattern name "reviewer" only.
-    // For any other pattern name without `thread_prefix`, `review-pr-{N}`
+    // For any other pattern name without `topic_prefix`, `review-pr-{N}`
     // dirs are not recognized.
     let tmpdir = tempfile::tempdir().unwrap();
     let config = make_ci_test_config();
@@ -850,14 +850,14 @@ fn test_scan_active_pr_threads_review_prefix_unknown_pattern_ignored() {
     std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
     std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
 
-    let result = adapter.scan_active_pr_threads();
+    let result = adapter.scan_active_pr_topics();
     assert_eq!(result.len(), 1);
     assert!(result.contains(&42));
     assert!(!result.contains(&43));
 }
 
 #[test]
-fn test_scan_active_pr_threads_non_numeric_suffix() {
+fn test_scan_active_pr_topics_non_numeric_suffix() {
     let tmpdir = tempfile::tempdir().unwrap();
     let config = make_ci_test_config();
     let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
@@ -865,18 +865,18 @@ fn test_scan_active_pr_threads_non_numeric_suffix() {
     let workspace = tmpdir.path().join("test_ch").join("workspace");
     std::fs::create_dir_all(workspace.join("pr-abc")).unwrap();
 
-    let result = adapter.scan_active_pr_threads();
+    let result = adapter.scan_active_pr_topics();
     assert!(result.is_empty(), "non-numeric suffix should be skipped");
 }
 
 #[test]
-fn test_ci_polling_filters_by_active_threads() {
+fn test_ci_polling_filters_by_active_topics() {
     let tmpdir = tempfile::tempdir().unwrap();
     let config = make_ci_test_config();
     // Reviewer pattern is required for `review-pr-` to be recognized.
     let reviewer_pattern = ChannelPattern {
         name: "reviewer".to_string(),
-        thread_prefix: Some("review-pr".to_string()),
+        topic_prefix: Some("review-pr".to_string()),
         rules: PatternRules {
             github_type: Some(vec!["pull_request".to_string()]),
             ..Default::default()
@@ -890,13 +890,13 @@ fn test_ci_polling_filters_by_active_threads() {
     std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
     std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
 
-    let active_pr_threads = adapter.scan_active_pr_threads();
+    let active_pr_topics = adapter.scan_active_pr_topics();
 
     let open_pr_numbers: Vec<u64> = vec![42, 43, 44, 45];
 
     let polled: Vec<u64> = open_pr_numbers
         .iter()
-        .filter(|pr| active_pr_threads.contains(pr))
+        .filter(|pr| active_pr_topics.contains(pr))
         .copied()
         .collect();
 
@@ -905,23 +905,23 @@ fn test_ci_polling_filters_by_active_threads() {
     assert_eq!(
         sorted,
         vec![42, 43],
-        "only PRs with active thread dirs should be polled"
+        "only PRs with active topic dirs should be polled"
     );
 }
 
 #[test]
-fn test_ci_polling_no_active_threads_skips_all() {
+fn test_ci_polling_no_active_topics_skips_all() {
     let tmpdir = tempfile::tempdir().unwrap();
     let config = make_ci_test_config();
     let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
 
-    let active_pr_threads = adapter.scan_active_pr_threads();
+    let active_pr_topics = adapter.scan_active_pr_topics();
 
     let open_pr_numbers: Vec<u64> = vec![100, 200, 300];
 
     let polled: Vec<u64> = open_pr_numbers
         .iter()
-        .filter(|pr| active_pr_threads.contains(pr))
+        .filter(|pr| active_pr_topics.contains(pr))
         .copied()
         .collect();
 
@@ -931,13 +931,13 @@ fn test_ci_polling_no_active_threads_skips_all() {
     );
 }
 
-// --- scan_threads_for_number tests ---
+// --- scan_topics_for_number tests ---
 
 #[test]
-fn test_scan_threads_for_number_matches_all_prefixes() {
+fn test_scan_topics_for_number_matches_all_prefixes() {
     // Closing an issue/PR should enumerate every workspace dir whose name
     // ends in `-{N}`, regardless of which prefix patterns are configured.
-    // This is the channel-agnostic close-thread enumeration used by the
+    // This is the channel-agnostic close-topic enumeration used by the
     // GitHub close path.
     let tmpdir = tempfile::tempdir().unwrap();
     let config = make_ci_test_config();
@@ -952,22 +952,22 @@ fn test_scan_threads_for_number_matches_all_prefixes() {
     // unrelated one to confirm the strict suffix match.
     std::fs::create_dir_all(workspace.join("unrelated-43")).unwrap();
 
-    let mut result = adapter.scan_threads_for_number(42);
+    let mut result = adapter.scan_topics_for_number(42);
     result.sort();
     assert_eq!(result, vec!["issue-42".to_string(), "plan-42".to_string()]);
 }
 
 #[test]
-fn test_scan_threads_for_number_empty_workspace() {
+fn test_scan_topics_for_number_empty_workspace() {
     let tmpdir = tempfile::tempdir().unwrap();
     let config = make_ci_test_config();
     let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
-    let result = adapter.scan_threads_for_number(42);
+    let result = adapter.scan_topics_for_number(42);
     assert!(result.is_empty());
 }
 
 #[test]
-fn test_scan_threads_for_number_no_substring_false_match() {
+fn test_scan_topics_for_number_no_substring_false_match() {
     // A directory ending in -420 must NOT match number 42.
     let tmpdir = tempfile::tempdir().unwrap();
     let config = make_ci_test_config();
@@ -977,7 +977,7 @@ fn test_scan_threads_for_number_no_substring_false_match() {
     std::fs::create_dir_all(workspace.join("issue-420")).unwrap();
     std::fs::create_dir_all(workspace.join("issue-42")).unwrap();
 
-    let mut result = adapter.scan_threads_for_number(42);
+    let mut result = adapter.scan_topics_for_number(42);
     result.sort();
     assert_eq!(result, vec!["issue-42".to_string()]);
 }

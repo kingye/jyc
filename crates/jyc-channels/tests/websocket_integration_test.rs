@@ -29,7 +29,7 @@ async fn test_websocket_adapter_start_and_handle() {
             let _ = msg_tx.send(msg);
             Ok(())
         }),
-        on_thread_close: None,
+        on_topic_close: None,
         on_error: Box::new(|e| {
             tracing::error!("Inbound error: {e}");
         }),
@@ -76,13 +76,13 @@ async fn test_websocket_adapter_start_and_handle() {
     let ws_stream = tokio_tungstenite::connect_async(&url).await.unwrap().0;
     let (mut write, _read) = ws_stream.split();
 
-    // Send a message — the URL is /ws (no thread scope), so the message
-    // payload must include `thread`. The `list_patterns` and `subscribe`
+    // Send a message — the URL is /ws (no topic scope), so the message
+    // payload must include `topic`. The `list_patterns` and `subscribe`
     // commands have been replaced by REST endpoints; the WebSocket
     // protocol now only carries the live-message stream.
     let message_text = "Hello from test client";
     let message_msg = format!(
-        r#"{{"type":"message","thread":"general","text":"{}"}}"#,
+        r#"{{"type":"message","topic":"general","text":"{}"}}"#,
         message_text
     );
     write

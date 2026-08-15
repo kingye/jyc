@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{AgentResult, AgentService};
-use crate::thread_event_bus::ThreadEventBusRef;
+use crate::topic_event_bus::TopicEventBusRef;
 use jyc_types::InboundMessage;
 use jyc_types::QueueItem;
 
@@ -35,11 +35,11 @@ impl AgentService for StaticAgentService {
     async fn process(
         &self,
         _message: &InboundMessage,
-        _thread_name: &str,
-        _thread_path: &Path,
+        _topic_name: &str,
+        _topic_path: &Path,
         _message_dir: &str,
         _pending_rx: &mut mpsc::Receiver<QueueItem>,
-        _thread_cancel: CancellationToken,
+        _topic_cancel: CancellationToken,
     ) -> Result<AgentResult> {
         tracing::info!("Static reply generated");
 
@@ -49,23 +49,19 @@ impl AgentService for StaticAgentService {
         })
     }
 
-    async fn set_thread_event_bus(
-        &self,
-        _thread_name: &str,
-        _event_bus: Option<ThreadEventBusRef>,
-    ) {
+    async fn set_topic_event_bus(&self, _topic_name: &str, _event_bus: Option<TopicEventBusRef>) {
         // Static agent doesn't use event bus
     }
 
     async fn reset_session(
         &self,
-        thread_path: &Path,
-        _thread_name: &str,
+        topic_path: &Path,
+        _topic_name: &str,
         config: &jyc_types::channel::ResetCompressionConfig,
     ) -> Result<()> {
         use jyc_types::channel::CompressionMode;
 
-        let jyc_dir = thread_path.join(".jyc");
+        let jyc_dir = topic_path.join(".jyc");
         match config.mode {
             CompressionMode::None => {
                 tokio::fs::remove_file(jyc_dir.join("agent-context.json"))
@@ -111,7 +107,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -143,7 +139,7 @@ mod tests {
         let result = svc
             .process(
                 &msg,
-                "test_thread",
+                "test_topic",
                 Path::new("/tmp"),
                 "msg1",
                 &mut rx,
@@ -156,9 +152,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_thread_event_bus_does_nothing() {
+    async fn set_topic_event_bus_does_nothing() {
         let svc = StaticAgentService::new("reply");
-        svc.set_thread_event_bus("test", None).await;
+        svc.set_topic_event_bus("test", None).await;
         // No panic = success
     }
 }

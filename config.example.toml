@@ -5,22 +5,22 @@
 # Locations & layering (see README "Configuration & Data Layout"):
 #   L1 (global):  <config dir>/config.toml   (Linux/macOS: ~/.config/jyc/config.toml)
 #   L2 (workdir): <workdir>/config.toml      (--workdir, or platform data dir)
-#   L3 (thread):  <thread>/.jyc/config.toml  (restricted [agent] model overrides)
+#   L3 (topic):  <topic>/.jyc/config.toml  (restricted [agent] model overrides)
 # L2 is deep-merged over L1 (tables merge; arrays/scalars are replaced).
 
 [general]
-max_concurrent_threads = 3
-max_queue_size_per_thread = 10
+max_concurrent_topics = 3
+max_queue_size_per_topic = 10
 
 # --- Scheduler ---
 # Enable channel-agnostic scheduled jobs.
-# When enabled, the background JobScheduler scans all threads for due jobs
-# and fires them by injecting InboundMessage into the originating thread.
+# When enabled, the background JobScheduler scans all topics for due jobs
+# and fires them by injecting InboundMessage into the originating topic.
 # Default: enabled.
 # [scheduler]
 # enabled = true
 # scan_interval_secs = 60    # How often to scan for due jobs
-# max_jobs_per_thread = 10   # Max jobs per thread (prevents unbounded creation)
+# max_jobs_per_topic = 10   # Max jobs per topic (prevents unbounded creation)
 
 # --- Channel: jiny283 ---
 
@@ -59,7 +59,7 @@ folder = "INBOX"
 # small_model = "deepseek/deepseek-v4-flash"
 
 # Channel-level skills whitelist: when set, only these skills are loaded
-# for all threads in this channel. Pattern-level `skills` takes priority.
+# for all topics in this channel. Pattern-level `skills` takes priority.
 # skills = ["internal-comms", "coding-principles"]
 
 # Channel-level skills to disable: merged with pattern-level `disabled_skills`.
@@ -69,8 +69,8 @@ folder = "INBOX"
 name = "xxx"
 enabled = true
 
-# Initial agent mode for threads matching this pattern. Valid values: "plan", "build".
-# When set, threads matching this pattern start in the specified mode, unless the
+# Initial agent mode for topics matching this pattern. Valid values: "plan", "build".
+# When set, topics matching this pattern start in the specified mode, unless the
 # runtime `.jyc/mode-override` file takes priority. Default: "build".
 # mode = "plan"
 
@@ -101,13 +101,13 @@ enabled = true
 # Default: 0.95
 # auto_reset_threshold = 0.9
 
-# Custom filesystem path for the thread directory.
-# When set, the thread's working directory is this path instead of the
-# default <workspace>/<thread_name>/. Supports ~ expansion to $HOME.
-# Absolute paths are used as-is. The thread_name (or thread_prefix) still
+# Custom filesystem path for the topic directory.
+# When set, the topic's working directory is this path instead of the
+# default <workspace>/<topic_name>/. Supports ~ expansion to $HOME.
+# Absolute paths are used as-is. The topic_name (or topic_prefix) still
 # controls the logical routing key — this field only changes where files
 # are stored on disk.
-# thread_path = "~/my-project"
+# topic_path = "~/my-project"
 
 # Per-pattern skills whitelist: overrides channel-level `skills`.
 # When both are unset, all discovered skills are loaded.
@@ -117,9 +117,9 @@ enabled = true
 # disabled_skills = ["coding-principles"]
 
 # Per-pattern filesystem access whitelist.
-# Extends the agent's read/write boundary beyond the thread working directory.
+# Extends the agent's read/write boundary beyond the topic working directory.
 # Paths in `write` are also readable automatically.
-# Tilde (~) expands to $HOME. Relative paths resolve against the thread
+# Tilde (~) expands to $HOME. Relative paths resolve against the topic
 # working directory and are ignored (already accessible).
 #
 # [channels.jiny283.patterns.access]
@@ -221,10 +221,10 @@ heartbeat_interval_secs = 30
 name = "feishu_bot"
 enabled = true
 # Optional: pipe messages matching this pattern into another (websocket)
-# channel's thread. The message is re-targeted and routed through the target
+# channel's topic. The message is re-targeted and routed through the target
 # channel's own router (identical to a chat-pane message), so the target
-# pattern's thread_path/template/skills apply.
-# pipe = { channel = "local_dev", thread = "jyc" }
+# pattern's topic_path/template/skills apply.
+# pipe = { channel = "local_dev", topic = "jyc" }
 
 # Feishu-specific pattern matching (placeholder - will be implemented)
 [channels.feishu_bot.patterns.rules]
@@ -334,7 +334,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # --- Cost tracking ---
 #
 # When a model (or its provider) has `pricing` set, jyc computes the cost
-# of every LLM call and shows it in the dashboard and chat Thread Info
+# of every LLM call and shows it in the dashboard and chat Topic Info
 # panes as "Cost: ¥X session . ¥Y today" ($ for USD-priced models).
 # With no `pricing` configured,
 # no cost is computed and the row is hidden.
@@ -363,11 +363,11 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # # `currency = "CNY"` is the default and may be omitted; shown here for clarity.
 # pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_million = 0.5, currency = "CNY" }
 #
-# Two figures are tracked per thread:
+# Two figures are tracked per topic:
 #   - session: resets when the agent session resets (context auto-reset,
 #     /reset, or a model switch to a smaller context window)
 #   - today:   durable UTC-day total, appended per call to
-#     <thread>/.jyc/bill-YYYY-MM-DD.jsonl and never reset or truncated
+#     <topic>/.jyc/bill-YYYY-MM-DD.jsonl and never reset or truncated
 
 # --- Agent Vision Fallback ---
 #
@@ -460,7 +460,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 
 # Externally-reachable base URL of the inspect server, used for any link that
 # leaves the server — currently the share links returned by the jyc_publish_file
-# tool and the /exchange command (/exchange/<channel>/<thread>/<name>?token=).
+# tool and the /exchange command (/exchange/<channel>/<topic>/<name>?token=).
 # Must include the scheme; a port and a subpath are allowed:
 #   "https://jyc.example.com"  "http://192.168.1.50:9876"  "https://example.com/jyc"
 #
@@ -475,7 +475,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # command that appears in `/?` and the dashboard command popup (press `/`).
 #
 # Invoking the command:
-#   1. switches the thread to `mode` (when set; `plan` or `build`),
+#   1. switches the topic to `mode` (when set; `plan` or `build`),
 #   2. tells the agent which `skills` to use (the agent already receives
 #      every discovered skill's path and description, so naming them is
 #      enough for it to read the right SKILL.md),
@@ -519,7 +519,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # name = "jyc_reply"
 # type = "local"
 # command = ["jyc", "mcp-reply-tool"]
-# # environment = { "JYC_THREAD_DIR" = "/path/to/thread" }
+# # environment = { "JYC_THREAD_DIR" = "/path/to/topic" }
 
 # [[mcps]]
 # name = "invoice"
@@ -545,10 +545,10 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #
 # # --- Per-Pattern MCP Configuration ---
 # # You can also configure MCP servers per pattern, overriding the global `[[mcps]]`
-# # list for threads matching that pattern. This allows different patterns to use
+# # list for topics matching that pattern. This allows different patterns to use
 # # different tools, credentials, and remote endpoints.
 # #
-# # When a pattern has `mcps` set, only those MCP servers are loaded for threads
+# # When a pattern has `mcps` set, only those MCP servers are loaded for topics
 # # matching that pattern. When `mcps` is not set (default), the global `[[mcps]]`
 # # list is used for backward compatibility. Set `mcps = []` to disable all MCP
 # # tools for a specific pattern.
@@ -579,7 +579,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # enabled = true
 # role = "Planner"
 # template = "gitee-planner"
-# thread_prefix = "issue"
+# topic_prefix = "issue"
 #
 # [channels.my_gitee.patterns.rules]
 # github_type = ["issue"]
@@ -590,7 +590,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # enabled = true
 # role = "Developer"
 # template = "gitee-developer"
-# thread_prefix = "pr"
+# topic_prefix = "pr"
 #
 # [channels.my_gitee.patterns.rules]
 # github_type = ["pull_request"]
@@ -602,7 +602,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # enabled = true
 # role = "Reviewer"
 # template = "gitee-reviewer"
-# thread_prefix = "review-pr"
+# topic_prefix = "review-pr"
 #
 # [channels.my_gitee.patterns.rules]
 # github_type = ["pull_request"]
@@ -626,34 +626,34 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # [channels.my_repo.footer]
 # enabled = false
 #
-# # Thread naming
+# # Topic naming
 # # -------------
-# # By default, GitHub threads are named:
+# # By default, GitHub topics are named:
 # #     issue-{N}      for issue events
 # #     pr-{N}         for pull_request events
 # # When two patterns can match the same issue/PR (e.g. distinguished by labels),
-# # they MUST declare distinct `thread_prefix` values — otherwise both patterns
+# # they MUST declare distinct `topic_prefix` values — otherwise both patterns
 # # route to the same workspace dir, and the second pattern's template /
 # # AGENTS.md is silently dropped (jyc will refuse and log a TemplateMismatch
-# # error if this happens). `thread_prefix` is combined with the GitHub number
+# # error if this happens). `topic_prefix` is combined with the GitHub number
 # # as `{prefix}-{N}`. Omit it to keep the default behavior.
 #
 # # Pattern: Issues with 'feature-plan' label → High-Level Planner (product manager perspective)
-# # Lives in workspace/plan-{N}/ in parallel with any later detail-planner thread,
-# # so the detail-planner can read this thread's output via the filesystem.
+# # Lives in workspace/plan-{N}/ in parallel with any later detail-planner topic,
+# # so the detail-planner can read this topic's output via the filesystem.
 # [[channels.my_repo.patterns]]
 # name = "high-level-planner"
 # enabled = true
 # role = "High-Level Planner"
 # template = "github-high-level-planner"
-# thread_prefix = "plan"               # → workspace/plan-42/
+# topic_prefix = "plan"               # → workspace/plan-42/
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["issue"]
 # labels = ["feature-plan"]
 #
 # # Pattern: Issues without 'feature-plan' label → Detail-Level Planner (technical architect)
-# # Uses the default `issue-{N}` thread name (no prefix needed).
+# # Uses the default `issue-{N}` topic name (no prefix needed).
 # # The exclude_labels rule ensures this pattern does NOT fire while High-Level Planner is active.
 # [[channels.my_repo.patterns]]
 # name = "detail-planner"
@@ -666,7 +666,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # exclude_labels = ["feature-plan"]
 #
 # # Pattern: PRs with 'ready-for-dev' label → Developer agent (auto-trigger)
-# # Uses the default `pr-{N}` thread name.
+# # Uses the default `pr-{N}` topic name.
 # [[channels.my_repo.patterns]]
 # name = "developer"
 # enabled = true
@@ -689,7 +689,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # enabled = true
 # role = "Reviewer"
 # template = "github-reviewer"
-# thread_prefix = "review-pr"          # → workspace/review-pr-43/
+# topic_prefix = "review-pr"          # → workspace/review-pr-43/
 # repo_group = "pr"                    # Share repo clone with developer pattern
 #
 # [channels.my_repo.patterns.rules]
@@ -723,7 +723,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # --- Per-Pattern MCP Examples ---
 # # Each pattern can declare its own `mcps` list to use different MCP tools,
 # # different credentials, or different remote endpoints. When set, only these
-# # MCP servers are loaded for threads matching this pattern.
+# # MCP servers are loaded for topics matching this pattern.
 #
 # # Pattern: Invoice processing with dedicated local MCP
 # # [[channels.my_repo.patterns]]
@@ -765,13 +765,13 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # "X-Organization" = "my-org"
 #
 # # --- Channel-Level MCP Example ---
-# # Channel-level MCPs are loaded for all threads in the channel.
+# # Channel-level MCPs are loaded for all topics in the channel.
 # # Pattern-level mcps overrides channel-level.
 # #
 # [channels.my_wecomkf]
 # type = "wecomkf"
 # #
-# # Channel-level MCP: all threads in this channel share these tools
+# # Channel-level MCP: all topics in this channel share these tools
 # # [[channels.my_wecomkf.mcps]]
 # # name = "kf_helper"
 # # type = "local"
@@ -828,7 +828,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # --- Channel: my_wechat_bot ---
 # # WeChat channel via OpenILink WebSocket Bridge
 # # Both inbound and outbound share the same WebSocket connection.
-# # One bot = one fixed thread (thread name = channel name).
+# # One bot = one fixed topic (topic name = channel name).
 # # v1 supports text-only messages.
 #
 # [channels.my_wechat_bot]
@@ -906,7 +906,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # - Receives kf_msg_or_event notifications via the shared webhook server
 # # - Pulls messages via kf/sync_msg API (cursor-based incremental sync)
 # # - Sends replies via kf/send_msg API
-# # - One thread per customer per KF account
+# # - One topic per customer per KF account
 # #   ({channel_name}_{open_kfid}_{external_userid})
 # #
 # # Prerequisites:
@@ -993,30 +993,30 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # name = "general"
 # enabled = true
 
-# --- Per-Thread MCP Overrides (L3) ---
+# --- Per-Topic MCP Overrides (L3) ---
 #
-# Place a `<thread_path>/.jyc/config.toml` to add or replace MCPs for a
-# specific thread (e.g. one GitHub PR, one WeCom conversation). Layered on
+# Place a `<topic_path>/.jyc/config.toml` to add or replace MCPs for a
+# specific topic (e.g. one GitHub PR, one WeCom conversation). Layered on
 # top of the pattern → channel → global chain. The same `[agent] model`
 # overrides also live here.
 #
-# Default merge = ADDITIVE: thread MCPs union with the inherited set.
-# Same `name` → thread version wins (last-writer-wins on the union).
+# Default merge = ADDITIVE: topic MCPs union with the inherited set.
+# Same `name` → topic version wins (last-writer-wins on the union).
 #
 # Opt-in REPLACE: set `mcps_replace = true` to fully drop the inherited
-# MCPs and use only the thread's MCP list. Useful when a thread should
+# MCPs and use only the topic's MCP list. Useful when a topic should
 # be isolated from the pattern's tools.
 #
-# Example thread config:
+# Example topic config:
 #
-#   # /<thread>/.jyc/config.toml
+#   # /<topic>/.jyc/config.toml
 #
 #   [agent]
 #   model = "anthropic/claude-opus-4-7"
 #
-#   # Default: additive. Adds a thread-only MCP without dropping inherited ones.
+#   # Default: additive. Adds a topic-only MCP without dropping inherited ones.
 #   [[mcps]]
-#   name = "thread-local"
+#   name = "topic-local"
 #   type = "local"
 #   command = ["./local-mcp"]
 #
@@ -1029,8 +1029,8 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #   # url = "https://example.com/mcp"
 #
 # Note: parse errors in this file are logged at runtime and ignored
-# (a broken thread config must not crash the agent). After starting
-# `jyc serve`, check logs for `Ignoring invalid thread config`
+# (a broken topic config must not crash the agent). After starting
+# `jyc serve`, check logs for `Ignoring invalid topic config`
 # warnings to confirm parsing succeeded. Semantic issues (e.g. bad
 # MCP command path) still surface at MCP-load time as normal errors.
 

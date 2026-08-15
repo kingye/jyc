@@ -111,7 +111,7 @@ pub struct AppConfig {
 
     /// Scheduler configuration for channel-agnostic scheduled jobs.
     /// When enabled, a background JobScheduler runs alongside the monitor
-    /// and fires due jobs by injecting InboundMessage into ThreadManager.
+    /// and fires due jobs by injecting InboundMessage into TopicManager.
     #[serde(default)]
     pub scheduler: SchedulerConfig,
 
@@ -122,7 +122,7 @@ pub struct AppConfig {
 
 /// A user-defined slash command declared in `config.toml` as `[[commands]]`.
 ///
-/// Invoking `/<name>` switches the thread to `mode` (when set), points the
+/// Invoking `/<name>` switches the topic to `mode` (when set), points the
 /// agent at `skills`, and appends `user_prompt` to the message body. The
 /// command also appears in `/?` and the dashboard command popup.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -135,7 +135,7 @@ pub struct CustomCommand {
     pub description: String,
 
     /// Mode to switch to before running: `plan` or `build`.
-    /// When unset, the current thread mode is left unchanged.
+    /// When unset, the current topic mode is left unchanged.
     #[serde(default)]
     pub mode: Option<String>,
 
@@ -176,20 +176,20 @@ pub const BUILTIN_COMMAND_NAMES: &[&str] = &[
 /// General application settings.
 #[derive(Debug, Clone, Deserialize)]
 pub struct GeneralConfig {
-    /// Max concurrent thread workers (default: 3)
+    /// Max concurrent topic workers (default: 3)
     #[serde(default = "default_3")]
-    pub max_concurrent_threads: usize,
+    pub max_concurrent_topics: usize,
 
-    /// Max queued messages per thread (default: 10)
+    /// Max queued messages per topic (default: 10)
     #[serde(default = "default_10")]
-    pub max_queue_size_per_thread: usize,
+    pub max_queue_size_per_topic: usize,
 }
 
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
-            max_concurrent_threads: 3,
-            max_queue_size_per_thread: 10,
+            max_concurrent_topics: 3,
+            max_queue_size_per_topic: 10,
         }
     }
 }
@@ -264,7 +264,7 @@ pub struct ChannelConfig {
 
     /// Channel-level MCP server configurations.
     ///
-    /// When set, these MCPs are loaded for all threads in this channel.
+    /// When set, these MCPs are loaded for all topics in this channel.
     /// Pattern-level `mcps` takes priority over this. When both are unset,
     /// falls back to global `[[mcps]]`.
     #[serde(default)]
@@ -288,7 +288,7 @@ pub struct ChannelConfig {
     /// Channel-level skills whitelist.
     ///
     /// When set, only skills whose names appear in this list are loaded
-    /// for all threads in this channel. Pattern-level `skills` takes priority.
+    /// for all topics in this channel. Pattern-level `skills` takes priority.
     /// When both are unset, all discovered skills are loaded.
     #[serde(default)]
     pub skills: Option<Vec<String>>,
@@ -643,7 +643,7 @@ pub struct InspectConfig {
 
     /// Externally-reachable base URL of the inspect server (scheme + host,
     /// optionally port and subpath), used to build links that leave the
-    /// server — currently `/exchange/<channel>/<thread>/<name>` share links.
+    /// server — currently `/exchange/<channel>/<topic>/<name>` share links.
     /// Required behind a reverse proxy; falls back to `http://<bind>`
     /// (wildcard host replaced by the primary LAN IP) when unset.
     #[serde(default)]
@@ -726,7 +726,7 @@ fn default_inspect_bind() -> String {
 /// Scheduler configuration for channel-agnostic scheduled jobs.
 ///
 /// Controls the background JobScheduler that fires due jobs by injecting
-/// InboundMessage into the originating thread via ThreadManager.
+/// InboundMessage into the originating topic via TopicManager.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SchedulerConfig {
     /// Whether the job scheduler is enabled (default: true).
@@ -737,9 +737,9 @@ pub struct SchedulerConfig {
     #[serde(default = "default_60")]
     pub scan_interval_secs: u64,
 
-    /// Maximum number of jobs per thread (default: 10).
+    /// Maximum number of jobs per topic (default: 10).
     #[serde(default = "default_10_jobs")]
-    pub max_jobs_per_thread: usize,
+    pub max_jobs_per_topic: usize,
 }
 
 impl Default for SchedulerConfig {
@@ -747,7 +747,7 @@ impl Default for SchedulerConfig {
         Self {
             enabled: true,
             scan_interval_secs: 60,
-            max_jobs_per_thread: 10,
+            max_jobs_per_topic: 10,
         }
     }
 }
@@ -846,7 +846,7 @@ pub struct InboundAttachmentConfig {
     pub max_per_message: Option<usize>,
 
     /// Path to save downloaded attachments (relative to workspace or absolute)
-    /// If not set, attachments will be saved to thread directory
+    /// If not set, attachments will be saved to topic directory
     pub save_path: Option<String>,
 }
 

@@ -4,7 +4,7 @@ use crate::config::load_config_from_str;
 fn valid_config_toml() -> &'static str {
     r#"
 [general]
-max_concurrent_threads = 3
+max_concurrent_topics = 3
 
 [channels.work]
 type = "email"
@@ -436,7 +436,7 @@ mode = "agent"
 fn test_unified_attachment_config() {
     let toml = r#"
 [general]
-max_concurrent_threads = 3
+max_concurrent_topics = 3
 
 [channels.work]
 type = "email"
@@ -502,7 +502,7 @@ max_per_message = 5
 fn test_invalid_unified_attachment_config() {
     let toml = r#"
 [general]
-max_concurrent_threads = 3
+max_concurrent_topics = 3
 
 [channels.work]
 type = "email"
@@ -550,7 +550,7 @@ max_per_message = 5
 fn test_wecom_valid_config_passes() {
     let toml = r#"
 [general]
-max_concurrent_threads = 3
+max_concurrent_topics = 3
 
 [channels.wecom_bot]
 type = "wecom"

@@ -7,7 +7,7 @@ use anyhow::Result;
 ///
 /// Environment:
 /// - `JYC_ROOT`: path to the project root (for config loading)
-/// - `cwd`: set by agent to the thread directory
+/// - `cwd`: set by agent to the topic directory
 pub async fn run() -> Result<()> {
     jyc_mcp::reply_tool::run_server().await
 }

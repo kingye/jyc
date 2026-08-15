@@ -3,16 +3,16 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
-use crate::thread_manager::ThreadManager;
+use crate::topic_manager::TopicManager;
 
-/// /close command — close and delete thread directory.
+/// /close command — close and delete topic directory.
 pub struct CloseCommandHandler {
-    thread_manager: Arc<ThreadManager>,
+    topic_manager: Arc<TopicManager>,
 }
 
 impl CloseCommandHandler {
-    pub fn new(thread_manager: Arc<ThreadManager>) -> Self {
-        Self { thread_manager }
+    pub fn new(topic_manager: Arc<TopicManager>) -> Self {
+        Self { topic_manager }
     }
 
     /// Returns `true` if the args contain an explicit confirmation flag.
@@ -31,36 +31,36 @@ impl CommandHandler for CloseCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Close and delete this thread (requires --confirm or -y)"
+        "Close and delete this topic (requires --confirm or -y)"
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let thread_name = context
-            .thread_path
+        let topic_name = context
+            .topic_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("");
 
-        if thread_name.is_empty() {
+        if topic_name.is_empty() {
             return Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "Failed to determine thread name from path: {:?}",
-                    context.thread_path
+                    "Failed to determine topic name from path: {:?}",
+                    context.topic_path
                 ),
-                error: Some("Thread directory name could not be extracted".into()),
+                error: Some("Topic directory name could not be extracted".into()),
                 append_body: None,
             });
         }
 
-        // Require explicit confirmation to prevent accidental thread deletion.
+        // Require explicit confirmation to prevent accidental topic deletion.
         // Accept `--confirm` or `-y`. Plain `/close` returns a warning instead
         // of performing the destructive action.
         if !Self::is_confirmed(&context.args) {
             return Ok(CommandResult {
                 success: true,
                 message: format!(
-                    "⚠️  /close will PERMANENTLY delete thread '{thread_name}' and all its data \
+                    "⚠️  /close will PERMANENTLY delete topic '{topic_name}' and all its data \
                      (chat history, AI session, attachments). This cannot be undone.\n\
                      \n\
                      To proceed, send: /close -y  (or /close --confirm)"
@@ -70,20 +70,20 @@ impl CommandHandler for CloseCommandHandler {
             });
         }
 
-        match self.thread_manager.close_thread(thread_name).await {
+        match self.topic_manager.close_topic(topic_name).await {
             Ok(()) => {
-                tracing::info!(thread = %thread_name, "Thread closed successfully via /close command");
+                tracing::info!(topic = %topic_name, "Topic closed successfully via /close command");
                 Ok(CommandResult {
                     success: true,
-                    message: format!("Thread '{}' closed and directory deleted.", thread_name),
+                    message: format!("Topic '{}' closed and directory deleted.", topic_name),
                     error: None,
                     append_body: None,
                 })
             }
             Err(e) => Ok(CommandResult {
                 success: false,
-                message: format!("Failed to close thread '{}'", thread_name),
-                error: Some(e.context("close_thread failed").to_string()),
+                message: format!("Failed to close topic '{}'", topic_name),
+                error: Some(e.context("close_topic failed").to_string()),
                 append_body: None,
             }),
         }

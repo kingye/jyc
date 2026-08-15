@@ -7,7 +7,7 @@ use rmcp::{
 };
 use std::path::{Path, PathBuf};
 
-use super::context::{load_reply_context, resolve_thread_dir};
+use super::context::{load_reply_context, resolve_topic_dir};
 
 const EXCLUDED_DIRS: &[&str] = &[".jyc"];
 
@@ -48,7 +48,7 @@ impl McpLogger {
 pub struct ReplyMessageParams {
     #[schemars(description = "The reply text to send")]
     pub message: String,
-    #[schemars(description = "Optional list of filenames within the thread directory to attach")]
+    #[schemars(description = "Optional list of filenames within the topic directory to attach")]
     pub attachments: Option<Vec<String>>,
 }
 
@@ -65,7 +65,7 @@ impl ReplyToolHandler {
         &self,
         Parameters(params): Parameters<ReplyMessageParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let cwd = resolve_thread_dir();
+        let cwd = resolve_topic_dir();
         let logger = McpLogger::new(&cwd);
 
         logger.log(
@@ -131,8 +131,8 @@ async fn handle_reply(
     logger.log(
         "INFO",
         &format!(
-            "Context loaded: channel={}, thread={}, messageDir={}, model={:?}, mode={:?}",
-            ctx.channel, ctx.thread_name, ctx.incoming_message_dir, ctx.model, ctx.mode
+            "Context loaded: channel={}, topic={}, messageDir={}, model={:?}, mode={:?}",
+            ctx.channel, ctx.topic_name, ctx.incoming_message_dir, ctx.model, ctx.mode
         ),
     );
 
@@ -141,12 +141,12 @@ async fn handle_reply(
         anyhow::bail!("Message cannot be empty");
     }
 
-    // 3. Thread path = cwd
-    let thread_path = cwd;
+    // 3. Topic path = cwd
+    let topic_path = cwd;
 
     // 4. Validate attachments
     let validated_attachments = if let Some(filenames) = attachments {
-        validate_attachments(thread_path, filenames, logger)?
+        validate_attachments(topic_path, filenames, logger)?
     } else {
         vec![]
     };
@@ -154,7 +154,7 @@ async fn handle_reply(
     // 5. Write reply.md so the background delivery watcher can deliver immediately
     //    (without waiting for the SSE stream to complete).
     //    The watcher checks for both reply-sent.flag and reply.md.
-    let jyc_dir = thread_path.join(".jyc");
+    let jyc_dir = topic_path.join(".jyc");
     tokio::fs::create_dir_all(&jyc_dir).await.ok();
     tokio::fs::write(jyc_dir.join("reply.md"), message)
         .await
@@ -201,28 +201,28 @@ async fn handle_reply(
 
 /// Validate attachment filenames.
 fn validate_attachments(
-    thread_path: &Path,
+    topic_path: &Path,
     filenames: &[String],
     logger: &McpLogger,
 ) -> Result<Vec<String>> {
     let mut valid = Vec::new();
 
     for filename in filenames {
-        let path = thread_path.join(filename);
+        let path = topic_path.join(filename);
         let canonical = path
             .canonicalize()
             .map_err(|_| anyhow::anyhow!("attachment not found: {filename}"))?;
 
-        let thread_canonical = thread_path
+        let topic_canonical = topic_path
             .canonicalize()
-            .unwrap_or_else(|_| thread_path.to_path_buf());
+            .unwrap_or_else(|_| topic_path.to_path_buf());
 
-        if !canonical.starts_with(&thread_canonical) {
-            anyhow::bail!("attachment path escapes thread directory: {filename}");
+        if !canonical.starts_with(&topic_canonical) {
+            anyhow::bail!("attachment path escapes topic directory: {filename}");
         }
 
         let relative = canonical
-            .strip_prefix(&thread_canonical)
+            .strip_prefix(&topic_canonical)
             .unwrap_or(canonical.as_path());
         for component in relative.components() {
             let part = component.as_os_str().to_string_lossy();

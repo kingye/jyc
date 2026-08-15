@@ -54,15 +54,15 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
     // General
-    if config.general.max_concurrent_threads == 0 {
+    if config.general.max_concurrent_topics == 0 {
         errors.push(ValidationError {
-            path: "general.max_concurrent_threads".into(),
+            path: "general.max_concurrent_topics".into(),
             message: "must be at least 1".into(),
         });
     }
-    if config.general.max_queue_size_per_thread == 0 {
+    if config.general.max_queue_size_per_topic == 0 {
         errors.push(ValidationError {
-            path: "general.max_queue_size_per_thread".into(),
+            path: "general.max_queue_size_per_topic".into(),
             message: "must be at least 1".into(),
         });
     }

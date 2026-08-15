@@ -9,14 +9,14 @@
 //! Kept module-private (`pub(super)`) — these are TUI internals, not part
 //! of the dashboard's public surface.
 
-use jyc_types::ThreadSummary;
+use jyc_types::TopicSummary;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-/// Compute the input-token percentage for a thread. Returns `None` when
+/// Compute the input-token percentage for a topic. Returns `None` when
 /// either bound is missing or `max` is zero. Uses checked arithmetic to
 /// avoid wrapping when `cur` is very large.
-pub(super) fn input_token_pct(t: &ThreadSummary) -> Option<u32> {
+pub(super) fn input_token_pct(t: &TopicSummary) -> Option<u32> {
     match (t.context_input_tokens, t.max_tokens) {
         (Some(cur), Some(max)) if max > 0 => Some(
             cur.checked_mul(100)
@@ -29,7 +29,7 @@ pub(super) fn input_token_pct(t: &ThreadSummary) -> Option<u32> {
 
 /// Append the "Tokens: X / Y (Z%)" row to `spans`. Pushes nothing when
 /// `context_input_tokens` or `max_tokens` is missing.
-pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
+pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &TopicSummary) {
     if let (Some(cur), Some(max)) = (t.context_input_tokens, t.max_tokens) {
         let pct = input_token_pct(t).unwrap_or(0);
         spans.push(Span::styled(
@@ -42,7 +42,7 @@ pub(super) fn push_tokens_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
 
 /// Append the "Output: N" row to `spans`. Pushes nothing when
 /// `output_tokens` is missing.
-pub(super) fn push_output_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
+pub(super) fn push_output_span(spans: &mut Vec<Span>, t: &TopicSummary) {
     if let Some(out) = t.output_tokens {
         spans.push(Span::styled(
             "Output: ",
@@ -56,7 +56,7 @@ pub(super) fn push_output_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
 /// `total_input_tokens` is missing. Distinct from `push_tokens_span`
 /// (which shows the current context size); this shows the lifetime sum
 /// across all LLM calls in the session.
-pub(super) fn push_total_input_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
+pub(super) fn push_total_input_span(spans: &mut Vec<Span>, t: &TopicSummary) {
     if let Some(total) = t.total_input_tokens {
         spans.push(Span::styled(
             "Total input: ",
@@ -71,9 +71,9 @@ pub(super) fn push_total_input_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
 /// but for prompt-cache hits — the running sum of every LLM call's
 /// cache-hit tokens (= tokens served from the provider's prompt cache
 /// rather than re-billed as fresh input). Not shown in the dashboard
-/// overview list — only the chat info pane and dashboard thread info
+/// overview list — only the chat info pane and dashboard topic info
 /// area call this.
-pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
+pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &TopicSummary) {
     if let Some(cache_hit) = t.total_cache_hit_tokens {
         spans.push(Span::styled(
             "Cache hits: ",
@@ -87,10 +87,10 @@ pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
 /// `total_cache_creation_tokens` is missing. Anthropic is the only
 /// provider that reports writes separately from reads; for every other
 /// vendor this stays `None` and the row never renders. Sits next to
-/// [`push_cache_hit_span`] in the chat info pane and dashboard thread
+/// [`push_cache_hit_span`] in the chat info pane and dashboard topic
 /// info area so users with cache-heavy Anthropic workflows can see
 /// the write volume that the cache-creation premium rate applies to.
-pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
+pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicSummary) {
     if let Some(cache_creation) = t.total_cache_creation_tokens {
         spans.push(Span::styled(
             "Cache create: ",
@@ -118,14 +118,14 @@ fn format_amount(amount: f64, currency: &str) -> String {
 }
 
 /// Append the "Cost: $X session · $Y today" row to `spans`. Pushes
-/// nothing when the thread has no cost data (model without configured
-/// `pricing`), so an unpriced thread shows no row at all rather than a
+/// nothing when the topic has no cost data (model without configured
+/// `pricing`), so an unpriced topic shows no row at all rather than a
 /// misleading zero.
 ///
 /// `session` resets with the agent session; `today` is the durable
 /// per-day total from the billing ledger — they differ after a reset by
 /// design.
-pub(super) fn push_cost_span(spans: &mut Vec<Span>, t: &ThreadSummary) {
+pub(super) fn push_cost_span(spans: &mut Vec<Span>, t: &TopicSummary) {
     if let Some(ref c) = t.cost {
         spans.push(Span::styled(
             "Cost: ",
@@ -156,12 +156,12 @@ mod tests {
         total_input: Option<u64>,
         cache_hit: Option<u64>,
         cache_creation: Option<u64>,
-    ) -> ThreadSummary {
-        ThreadSummary {
+    ) -> TopicSummary {
+        TopicSummary {
             name: "t".into(),
             channel: "c".into(),
             pattern: None,
-            status: jyc_types::ThreadStatus::Idle,
+            status: jyc_types::TopicStatus::Idle,
             model: None,
             mode: None,
             branch: None,
@@ -174,7 +174,7 @@ mod tests {
             total_cache_creation_tokens: cache_creation,
             last_active_at: None,
             skills: vec![],
-            thread_path: None,
+            topic_path: None,
             cost: None,
         }
     }
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn push_cost_span_writes_session_and_today() {
         let mut t = summary_with(Some(100), Some(10000), Some(50), Some(720), Some(640), None);
-        t.cost = Some(jyc_types::ThreadCost {
+        t.cost = Some(jyc_types::TopicCost {
             session: 0.0521,
             today: 1.3057,
             currency: "USD".into(),
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn push_cost_span_uses_cny_symbol() {
         let mut t = summary_with(None, None, None, None, None, None);
-        t.cost = Some(jyc_types::ThreadCost {
+        t.cost = Some(jyc_types::TopicCost {
             session: 2.5,
             today: 10.0,
             currency: "CNY".into(),
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn push_cost_span_suffixes_unknown_currency() {
         let mut t = summary_with(None, None, None, None, None, None);
-        t.cost = Some(jyc_types::ThreadCost {
+        t.cost = Some(jyc_types::TopicCost {
             session: 1.0,
             today: 2.0,
             currency: "mixed".into(),
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn push_cost_span_keeps_sub_cent_precision() {
         let mut t = summary_with(None, None, None, None, None, None);
-        t.cost = Some(jyc_types::ThreadCost {
+        t.cost = Some(jyc_types::TopicCost {
             session: 0.0003,
             today: 0.0007,
             currency: "USD".into(),

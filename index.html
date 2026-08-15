@@ -231,9 +231,9 @@ footer{padding:52px 0 64px}
   <h1>Channel<br><em>Agnostic</em><span class="thin">AI Agent</span></h1>
   <p class="lede">
     Messaging channels are the interface. AI is the brain. JYC watches Email, GitHub,
-    Feishu, WeCom and more, routes each inbound message to a <b>per-thread worker</b>,
+    Feishu, WeCom and more, routes each inbound message to a <b>per-topic worker</b>,
     and lets an autonomous agent reply through the channel it came from &mdash;
-    keeping conversation context per thread across turns.
+    keeping conversation context per topic across turns.
   </p>
   <dl class="hero-strip">
     <div class="hs"><dt>Channels</dt><dd>9 <small>live</small></dd></div>
@@ -252,7 +252,7 @@ footer{padding:52px 0 64px}
     </ul></div>
     <div class="arrow"></div>
     <div class="node"><h3>Router</h3><ul>
-      <li>match_message()</li><li>derive_thread_name()</li><li>hot-reload patterns</li><li>ArcSwap&lt;AppConfig&gt;</li>
+      <li>match_message()</li><li>derive_topic_name()</li><li>hot-reload patterns</li><li>ArcSwap&lt;AppConfig&gt;</li>
     </ul></div>
     <div class="arrow"></div>
     <div class="node"><h3>Thread worker</h3><ul>
@@ -280,17 +280,17 @@ footer{padding:52px 0 64px}
       <h3>Two traits per channel</h3>
       <p>A new channel needs only <span class="mono" style="color:var(--amber)">InboundAdapter</span>
          and <span class="mono" style="color:var(--amber)">OutboundAdapter</span>.
-         Routing, threading, queueing, sessions and commands are inherited for free.</p>
+         Routing, topicing, queueing, sessions and commands are inherited for free.</p>
     </div>
   </div>
 </div></section>
 
 <section id="channels"><div class="wrap">
   <div class="shead rv"><span class="snum">02</span><h2>Channels</h2>
-    <p>Nine transports in production, each with its own threading model.</p></div>
+    <p>Nine transports in production, each with its own topicing model.</p></div>
   <div class="chgrid rv">
     <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>Email</h4><span class="ver">core</span></div>
-      <p>Full threading, attachments and HTML bodies. IMAP IDLE for push, polling as fallback.</p>
+      <p>Full topicing, attachments and HTML bodies. IMAP IDLE for push, polling as fallback.</p>
       <div class="proto"><span>IMAP</span><span>SMTP</span><span>TLS</span><span>OAuth2</span></div></div>
     <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>GitHub</h4><span class="ver">v0.1.10</span></div>
       <p>Issue and PR comments with label-based routing. Planner / Developer / Reviewer agents drive a full PR workflow.</p>
@@ -302,13 +302,13 @@ footer{padding:52px 0 64px}
       <p>Bot webhook inbound plus external-contact API outbound, with signature verification.</p>
       <div class="proto"><span>Webhook</span><span>AES-256-CBC</span><span>SHA1</span></div></div>
     <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>WeCom KF</h4><span class="ver">v0.3.10</span></div>
-      <p>Customer-service messaging via event notifications and message-sync pull. One thread per customer per account.</p>
+      <p>Customer-service messaging via event notifications and message-sync pull. One topic per customer per account.</p>
       <div class="proto"><span>Events</span><span>REST</span></div></div>
     <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>WeCom Robot</h4><span class="ver">v0.3.11</span></div>
       <p>Smart Robot over a persistent WebSocket with streaming replies and media upload.</p>
       <div class="proto"><span>WebSocket</span><span>streaming</span><span>media</span></div></div>
     <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>WeChat</h4><span class="ver">v0.3.9</span></div>
-      <p>Single-bot, single-thread messaging through the OpenILink bridge. Images, files, voice, video.</p>
+      <p>Single-bot, single-topic messaging through the OpenILink bridge. Images, files, voice, video.</p>
       <div class="proto"><span>WebSocket</span><span>bridge</span></div></div>
     <div class="ch"><div class="ch-top"><span class="dot live"></span><h4>Gitee</h4><span class="ver">v0.3.10</span></div>
       <p>The GitHub multi-agent workflow mirrored onto Gitee issues and pull requests.</p>
@@ -324,15 +324,15 @@ footer{padding:52px 0 64px}
 
 <section id="runtime"><div class="wrap">
   <div class="shead rv"><span class="snum">03</span><h2>Runtime Model</h2>
-    <p>Bounded concurrency, per-thread isolation, live observability.</p></div>
+    <p>Bounded concurrency, per-topic isolation, live observability.</p></div>
   <div class="duo rv">
     <div class="cell">
       <div class="sub">Concurrency</div>
       <h3>Semaphore-bounded workers</h3>
-      <p>The thread manager holds a tokio semaphore (default 3 permits). A new thread spawns a
+      <p>The topic manager holds a tokio semaphore (default 3 permits). A new topic spawns a
          task, acquires a permit, and drains its own bounded mpsc queue (default 10) one message
          at a time. Empty queue releases the permit and the task exits.</p>
-      <p>Messages within a thread are strictly serial &mdash; different threads run in parallel.
+      <p>Messages within a topic are strictly serial &mdash; different topics run in parallel.
          Live injection lets a new message reach an in-flight agent turn.</p>
     </div>
     <div class="cell">
@@ -346,8 +346,8 @@ footer{padding:52px 0 64px}
     <div class="cell">
       <div class="sub">Observability</div>
       <h3>Thread event bus &amp; TUI</h3>
-      <p>Each thread owns an isolated event bus; agent activity is converted into thread events and
-         streamed to the inspect server. The dashboard renders live threads, processing state,
+      <p>Each topic owns an isolated event bus; agent activity is converted into topic events and
+         streamed to the inspect server. The dashboard renders live topics, processing state,
          cost, git branch and changed files, with an embedded chat pane.</p>
     </div>
     <div class="cell">
@@ -365,10 +365,10 @@ footer{padding:52px 0 64px}
   <div class="duo rv">
     <div class="cell">
       <div class="sub">Three levels</div>
-      <h3>Global &rarr; workdir &rarr; thread</h3>
+      <h3>Global &rarr; workdir &rarr; topic</h3>
       <div class="layer"><span class="lv">L1</span><div class="layer-b"><strong>config dir</strong><span>shared config.toml, skills/, templates/</span></div></div>
-      <div class="layer"><span class="lv l2">L2</span><div class="layer-b"><strong>workdir / data root</strong><span>own config.toml plus all generated state per channel and thread</span></div></div>
-      <div class="layer"><span class="lv l3">L3</span><div class="layer-b"><strong>thread</strong><span>restricted model overrides, sessions, chat history, published files</span></div></div>
+      <div class="layer"><span class="lv l2">L2</span><div class="layer-b"><strong>workdir / data root</strong><span>own config.toml plus all generated state per channel and topic</span></div></div>
+      <div class="layer"><span class="lv l3">L3</span><div class="layer-b"><strong>topic</strong><span>restricted model overrides, sessions, chat history, published files</span></div></div>
       <p style="margin-top:16px">L2 is deep-merged over L1: tables merge recursively, arrays and scalars are replaced.
          Skills are scanned at every level with higher levels winning; templates resolve L3 to L2 to L1, first match wins.</p>
     </div>
@@ -381,8 +381,8 @@ footer{padding:52px 0 64px}
         <tr><td>Windows</td><td><code>%APPDATA%\jyc</code></td><td><code>%LOCALAPPDATA%\jyc</code></td></tr>
       </table>
       <p style="margin-top:16px">Secrets use environment-variable interpolation, so config files stay
-         commitable. Model precedence runs from a per-thread override file down through
-         thread config, pattern, then global config.</p>
+         commitable. Model precedence runs from a per-topic override file down through
+         topic config, pattern, then global config.</p>
     </div>
   </div>
 </div></section>
@@ -396,12 +396,12 @@ footer{padding:52px 0 64px}
       <h3>Slash commands, any channel</h3>
       <table>
         <tr><th>Command</th><th>Effect</th></tr>
-        <tr><td><code>/model &lt;id&gt;</code></td><td>Switch model for this thread (bare form lists, <code>reset</code> restores)</td></tr>
+        <tr><td><code>/model &lt;id&gt;</code></td><td>Switch model for this topic (bare form lists, <code>reset</code> restores)</td></tr>
         <tr><td><code>/plan</code> <code>/build</code></td><td>Read-only planning mode, or full execution</td></tr>
         <tr><td><code>/reset</code></td><td>Clear the AI session and start fresh</td></tr>
-        <tr><td><code>/exchange</code></td><td>List shareable URLs for files published from this thread</td></tr>
+        <tr><td><code>/exchange</code></td><td>List shareable URLs for files published from this topic</td></tr>
         <tr><td><code>/template</code></td><td>Apply template files, optionally overwriting</td></tr>
-        <tr><td><code>/close</code></td><td>Close the thread and delete its directory</td></tr>
+        <tr><td><code>/close</code></td><td>Close the topic and delete its directory</td></tr>
       </table>
     </div>
     <div class="cell">
@@ -413,9 +413,9 @@ footer{padding:52px 0 64px}
       <div class="sub" style="margin-top:24px">Agent tools</div>
       <table>
         <tr><th>Tool</th><th>Purpose</th></tr>
-        <tr><td><code>reply_message</code></td><td>In-thread reply through the originating adapter</td></tr>
-        <tr><td><code>send_message</code></td><td>Proactive out-of-thread alerts and notifications</td></tr>
-        <tr><td><code>publish_file</code></td><td>Publish a thread file behind a per-thread token URL</td></tr>
+        <tr><td><code>reply_message</code></td><td>In-topic reply through the originating adapter</td></tr>
+        <tr><td><code>send_message</code></td><td>Proactive out-of-topic alerts and notifications</td></tr>
+        <tr><td><code>publish_file</code></td><td>Publish a topic file behind a per-topic token URL</td></tr>
         <tr><td><code>analyze_image</code></td><td>Vision analysis of local paths or remote images</td></tr>
         <tr><td><code>ask_user</code></td><td>Ask a question and block for the reply</td></tr>
       </table>
@@ -429,7 +429,7 @@ footer{padding:52px 0 64px}
   <div class="rv">
     <div class="crate"><span class="cn">jyc-channels</span><span class="cd">Adapter implementations for all ten transports<div class="bar"><i style="width:100%;animation-delay:.05s"></i></div></span><span class="cl">23.7k</span></div>
     <div class="crate"><span class="cn">jyc-agent</span><span class="cd">In-process agent loop, sessions, skills, tool dispatch<div class="bar"><i style="width:76%;animation-delay:.1s"></i></div></span><span class="cl">18.1k</span></div>
-    <div class="crate"><span class="cn">jyc-core</span><span class="cd">Router, thread manager, workers, command registry<div class="bar"><i style="width:67%;animation-delay:.15s"></i></div></span><span class="cl">15.9k</span></div>
+    <div class="crate"><span class="cn">jyc-core</span><span class="cd">Router, topic manager, workers, command registry<div class="bar"><i style="width:67%;animation-delay:.15s"></i></div></span><span class="cl">15.9k</span></div>
     <div class="crate"><span class="cn">jyc-cli</span><span class="cd">Binary, serve loop, TUI dashboard, subcommands<div class="bar"><i style="width:47%;animation-delay:.2s"></i></div></span><span class="cl">11.1k</span></div>
     <div class="crate"><span class="cn">jyc-types</span><span class="cd">Shared message, config and event types<div class="bar"><i style="width:29%;animation-delay:.25s"></i></div></span><span class="cl">7.0k</span></div>
     <div class="crate"><span class="cn">jyc-inspect</span><span class="cd">Inspection server and client, exchange routes<div class="bar"><i style="width:14%;animation-delay:.3s"></i></div></span><span class="cl">3.3k</span></div>

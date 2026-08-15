@@ -248,18 +248,18 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
         &self,
         original: &InboundMessage,
         reply_text: &str,
-        thread_path: &Path,
+        topic_path: &Path,
         message_dir: &str,
         attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
         // 1. Read model/mode from reply context file
-        let reply_ctx = jyc_mcp::context::load_reply_context(thread_path).await.ok();
+        let reply_ctx = jyc_mcp::context::load_reply_context(topic_path).await.ok();
         let model = reply_ctx.as_ref().and_then(|c| c.model.as_deref());
         let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
 
         // Read current input tokens from session state
         let (input_tokens, max_tokens) =
-            jyc_core::session_state::read_input_tokens(thread_path).await;
+            jyc_core::session_state::read_input_tokens(topic_path).await;
 
         // 2. Build footer
         let footer =
@@ -277,7 +277,7 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
 
         // 5. Get req_id from original message metadata.
         //    Proactive messages (scheduled tasks) have no req_id — derive chatid
-        //    from thread_path and use aibot_send_msg instead.
+        //    from topic_path and use aibot_send_msg instead.
         let original_req_id = original
             .metadata
             .get("req_id")
@@ -285,15 +285,15 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
             .unwrap_or("");
 
         let (req_id, proactive_chatid) = if original_req_id.is_empty() {
-            // Derive chatid from thread_path: strip "bot-" prefix from last component
-            let thread_name = thread_path
+            // Derive chatid from topic_path: strip "bot-" prefix from last component
+            let topic_name = topic_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
-            let chatid = thread_name.strip_prefix("bot-").unwrap_or(thread_name);
+            let chatid = topic_name.strip_prefix("bot-").unwrap_or(topic_name);
             let new_req_id = generate_req_id("aibot_send_msg");
             tracing::warn!(
-                thread_name = %thread_name,
+                topic_name = %topic_name,
                 chatid = %chatid,
                 "Original message missing req_id, using proactive send"
             );
@@ -380,7 +380,7 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
 
         // 10. Store reply to chat log
         self.storage
-            .store_reply(thread_path, &full_reply, message_dir)
+            .store_reply(topic_path, &full_reply, message_dir)
             .await
             .context("Failed to store WeCom Bot reply")?;
 
@@ -936,7 +936,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -969,10 +969,10 @@ mod tests {
         assert_eq!(indicator["body"]["stream"]["content"], "正在思考中...");
 
         // Now send reply — it should reuse the same stream_id
-        let thread_path = std::path::PathBuf::from("/tmp/test_thread");
-        tokio::fs::create_dir_all(&thread_path).await.ok();
+        let topic_path = std::path::PathBuf::from("/tmp/test_topic");
+        tokio::fs::create_dir_all(&topic_path).await.ok();
         let result = adapter
-            .send_reply(&message, "AI reply", &thread_path, "msg_001", None)
+            .send_reply(&message, "AI reply", &topic_path, "msg_001", None)
             .await
             .expect("reply should send");
         assert!(!result.message_id.is_empty());
@@ -1020,7 +1020,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -1035,10 +1035,10 @@ mod tests {
             matched_pattern: None,
         };
 
-        let thread_path = std::path::PathBuf::from("/tmp/test_thread2");
-        tokio::fs::create_dir_all(&thread_path).await.ok();
+        let topic_path = std::path::PathBuf::from("/tmp/test_topic2");
+        tokio::fs::create_dir_all(&topic_path).await.ok();
         adapter
-            .send_reply(&message, "Direct reply", &thread_path, "msg_002", None)
+            .send_reply(&message, "Direct reply", &topic_path, "msg_002", None)
             .await
             .expect("reply should send");
 
@@ -1076,7 +1076,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -1356,7 +1356,7 @@ mod tests {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -1378,13 +1378,13 @@ mod tests {
         }];
 
         let reply_task = tokio::spawn(async move {
-            let thread_path = dir.path().join("thread");
-            tokio::fs::create_dir_all(&thread_path).await.unwrap();
+            let topic_path = dir.path().join("topic");
+            tokio::fs::create_dir_all(&topic_path).await.unwrap();
             adapter
                 .send_reply(
                     &message,
                     "AI reply",
-                    &thread_path,
+                    &topic_path,
                     "msg_001",
                     Some(&attachments),
                 )

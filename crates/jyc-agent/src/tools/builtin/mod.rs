@@ -8,7 +8,7 @@ pub mod job_tools;
 pub mod publish_file;
 pub mod read;
 pub mod read_image;
-pub mod send_to_thread;
+pub mod send_to_topic;
 pub mod webfetch;
 pub mod write;
 
@@ -32,7 +32,7 @@ pub fn create_builtin_registry() -> ToolRegistry {
     registry.register(Box::new(job_tools::JobCreateTool));
     registry.register(Box::new(job_tools::JobDeleteTool));
     registry.register(Box::new(job_tools::JobToggleTool));
-    registry.register(Box::new(send_to_thread::SendToThreadTool));
+    registry.register(Box::new(send_to_topic::SendToThreadTool));
 
     registry
 }

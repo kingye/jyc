@@ -15,7 +15,7 @@ via messages, extract key data, and maintain organized monthly records.
 - `invoice_export` — 导出报表（不结账）
 
 ## Working Directory
-All invoice data is organized in this thread directory:
+All invoice data is organized in this topic directory:
 - `.invoice/` — Invoice database directory (managed by invoice MCP)
 - `invoice_YYYY-MM/` — Monthly folders with downloaded invoice files
 

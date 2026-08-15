@@ -4,18 +4,18 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 use crate::message_storage::MessageStorage;
-use crate::thread_manager::ThreadManager;
+use crate::topic_manager::TopicManager;
 use jyc_types::{ChannelMatcher, ChannelPattern, InboundMessage};
 
-/// Routes inbound messages to the appropriate thread queue.
+/// Routes inbound messages to the appropriate topic queue.
 ///
-/// Channel-agnostic: delegates pattern matching and thread name derivation
+/// Channel-agnostic: delegates pattern matching and topic name derivation
 /// to the `ChannelMatcher` provided by the caller.
 ///
 /// Patterns are read dynamically from the live config on each route call,
 /// so changes to config.toml are effective immediately after reload.
 pub struct MessageRouter {
-    thread_manager: Arc<ThreadManager>,
+    topic_manager: Arc<TopicManager>,
     storage: Arc<MessageStorage>,
     config: Arc<ArcSwap<jyc_types::AppConfig>>,
     channel_name: String,
@@ -23,13 +23,13 @@ pub struct MessageRouter {
 
 impl MessageRouter {
     pub fn new(
-        thread_manager: Arc<ThreadManager>,
+        topic_manager: Arc<TopicManager>,
         storage: Arc<MessageStorage>,
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
         channel_name: String,
     ) -> Self {
         Self {
-            thread_manager,
+            topic_manager,
             storage,
             config,
             channel_name,
@@ -47,7 +47,7 @@ impl MessageRouter {
 
     /// Route a message from any channel type.
     ///
-    /// Pattern matching and thread name derivation are delegated to
+    /// Pattern matching and topic name derivation are delegated to
     /// the channel-specific `ChannelMatcher` implementation.
     /// Patterns are read dynamically from the live config.
     pub async fn route(&self, matcher: &dyn ChannelMatcher, mut message: InboundMessage) {
@@ -65,7 +65,7 @@ impl MessageRouter {
                     topic = %message.topic,
                     "Pattern matched"
                 );
-                self.thread_manager.metrics.message_matched(&m.pattern_name);
+                self.topic_manager.metrics.message_matched(&m.pattern_name);
                 message.matched_pattern = Some(m.pattern_name.clone());
                 Some(m)
             }
@@ -92,8 +92,8 @@ impl MessageRouter {
             }
         };
 
-        // 2. Derive thread name
-        // If the matched pattern has a fixed thread_name, use it (channel-agnostic).
+        // 2. Derive topic name
+        // If the matched pattern has a fixed topic_name, use it (channel-agnostic).
         // Otherwise, derive from message content (channel-specific).
         let pattern_name = pattern_match
             .as_ref()
@@ -101,19 +101,19 @@ impl MessageRouter {
             .pattern_name
             .clone();
 
-        let thread_name = patterns_ref
+        let topic_name = patterns_ref
             .iter()
             .find(|p| p.name == pattern_name)
-            .and_then(|p| p.thread_name.clone())
+            .and_then(|p| p.topic_name.clone())
             .unwrap_or_else(|| {
-                matcher.derive_thread_name(&message, patterns_ref, pattern_match.as_ref())
+                matcher.derive_topic_name(&message, patterns_ref, pattern_match.as_ref())
             });
 
         tracing::info!(
             channel = %ch,
-            thread = %thread_name,
+            topic = %topic_name,
             pattern = %pattern_name,
-            "Routing to thread"
+            "Routing to topic"
         );
 
         // 3. Get attachment config, template, and live_injection from the matched pattern
@@ -122,7 +122,7 @@ impl MessageRouter {
         let attachment_config = matched_pattern.and_then(|p| p.attachments.clone());
         let live_injection = matched_pattern.map(|p| p.live_injection).unwrap_or(true);
 
-        // Store template name in message metadata for thread initialization
+        // Store template name in message metadata for topic initialization
         let matched_template = matched_pattern.and_then(|p| p.template.clone());
         tracing::debug!(
             pattern = %matched_pattern_name,
@@ -160,39 +160,39 @@ impl MessageRouter {
         if let Some(repo_group) = matched_pattern.and_then(|p| p.repo_group.clone())
             && let Some(number) = number_opt
         {
-            let key = crate::thread_path::compute_repo_group_key(&repo_group, &number);
+            let key = crate::topic_path::compute_repo_group_key(&repo_group, &number);
             message
                 .metadata
                 .insert("repo_group_key".to_string(), serde_json::Value::String(key));
         }
 
-        // 4. Resolve thread_path override: prefer explicit metadata from
-        // WebSocket create_thread, then fall back to the matched pattern's
-        // configured thread_path.
-        let thread_path_override: Option<PathBuf> = message
+        // 4. Resolve topic_path override: prefer explicit metadata from
+        // WebSocket create_topic, then fall back to the matched pattern's
+        // configured topic_path.
+        let topic_path_override: Option<PathBuf> = message
             .metadata
-            .get("thread_path_override")
+            .get("topic_path_override")
             .and_then(|v| v.as_str())
             // Dashboard client sends absolute paths; raw PathBuf::from is
             // correct here (resolves relative paths against the CLI cwd).
             .map(PathBuf::from)
             .or_else(|| {
                 matched_pattern
-                    .and_then(|p| p.thread_path.as_ref())
+                    .and_then(|p| p.topic_path.as_ref())
                     .map(|tp| {
-                        crate::thread_path::resolve_thread_path(tp, self.thread_manager.data_root())
+                        crate::topic_path::resolve_topic_path(tp, self.topic_manager.data_root())
                     })
             });
         // 5. Enqueue (channel-agnostic)
         let pm = pattern_match.expect("pattern_match should be Some");
-        self.thread_manager
+        self.topic_manager
             .enqueue(
                 message,
-                thread_name,
+                topic_name,
                 pm,
                 attachment_config,
                 live_injection,
-                thread_path_override,
+                topic_path_override,
             )
             .await;
     }
@@ -206,12 +206,12 @@ impl MessageRouter {
         let patterns = self.patterns();
         let patterns_ref: &[ChannelPattern] = &patterns;
 
-        // Derive thread name even for unmatched messages
-        let thread_name = matcher.derive_thread_name(message, patterns_ref, None);
+        // Derive topic name even for unmatched messages
+        let topic_name = matcher.derive_topic_name(message, patterns_ref, None);
 
         tracing::info!(
             channel = %message.channel,
-            thread = %thread_name,
+            topic = %topic_name,
             sender = %message.sender_address,
             topic = %message.topic,
             "Storing unmatched message"
@@ -220,13 +220,13 @@ impl MessageRouter {
         // Store the message without processing (is_matched = false)
         match self
             .storage
-            .store_with_match(message, &thread_name, false, None)
+            .store_with_match(message, &topic_name, false, None)
             .await
         {
             Ok(store_result) => {
                 tracing::debug!(
                     channel = %message.channel,
-                    thread = %thread_name,
+                    topic = %topic_name,
                     path = %store_result.message_dir,
                     "Unmatched message stored"
                 );
@@ -234,7 +234,7 @@ impl MessageRouter {
             Err(e) => {
                 tracing::error!(
                     channel = %message.channel,
-                    thread = %thread_name,
+                    topic = %topic_name,
                     error = %e,
                     "Failed to store unmatched message"
                 );
@@ -257,7 +257,7 @@ mod tests {
             "mock"
         }
 
-        fn derive_thread_name(
+        fn derive_topic_name(
             &self,
             message: &InboundMessage,
             _patterns: &[ChannelPattern],
@@ -291,7 +291,7 @@ mod tests {
             topic: topic.to_string(),
             content: MessageContent::default(),
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -300,16 +300,16 @@ mod tests {
         }
     }
 
-    fn test_pattern(name: &str, thread_name: Option<&str>) -> ChannelPattern {
+    fn test_pattern(name: &str, topic_name: Option<&str>) -> ChannelPattern {
         ChannelPattern {
             name: name.to_string(),
-            thread_name: thread_name.map(|s| s.to_string()),
+            topic_name: topic_name.map(|s| s.to_string()),
             ..Default::default()
         }
     }
 
     #[test]
-    fn test_thread_name_override_used_when_set() {
+    fn test_topic_name_override_used_when_set() {
         let matcher = MockMatcher;
         let message = test_message("Invoice for food");
         let patterns = vec![test_pattern("invoices", Some("invoices"))];
@@ -319,20 +319,20 @@ mod tests {
 
         let pattern_name = pattern_match.as_ref().unwrap().pattern_name.clone();
 
-        // With thread_name override, should use "invoices" not "Invoice for food"
-        let thread_name = patterns
+        // With topic_name override, should use "invoices" not "Invoice for food"
+        let topic_name = patterns
             .iter()
             .find(|p| p.name == pattern_name)
-            .and_then(|p| p.thread_name.clone())
+            .and_then(|p| p.topic_name.clone())
             .unwrap_or_else(|| {
-                matcher.derive_thread_name(&message, &patterns, pattern_match.as_ref())
+                matcher.derive_topic_name(&message, &patterns, pattern_match.as_ref())
             });
 
-        assert_eq!(thread_name, "invoices");
+        assert_eq!(topic_name, "invoices");
     }
 
     #[test]
-    fn test_thread_name_derived_when_no_override() {
+    fn test_topic_name_derived_when_no_override() {
         let matcher = MockMatcher;
         let message = test_message("Invoice for food");
         let patterns = vec![test_pattern("catch_all", None)];
@@ -342,20 +342,20 @@ mod tests {
 
         let pattern_name = pattern_match.as_ref().unwrap().pattern_name.clone();
 
-        // Without thread_name override, should derive from topic
-        let thread_name = patterns
+        // Without topic_name override, should derive from topic
+        let topic_name = patterns
             .iter()
             .find(|p| p.name == pattern_name)
-            .and_then(|p| p.thread_name.clone())
+            .and_then(|p| p.topic_name.clone())
             .unwrap_or_else(|| {
-                matcher.derive_thread_name(&message, &patterns, pattern_match.as_ref())
+                matcher.derive_topic_name(&message, &patterns, pattern_match.as_ref())
             });
 
-        assert_eq!(thread_name, "Invoice for food");
+        assert_eq!(topic_name, "Invoice for food");
     }
 
     #[test]
-    fn test_different_topics_same_thread_with_override() {
+    fn test_different_topics_same_topic_with_override() {
         let matcher = MockMatcher;
         let patterns = vec![test_pattern("invoices", Some("invoices"))];
 
@@ -364,16 +364,16 @@ mod tests {
             let pattern_match = matcher.match_message(&message, &patterns);
             let pattern_name = pattern_match.as_ref().unwrap().pattern_name.clone();
 
-            let thread_name = patterns
+            let topic_name = patterns
                 .iter()
                 .find(|p| p.name == pattern_name)
-                .and_then(|p| p.thread_name.clone())
+                .and_then(|p| p.topic_name.clone())
                 .unwrap_or_else(|| {
-                    matcher.derive_thread_name(&message, &patterns, pattern_match.as_ref())
+                    matcher.derive_topic_name(&message, &patterns, pattern_match.as_ref())
                 });
 
             assert_eq!(
-                thread_name, "invoices",
+                topic_name, "invoices",
                 "Topic '{}' should route to 'invoices'",
                 topic
             );

@@ -65,7 +65,7 @@ impl OutboundAdapter for GithubOutboundAdapter {
         &self,
         original: &jyc_types::InboundMessage,
         reply_text: &str,
-        thread_path: &Path,
+        topic_path: &Path,
         message_dir: &str,
         _attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult> {
@@ -83,13 +83,13 @@ impl OutboundAdapter for GithubOutboundAdapter {
             .unwrap_or("");
 
         // Read model/mode from reply context file (if available)
-        let reply_ctx = jyc_mcp::context::load_reply_context(thread_path).await.ok();
+        let reply_ctx = jyc_mcp::context::load_reply_context(topic_path).await.ok();
         let model = reply_ctx.as_ref().and_then(|c| c.model.as_deref());
         let mode = reply_ctx.as_ref().and_then(|c| c.mode.as_deref());
 
         // Read current input tokens from session state (agent-agnostic)
         let (input_tokens, max_tokens) =
-            jyc_core::session_state::read_input_tokens(thread_path).await;
+            jyc_core::session_state::read_input_tokens(topic_path).await;
 
         // Build footer with model/mode/tokens information
         let footer = jyc_core::email_parser::build_footer(
@@ -120,7 +120,7 @@ impl OutboundAdapter for GithubOutboundAdapter {
 
         // Store reply to chat log
         self.storage
-            .store_reply(thread_path, reply_text, message_dir)
+            .store_reply(topic_path, reply_text, message_dir)
             .await?;
 
         Ok(SendResult {

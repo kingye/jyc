@@ -2,11 +2,11 @@
 //!
 //! This module provides inbound and outbound adapters for the WeChat messaging platform
 //! via the OpenILink WebSocket Bridge. Both inbound and outbound messages share the
-//! same WebSocket connection. One bot corresponds to one fixed thread.
+//! same WebSocket connection. One bot corresponds to one fixed topic.
 //!
 //! Architecture differs from Feishu:
 //! - Inbound + outbound share ONE WebSocket connection (vs Feishu's WS inbound + HTTP outbound)
-//! - One bot = one fixed thread (vs Feishu's multi-chat architecture)
+//! - One bot = one fixed topic (vs Feishu's multi-chat architecture)
 //! - Pure text messages only in v1 (rich media can be added later)
 
 pub mod inbound;

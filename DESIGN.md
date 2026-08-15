@@ -2,7 +2,7 @@
 
 ## Overview
 
-JYC is a channel-agnostic AI agent that operates through messaging channels. Users interact with the agent by sending messages (email, FeiShu, Slack, etc.), and the agent responds autonomously using an in-process agent. The agent maintains conversation context per thread, enabling coherent multi-turn interactions.
+JYC is a channel-agnostic AI agent that operates through messaging channels. Users interact with the agent by sending messages (email, FeiShu, Slack, etc.), and the agent responds autonomously using an in-process agent. The agent maintains conversation context per topic, enabling coherent multi-turn interactions.
 
 **Core Concept:** Messaging channels are the interface; AI is the brain. The architecture is channel-agnostic — adding a new channel requires only implementing an inbound and outbound adapter trait.
 
@@ -21,9 +21,9 @@ JYC is a channel-agnostic AI agent that operates through messaging channels. Use
 ### High-Level Flow
 
 ```
-User sends message (any channel) → Pattern Match → Thread Queue → Worker (AI) → Reply via originating channel
+User sends message (any channel) → Pattern Match → Topic Queue → Worker (AI) → Reply via originating channel
                                                          ↓
-                                               Thread-based context
+                                               Topic-based context
                                                (remembers conversation)
 ```
 
@@ -37,7 +37,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  │  (IMAP/TLS)  │  │ (WebSocket)  │  │ (REST poll)  │  │  (WebHook)   │                 │
 │  │              │  │              │  │              │  │              │                 │
 │  │ match_message│  │ match_message│  │ match_message│  │ match_message│                 │
-│  │ derive_thread│  │ derive_thread│  │ derive_thread│  │ derive_thread│                 │
+│  │ derive_topic│  │ derive_topic│  │ derive_topic│  │ derive_topic│                 │
 │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘                 │
 └─────────┼──────────────────┼──────────────────┼──────────────────┼───────────────────────┘
           │                  │                  │                  │
@@ -51,23 +51,23 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │                       MessageRouter                                      │
 │  - Receives ALL messages from all channels via mpsc::Sender              │
 │  - Delegates matching to adapter.match_message()                         │
-│  - Delegates thread naming to adapter.derive_thread_name()               │
+│  - Delegates topic naming to adapter.derive_topic_name()               │
 │  - Reads patterns from live ArcSwap<AppConfig> (supports hot-reload)     │
-│  - Sends to ThreadManager via mpsc channel (fire-and-forget)             │
+│  - Sends to TopicManager via mpsc channel (fire-and-forget)             │
 └────────────────────────┬────────────────────────────────────────────────┘
                          │ send (non-blocking)
                          ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                       ThreadManager                                      │
-│  max_concurrent_threads: 3 (Semaphore-bounded)                           │
-│  max_queue_size_per_thread: 10                                           │
+│                       TopicManager                                      │
+│  max_concurrent_topics: 3 (Semaphore-bounded)                           │
+│  max_queue_size_per_topic: 10                                           │
 │                                                                          │
 │  ┌─────────────────────────────────────────────────────┐                │
-│  │        Thread Queues (HashMap<String, ThreadQueue>)  │                │
+│  │        Topic Queues (HashMap<String, TopicQueue>)  │                │
 │  │                                                      │                │
-│  │  "thread-A" → mpsc::Receiver ← [msg2, msg3]         │                │
-│  │  "thread-B" → mpsc::Receiver ← [msg4]               │                │
-│  │  "thread-C" → mpsc::Receiver ← []                   │                │
+│  │  "topic-A" → mpsc::Receiver ← [msg2, msg3]         │                │
+│  │  "topic-B" → mpsc::Receiver ← [msg4]               │                │
+│  │  "topic-C" → mpsc::Receiver ← []                   │                │
 │  └─────────────────────────────────────────────────────┘                │
 │                                                                          │
 │  Tokio Semaphore (3 permits):                                            │
@@ -75,31 +75,31 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  │ Worker A    │  │ Worker B    │  │ Worker C    │                     │
 │  │ (permit 1)  │  │ (permit 2)  │  │ (permit 3)  │                     │
 │  │ processing  │  │ processing  │  │ idle        │                     │
-│  │ thread-A/m1 │  │ thread-B/m4 │  │             │                     │
+│  │ topic-A/m1 │  │ topic-B/m4 │  │             │                     │
 │  │   ┌─────┐   │  │   ┌─────┐   │  │             │                     │
 │  │   │Event│   │  │   │Event│   │  │             │                     │
 │  │   │Bus A│   │  │   │Bus B│   │  │             │                     │
 │  │   └─────┘   │  │   └─────┘   │  │             │                     │
 │  └─────────────┘  └─────────────┘  └─────────────┘                     │
 │                                                                          │
-│  Thread Event System (per thread):                                       │
+│  Topic Event System (per topic):                                       │
 │  ┌─────────────────────────────────────────────────────┐                │
-│  │  • Thread-isolated event bus                        │                │
-│  │  • SSE → ThreadEvent conversion (agent client)   │                │
+│  │  • Topic-isolated event bus                        │                │
+│  │  • SSE → TopicEvent conversion (agent client)   │                │
 │  │  • Processing state tracking                        │                │
 │  └─────────────────────────────────────────────────────┘                │
 │                                                                          │
-│  New thread arrives → tokio::spawn → acquire semaphore permit            │
+│  New topic arrives → tokio::spawn → acquire semaphore permit            │
 │  Worker loop: recv from mpsc → process (rx passed to agent for           │
 │    live injection) → recv next                                           │
-│  Thread queue empty + no pending → release permit, task exits            │
+│  Topic queue empty + no pending → release permit, task exits            │
 └────────────────────────┬────────────────────────────────────────────────┘
                          │
                          ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    Worker (per message) — ThreadManager                   │
+│                    Worker (per message) — TopicManager                   │
 │                                                                          │
-│  0. If event support enabled: create thread event bus and start listener │
+│  0. If event support enabled: create topic event bus and start listener │
  │  1. MessageStorage::store(msg) → append to chat_history_YYYY-MM-DD.jsonl   │
 │  2. Save inbound attachments (allowlisted)                               │
 │  3. CommandRegistry::process_commands(body, ctx)                         │
@@ -110,7 +110,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │     - "agent" → AgentService::generate_reply(msg)                  │
 │     - "agent" → JycAgentService::process(msg) [in-process, no ext. deps] │
 │  6. If agent returns fallback text → send via OutboundAdapter            │
-│  7. Worker picks next message from thread queue                          │
+│  7. Worker picks next message from topic queue                          │
 └────────────────────────┬────────────────────────────────────────────────┘
                          │
                          ▼
@@ -118,12 +118,12 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │             AgentService::generate_reply() (agent-specific)           │
 │                                                                          │
 │  1. Ensure agent service is running (auto-start)                       │
-│  2. Setup per-thread agent config (model, MCP tools, permissions)       │
+│  2. Setup per-topic agent config (model, MCP tools, permissions)       │
 │  3. Resolve effective model: .jyc/model-override > pattern > channel >   │
 │     global                                                               │
 │  4. Build system prompt:                                                 │
 │     - Directory boundary rules                                           │
-│     - AGENTS.md (thread-local + repo/AGENTS.md if exist)                 │
+│     - AGENTS.md (topic-local + repo/AGENTS.md if exist)                 │
 │     - Discovered skills section (lazy: name + description, full content  │
 │       loaded on demand via read tool)                                    │
 │     - Reply instructions                                                 │
@@ -156,7 +156,7 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 │  │ Email Outbound│  │FeiShu Outbound│  │GitHub Outbound│  │Slack(Fut) ││
 │  │  (SMTP/TLS)   │  │  (API)        │  │  (API)        │  │  (API)    ││
 │  │ markdown→HTML │  │ format for    │  │ Issue/PR comms│  │ format    ││
-│  │ threading hdrs│  │ feishu msg    │  │ [Role] prefix │  │ for slack ││
+│  │ References hdrs│  │ feishu msg    │  │ [Role] prefix │  │ for slack ││
 │  └───────────────┘  └───────────────┘  └───────────────┘  └───────────┘│
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -165,13 +165,13 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 
 1. **Inbound Adapters** — Channel-specific message receivers (Email/IMAP, FeiShu/WebSocket, GitHub/REST polling, WeChat/WebSocket)
 2. **Outbound Adapters** — Channel-specific reply senders (Email/SMTP, FeiShu/API, GitHub/REST, WeChat/WebSocket)
-3. **Message Router** — Receives messages from all channels, delegates matching to adapters, routes to ThreadManager
-4. **Thread Manager** — Per-thread queues with semaphore concurrency control, worker spawn/manage
-5. **Thread Event Bus** — Thread-isolated event bus for publishing and subscribing to processing events (SSE → ThreadEvent conversion)
-6. **Thread Event System** — Per-thread isolated event bus for progress events (ProcessingStarted/Progress/Completed, ToolStarted/Completed, Thinking, SessionStatus). Used by the inspect dashboard for realtime monitoring.
+3. **Message Router** — Receives messages from all channels, delegates matching to adapters, routes to TopicManager
+4. **Topic Manager** — Per-topic queues with semaphore concurrency control, worker spawn/manage
+5. **Topic Event Bus** — Topic-isolated event bus for publishing and subscribing to processing events (SSE → TopicEvent conversion)
+6. **Topic Event System** — Per-topic isolated event bus for progress events (ProcessingStarted/Progress/Completed, ToolStarted/Completed, Thinking, SessionStatus). Used by the inspect dashboard for realtime monitoring.
 7. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage; supports multimodal first turns with ContentBlock::Image
 8. **MCP Reply Tool** — `reply_message` tool via `rmcp`, appends reply to chat log and writes signal file. Monitor reads from chat log and sends via pre-warmed outbound adapter
-9. **MCP SendMessage Tool** — `jyc_send_message` tool via `rmcp`, sends proactive out-of-thread messages to any recipient via the pre-warmed outbound adapter. Used for alerts and notifications only, not for in-thread replies
+9. **MCP SendMessage Tool** — `jyc_send_message` tool via `rmcp`, sends proactive out-of-topic messages to any recipient via the pre-warmed outbound adapter. Used for alerts and notifications only, not for in-topic replies
 10. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[[mcps]]` in `config.toml`
 11. **MCP Question Tool** — `ask_user` tool via `rmcp`, sends question to user and waits for reply (up to 5 minutes)
 12. **Pending Delivery Watcher** — Background task that runs alongside SSE stream, watches for signal files and delivers messages immediately
@@ -180,13 +180,13 @@ User sends message (any channel) → Pattern Match → Thread Queue → Worker (
 15. **Security Module** — Path validation, file size/extension checks for attachments; tool boundary checks for write/edit/grep/glob/bash/read_image
 16. **Attachment Storage** — Channel-agnostic attachment saving with path traversal protection
 17. **Inspect Server + Dashboard** — TCP JSON line protocol for runtime state queries, TUI dashboard for live monitoring
-18. **MetricsCollector** — Lightweight stats accumulation for monitoring thread/channel activity
+18. **MetricsCollector** — Lightweight stats accumulation for monitoring topic/channel activity
 19. **Command System** — `/command` parsing and execution (`/model`, `/plan`, `/build`, `/reset`, `/close`, `/template`)
-20. **Thread Lifecycle** — Channel-agnostic thread close mechanism via `on_thread_close` callback
-21. **Template System** — Initialize new threads with predefined files from `templates/` directory
+20. **Topic Lifecycle** — Channel-agnostic topic close mechanism via `on_topic_close` callback
+21. **Template System** — Initialize new topics with predefined files from `templates/` directory
 22. **AgentService** — Unified agent dispatch trait for static and in-process agent modes; resolves effective model from pattern/channel/global config
-23. **Channel Orchestrator** — Manages channel lifecycle across config reloads. Registers per-channel status (thread manager, cancel token). On reload, diffs old/new config: cancels removed channels gracefully, warns on new channels (requires restart). Updates shared `InspectContext` state (`thread_managers`, `channels`, `workspace_dirs`) via `ArcSwap`.
-24. **BillingLogStore** — Durable per-thread cost ledger. Appends one line per LLM call to `.jyc/bill-YYYY-MM-DD.jsonl` (token counts + computed cost + currency). Day-stamped files bound the dashboard's per-poll read to a single day; never rotated or truncated, unlike the bounded `activity.jsonl` debug buffer. Complements `session_cost` in `agent-session.json`, which is session-scoped and zeroes on reset.
+23. **Channel Orchestrator** — Manages channel lifecycle across config reloads. Registers per-channel status (topic manager, cancel token). On reload, diffs old/new config: cancels removed channels gracefully, warns on new channels (requires restart). Updates shared `InspectContext` state (`topic_managers`, `channels`, `workspace_dirs`) via `ArcSwap`.
+24. **BillingLogStore** — Durable per-topic cost ledger. Appends one line per LLM call to `.jyc/bill-YYYY-MM-DD.jsonl` (token counts + computed cost + currency). Day-stamped files bound the dashboard's per-poll read to a single day; never rotated or truncated, unlike the bounded `activity.jsonl` debug buffer. Complements `session_cost` in `agent-session.json`, which is session-scoped and zeroes on reset.
 
 ### Design Principles: Component Responsibilities
 
@@ -219,7 +219,7 @@ Each component has a single, clear responsibility. Data flows through the system
 
 - Orchestrator for the reply flow
 - Reads `.jyc/reply-context.json` from disk to get routing info (channel name, message timestamp)
-- Reads ALL message metadata (sender, recipient, topic, threading headers) from reply-context.json — NOT from the AI prompt
+- Reads ALL message metadata (sender, recipient, topic, References headers) from reply-context.json — NOT from the AI prompt
 - Builds the full reply in markdown: AI reply text + quoted history (`prepare_body_for_quoting`)
 - Delegates sending to OutboundAdapter (passes the full markdown reply)
 - Delegates storage to MessageStorage (appends to daily chat log file)
@@ -228,24 +228,24 @@ Each component has a single, clear responsibility. Data flows through the system
 **SmtpClient** (and other transport services)
 
 - Dumb transport: receives markdown, converts to HTML (via `comrak`), adds email headers, sends via `lettre`
-- Adds `Re:` to subject, sets `In-Reply-To` and `References` headers for threading
+- Adds `Re:` to subject, sets `In-Reply-To` and `References` headers for References
 - Does NOT build quoted history, does NOT clean or transform content
 - **Structured error handling**: Uses lettre's structured SmtpError API for error classification: permanent errors (5xx) fail immediately, transient errors (4xx) retry with exponential backoff (3 attempts, 5-60s), connection/timeout errors reconnect with backoff (2 attempts).
-- **Shared instance**: A single `SmtpClient` (via `EmailOutboundAdapter`) is created at monitor startup and shared across ThreadManager fallback and monitor reply send path (when MCP tool appends to chat log)
+- **Shared instance**: A single `SmtpClient` (via `EmailOutboundAdapter`) is created at monitor startup and shared across TopicManager fallback and monitor reply send path (when MCP tool appends to chat log)
 
-**Thread Event System**
+**Topic Event System**
 
-- **Thread Event Bus** - Thread-isolated event bus for SSE → ThreadEvent conversion
-- **Thread Isolation** - Each thread has independent event bus state
+- **Topic Event Bus** - Topic-isolated event bus for SSE → TopicEvent conversion
+- **Topic Isolation** - Each topic has independent event bus state
 - **Event Types**:
   - `ProcessingStarted`, `ProcessingProgress`, `ProcessingCompleted`
   - `ToolStarted`, `ToolCompleted`
-- **Event Flow**: SSE events → agent client conversion → Thread Event Bus → subscribers (inspect dashboard)
+- **Event Flow**: SSE events → agent client conversion → Topic Event Bus → subscribers (inspect dashboard)
 
 **Reply context** saved to `.jyc/reply-context.json` — the AI never sees it
 
-- Only 5 fields: `channel`, `threadName`, `incomingMessageDir`, `uid`, `_nonce`
-- Channel-agnostic — no email-specific fields (no sender, recipient, topic, threading headers)
+- Only 5 fields: `channel`, `topicName`, `incomingMessageDir`, `uid`, `_nonce`
+- Channel-agnostic — no email-specific fields (no sender, recipient, topic, References headers)
 - The AI passes it through unchanged as `reply-context.json=<base64>` (not XML tags)
 - The Reply Tool decodes it for routing only — reads all message metadata from chat log frontmatter
 - Short token (~120 bytes) reduces AI corruption risk compared to the old 12-field token (~400 bytes)
@@ -297,7 +297,7 @@ Email arrives
 
 ```
 ┌──────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
-│ IMAP │  │ Inbound  │  │ Message  │  │  Thread  │  │ Prompt   │  │ in-process agent │  │  Reply   │  │  SMTP    │
+│ IMAP │  │ Inbound  │  │ Message  │  │  Topic  │  │ Prompt   │  │ in-process agent │  │  Reply   │  │  SMTP    │
 │Server│  │ Adapter  │  │ Storage  │  │ Manager  │  │ Builder  │  │  (AI)    │  │  Tool    │  │ Client   │
 └──┬───┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘
    │           │             │             │             │             │             │             │
@@ -373,7 +373,7 @@ Email arrives
 - **InboundAdapter** is the only place where data is cleaned (subject + body)
 - **MessageStorage** stores data as-is (with full frontmatter metadata) — the authoritative source of message data
 - **PromptBuilder** strips quoted history from body for the AI prompt; does NOT include conversation history (the agent session memory handles that)
-- **`build_full_reply_text()`** is the single shared function for assembling the full reply (AI text + quoted history) — called by `EmailOutboundAdapter` and the monitor's reply send path, NOT by agents or ThreadManager
+- **`build_full_reply_text()`** is the single shared function for assembling the full reply (AI text + quoted history) — called by `EmailOutboundAdapter` and the monitor's reply send path, NOT by agents or TopicManager
 - **SmtpClient** is a dumb transport: markdown→HTML + headers + attachments + send
 - **reply-context.json** is a minimal routing token (5 fields) — all message metadata comes from chat log frontmatter
 - **Chat log entries** = exactly what the recipient receives (minus HTML formatting)
@@ -389,8 +389,8 @@ When a pattern sets `inject_inbound_images = true` and the active model has `sup
 **Flow:**
 ```
 InboundMessage with image attachment
-  → MessageRouter stores attachment to thread dir
-  → ThreadManager calls agent.process()
+  → MessageRouter stores attachment to topic dir
+  → TopicManager calls agent.process()
   → Agent checks: supports_images? && pattern.inject_inbound_images?
   → build_user_blocks() reads image bytes from saved_path
   → base64-encodes → ContentBlock::Image
@@ -456,7 +456,7 @@ The Feishu (飞书) channel implementation provides real-time messaging capabili
 │  │  • LarkWsClient WebSocket connection management    │  │
 │  │  • Real-time message reception via WebSocket       │  │
 │  │  • Event parsing (im.message.receive_v1)           │  │
-│  │  • FeishuMatcher for matching and thread derivation│  │
+│  │  • FeishuMatcher for matching and topic derivation│  │
 │  │  • Converts Feishu events to InboundMessage         │  │
 │  └─────────────────────────────────────────────────────┘  │
 │                                                             │
@@ -511,7 +511,7 @@ The Feishu (飞书) channel implementation provides real-time messaging capabili
    - `get_chat_name()` resolves chat IDs to display names
    - `get_user_name()` resolves user IDs to display names
    - In-memory caching to reduce API calls
-   - Used by thread name derivation and message display
+   - Used by topic name derivation and message display
 
 4. **Multi-format Message Support**
    - Markdown formatting (primary)
@@ -519,11 +519,11 @@ The Feishu (飞书) channel implementation provides real-time messaging capabili
    - HTML support for complex formatting
    - Automatic format detection and conversion
 
-5. **Thread Management**
-   - Thread name derivation from chat metadata
+5. **Topic Management**
+   - Topic name derivation from chat metadata
    - Message pattern matching for routing
    - Conversation context preservation
-   - Cross-channel thread compatibility
+   - Cross-channel topic compatibility
 
 6. **Error Handling and Recovery**
    - Comprehensive FeishuError enum
@@ -588,7 +588,7 @@ The Feishu channel integrates seamlessly with the core JYC architecture:
 
 - Uses the same `InboundMessage` and `OutboundMessage` types
 - Follows the same pattern matching system
-- Integrates with the thread manager and queue system
+- Integrates with the topic manager and queue system
 - Supports all existing AI features and command system
 - Compatible with MCP reply tool
 
@@ -730,7 +730,7 @@ The adapter detects issue/PR close events by comparing cached state:
 
 1. Each poll cycle fetches all open issue/PR numbers
 2. Previously-open issues not in the current set are considered closed
-3. Closed threads trigger the `on_thread_close` callback (deletes thread directory)
+3. Closed topics trigger the `on_topic_close` callback (deletes topic directory)
 4. Fallback: `list_closed_since()` checks recently-closed issues as a backup
 
 ### Persistent Comment Tracking
@@ -784,27 +784,27 @@ template = "github-reviewer"
 github_type = ["pull_request"]
 ````
 
-### Thread Naming
+### Topic Naming
 
-Thread name is `{prefix}-{N}` where `{prefix}` comes from the matched
-pattern's optional `thread_prefix` config field, falling back to a default
+Topic name is `{prefix}-{N}` where `{prefix}` comes from the matched
+pattern's optional `topic_prefix` config field, falling back to a default
 based on event type when no prefix is configured.
 
-| GitHub Type  | Pattern config              | Thread Name     |
+| GitHub Type  | Pattern config              | Topic Name     |
 | ------------ | --------------------------- | --------------- |
-| Issue        | (no `thread_prefix`)        | `issue-{N}`     |
-| Pull Request | (no `thread_prefix`)        | `pr-{N}`        |
-| any          | `thread_prefix = "plan"`    | `plan-{N}`      |
-| any          | `thread_prefix = "review-pr"` | `review-pr-{N}` |
+| Issue        | (no `topic_prefix`)        | `issue-{N}`     |
+| Pull Request | (no `topic_prefix`)        | `pr-{N}`        |
+| any          | `topic_prefix = "plan"`    | `plan-{N}`      |
+| any          | `topic_prefix = "review-pr"` | `review-pr-{N}` |
 
 When two patterns can match the same GitHub identity (e.g., both target
 issues but are distinguished by labels), they MUST declare distinct
-`thread_prefix` values. Otherwise both patterns route to the same workspace
+`topic_prefix` values. Otherwise both patterns route to the same workspace
 directory; the second pattern's template / `AGENTS.md` would silently be
 dropped. jyc detects this on the second message and refuses to dispatch it
 with a `TemplateMismatch` error.
 
-The reviewer pattern in particular must declare `thread_prefix = "review-pr"`
+The reviewer pattern in particular must declare `topic_prefix = "review-pr"`
 explicitly so it does not collide with the developer pattern (default
 `pr-{N}`) on the same PR.
 
@@ -816,7 +816,7 @@ Comprehensive unit tests (14 tests for rule filtering alone) cover:
 - Self-loop prevention (own-role skip, cross-role pass)
 - Rule filtering (github_type, labels, assignees — AND/OR logic, case-insensitive)
 - Pattern fallback (skip first pattern on rule failure, match second)
-- Thread name derivation (issue, PR, reviewer prefix)
+- Topic name derivation (issue, PR, reviewer prefix)
 - Persistent comment tracking (track, reload, edit detection, compaction)
 - Label change detection (new label triggers routing)
 - Trigger message building (issue and PR variants)
@@ -835,7 +835,7 @@ Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) 
 | Windows | `%APPDATA%\jyc` | `%LOCALAPPDATA%\jyc` |
 
 - **Config dir** holds user-edited files: `config.toml`, `skills/`, `templates/`.
-- **Data dir** (= default workdir / data root) holds generated state: `<channel>/.imap/`, `<channel>/.github/`, `<channel>/workspace/<thread>/`.
+- **Data dir** (= default workdir / data root) holds generated state: `<channel>/.imap/`, `<channel>/.github/`, `<channel>/workspace/<topic>/`.
 - `jyc serve` without `--workdir` uses the data dir (never the current directory). Without `--config`, the config is `<config dir>/config.toml`; with an explicit `--workdir` but no `--config`, it's `<workdir>/config.toml`.
 - **First run**: if the default config is missing on a flag-less invocation, jyc creates it from `config.example.toml` (plus empty `skills/` and `templates/`), prints edit instructions, and exits.
 
@@ -843,18 +843,18 @@ Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) 
 
 - **L1 (global)**: `<config dir>/` — `config.toml`, `skills/`, `templates/`
 - **L2 (workdir / data root)**: `--workdir` if given, else the data dir — `config.toml` (via `--config`), `skills/`, `templates/`, plus all generated state
-- **L3 (thread)**: `<thread_path>/.jyc/` — `config.toml` (restricted `[agent]` subset), `skills/`, `templates/`, sessions, chat history
+- **L3 (topic)**: `<topic_path>/.jyc/` — `config.toml` (restricted `[agent]` subset), `skills/`, `templates/`, sessions, chat history
 
 ### Merge & Lookup Rules
 
 | Asset | Rule |
 |---|---|
 | `config.toml` (L1/L2) | Deep merge at `toml::Value` level (`merge_toml`): tables merge recursively, arrays/scalars replaced by L2. `${VAR}` expansion after merge. Applies to startup and hot-reload (`load_config_layered`). |
-| `config.toml` (L3) | Restricted `[agent]` subset (`ThreadConfig`): `model`, `plan_model`, `build_model`, `small_model`. Invalid files are ignored with a warning. |
+| `config.toml` (L3) | Restricted `[agent]` subset (`TopicConfig`): `model`, `plan_model`, `build_model`, `small_model`. Invalid files are ignored with a warning. |
 | Model precedence | `.jyc/<mode>-model-override` file > L3 `config.toml` > pattern > L2/L1 config |
-| `skills/` | All levels scanned low→high; same-named skills are overridden by higher levels. Order: `~/.config/jyc/skills`, `~/.claude/skills` → L1 → L2 → thread repo → L3. |
-| `templates/` | Lookup L3 → L2 → L1 (`TemplateDirs::resolve_with_thread`); first match wins. |
-| Custom `thread_path` | Absolute/`~` paths used as-is (outside the data root); **relative paths resolve against the data root** (previously process cwd). L3 applies to any thread directory, including ad-hoc threads (`jyc open <path>`). |
+| `skills/` | All levels scanned low→high; same-named skills are overridden by higher levels. Order: `~/.config/jyc/skills`, `~/.claude/skills` → L1 → L2 → topic repo → L3. |
+| `templates/` | Lookup L3 → L2 → L1 (`TemplateDirs::resolve_with_topic`); first match wins. |
+| Custom `topic_path` | Absolute/`~` paths used as-is (outside the data root); **relative paths resolve against the data root** (previously process cwd). L3 applies to any topic directory, including ad-hoc topics (`jyc open <path>`). |
 
 > **Merge limitation**: L2 can override any L1 value but cannot *remove* entries (e.g. a channel defined in L1 cannot be deleted by L2). If removal is needed, either omit the channel from L1 or add it with `enabled = false` in L2.
 
@@ -894,12 +894,12 @@ config.toml (disk)
 | Delete channel | ✅ Channel cancelled gracefully |
 | Add new channel | ⚠️ Requires monitor restart |
 | Change connection params (host/port) | ⚠️ Requires monitor restart |
-| Change `general.max_concurrent_threads` | ⚠️ Requires process restart |
+| Change `general.max_concurrent_topics` | ⚠️ Requires process restart |
 
 ### Components
 
-- **ChannelOrchestrator** — Manages channel task lifecycle. Holds per-channel `ChannelHandle` (cancel token, thread manager ref). On reload, computes diff between old and new config section names, cancels removed channels with a 5-second grace period for cleanup. New channels are detected and logged with a warning (the monitor must be restarted to spawn new channel tasks).
-- **InspectContext (ArcSwap)** — `thread_managers`, `channels`, and `workspace_dirs` are wrapped in `Arc<ArcSwap<Vec<...>>>`, allowing the orchestrator to atomically swap updated lists after reload. The dashboard reads the latest snapshot on each poll cycle.
+- **ChannelOrchestrator** — Manages channel task lifecycle. Holds per-channel `ChannelHandle` (cancel token, topic manager ref). On reload, computes diff between old and new config section names, cancels removed channels with a 5-second grace period for cleanup. New channels are detected and logged with a warning (the monitor must be restarted to spawn new channel tasks).
+- **InspectContext (ArcSwap)** — `topic_managers`, `channels`, and `workspace_dirs` are wrapped in `Arc<ArcSwap<Vec<...>>>`, allowing the orchestrator to atomically swap updated lists after reload. The dashboard reads the latest snapshot on each poll cycle.
 - **MessageRouter** — Holds `Arc<ArcSwap<AppConfig>>` and the channel name. On each `route()` call, reads `config.load().channels[name].patterns` dynamically. No cached pattern snapshot — pattern changes take effect on the next message after reload.
 
 ## Core Types & Traits
@@ -923,7 +923,7 @@ pub struct InboundMessage {
     pub topic: String,                        // Subject (email) / title (feishu)
     pub content: MessageContent,
     pub timestamp: DateTime<Utc>,
-    pub thread_refs: Option<Vec<String>>,     // Email: References header
+    pub references: Option<Vec<String>>,     // Email: References header
     pub reply_to_id: Option<String>,          // Email: In-Reply-To
     pub external_id: Option<String>,          // Email: Message-ID
     pub attachments: Vec<MessageAttachment>,
@@ -957,7 +957,7 @@ pub struct PatternMatch {
 }
 
 /// Inbound adapter trait — one per channel type
-/// Channel-specific message matching and thread name derivation.
+/// Channel-specific message matching and topic name derivation.
 ///
 /// Pure-logic trait used by MessageRouter. Every channel type implements this.
 /// Separated from InboundAdapter to allow use without the lifecycle (start/stop).
@@ -965,7 +965,7 @@ pub struct PatternMatch {
 pub trait ChannelMatcher: Send + Sync {
     fn channel_type(&self) -> &str;
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         patterns: &[ChannelPattern],
@@ -993,8 +993,8 @@ pub trait InboundAdapter: ChannelMatcher {
 pub struct InboundAdapterOptions {
     /// Callback for each received message (fire-and-forget)
     pub on_message: Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>,
-    /// Callback for thread close events (e.g., Feishu chat.disbanded)
-    pub on_thread_close: Option<Box<dyn Fn(String) -> Result<()> + Send + Sync>>,
+    /// Callback for topic close events (e.g., Feishu chat.disbanded)
+    pub on_topic_close: Option<Box<dyn Fn(String) -> Result<()> + Send + Sync>>,
     /// Callback for errors
     pub on_error: Box<dyn Fn(anyhow::Error) + Send + Sync>,
     /// Attachment download configuration
@@ -1019,7 +1019,7 @@ pub trait OutboundAdapter: Send + Sync {
         &self,
         original: &InboundMessage,
         reply_text: &str,
-        thread_path: &Path,
+        topic_path: &Path,
         message_dir: &str,
         attachments: Option<&[OutboundAttachment]>,
     ) -> Result<SendResult>;
@@ -1049,10 +1049,10 @@ pub struct ChannelPattern {
     pub enabled: bool,
     pub rules: PatternRules,
     pub attachments: Option<AttachmentConfig>,
-    pub template: Option<String>,             // Thread template name
-    pub thread_name: Option<String>,          // Fixed thread name override
-    pub thread_prefix: Option<String>,        // Thread name prefix (e.g. "issue", "pr")
-    pub thread_path: Option<String>,          // Custom filesystem path for thread dir
+    pub template: Option<String>,             // Topic template name
+    pub topic_name: Option<String>,          // Fixed topic name override
+    pub topic_prefix: Option<String>,        // Topic name prefix (e.g. "issue", "pr")
+    pub topic_path: Option<String>,          // Custom filesystem path for topic dir
     pub role: Option<String>,                 // Agent role (e.g., "Planner", "Developer", "Reviewer")
     pub repo_group: Option<String>,           // Shared repo directory group key
     #[serde(default = "default_true")]
@@ -1114,19 +1114,19 @@ pub struct SenderRule {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SubjectRule {
-    pub prefix: Option<Vec<String>>,          // Prefix match (stripped from thread name)
+    pub prefix: Option<Vec<String>>,          // Prefix match (stripped from topic name)
     pub regex: Option<String>,                // Regex match
 }
 ```
 
-### Thread Name Derivation
+### Topic Name Derivation
 
-Each channel's `ChannelMatcher` implements `derive_thread_name(message, patterns, pattern_match)` with channel-specific logic:
+Each channel's `ChannelMatcher` implements `derive_topic_name(message, patterns, pattern_match)` with channel-specific logic:
 
 - **Email**: Strip reply prefixes (Re:, Fwd:, 回复:, 转发:), strip configured subject prefix (e.g., "Jiny:"), sanitize for filesystem. Supports broad separator recognition (`:`, `-`, `_`, `~`, `|`, `/`, `&`, `$`, etc.)
 - **FeiShu**: Derive from chat name (via `get_chat_name` with caching) or message content
-- **GitHub**: `{prefix}-{N}` where `{prefix}` is the matched pattern's `thread_prefix` config value, or `issue` / `pr` by default based on event type. See "Thread Naming" above for the full rule.
-- **Slack** (future): Derive from channel name + thread topic
+- **GitHub**: `{prefix}-{N}` where `{prefix}` is the matched pattern's `topic_prefix` config value, or `issue` / `pr` by default based on event type. See "Topic Naming" above for the full rule.
+- **Slack** (future): Derive from channel name + topic topic
 
 ## Async Event Queue Architecture
 
@@ -1139,7 +1139,7 @@ JYC uses **Tokio** as its async runtime. The message processing pipeline is buil
 ```
                     ┌─────────────────────┐
                     │  Tokio Runtime       │
-                    │  (multi-threaded)    │
+                    │  (multi-topiced)    │
                     └─────────────────────┘
                               │
               ┌───────────────┴───────────────┐
@@ -1162,8 +1162,8 @@ JYC uses **Tokio** as its async runtime. The message processing pipeline is buil
               ┌─────────────────┼─────────────────┐
               ▼                 ▼                  ▼
     ┌──────────────┐  ┌──────────────┐   ┌──────────────┐
-    │ Thread Queue  │  │ Thread Queue  │   │ Thread Queue  │
-    │ "thread-A"   │  │ "thread-B"   │   │ "thread-C"   │
+    │ Topic Queue  │  │ Topic Queue  │   │ Topic Queue  │
+    │ "topic-A"   │  │ "topic-B"   │   │ "topic-C"   │
     │ mpsc(10)     │  │ mpsc(10)     │   │ mpsc(10)     │
     └──────┬───────┘  └──────┬───────┘   └──────┬───────┘
            │                 │                   │
@@ -1185,14 +1185,14 @@ JYC uses **Tokio** as its async runtime. The message processing pipeline is buil
      └───────────────────────────────────┘
 ```
 
-### Thread Manager: Semaphore + Per-Thread mpsc
+### Topic Manager: Semaphore + Per-Topic mpsc
 
 ```rust
-pub struct ThreadManager {
-    /// Per-thread bounded mpsc channels
-    thread_queues: Mutex<HashMap<String, mpsc::Sender<QueueItem>>>,
+pub struct TopicManager {
+    /// Per-topic bounded mpsc channels
+    topic_queues: Mutex<HashMap<String, mpsc::Sender<QueueItem>>>,
 
-    /// Bounds concurrent thread workers
+    /// Bounds concurrent topic workers
     semaphore: Arc<Semaphore>,
 
     /// Configuration
@@ -1203,8 +1203,8 @@ pub struct ThreadManager {
     outbound: Arc<dyn OutboundAdapter>, // Channel-agnostic outbound
     agent: Arc<dyn AgentService>,
 
-    /// Thread-isolated event buses (Thread Event system)
-    event_buses: Mutex<HashMap<String, ThreadEventBusRef>>,
+    /// Topic-isolated event buses (Topic Event system)
+    event_buses: Mutex<HashMap<String, TopicEventBusRef>>,
     enable_events: bool,
 
     /// Graceful shutdown (child token — cancelling this does NOT cancel other channels)
@@ -1218,42 +1218,42 @@ pub struct ThreadManager {
 **Enqueue flow:**
 
 ```rust
-impl ThreadManager {
+impl TopicManager {
     pub async fn enqueue(
         &self,
         message: InboundMessage,
-        thread_name: String,
+        topic_name: String,
         pattern_match: PatternMatch,
     ) {
-        let mut queues = self.thread_queues.lock().await;
+        let mut queues = self.topic_queues.lock().await;
 
-        if let Some(sender) = queues.get(&thread_name) {
-            // Thread queue exists — try_send (non-blocking)
+        if let Some(sender) = queues.get(&topic_name) {
+            // Topic queue exists — try_send (non-blocking)
             match sender.try_send(QueueItem { message, pattern_match }) {
                 Ok(()) => return,
                 Err(TrySendError::Full(_)) => {
-                    tracing::warn!(thread = %thread_name, "Queue full, dropping message");
+                    tracing::warn!(topic = %topic_name, "Queue full, dropping message");
                     return;
                 }
                 Err(TrySendError::Closed(_)) => {
                     // Worker finished, remove stale queue and recreate below
-                    queues.remove(&thread_name);
+                    queues.remove(&topic_name);
                 }
             }
         }
 
-        // Create new thread queue + spawn worker
-        let (tx, rx) = mpsc::channel(self.max_queue_size_per_thread);
+        // Create new topic queue + spawn worker
+        let (tx, rx) = mpsc::channel(self.max_queue_size_per_topic);
         tx.try_send(QueueItem { message, pattern_match }).ok();
-        queues.insert(thread_name.clone(), tx);
+        queues.insert(topic_name.clone(), tx);
 
-        let handle = self.spawn_worker(thread_name.clone(), rx);
+        let handle = self.spawn_worker(topic_name.clone(), rx);
         self.worker_handles.lock().await.push(handle);
     }
 
     fn spawn_worker(
         &self,
-        thread_name: String,
+        topic_name: String,
         mut rx: mpsc::Receiver<QueueItem>,
     ) -> JoinHandle<()> {
         let semaphore = self.semaphore.clone();
@@ -1269,21 +1269,21 @@ impl ThreadManager {
                 _ = cancel.cancelled() => return,
             };
 
-            tracing::info!(thread = %thread_name, "Worker started");
+            tracing::info!(topic = %topic_name, "Worker started");
 
-            // Thread Event system setup
+            // Topic Event system setup
             let (current_message_tx, current_message_rx) = tokio::sync::watch::channel(None);
             let event_listener_handle = if enable_events {
-                // Create thread-isolated event bus
+                // Create topic-isolated event bus
                 let event_bus = Arc::new(SimpleThreadEventBus::new(10));
                 // Set event bus for agent service
-                let _ = agent.set_thread_event_bus(&thread_name, Some(event_bus.clone())).await;
+                let _ = agent.set_topic_event_bus(&topic_name, Some(event_bus.clone())).await;
 
                 // Start event listener (forwards events to subscribers)
                 Some(tokio::spawn(async move {
                     Self::event_listener(
                         event_bus,
-                        thread_name.clone(),
+                        topic_name.clone(),
                         current_message_rx,
                     ).await;
                 }))
@@ -1304,10 +1304,10 @@ impl ThreadManager {
                 let _ = current_message_tx.send(Some(item.message.clone()));
 
                 if let Err(e) = process_message(
-                    &item, &thread_name, &agent, &storage, /* ... */
+                    &item, &topic_name, &agent, &storage, /* ... */
                 ).await {
                     tracing::error!(
-                        thread = %thread_name,
+                        topic = %topic_name,
                         error = %e,
                         "Failed to process message"
                     );
@@ -1317,7 +1317,7 @@ impl ThreadManager {
                 let _ = current_message_tx.send(None);
             }
 
-            tracing::info!(thread = %thread_name, "Worker finished");
+            tracing::info!(topic = %topic_name, "Worker finished");
             // _permit dropped here → semaphore slot freed
         })
     }
@@ -1326,12 +1326,12 @@ impl ThreadManager {
 
 **Key properties:**
 
-- **Bounded concurrency**: `Semaphore(3)` — at most 3 threads process messages simultaneously
-- **Per-thread ordering**: Each thread's `mpsc::Receiver` ensures FIFO order. Messages arriving during AI processing are injected live into the session (not queued).
+- **Bounded concurrency**: `Semaphore(3)` — at most 3 topics process messages simultaneously
+- **Per-topic ordering**: Each topic's `mpsc::Receiver` ensures FIFO order. Messages arriving during AI processing are injected live into the session (not queued).
 - **Back-pressure**: `mpsc::channel(10)` — `try_send` fails when queue is full (message dropped)
 - **Graceful shutdown**: `CancellationToken` propagates to all workers and monitors
 - **Automatic cleanup**: Worker tasks exit when their mpsc channel closes (all senders dropped) or on cancellation. Semaphore permits are released on `_permit` drop.
-- **Thread Event System**: Each thread has an isolated event bus; events are forwarded to subscribers (e.g. inspect dashboard).
+- **Topic Event System**: Each topic has an isolated event bus; events are forwarded to subscribers (e.g. inspect dashboard).
 
 ### IMAP Monitor: State Machine
 
@@ -1450,18 +1450,18 @@ impl ThreadManager {
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**Thread Event Integration with SSE:**
+**Topic Event Integration with SSE:**
 
-- **SSE Event Conversion**: agent client converts SSE events to ThreadEvents
+- **SSE Event Conversion**: agent client converts SSE events to TopicEvents
 - **Event Types Converted**:
-  - `ProcessingStarted` → `ThreadEvent::ProcessingStarted`
-  - `ProcessingProgress` → `ThreadEvent::ProcessingProgress`
-  - `ProcessingCompleted` → `ThreadEvent::ProcessingCompleted`
-  - `ToolStarted` → `ThreadEvent::ToolStarted`
-  - `ToolCompleted` → `ThreadEvent::ToolCompleted`
+  - `ProcessingStarted` → `TopicEvent::ProcessingStarted`
+  - `ProcessingProgress` → `TopicEvent::ProcessingProgress`
+  - `ProcessingCompleted` → `TopicEvent::ProcessingCompleted`
+  - `ToolStarted` → `TopicEvent::ToolStarted`
+  - `ToolCompleted` → `TopicEvent::ToolCompleted`
   - `server.heartbeat` → ignored (connection keep-alive only)
-- **Event Publishing**: Events are published to thread-isolated event bus
-- **Thread Manager Monitoring**: Listens for events and forwards them to subscribers (inspect dashboard).
+- **Event Publishing**: Events are published to topic-isolated event bus
+- **Topic Manager Monitoring**: Listens for events and forwards them to subscribers (inspect dashboard).
 
 ### Graceful Shutdown Sequence
 
@@ -1476,7 +1476,7 @@ Signal (SIGINT/SIGTERM)
        │
         ├──> IMAP Monitors: exit IDLE/poll loop → disconnect
         │
-        ├──> ThreadManager workers: finish current message → exit
+        ├──> TopicManager workers: finish current message → exit
         │    (in-queue messages are lost — IMAP re-fetch on restart)
         │
         ├──> agent server: explicitly stopped via server.stop()
@@ -1503,32 +1503,32 @@ root_cancel (top-level)
     ├── imap_monitor_cancel (per channel)
     │       └── signals IMAP IDLE to abort
     │
-    ├── thread_manager_cancel
+    ├── topic_manager_cancel
     │       └── all worker tasks check this
     │
     └── agent_service_cancel
             └── aborts SSE streams
 ```
 
-## Thread Manager & Queue
+## Topic Manager & Queue
 
-### Per-Thread Queue with Semaphore-Bounded Concurrency
+### Per-Topic Queue with Semaphore-Bounded Concurrency
 
-(See the Async Event Queue Architecture section above for the full `ThreadManager` design with code.)
+(See the Async Event Queue Architecture section above for the full `TopicManager` design with code.)
 
 **Key properties:**
 
 - **Inbound channels run as concurrent tokio tasks** — Email monitor and FeiShu monitor listen simultaneously
 - **Fire-and-forget enqueue** — MessageRouter sends into mpsc and returns immediately
-- **Each thread has its own mpsc channel** — FIFO order preserved within a conversation
-- **One worker per thread** — Sequential processing (order matters for conversation coherence)
-- **Different threads process in parallel** — Up to `max_concurrent_threads` (default: 3) via `Semaphore`
+- **Each topic has its own mpsc channel** — FIFO order preserved within a conversation
+- **One worker per topic** — Sequential processing (order matters for conversation coherence)
+- **Different topics process in parallel** — Up to `max_concurrent_topics` (default: 3) via `Semaphore`
 - **In-memory queues** — Lost on restart; IMAP re-fetch handles recovery
 - **Queue overflow** — Messages dropped with warning when mpsc buffer is full
 
 ### Live Message Injection
 
-When a user sends a follow-up message while the AI is still processing the first message in the same thread, the follow-up is injected into the ongoing AI session rather than waiting in the queue.
+When a user sends a follow-up message while the AI is still processing the first message in the same topic, the follow-up is injected into the ongoing AI session rather than waiting in the queue.
 
 **Behavior:**
 
@@ -1558,7 +1558,7 @@ Please also add a chart to the PPT.
 
 ## Worker (Agent Service)
 
-### Responsibility Separation: ThreadManager vs AgentService vs OutboundAdapter
+### Responsibility Separation: TopicManager vs AgentService vs OutboundAdapter
 
 The processing pipeline is split into three layers with distinct responsibilities:
 
@@ -1568,8 +1568,8 @@ The processing pipeline is split into three layers with distinct responsibilitie
 #[async_trait]
 pub trait AgentService: Send + Sync {
     async fn process(
-        &self, message: &InboundMessage, thread_name: &str,
-        thread_path: &Path, message_dir: &str,
+        &self, message: &InboundMessage, topic_name: &str,
+        topic_path: &Path, message_dir: &str,
         pending_rx: &mut mpsc::Receiver<QueueItem>,
     ) -> Result<AgentResult>;
 }
@@ -1582,9 +1582,9 @@ pub struct AgentResult {
 
 Each agent mode implements this trait. Adding a new agent requires only implementing `AgentService` + a match arm in `cli/serve.rs`.
 
-**ThreadManager** (`src/core/thread_manager.rs`) — Orchestrator:
+**TopicManager** (`src/core/topic_manager.rs`) — Orchestrator:
 
-- Queue management: per-thread mpsc channels, semaphore-bounded concurrency
+- Queue management: per-topic mpsc channels, semaphore-bounded concurrency
 - Message storage: append to daily chat log (`chat_history_YYYY-MM-DD.jsonl`), save attachments
 - Command processing: parse/execute/strip email commands, send command results
 - Agent dispatch: calls `agent.process()` via `Arc<dyn AgentService>`
@@ -1594,14 +1594,14 @@ Each agent mode implements this trait. Adding a new agent requires only implemen
 **OutboundAdapter** (`src/channels/email/outbound.rs`) — Channel-specific reply lifecycle:
 
 - Builds channel-formatted reply (email: `build_full_reply_text()` with quoted history)
-- Sends via channel transport (SMTP with threading headers + attachments)
+- Sends via channel transport (SMTP with References headers + attachments)
 - Appends reply to chat log
 - Different channels (FeiShu, Slack) would implement different formatting + transport
 
 **AgentService** (`src/services/agent/service.rs`) implements `AgentService`:
 
 - Server lifecycle: ensure agent service is running, health check, auto-restart
-- Thread setup: write per-thread `agent config` with model, MCP tools, permissions
+- Topic setup: write per-topic `agent config` with model, MCP tools, permissions
 - Session management: reuse/create sessions, staleness detection
 - Prompt building: system prompt + user prompt
 - SSE streaming: activity timeout, tool detection, progress logging
@@ -1613,13 +1613,13 @@ Each agent mode implements this trait. Adding a new agent requires only implemen
 - Returns configured static text — does NOT format, send, or store
 
 ```rust
-// ThreadManager dispatches to agent, then outbound:
-let result = agent.process(&message, thread_name, thread_path, message_dir, &mut rx).await?;
+// TopicManager dispatches to agent, then outbound:
+let result = agent.process(&message, topic_name, topic_path, message_dir, &mut rx).await?;
 
 if !result.reply_sent_by_tool {
     if let Some(ref text) = result.reply_text {
         // Outbound adapter owns: format + send + store
-        outbound.send_reply(&message, text, thread_path, message_dir, None).await?;
+        outbound.send_reply(&message, text, topic_path, message_dir, None).await?;
     }
 }
 ```
@@ -1628,16 +1628,16 @@ This separation:
 
 - **Agent** is channel-agnostic — returns raw text, no email/FeiShu knowledge
 - **OutboundAdapter** owns the full reply lifecycle — format + send + store
-- **ThreadManager** is a thin orchestrator — dispatch to agent, pass result to outbound
+- **TopicManager** is a thin orchestrator — dispatch to agent, pass result to outbound
 - Adding a new channel requires only a new OutboundAdapter implementation
 - Adding a new AI backend requires only a new AgentService implementation
 
-### Session-Based Thread Management
+### Session-Based Topic Management
 
-Each thread has a dedicated agent session persisted in `agent-session.json`. This enables:
+Each topic has a dedicated agent session persisted in `agent-session.json`. This enables:
 
 - **Memory** — AI remembers previous replies in the conversation
-- **Coherence** — Consistent responses across the thread
+- **Coherence** — Consistent responses across the topic
 - **Context** — Conversation history maintained by agent session memory (not injected into prompt)
 - **Debugging** — Can inspect/replay sessions in in-process agent TUI
 
@@ -1666,7 +1666,7 @@ struct in-process agentServer {
 
 **Server lifecycle:**
 
-- Single shared agent service handles all threads
+- Single shared agent service handles all topics
 - Started via `jyc serve --hostname=127.0.0.1 --port=<port>`
 - Readiness detected by parsing stdout for `"jyc server listening on http://..."`
 - Auto-started on first request, auto-finds free port (49152+)
@@ -1707,10 +1707,10 @@ JYC uses the following subset of the agent service API:
 | `session.error`        | Session error                     | `properties.{ sessionID, error.name }`                                       |
 | `step.finish`          | Step completion with token counts | `properties.step.{ id, sessionID, cost, inputTokens, outputTokens, reason }` |
 
-**Per-thread configuration:**
+**Per-topic configuration:**
 
-- Each thread gets its own `agent config` with model settings, MCP tool config, and permissions
-- `permission: { "*": "allow", "question": "deny", "external_directory": "deny" }` — headless mode, no interactive terminal, no access outside thread directory
+- Each topic gets its own `agent config` with model settings, MCP tool config, and permissions
+- `permission: { "*": "allow", "question": "deny", "external_directory": "deny" }` — headless mode, no interactive terminal, no access outside topic directory
 - Staleness check detects changes → rewrites config → restarts server
 - Model and mode are passed per-prompt via `PromptRequest.model` and `PromptRequest.agent` — no session restart needed for switches
 
@@ -1725,11 +1725,11 @@ JYC uses the following subset of the agent service API:
 │  Shared reqwest::Client                                     │
 │       ↓                                                     │
 │  ┌─────────────────────────────────────┐                    │
-│  │ Sessions (per-thread directory)     │                    │
+│  │ Sessions (per-topic directory)     │                    │
 │  │                                     │                    │
-│  │ Thread A → agent-session.json + .agent/│                    │
-│  │ Thread B → agent-session.json + .agent/│                    │
-│  │ Thread C → agent-session.json + .agent/│                    │
+│  │ Topic A → agent-session.json + .agent/│                    │
+│  │ Topic B → agent-session.json + .agent/│                    │
+│  │ Topic C → agent-session.json + .agent/│                    │
 │  └─────────────────────────────────────┘                    │
 │                                                             │
 │  Server lives until CLI exits                               │
@@ -1739,14 +1739,14 @@ JYC uses the following subset of the agent service API:
 ### Worker Processing Flow
 
 ```
-┌─ ThreadManager (src/core/thread_manager.rs) ─────────────────────────┐
+┌─ TopicManager (src/core/topic_manager.rs) ─────────────────────────┐
 │                                                                       │
-│  Worker picks message from thread queue                               │
+│  Worker picks message from topic queue                               │
 │         │                                                             │
 │         ▼                                                             │
 │  ┌──────────────────────────────────────────┐                         │
 │  │ 1. STORE                                 │                         │
-│  │    MessageStorage::store(msg, thread)     │                         │
+│  │    MessageStorage::store(msg, topic)     │                         │
 │  │    → chat_history_YYYY-MM-DD.jsonl (appended)  │                         │
 │  │    → save attachments (allowlisted)       │                         │
 │  └──────────────┬───────────────────────────┘                         │
@@ -1795,13 +1795,13 @@ JYC uses the following subset of the agent service API:
 │                │      (outbound formats + sends + stores)  │          │
 │                └──────────────────────────────────────────┘  │      │
 │                                                              │      │
-│  Worker picks next message from thread queue                  │      │
+│  Worker picks next message from topic queue                  │      │
 └───────────────────────────────────────────────────────────────┘      │
                                                                        │
 ┌─ AgentService (src/services/agent/service.rs) ─────────────────┘
 │
 │  1. Ensure agent service is running (auto-start, health check)
-│  2. ensure_thread_agent_setup(thread_path)
+│  2. ensure_topic_agent_setup(topic_path)
 │     → reads .jyc/model-override (if exists, takes priority over config)
 │     → writes agent config with model, MCP config, permissions
 │     → staleness check: skip write if unchanged
@@ -1819,7 +1819,7 @@ JYC uses the following subset of the agent service API:
 │  7. Check mode override (plan/build from .jyc/mode-override)
 │         ↓
 │  prompt_with_sse() (SSE streaming):
-│    1. Subscribe to SSE events ({ directory: thread_path })
+│    1. Subscribe to SSE events ({ directory: topic_path })
 │    2. Fire prompt_async() (returns immediately)
 │    3. Process events (filtered by session_id, deduped):
 │        - server.connected → confirm SSE stream alive
@@ -1852,9 +1852,9 @@ JYC uses the following subset of the agent service API:
 │        → delete session, create new, retry once
 │    - ContextOverflow → new session + blocking retry
 │    - SSE failure → blocking prompt fallback
-│    - No tool used → return reply_text for ThreadManager fallback
+│    - No tool used → return reply_text for TopicManager fallback
 │
-└─ Returns GenerateReplyResult to ThreadManager ──────────────────────────
+└─ Returns GenerateReplyResult to TopicManager ──────────────────────────
 ```
 
 **Key flow rules:**
@@ -1867,7 +1867,7 @@ JYC uses the following subset of the agent service API:
 
 **Session lifecycle:**
 
-- Sessions are created on first use per thread and persisted in `.jyc/agent-session.json`
+- Sessions are created on first use per topic and persisted in `.jyc/agent-session.json`
 - Sessions are reused across messages, model switches, mode switches, and container restarts
 - Sessions track input tokens (`context_input_tokens`) and maximum threshold (`max_input_tokens`)
 - Sessions are automatically reset when token limit is exceeded
@@ -1879,7 +1879,7 @@ JYC uses the following subset of the agent service API:
 The agent relies on in-process agent's built-in session memory for multi-turn conversation context. JYC does NOT inject conversation history into the prompt.
 
 1. **in-process agent Session (Primary)** — Conversation memory maintained by in-process agent
-   - Session is reused across messages in the same thread (`agent-session.json`)
+   - Session is reused across messages in the same topic (`agent-session.json`)
    - AI remembers previous messages and replies within the session
    - Session is deleted when token limit is exceeded or on ContextOverflow
    - New session created on server restart
@@ -1912,7 +1912,7 @@ The agent relies on in-process agent's built-in session memory for multi-turn co
    /// Default maximum input tokens per session before resetting
    pub const DEFAULT_MAX_INPUT_TOKENS: u64 = 120 * 1024; // 122,880 tokens (120K)
 
-   /// Per-thread session state, persisted in `.jyc/agent-session.json`.
+   /// Per-topic session state, persisted in `.jyc/agent-session.json`.
    #[derive(Debug, Clone, Serialize, Deserialize)]
    pub struct SessionState {
        #[serde(rename = "sessionId")]
@@ -1955,7 +1955,7 @@ The agent relies on in-process agent's built-in session memory for multi-turn co
    - Topic cleaned of repeated Reply/Fwd prefixes (at ingest time by InboundAdapter)
    - Limited to 2,000 chars
 
-7. **Thread Files (Durable, for quoted history only)** — Markdown files stored in thread folder
+7. **Topic Files (Durable, for quoted history only)** — Markdown files stored in topic folder
    - Used by `build_full_reply_text()` for quoted history in reply emails
    - NOT loaded into the AI prompt
 
@@ -1976,7 +1976,7 @@ Create new session (clears history)
 ↓
 Retry prompt with new session (blocking fallback)
 ↓
-Thread files still provide recent conversation context
+Topic files still provide recent conversation context
 
 ```
 
@@ -1985,15 +1985,15 @@ Thread files still provide recent conversation context
 | Scenario | What Happens |
 |----------|-------------|
 | in-process agent uses `reply_message` tool successfully | Detected via SSE; `reply_sent_by_tool: true`, skips fallback |
-| `reply_message` tool fails (e.g. MCP not implemented, invalid JSON) | AI generates text response instead; ThreadManager passes raw text to OutboundAdapter which formats, sends, and stores |
-| AI returns text without using tool | `session.idle` fires; ThreadManager passes raw text to OutboundAdapter |
+| `reply_message` tool fails (e.g. MCP not implemented, invalid JSON) | AI generates text response instead; TopicManager passes raw text to OutboundAdapter which formats, sends, and stores |
+| AI returns text without using tool | `session.idle` fires; TopicManager passes raw text to OutboundAdapter |
 | AI takes very long but keeps working | SSE events keep arriving → no timeout; progress logged every 10s |
 | AI goes silent for 30 minutes | Activity timeout (60 min if tool running) → checks signal file → error |
 | SSE subscription fails | Falls back to blocking prompt with 5-min timeout |
 | agent service dies between messages | Health check detects it, restarts automatically |
 | ContextOverflowError | Detected via SSE `session.error` → new session → retry (blocking) |
 | Token limit exceeded | Detected at session creation → new session created → AI notified via prompt |
-| Thread queue full | Message dropped with warning; IMAP re-fetch recovers on restart |
+| Topic queue full | Message dropped with warning; IMAP re-fetch recovers on restart |
 
 ### Reply Text Building Pipeline
 
@@ -2037,9 +2037,9 @@ This ensures all reply emails have the same format regardless of the send path. 
 
 ```
 
-build*full_reply_text(reply_text, thread_path, sender, timestamp, topic, body, message_ts)
+build*full_reply_text(reply_text, topic_path, sender, timestamp, topic, body, message_ts)
 │
-├── prepare_body_for_quoting(thread_path, current_message, max_history)
+├── prepare_body_for_quoting(topic_path, current_message, max_history)
 │ │
 │ └── Read chat_history*\*.jsonl files for conversation context
 │ │
@@ -2113,7 +2113,7 @@ The reply tool shares types with the main binary (same Rust crate), eliminating 
 
 ### Reply Context File (Disk-Based)
 
-The reply context is saved to `.jyc/reply-context.json` per-thread before the AI prompt is sent. The MCP reply tool reads it from disk — the AI never sees or touches the context.
+The reply context is saved to `.jyc/reply-context.json` per-topic before the AI prompt is sent. The MCP reply tool reads it from disk — the AI never sees or touches the context.
 
 This replaces the old `reply-context.json=<base64>` approach where context was passed through the AI in the prompt text (prone to corruption by AI models).
 
@@ -2121,7 +2121,7 @@ This replaces the old `reply-context.json=<base64>` approach where context was p
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplyContext {
     pub channel: String,              // Config channel name (routing key)
-    pub thread_name: String,          // Thread directory name
+    pub topic_name: String,          // Topic directory name
     pub incoming_message_dir: String, // Timestamp identifier (e.g., "2026-03-19_23-02-20")
     pub uid: String,                  // Channel-specific message ID
     pub model: Option<String>,        // AI model used (e.g., "ark/deepseek-v3.2")
@@ -2130,21 +2130,21 @@ pub struct ReplyContext {
 }
 
 /// Save to .jyc/reply-context.json (called by AgentService before prompt)
-pub async fn save_reply_context(thread_path: &Path, ctx: &ReplyContext) -> Result<()>
+pub async fn save_reply_context(topic_path: &Path, ctx: &ReplyContext) -> Result<()>
 
 /// Load from .jyc/reply-context.json (called by MCP reply tool from cwd)
-pub async fn load_reply_context(thread_path: &Path) -> Result<ReplyContext>
+pub async fn load_reply_context(topic_path: &Path) -> Result<ReplyContext>
 
 /// Delete reply context file (used for tests and manual cleanup)
-pub async fn cleanup_reply_context(thread_path: &Path)
+pub async fn cleanup_reply_context(topic_path: &Path)
 ```
 
 **Lifecycle:**
 
 1. `AgentService` saves `.jyc/reply-context.json` before sending the prompt
 2. AI calls `reply_message(message, attachments)` — no token parameter
-3. MCP reply tool reads `.jyc/reply-context.json` from cwd (= thread directory)
-4. After successful send, context file persists (not deleted) to allow multiple replies in same thread
+3. MCP reply tool reads `.jyc/reply-context.json` from cwd (= topic directory)
+4. After successful send, context file persists (not deleted) to allow multiple replies in same topic
 5. Context file is overwritten on each new incoming message
 6. `cleanup_reply_context()` is only used for tests and manual cleanup operations
 
@@ -2153,7 +2153,7 @@ pub async fn cleanup_reply_context(thread_path: &Path)
 ### MCP Tool: `reply_message`
 
 ```
-MCP Server (rmcp, stdio transport, cwd = thread dir):
+MCP Server (rmcp, stdio transport, cwd = topic dir):
   Tool schema: message (string), attachments (string[] optional)
 
   1. Load .jyc/reply-context.json from cwd → get channel, message timestamp
@@ -2168,7 +2168,7 @@ MCP Server (rmcp, stdio transport, cwd = thread dir):
 
 ### MCP Tool: `jyc_send_message`
 
-Sends a proactive out-of-thread message to any recipient. Unlike `reply_message` which replies within the current thread context, this tool is for alerts, notifications, and other proactive messaging.
+Sends a proactive out-of-topic message to any recipient. Unlike `reply_message` which replies within the current topic context, this tool is for alerts, notifications, and other proactive messaging.
 
 ```
 MCP Server (rmcp, stdio transport):
@@ -2180,60 +2180,60 @@ MCP Server (rmcp, stdio transport):
   4. Return success message with delivery confirmation
 ```
 
-**ToolContext outbound injection**: `ToolContext` carries an optional `outbound: Arc<dyn OutboundAdapter>` field. When the agent loop builds the tool registry, it injects the current thread's outbound adapter into `ToolContext`. The `jyc_send_message` tool uses this adapter directly for immediate delivery — no signal file indirection needed.
+**ToolContext outbound injection**: `ToolContext` carries an optional `outbound: Arc<dyn OutboundAdapter>` field. When the agent loop builds the tool registry, it injects the current topic's outbound adapter into `ToolContext`. The `jyc_send_message` tool uses this adapter directly for immediate delivery — no signal file indirection needed.
 
 **Usage constraints** (enforced by AGENTS.md rules):
-- Must NOT be used for in-thread replies (use `reply_message` instead)
+- Must NOT be used for in-topic replies (use `reply_message` instead)
 - Must NOT be used to spam users (limit to alerts and notifications)
 - Recipient format is channel-specific; the tool validates format before attempting delivery
 
-### Built-in Tool: `jyc_send_to_thread`
+### Built-in Tool: `jyc_send_to_topic`
 
-Injects a message into another channel's thread queue for agent processing. Unlike `jyc_send_message` which bypasses agent processing (direct outbound delivery), `jyc_send_to_thread` enqueues an `InboundMessage` into the target thread's `ThreadManager`, so the target thread's agent picks it up and processes it.
+Injects a message into another channel's topic queue for agent processing. Unlike `jyc_send_message` which bypasses agent processing (direct outbound delivery), `jyc_send_to_topic` enqueues an `InboundMessage` into the target topic's `TopicManager`, so the target topic's agent picks it up and processes it.
 
 ```
-Thread A (feishu_bot / "greenfield 下单")
+Topic A (feishu_bot / "greenfield 下单")
   │
-  │  jyc_send_to_thread(
+  │  jyc_send_to_topic(
   │    channel="jin283",
-  │    thread="invoice-processing",
+  │    topic="invoice-processing",
   │    message="Please process this invoice...",
   │    attachments=["invoice.pdf"],
   │    require_reply=true
   │  )
   │
   ▼
-Thread B (jiny283 / "invoice-processing")
+Topic B (jiny283 / "invoice-processing")
   │
   │  InboundMessage enqueued with metadata:
   │    source_channel: "feishu_bot"
-  │    source_thread: "greenfield 下单"
+  │    source_topic: "greenfield 下单"
   │    require_reply: true
   │
   │  Agent sees in incoming message prompt:
-  │    **Source:** channel "feishu_bot", thread "greenfield 下单"
-  │      (⚠️ Reply requested - use jyc_send_to_thread to send results back)
+  │    **Source:** channel "feishu_bot", topic "greenfield 下单"
+  │      (⚠️ Reply requested - use jyc_send_to_topic to send results back)
   │
   │  Agent processes task, then calls:
-  │    jyc_send_to_thread(
+  │    jyc_send_to_topic(
   │      channel="feishu_bot",
-  │      thread="greenfield 下单",
+  │      topic="greenfield 下单",
   │      message="Done: invoice processed..."
   │    )
   │
   ▼
-Thread A receives results
+Topic A receives results
 ```
 
-**`require_reply` flag** (default: `false`): When `true`, the target agent's incoming message prompt includes a "⚠️ Reply requested" indicator, instructing it to send results back to the source channel/thread via `jyc_send_to_thread` when done.
+**`require_reply` flag** (default: `false`): When `true`, the target agent's incoming message prompt includes a "⚠️ Reply requested" indicator, instructing it to send results back to the source channel/topic via `jyc_send_to_topic` when done.
 
-**Source metadata**: The tool sets `source_channel`, `source_thread`, and `require_reply` in the `InboundMessage.metadata` HashMap. The `build_user_prompt_text()` function reads these fields and renders a `**Source:**` header in the target agent's prompt.
+**Source metadata**: The tool sets `source_channel`, `source_topic`, and `require_reply` in the `InboundMessage.metadata` HashMap. The `build_user_prompt_text()` function reads these fields and renders a `**Source:**` header in the target agent's prompt.
 
-**ToolContext injection**: `ToolContext` carries `thread_managers: Option<ThreadManagersMap>` (cross-channel thread managers keyed by channel name) and `current_channel` / `current_thread` (source context). These are injected by `JycAgentService` when building the tool registry.
+**ToolContext injection**: `ToolContext` carries `topic_managers: Option<TopicManagersMap>` (cross-channel topic managers keyed by channel name) and `current_channel` / `current_topic` (source context). These are injected by `JycAgentService` when building the tool registry.
 
-### Historical Message Quoting (Thread Trail)
+### Historical Message Quoting (Topic Trail)
 
-`build_full_reply_text()` builds the reply with quoted history from the thread's `chat_history_*.jsonl` files.
+`build_full_reply_text()` builds the reply with quoted history from the topic's `chat_history_*.jsonl` files.
 
 - **Chronological ordering**: Messages and replies are read from chat log files, ordered newest first.
 - **Stripped bodies**: Received messages stripped of quoted history via `strip_quoted_history()`. Reply messages parsed to extract only the AI's response text.
@@ -2241,9 +2241,9 @@ Thread A receives results
 - **Limit**: `MAX_HISTORY_QUOTE = 6` entries for reply email quoted history
 - **Timestamp format**: `YYYY-MM-DD HH:MM` in both quoted history headers and prompt context
 
-### Per-Thread in-process agent Config (`agent config`)
+### Per-Topic in-process agent Config (`agent config`)
 
-Written by `ensure_thread_agent_setup()` in each thread directory:
+Written by `ensure_topic_agent_setup()` in each topic directory:
 
 ```json
 {
@@ -2285,8 +2285,8 @@ JYC uses TOML for configuration, taking advantage of TOML's native support for n
 # JYC Configuration
 
 [general]
-max_concurrent_threads = 3
-max_queue_size_per_thread = 10
+max_concurrent_topics = 3
+max_queue_size_per_topic = 10
 
 # --- Channels ---
 
@@ -2366,9 +2366,9 @@ pub struct AppConfig {
 #[derive(Debug, Deserialize)]
 pub struct GeneralConfig {
     #[serde(default = "default_3")]
-    pub max_concurrent_threads: usize,
+    pub max_concurrent_topics: usize,
     #[serde(default = "default_10")]
-    pub max_queue_size_per_thread: usize,
+    pub max_queue_size_per_topic: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2431,7 +2431,7 @@ pub struct in-process agentConfig {
     pub model: Option<String>,
     pub small_model: Option<String>,
     pub system_prompt: Option<String>,
-    // Note: include_thread_history is deprecated — conversation history
+    // Note: include_topic_history is deprecated — conversation history
     // is no longer injected into the prompt. in-process agent session memory handles it.
 }
 ```
@@ -2473,7 +2473,7 @@ Each channel manages its own state independently. For email, state tracks IMAP s
 
 ### Per-Pattern Overrides
 
-Patterns can override global behavior for their matching threads:
+Patterns can override global behavior for their matching topics:
 
 ```toml
 [[channels.github.patterns]]
@@ -2498,7 +2498,7 @@ assignees = ["kingye"]
 3. Channel-level `model` / `small_model`
 4. Global `[agent]` config
 
-**MCP scoping**: When `mcps` is present on a pattern, only those named servers are loaded for matching threads. When `mcps = []`, no MCP servers are loaded (fully restricted). When omitted, the global `[[mcps]]` list is used.
+**MCP scoping**: When `mcps` is present on a pattern, only those named servers are loaded for matching topics. When `mcps = []`, no MCP servers are loaded (fully restricted). When omitted, the global `[[mcps]]` list is used.
 
 **Built-in tool disable**: `disabled_builtin_tools` removes named tools from the registry before the agent loop starts. Tool names match `Tool::name()`: `bash`, `write`, `edit`, `grep`, `glob`, `read`, `webfetch`, `read_image`.
 
@@ -2513,8 +2513,8 @@ assignees = ["kingye"]
 │   ├── .imap/
 │   │   ├── .state.json                  # IMAP monitor state
 │   │   └── .processed-uids.txt         # One UID per line, append-only
-│   └── workspace/                       # Thread workspaces (hardcoded: <workdir>/<channel_name>/workspace/)
-│       ├── <thread-dir-1>/              # in-process agent cwd for this thread
+│   └── workspace/                       # Topic workspaces (hardcoded: <workdir>/<channel_name>/workspace/)
+│       ├── <topic-dir-1>/              # in-process agent cwd for this topic
 │       │   ├── chat_history_2026-03-19.jsonl   # Daily chat log (messages + replies)
 │       │   ├── chat_history_2026-03-20.jsonl   # Next day's chat log
 │       │   ├── attachments/                 # Saved inbound attachments (if configured)
@@ -2527,17 +2527,17 @@ assignees = ["kingye"]
 │       │   │   ├── model-override       # /model command override
 │       │   │   └── mode-override        # /plan command override
 │       │   ├── .agent/               # in-process agent internal
-│       │   ├── agent config            # Per-thread in-process agent config
-│       │   └── system.md                # Optional thread-specific prompt
-│       └── <thread-dir-2>/
+│       │   ├── agent config            # Per-topic in-process agent config
+│       │   └── system.md                # Optional topic-specific prompt
+│       └── <topic-dir-2>/
 │           └── ...
 └── <channel-2>/
     └── ...
 ```
 
-## Thread Template
+## Topic Template
 
-Thread Template allows initializing new threads with predefined files and directories. Templates are defined at the pattern level and applied when a thread is first created.
+Topic Template allows initializing new topics with predefined files and directories. Templates are defined at the pattern level and applied when a topic is first created.
 
 ### Configuration
 
@@ -2553,7 +2553,7 @@ template = "urgent"  # Use templates/urgent/ for this pattern
 
 [[channels.my_channel.patterns]]
 name = "normal"
-# No template - thread starts empty
+# No template - topic starts empty
 ```
 
 Template directory structure (in workdir):
@@ -2562,7 +2562,7 @@ Template directory structure (in workdir):
 <root-dir>/
 ├── templates/
 │   ├── urgent/
-│   │   ├── agent.md      # in-process agent reads this as thread-specific prompt
+│   │   ├── agent.md      # in-process agent reads this as topic-specific prompt
 │   │   ├── skills/
 │   │   │   └── my_skill/
 │   │   │       └── SKILL.md
@@ -2575,15 +2575,15 @@ Template directory structure (in workdir):
 
 1. **Pattern Matching**: When a message matches a pattern with a `template` field, the template name is stored in the message metadata.
 
-2. **Thread Initialization**: On the first message to a thread, `ThreadManager` copies all files from `templates/{template_name}/` to the thread directory (skipping existing files).
+2. **Topic Initialization**: On the first message to a topic, `TopicManager` copies all files from `templates/{template_name}/` to the topic directory (skipping existing files).
 
 3. **Pattern Tracking**: The pattern name is saved to `.jyc/pattern` for later reference.
 
-4. **`/template` Command**: Users can run `/template` to re-apply the template to the current thread (copies missing files).
+4. **`/template` Command**: Users can run `/template` to re-apply the template to the current topic (copies missing files).
 
 ### Files Copied
 
-- Template files are copied to the thread root directory (not `.jyc/`)
+- Template files are copied to the topic root directory (not `.jyc/`)
 - Directories are created as needed
 - Existing files are **not** overwritten (safe to re-run)
 
@@ -2598,11 +2598,11 @@ Template directory structure (in workdir):
 │  ┌─────────────────┐ │                                │                      │
 │  │ InspectServer    │ │   GET  /api/state             │  polls every 500ms   │
 │  │ (axum router)   │ │  ◄──────────────────────────  │  reqwest + Bearer    │
-│  │                  │ │   200 + {channels, threads…}  │  auto-reconnect      │
+│  │                  │ │   200 + {channels, topics…}  │  auto-reconnect      │
 │  │ routes:         │ │  ──────────────────────────►  │                      │
 │  │  /api/state     │ │                                └──────────────────────┘
 │  │  /api/state/... │ │
-│  │  /api/threads/* │ │  /ws, /ws/<ch>, /ws/<ch>/<t>  ← WebSocket upgrade
+│  │  /api/topics/* │ │  /ws, /ws/<ch>, /ws/<ch>/<t>  ← WebSocket upgrade
 │  │  /api/...       │ │     Authorization: Bearer …
 │  │  /ws/*          │ │     → 101 Switching Protocols
 │  │  (require_bearer│ │
@@ -2652,8 +2652,8 @@ wscat -c ws://127.0.0.1:9876/ws/feishu_bot/issue-42 \
 │ ┌─ Channels ──────────────────────────────────────────────────┐  │
 │ │ ● emf (github)     ● networkcalc (github)                   │  │
 │ └─────────────────────────────────────────────────────────────┘  │
-│ ┌─ Threads (4) ───────────────────────────────────────────────┐  │
-│ │ Thread          Channel     Pattern     Status     Tokens   │  │
+│ ┌─ Topics (4) ───────────────────────────────────────────────┐  │
+│ │ Topic          Channel     Pattern     Status     Tokens   │  │
 │ │ issue-42        emf         planner     Processing 45K/120K │  │
 │ │ pr-43           emf         developer   Idle       12K/120K │  │
 │ │ review-pr-43    emf         reviewer    Queued     -        │  │
@@ -2665,15 +2665,15 @@ wscat -c ws://127.0.0.1:9876/ws/feishu_bot/issue-42 \
 │ │ Tokens: 45231 / 120000 (37%)                                 │  │
 │ │ Status: Processing                                           │  │
 │ └─────────────────────────────────────────────────────────────┘  │
-│ 2 active / 4 threads │ 156 recv │ 2 err │ up 1h03m │ v0.2.1   │
+│ 2 active / 4 topics │ 156 recv │ 2 err │ up 1h03m │ v0.2.1   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Key bindings: `q`/`Esc` quit, `↑`/`↓`/`j`/`k` select thread, `r` force refresh.
+Key bindings: `q`/`Esc` quit, `↑`/`↓`/`j`/`k` select topic, `r` force refresh.
 
-### Dashboard Cross-Channel Thread Chat
+### Dashboard Cross-Channel Topic Chat
 
-When the user selects a non-websocket thread (email, feishu, github) in the overview pane and presses `Enter`, the dashboard enters a detail/chat mode showing live messages and allowing message injection into the thread. This closes the gap where previously only websocket threads supported interactive chat from the dashboard.
+When the user selects a non-websocket topic (email, feishu, github) in the overview pane and presses `Enter`, the dashboard enters a detail/chat mode showing live messages and allowing message injection into the topic. This closes the gap where previously only websocket topics supported interactive chat from the dashboard.
 
 #### Live Message Flow
 
@@ -2689,18 +2689,18 @@ When the user selects a non-websocket thread (email, feishu, github) in the over
                                       ▼      ▼        ▼
                               ┌──────────────────────────────────┐
                               │       MessageRouter              │
-                              │  match → derive_thread → route   │
+                              │  match → derive_topic → route   │
                               └───────────────┬──────────────────┘
                                               │
                                               ▼
                               ┌──────────────────────────────────┐
-                              │       ThreadManager              │
+                              │       TopicManager              │
                               │                                  │
                               │  enqueue(message)                │
                               │    │                             │
-                              │    ├─ publish ThreadEvent::      │
+                              │    ├─ publish TopicEvent::      │
                               │    │   IncomingMessage           │
-                              │    │   on ThreadEventBus (1)     │
+                              │    │   on TopicEventBus (1)     │
                               │    │                             │
                               │    ▼                             │
                               │  Worker processes                │
@@ -2708,34 +2708,34 @@ When the user selects a non-websocket thread (email, feishu, github) in the over
                               │    ▼                             │
                               │  outbound.send_reply(text)       │
                               │    │                             │
-                              │    └─ publish ThreadEvent::      │
+                              │    └─ publish TopicEvent::      │
                               │       ReplySent                  │
-                              │       on ThreadEventBus (2)      │
+                              │       on TopicEventBus (2)      │
                               └───────────────┬──────────────────┘
                                               │
-                            ThreadEventBus    │
+                            TopicEventBus    │
                                               │
                     ┌─────────────────────────┘
                     │
                     ▼
 ┌───────────────────────────────────────────────────────────────────┐
 │                      ActivityTracker                               │
-│  (subscribes to ThreadEventBus per thread)                         │
+│  (subscribes to TopicEventBus per topic)                         │
 │                                                                   │
-│  ThreadEvent::IncomingMessage → store in                           │
-│    ThreadActivityState.recent_messages as ChatMessageEntry         │
+│  TopicEvent::IncomingMessage → store in                           │
+│    TopicActivityState.recent_messages as ChatMessageEntry         │
 │                                                                   │
-│  ThreadEvent::ReplySent → store in                                 │
-│    ThreadActivityState.recent_messages as ChatMessageEntry         │
+│  TopicEvent::ReplySent → store in                                 │
+│    TopicActivityState.recent_messages as ChatMessageEntry         │
 └───────────────────────────────┬───────────────────────────────────┘
                                 │
                                 ▼
 ┌───────────────────────────────────────────────────────────────────┐
 │                  InspectServer::build_state()                      │
 │                                                                   │
-│  For each thread:                                                 │
-│    • Drain ThreadActivityState.recent_messages                     │
-│    • Populate ThreadInfo.recent_messages                           │
+│  For each topic:                                                 │
+│    • Drain TopicActivityState.recent_messages                     │
+│    • Populate TopicInfo.recent_messages                           │
 │    • Return in InspectState (JSON)                                 │
 └───────────────────────────────┬───────────────────────────────────┘
                                 │
@@ -2762,33 +2762,33 @@ When the user selects a non-websocket thread (email, feishu, github) in the over
 │   pre-zen state on exit. Ctrl+P c focuses the message area;        │
 │   typing from any focused pane refocuses the input.                │
 │  ┌─────────────┐                                                 │
-│  │ Thread Info │ (20% wide right pane)                            │
+│  │ Topic Info │ (20% wide right pane)                            │
 │  │ (bordered)  │                                                 │
 │  └─────────────┘                                                 │
 │  [Tab]focus [↑↓]scroll [^P]leader [Esc]back [^Q]quit              │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
-#### ThreadEvent Additions
+#### TopicEvent Additions
 
 Two new variants enable the live message feed:
 
 ```rust
-pub enum ThreadEvent {
+pub enum TopicEvent {
     // ... existing variants ...
 
-    /// A new message arrived in this thread (from any source: remote user,
+    /// A new message arrived in this topic (from any source: remote user,
     /// scheduled job, or dashboard injection).
     IncomingMessage {
-        thread_name: String,
+        topic_name: String,
         sender: String,        // "user", "job", display name, etc.
         text: String,          // Truncated message body preview
         timestamp: DateTime<Utc>,
     },
 
-    /// The AI sent a reply for this thread.
+    /// The AI sent a reply for this topic.
     ReplySent {
-        thread_name: String,
+        topic_name: String,
         text: String,          // The AI reply text
         timestamp: DateTime<Utc>,
     },
@@ -2804,13 +2804,13 @@ non-websocket channels through a REST `inject_message` fallback.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                    /ws/<channel>/<thread> (any channel type)              │
+│                    /ws/<channel>/<topic> (any channel type)              │
 │                                                                          │
 │  Dashboard  ──────►  InspectServer::handle_client                        │
 │                          │                                             │
-│                          │  extract_ws_route("/ws/<channel>/<thread>")   │
+│                          │  extract_ws_route("/ws/<channel>/<topic>")   │
 │                          ▼                                             │
-│                    WsRoute::Thread { channel, name }                     │
+│                    WsRoute::Topic { channel, name }                     │
 │                          │                                             │
 │                          │  if channel in websocket_handlers:            │
 │                          ▼                                             │
@@ -2823,15 +2823,15 @@ non-websocket channels through a REST `inject_message` fallback.
 │                          │  else (any other channel):                    │
 │                          ▼                                             │
 │                    ┌─────────────────────────┐                          │
-│                    │ ThreadProxyHandler      │  (any other channel)      │
-│                    │ - inbound: load thread- │  reads .jyc/thread-       │
+│                    │ TopicProxyHandler      │  (any other channel)      │
+│                    │ - inbound: load topic- │  reads .jyc/topic-       │
 │                    │   meta.json, build      │  meta.json for routing    │
 │                    │   InboundMessage,       │  metadata                  │
 │                    │   tm.enqueue()          │                            │
 │                    │ - outbound: subscribe to │                            │
 │                    │   InspectContext.broad- │                            │
 │                    │   cast, filter by       │                            │
-│                    │   (channel, thread),    │                            │
+│                    │   (channel, topic),    │                            │
 │                    │   forward events        │                            │
 │                    │ - resync on Lagged      │                            │
 │                    └─────────────────────────┘                          │
@@ -2840,27 +2840,27 @@ non-websocket channels through a REST `inject_message` fallback.
 
 **Three URL routes:**
 
-- `GET /ws/<channel>/<thread>` — unified chat for any (channel, thread) pair
-  (routes to `ScopedWsHandler` for websocket channels, `ThreadProxyHandler` otherwise)
-- `GET /ws/<channel>` — adhoc thread on a websocket-type channel only
+- `GET /ws/<channel>/<topic>` — unified chat for any (channel, topic) pair
+  (routes to `ScopedWsHandler` for websocket channels, `TopicProxyHandler` otherwise)
+- `GET /ws/<channel>` — adhoc topic on a websocket-type channel only
   (returns error if `<channel>` is not a websocket channel)
 - `GET /ws` — use the first registered websocket channel (legacy)
 
 **Initial hydration (cold start):**
 
 ```
-Dashboard  ──REST──►  GET /threads/<channel>/<thread>/activity
-                       GET /threads/<channel>/<thread>/chat
+Dashboard  ──REST──►  GET /topics/<channel>/<topic>/activity
+                       GET /topics/<channel>/<topic>/chat
                        ↓
-                       seed_live(channel, thread, activity, chat) on the
+                       seed_live(channel, topic, activity, chat) on the
                        dashboard's ChatState.live_activity / live_chat
-                       BTreeMaps (keyed by (channel, thread))
+                       BTreeMaps (keyed by (channel, topic))
 ```
 
 **Live updates (warm path):**
 
 ```
-ThreadManager  ──publish──►  ThreadEventBus
+TopicManager  ──publish──►  TopicEventBus
                                  │
                                  ▼
                             ActivityTracker  ──fanout──►  InspectContext.broadcast
@@ -2869,7 +2869,7 @@ ThreadManager  ──publish──►  ThreadEventBus
                                  ▼                       ScopedWsHandler
                           state.entries /                  │
                           state.recent_messages            │ filter
-                                 │                         │ by (channel, thread)
+                                 │                         │ by (channel, topic)
                                  │                         ▼
                                  └────► also drained     ws.write
                                           into the same         │
@@ -2880,11 +2880,11 @@ ThreadManager  ──publish──►  ThreadEventBus
 **WebSocket protocol (outbound events from server):**
 
 ```json
-{"type":"activity",     "channel":"...", "thread":"...", "id":N, "entry":{...}}
-{"type":"chat_message", "channel":"...", "thread":"...", "id":N, "entry":{...}}
-{"type":"thinking",     "channel":"...", "thread":"...", "text":"..."}
-{"type":"processing",   "channel":"...", "thread":"...", "is_processing":bool, "has_error":bool}
-{"type":"resync",       "channel":"...", "thread":"...", "dropped":N}
+{"type":"activity",     "channel":"...", "topic":"...", "id":N, "entry":{...}}
+{"type":"chat_message", "channel":"...", "topic":"...", "id":N, "entry":{...}}
+{"type":"thinking",     "channel":"...", "topic":"...", "text":"..."}
+{"type":"processing",   "channel":"...", "topic":"...", "is_processing":bool, "has_error":bool}
+{"type":"resync",       "channel":"...", "topic":"...", "dropped":N}
 ```
 
 **WebSocket protocol (inbound messages from dashboard):**
@@ -2894,33 +2894,33 @@ ThreadManager  ──publish──►  ThreadEventBus
 {"type":"disconnect"}
 ```
 
-`channel` and `thread` are NOT in the payload — they're bound at handler
+`channel` and `topic` are NOT in the payload — they're bound at handler
 construction time from the URL path.
 
 **Dedup & backpressure:**
 
 - Each entry carries a monotonic `id: u64` assigned by `ActivityTracker`
-  on push (per-thread counter in `ThreadActivityState::next_id`).
-- Client tracks `last_seen_id[(channel, thread)]` and drops `id <= last_seen_id`.
+  on push (per-topic counter in `TopicActivityState::next_id`).
+- Client tracks `last_seen_id[(channel, topic)]` and drops `id <= last_seen_id`.
 - On `Lagged(n)`, the server sends `{"type":"resync", "dropped": n}` and the
   client clears the live buffer and re-hydrates via REST.
 
 #### Component Map
 
 ```
-ThreadEvent (crates/jyc-core/src/thread_event.rs)
+TopicEvent (crates/jyc-core/src/topic_event.rs)
   ├── +IncomingMessage variant
   └── +ReplySent variant
 
-ThreadManager (crates/jyc-core/src/thread_manager.rs)
-  ├── enqueue(): publish IncomingMessage on ThreadEventBus
+TopicManager (crates/jyc-core/src/topic_manager.rs)
+  ├── enqueue(): publish IncomingMessage on TopicEventBus
   ├── worker reply path: publish ReplySent after send_reply() succeeds
-  └── process_message(): write .jyc/thread-meta.json on first message
-      (routing metadata for ThreadProxyHandler)
+  └── process_message(): write .jyc/topic-meta.json on first message
+      (routing metadata for TopicProxyHandler)
 
-ThreadActivityState (crates/jyc-inspect/src/server.rs)
+TopicActivityState (crates/jyc-inspect/src/server.rs)
   ├── +recent_messages: VecDeque<ChatMessageEntry>  (capped at ~50)
-  └── +next_id: u64 (monotonic per-thread counter for dedup)
+  └── +next_id: u64 (monotonic per-topic counter for dedup)
 
 ActivityTracker (crates/jyc-inspect/src/server.rs)
   ├── subscriber loop: capture IncomingMessage/ReplySent → recent_messages
@@ -2930,55 +2930,55 @@ ActivityTracker (crates/jyc-inspect/src/server.rs)
 InspectContext (crates/jyc-inspect/src/server.rs)
   └── +inspect_broadcast: Arc<broadcast::Sender<String>>
       Per-channel broadcast bus fed by ActivityTracker; consumed by
-      ThreadProxyHandler and ScopedWsHandler (for filtering).
+      TopicProxyHandler and ScopedWsHandler (for filtering).
 
 WsRoute (crates/jyc-inspect/src/server.rs)
   ├── Bare: GET /ws
   ├── Channel(name): GET /ws/<channel>
-  └── Thread { channel, name }: GET /ws/<channel>/<thread>
+  └── Topic { channel, name }: GET /ws/<channel>/<topic>
 
-ThreadProxyHandler (crates/jyc-inspect/src/thread_proxy.rs)
+TopicProxyHandler (crates/jyc-inspect/src/topic_proxy.rs)
   ├── inbound {message, disconnect}
   ├── outbound: filtered events from inspect_broadcast
   └── emits resync on Lagged
 
 ScopedWsHandler (crates/jyc-inspect/src/scoped_ws.rs)
-  └── wraps any WebsocketHandler; pre-sends {type:"subscribe", thread}
+  └── wraps any WebsocketHandler; pre-sends {type:"subscribe", topic}
       before delegating to the inner handler (used to bind the inner
-      WebsocketInboundAdapter to a specific thread from the URL path)
+      WebsocketInboundAdapter to a specific topic from the URL path)
 
-InspectOverview / ThreadSummary (crates/jyc-types/src/inspect.rs)
+InspectOverview / TopicSummary (crates/jyc-types/src/inspect.rs)
   ├── Slim overview payload — same shape as InspectState but without
-  │   activity / recent_messages / thinking_text per thread
+  │   activity / recent_messages / thinking_text per topic
   └── Used by the dashboard's polling loop to keep payloads small
 
-InspectState / ThreadInfo (crates/jyc-types/src/inspect.rs)
+InspectState / TopicInfo (crates/jyc-types/src/inspect.rs)
   ├── ActivityEntry { id, text, timestamp, severity }
   ├── ChatMessageEntry { id, sender, text, timestamp }
-  └── ThreadInfo.{activity, recent_messages, thinking_text, ...} (full payload,
+  └── TopicInfo.{activity, recent_messages, thinking_text, ...} (full payload,
       retained for backward compat with any external clients)
 
 InspectServer (crates/jyc-inspect/src/server.rs)
   ├── build_state(): full snapshot with activity/messages
   ├── build_overview_state(): slim snapshot (no activity/messages)
-  ├── get_thread_activity: read .jyc/activity.jsonl
-  ├── get_thread_chat: read chat_history_*.jsonl
+  ├── get_topic_activity: read .jyc/activity.jsonl
+  ├── get_topic_chat: read chat_history_*.jsonl
   ├── get_state_overview / get_state: handled by handle_request
   └── reload_config: handled by handle_request
 
 InspectClient (crates/jyc-inspect/src/client.rs)
   ├── get_state() → InspectState (full, retained for compatibility)
   ├── get_overview() → InspectOverview (slim, used by dashboard poll)
-  ├── get_thread_activity(channel, thread, since, limit) → Vec<ActivityEntry>
-  ├── get_thread_chat(channel, thread, since, limit) → Vec<ChatMessageEntry>
+  ├── get_topic_activity(channel, topic, since, limit) → Vec<ActivityEntry>
+  ├── get_topic_chat(channel, topic, since, limit) → Vec<ChatMessageEntry>
   └── reload_config() → (bool, String)
 
 Dashboard (crates/jyc-cli/src/cli/dashboard/)
   ├── main poll: client.get_overview() every 500ms (slim payload)
-  ├── on thread selection: REST hydrate (get_thread_activity + get_thread_chat)
-  │   + WS connect to /ws/<channel>/<thread>
+  ├── on topic selection: REST hydrate (get_topic_activity + get_topic_chat)
+  │   + WS connect to /ws/<channel>/<topic>
   ├── ChatState.live_activity / live_chat / live_thinking / live_processing:
-  │   BTreeMap<(channel, thread), ...>; populated by hydrate + WS events
+  │   BTreeMap<(channel, topic), ...>; populated by hydrate + WS events
   ├── Activity pane + chat progress read from these live buffers
   │   (rendering logic unchanged from before the refactor)
   └── handle_live_event() appends WS events to the live buffers with
@@ -2989,28 +2989,28 @@ Dashboard (crates/jyc-cli/src/cli/dashboard/)
 
 | Decision | Rationale |
 |---|---|
-| `ThreadEventBus` over new broadcast channel | Reuses existing infrastructure; events already scoped per-thread; ActivityTracker already subscribes |
-| `IncomingMessage` published in `ThreadManager::enqueue()` | Captures ALL message sources (remote IMAP, Feishu WS, GitHub poll, dashboard, jobs) in one place |
+| `TopicEventBus` over new broadcast channel | Reuses existing infrastructure; events already scoped per-topic; ActivityTracker already subscribes |
+| `IncomingMessage` published in `TopicManager::enqueue()` | Captures ALL message sources (remote IMAP, Feishu WS, GitHub poll, dashboard, jobs) in one place |
 | `ReplySent` published after `send_reply()` succeeds | Guarantees the reply was actually delivered; same timing as existing metrics counters |
-| `recent_messages` in `ThreadActivityState`, not `ThreadInfo` directly | ThreadInfo is rebuilt from scratch on each poll; ActivityTracker maintains rolling buffer |
-| Single WebSocket endpoint for all channels (`/ws/<channel>/<thread>`) | Decouples dashboard from channel type; `ThreadProxyHandler` handles non-WS channels uniformly |
-| Per-channel broadcast bus (`InspectContext.inspect_broadcast`) | One shared bus; handlers filter by `(channel, thread)` from each payload |
-| `id: u64` monotonic per-thread for dedup | Survives WS reconnect / Lagged recovery; small field, backward compat via `#[serde(default)]` |
+| `recent_messages` in `TopicActivityState`, not `TopicInfo` directly | TopicInfo is rebuilt from scratch on each poll; ActivityTracker maintains rolling buffer |
+| Single WebSocket endpoint for all channels (`/ws/<channel>/<topic>`) | Decouples dashboard from channel type; `TopicProxyHandler` handles non-WS channels uniformly |
+| Per-channel broadcast bus (`InspectContext.inspect_broadcast`) | One shared bus; handlers filter by `(channel, topic)` from each payload |
+| `id: u64` monotonic per-topic for dedup | Survives WS reconnect / Lagged recovery; small field, backward compat via `#[serde(default)]` |
 | `resync` on `Lagged(n)` instead of panicking | Client re-hydrates via REST; same code path as cold start |
 | REST hydrate on selection + WS for live | Cold start from disk (authoritative); warm path push-based (low latency) |
 | `chat.progress` and `activity` pane read from the **same** `live_activity` buffer | Single source of truth; both panes show identical data |
-| Reuse `ThreadManager::enqueue` for both REST-injected and WS-injected messages | Same path as `send_to_thread` tool; no duplicate routing logic |
+| Reuse `TopicManager::enqueue` for both REST-injected and WS-injected messages | Same path as `send_to_topic` tool; no duplicate routing logic |
 | `ChatMessageEntry` struct shared in `jyc_types` | Lets both inspect server and dashboard use the same type without coupling |
 | Drop `inject_message` REST method | Replaced by WS; no consumer since only the TUI used it |
-| Per-thread broadcast capacity 256 (vs. 64 for reply bus) | Activity events burstier than AI replies; 256 absorbs 5-min TUI offline gaps |
+| Per-topic broadcast capacity 256 (vs. 64 for reply bus) | Activity events burstier than AI replies; 256 absorbs 5-min TUI offline gaps |
 
 ### MetricsCollector
 
 Components report events via `MetricsHandle`:
 
-- `message_received(thread)`, `message_matched(thread)`
-- `reply_by_tool(thread)`, `reply_by_fallback(thread)`
-- `processing_error(thread, error)`, `queue_dropped(thread)`
+- `message_received(topic)`, `message_matched(topic)`
+- `reply_by_tool(topic)`, `reply_by_fallback(topic)`
+- `processing_error(topic, error)`, `queue_dropped(topic)`
 
 Stats are accumulated in `Arc<Mutex<HealthStats>>`, queryable by the inspect server. No email dependency.
 
@@ -3063,15 +3063,15 @@ jyc/
 │   │       └── outbound.rs             # GithubOutboundAdapter (comment poster)
 │   ├── core/
 │   │   ├── mod.rs
-│   │   ├── thread_manager.rs           # Per-thread queues + semaphore
-│   │   ├── thread_manager_tests.rs     # ThreadManager integration tests
-│   │   ├── thread_path.rs              # Central path resolution for threads
-│   │   ├── thread_event_bus.rs         # Thread-isolated event bus
-│   │   ├── thread_event.rs             # ThreadEvent types
+│   │   ├── topic_manager.rs           # Per-topic queues + semaphore
+│   │   ├── topic_manager_tests.rs     # TopicManager integration tests
+│   │   ├── topic_path.rs              # Central path resolution for topics
+│   │   ├── topic_event_bus.rs         # Topic-isolated event bus
+│   │   ├── topic_event.rs             # TopicEvent types
 │   │   ├── message_router.rs           # Pattern match → dispatch
 │   │   ├── message_storage.rs          # Markdown file I/O
 │   │   ├── chat_log_store.rs           # Chat log storage (daily log files)
-│   │   ├── email_parser.rs             # Stripping, quoting, thread trail
+│   │   ├── email_parser.rs             # Stripping, quoting, topic trail
 │   │   ├── state_manager.rs            # UID tracking, state persistence
 │   │   ├── metrics.rs                   # MetricsCollector
 │   │   ├── attachment_storage.rs       # Channel-agnostic attachment saving
@@ -3084,7 +3084,7 @@ jyc/
 │   │       ├── model_handler.rs        # /model command
 │   │       ├── mode_handler.rs         # /plan, /build commands
 │   │       ├── reset_handler.rs        # /reset command
-│   │       ├── close_handler.rs        # /close command (thread cleanup)
+│   │       ├── close_handler.rs        # /close command (topic cleanup)
 │   │       └── template_handler.rs     # /template command (re-apply template)
 │   ├── services/
 │   │   ├── mod.rs
@@ -3112,7 +3112,7 @@ jyc/
 │   │   └── context.rs                # ReplyContext serialization + validation
 │   ├── inspect/
 │   │   ├── mod.rs
-│   │   ├── types.rs                  # InspectState, ChannelInfo, ThreadInfo, protocol
+│   │   ├── types.rs                  # InspectState, ChannelInfo, TopicInfo, protocol
 │   │   ├── server.rs                 # TCP inspect server (JSON line protocol)
 │   │   └── client.rs                 # TCP client (persistent connection, auto-reconnect)
 │   ├── security/
@@ -3149,7 +3149,7 @@ Each log file contains chronological entries:
 
 - Incoming messages — appended with sender, timestamp, and body
 - AI replies — appended after sending, with model and mode metadata
-- Attachments — saved in the thread directory by the inbound adapter (if allowlist config enabled)
+- Attachments — saved in the topic directory by the inbound adapter (if allowlist config enabled)
 
 ## Logging & Tracing
 
@@ -3161,7 +3161,7 @@ JYC uses the `tracing` ecosystem for all logging and diagnostics:
 | --------------------- | --------------------------------------------------------------------------------------------- |
 | **Crate**             | `tracing` 0.1.x + `tracing-subscriber` 0.3.x                                                  |
 | **Why not `log`**     | `tracing` provides structured fields, async-aware spans, and custom subscriber layers         |
-| **Span architecture** | Layered spans provide automatic context (component, channel, thread, model) on every log line |
+| **Span architecture** | Layered spans provide automatic context (component, channel, topic, model) on every log line |
 | **Env filter**        | `RUST_LOG=jyc=info,async_imap=warn` controls per-module verbosity                             |
 | **CLI flags**         | `--debug` sets `jyc=debug`, `--verbose` sets `jyc=trace,async_imap=debug`                     |
 
@@ -3172,7 +3172,7 @@ Every log line automatically includes context from hierarchical `tracing` spans.
 ```
 Layer 1: component     (always present — identifies the subsystem)
   Layer 2: channel     (present when processing a specific channel)
-    Layer 3: thread    (present when processing a specific thread)
+    Layer 3: topic    (present when processing a specific topic)
       Layer 4: model/mode  (present during AI session)
 ```
 
@@ -3181,16 +3181,16 @@ Layer 1: component     (always present — identifies the subsystem)
 | Span Name | Layer    | Fields              | Where Created                    | Propagation                   |
 | --------- | -------- | ------------------- | -------------------------------- | ----------------------------- |
 | `inbound` | L1+L2    | `channel`           | `cli/serve.rs` — per IMAP task   | `tokio::spawn().instrument()` |
-| `worker`  | L1+L2+L3 | `channel`, `thread` | `thread_manager.rs` — per worker | `tokio::spawn().instrument()` |
+| `worker`  | L1+L2+L3 | `channel`, `topic` | `topic_manager.rs` — per worker | `tokio::spawn().instrument()` |
 | `metrics` | L1       | —                   | `metrics.rs` — background task   | `tokio::spawn().instrument()` |
 
 Logs within instrumented futures automatically inherit all parent span fields. For example, a log in `agent/service.rs` called from within a `worker` span shows:
 
 ```
-INFO worker{channel=jiny283, thread=weather}: Sending prompt to in-process agent mode=build
-INFO worker{channel=jiny283, thread=weather}: AI model selected model=deepseek-v3.2
-INFO worker{channel=jiny283, thread=weather}: Tool running tool=glob
-INFO worker{channel=jiny283, thread=weather}: Session idle — prompt complete
+INFO worker{channel=jiny283, topic=weather}: Sending prompt to in-process agent mode=build
+INFO worker{channel=jiny283, topic=weather}: AI model selected model=deepseek-v3.2
+INFO worker{channel=jiny283, topic=weather}: Tool running tool=glob
+INFO worker{channel=jiny283, topic=weather}: Session idle — prompt complete
 ```
 
 #### How Spans Propagate in Async Code
@@ -3200,14 +3200,14 @@ cli/serve.rs:
   tokio::spawn(async { ... }.instrument(info_span!("inbound", channel = %ch)))
     → imap/monitor.rs: start() — all logs inherit inbound{channel}
       → message_router.rs: route() — inherits inbound{channel}
-        → thread_manager.rs: enqueue() — creates new worker span
+        → topic_manager.rs: enqueue() — creates new worker span
 
-  tokio::spawn(async { ... }.instrument(info_span!("worker", channel, thread)))
-    → process_message() — inherits worker{channel, thread}
-      → command/registry.rs: process_commands() — inherits worker{channel, thread}
-      → agent.process() — inherits worker{channel, thread}
-        → agent/service.rs: generate_reply() — inherits worker{channel, thread}
-          → agent/client.rs: prompt_with_sse() — inherits worker{channel, thread}
+  tokio::spawn(async { ... }.instrument(info_span!("worker", channel, topic)))
+    → process_message() — inherits worker{channel, topic}
+      → command/registry.rs: process_commands() — inherits worker{channel, topic}
+      → agent.process() — inherits worker{channel, topic}
+        → agent/service.rs: generate_reply() — inherits worker{channel, topic}
+          → agent/client.rs: prompt_with_sse() — inherits worker{channel, topic}
             → handle_sse_event() — inherits (sync, called within instrumented future)
 ```
 
@@ -3217,15 +3217,15 @@ cli/serve.rs:
 INFO inbound{channel=jiny283}: Starting IMAP monitor mode="poll" folder=INBOX
 INFO inbound{channel=jiny283}: IMAP connected and authenticated host=imap.163.com
 INFO inbound{channel=jiny283}: Message received uid=123 sender=kingye@petalmail.com
-INFO worker{channel=jiny283, thread=weather}: Worker started
-INFO worker{channel=jiny283, thread=weather}: Message stored sender=kingye@petalmail.com
-INFO worker{channel=jiny283, thread=weather}: Sending prompt to in-process agent mode=build
-INFO worker{channel=jiny283, thread=weather}: AI model selected model=deepseek-v3.2
-INFO worker{channel=jiny283, thread=weather}: Tool running tool=jiny_reply_reply_message
-INFO worker{channel=jiny283, thread=weather}: Session idle — prompt complete
-INFO worker{channel=jiny283, thread=weather}: Reply sent by MCP tool
-INFO worker{channel=jiny283, thread=weather}: Agent complete reply_sent=true
-INFO worker{channel=jiny283, thread=weather}: Worker finished
+INFO worker{channel=jiny283, topic=weather}: Worker started
+INFO worker{channel=jiny283, topic=weather}: Message stored sender=kingye@petalmail.com
+INFO worker{channel=jiny283, topic=weather}: Sending prompt to in-process agent mode=build
+INFO worker{channel=jiny283, topic=weather}: AI model selected model=deepseek-v3.2
+INFO worker{channel=jiny283, topic=weather}: Tool running tool=jiny_reply_reply_message
+INFO worker{channel=jiny283, topic=weather}: Session idle — prompt complete
+INFO worker{channel=jiny283, topic=weather}: Reply sent by MCP tool
+INFO worker{channel=jiny283, topic=weather}: Agent complete reply_sent=true
+INFO worker{channel=jiny283, topic=weather}: Worker finished
 ```
 
 #### Key Rules
@@ -3234,7 +3234,7 @@ INFO worker{channel=jiny283, thread=weather}: Worker finished
 - **`.instrument(span)` works across `.await` points** — unlike `span.enter()` which only works in sync code
 - **Sync methods called within instrumented async blocks** inherit the parent span automatically (e.g., `handle_sse_event()`)
 - **MCP reply tool** runs as a separate process — no span inheritance. Uses its own file-based logger.
-- **Individual log calls** only include per-event fields (e.g., `tool`, `uid`, `error`). Context fields (channel, thread) come from the span.
+- **Individual log calls** only include per-event fields (e.g., `tool`, `uid`, `error`). Context fields (channel, topic) come from the span.
 
 ### Log Levels
 
@@ -3252,14 +3252,14 @@ INFO worker{channel=jiny283, thread=weather}: Worker finished
 
 | Command        | Description                                                   | Example                                            |
 | -------------- | ------------------------------------------------------------- | -------------------------------------------------- |
-| `/model <id>`  | Switch AI model for this thread                               | `/model SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2` |
+| `/model <id>`  | Switch AI model for this topic                               | `/model SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2` |
 | `/model`       | List available models                                         | `/model`                                           |
 | `/model reset` | Reset to default model from config                            | `/model reset`                                     |
 | `/plan`        | Switch to plan mode (read-only, enforced by in-process agent)         | `/plan`                                            |
 | `/build`       | Switch to build mode (full execution, default)                | `/build`                                           |
 | `/reset`       | Clear the current in-process agent session (start fresh context)      | `/reset`                                           |
-| `/close`       | Close the current thread (deletes thread directory and state; requires `-y`/`--confirm`) | `/close -y`                                        |
-| `/template`    | Re-apply the pattern's thread template files                  | `/template`                                        |
+| `/close`       | Close the current topic (deletes topic directory and state; requires `-y`/`--confirm`) | `/close -y`                                        |
+| `/template`    | Re-apply the pattern's topic template files                  | `/template`                                        |
 
 ### Command Handler Trait
 
@@ -3274,7 +3274,7 @@ pub trait CommandHandler: Send + Sync {
 
 pub struct CommandContext {
     pub args: Vec<String>,
-    pub thread_path: PathBuf,
+    pub topic_path: PathBuf,
     pub config: Arc<AppConfig>,
     pub channel: String,
 }
@@ -3310,7 +3310,7 @@ impl CommandRegistry {
     /// line ends the command block — everything from that line onward is the
     /// cleaned body.
     ///
-    /// Returns executed results + cleaned body. ThreadManager does NOT need to
+    /// Returns executed results + cleaned body. TopicManager does NOT need to
     /// know about command line syntax.
     pub async fn process_commands(
         &self,
@@ -3355,7 +3355,7 @@ impl CommandRegistry {
 }
 ```
 
-**ThreadManager usage** (simplified — no command syntax knowledge needed):
+**TopicManager usage** (simplified — no command syntax knowledge needed):
 
 ```rust
 let output = command_registry.process_commands(
@@ -3369,7 +3369,7 @@ if output.body_empty && !output.results.is_empty() {
         .map(|r| r.message.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    send_direct_reply(&message, &summary, thread_path, message_dir).await?;
+    send_direct_reply(&message, &summary, topic_path, message_dir).await?;
     return Ok(());
 }
 
@@ -3380,12 +3380,12 @@ message.content.text = Some(output.cleaned_body);
 **Key design decisions:**
 
 - **Single pass**: Commands are parsed, executed, and stripped in one scan of the body.
-- **Single responsibility**: All command-related logic (parsing, executing, stripping) lives in `CommandRegistry`. `ThreadManager` only checks `body_empty` and `results`.
-- **Testable**: One function in, one struct out. Easy to unit test without mocking ThreadManager.
+- **Single responsibility**: All command-related logic (parsing, executing, stripping) lives in `CommandRegistry`. `TopicManager` only checks `body_empty` and `results`.
+- **Testable**: One function in, one struct out. Easy to unit test without mocking TopicManager.
 
 ### Model Override Persistence
 
-The `/model` command writes the model ID to `.jyc/model-override` in the thread directory. This persists across messages — subsequent emails in the same thread use the overridden model until `/model reset` is sent.
+The `/model` command writes the model ID to `.jyc/model-override` in the topic directory. This persists across messages — subsequent emails in the same topic use the overridden model until `/model reset` is sent.
 
 ### Plan/Build Mode
 
@@ -3438,7 +3438,7 @@ Configurable per pattern via `attachments` in the pattern config.
 - MCP tool: validate context before processing
 - `permission: { "*": "allow", "question": "deny", "external_directory": "deny" }` in agent config
 - Rust's ownership model eliminates data races, use-after-free, and buffer overflows
-- `system.md` per-thread customization — file permissions should restrict who can modify thread directories
+- `system.md` per-topic customization — file permissions should restrict who can modify topic directories
 
 ## Crate Dependencies
 
@@ -3469,17 +3469,17 @@ Configurable per pattern via `attachments` in the pattern config.
 | `tokio-util`          | 0.7.x                                  | CancellationToken                 |
 | `async-trait`         | 0.1.x                                  | Async trait support               |
 
-## Thread Event System
+## Topic Event System
 
-The Thread Event System is a core component for handling inter-thread event communication in JYC. It implements SSE event to ThreadEvent conversion with thread isolation.
+The Topic Event System is a core component for handling inter-topic event communication in JYC. It implements SSE event to TopicEvent conversion with topic isolation.
 
 ### Architecture
 
 #### Core Components
 
 1. **in-process agent Client** - SSE event conversion layer
-2. **Thread Event Bus** - Thread-isolated event bus (publish/subscribe)
-3. **Thread Manager** - Event listening and forwarding layer
+2. **Topic Event Bus** - Topic-isolated event bus (publish/subscribe)
+3. **Topic Manager** - Event listening and forwarding layer
 
 #### Data Flow
 
@@ -3487,40 +3487,40 @@ The Thread Event System is a core component for handling inter-thread event comm
 SSE Events (in-process agent Server)
     ↓
 in-process agent Client Conversion
-    ├── ProcessingStarted → ThreadEvent::ProcessingStarted
-    ├── ProcessingProgress → ThreadEvent::ProcessingProgress
-    ├── ToolStarted/Completed → ThreadEvent::ToolStarted/Completed
+    ├── ProcessingStarted → TopicEvent::ProcessingStarted
+    ├── ProcessingProgress → TopicEvent::ProcessingProgress
+    ├── ToolStarted/Completed → TopicEvent::ToolStarted/Completed
     └── server.heartbeat → ignored (connection keep-alive only)
     ↓
-Publish to Thread's Event Bus
+Publish to Topic's Event Bus
     ↓
-Thread Manager Event Listener
+Topic Manager Event Listener
     └── Receive events and forward to subscribers (e.g. inspect dashboard)
 ```
 
-### Thread Isolation Design
+### Topic Isolation Design
 
 #### Key Features
 
-1. **Per-thread isolated event bus** - Each thread uses a `SimpleThreadEventBus` instance
-2. **No cross-thread event propagation** - Complete isolation
+1. **Per-topic isolated event bus** - Each topic uses a `SimpleThreadEventBus` instance
+2. **No cross-topic event propagation** - Complete isolation
 
 #### Implementation
 
 ```rust
-// ThreadManager creates isolated event bus for each thread
+// TopicManager creates isolated event bus for each topic
 let event_bus = Arc::new(SimpleThreadEventBus::new(10));
 
-// Event listener subscribes only to its thread's event bus
+// Event listener subscribes only to its topic's event bus
 let mut receiver = event_bus.subscribe().await;
 ```
 
-### ThreadEvent Types
+### TopicEvent Types
 
 #### Event Enumeration
 
 ```rust
-pub enum ThreadEvent {
+pub enum TopicEvent {
     // Processing state events (published by in-process agent Client)
     ProcessingStarted { ... },
     ProcessingProgress { ... },
@@ -3543,18 +3543,18 @@ pub enum ThreadEvent {
 
 ### Configuration
 
-#### Thread Manager Initialization
+#### Topic Manager Initialization
 
 ```rust
-// Enable Thread Event system by default
-let thread_manager = ThreadManager::new_with_options(
+// Enable Topic Event system by default
+let topic_manager = TopicManager::new_with_options(
     max_concurrent,
     max_queue_size,
     storage,
     outbound,
     agent,
     cancel.child_token(), // child token — prevents cascade shutdown
-    true, // enable_events: true (Thread Event system)
+    true, // enable_events: true (Topic Event system)
 );
 ```
 
@@ -3569,7 +3569,7 @@ let thread_manager = ThreadManager::new_with_options(
 ### Performance Considerations
 
 1. **Asynchronous non-blocking** - All event publishing is asynchronous
-2. **Thread-local state** - Each thread maintains independent event bus state
+2. **Topic-local state** - Each topic maintains independent event bus state
 3. **Lightweight events** - Event structures remain simple
 4. **Limited queues** - Event buses use limited capacity queues
 
@@ -3582,13 +3582,13 @@ let thread_manager = ThreadManager::new_with_options(
 
 #### Integration Tests
 
-- SSE event to ThreadEvent conversion
-- Inter-thread event isolation
+- SSE event to TopicEvent conversion
+- Inter-topic event isolation
 
 #### End-to-End Tests
 
-- Complete event flow: SSE → ThreadEvent → inspect dashboard / event subscribers
-- Multi-thread concurrent processing
+- Complete event flow: SSE → TopicEvent → inspect dashboard / event subscribers
+- Multi-topic concurrent processing
 - Error scenario handling
 
 ### Deployment Notes
@@ -3638,9 +3638,9 @@ Overseas Server (HK)                    Mainland China Server (Shanghai)
 
 ### Templates & Skills
 
-Agent templates define the role, instructions, and skills for each thread type.
+Agent templates define the role, instructions, and skills for each topic type.
 Templates live in the repo under `templates/`. Skills are discovered from multiple
-priority paths at runtime, with thread-local paths overriding repo paths, which
+priority paths at runtime, with topic-local paths overriding repo paths, which
 override system paths. A deploy script composes them at deploy time.
 
 **Repository structure:**
@@ -3654,7 +3654,7 @@ templates/                      ← AGENTS.md only (role + instructions)
   github-developer/AGENTS.md
   github-reviewer/AGENTS.md
 
-.agent/skills/               ← Default in-repo skills (lowest priority per-thread)
+.agent/skills/               ← Default in-repo skills (lowest priority per-topic)
   invoice-processing/           ← Invoice extraction workflow
   dev-workflow/                 ← Branching, commits, releases
   incremental-dev/              ← Small-step development methodology
@@ -3664,7 +3664,7 @@ templates/                      ← AGENTS.md only (role + instructions)
   jyc-deploy-docker/            ← Docker deployment
 
 .claude/skills/                 ← Alternative in-repo skills (overrides .agent/)
-.jyc/skills/                    ← Thread-local override (highest in-repo priority)
+.jyc/skills/                    ← Topic-local override (highest in-repo priority)
 ```
 
 **Multi-path skill discovery:**
@@ -3680,15 +3680,15 @@ higher-priority paths override those from lower-priority paths, so a
 | 1 (lowest) | `$HOME/.config/agent/skills/` | User system |
 | 2 | `$HOME/.claude/skills/` | User system |
 | 3 | `{jyc-data}/skills/` | JYC data directory |
-| 4 | `{thread}/repo/.claude/skills/` | Thread repo |
-| 5 | `{thread}/repo/.agent/skills/` | Thread repo |
-| 6 | `{thread}/repo/.jyc/skills/` | Thread repo (highest in repo) |
-| 7 | `{thread}/.claude/skills/` | Thread-local |
-| 8 | `{thread}/.agent/skills/` | Thread-local |
-| 9 (highest) | `{thread}/.jyc/skills/` | Thread-local override |
+| 4 | `{topic}/repo/.claude/skills/` | Topic repo |
+| 5 | `{topic}/repo/.agent/skills/` | Topic repo |
+| 6 | `{topic}/repo/.jyc/skills/` | Topic repo (highest in repo) |
+| 7 | `{topic}/.claude/skills/` | Topic-local |
+| 8 | `{topic}/.agent/skills/` | Topic-local |
+| 9 (highest) | `{topic}/.jyc/skills/` | Topic-local override |
 
-Thread-local `.jyc/skills/` is the highest priority path — it provides a
-mechanism for overriding any skill on a per-thread basis without modifying the
+Topic-local `.jyc/skills/` is the highest priority path — it provides a
+mechanism for overriding any skill on a per-topic basis without modifying the
 shared repository.
 
 **Runtime skill injection (lazy loading):**
@@ -3735,9 +3735,9 @@ content can be 10-50KB each — embedding them all would bloat the prompt.
 
 **Persistence for dashboard inspection:**
 
-Discovered skill names are persisted to `.jyc/skills.json` per thread, allowing
+Discovered skill names are persisted to `.jyc/skills.json` per topic, allowing
 the inspect server / dashboard to display which skills are active for each
-thread without re-running discovery.
+topic without re-running discovery.
 
 **Skill → Template mapping:**
 
@@ -3758,10 +3758,10 @@ thread without re-running discovery.
 ```
 
 The script copies each template's `AGENTS.md` and its referenced skills from
-the repository's skill directories into the target directory. When a thread is
-created with a template, the `AGENTS.md` is copied to the thread workspace.
+the repository's skill directories into the target directory. When a topic is
+created with a template, the `AGENTS.md` is copied to the topic workspace.
 Skills are then discovered at runtime from all 9 priority paths (see table above)
-via `discover_skills()`, with thread-local paths overriding any repo or system
+via `discover_skills()`, with topic-local paths overriding any repo or system
 skills of the same name.
 
 **Adding a new template:**
@@ -3772,7 +3772,7 @@ skills of the same name.
 
 ## WeChat Channel Implementation
 
-The WeChat (微信) channel implementation provides messaging capabilities through the OpenILink WebSocket Bridge. Unlike Feishu which uses separate WebSocket (inbound) and HTTP API (outbound) paths, WeChat uses a **single shared WebSocket connection** for both receiving and sending messages. One bot corresponds to one fixed thread.
+The WeChat (微信) channel implementation provides messaging capabilities through the OpenILink WebSocket Bridge. Unlike Feishu which uses separate WebSocket (inbound) and HTTP API (outbound) paths, WeChat uses a **single shared WebSocket connection** for both receiving and sending messages. One bot corresponds to one fixed topic.
 
 ### Architecture Overview
 
@@ -3812,7 +3812,7 @@ The WeChat (微信) channel implementation provides messaging capabilities throu
 │  │WechatInboundAdapter│   │ WechatOutboundAdapter  │     │
 │  │ • WechatMatcher    │   │ • JSON format sending  │     │
 │  │ • Pattern matching │   │ • Footer concatenation │     │
-│  │ • Thread name =    │   │ • Reply storage        │     │
+│  │ • Topic name =    │   │ • Reply storage        │     │
 │  │   channel name     │   │ • v1: text-only        │     │
 │  └──────────────────┘    └─────────────────────────┘     │
 └─────────────────────────────────────────────────────────────┘
@@ -3831,9 +3831,9 @@ The WeChat (微信) channel implementation provides messaging capabilities throu
    - Configurable max reconnect attempts
    - `CancellationToken` for graceful shutdown
 
-3. **One Bot = One Fixed Thread**
-   - `derive_thread_name()` returns the channel name directly (e.g., `"wechat_bot"`)
-   - Unlike Feishu which supports multiple chats, WeChat v1 uses a single-thread model
+3. **One Bot = One Fixed Topic**
+   - `derive_topic_name()` returns the channel name directly (e.g., `"wechat_bot"`)
+   - Unlike Feishu which supports multiple chats, WeChat v1 uses a single-topic model
    - Simplifies implementation and matches typical WeChat bot usage patterns
 
 4. **Pattern Matching**
@@ -3847,9 +3847,9 @@ The WeChat (微信) channel implementation provides messaging capabilities throu
 |--------|--------|--------|
 | Inbound transport | LarkWsClient (SDK) WebSocket | Raw tokio-tungstenite WebSocket |
 | Outbound transport | REST API (HTTP) | Same WebSocket as inbound |
-| Thread model | One thread per chat | One fixed thread per bot |
+| Topic model | One topic per chat | One fixed topic per bot |
 | Message format | Rich (text, image, file, card) | Text + attachments (images, files, voice, video) |
-| Name resolution | API-based with caching | Not needed (fixed thread) |
+| Name resolution | API-based with caching | Not needed (fixed topic) |
 | SDK dependency | openlark SDK | None (direct WS protocol) |
 
 ### Message Formats
@@ -3895,24 +3895,24 @@ WeChat inbound attachments (images, files, voice, video) are received via the Op
 
 The WeChat inbound adapter:
 1. Downloads the attachment from the provided URL
-2. Saves it to the thread directory via `attachment_storage`
+2. Saves it to the topic directory via `attachment_storage`
 3. Populates `MessageAttachment.saved_path` so downstream agent tools can access it
 4. Strips placeholder bodies (`[image]`, `[file]`, etc.) so the agent processes attachment-only messages correctly
 
 ### Limitations (v1)
-- Single thread per bot — no multi-chat routing
+- Single topic per bot — no multi-chat routing
 - JSON format is OpenILink-specific — no protocol abstraction layer
 
 ## Scheduled Job System
 
 ### Overview
 
-JYC supports channel-agnostic scheduled jobs — recurring or one-time tasks created by the AI from any thread. The JobScheduler runs as a background task alongside the per-channel inbound monitors, firing due jobs by injecting `InboundMessage` into the originating thread via `ThreadManager::enqueue`.
+JYC supports channel-agnostic scheduled jobs — recurring or one-time tasks created by the AI from any topic. The JobScheduler runs as a background task alongside the per-channel inbound monitors, firing due jobs by injecting `InboundMessage` into the originating topic via `TopicManager::enqueue`.
 
 ### Architecture
 
 ```
-User in thread: "Every day at 8 AM, send me the daily summary"
+User in topic: "Every day at 8 AM, send me the daily summary"
     │
     ├── Agent calls job_create("0 0 8 * * * *", "send daily summary")
     │       │
@@ -3935,7 +3935,7 @@ User in thread: "Every day at 8 AM, send me the daily summary"
             │   }
             │       │
             │       ▼
-            │   ThreadManager::enqueue(message, thread_name, ...)
+            │   TopicManager::enqueue(message, topic_name, ...)
             │       │
             │       ▼
             │   Worker processes message → AI generates reply
@@ -3949,7 +3949,7 @@ User in thread: "Every day at 8 AM, send me the daily summary"
    - `cron`: 7-field cron expression ("sec min hour dom mon dow year") for recurring jobs
    - `at`: ISO 8601 timestamp for one-time jobs
    - `enabled`: Whether the job fires
-   - `thread_name`, `channel`, `channel_name`: Routing info for firing
+   - `topic_name`, `channel`, `channel_name`: Routing info for firing
    - `prompt`: Instructions injected as the message body when job fires
    - `next_fire_at`: Pre-computed next scheduled fire time (updated after each fire)
 
@@ -3960,7 +3960,7 @@ User in thread: "Every day at 8 AM, send me the daily summary"
 
 3. **JobScheduler** (`jyc-services/src/job_scheduler.rs`) — Background scan-and-fire loop
    - Lists all enabled jobs, checks `next_fire_at <= now`
-   - Fires due jobs by injecting `InboundMessage` into `ThreadManager`
+   - Fires due jobs by injecting `InboundMessage` into `TopicManager`
    - Updates job state (last_fired_at, next_fire_at, enabled for one-time)
    - Sleeps until next due job (or scan interval)
 
@@ -3976,13 +3976,13 @@ User in thread: "Every day at 8 AM, send me the daily summary"
 [scheduler]
 enabled = true              # default: true
 scan_interval_secs = 60     # default: 60
-max_jobs_per_thread = 10    # default: 10
+max_jobs_per_topic = 10    # default: 10
 ```
 
 ### Design Decisions
 
-- **Channel-agnostic**: Jobs fire by injecting `InboundMessage` into the existing `ThreadManager` — no channel-specific code in the scheduler
-- **Per-thread JSON file storage**: Jobs are stored in `<thread>/.jyc/jobs/<id>.json` — each thread manages its own jobs, no global directory. The scheduler scans all workspace directories for thread directories with `.jyc/jobs/` subdirectories.
+- **Channel-agnostic**: Jobs fire by injecting `InboundMessage` into the existing `TopicManager` — no channel-specific code in the scheduler
+- **Per-topic JSON file storage**: Jobs are stored in `<topic>/.jyc/jobs/<id>.json` — each topic manages its own jobs, no global directory. The scheduler scans all workspace directories for topic directories with `.jyc/jobs/` subdirectories.
 - **7-field cron** (sec min hour dom mon dow year) for precision — the `cron` crate supports sub-minute scheduling
 - **Pre-computed next_fire_at**: Each job stores its next fire time, computed after each fire — avoids re-parsing cron on every scan cycle
 - **One-time job lifecycle**: After firing, `enabled` is set to `false` and `next_fire_at` to `None`

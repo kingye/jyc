@@ -7,17 +7,17 @@ use tracing::Instrument;
 /// Metric events reported by components.
 #[derive(Debug)]
 pub enum MetricEvent {
-    MessageReceived { thread: String },
-    MessageMatched { thread: String },
-    ReplyByTool { thread: String },
-    ReplyByFallback { thread: String },
-    ProcessingError { thread: String, error: String },
-    QueueDropped { thread: String },
+    MessageReceived { topic: String },
+    MessageMatched { topic: String },
+    ReplyByTool { topic: String },
+    ReplyByFallback { topic: String },
+    ProcessingError { topic: String, error: String },
+    QueueDropped { topic: String },
 }
 
-/// Per-thread statistics.
+/// Per-topic statistics.
 #[derive(Debug, Default, Clone)]
-pub struct ThreadStats {
+pub struct TopicStats {
     pub received: u64,
     pub processed: u64,
     pub errors: u64,
@@ -33,7 +33,7 @@ pub struct HealthStats {
     pub replies_by_fallback: u64,
     pub errors: u64,
     pub dropped: u64,
-    pub per_thread: HashMap<String, ThreadStats>,
+    pub per_topic: HashMap<String, TopicStats>,
 }
 
 /// Shared reference to accumulated health stats.
@@ -50,45 +50,45 @@ pub struct MetricsHandle {
 
 impl MetricsHandle {
     /// Report a message received.
-    pub fn message_received(&self, thread: &str) {
+    pub fn message_received(&self, topic: &str) {
         let _ = self.sender.try_send(MetricEvent::MessageReceived {
-            thread: thread.to_string(),
+            topic: topic.to_string(),
         });
     }
 
     /// Report a pattern match.
-    pub fn message_matched(&self, thread: &str) {
+    pub fn message_matched(&self, topic: &str) {
         let _ = self.sender.try_send(MetricEvent::MessageMatched {
-            thread: thread.to_string(),
+            topic: topic.to_string(),
         });
     }
 
     /// Report a reply sent by MCP tool.
-    pub fn reply_by_tool(&self, thread: &str) {
+    pub fn reply_by_tool(&self, topic: &str) {
         let _ = self.sender.try_send(MetricEvent::ReplyByTool {
-            thread: thread.to_string(),
+            topic: topic.to_string(),
         });
     }
 
     /// Report a reply sent by fallback.
-    pub fn reply_by_fallback(&self, thread: &str) {
+    pub fn reply_by_fallback(&self, topic: &str) {
         let _ = self.sender.try_send(MetricEvent::ReplyByFallback {
-            thread: thread.to_string(),
+            topic: topic.to_string(),
         });
     }
 
     /// Report a processing error.
-    pub fn processing_error(&self, thread: &str, error: &str) {
+    pub fn processing_error(&self, topic: &str, error: &str) {
         let _ = self.sender.try_send(MetricEvent::ProcessingError {
-            thread: thread.to_string(),
+            topic: topic.to_string(),
             error: error.to_string(),
         });
     }
 
     /// Report a dropped message (queue full).
-    pub fn queue_dropped(&self, thread: &str) {
+    pub fn queue_dropped(&self, topic: &str) {
         let _ = self.sender.try_send(MetricEvent::QueueDropped {
-            thread: thread.to_string(),
+            topic: topic.to_string(),
         });
     }
 
@@ -156,34 +156,26 @@ impl MetricsCollector {
 
     fn handle_event(event: MetricEvent, stats: &mut HealthStats) {
         match event {
-            MetricEvent::MessageReceived { ref thread } => {
+            MetricEvent::MessageReceived { ref topic } => {
                 stats.messages_received += 1;
-                stats.per_thread.entry(thread.clone()).or_default().received += 1;
+                stats.per_topic.entry(topic.clone()).or_default().received += 1;
             }
             MetricEvent::MessageMatched { .. } => {
                 stats.messages_matched += 1;
             }
-            MetricEvent::ReplyByTool { ref thread } => {
+            MetricEvent::ReplyByTool { ref topic } => {
                 stats.messages_processed += 1;
                 stats.replies_by_tool += 1;
-                stats
-                    .per_thread
-                    .entry(thread.clone())
-                    .or_default()
-                    .processed += 1;
+                stats.per_topic.entry(topic.clone()).or_default().processed += 1;
             }
-            MetricEvent::ReplyByFallback { ref thread } => {
+            MetricEvent::ReplyByFallback { ref topic } => {
                 stats.messages_processed += 1;
                 stats.replies_by_fallback += 1;
-                stats
-                    .per_thread
-                    .entry(thread.clone())
-                    .or_default()
-                    .processed += 1;
+                stats.per_topic.entry(topic.clone()).or_default().processed += 1;
             }
-            MetricEvent::ProcessingError { ref thread, .. } => {
+            MetricEvent::ProcessingError { ref topic, .. } => {
                 stats.errors += 1;
-                stats.per_thread.entry(thread.clone()).or_default().errors += 1;
+                stats.per_topic.entry(topic.clone()).or_default().errors += 1;
             }
             MetricEvent::QueueDropped { .. } => {
                 stats.dropped += 1;
@@ -200,9 +192,9 @@ mod tests {
     async fn test_metrics_handle_noop() {
         let handle = MetricsHandle::noop();
         // Should not panic — events are silently dropped
-        handle.message_received("test-thread");
-        handle.processing_error("test-thread", "some error");
-        handle.queue_dropped("test-thread");
+        handle.message_received("test-topic");
+        handle.processing_error("test-topic", "some error");
+        handle.queue_dropped("test-topic");
     }
 
     #[tokio::test]
@@ -212,13 +204,13 @@ mod tests {
         let (handle, stats, task) = collector.start();
 
         // Send events
-        handle.message_received("thread-1");
-        handle.message_received("thread-1");
-        handle.message_received("thread-2");
-        handle.message_matched("thread-1");
-        handle.reply_by_tool("thread-1");
-        handle.processing_error("thread-2", "oops");
-        handle.queue_dropped("thread-3");
+        handle.message_received("topic-1");
+        handle.message_received("topic-1");
+        handle.message_received("topic-2");
+        handle.message_matched("topic-1");
+        handle.reply_by_tool("topic-1");
+        handle.processing_error("topic-2", "oops");
+        handle.queue_dropped("topic-3");
 
         // Give the collector time to process
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -231,11 +223,11 @@ mod tests {
         assert_eq!(s.errors, 1);
         assert_eq!(s.dropped, 1);
 
-        // Per-thread stats
-        assert_eq!(s.per_thread["thread-1"].received, 2);
-        assert_eq!(s.per_thread["thread-1"].processed, 1);
-        assert_eq!(s.per_thread["thread-2"].received, 1);
-        assert_eq!(s.per_thread["thread-2"].errors, 1);
+        // Per-topic stats
+        assert_eq!(s.per_topic["topic-1"].received, 2);
+        assert_eq!(s.per_topic["topic-1"].processed, 1);
+        assert_eq!(s.per_topic["topic-2"].received, 1);
+        assert_eq!(s.per_topic["topic-2"].errors, 1);
 
         drop(s);
 
@@ -264,13 +256,13 @@ mod tests {
         let collector = MetricsCollector::new(cancel.clone());
         let (handle, stats, task) = collector.start();
 
-        handle.reply_by_fallback("thread-1");
+        handle.reply_by_fallback("topic-1");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let s = stats.lock().await;
         assert_eq!(s.messages_processed, 1);
         assert_eq!(s.replies_by_fallback, 1);
-        assert_eq!(s.per_thread["thread-1"].processed, 1);
+        assert_eq!(s.per_topic["topic-1"].processed, 1);
         drop(s);
 
         cancel.cancel();

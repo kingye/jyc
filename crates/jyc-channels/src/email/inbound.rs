@@ -13,7 +13,7 @@ use jyc_types::{
 };
 use jyc_utils::helpers::extract_domain;
 
-/// Email-specific pattern matching and thread name derivation.
+/// Email-specific pattern matching and topic name derivation.
 ///
 /// Stateless struct implementing `ChannelMatcher` — can be cheaply created
 /// wherever email pattern matching is needed (e.g., ImapMonitor, tests).
@@ -24,7 +24,7 @@ impl ChannelMatcher for EmailMatcher {
         "email"
     }
 
-    fn derive_thread_name(
+    fn derive_topic_name(
         &self,
         message: &InboundMessage,
         patterns: &[ChannelPattern],
@@ -37,7 +37,7 @@ impl ChannelMatcher for EmailMatcher {
             .flatten()
             .cloned()
             .collect();
-        email_parser::derive_thread_name(&message.topic, &subject_prefixes)
+        email_parser::derive_topic_name(&message.topic, &subject_prefixes)
     }
 
     fn match_message(
@@ -85,7 +85,7 @@ pub fn parse_raw_email(raw: &[u8], uid: u32) -> anyhow::Result<InboundMessage> {
     let subject = parsed.subject().unwrap_or("").to_string();
     let message_id = parsed.message_id().map(|s| s.to_string());
 
-    // Extract threading headers
+    // Extract References headers
     let in_reply_to = parsed.in_reply_to().as_text().map(|s| s.to_string());
 
     let references: Option<Vec<String>> = {
@@ -201,7 +201,7 @@ pub fn parse_raw_email(raw: &[u8], uid: u32) -> anyhow::Result<InboundMessage> {
             markdown: None,
         },
         timestamp,
-        thread_refs: references,
+        references,
         reply_to_id: in_reply_to,
         external_id: message_id,
         attachments,
@@ -346,19 +346,19 @@ impl EmailInboundAdapter {
         }
     }
 
-    /// Save attachments to thread directory.
-    pub async fn save_attachments_to_thread_directory(
+    /// Save attachments to topic directory.
+    pub async fn save_attachments_to_topic_directory(
         &self,
         message: &mut InboundMessage,
         patterns: &[ChannelPattern],
         attachment_config: Option<&InboundAttachmentConfig>,
     ) -> Result<()> {
-        let thread_name = EmailMatcher.derive_thread_name(message, patterns, None);
-        jyc_core::attachment_storage::save_attachments_to_thread_directory(
+        let topic_name = EmailMatcher.derive_topic_name(message, patterns, None);
+        jyc_core::attachment_storage::save_attachments_to_topic_directory(
             message,
             &self.workspace_root,
             &self.channel_name,
-            &thread_name,
+            &topic_name,
             attachment_config,
         )
         .await
@@ -382,7 +382,7 @@ mod tests {
             topic: subject.to_string(),
             content: MessageContent::default(),
             timestamp: Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
@@ -559,7 +559,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_save_attachments_to_thread_directory() {
+    async fn test_save_attachments_to_topic_directory() {
         // Create a temporary directory for workspace
         let temp_dir = tempdir().unwrap();
         let workspace_root = temp_dir.path().to_path_buf();
@@ -581,7 +581,7 @@ mod tests {
             topic: "Test Subject".to_string(),
             content: MessageContent::default(),
             timestamp: Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments: vec![
@@ -609,7 +609,7 @@ mod tests {
 
         // Save attachments
         let result = adapter
-            .save_attachments_to_thread_directory(&mut message, &patterns, None)
+            .save_attachments_to_topic_directory(&mut message, &patterns, None)
             .await;
 
         // Verify the operation succeeded
@@ -640,11 +640,11 @@ mod tests {
         }
 
         // Verify the directory structure
-        let thread_name = EmailMatcher.derive_thread_name(&message, &patterns, None);
+        let topic_name = EmailMatcher.derive_topic_name(&message, &patterns, None);
         let expected_attachments_dir = workspace_root
             .join("test_channel")
             .join("workspace")
-            .join(&thread_name)
+            .join(&topic_name)
             .join("attachments");
 
         assert!(

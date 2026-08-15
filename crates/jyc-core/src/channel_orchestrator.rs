@@ -9,12 +9,12 @@ use tokio_util::sync::CancellationToken;
 use jyc_types::AppConfig;
 use jyc_types::ChannelInfo;
 
-use crate::thread_manager::ThreadManager;
+use crate::topic_manager::TopicManager;
 
 /// Handle for a running channel, used by the orchestrator to manage lifecycle.
 pub struct ChannelHandle {
     pub cancel: CancellationToken,
-    pub thread_manager: Arc<ThreadManager>,
+    pub topic_manager: Arc<TopicManager>,
     pub channel_info: ChannelInfo,
     pub workspace_dir: std::path::PathBuf,
 }
@@ -31,7 +31,7 @@ pub struct ChannelHandle {
 pub struct ChannelOrchestrator {
     channels: Mutex<HashMap<String, ChannelHandle>>,
     config: Arc<ArcSwap<AppConfig>>,
-    thread_managers: Arc<ArcSwap<Vec<Arc<ThreadManager>>>>,
+    topic_managers: Arc<ArcSwap<Vec<Arc<TopicManager>>>>,
     channel_infos: Arc<ArcSwap<Vec<ChannelInfo>>>,
     workspace_dirs: Arc<ArcSwap<Vec<std::path::PathBuf>>>,
 }
@@ -41,15 +41,15 @@ impl ChannelOrchestrator {
         Self {
             channels: Mutex::new(HashMap::new()),
             config,
-            thread_managers: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            topic_managers: Arc::new(ArcSwap::from_pointee(Vec::new())),
             channel_infos: Arc::new(ArcSwap::from_pointee(Vec::new())),
             workspace_dirs: Arc::new(ArcSwap::from_pointee(Vec::new())),
         }
     }
 
-    /// Shared view of thread managers for InspectContext.
-    pub fn thread_managers(&self) -> Arc<ArcSwap<Vec<Arc<ThreadManager>>>> {
-        self.thread_managers.clone()
+    /// Shared view of topic managers for InspectContext.
+    pub fn topic_managers(&self) -> Arc<ArcSwap<Vec<Arc<TopicManager>>>> {
+        self.topic_managers.clone()
     }
 
     /// Shared view of channel infos for InspectContext.
@@ -80,14 +80,14 @@ impl ChannelOrchestrator {
 
         // Stop removed channels: cancel the per-channel token, then give workers
         // up to 5s to exit gracefully (via the cancel token). The inbound task
-        // should shut down its adapter and call ThreadManager::shutdown().
+        // should shut down its adapter and call TopicManager::shutdown().
         for name in old_names.difference(&new_names) {
             if let Some(handle) = channels.remove(name) {
                 tracing::info!(channel = %name, "Stopping channel (removed from config)");
                 handle.cancel.cancel();
                 // Allow time for the task to see the cancellation and shut down.
                 // The task is responsible for cleaning up (adapter disconnect,
-                // ThreadManager shutdown, etc.) after the token fires.
+                // TopicManager shutdown, etc.) after the token fires.
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
         }
@@ -112,21 +112,19 @@ impl ChannelOrchestrator {
     /// Update the shared ArcSwap views for InspectContext.
     async fn update_shared_state(&self) {
         let channels = self.channels.lock().await;
-        let tms: Vec<Arc<ThreadManager>> = channels
-            .values()
-            .map(|h| h.thread_manager.clone())
-            .collect();
+        let tms: Vec<Arc<TopicManager>> =
+            channels.values().map(|h| h.topic_manager.clone()).collect();
         let infos: Vec<ChannelInfo> = channels.values().map(|h| h.channel_info.clone()).collect();
         let dirs: Vec<std::path::PathBuf> =
             channels.values().map(|h| h.workspace_dir.clone()).collect();
         drop(channels);
 
-        self.thread_managers.store(Arc::new(tms));
+        self.topic_managers.store(Arc::new(tms));
         self.channel_infos.store(Arc::new(infos));
         self.workspace_dirs.store(Arc::new(dirs));
 
         tracing::info!(
-            channel_count = self.thread_managers.load().len(),
+            channel_count = self.topic_managers.load().len(),
             "Updated shared state after reload"
         );
     }
@@ -161,7 +159,7 @@ api_key_env = "TEST_KEY"
         let orch = ChannelOrchestrator::new(config.clone(), tmpdir.path());
 
         // Initially empty
-        let tms = orch.thread_managers.load();
+        let tms = orch.topic_managers.load();
         assert!(tms.is_empty());
     }
 
@@ -174,7 +172,7 @@ api_key_env = "TEST_KEY"
         // update_shared_state with empty channels should produce empty vecs
         orch.update_shared_state().await;
 
-        let tms = orch.thread_managers.load();
+        let tms = orch.topic_managers.load();
         assert!(tms.is_empty());
 
         let infos = orch.channel_infos.load();
@@ -190,7 +188,7 @@ api_key_env = "TEST_KEY"
         // Reload with no changes should succeed
         orch.reload().await.unwrap();
 
-        let tms = orch.thread_managers.load();
+        let tms = orch.topic_managers.load();
         assert!(tms.is_empty());
     }
 }

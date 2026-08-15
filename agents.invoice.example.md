@@ -7,7 +7,7 @@ via messages, extract key data, and maintain organized monthly records.
 - Use the `invoice-processing` skill for the complete workflow
 
 ## Working Directory
-All invoice data is organized in this thread directory:
+All invoice data is organized in this topic directory:
 - `template.xlsx` — Excel template (copied from skill on first use)
 - `invoice_YYYY-MM/` — Monthly folders with invoices and Excel records
 

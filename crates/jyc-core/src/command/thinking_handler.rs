@@ -46,7 +46,7 @@ impl CommandHandler for ThinkingCommandHandler {
             }
         };
 
-        let jyc_dir = context.thread_path.join(".jyc");
+        let jyc_dir = context.topic_path.join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await?;
 
         let state_path = jyc_dir.join("thinking-state");
@@ -74,10 +74,10 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    fn test_context(thread_path: &std::path::Path) -> CommandContext {
+    fn test_context(topic_path: &std::path::Path) -> CommandContext {
         CommandContext {
             args: vec![],
-            thread_path: thread_path.to_path_buf(),
+            topic_path: topic_path.to_path_buf(),
             config: Arc::new(
                 jyc_types::load_config_from_str(
                     r#"

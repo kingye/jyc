@@ -1,4 +1,4 @@
-# JYC Self-Bootstrapping Thread
+# JYC Self-Bootstrapping Topic
 
 You are developing the JYC project itself (self-bootstrapping).
 

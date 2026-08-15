@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::session_state;
 
-/// Switch the thread to `mode` (`"plan"` or `"build"`).
+/// Switch the topic to `mode` (`"plan"` or `"build"`).
 ///
 /// Plan mode writes `.jyc/mode-override`; build mode removes it (build is the
 /// default). Also refreshes `max_input_tokens` so the dashboard and the
@@ -12,7 +12,7 @@ use crate::session_state;
 ///
 /// Shared by `/plan`, `/build`, and user-defined commands that declare a mode.
 pub async fn set_mode(context: &CommandContext, mode: &str) -> Result<()> {
-    let jyc_dir = context.thread_path.join(".jyc");
+    let jyc_dir = context.topic_path.join(".jyc");
     let override_path = jyc_dir.join("mode-override");
 
     if mode == "plan" {
@@ -88,14 +88,14 @@ impl CommandHandler for BuildCommandHandler {
 /// (the post-loop `update_tokens` will set it on the next turn).
 async fn refresh_max_input_tokens(context: &CommandContext) {
     let new_max = session_state::resolve_active_context_window(
-        &context.thread_path,
+        &context.topic_path,
         &context.config,
         &context.channel,
         context.config.agent.auto_reset_threshold,
     )
     .await;
     if let Some(new_max) = new_max {
-        session_state::write_max_input_tokens(&context.thread_path, new_max).await;
+        session_state::write_max_input_tokens(&context.topic_path, new_max).await;
     }
 }
 
@@ -105,10 +105,10 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    fn test_context(thread_path: &Path) -> CommandContext {
+    fn test_context(topic_path: &Path) -> CommandContext {
         CommandContext {
             args: vec![],
-            thread_path: thread_path.to_path_buf(),
+            topic_path: topic_path.to_path_buf(),
             config: Arc::new(
                 jyc_types::load_config_from_str(
                     r#"

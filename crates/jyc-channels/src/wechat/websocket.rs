@@ -250,7 +250,7 @@ impl WechatWebSocket {
         // (presence pings, status updates, attachments-only events, …).
         // We only route message.* events; everything else is acknowledged
         // and dropped without invoking on_message so we don't fabricate
-        // empty thread routes (the prior bug — sender=unknown content_len=0
+        // empty topic routes (the prior bug — sender=unknown content_len=0
         // routes turned into "No message body, stopping (no AI)").
 
         // Top-level envelope type must be "event"; anything else is an
@@ -403,7 +403,7 @@ impl WechatWebSocket {
         // we fetch the bytes and push a `MessageAttachment` into the
         // outgoing message. The actual on-disk persistence happens
         // post-route in the inbound adapter's
-        // `save_attachments_to_thread_directory` (mirroring feishu).
+        // `save_attachments_to_topic_directory` (mirroring feishu).
         //
         // Each item is best-effort: if a single download fails, log a
         // warning and continue with the rest. The text body and other
@@ -420,7 +420,7 @@ impl WechatWebSocket {
         // literal four-character string `[image]` and reply confusingly
         // about it.
         //
-        // Strip the placeholder so `thread_manager`'s body-empty guard
+        // Strip the placeholder so `topic_manager`'s body-empty guard
         // kicks in and the agent step is skipped entirely. The
         // attachment is still saved to disk and visible in the chat
         // history; a later PR will introduce a vision-aware path that
@@ -467,7 +467,7 @@ impl WechatWebSocket {
                 markdown: None,
             },
             timestamp: chrono::Utc::now(),
-            thread_refs: None,
+            references: None,
             reply_to_id: None,
             external_id: None,
             attachments,
@@ -498,7 +498,7 @@ impl WechatWebSocket {
             Some(c) if c.enabled => c,
             _ => {
                 // Attachments disabled (or no config provided). Log so the
-                // operator can correlate empty-attachment threads with
+                // operator can correlate empty-attachment topics with
                 // disabled config rather than guessing.
                 if let Some(items) = data.get("items").and_then(|v| v.as_array()) {
                     let non_text = items
@@ -895,7 +895,7 @@ mod tests {
     /// Non-event envelope frames (e.g. server keep-alive, presence
     /// notifications) must be acknowledged but NOT routed — otherwise the
     /// pattern matcher gets a fabricated empty message and spawns a
-    /// useless thread (the `sender=unknown content_len=0` bug from May 26).
+    /// useless topic (the `sender=unknown content_len=0` bug from May 26).
     #[tokio::test]
     async fn test_handle_incoming_skips_non_event_frames() {
         let payload = r#"{"type": "ping", "v": 1}"#;
@@ -1096,7 +1096,7 @@ mod tests {
         // Body still blanked for non-text events even when no attachment
         // was fetched: the placeholder `[image]` carries no information
         // for the agent, regardless of whether we managed to grab the
-        // bytes. The body-empty guard in thread_manager skips the LLM
+        // bytes. The body-empty guard in topic_manager skips the LLM
         // call uniformly.
         assert_eq!(msg.content.text.as_deref(), Some(""));
     }

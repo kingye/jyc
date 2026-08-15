@@ -31,7 +31,7 @@ Navigate to **Permissions & Scopes** (权限管理) in your app settings and add
 | `im:message.group_msg` | Read group messages | Receive messages in group chats |
 | `im:message.p2p_msg:readonly` | Read DM messages | Receive direct messages to the bot |
 | `im:message.group_at_msg:readonly` | Read @-mention messages | Receive messages where the bot is @-mentioned |
-| `im:chat:readonly` | Read chat info | Get group chat names (for readable thread directory names) |
+| `im:chat:readonly` | Read chat info | Get group chat names (for readable topic directory names) |
 | `contact:user.base:readonly` | Read user info | Get user display names (for sender names in prompts) |
 | `im:resource` | Upload files/images | Required for sending attachments (files, images) in replies |
 
@@ -157,16 +157,16 @@ INFO  Feishu WebSocket connected, listening for events
 
 - **Check recent JYC version**: The MCP reply tool now writes to disk and the monitor process sends via pre-warmed client. Old versions had timeout issues with cold-start API calls.
 - **Check Feishu API access**: The server must be able to reach `open.feishu.cn` for sending messages
-- **Delete stale sessions**: Remove `.jyc/agent-session.json` in the thread directory to force a fresh session
+- **Delete stale sessions**: Remove `.jyc/agent-session.json` in the topic directory to force a fresh session
 
-### Thread directory names
+### Topic directory names
 
-Thread directories are named using readable chat/user names:
+Topic directories are named using readable chat/user names:
 - **Group chat**: `feishu_<chat_name>` (e.g., `feishu_Project Alpha`)
 - **Direct message**: `feishu_dm_<sender_name>` (e.g., `feishu_dm_Zhang San`)
 - **Fallback** (if name lookup fails): `feishu_chat_<chat_id>`
 
-If you rename the bot's display name in Feishu or change group names, new messages will create new thread directories. Rename old directories manually if you want to preserve conversation history.
+If you rename the bot's display name in Feishu or change group names, new messages will create new topic directories. Rename old directories manually if you want to preserve conversation history.
 
 ## Architecture Overview
 
@@ -180,7 +180,7 @@ LarkWsClient::open()          ← openlark SDK handles connection, ping/pong, re
 websocket.rs event loop        ← parse JSON → enrich with names → InboundMessage
      │ on_message callback
      ▼
-FeishuMatcher → MessageRouter → ThreadManager → in-process agent
+FeishuMatcher → MessageRouter → TopicManager → in-process agent
      │ reply text (stored to reply.md)
      ▼
 FeishuOutboundAdapter → FeishuClient.send_text_message()

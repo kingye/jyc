@@ -41,21 +41,21 @@ Create these labels in your Gitee repository before using the workflow:
 name = "planner"
 role = "Planner"
 template = "gitee-planner"
-thread_prefix = "issue"
+topic_prefix = "issue"
 rules = { github_type = ["issue"] }
 
 [[channels.mygitee.patterns]]
 name = "developer"
 role = "Developer"
 template = "gitee-developer"
-thread_prefix = "pr"
+topic_prefix = "pr"
 rules = { github_type = ["pull_request"], labels = ["ready-for-dev"] }
 
 [[channels.mygitee.patterns]]
 name = "reviewer"
 role = "Reviewer"
 template = "gitee-reviewer"
-thread_prefix = "review-pr"
+topic_prefix = "review-pr"
 rules = { github_type = ["pull_request"], labels = ["ready-for-review"] }
 ```
 

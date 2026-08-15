@@ -4,7 +4,7 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::thread_event_bus::ThreadEventBusRef;
+use crate::topic_event_bus::TopicEventBusRef;
 use jyc_types::InboundMessage;
 use jyc_types::QueueItem;
 
@@ -31,7 +31,7 @@ pub struct AgentResult {
 /// - Returning raw response text
 ///
 /// The agent is NOT responsible for:
-/// - Reply formatting (quoted history, email threading) — that's the outbound adapter
+/// - Reply formatting (quoted history, email References) — that's the outbound adapter
 /// - Sending replies — that's the outbound adapter
 /// - Storing replies — that's the outbound adapter
 #[async_trait]
@@ -51,29 +51,24 @@ pub trait AgentService: Send + Sync {
     async fn process(
         &self,
         message: &InboundMessage,
-        thread_name: &str,
-        thread_path: &Path,
+        topic_name: &str,
+        topic_path: &Path,
         message_dir: &str,
         pending_rx: &mut mpsc::Receiver<QueueItem>,
-        thread_cancel: CancellationToken,
+        topic_cancel: CancellationToken,
     ) -> Result<AgentResult>;
 
-    /// Set thread event bus for this thread.
+    /// Set topic event bus for this topic.
     /// This is optional - some agent implementations may not use event buses.
-    async fn set_thread_event_bus(
-        &self,
-        _thread_name: &str,
-        _event_bus: Option<ThreadEventBusRef>,
-    ) {
-    }
+    async fn set_topic_event_bus(&self, _topic_name: &str, _event_bus: Option<TopicEventBusRef>) {}
 
-    /// Reset session for a thread with configurable compression.
+    /// Reset session for a topic with configurable compression.
     ///
     /// Default: delete session and context files (no compression).
     async fn reset_session(
         &self,
-        thread_path: &Path,
-        thread_name: &str,
+        topic_path: &Path,
+        topic_name: &str,
         config: &jyc_types::channel::ResetCompressionConfig,
     ) -> Result<()>;
 }

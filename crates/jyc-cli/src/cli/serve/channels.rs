@@ -581,9 +581,11 @@ impl InboundSpawner<'_> {
                                 )
                                 .await
                                 {
+                                    // Full chain (`{:#}`): the outer context
+                                    // alone hides the HTTP status (e.g. 401).
                                     tracing::warn!(
                                         filename = %att.filename,
-                                        error = %e,
+                                        error = format!("{e:#}"),
                                         "feishu pipe: failed to relay attachment"
                                     );
                                 }

@@ -142,6 +142,32 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         None
     };
 
+    // Generate and persist the inspect auth token BEFORE spawning channels:
+    // piped-channel reply forwarders (e.g. feishu) read this file at startup
+    // to build their inspect client — writing it later would race them and
+    // leave them holding a stale (or no) token, failing every attachment
+    // relay with 401 until the next restart.
+    let inspect_auth_token: Option<String> =
+        if config_snapshot.inspect.as_ref().is_some_and(|i| i.enabled) {
+            let auth_token = jyc_utils::auth_token::generate_token();
+            let token_path = jyc_utils::auth_token::token_path(workdir);
+            jyc_utils::auth_token::write_token(&token_path, &auth_token).with_context(|| {
+                format!(
+                    "Failed to write authorization token to {}. \
+                     Dashboard will not be able to connect. Fix the path \
+                     and rerun `jyc serve`.",
+                    token_path.display()
+                )
+            })?;
+            tracing::info!(
+                path = %token_path.display(),
+                "Authorization token written; retrieve with `jyc token show`"
+            );
+            Some(auth_token)
+        } else {
+            None
+        };
+
     // Collect websocket inbound adapters to register with the inspect server later
     let mut websocket_handlers: Vec<Arc<WebsocketInboundAdapter>> = vec![];
     // Map for setting TopicManager on websocket handlers after creation
@@ -405,31 +431,12 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         }
     }
 
-    // 6. Start inspect server (if configured)
-    let inspect_task = if config_snapshot.inspect.as_ref().is_some_and(|i| i.enabled) {
+    // 6. Start inspect server (if configured). The auth token was already
+    // generated and persisted before the channel spawn loop above.
+    let inspect_task = if let Some(auth_token) = inspect_auth_token {
         let inspect_config = config_snapshot.inspect.as_ref().unwrap();
         let activity_map: jyc_inspect::server::SharedActivityMap =
             Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
-
-        // Generate and persist the dashboard authorization token. The file
-        // is created with owner-only permissions; its path is logged so the
-        // user can retrieve the token via `jyc token show`. If the write
-        // fails, the server still enforces the in-memory token but the
-        // dashboard won't be able to connect - bail out instead.
-        let auth_token = jyc_utils::auth_token::generate_token();
-        let token_path = jyc_utils::auth_token::token_path(workdir);
-        jyc_utils::auth_token::write_token(&token_path, &auth_token).with_context(|| {
-            format!(
-                "Failed to write authorization token to {}. \
-                     Dashboard will not be able to connect. Fix the path \
-                     and rerun `jyc serve`.",
-                token_path.display()
-            )
-        })?;
-        tracing::info!(
-            path = %token_path.display(),
-            "Authorization token written; retrieve with `jyc token show`"
-        );
 
         let context = Arc::new(jyc_inspect::server::InspectContext {
             topic_managers: orchestrator.topic_managers(),
@@ -468,7 +475,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
                 }) as jyc_inspect::server::ReloadCallback)
             },
             inspect_broadcast: inspect_broadcast.clone(),
-            auth_token: Some(auth_token.clone()),
+            auth_token: Some(auth_token),
         });
 
         // Restore custom topic_path mappings from disk so topics with

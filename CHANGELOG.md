@@ -40,6 +40,21 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Feishu pipe attachment relay failed with 401 after every restart.** The
+  inspect auth token was regenerated and written to `auth.token` *after* the
+  channel spawn loop, but the feishu pipe reply forwarder reads that file at
+  task startup — leaving its inspect client holding a stale (or no) token for
+  the process lifetime. The token is now generated and persisted before any
+  channel is spawned. Relay-failure logs also print the full error chain
+  (`{:#}`) so the HTTP status is no longer swallowed by the outer context.
+  (#566)
+
+- **Reply attachments dropped when the pending-delivery watcher won the race.**
+  The background watcher delivered `reply.md` with attachments hardcoded to
+  `None` and deleted the signal files, so replies with attachments lost their
+  files whenever it beat the post-run delivery path. It now reads the
+  attachment list from `reply-sent.flag` like the main path. (#566)
+
 - **Feishu chat-message files now download correctly.** `FeishuClient::download_file`
   used the standalone `/im/v1/files/:file_key` endpoint, which only serves
   files uploaded by the app itself — files received in chat messages failed

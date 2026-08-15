@@ -243,17 +243,41 @@ fn loopback_addr(bind: &str) -> String {
         .replace("[::]", "127.0.0.1")
 }
 
+/// Runtime placeholder resolved from message metadata when retargeting a
+/// piped message. The `msg.` namespace keeps it immune to the load-time
+/// `${ENV_VAR}` expansion (whose regex requires `\w+`, no dots).
+const PIPE_TOPIC_CHAT_NAME_PLACEHOLDER: &str = "${msg.chat_name}";
+
 /// Re-target a piped inbound message into the target channel/topic.
 ///
 /// Attachments and metadata ride along untouched — only the routing
 /// identity (channel + topic) is rewritten.
+///
+/// `pipe.topic` may contain `${msg.chat_name}`, resolved from the message's
+/// `chat_name` metadata (sanitized via `sanitize_for_filesystem`, same as
+/// feishu's own topic derivation). Returns `None` when the placeholder is
+/// present but the metadata is missing/empty (e.g. P2P chats) — the caller
+/// drops the message with a warning rather than misrouting it.
 fn apply_pipe_retarget(
     mut msg: jyc_types::InboundMessage,
     pipe: &jyc_types::PipeTarget,
-) -> jyc_types::InboundMessage {
+) -> Option<jyc_types::InboundMessage> {
+    let topic = if pipe.topic.contains(PIPE_TOPIC_CHAT_NAME_PLACEHOLDER) {
+        let chat_name = msg
+            .metadata
+            .get("chat_name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())?;
+        pipe.topic.replace(
+            PIPE_TOPIC_CHAT_NAME_PLACEHOLDER,
+            &jyc_utils::helpers::sanitize_for_filesystem(chat_name),
+        )
+    } else {
+        pipe.topic.clone()
+    };
     msg.channel = pipe.channel.clone();
-    msg.topic = pipe.topic.clone();
-    msg
+    msg.topic = topic;
+    Some(msg)
 }
 
 /// One attachment entry parsed from a websocket `reply` broadcast payload.
@@ -621,12 +645,21 @@ impl InboundSpawner<'_> {
                                 router.route(&FeishuMatcher, message).await;
                                 return;
                             };
-                            // 3. Record topic -> chat_id for reply relay.
+                            // 3. Re-target into the target channel/topic —
+                            //    resolves `${msg.chat_name}` placeholders in
+                            //    `pipe.topic` against message metadata.
+                            let Some(message) = apply_pipe_retarget(message, pipe) else {
+                                tracing::warn!(
+                                    topic = %pipe.topic,
+                                    "feishu pipe: ${{msg.chat_name}} placeholder unresolved (no chat_name metadata), dropping"
+                                );
+                                return;
+                            };
+                            // 4. Record resolved topic -> chat_id for reply relay.
                             if let Some(chat_id) = message.metadata.get("chat_id").and_then(|v| v.as_str()) {
-                                topic_chat.lock().unwrap().insert(pipe.topic.clone(), chat_id.to_string());
+                                topic_chat.lock().unwrap().insert(message.topic.clone(), chat_id.to_string());
                             }
-                            // 4. Re-target into the target channel/topic and
-                            //    route through the target's own MessageRouter —
+                            // 5. Route through the target's own MessageRouter —
                             //    the exact same path as a chat-pane message, so
                             //    topic_path/template/skills apply identically.
                             let Some(target_router) = routers.lock().unwrap().get(&pipe.channel).cloned() else {
@@ -636,7 +669,7 @@ impl InboundSpawner<'_> {
                             target_router
                                 .route(
                                     &WebsocketMatcher::new(pipe.channel.clone()),
-                                    apply_pipe_retarget(message, pipe),
+                                    message,
                                 )
                                 .await;
                         });
@@ -1284,13 +1317,10 @@ mod tests {
         assert_eq!(loopback_addr("[::]:9876"), "127.0.0.1:9876");
     }
 
-    /// Regression: piping re-targets only channel/topic — attachment bytes
-    /// and metadata (chat_id, sender identity) must survive the forward.
-    #[test]
-    fn pipe_retarget_preserves_attachments_and_metadata() {
-        let mut metadata = std::collections::HashMap::new();
-        metadata.insert("chat_id".to_string(), serde_json::json!("oc_abc"));
-        let msg = jyc_types::InboundMessage {
+    fn pipe_msg(
+        metadata: std::collections::HashMap<String, serde_json::Value>,
+    ) -> jyc_types::InboundMessage {
+        jyc_types::InboundMessage {
             id: "m1".to_string(),
             channel: "feishu_bot".to_string(),
             channel_uid: "om_x".to_string(),
@@ -1316,13 +1346,22 @@ mod tests {
             }],
             metadata,
             matched_pattern: None,
-        };
+        }
+    }
+
+    /// Regression: piping re-targets only channel/topic — attachment bytes
+    /// and metadata (chat_id, sender identity) must survive the forward.
+    #[test]
+    fn pipe_retarget_preserves_attachments_and_metadata() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("chat_id".to_string(), serde_json::json!("oc_abc"));
+        let msg = pipe_msg(metadata);
         let pipe = jyc_types::PipeTarget {
             channel: "local_dev".to_string(),
             topic: "jyc".to_string(),
         };
 
-        let out = apply_pipe_retarget(msg, &pipe);
+        let out = apply_pipe_retarget(msg, &pipe).unwrap();
 
         assert_eq!(out.channel, "local_dev");
         assert_eq!(out.topic, "jyc");
@@ -1333,5 +1372,48 @@ mod tests {
             out.metadata.get("chat_id").and_then(|v| v.as_str()),
             Some("oc_abc")
         );
+    }
+
+    /// `${msg.chat_name}` in `pipe.topic` resolves from message metadata,
+    /// sanitized for filesystem use.
+    #[test]
+    fn pipe_retarget_resolves_chat_name_placeholder() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("chat_name".to_string(), serde_json::json!("dev-jyc"));
+        let pipe = jyc_types::PipeTarget {
+            channel: "local_dev".to_string(),
+            topic: "${msg.chat_name}".to_string(),
+        };
+        let out = apply_pipe_retarget(pipe_msg(metadata), &pipe).unwrap();
+        assert_eq!(out.topic, "dev-jyc");
+
+        // Embedded placeholder with a prefix also resolves.
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "chat_name".to_string(),
+            serde_json::json!("greenfield 下单"),
+        );
+        let pipe = jyc_types::PipeTarget {
+            channel: "local_dev".to_string(),
+            topic: "feishu-${msg.chat_name}".to_string(),
+        };
+        let out = apply_pipe_retarget(pipe_msg(metadata), &pipe).unwrap();
+        assert_eq!(out.topic, "feishu-greenfield 下单");
+    }
+
+    /// Placeholder present but no chat_name metadata (e.g. P2P chat):
+    /// returns None so the caller drops with a warning instead of
+    /// misrouting to a literal "${msg.chat_name}" topic.
+    #[test]
+    fn pipe_retarget_unresolved_placeholder_returns_none() {
+        let pipe = jyc_types::PipeTarget {
+            channel: "local_dev".to_string(),
+            topic: "${msg.chat_name}".to_string(),
+        };
+        assert!(apply_pipe_retarget(pipe_msg(Default::default()), &pipe).is_none());
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("chat_name".to_string(), serde_json::json!(""));
+        assert!(apply_pipe_retarget(pipe_msg(metadata), &pipe).is_none());
     }
 }

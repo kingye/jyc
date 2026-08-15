@@ -212,16 +212,6 @@ pub struct ChannelConfig {
     #[serde(rename = "type")]
     pub channel_type: String,
 
-    /// Pipe this channel's inbound messages into another (websocket) channel.
-    ///
-    /// When set to a target channel name, this channel acts as a client of
-    /// the target: inbound messages are matched by this channel's patterns
-    /// (rules only) and enqueued into the target's threads (thread name =
-    /// this channel's derived thread name); replies come back via the target
-    /// channel's broadcast and are relayed to this channel's users.
-    #[serde(default)]
-    pub pipe: Option<String>,
-
     /// IMAP configuration (for email channels)
     pub inbound: Option<ImapConfig>,
 

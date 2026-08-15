@@ -23,6 +23,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Feishu chat-message files now download correctly.** `FeishuClient::download_file`
+  used the standalone `/im/v1/files/:file_key` endpoint, which only serves
+  files uploaded by the app itself — files received in chat messages failed
+  with 234008 "The app is not the resource sender" and were silently dropped
+  (only a `[File: ...]` placeholder reached the topic). It now uses the
+  message resource endpoint `/im/v1/messages/:message_id/resources/:file_key?type=file`,
+  mirroring `download_image`.
+
 - **Chat pane renders piped-channel messages on the human side.** The chat
   render treated only `sender == "user"` as the human side; a message piped
   from another channel (e.g. feishu via `pipe`) carries the remote user's

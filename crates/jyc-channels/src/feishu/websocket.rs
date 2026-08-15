@@ -388,7 +388,11 @@ impl FeishuWebSocket {
 
                         if allowed {
                             // Download file from Feishu
-                            match self.client.download_file(&content.file_key).await {
+                            match self
+                                .client
+                                .download_file(&content.file_key, Some(&msg.message_id))
+                                .await
+                            {
                                 Ok(file_bytes) if !file_bytes.is_empty() => {
                                     tracing::debug!(
                                         "File downloaded: file_key = {}, size = {} bytes",

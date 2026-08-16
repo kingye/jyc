@@ -185,6 +185,79 @@ mode = "static"
 }
 
 #[test]
+fn test_reserved_channel_names_rejected() {
+    for reserved in ["agents", "channels"] {
+        let toml = format!(
+            r#"
+[general]
+[channels.{reserved}]
+type = "email"
+[channels.{reserved}.inbound]
+host = "h"
+username = "u"
+password = "p"
+[channels.{reserved}.outbound]
+host = "h"
+username = "u"
+password = "p"
+[ai]
+mode = "agent"
+"#
+        );
+        let config = load_config_from_str(&toml).unwrap();
+        let errors = validate_config(&config);
+        assert!(
+            errors.iter().any(|e| e.message.contains("reserved")),
+            "expected reserved-name error for '{reserved}'"
+        );
+    }
+}
+
+#[test]
+fn test_agent_shared_across_channels_rejected() {
+    let toml = r#"
+[general]
+[channels.a]
+type = "email"
+[channels.a.inbound]
+host = "h"
+username = "u"
+password = "p"
+[channels.a.outbound]
+host = "h"
+username = "u"
+password = "p"
+[[channels.a.patterns]]
+name = "p1"
+agent = "shared"
+[channels.b]
+type = "email"
+[channels.b.inbound]
+host = "h"
+username = "u"
+password = "p"
+[channels.b.outbound]
+host = "h"
+username = "u"
+password = "p"
+[[channels.b.patterns]]
+name = "p2"
+agent = "shared"
+[agents.shared]
+[ai]
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.path == "agents.shared" && e.message.contains("multiple channels")),
+        "expected multi-channel sharing error, got: {errors:?}"
+    );
+}
+
+#[test]
 fn test_pattern_agent_dangling_reference() {
     let toml = r#"
 [general]

@@ -18,7 +18,6 @@ use jyc_channels::email::inbound::EmailMatcher;
 use jyc_channels::email::outbound::EmailOutboundAdapter;
 use jyc_channels::feishu::client::FeishuClient;
 use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
-use jyc_channels::feishu::outbound::FeishuOutboundAdapter;
 use jyc_channels::gitee::inbound::GiteeMatcher;
 use jyc_channels::gitee::outbound::GiteeOutboundAdapter;
 use jyc_channels::github::inbound::GithubMatcher;
@@ -79,19 +78,6 @@ pub(crate) fn build_outbound_adapter(
             })?;
             Arc::new(EmailOutboundAdapter::new_with_attachments(
                 outbound_config,
-                storage.clone(),
-                outbound_attachment_config,
-                footer_enabled,
-            ))
-        }
-        "feishu" => {
-            let feishu_config = channel_config
-                .feishu
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("channel '{channel_name}': missing feishu config"))?
-                .clone();
-            Arc::new(FeishuOutboundAdapter::new_with_attachments(
-                feishu_config,
                 storage.clone(),
                 outbound_attachment_config,
                 footer_enabled,
@@ -323,8 +309,7 @@ fn parse_reply_attachments(v: &serde_json::Value) -> Vec<ReplyAttachmentRef> {
 }
 
 /// Download one reply attachment from the inspect server and send it to the
-/// feishu chat (image vs. file chosen by content type, same primitives as
-/// `FeishuOutboundAdapter::send_attachments`).
+/// feishu chat (image vs. file chosen by content type).
 async fn relay_attachment(
     inspect: &jyc_inspect::client::InspectClient,
     client: &FeishuClient,
@@ -368,6 +353,243 @@ async fn relay_attachment(
     Ok(())
 }
 
+/// Spawn a pipe-only feishu adapter: the inbound adapter plus one reply
+/// forwarder per distinct pipe target channel.
+///
+/// Unlike full channels, a feishu adapter has no outbound adapter, agent
+/// service, TopicManager, StateManager, or orchestrator registration — all
+/// topics live in the pipe target (hub) channel. See
+/// `docs/core-hub-adapters.md`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_feishu_adapter(
+    channel_config: &ChannelConfig,
+    channel_name: String,
+    workdir: &Path,
+    inbound_attachment_config: Option<InboundAttachmentConfig>,
+    cancel: CancellationToken,
+    tasks: &mut Vec<JoinHandle<()>>,
+    config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
+    ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
+    routers: std::sync::Arc<std::sync::Mutex<HashMap<String, Arc<MessageRouter>>>>,
+) -> Result<()> {
+    let feishu_config = channel_config
+        .feishu
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("channel '{channel_name}': missing feishu config"))?
+        .clone();
+    // Feishu is pipe-only: every enabled pattern must name a pipe target (a
+    // websocket hub channel). Collect the distinct target channels for reply
+    // relaying; patterns without one are a configuration error — warn at
+    // startup, drop matching messages at runtime.
+    let mut pipe_channels: std::collections::HashSet<String> = Default::default();
+    for p in channel_config
+        .patterns
+        .iter()
+        .flatten()
+        .filter(|p| p.enabled)
+    {
+        match &p.pipe {
+            Some(pipe) => {
+                pipe_channels.insert(pipe.channel.clone());
+            }
+            None => tracing::warn!(
+                channel = %channel_name,
+                pattern = %p.name,
+                "feishu pattern has no pipe target; matching messages will be dropped"
+            ),
+        }
+    }
+
+    let channel_span = tracing::info_span!("in", ch = %channel_name);
+    // Owned copy for the task: `workdir` borrows from the caller.
+    let workdir_for_task = workdir.to_path_buf();
+
+    let task = tokio::spawn(
+        async move {
+            let adapter = FeishuInboundAdapter::new(&feishu_config, channel_name.clone());
+
+            // Shared feishu client + topic->chat_id map for pipe relaying.
+            let feishu_client = std::sync::Arc::new(FeishuClient::new(feishu_config.clone()));
+            let topic_chat: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+
+            // One reply forwarder per distinct pipe target channel:
+            // subscribe to the target channel's broadcast and relay
+            // replies back to feishu.
+            //
+            // Attachment relay needs the inspect server (reply broadcasts
+            // carry download paths served by its files endpoint). Built
+            // once here; `None` when inspect is disabled — text relaying
+            // is unaffected, attachments are dropped with a warning.
+            let inspect_client = {
+                let cfg = config_for_spawn.load();
+                cfg.inspect.as_ref().filter(|i| i.enabled).map(|i| {
+                    let token = jyc_utils::auth_token::read_token(
+                        &jyc_utils::auth_token::token_path(&workdir_for_task),
+                    )
+                    .ok();
+                    jyc_inspect::client::InspectClient::with_token(
+                        &loopback_addr(&i.bind),
+                        token.as_deref(),
+                    )
+                })
+            };
+            for channel in &pipe_channels {
+                let ws_broadcasts = ws_broadcasts.clone();
+                let topic_chat = topic_chat.clone();
+                let feishu_client = feishu_client.clone();
+                let channel = channel.clone();
+                let inspect_client = inspect_client.clone();
+                let config_for_relay = config_for_spawn.clone();
+                tokio::spawn(async move {
+                    let Some(broadcast_tx) = wait_for_broadcast(&ws_broadcasts, &channel).await
+                    else {
+                        tracing::error!(
+                            channel = %channel,
+                            "feishu pipe: target channel broadcast never appeared (is it a websocket channel?), reply forwarder not started"
+                        );
+                        return;
+                    };
+                    let mut rx = broadcast_tx.subscribe();
+                    tracing::info!(channel = %channel, "feishu pipe reply forwarder subscribed");
+                    while let Ok(payload) = rx.recv().await {
+                        let v: serde_json::Value = match serde_json::from_str(&payload) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        if v.get("type").and_then(|t| t.as_str()) != Some("reply") {
+                            continue;
+                        }
+                        let (Some(topic), Some(text)) = (
+                            v.get("topic").and_then(|t| t.as_str()),
+                            v.get("text").and_then(|t| t.as_str()),
+                        ) else {
+                            continue;
+                        };
+                        let Some(chat_id) = topic_chat.lock().unwrap().get(topic).cloned() else {
+                            tracing::debug!(topic = %topic, "feishu pipe: no chat mapping for reply, skipping");
+                            continue;
+                        };
+                        if let Err(e) = feishu_client.send_text_message(&chat_id, text).await {
+                            tracing::error!(error = %e, "failed to relay reply to feishu");
+                        }
+                        // Relay reply attachments: download from the inspect
+                        // server's files endpoint, re-upload to feishu.
+                        for att in parse_reply_attachments(&v) {
+                            let Some(inspect) = &inspect_client else {
+                                tracing::warn!(
+                                    filename = %att.filename,
+                                    "feishu pipe: attachment dropped (inspect server disabled)"
+                                );
+                                continue;
+                            };
+                            if let Err(e) =
+                                relay_attachment(inspect, &feishu_client, &chat_id, &att, &config_for_relay)
+                                    .await
+                            {
+                                // Full chain (`{:#}`): the outer context
+                                // alone hides the HTTP status (e.g. 401).
+                                tracing::warn!(
+                                    filename = %att.filename,
+                                    error = format!("{e:#}"),
+                                    "feishu pipe: failed to relay attachment"
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+
+            let options = jyc_types::InboundAdapterOptions {
+                on_message: Box::new(move |message| {
+                    let config_for_pipe = config_for_spawn.clone();
+                    let topic_chat = topic_chat.clone();
+                    let channel_name_self = channel_name.clone();
+                    let routers = routers.clone();
+                    tokio::spawn(async move {
+                        // 1. Match this channel's patterns (rules).
+                        let patterns = config_for_pipe
+                            .load()
+                            .channels
+                            .get(&channel_name_self)
+                            .and_then(|c| c.patterns.clone())
+                            .unwrap_or_default();
+                        let Some(pm) = FeishuMatcher.match_message(&message, &patterns) else {
+                            tracing::debug!(chat = %message.topic, "feishu: no pattern matched, dropping");
+                            return;
+                        };
+                        // 2. Per-pattern `pipe`: the matched pattern decides.
+                        let matched = patterns.iter().find(|p| p.name == pm.pattern_name);
+                        let Some(pipe) = matched.and_then(|p| p.pipe.as_ref()) else {
+                            // Pipe-only adapter: a matched pattern without a
+                            // pipe target is a configuration error.
+                            tracing::warn!(
+                                pattern = %pm.pattern_name,
+                                "feishu: matched pattern has no pipe target, dropping message"
+                            );
+                            return;
+                        };
+                        // 3. Re-target into the target channel/topic —
+                        //    resolves the effective topic (`topic ?? pattern`)
+                        //    and `${msg.chat_name}` placeholders against
+                        //    message metadata. Identifiers captured before
+                        //    the move, for the drop warning below.
+                        let drop_debug =
+                            (message.id.clone(), message.metadata.get("chat_id").cloned());
+                        let Some(message) = apply_pipe_retarget(message, pipe) else {
+                            tracing::warn!(
+                                topic = ?pipe.topic,
+                                pattern = ?pipe.pattern,
+                                message_id = %drop_debug.0,
+                                chat_id = ?drop_debug.1,
+                                "feishu pipe: unresolvable target (no topic/pattern configured, or ${{msg.chat_name}} without chat_name metadata), dropping"
+                            );
+                            return;
+                        };
+                        // 4. Record resolved topic -> chat_id for reply relay.
+                        if let Some(chat_id) =
+                            message.metadata.get("chat_id").and_then(|v| v.as_str())
+                        {
+                            topic_chat
+                                .lock()
+                                .unwrap()
+                                .insert(message.topic.clone(), chat_id.to_string());
+                        }
+                        // 5. Route through the target's own MessageRouter —
+                        //    the exact same path as a chat-pane message, so
+                        //    topic_path/template/skills apply identically.
+                        let Some(target_router) =
+                            routers.lock().unwrap().get(&pipe.channel).cloned()
+                        else {
+                            tracing::warn!(channel = %pipe.channel, "feishu pipe: target channel router not found, dropping");
+                            return;
+                        };
+                        target_router
+                            .route(&WebsocketMatcher::new(pipe.channel.clone()), message)
+                            .await;
+                    });
+                    Ok(())
+                }),
+                on_topic_close: None,
+                on_error: Box::new(|error| {
+                    tracing::error!(error = %error, "Feishu inbound error");
+                }),
+                attachment_config: inbound_attachment_config.clone(),
+            };
+
+            if let Err(e) = adapter.start(options, cancel).await {
+                tracing::error!(
+                    error = %e,
+                    "Feishu inbound adapter error"
+                );
+            }
+        }
+        .instrument(channel_span),
+    );
+    tasks.push(task);
+    Ok(())
+}
+
 /// Shared per-channel context for spawning the inbound monitor task(s).
 ///
 /// `state_manager` is consumed (moved into the IMAP monitor closure).
@@ -393,11 +615,6 @@ pub(crate) struct InboundSpawner<'a> {
     pub(crate) config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
     pub(crate) wecom_server: Option<Arc<WecomWebhookServer>>,
     pub(crate) websocket_handlers: &'a mut [Arc<WebsocketInboundAdapter>],
-    /// Per-channel websocket broadcast senders (for `pipe` reply relaying).
-    pub(crate) ws_broadcasts:
-        std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
-    /// Per-channel MessageRouters (for `pipe` re-targeting).
-    pub(crate) routers: std::sync::Arc<std::sync::Mutex<HashMap<String, Arc<MessageRouter>>>>,
 }
 
 impl InboundSpawner<'_> {
@@ -428,8 +645,6 @@ impl InboundSpawner<'_> {
             config_for_spawn,
             wecom_server,
             websocket_handlers,
-            ws_broadcasts,
-            routers,
         } = self;
         let channel_name_owned = channel_name.clone();
         let tm = topic_manager.clone();
@@ -480,249 +695,6 @@ impl InboundSpawner<'_> {
                     }
                     .instrument(channel_span),
                 );
-
-                orchestrator
-                    .register_channel(
-                        channel_name.to_string(),
-                        jyc_core::channel_orchestrator::ChannelHandle {
-                            cancel: cancel.clone(),
-
-                            topic_manager: topic_manager.clone(),
-
-                            channel_info: channel_info.clone(),
-
-                            workspace_dir: workspace_dir.clone(),
-                        },
-                    )
-                    .await;
-
-                tasks.push(task);
-            }
-            "feishu" => {
-                let feishu_config = channel_config
-                    .feishu
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("channel '{channel_name}': missing feishu config")
-                    })?
-                    .clone();
-                // `pipe` targets: patterns can forward matching messages into
-                // another (websocket) channel instead of this channel's own
-                // TopicManager. Collect the distinct target channels for
-                // reply relaying.
-                let pipe_channels: std::collections::HashSet<String> = channel_config
-                    .patterns
-                    .iter()
-                    .flatten()
-                    .filter(|p| p.enabled)
-                    .filter_map(|p| p.pipe.as_ref().map(|pipe| pipe.channel.clone()))
-                    .collect();
-
-                let router_for_callback = router.clone();
-                let topic_manager_for_task = topic_manager.clone();
-                let routers_for_pipe = routers.clone();
-                let config_for_pipe = config_for_spawn.clone();
-                let channel_name_for_pipe = channel_name.clone();
-                // Owned copy for the task: `workdir` borrows from `self`.
-                let workdir_for_task = workdir.to_path_buf();
-
-                let task = tokio::spawn(async move {
-                // Clone configs before moving into closures
-                let feishu_config_cloned = feishu_config.clone();
-
-                let adapter = FeishuInboundAdapter::new(&feishu_config_cloned, channel_name_owned.clone());
-
-                let topic_manager_clone = topic_manager_for_task.clone();
-
-                // Shared feishu client + topic->chat_id map for pipe relaying.
-                let feishu_client = std::sync::Arc::new(FeishuClient::new(feishu_config_cloned.clone()));
-                let topic_chat: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>> =
-                    std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
-
-                // One reply forwarder per distinct pipe target channel:
-                // subscribe to the target channel's broadcast and relay
-                // replies back to feishu.
-                //
-                // Attachment relay needs the inspect server (reply broadcasts
-                // carry download paths served by its files endpoint). Built
-                // once here; `None` when inspect is disabled — text relaying
-                // is unaffected, attachments are dropped with a warning.
-                let inspect_client = {
-                    let cfg = config_for_pipe.load();
-                    cfg.inspect.as_ref().filter(|i| i.enabled).map(|i| {
-                        let token = jyc_utils::auth_token::read_token(
-                            &jyc_utils::auth_token::token_path(&workdir_for_task),
-                        )
-                        .ok();
-                        jyc_inspect::client::InspectClient::with_token(
-                            &loopback_addr(&i.bind),
-                            token.as_deref(),
-                        )
-                    })
-                };
-                for channel in &pipe_channels {
-                    let ws_broadcasts = ws_broadcasts.clone();
-                    let topic_chat = topic_chat.clone();
-                    let feishu_client = feishu_client.clone();
-                    let channel = channel.clone();
-                    let inspect_client = inspect_client.clone();
-                    let config_for_relay = config_for_pipe.clone();
-                    tokio::spawn(async move {
-                        let Some(broadcast_tx) = wait_for_broadcast(&ws_broadcasts, &channel).await else {
-                            tracing::error!(
-                                channel = %channel,
-                                "feishu pipe: target channel broadcast never appeared (is it a websocket channel?), reply forwarder not started"
-                            );
-                            return;
-                        };
-                        let mut rx = broadcast_tx.subscribe();
-                        tracing::info!(channel = %channel, "feishu pipe reply forwarder subscribed");
-                        while let Ok(payload) = rx.recv().await {
-                            let v: serde_json::Value = match serde_json::from_str(&payload) {
-                                Ok(v) => v,
-                                Err(_) => continue,
-                            };
-                            if v.get("type").and_then(|t| t.as_str()) != Some("reply") {
-                                continue;
-                            }
-                            let (Some(topic), Some(text)) = (
-                                v.get("topic").and_then(|t| t.as_str()),
-                                v.get("text").and_then(|t| t.as_str()),
-                            ) else {
-                                continue;
-                            };
-                            let Some(chat_id) = topic_chat.lock().unwrap().get(topic).cloned() else {
-                                tracing::debug!(topic = %topic, "feishu pipe: no chat mapping for reply, skipping");
-                                continue;
-                            };
-                            if let Err(e) = feishu_client.send_text_message(&chat_id, text).await {
-                                tracing::error!(error = %e, "failed to relay reply to feishu");
-                            }
-                            // Relay reply attachments: download from the inspect
-                            // server's files endpoint, re-upload to feishu.
-                            for att in parse_reply_attachments(&v) {
-                                let Some(inspect) = &inspect_client else {
-                                    tracing::warn!(
-                                        filename = %att.filename,
-                                        "feishu pipe: attachment dropped (inspect server disabled)"
-                                    );
-                                    continue;
-                                };
-                                if let Err(e) = relay_attachment(
-                                    inspect,
-                                    &feishu_client,
-                                    &chat_id,
-                                    &att,
-                                    &config_for_relay,
-                                )
-                                .await
-                                {
-                                    // Full chain (`{:#}`): the outer context
-                                    // alone hides the HTTP status (e.g. 401).
-                                    tracing::warn!(
-                                        filename = %att.filename,
-                                        error = format!("{e:#}"),
-                                        "feishu pipe: failed to relay attachment"
-                                    );
-                                }
-                            }
-                        }
-                    });
-                }
-
-                let options = jyc_types::InboundAdapterOptions {
-                    on_message: Box::new(move |message| {
-                        let config_for_pipe = config_for_pipe.clone();
-                        let topic_chat = topic_chat.clone();
-                        let channel_name_self = channel_name_for_pipe.clone();
-                        let router = router_for_callback.clone();
-                        let routers = routers_for_pipe.clone();
-                        tokio::spawn(async move {
-                            // 1. Match this channel's patterns (rules).
-                            let patterns = config_for_pipe
-                                .load()
-                                .channels
-                                .get(&channel_name_self)
-                                .and_then(|c| c.patterns.clone())
-                                .unwrap_or_default();
-                            let Some(pm) = FeishuMatcher.match_message(&message, &patterns) else {
-                                tracing::debug!(chat = %message.topic, "feishu: no pattern matched, dropping");
-                                return;
-                            };
-                            // 2. Per-pattern `pipe`: the matched pattern decides.
-                            let matched = patterns.iter().find(|p| p.name == pm.pattern_name);
-                            let Some(pipe) = matched.and_then(|p| p.pipe.as_ref()) else {
-                                // No pipe on the matched pattern: route normally
-                                // through this channel's own TopicManager.
-                                router.route(&FeishuMatcher, message).await;
-                                return;
-                            };
-                            // 3. Re-target into the target channel/topic —
-                            //    resolves the effective topic (`topic ?? pattern`)
-                            //    and `${msg.chat_name}` placeholders against
-                            //    message metadata. Identifiers captured before
-                            //    the move, for the drop warning below.
-                            let drop_debug = (message.id.clone(), message.metadata.get("chat_id").cloned());
-                            let Some(message) = apply_pipe_retarget(message, pipe) else {
-                                tracing::warn!(
-                                    topic = ?pipe.topic,
-                                    pattern = ?pipe.pattern,
-                                    message_id = %drop_debug.0,
-                                    chat_id = ?drop_debug.1,
-                                    "feishu pipe: unresolvable target (no topic/pattern configured, or ${{msg.chat_name}} without chat_name metadata), dropping"
-                                );
-                                return;
-                            };
-                            // 4. Record resolved topic -> chat_id for reply relay.
-                            if let Some(chat_id) = message.metadata.get("chat_id").and_then(|v| v.as_str()) {
-                                topic_chat.lock().unwrap().insert(message.topic.clone(), chat_id.to_string());
-                            }
-                            // 5. Route through the target's own MessageRouter —
-                            //    the exact same path as a chat-pane message, so
-                            //    topic_path/template/skills apply identically.
-                            let Some(target_router) = routers.lock().unwrap().get(&pipe.channel).cloned() else {
-                                tracing::warn!(channel = %pipe.channel, "feishu pipe: target channel router not found, dropping");
-                                return;
-                            };
-                            target_router
-                                .route(
-                                    &WebsocketMatcher::new(pipe.channel.clone()),
-                                    message,
-                                )
-                                .await;
-                        });
-                        Ok(())
-                    }),
-                    on_topic_close: Some(Box::new(move |topic_name: String| {
-                        // Always close in this channel's own TopicManager:
-                        // correct for non-pipe topics, a safe no-op for piped
-                        // topics (they live in the target channel, whose
-                        // topics are not auto-closed — the explicit pipe
-                        // mapping can't be reversed from the derived name).
-                        let tm = topic_manager_clone.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = tm.close_topic(&topic_name).await {
-                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
-                            }
-                        });
-                        Ok(())
-                    })),
-                    on_error: Box::new(|error| {
-                        tracing::error!(error = %error, "Feishu inbound error");
-                    }),
-                    attachment_config: inbound_attachment_config.clone(),
-                };
-
-                if let Err(e) = adapter.start(options, cancel_child).await {
-                    tracing::error!(
-                        error = %e,
-                        "Feishu inbound adapter error"
-                    );
-                }
-
-                // Shutdown topic manager for this channel
-                tm.shutdown().await;
-            }.instrument(channel_span));
 
                 orchestrator
                     .register_channel(

@@ -6,6 +6,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Core / hub / adapters architecture document.** `docs/core-hub-adapters.md`
+  describes the target three-layer architecture (core: per-topic queues +
+  workers; hub: the websocket channel, the only layer owning topics and
+  agents; adapters: protocol-only channels that pipe into the hub). Feishu is
+  the first migrated channel; other channels will follow.
+
 - **Topic file download endpoint.** `GET /api/topics/{channel}/{topic}/files/{file...}`
   serves topic-local files in place under the bearer middleware — unlike
   `/exchange/...`, which stays reserved for agent-published files
@@ -38,6 +44,22 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Feishu is now a pipe-only adapter.** Following the core / hub / adapters
+  architecture, the feishu channel no longer creates its own outbound
+  adapter, agent service, TopicManager, StateManager, or orchestrator
+  registration — it only receives events, pipes matching messages into a
+  websocket hub channel, and relays the hub's replies back. Consequences:
+  - A matched pattern **without** `pipe` now drops the message with a
+    warning (previously it was routed through feishu's own TopicManager);
+    startup logs a warning for each such pattern.
+  - Chat-disbanded events no longer close topics (already a no-op for piped
+    topics).
+  - Feishu no longer appears in the orchestrator / dashboard channel list.
+  - Proactive messages to a feishu chat now go through the hub channel:
+    `jyc_send_message(channel = "<hub>", recipient = "<piped topic>")` is
+    relayed by the pipe forwarder (mapping is in-memory, rebuilt on inbound
+    traffic).
+
 - **Terminology: "thread" → "topic".** The conversation-workspace concept
   (formerly "thread") is now "topic" everywhere — `TopicManager`,
   `topic_name`/`topic_path`/`topic_prefix`, the WebSocket `topic` field,
@@ -52,6 +74,17 @@ All notable changes to JYC will be documented in this file.
   `thread_path`) fails at startup with an error naming the key and the
   correct `topic_*` field — instead of being silently ignored and falling
   back to defaults.
+
+- **Channel pattern `pipe` now takes an explicit mapping**
+  (`pipe = { channel = "local_dev", topic = "jyc" }` instead of a bare
+  target channel). Matching messages are re-targeted to the target
+  channel/topic and routed through the target's own `MessageRouter` —
+  the exact same path as a chat-pane message — so the target pattern's
+  `topic_path`, template, skills and model apply identically; replies
+  are relayed back to this channel's users. The former
+  `pipe = "<channel>"` string form is replaced by this mapping.
+  For feishu, `pipe` later became mandatory — see "Feishu is now a
+  pipe-only adapter" above.
 
 ### Fixed
 
@@ -84,17 +117,14 @@ All notable changes to JYC will be documented in this file.
   display name and was mislabeled "AI:". Anything that is not the agent's
   reply (`sender != "ai"`) now renders on the human side.
 
-### Changed
+### Removed
 
-- **Channel pattern `pipe` now takes an explicit mapping**
-  (`pipe = { channel = "local_dev", topic = "jyc" }` instead of a bare
-  target channel). Matching messages are re-targeted to the target
-  channel/topic and routed through the target's own `MessageRouter` —
-  the exact same path as a chat-pane message — so the target pattern's
-  `topic_path`, template, skills and model apply identically; replies
-  are relayed back to this channel's users. Patterns without `pipe`
-  keep routing normally, so a channel can mix both. The former
-  `pipe = "<channel>"` string form is replaced by this mapping.
+- **Feishu direct-mode code.** `FeishuOutboundAdapter` (direct-mode reply
+  delivery — replies now flow via the hub broadcast + pipe forwarder), the
+  feishu `formatter` and `validator` modules (never wired into any code
+  path), the adapter's own attachment-saving method (the hub topic's worker
+  saves piped attachments), feishu-side topic-close handling, and the
+  non-pipe routing fallback.
 
 ## [0.3.15] - 2026-08-14
 

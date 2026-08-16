@@ -93,6 +93,13 @@ heartbeat_interval_secs = 30
 name = "mention_bot"
 enabled = true
 
+# Required: feishu is a pipe-only adapter — every enabled pattern must pipe
+# into a websocket hub channel (here: "local_dev"). The target pattern
+# ("group_chat") supplies the topic config (template/topic_path/skills);
+# "${msg.chat_name}" gives each group chat its own topic.
+# A matched pattern without `pipe` drops the message with a warning.
+pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
+
 [channels.feishu_bot.patterns.rules]
 mentions = ["jyc"]                     # Your bot's display name
 ```
@@ -116,11 +123,11 @@ mentions = ["jyc"]                     # Your bot's display name
 You should see in the logs:
 
 ```
-INFO  Feishu outbound adapter connected (client + token ready)
 INFO  Starting Feishu WebSocket connection...
 INFO  Connecting to Feishu WebSocket...
 INFO  connected to wss://open.feishu.cn/...
 INFO  Feishu WebSocket connected, listening for events
+INFO  feishu pipe reply forwarder subscribed
 ```
 
 ## Step 9: Test
@@ -153,22 +160,36 @@ INFO  Feishu WebSocket connected, listening for events
 - **Check network**: The server must be able to reach `open.feishu.cn` (or `open.larksuite.com`) on port 443
 - **Check logs**: Look for `Feishu WebSocket error` messages
 
-### Reply not delivered (timeout)
+### Reply not delivered
 
-- **Check recent JYC version**: The MCP reply tool now writes to disk and the monitor process sends via pre-warmed client. Old versions had timeout issues with cold-start API calls.
+- **Check the pipe forwarder**: replies are relayed by the pipe reply forwarder subscribed to the hub channel's broadcast. Look for `feishu pipe reply forwarder subscribed` at startup and `failed to relay reply to feishu` errors.
+- **No chat mapping**: the topic→chat_id mapping is in-memory, recorded when a feishu message is piped in. After a restart it is empty until the next inbound message — replies/proactive sends to not-yet-seen topics are skipped (`no chat mapping for reply`).
 - **Check Feishu API access**: The server must be able to reach `open.feishu.cn` for sending messages
-- **Delete stale sessions**: Remove `.jyc/agent-session.json` in the topic directory to force a fresh session
+
+### Proactive messages to a feishu chat
+
+`jyc_send_message(channel = "<hub channel>", recipient = "<topic>")` broadcasts
+a reply payload keyed by topic, which the pipe forwarder relays to the wired
+feishu chat — use the hub channel (e.g. `local_dev`), not the feishu channel,
+as the target. The recipient must be the exact piped topic name (the sanitized
+chat name). Limitation: after a restart the topic→chat mapping only exists
+once a new feishu message has arrived (see above).
 
 ### Topic directory names
 
-Topic directories are named using readable chat/user names:
-- **Group chat**: `feishu_<chat_name>` (e.g., `feishu_Project Alpha`)
-- **Direct message**: `feishu_dm_<sender_name>` (e.g., `feishu_dm_Zhang San`)
-- **Fallback** (if name lookup fails): `feishu_chat_<chat_id>`
+Piped topics live in the **hub channel's** workspace, named by the pipe
+mapping — typically the sanitized chat name (`${msg.chat_name}`), e.g.
+`<workdir>/local_dev/workspace/Project Alpha`. The feishu adapter itself owns
+no topic directories.
 
 If you rename the bot's display name in Feishu or change group names, new messages will create new topic directories. Rename old directories manually if you want to preserve conversation history.
 
 ## Architecture Overview
+
+Feishu is a **pipe-only adapter** in the core / hub / adapters architecture
+(see [docs/core-hub-adapters.md](docs/core-hub-adapters.md)): it speaks the
+Feishu protocol and pipes messages into a websocket hub channel, which owns
+the topics, agents, and conversation state.
 
 ```
 Feishu Server
@@ -180,11 +201,18 @@ LarkWsClient::open()          ← openlark SDK handles connection, ping/pong, re
 websocket.rs event loop        ← parse JSON → enrich with names → InboundMessage
      │ on_message callback
      ▼
-FeishuMatcher → MessageRouter → TopicManager → in-process agent
-     │ reply text (stored to reply.md)
+FeishuMatcher → apply_pipe_retarget (channel/topic rewritten, topic→chat_id recorded)
+     │
      ▼
-FeishuOutboundAdapter → FeishuClient.send_text_message()
-     │ CreateMessageRequest (IM API, pre-warmed client + cached token)
+Hub channel's MessageRouter → TopicManager → in-process agent
+     │ reply
+     ▼
+Hub channel's WebsocketOutboundAdapter → broadcast {"type":"reply", topic, text, attachments}
+     │
+     ▼
+Feishu pipe reply forwarder (subscribed to the hub broadcast)
+     │ topic→chat_id lookup → FeishuClient.send_text_message()
+     │ attachments: download from inspect files endpoint → re-upload to feishu
      ▼
 Feishu Server → User sees reply in chat
 ```

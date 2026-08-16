@@ -66,16 +66,11 @@ impl FeishuWebSocket {
     /// For each received message event, converts to `InboundMessage`
     /// and calls `on_message`.
     ///
-    /// The `on_topic_close` callback is invoked when a chat is disbanded,
-    /// receiving the topic name derived from the chat_id. Can be None if
-    /// topic close handling is not needed.
-    ///
     /// Returns `Ok(())` on clean cancellation, `Err(...)` on connection failure.
     pub async fn run(
         &mut self,
         channel_name: &str,
         on_message: &(dyn Fn(InboundMessage) -> Result<()> + Send + Sync),
-        on_topic_close: Option<&(dyn Fn(String) -> Result<()> + Send + Sync)>,
         cancel: &CancellationToken,
     ) -> Result<()> {
         // 1. Build openlark client Config from FeishuConfig
@@ -109,7 +104,7 @@ impl FeishuWebSocket {
                 payload = payload_rx.recv() => {
                     match payload {
                         Some(data) => {
-                            if let Err(e) = self.handle_payload(channel_name, &data, on_message, on_topic_close).await {
+                            if let Err(e) = self.handle_payload(channel_name, &data, on_message).await {
                                 tracing::warn!(error = %e, "Failed to process Feishu event");
                             }
                         }
@@ -148,7 +143,6 @@ impl FeishuWebSocket {
         channel_name: &str,
         data: &[u8],
         on_message: &(dyn Fn(InboundMessage) -> Result<()> + Send + Sync),
-        on_topic_close: Option<&(dyn Fn(String) -> Result<()> + Send + Sync)>,
     ) -> Result<()> {
         // First parse as generic JSON to check event type
         let json: serde_json::Value = match serde_json::from_slice(data) {
@@ -171,37 +165,11 @@ impl FeishuWebSocket {
 
         tracing::debug!(event_type = %event_type, "Received Feishu event");
 
-        // Handle chat disbanded event specially (note: event_type is "im.chat.disbanded_v1")
+        // Chat disbanded event: nothing to close — feishu is a pipe-only
+        // adapter; piped topics live in the hub channel and are not
+        // auto-closed.
         if event_type == "im.chat.disbanded_v1" {
-            if let Some(callback) = on_topic_close {
-                let chat_id = json
-                    .get("event")
-                    .and_then(|e| e.get("chat_id"))
-                    .and_then(|id| id.as_str())
-                    .unwrap_or("");
-
-                if chat_id.is_empty() {
-                    tracing::warn!("Chat disbanded event missing chat_id");
-                    return Ok(());
-                }
-
-                // Try to get chat name: first from event, then from API/cache
-                let chat_name = json
-                    .get("event")
-                    .and_then(|e| e.get("name"))
-                    .and_then(|n| n.as_str());
-
-                let topic_name = if let Some(chat_name) = chat_name {
-                    helpers::sanitize_for_filesystem(chat_name)
-                } else if let Ok(Some(name)) = self.client.get_chat_name(chat_id).await {
-                    name
-                } else {
-                    derive_topic_name_from_chat_id(channel_name, chat_id)
-                };
-
-                tracing::info!(chat_id = %chat_id, topic = %topic_name, "Chat disbanded, closing topic");
-                callback(topic_name)?;
-            }
+            tracing::info!("Chat disbanded event received (no topic close in pipe-only mode)");
             return Ok(());
         }
 
@@ -674,12 +642,6 @@ fn strip_mention_placeholders(
     result.trim().to_string()
 }
 
-/// Derive topic name from chat_id for topic close events.
-/// This matches the logic in FeishuMatcher::derive_topic_name().
-fn derive_topic_name_from_chat_id(channel_name: &str, chat_id: &str) -> String {
-    format!("{}_{}", channel_name, chat_id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -740,12 +702,6 @@ mod tests {
         }];
         let result = strip_mention_placeholders("@_user_1 hello", Some(&mentions));
         assert_eq!(result, "hello");
-    }
-
-    #[test]
-    fn test_derive_topic_name_from_chat_id() {
-        let topic_name = super::derive_topic_name_from_chat_id("feishu", "oc_12345678");
-        assert_eq!(topic_name, "feishu_oc_12345678");
     }
 
     #[test]

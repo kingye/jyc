@@ -91,8 +91,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub channels: HashMap<String, ChannelConfig>,
 
-    /// Agent configuration (AI model, prompts, attachments)
-    pub agent: AgentConfig,
+    /// AI configuration (model, prompts, providers) — the shared brain.
+    /// Legacy key `[agent]` is accepted as an alias (deprecated).
+    #[serde(rename = "ai", alias = "agent")]
+    pub ai: AiConfig,
 
     /// Inspect server configuration (exposes runtime state for dashboard)
     pub inspect: Option<InspectConfig>,
@@ -248,8 +250,10 @@ pub struct ChannelConfig {
     /// Patterns for this channel
     pub patterns: Option<Vec<ChannelPattern>>,
 
-    /// Channel-specific agent config override
-    pub agent: Option<AgentConfig>,
+    /// Channel-specific AI config override.
+    /// Legacy key `agent` is accepted as an alias (deprecated).
+    #[serde(rename = "ai", alias = "agent", default)]
+    pub ai: Option<AiConfig>,
 
     /// Override model for this channel (e.g., "anthropic/claude-opus-4-6").
     /// Takes priority over global [agent].model, but below pattern-level model.
@@ -385,7 +389,7 @@ pub struct VisionConfig {
 
 /// Agent configuration — how the AI responds to messages.
 #[derive(Debug, Clone, Deserialize)]
-pub struct AgentConfig {
+pub struct AiConfig {
     /// Whether AI replies are enabled
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -456,7 +460,7 @@ pub struct AgentConfig {
     pub auto_reset_threshold: f64,
 }
 
-impl Default for AgentConfig {
+impl Default for AiConfig {
     fn default() -> Self {
         Self {
             enabled: true,
@@ -797,7 +801,7 @@ fn default_agent_mode() -> String {
 fn default_max_iterations() -> usize {
     // 500 (raised from 200 in v0.3.6 — in-loop summarization at the cycle
     // boundary now keeps the request size bounded regardless of iteration
-    // count). See jyc-agent's prior slim AgentConfig for the original
+    // count). See jyc-agent's prior slim AiConfig for the original
     // rationale.
     500
 }
@@ -908,6 +912,15 @@ fn parse_and_deserialize_from_value<T: serde::de::DeserializeOwned>(
     mut value: toml::Value,
     ctx: &str,
 ) -> Result<T> {
+    // Deprecation warning for the legacy `[agent]` table (renamed to `[ai]`).
+    if let toml::Value::Table(t) = &value
+        && t.contains_key("agent")
+    {
+        tracing::warn!(
+            "config {ctx}: the [agent] table is deprecated; rename it to [ai] \
+             (legacy key still accepted)"
+        );
+    }
     expand_env_vars(&mut value);
     value
         .try_into()

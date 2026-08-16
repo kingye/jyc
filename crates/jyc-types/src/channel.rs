@@ -525,7 +525,7 @@ pub enum CompressionMode {
 /// Configuration for compression behavior on session reset.
 ///
 /// Can be set per-pattern (`ChannelPattern.reset_compression`) or globally
-/// (`AgentConfig.reset_compression`). Pattern-level config takes priority.
+/// (`AiConfig.reset_compression`). Pattern-level config takes priority.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResetCompressionConfig {
     /// Compression mode: "llm" | "heuristic" | "none". Default: "heuristic".

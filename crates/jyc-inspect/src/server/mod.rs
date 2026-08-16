@@ -293,7 +293,7 @@ impl InspectServer {
             models: context
                 .config
                 .as_ref()
-                .map(|cfg| list_available_models(&cfg.load().agent.providers))
+                .map(|cfg| list_available_models(&cfg.load().ai.providers))
                 .unwrap_or_default(),
         }
     }
@@ -340,7 +340,7 @@ impl InspectServer {
             models: context
                 .config
                 .as_ref()
-                .map(|cfg| list_available_models(&cfg.load().agent.providers))
+                .map(|cfg| list_available_models(&cfg.load().ai.providers))
                 .unwrap_or_default(),
         }
     }

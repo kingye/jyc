@@ -51,7 +51,7 @@ impl CommandHandler for ModelCommandHandler {
         let jyc_dir = context.topic_path.join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await?;
 
-        let providers = &context.config.agent.providers;
+        let providers = &context.config.ai.providers;
 
         // Read current mode to determine which override file to use.
         let current_mode = crate::session_state::read_mode_override(&context.topic_path).await;
@@ -160,7 +160,7 @@ impl CommandHandler for ModelCommandHandler {
                         &context.topic_path,
                         &context.config,
                         &context.channel,
-                        context.config.agent.auto_reset_threshold,
+                        context.config.ai.auto_reset_threshold,
                     )
                     .await
                     {

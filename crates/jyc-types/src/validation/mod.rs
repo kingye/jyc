@@ -340,23 +340,23 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
     }
 
     // Agent
-    if config.agent.mode != "agent" && config.agent.mode != "static" {
+    if config.ai.mode != "agent" && config.ai.mode != "static" {
         errors.push(ValidationError {
-            path: "agent.mode".into(),
-            message: format!("must be 'agent' or 'static', got '{}'", config.agent.mode),
+            path: "ai.mode".into(),
+            message: format!("must be 'agent' or 'static', got '{}'", config.ai.mode),
         });
     }
 
-    if config.agent.mode == "static" && config.agent.text.is_none() {
+    if config.ai.mode == "static" && config.ai.text.is_none() {
         errors.push(ValidationError {
-            path: "agent.text".into(),
-            message: "required when agent.mode is 'static'".into(),
+            path: "ai.text".into(),
+            message: "required when ai.mode is 'static'".into(),
         });
     }
 
     // Validate agent attachment config
-    if let Some(ref att) = config.agent.attachments {
-        validate_outbound_attachment_config("agent.attachments", att, &mut errors);
+    if let Some(ref att) = config.ai.attachments {
+        validate_outbound_attachment_config("ai.attachments", att, &mut errors);
     }
 
     // Validate unified attachment config

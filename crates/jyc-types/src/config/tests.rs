@@ -128,8 +128,76 @@ mode = "agent"
         assert_eq!(config.channels.len(), 1);
         assert!(config.channels.contains_key("work"));
         assert_eq!(config.channels["work"].channel_type, "email");
-        assert!(config.agent.enabled);
-        assert_eq!(config.agent.mode, "agent");
+        assert!(config.ai.enabled);
+        assert_eq!(config.ai.mode, "agent");
+    }
+
+    #[test]
+    fn test_load_ai_table_new_key() {
+        // `[ai]` is the canonical key; the test above covers the legacy
+        // `[agent]` alias.
+        let toml = r#"
+[general]
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "imap.example.com"
+username = "user"
+password = "pass"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+username = "user"
+password = "pass"
+
+[channels.work.ai]
+mode = "static"
+text = "ok"
+
+[ai]
+enabled = true
+mode = "agent"
+"#;
+
+        let config = load_config_from_str(toml).unwrap();
+        assert!(config.ai.enabled);
+        assert_eq!(config.ai.mode, "agent");
+        // Channel-level `[channels.x.ai]` override
+        let ch_ai = config.channels["work"].ai.as_ref().unwrap();
+        assert_eq!(ch_ai.mode, "static");
+    }
+
+    #[test]
+    fn test_load_channel_ai_legacy_agent_alias() {
+        let toml = r#"
+[general]
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "imap.example.com"
+username = "user"
+password = "pass"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+username = "user"
+password = "pass"
+
+[channels.work.agent]
+mode = "static"
+text = "ok"
+
+[ai]
+mode = "agent"
+"#;
+
+        let config = load_config_from_str(toml).unwrap();
+        let ch_ai = config.channels["work"].ai.as_ref().unwrap();
+        assert_eq!(ch_ai.mode, "static");
     }
 
     #[test]
@@ -297,7 +365,7 @@ api_key = "${JYC_LOAD_TEST_API_KEY}"
         }
         let config = load_config_from_str(toml).unwrap();
         let provider = config
-            .agent
+            .ai
             .providers
             .get("anthropic")
             .expect("anthropic provider must parse");
@@ -505,7 +573,7 @@ type = "feishu"
         .unwrap();
 
         let config = load_config_layered(Some(&global_path), &workdir_path).unwrap();
-        assert_eq!(config.agent.model.as_deref(), Some("workdir-model"));
+        assert_eq!(config.ai.model.as_deref(), Some("workdir-model"));
         assert!(config.channels.contains_key("global_chan"));
         assert!(config.channels.contains_key("local_chan"));
     }
@@ -636,7 +704,7 @@ mode = "static"
         .unwrap();
 
         let config = load_config_layered(Some(&global_path), &workdir_path).unwrap();
-        assert_eq!(config.agent.mode, "static");
+        assert_eq!(config.ai.mode, "static");
     }
 
     #[test]
@@ -662,7 +730,7 @@ small_model = "provider/small-model"
         .unwrap();
 
         let cfg = load_topic_config(tmp.path()).unwrap();
-        let agent = cfg.agent.unwrap();
+        let agent = cfg.ai.unwrap();
         assert_eq!(agent.model.as_deref(), Some("provider/topic-model"));
         assert_eq!(agent.plan_model.as_deref(), Some("provider/plan-model"));
         assert_eq!(agent.build_model, None);
@@ -755,7 +823,7 @@ model = "${JYC_LOAD_THREAD_MODEL}"
         .unwrap();
 
         let cfg = load_topic_config(tmp.path()).unwrap();
-        let agent = cfg.agent.unwrap();
+        let agent = cfg.ai.unwrap();
         assert_eq!(
             agent.model.as_deref(),
             Some("anthropic/claude-opus-4-7"),
@@ -837,7 +905,7 @@ model = "${JYC_LOAD_THREAD_DEFINITELY_UNSET}"
         .unwrap();
 
         let cfg = load_topic_config(tmp.path()).unwrap();
-        let agent = cfg.agent.unwrap();
+        let agent = cfg.ai.unwrap();
         assert_eq!(
             agent.model.as_deref(),
             Some(""),
@@ -859,7 +927,7 @@ mode = "static"
         .unwrap();
 
         let config = load_config_layered(Some(&path), &path).unwrap();
-        assert_eq!(config.agent.mode, "static");
+        assert_eq!(config.ai.mode, "static");
     }
 
     // ---- apply_topic_mcp_overlay ----

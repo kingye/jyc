@@ -21,15 +21,18 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
 /// Topic-level configuration (L3), loaded from `<topic_path>/.jyc/config.toml`.
 ///
 /// Restricted subset of the app config:
-/// - `[agent]`: model overrides. Precedence: `.jyc/<mode>-model-override` >
-///   `.jyc/config.toml` > pattern > channel > global.
+/// - `[ai]`: model overrides (legacy key `[agent]` accepted). Precedence:
+///   `.jyc/<mode>-model-override` > `.jyc/config.toml` > pattern > channel >
+///   global.
 /// - `[mcps]`: MCP overrides (additive by default, opt-in full replace via
 ///   `mcps_replace`). Precedence: `.jyc/config.toml` > pattern > channel >
 ///   global. No `<mode>-model-override` higher layer exists for MCPs.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TopicConfig {
-    /// Agent overrides for this topic.
-    pub agent: Option<TopicAgentConfig>,
+    /// AI overrides for this topic.
+    /// Legacy key `agent` is accepted as an alias (deprecated).
+    #[serde(rename = "ai", alias = "agent", default)]
+    pub ai: Option<TopicAiConfig>,
 
     /// MCPs added for this topic.
     ///
@@ -48,7 +51,7 @@ pub struct TopicConfig {
 
 /// Agent model overrides for a single topic.
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct TopicAgentConfig {
+pub struct TopicAiConfig {
     /// Model override for all modes.
     pub model: Option<String>,
     /// Model override for plan mode.

@@ -192,15 +192,17 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     for (channel_name, channel_config) in &config_snapshot.channels {
         let channel_type = channel_config.channel_type.as_str();
 
+        // Get attachment configuration from unified config
+        let inbound_attachment_config = config_snapshot
+            .attachments
+            .as_ref()
+            .and_then(|att| att.inbound.clone());
+
         // Feishu is a pipe-only adapter (see docs/core-hub-adapters.md):
         // skip the full channel construction (outbound/agent/TopicManager/
         // StateManager/orchestrator) — spawn only the inbound adapter plus
         // pipe reply forwarders.
         if channel_type == "feishu" {
-            let inbound_attachment_config = config_snapshot
-                .attachments
-                .as_ref()
-                .and_then(|att| att.inbound.clone());
             crate::cli::serve::channels::spawn_feishu_adapter(
                 channel_config,
                 channel_name.clone(),
@@ -221,15 +223,10 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
 
         let patterns = channel_config.patterns.clone().unwrap_or_default();
 
-        // Get attachment configuration from unified config
         let outbound_attachment_config = config_snapshot
             .attachments
             .as_ref()
             .and_then(|att| att.outbound.clone());
-        let inbound_attachment_config = config_snapshot
-            .attachments
-            .as_ref()
-            .and_then(|att| att.inbound.clone());
 
         let footer_enabled = channel_config.footer.as_ref().is_none_or(|f| f.enabled);
 

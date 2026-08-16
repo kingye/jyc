@@ -248,33 +248,50 @@ fn loopback_addr(bind: &str) -> String {
 /// `${ENV_VAR}` expansion (whose regex requires `\w+`, no dots).
 const PIPE_TOPIC_CHAT_NAME_PLACEHOLDER: &str = "${msg.chat_name}";
 
+/// Message metadata key carrying the pipe's explicit target pattern name,
+/// honored by `WebsocketMatcher` to decouple pattern config from the
+/// (possibly dynamic) topic name.
+const PIPE_PATTERN_METADATA_KEY: &str = "pipe_pattern";
+
 /// Re-target a piped inbound message into the target channel/topic.
 ///
 /// Attachments and metadata ride along untouched — only the routing
 /// identity (channel + topic) is rewritten.
 ///
-/// `pipe.topic` may contain `${msg.chat_name}`, resolved from the message's
-/// `chat_name` metadata (sanitized via `sanitize_for_filesystem`, same as
-/// feishu's own topic derivation). Returns `None` when the placeholder is
-/// present but the metadata is missing/empty (e.g. P2P chats) — the caller
-/// drops the message with a warning rather than misrouting it.
+/// The effective topic template is `pipe.topic ?? pipe.pattern`; it may
+/// contain `${msg.chat_name}`, resolved from the message's `chat_name`
+/// metadata (sanitized via `sanitize_for_filesystem`, same as feishu's own
+/// topic derivation). An explicit `pipe.pattern` is recorded in message
+/// metadata as a hint for the target channel's matcher.
+///
+/// Returns `None` when neither `topic` nor `pattern` is set (config error)
+/// or when the placeholder is present but the metadata is missing/empty
+/// (e.g. P2P chats) — the caller drops the message with a warning rather
+/// than misrouting it.
 fn apply_pipe_retarget(
     mut msg: jyc_types::InboundMessage,
     pipe: &jyc_types::PipeTarget,
 ) -> Option<jyc_types::InboundMessage> {
-    let topic = if pipe.topic.contains(PIPE_TOPIC_CHAT_NAME_PLACEHOLDER) {
+    let template = pipe.topic.as_deref().or(pipe.pattern.as_deref())?;
+    let topic = if template.contains(PIPE_TOPIC_CHAT_NAME_PLACEHOLDER) {
         let chat_name = msg
             .metadata
             .get("chat_name")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())?;
-        pipe.topic.replace(
+        template.replace(
             PIPE_TOPIC_CHAT_NAME_PLACEHOLDER,
             &jyc_utils::helpers::sanitize_for_filesystem(chat_name),
         )
     } else {
-        pipe.topic.clone()
+        template.to_string()
     };
+    if let Some(pattern) = &pipe.pattern {
+        msg.metadata.insert(
+            PIPE_PATTERN_METADATA_KEY.to_string(),
+            serde_json::Value::String(pattern.clone()),
+        );
+    }
     msg.channel = pipe.channel.clone();
     msg.topic = topic;
     Some(msg)
@@ -646,17 +663,18 @@ impl InboundSpawner<'_> {
                                 return;
                             };
                             // 3. Re-target into the target channel/topic —
-                            //    resolves `${msg.chat_name}` placeholders in
-                            //    `pipe.topic` against message metadata.
-                            // Identifiers captured before the move, for the
-                            // drop warning below.
+                            //    resolves the effective topic (`topic ?? pattern`)
+                            //    and `${msg.chat_name}` placeholders against
+                            //    message metadata. Identifiers captured before
+                            //    the move, for the drop warning below.
                             let drop_debug = (message.id.clone(), message.metadata.get("chat_id").cloned());
                             let Some(message) = apply_pipe_retarget(message, pipe) else {
                                 tracing::warn!(
-                                    topic = %pipe.topic,
+                                    topic = ?pipe.topic,
+                                    pattern = ?pipe.pattern,
                                     message_id = %drop_debug.0,
                                     chat_id = ?drop_debug.1,
-                                    "feishu pipe: ${{msg.chat_name}} placeholder unresolved (no chat_name metadata), dropping"
+                                    "feishu pipe: unresolvable target (no topic/pattern configured, or ${{msg.chat_name}} without chat_name metadata), dropping"
                                 );
                                 return;
                             };
@@ -1354,6 +1372,14 @@ mod tests {
         }
     }
 
+    fn pipe_target(pattern: Option<&str>, topic: Option<&str>) -> jyc_types::PipeTarget {
+        jyc_types::PipeTarget {
+            channel: "local_dev".to_string(),
+            pattern: pattern.map(str::to_string),
+            topic: topic.map(str::to_string),
+        }
+    }
+
     /// Regression: piping re-targets only channel/topic — attachment bytes
     /// and metadata (chat_id, sender identity) must survive the forward.
     #[test]
@@ -1361,10 +1387,7 @@ mod tests {
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("chat_id".to_string(), serde_json::json!("oc_abc"));
         let msg = pipe_msg(metadata);
-        let pipe = jyc_types::PipeTarget {
-            channel: "local_dev".to_string(),
-            topic: "jyc".to_string(),
-        };
+        let pipe = pipe_target(None, Some("jyc"));
 
         let out = apply_pipe_retarget(msg, &pipe).unwrap();
 
@@ -1377,6 +1400,8 @@ mod tests {
             out.metadata.get("chat_id").and_then(|v| v.as_str()),
             Some("oc_abc")
         );
+        // Legacy topic-only form carries no pattern hint.
+        assert!(!out.metadata.contains_key("pipe_pattern"));
     }
 
     /// `${msg.chat_name}` in `pipe.topic` resolves from message metadata,
@@ -1385,10 +1410,7 @@ mod tests {
     fn pipe_retarget_resolves_chat_name_placeholder() {
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("chat_name".to_string(), serde_json::json!("dev-jyc"));
-        let pipe = jyc_types::PipeTarget {
-            channel: "local_dev".to_string(),
-            topic: "${msg.chat_name}".to_string(),
-        };
+        let pipe = pipe_target(None, Some("${msg.chat_name}"));
         let out = apply_pipe_retarget(pipe_msg(metadata), &pipe).unwrap();
         assert_eq!(out.topic, "dev-jyc");
 
@@ -1398,10 +1420,7 @@ mod tests {
             "chat_name".to_string(),
             serde_json::json!("greenfield 下单"),
         );
-        let pipe = jyc_types::PipeTarget {
-            channel: "local_dev".to_string(),
-            topic: "feishu-${msg.chat_name}".to_string(),
-        };
+        let pipe = pipe_target(None, Some("feishu-${msg.chat_name}"));
         let out = apply_pipe_retarget(pipe_msg(metadata), &pipe).unwrap();
         assert_eq!(out.topic, "feishu-greenfield 下单");
     }
@@ -1411,14 +1430,45 @@ mod tests {
     /// misrouting to a literal "${msg.chat_name}" topic.
     #[test]
     fn pipe_retarget_unresolved_placeholder_returns_none() {
-        let pipe = jyc_types::PipeTarget {
-            channel: "local_dev".to_string(),
-            topic: "${msg.chat_name}".to_string(),
-        };
+        let pipe = pipe_target(None, Some("${msg.chat_name}"));
         assert!(apply_pipe_retarget(pipe_msg(Default::default()), &pipe).is_none());
 
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("chat_name".to_string(), serde_json::json!(""));
         assert!(apply_pipe_retarget(pipe_msg(metadata), &pipe).is_none());
+    }
+
+    /// `pattern`-only shorthand: the pattern name doubles as the topic name,
+    /// and the pattern hint is recorded for the target matcher.
+    #[test]
+    fn pipe_retarget_pattern_shorthand() {
+        let pipe = pipe_target(Some("jyc"), None);
+        let out = apply_pipe_retarget(pipe_msg(Default::default()), &pipe).unwrap();
+        assert_eq!(out.topic, "jyc");
+        assert_eq!(
+            out.metadata.get("pipe_pattern").and_then(|v| v.as_str()),
+            Some("jyc")
+        );
+    }
+
+    /// Full dynamic form: pattern supplies config, topic derives per chat.
+    #[test]
+    fn pipe_retarget_pattern_with_dynamic_topic() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("chat_name".to_string(), serde_json::json!("dev-jyc"));
+        let pipe = pipe_target(Some("group_chat"), Some("${msg.chat_name}"));
+        let out = apply_pipe_retarget(pipe_msg(metadata), &pipe).unwrap();
+        assert_eq!(out.topic, "dev-jyc");
+        assert_eq!(
+            out.metadata.get("pipe_pattern").and_then(|v| v.as_str()),
+            Some("group_chat")
+        );
+    }
+
+    /// Neither `topic` nor `pattern` set: config error, returns None.
+    #[test]
+    fn pipe_retarget_no_target_returns_none() {
+        let pipe = pipe_target(None, None);
+        assert!(apply_pipe_retarget(pipe_msg(Default::default()), &pipe).is_none());
     }
 }

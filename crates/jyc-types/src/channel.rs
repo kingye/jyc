@@ -278,14 +278,26 @@ pub trait OutboundAdapter: Send + Sync {
 // --- Pattern Types ---
 
 /// Target of a `ChannelPattern.pipe`: which (channel, topic) to forward
-/// matching messages into. `topic` is the target channel's topic name,
-/// which equals its pattern name for websocket-type channels.
+/// matching messages into.
+///
+/// `pattern` names a pattern on the target channel whose config
+/// (`topic_path`, template, skills, model) applies to the piped message.
+/// `topic` is the target topic name and may embed the runtime placeholder
+/// `${msg.chat_name}`. Resolution: `effective_topic = topic ?? pattern`;
+/// at least one must be set. Legacy `topic`-only form keeps the implicit
+/// "topic name == pattern name" selection of websocket channels.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipeTarget {
     /// Target channel name (typically a websocket-type channel).
     pub channel: String,
-    /// Target topic name (= target channel's pattern name).
-    pub topic: String,
+    /// Target pattern name whose config applies. When `topic` is omitted,
+    /// the pattern name doubles as the topic name.
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// Target topic name; supports the `${msg.chat_name}` runtime
+    /// placeholder. Defaults to `pattern` when omitted.
+    #[serde(default)]
+    pub topic: Option<String>,
 }
 
 /// A channel pattern defines matching rules for a specific channel.

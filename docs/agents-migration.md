@@ -163,24 +163,34 @@ Migration design doc to preserve context (this file).
 - Legacy patterns without an agent reference keep the old layout until
   migrated (D11).
 
-### PR-5 — Runtime convergence (the deep one, D6)
+### PR-5 — Runtime convergence (the deep one, D6) — split into 5a/5b
 
-- TopicManager keyed by agent instead of channel. Internals (queue, worker,
-  semaphore, event buses, template init) stay; the change is in wiring:
-  - construction: one TopicManager per agent;
-  - lookup key: every `TopicManager`-by-channel-name call site
-    (job_scheduler, inspect/topic_proxy, websocket inbound, `send_to_topic`
-    tool, agent_builder) switches to agent key;
-  - reply path: `outbound` is resolved per message from its origin channel
-    (generalizing the feishu pipe relay), not held fixed by the manager.
-- Channel side keeps the thin matching/forwarding/relay role (D7).
+**5a — Agent-keyed TopicManagers ✅**
+
+- One TopicManager per agent referenced by any channel pattern is
+  constructed at startup (`agents/<agent>/` workspace), registered with the
+  orchestrator as an agent (shared inspect/scheduler/cross-topic views,
+  exempt from the reload diff, not added to the scheduler's workspace scan —
+  the per-TopicManager custom-path scan covers it).
+- `MessageRouter` gains `agent_topic_managers`; `route()` dispatches to the
+  owning agent's manager when the matched pattern references an agent
+  (`topic_manager_for`).
+- `send_to_topic` follows the same dispatch: when the target pattern routes
+  to an agent, the injected message is processed by the agent's manager.
+- The multi-channel sharing guard (PR-4) stays for now: each agent TM holds
+  the referencing channel's outbound and agent service, which is only sound
+  for a single referencing channel.
+
+**5b — Remaining**
+
+- Reply path: `outbound` resolved per message from its origin channel
+  (generalizing the feishu pipe relay), not held fixed by the manager —
+  required before lifting the multi-channel guard (D5).
 - The websocket channel dissolves (D9): the inspect server serves one ws
   endpoint; the panel lists declared `[agents]` directly (Agents area) and
   legacy channel topics separately (Channels area, D11).
-- Lifts the PR-4 restriction: agents may then be shared across channels
-  (D5) since one TopicManager owns the agent's topics regardless of origin.
-- Magnitude: medium-large, mostly mechanical lookup rewiring; reply-path
-  and live-injection semantics need the most care.
+- Lookup polish at the remaining channel-name call sites (inspect
+  topic_proxy, websocket inbound).
 
 ### PR-6 — Docs & cleanup
 

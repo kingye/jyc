@@ -61,7 +61,7 @@ impl ChannelMatcher for WebsocketMatcher {
         // from the (possibly dynamic) topic name.
         if let Some(hint) = message
             .metadata
-            .get("pipe_pattern")
+            .get(jyc_types::PIPE_PATTERN_METADATA_KEY)
             .and_then(|v| v.as_str())
         {
             if let Some(p) = patterns.iter().find(|p| p.enabled && p.name == hint) {
@@ -641,8 +641,10 @@ mod tests {
         let matcher = WebsocketMatcher::new("local_dev".to_string());
         let mut msg = create_test_message();
         msg.topic = "dev-jyc".to_string(); // dynamic topic, no such pattern
-        msg.metadata
-            .insert("pipe_pattern".to_string(), serde_json::json!("group_chat"));
+        msg.metadata.insert(
+            jyc_types::PIPE_PATTERN_METADATA_KEY.to_string(),
+            serde_json::json!("group_chat"),
+        );
 
         let patterns = vec![ChannelPattern {
             name: "group_chat".to_string(),
@@ -663,7 +665,7 @@ mod tests {
         let mut msg = create_test_message();
         msg.topic = "adhoc".to_string();
         msg.metadata.insert(
-            "pipe_pattern".to_string(),
+            jyc_types::PIPE_PATTERN_METADATA_KEY.to_string(),
             serde_json::json!("typo_pattern"),
         );
 

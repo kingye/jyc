@@ -277,6 +277,12 @@ pub trait OutboundAdapter: Send + Sync {
 
 // --- Pattern Types ---
 
+/// Message metadata key carrying a pipe's explicit target pattern name.
+/// Written by the pipe retarget path (jyc-cli) and honored by the target
+/// channel's matcher (e.g. `WebsocketMatcher`). Defined here so writer and
+/// reader share one source of truth.
+pub const PIPE_PATTERN_METADATA_KEY: &str = "pipe_pattern";
+
 /// Target of a `ChannelPattern.pipe`: which (channel, topic) to forward
 /// matching messages into.
 ///
@@ -287,6 +293,7 @@ pub trait OutboundAdapter: Send + Sync {
 /// at least one must be set. Legacy `topic`-only form keeps the implicit
 /// "topic name == pattern name" selection of websocket channels.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipeTarget {
     /// Target channel name (typically a websocket-type channel).
     pub channel: String,

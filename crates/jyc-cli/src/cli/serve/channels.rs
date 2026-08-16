@@ -248,11 +248,6 @@ fn loopback_addr(bind: &str) -> String {
 /// `${ENV_VAR}` expansion (whose regex requires `\w+`, no dots).
 const PIPE_TOPIC_CHAT_NAME_PLACEHOLDER: &str = "${msg.chat_name}";
 
-/// Message metadata key carrying the pipe's explicit target pattern name,
-/// honored by `WebsocketMatcher` to decouple pattern config from the
-/// (possibly dynamic) topic name.
-const PIPE_PATTERN_METADATA_KEY: &str = "pipe_pattern";
-
 /// Re-target a piped inbound message into the target channel/topic.
 ///
 /// Attachments and metadata ride along untouched — only the routing
@@ -288,7 +283,7 @@ fn apply_pipe_retarget(
     };
     if let Some(pattern) = &pipe.pattern {
         msg.metadata.insert(
-            PIPE_PATTERN_METADATA_KEY.to_string(),
+            jyc_types::PIPE_PATTERN_METADATA_KEY.to_string(),
             serde_json::Value::String(pattern.clone()),
         );
     }
@@ -1401,7 +1396,10 @@ mod tests {
             Some("oc_abc")
         );
         // Legacy topic-only form carries no pattern hint.
-        assert!(!out.metadata.contains_key("pipe_pattern"));
+        assert!(
+            !out.metadata
+                .contains_key(jyc_types::PIPE_PATTERN_METADATA_KEY)
+        );
     }
 
     /// `${msg.chat_name}` in `pipe.topic` resolves from message metadata,
@@ -1446,7 +1444,9 @@ mod tests {
         let out = apply_pipe_retarget(pipe_msg(Default::default()), &pipe).unwrap();
         assert_eq!(out.topic, "jyc");
         assert_eq!(
-            out.metadata.get("pipe_pattern").and_then(|v| v.as_str()),
+            out.metadata
+                .get(jyc_types::PIPE_PATTERN_METADATA_KEY)
+                .and_then(|v| v.as_str()),
             Some("jyc")
         );
     }
@@ -1460,7 +1460,9 @@ mod tests {
         let out = apply_pipe_retarget(pipe_msg(metadata), &pipe).unwrap();
         assert_eq!(out.topic, "dev-jyc");
         assert_eq!(
-            out.metadata.get("pipe_pattern").and_then(|v| v.as_str()),
+            out.metadata
+                .get(jyc_types::PIPE_PATTERN_METADATA_KEY)
+                .and_then(|v| v.as_str()),
             Some("group_chat")
         );
     }

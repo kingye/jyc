@@ -74,22 +74,22 @@ After adding the scopes, click **Apply for Permissions** and wait for approval (
 Add the feishu channel to your `config.toml`:
 
 ```toml
-[adapters.feishu_bot]
+[channels.feishu_bot]
 type = "feishu"
 
-[adapters.feishu_bot.feishu]
+[channels.feishu_bot.feishu]
 app_id = "cli_xxxxxxxxxxxxx"       # Your App ID from Step 1
 app_secret = "xxxxxxxxxxxxxxxxxxxxxx"  # Your App Secret from Step 1
 base_url = "https://open.feishu.cn"    # or "https://open.larksuite.com" for Lark
 
-[adapters.feishu_bot.feishu.websocket]
+[channels.feishu_bot.feishu.websocket]
 enabled = true
 reconnect_delay_secs = 5
 max_reconnect_attempts = 10
 heartbeat_interval_secs = 30
 
 # Pattern: only process messages where the bot is @-mentioned
-[[adapters.feishu_bot.patterns]]
+[[channels.feishu_bot.patterns]]
 name = "mention_bot"
 enabled = true
 
@@ -98,9 +98,9 @@ enabled = true
 # ("group_chat") supplies the topic config (template/topic_path/skills);
 # "${msg.chat_name}" gives each group chat its own topic.
 # A matched pattern without `pipe` drops the message with a warning.
-pipe = { hub = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
+pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
 
-[adapters.feishu_bot.patterns.rules]
+[channels.feishu_bot.patterns.rules]
 mentions = ["jyc"]                     # Your bot's display name
 ```
 

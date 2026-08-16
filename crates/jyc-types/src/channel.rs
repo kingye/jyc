@@ -295,10 +295,8 @@ pub const PIPE_PATTERN_METADATA_KEY: &str = "pipe_pattern";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PipeTarget {
-    /// Target hub channel name (a websocket-type channel).
-    /// Legacy key `channel` is accepted as an alias.
-    #[serde(alias = "channel")]
-    pub hub: String,
+    /// Target channel name (typically a websocket-type channel).
+    pub channel: String,
     /// Target pattern name whose config applies. When `topic` is omitted,
     /// the pattern name doubles as the topic name.
     #[serde(default)]

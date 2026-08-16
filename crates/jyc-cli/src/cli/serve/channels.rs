@@ -273,7 +273,7 @@ fn apply_pipe_retarget(
             serde_json::Value::String(pattern.clone()),
         );
     }
-    msg.channel = pipe.channel.clone();
+    msg.channel = pipe.hub.clone();
     msg.topic = topic;
     Some(msg)
 }
@@ -390,7 +390,7 @@ pub(crate) fn spawn_feishu_adapter(
     {
         match &p.pipe {
             Some(pipe) => {
-                pipe_channels.insert(pipe.channel.clone());
+                pipe_channels.insert(pipe.hub.clone());
             }
             None => tracing::warn!(
                 channel = %channel_name,
@@ -559,13 +559,13 @@ pub(crate) fn spawn_feishu_adapter(
                         //    the exact same path as a chat-pane message, so
                         //    topic_path/template/skills apply identically.
                         let Some(target_router) =
-                            routers.lock().unwrap().get(&pipe.channel).cloned()
+                            routers.lock().unwrap().get(&pipe.hub).cloned()
                         else {
-                            tracing::warn!(channel = %pipe.channel, "feishu pipe: target channel router not found, dropping");
+                            tracing::warn!(hub = %pipe.hub, "feishu pipe: target channel router not found, dropping");
                             return;
                         };
                         target_router
-                            .route(&WebsocketMatcher::new(pipe.channel.clone()), message)
+                            .route(&WebsocketMatcher::new(pipe.hub.clone()), message)
                             .await;
                     });
                     Ok(())
@@ -1341,7 +1341,7 @@ mod tests {
 
     fn pipe_target(pattern: Option<&str>, topic: Option<&str>) -> jyc_types::PipeTarget {
         jyc_types::PipeTarget {
-            channel: "local_dev".to_string(),
+            hub: "local_dev".to_string(),
             pattern: pattern.map(str::to_string),
             topic: topic.map(str::to_string),
         }

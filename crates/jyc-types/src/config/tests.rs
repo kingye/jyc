@@ -175,6 +175,10 @@ app_secret = "b"
 
 [[channels.feishu_bot.patterns]]
 name = "piped"
+pipe = { hub = "local_dev", topic = "jyc" }
+
+[[channels.feishu_bot.patterns]]
+name = "piped_legacy_key"
 pipe = { channel = "local_dev", topic = "jyc" }
 
 [[channels.feishu_bot.patterns]]
@@ -187,13 +191,15 @@ mode = "agent"
         )
         .unwrap();
         let patterns = config.channels["feishu_bot"].patterns.as_ref().unwrap();
-        // Set explicitly -> parsed as the (channel, topic) mapping.
+        // Set explicitly -> parsed as the (hub, topic) mapping.
         let pipe = patterns[0].pipe.as_ref().unwrap();
-        assert_eq!(pipe.channel, "local_dev");
+        assert_eq!(pipe.hub, "local_dev");
         assert_eq!(pipe.topic.as_deref(), Some("jyc"));
         assert_eq!(pipe.pattern, None);
+        // Legacy `channel` key -> accepted as an alias for `hub`.
+        assert_eq!(patterns[1].pipe.as_ref().unwrap().hub, "local_dev");
         // Omitted -> default None (routed normally).
-        assert!(patterns[1].pipe.is_none());
+        assert!(patterns[2].pipe.is_none());
     }
 
     /// Legacy `thread_*` keys in `[general]` must fail loudly instead of

@@ -506,10 +506,25 @@ impl InboundSpawner<'_> {
                         anyhow::anyhow!("channel '{channel_name}': missing feishu config")
                     })?
                     .clone();
-                // `pipe` targets: patterns can forward matching messages into
-                // another (websocket) channel instead of this channel's own
-                // TopicManager. Collect the distinct target channels for
-                // reply relaying.
+                // Feishu is pipe-only: every enabled pattern must name a pipe
+                // target (a websocket hub channel). Patterns without one are
+                // a configuration error — warn at startup; matching messages
+                // are dropped with a warning at runtime.
+                for p in channel_config
+                    .patterns
+                    .iter()
+                    .flatten()
+                    .filter(|p| p.enabled && p.pipe.is_none())
+                {
+                    tracing::warn!(
+                        channel = %channel_name,
+                        pattern = %p.name,
+                        "feishu pattern has no pipe target; matching messages will be dropped"
+                    );
+                }
+                // `pipe` targets: patterns forward matching messages into
+                // another (websocket) channel. Collect the distinct target
+                // channels for reply relaying.
                 let pipe_channels: std::collections::HashSet<String> = channel_config
                     .patterns
                     .iter()
@@ -518,7 +533,6 @@ impl InboundSpawner<'_> {
                     .filter_map(|p| p.pipe.as_ref().map(|pipe| pipe.channel.clone()))
                     .collect();
 
-                let router_for_callback = router.clone();
                 let topic_manager_for_task = topic_manager.clone();
                 let routers_for_pipe = routers.clone();
                 let config_for_pipe = config_for_spawn.clone();
@@ -635,7 +649,6 @@ impl InboundSpawner<'_> {
                         let config_for_pipe = config_for_pipe.clone();
                         let topic_chat = topic_chat.clone();
                         let channel_name_self = channel_name_for_pipe.clone();
-                        let router = router_for_callback.clone();
                         let routers = routers_for_pipe.clone();
                         tokio::spawn(async move {
                             // 1. Match this channel's patterns (rules).
@@ -652,9 +665,12 @@ impl InboundSpawner<'_> {
                             // 2. Per-pattern `pipe`: the matched pattern decides.
                             let matched = patterns.iter().find(|p| p.name == pm.pattern_name);
                             let Some(pipe) = matched.and_then(|p| p.pipe.as_ref()) else {
-                                // No pipe on the matched pattern: route normally
-                                // through this channel's own TopicManager.
-                                router.route(&FeishuMatcher, message).await;
+                                // Pipe-only channel: a matched pattern without
+                                // a pipe target is a configuration error.
+                                tracing::warn!(
+                                    pattern = %pm.pattern_name,
+                                    "feishu: matched pattern has no pipe target, dropping message"
+                                );
                                 return;
                             };
                             // 3. Re-target into the target channel/topic —

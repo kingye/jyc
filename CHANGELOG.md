@@ -83,6 +83,8 @@ All notable changes to JYC will be documented in this file.
   `topic_path`, template, skills and model apply identically; replies
   are relayed back to this channel's users. The former
   `pipe = "<channel>"` string form is replaced by this mapping.
+  For feishu, `pipe` later became mandatory — see "Feishu is now a
+  pipe-only adapter" above.
 
 ### Fixed
 

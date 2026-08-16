@@ -314,6 +314,16 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                 let pp = format!("{prefix}.patterns[{i}]");
                 validate_pattern(&pp, pattern, &mut errors);
 
+                // Pattern agent references must resolve to an [agents] entry
+                if let Some(ref agent_name) = pattern.agent
+                    && !config.agents.contains_key(agent_name)
+                {
+                    errors.push(ValidationError {
+                        path: format!("{pp}.agent"),
+                        message: format!("agent '{agent_name}' is not defined in [agents]"),
+                    });
+                }
+
                 // Feishu-specific pattern validation
                 if channel.channel_type == "feishu" && pattern.enabled {
                     // Validate mentions list is non-empty if present

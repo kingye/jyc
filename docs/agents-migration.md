@@ -111,21 +111,30 @@ Migration design doc to preserve context (this file).
   `validate_config` is clean) so template rot is caught in CI. The existing
   `mode` whitelist in `validate_config` (D8) is covered by it.
 
-### PR-3 — `[agents]` behavior table + pattern routing target
+### PR-3 — `[agents]` behavior table + pattern routing target ✅
 
 - New `[agents.<name>]` table carrying today's pattern-level behavior fields:
-  `template`, `skills`, `disabled_skills`, `model`, `small_model`, `mcps`,
-  `disabled_tools`, `disabled_mcp_servers`, `live_injection`, `topic_path`.
-  **No connection fields, no rules.**
-- `ChannelPattern` gains `agent = "<name>"` and `topic` fields. Behavior
-  resolution chain: pattern legacy fields → referenced agent → channel-level
-  → global `[ai]`.
-- Internally the matched pattern + referenced agent are merged into the
-  effective behavior fed to the existing matcher/router — **no runtime
-  changes in this phase**.
+  `template`, `topic_path`, `model`, `plan_model`, `build_model`,
+  `small_model`, `mode`, `mcps`, `disabled_tools`, `disabled_mcp_servers`,
+  `skills`, `disabled_skills`, `reset_compression`, `auto_reset_threshold`,
+  `access` — all optional. **No connection fields, no rules.**
+- `ChannelPattern` gains `agent = "<name>"`. At load time
+  (`AppConfig::apply_agent_overlays`, called by all loaders) the agent's
+  fields are overlaid under the pattern's own fields — the pattern's explicit
+  values win — so the existing matcher/router/resolution chains are
+  **unchanged**. Topic naming stays on the pattern (`topic_name`,
+  `topic_prefix`, `topic_path`) — no separate `topic` field was needed.
+- Scope decisions made during implementation:
+  - `live_injection` and `inject_inbound_images` stay pattern-only —
+    bool-with-default fields cannot distinguish "unset" from "explicitly
+    default", so they cannot be overlaid cleanly.
+  - `role`, `repo_group`, `attachments` stay pattern-only — channel-specific
+    semantics, not agent behavior.
 - `pipe = { channel = "...", ... }` keeps working with a deprecation
   warning (feishu pipe predates #573 and may be deployed); the new form is
   `agent = "..."` on the pattern.
+- Validation: a pattern referencing an undefined agent is a
+  `validate_config` error.
 
 ### PR-4 — Data directory layout
 

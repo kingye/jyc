@@ -18,6 +18,14 @@ JYC is a channel-agnostic AI agent that operates through messaging channels. Use
 
 ## Architecture
 
+> **Target architecture:** JYC is migrating to a three-layer **core / hub /
+> adapters** model — the core (per-topic queues + workers), the hub (the
+> websocket channel, the only layer owning topics and agents), and
+> protocol-only adapters that pipe messages into the hub. Feishu is the first
+> migrated channel. See [docs/core-hub-adapters.md](docs/core-hub-adapters.md).
+> Sections below that describe per-channel TopicManagers and outbound adapters
+> reflect the legacy architecture for not-yet-migrated channels.
+
 ### High-Level Flow
 
 ```

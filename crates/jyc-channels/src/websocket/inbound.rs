@@ -56,6 +56,28 @@ impl ChannelMatcher for WebsocketMatcher {
     ) -> Option<PatternMatch> {
         let topic = &message.topic;
 
+        // Pipe hint: a piped message may name the target pattern explicitly
+        // (`pipe = { pattern = "..." }`), decoupling the pattern's config
+        // from the (possibly dynamic) topic name.
+        if let Some(hint) = message
+            .metadata
+            .get(jyc_types::PIPE_PATTERN_METADATA_KEY)
+            .and_then(|v| v.as_str())
+        {
+            if let Some(p) = patterns.iter().find(|p| p.enabled && p.name == hint) {
+                return Some(PatternMatch {
+                    pattern_name: p.name.clone(),
+                    channel: "websocket".to_string(),
+                    matches: HashMap::new(),
+                });
+            }
+            tracing::warn!(
+                pattern = %hint,
+                topic = %topic,
+                "pipe_pattern hint names no enabled pattern, falling back to topic-name matching"
+            );
+        }
+
         let pattern_name = if !topic.is_empty() {
             // Prefer the pattern whose name matches the client's topic name.
             // This allows per-topic config like `topic_path` to take effect.
@@ -609,6 +631,52 @@ mod tests {
 
         let result = matcher.match_message(&msg, &patterns);
         assert!(result.is_some());
+        assert_eq!(result.unwrap().pattern_name, "adhoc");
+    }
+
+    /// A `pipe_pattern` metadata hint forces the named pattern even when the
+    /// (dynamic) topic name matches nothing.
+    #[test]
+    fn test_match_message_pipe_pattern_hint() {
+        let matcher = WebsocketMatcher::new("local_dev".to_string());
+        let mut msg = create_test_message();
+        msg.topic = "dev-jyc".to_string(); // dynamic topic, no such pattern
+        msg.metadata.insert(
+            jyc_types::PIPE_PATTERN_METADATA_KEY.to_string(),
+            serde_json::json!("group_chat"),
+        );
+
+        let patterns = vec![ChannelPattern {
+            name: "group_chat".to_string(),
+            channel: "websocket".to_string(),
+            enabled: true,
+            ..Default::default()
+        }];
+
+        let result = matcher.match_message(&msg, &patterns);
+        assert_eq!(result.unwrap().pattern_name, "group_chat");
+    }
+
+    /// Hint naming a nonexistent/disabled pattern: warn + fall back to
+    /// topic-name matching.
+    #[test]
+    fn test_match_message_pipe_pattern_hint_fallback() {
+        let matcher = WebsocketMatcher::new("local_dev".to_string());
+        let mut msg = create_test_message();
+        msg.topic = "adhoc".to_string();
+        msg.metadata.insert(
+            jyc_types::PIPE_PATTERN_METADATA_KEY.to_string(),
+            serde_json::json!("typo_pattern"),
+        );
+
+        let patterns = vec![ChannelPattern {
+            name: "group_chat".to_string(),
+            channel: "websocket".to_string(),
+            enabled: true,
+            ..Default::default()
+        }];
+
+        let result = matcher.match_message(&msg, &patterns);
         assert_eq!(result.unwrap().pattern_name, "adhoc");
     }
 

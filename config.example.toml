@@ -224,14 +224,20 @@ enabled = true
 # channel's topic. The message is re-targeted and routed through the target
 # channel's own router (identical to a chat-pane message), so the target
 # pattern's topic_path/template/skills apply.
-# pipe = { channel = "local_dev", topic = "jyc" }
-# `topic` supports the runtime placeholder `${msg.chat_name}` (resolved from
-# the message's chat name, sanitized for filesystem use) to derive the target
-# topic per chat — e.g. one `mentions` pattern serving many group chats.
-# Distinct from load-time `${ENV_VAR}` expansion: the `msg.` namespace is
-# resolved per message at runtime. Messages without a chat name (e.g. P2P
-# chats) are dropped with a warning when the placeholder is used.
-# pipe = { channel = "local_dev", topic = "${msg.chat_name}" }
+#
+# Three forms:
+#   pipe = { channel = "local_dev", topic = "jyc" }
+#     Legacy: the topic name doubles as the target pattern name.
+#   pipe = { channel = "local_dev", pattern = "jyc" }
+#     Shorthand for pattern = "jyc", topic = "jyc".
+#   pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
+#     `group_chat` supplies the pattern config; the topic name is derived per
+#     chat via the runtime placeholder `${msg.chat_name}` (resolved from the
+#     message's chat name, sanitized for filesystem use) — e.g. one `mentions`
+#     pattern serving many group chats. Distinct from load-time `${ENV_VAR}`
+#     expansion: the `msg.` namespace is resolved per message at runtime.
+#     Messages without a chat name (e.g. P2P chats) are dropped with a
+#     warning when the placeholder is used.
 
 # Feishu-specific pattern matching (placeholder - will be implemented)
 [channels.feishu_bot.patterns.rules]

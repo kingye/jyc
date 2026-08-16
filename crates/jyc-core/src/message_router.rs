@@ -166,23 +166,19 @@ impl MessageRouter {
                 .insert("repo_group_key".to_string(), serde_json::Value::String(key));
         }
 
-        // 4. Resolve topic_path override: prefer explicit metadata from
-        // WebSocket create_topic, then fall back to the matched pattern's
-        // configured topic_path.
-        let topic_path_override: Option<PathBuf> = message
-            .metadata
-            .get("topic_path_override")
-            .and_then(|v| v.as_str())
-            // Dashboard client sends absolute paths; raw PathBuf::from is
-            // correct here (resolves relative paths against the CLI cwd).
-            .map(PathBuf::from)
-            .or_else(|| {
-                matched_pattern
-                    .and_then(|p| p.topic_path.as_ref())
-                    .map(|tp| {
-                        crate::topic_path::resolve_topic_path(tp, self.topic_manager.data_root())
-                    })
-            });
+        // 4. Resolve the effective topic dir (metadata override > pattern
+        // topic_path > agent dir, with lazy migration) — shared logic with
+        // the send_to_topic tool.
+        let topic_path_override: Option<PathBuf> = crate::topic_path::resolve_topic_path_override(
+            matched_pattern,
+            &topic_name,
+            self.topic_manager.data_root(),
+            &self.channel_name,
+            message
+                .metadata
+                .get("topic_path_override")
+                .and_then(|v| v.as_str()),
+        );
         // 5. Enqueue (channel-agnostic)
         let pm = pattern_match.expect("pattern_match should be Some");
         self.topic_manager

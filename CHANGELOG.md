@@ -15,6 +15,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **New data directory layout** (migration PR-4, see `docs/agents-migration.md`):
+  topics of agent-routed patterns live at `<data>/agents/<agent>/<topic>/`;
+  channel state (github/gitee poll cursors) moves to
+  `<data>/channels/<channel>/`. Legacy paths are lazily renamed on first
+  touch; explicit `topic_path` overrides unchanged. `agents`/`channels` are
+  now reserved channel names; sharing one agent across multiple channels is
+  rejected until the agent-keyed runtime lands (PR-5).
 - **`[agents.<name>]` behavior table + pattern `agent` routing** (migration
   PR-3, see `docs/agents-migration.md`): an agent carries behavior config
   (template, skills, model, MCPs, tools, …) and owns topics — no connection,

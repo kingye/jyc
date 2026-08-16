@@ -84,6 +84,9 @@ model = "deepseek/deepseek-v4-pro"
 | D6 | TopicManager becomes keyed by agent (deep refactor) | Forced by D5: a topic receiving messages from several channels cannot be hosted by one channel's TopicManager; reply routing must resolve per-message origin channel. |
 | D7 | Channel side keeps a thin matching/forwarding/relay role | Working name: SubjectManager (final naming TBD during implementation). |
 | D8 | `[ai].mode` valid values are `agent` / `static`, enforced by `validate_config` at load time | `agent_builder` bails on anything else at runtime; load-time validation catches it earlier. (Verified during PR-2: the whitelist already existed and the template already used `mode = "agent"` — the earlier "stale `auto`" concern was mistaken.) |
+| D9 | **Websocket is not a channel.** It is the console every *declared* agent carries; the inspect server provides the endpoint. `[channels.local_dev]`-style declarations disappear entirely | The ws "channel" was never an external protocol — it is the agent's own interactive interface. |
+| D10 | **Declaration = registration.** `[agents.x]` (even empty) registers an agent on the panel. A pattern's `agent = "<name>"` must reference a declared agent (strict validation error otherwise) | Empty tables are the explicit "exists with defaults" statement; typos fail loudly. Define-on-use was considered and rejected. |
+| D11 | **Implicit-owner bridge** for unmigrated patterns: at runtime each legacy pattern gets an internal owner named `<channel>/<pattern>`; topics stay in the legacy workspace layout, appear in the panel's Channels area, and never enter the Agents area | Zero-config-change compatibility. Panel has two areas: Agents (declared, interactive console) and Channels (background topics, observable as today). Migration to the Agents area is per-pattern and opt-in. |
 
 ## Phased plan
 
@@ -136,17 +139,29 @@ Migration design doc to preserve context (this file).
 - Validation: a pattern referencing an undefined agent is a
   `validate_config` error.
 
-### PR-4 — Data directory layout
+### PR-4 — Data directory layout ✅
 
-- Topic dirs: `~/.local/share/jyc/agents/<agent>/<topic>/` for patterns
-  with an agent reference.
-- Channel state files: `~/.local/share/jyc/channels/<channel>/`.
-- One-time startup migration: legacy `<workdir>/<channel>/workspace/<topic>`
-  is moved (same-filesystem `rename`) to the new location, mirroring the
-  existing topic-name migration in `topic_path.rs`. Explicit `topic_path`
-  overrides continue to win.
+- Topic dirs: `~/.local/share/jyc/agents/<agent>/<topic>/` for patterns with
+  an agent reference — implemented in the router by mapping agent-routed
+  topics onto the existing `topic_path_override` mechanism, so the worker,
+  storage, and template init are unchanged.
+- Channel state files: `~/.local/share/jyc/channels/<channel>/` (github
+  `.github` and gitee `.gitee` state dirs moved; other channel types keep
+  no on-disk state).
+- Migration is **lazy** (not a startup scan): on first touch of a topic or
+  state dir, the legacy `<workdir>/<channel>/...` path is renamed into the
+  new location via `migrate_dir_if_needed`. Explicit `topic_path` overrides
+  continue to win over both layouts.
+- `list_topics` / `topic_path` scan the agent topics dirs of the agents
+  referenced by the channel's patterns, so agent-routed topics survive
+  restarts.
+- Guards added to `validate_config`: `agents`/`channels` are reserved
+  channel names (would collide with the new data-root dirs); an agent
+  referenced from patterns of **more than one channel** is rejected until
+  the runtime is agent-keyed (PR-5) — sharing would race two per-channel
+  TopicManagers on the same topic dirs. Pipe into a hub channel instead.
 - Legacy patterns without an agent reference keep the old layout until
-  migrated.
+  migrated (D11).
 
 ### PR-5 — Runtime convergence (the deep one, D6)
 
@@ -159,6 +174,11 @@ Migration design doc to preserve context (this file).
   - reply path: `outbound` is resolved per message from its origin channel
     (generalizing the feishu pipe relay), not held fixed by the manager.
 - Channel side keeps the thin matching/forwarding/relay role (D7).
+- The websocket channel dissolves (D9): the inspect server serves one ws
+  endpoint; the panel lists declared `[agents]` directly (Agents area) and
+  legacy channel topics separately (Channels area, D11).
+- Lifts the PR-4 restriction: agents may then be shared across channels
+  (D5) since one TopicManager owns the agent's topics regardless of origin.
 - Magnitude: medium-large, mostly mechanical lookup rewiring; reply-path
   and live-injection semantics need the most care.
 

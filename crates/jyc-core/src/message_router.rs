@@ -182,6 +182,25 @@ impl MessageRouter {
                     .map(|tp| {
                         crate::topic_path::resolve_topic_path(tp, self.topic_manager.data_root())
                     })
+            })
+            // Agent-routed pattern: the topic lives under
+            // `<data>/agents/<agent>/<topic>` instead of the channel
+            // workspace. Lazily migrate a pre-existing legacy topic dir.
+            .or_else(|| {
+                let agent = matched_pattern.and_then(|p| p.agent.as_ref())?;
+                let dir = crate::topic_path::resolve_agent_topics_dir(
+                    self.topic_manager.data_root(),
+                    agent,
+                )
+                .join(&topic_name);
+                let legacy = self
+                    .topic_manager
+                    .data_root()
+                    .join(&self.channel_name)
+                    .join("workspace")
+                    .join(&topic_name);
+                crate::topic_path::migrate_dir_if_needed(&legacy, &dir);
+                Some(dir)
             });
         // 5. Enqueue (channel-agnostic)
         let pm = pattern_match.expect("pattern_match should be Some");

@@ -18,12 +18,37 @@ impl TopicManager {
         if let Some(path) = paths.get(topic_name) {
             return Some(path.clone());
         }
+        drop(paths);
         // Fallback: try the default workspace path
         let default_path = self.workspace_dir.join(topic_name);
         if tokio::fs::metadata(&default_path).await.is_ok() {
             return Some(default_path);
         }
+        // Fallback: topics of agent-routed patterns live under
+        // `<data>/agents/<agent>/<topic>` (docs/agents-migration.md, PR-4)
+        for dir in self.agent_topics_dirs() {
+            let candidate = dir.join(topic_name);
+            if candidate.join(".jyc").is_dir() {
+                return Some(candidate);
+            }
+        }
         None
+    }
+
+    /// Topics dirs of the agents referenced by this channel's patterns
+    /// (`<data>/agents/<agent>/`). Empty when no pattern uses `agent`.
+    fn agent_topics_dirs(&self) -> Vec<PathBuf> {
+        let cfg = self.config.load();
+        cfg.channels
+            .get(&self.channel_name)
+            .and_then(|c| c.patterns.as_ref())
+            .map(|pats| {
+                pats.iter()
+                    .filter_map(|p| p.agent.as_deref())
+                    .map(|a| crate::topic_path::resolve_agent_topics_dir(&self.workdir, a))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Get all custom topic paths (from pattern `topic_path` overrides).
@@ -180,6 +205,23 @@ impl TopicManager {
             }
         }
 
+        // Also scan topics dirs of agents referenced by this channel's
+        // patterns (agent-routed topics live outside the workspace).
+        for agent_dir in self.agent_topics_dirs() {
+            if let Ok(mut entries) = tokio::fs::read_dir(&agent_dir).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let path = entry.path();
+                    if path.is_dir()
+                        && path.join(".jyc").is_dir()
+                        && let Some(name) = entry.file_name().to_str()
+                        && !topic_names.iter().any(|n| n == name)
+                    {
+                        topic_names.push(name.to_string());
+                    }
+                }
+            }
+        }
+
         // Also include topics with custom `topic_path` overrides that live
         // outside the workspace directory (e.g. `~/projects/jyc`).
         // Clean up entries whose directory has been deleted (e.g. topic closed).
@@ -210,10 +252,18 @@ impl TopicManager {
         for name in topic_names {
             // Check for custom topic_path from pattern override first
             let paths = self.topic_paths.lock().await;
-            let topic_path = paths
-                .get(&name)
-                .cloned()
-                .unwrap_or_else(|| self.workspace_dir.join(&name));
+            let topic_path = paths.get(&name).cloned().unwrap_or_else(|| {
+                let ws = self.workspace_dir.join(&name);
+                if ws.join(".jyc").is_dir() {
+                    return ws;
+                }
+                // Agent-routed topic: <data>/agents/<agent>/<topic>
+                self.agent_topics_dirs()
+                    .into_iter()
+                    .map(|d| d.join(&name))
+                    .find(|p| p.join(".jyc").is_dir())
+                    .unwrap_or(ws)
+            });
             drop(paths);
 
             // Read pattern from .jyc/pattern

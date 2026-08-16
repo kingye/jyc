@@ -78,6 +78,16 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
     for (name, channel) in &config.channels {
         let prefix = format!("channels.{name}");
 
+        // `agents`/`channels` are reserved directory names under the data
+        // root (docs/agents-migration.md, PR-4); a channel with such a name
+        // would collide with them on disk.
+        if name == "agents" || name == "channels" {
+            errors.push(ValidationError {
+                path: prefix.clone(),
+                message: format!("'{name}' is a reserved name and cannot be used for a channel"),
+            });
+        }
+
         if channel.channel_type.is_empty() {
             errors.push(ValidationError {
                 path: format!("{prefix}.type"),
@@ -346,6 +356,42 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                     }
                 }
             }
+        }
+    }
+
+    // An agent referenced by patterns of more than one channel would have
+    // its topic dirs shared by multiple per-channel TopicManagers (racing
+    // workers) until the runtime becomes agent-keyed (migration PR-5).
+    // Reject the sharing for now; pipe into a hub channel instead.
+    let mut agent_channels: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+    for (ch_name, channel) in &config.channels {
+        if let Some(ref patterns) = channel.patterns {
+            for p in patterns {
+                if let Some(ref agent) = p.agent {
+                    agent_channels
+                        .entry(agent.as_str())
+                        .or_default()
+                        .push(ch_name.as_str());
+                }
+            }
+        }
+    }
+    for (agent, channels) in &agent_channels {
+        let mut unique: Vec<&str> = channels.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.len() > 1 {
+            errors.push(ValidationError {
+                path: format!("agents.{agent}"),
+                message: format!(
+                    "agent '{agent}' is referenced by patterns of multiple channels \
+                     ({}) — sharing an agent across channels requires the \
+                     agent-keyed runtime (not yet supported); use a pipe into a \
+                     hub channel instead",
+                    unique.join(", ")
+                ),
+            });
         }
     }
 

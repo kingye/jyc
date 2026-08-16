@@ -73,6 +73,53 @@ pub fn migrate_topic_name_file(jyc_dir: &Path) {
     }
 }
 
+/// Resolve the topics root for an agent.
+///
+/// Convention: `<workdir>/agents/<agent>/` — topics of patterns that
+/// reference an agent via `agent = "<name>"` live here instead of the
+/// legacy `<workdir>/<channel>/workspace/`. See `docs/agents-migration.md`.
+pub fn resolve_agent_topics_dir(workdir: &Path, agent: &str) -> PathBuf {
+    workdir.join("agents").join(agent)
+}
+
+/// Resolve a channel's state directory.
+///
+/// Convention: `<workdir>/channels/<channel>/` — channel-owned data
+/// (protocol state like `.github`/`.gitee` poll cursors). Topics no longer
+/// live here once their pattern references an agent.
+pub fn resolve_channel_state_dir(workdir: &Path, channel: &str) -> PathBuf {
+    workdir.join("channels").join(channel)
+}
+
+/// Lazy one-time migration: if `new` does not exist and `legacy` does,
+/// rename `legacy` into `new`'s place (creating parent dirs). No-op when
+/// both exist (new wins) or neither exists.
+pub fn migrate_dir_if_needed(legacy: &Path, new: &Path) {
+    if new.exists() || !legacy.exists() {
+        return;
+    }
+    if let Some(parent) = new.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::rename(legacy, new) {
+        Ok(()) => {
+            tracing::info!(
+                from = %legacy.display(),
+                to = %new.display(),
+                "Migrated directory to new layout"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                from = %legacy.display(),
+                to = %new.display(),
+                error = %e,
+                "Failed to migrate directory; leaving legacy path in place"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +128,62 @@ mod tests {
     use jyc_types::{ChannelPattern, InboundMessage, MessageContent};
     use std::collections::HashMap;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_resolve_agent_topics_dir() {
+        let root = Path::new("/data");
+        assert_eq!(
+            resolve_agent_topics_dir(root, "jyc"),
+            PathBuf::from("/data/agents/jyc")
+        );
+    }
+
+    #[test]
+    fn test_resolve_channel_state_dir() {
+        let root = Path::new("/data");
+        assert_eq!(
+            resolve_channel_state_dir(root, "jyc_repo"),
+            PathBuf::from("/data/channels/jyc_repo")
+        );
+    }
+
+    #[test]
+    fn test_migrate_dir_if_needed_moves_legacy() {
+        let tmp = tempdir().unwrap();
+        let legacy = tmp.path().join("local_dev/workspace/jyc");
+        let new = tmp.path().join("agents/jyc/jyc");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("marker"), "x").unwrap();
+
+        migrate_dir_if_needed(&legacy, &new);
+
+        assert!(!legacy.exists());
+        assert!(new.join("marker").exists());
+    }
+
+    #[test]
+    fn test_migrate_dir_if_needed_new_wins() {
+        let tmp = tempdir().unwrap();
+        let legacy = tmp.path().join("ch/workspace/t");
+        let new = tmp.path().join("agents/a/t");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+
+        migrate_dir_if_needed(&legacy, &new);
+
+        // Both kept; legacy untouched when the new dir already exists
+        assert!(legacy.exists());
+        assert!(new.exists());
+    }
+
+    #[test]
+    fn test_migrate_dir_if_needed_noop_when_neither() {
+        let tmp = tempdir().unwrap();
+        let legacy = tmp.path().join("ch/workspace/t");
+        let new = tmp.path().join("agents/a/t");
+        migrate_dir_if_needed(&legacy, &new);
+        assert!(!new.exists());
+    }
 
     fn make_message(channel: &str, topic: &str) -> InboundMessage {
         InboundMessage {

@@ -91,6 +91,18 @@ pub struct AppConfig {
     #[serde(default)]
     pub channels: HashMap<String, ChannelConfig>,
 
+    /// Hub channels (`[hub.<name>]`) — websocket channels owning topics,
+    /// routing, and agents. `type` may be omitted (implied `"websocket"`).
+    /// Unified into `channels` by [`AppConfig::normalize`].
+    #[serde(default)]
+    pub hub: HashMap<String, ChannelConfig>,
+
+    /// Pipe-only adapters (`[adapters.<name>]`) — protocol-only channels that
+    /// pipe messages into a hub. `type` is required (e.g. `"feishu"`).
+    /// Unified into `channels` by [`AppConfig::normalize`].
+    #[serde(default)]
+    pub adapters: HashMap<String, ChannelConfig>,
+
     /// Agent configuration (AI model, prompts, attachments)
     pub agent: AgentConfig,
 
@@ -118,6 +130,53 @@ pub struct AppConfig {
     /// User-defined slash commands (e.g. `/review`), declared as `[[commands]]`.
     #[serde(default)]
     pub commands: Vec<CustomCommand>,
+}
+
+impl AppConfig {
+    /// Unify the `[hub]` / `[adapters]` / legacy `[channels]` tables into
+    /// `channels`.
+    ///
+    /// - `[hub.<name>]`: a websocket hub channel; `type` must be absent or
+    ///   `"websocket"` (forced to `"websocket"`).
+    /// - `[adapters.<name>]`: a pipe-only adapter; `type` is required and
+    ///   must not be `"websocket"` (websocket channels belong in `[hub]`).
+    /// - Legacy `[channels]` entries pass through unchanged, with a
+    ///   deprecation warning.
+    ///
+    /// A channel name declared in more than one table is an error.
+    pub fn normalize(mut self) -> anyhow::Result<Self> {
+        if !self.channels.is_empty() {
+            tracing::warn!(
+                "legacy [channels] table is deprecated; use [hub] for the websocket hub \
+                 channel and [adapters] for pipe-only adapters"
+            );
+        }
+        for (name, mut cfg) in std::mem::take(&mut self.hub) {
+            if !cfg.channel_type.is_empty() && cfg.channel_type != "websocket" {
+                anyhow::bail!(
+                    "hub.{name}: type must be \"websocket\" (the `type` key may be omitted)"
+                );
+            }
+            cfg.channel_type = "websocket".to_string();
+            if self.channels.insert(name.clone(), cfg).is_some() {
+                anyhow::bail!("channel name '{name}' declared more than once");
+            }
+        }
+        for (name, cfg) in std::mem::take(&mut self.adapters) {
+            if cfg.channel_type.is_empty() {
+                anyhow::bail!("adapters.{name}: type is required (e.g. \"feishu\")");
+            }
+            if cfg.channel_type == "websocket" {
+                anyhow::bail!(
+                    "adapters.{name}: websocket channels are hubs — declare them in [hub]"
+                );
+            }
+            if self.channels.insert(name.clone(), cfg).is_some() {
+                anyhow::bail!("channel name '{name}' declared more than once");
+            }
+        }
+        Ok(self)
+    }
 }
 
 /// A user-defined slash command declared in `config.toml` as `[[commands]]`.
@@ -209,8 +268,9 @@ pub struct FooterConfig {
 /// Configuration for a single channel (e.g., one email account).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChannelConfig {
-    /// Channel type: "email", "feishu", etc.
-    #[serde(rename = "type")]
+    /// Channel type: "email", "feishu", etc. May be omitted in `[hub]`
+    /// tables (implied `"websocket"`, set by `AppConfig::normalize`).
+    #[serde(rename = "type", default)]
     pub channel_type: String,
 
     /// IMAP configuration (for email channels)

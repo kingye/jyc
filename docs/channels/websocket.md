@@ -227,14 +227,24 @@ Pipe reply forwarders (e.g. feishu patterns with
 checked against `[attachments.outbound]`, and re-uploaded to the source
 chat (images as image messages, everything else as file messages).
 
-A pipe `topic` may embed the runtime placeholder `${msg.chat_name}`,
-resolved per message from the source channel's chat-name metadata
-(sanitized for filesystem use) — e.g.
-`pipe = { channel = "local_dev", topic = "${msg.chat_name}" }` lets one
-feishu `mentions` pattern route each group chat to its own topic here.
-Unlike load-time `${ENV_VAR}` expansion, the `msg.` namespace is resolved
-at runtime per message. Messages lacking a chat name (e.g. P2P chats) are
-dropped with a warning when the placeholder is used.
+A pipe target has two independent knobs:
+
+- `pattern` — names a pattern on this channel whose config (`topic_path`,
+  template, skills, model) applies to the piped message;
+- `topic` — the topic name, which may embed the runtime placeholder
+  `${msg.chat_name}`, resolved per message from the source channel's
+  chat-name metadata (sanitized for filesystem use).
+
+`topic` defaults to `pattern` when omitted, so
+`pipe = { channel = "local_dev", pattern = "jyc" }` is shorthand for
+`pattern = "jyc", topic = "jyc"`. The full dynamic form
+`pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }`
+lets one feishu `mentions` pattern route each group chat to its own topic
+here while sharing the `group_chat` pattern's config. Unlike load-time
+`${ENV_VAR}` expansion, the `msg.` namespace is resolved at runtime per
+message. Messages lacking a chat name (e.g. P2P chats) are dropped with a
+warning when the placeholder is used; a `pattern` naming no enabled pattern
+on this channel falls back to topic-name matching with a warning.
 
 ## Architecture
 

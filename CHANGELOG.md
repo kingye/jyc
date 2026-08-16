@@ -28,6 +28,14 @@ All notable changes to JYC will be documented in this file.
   without a chat name are dropped with a warning when the placeholder is
   used. (#568)
 
+- **Pipe targets decouple pattern config from topic name.** `pipe` gains an
+  optional `pattern` field naming the target channel pattern whose config
+  applies, and `topic` is now optional (defaulting to `pattern`):
+  `pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }`
+  gives each dynamically-derived topic the `group_chat` pattern's
+  `topic_path`/template/skills. Legacy `topic`-only form is unchanged.
+  (#570)
+
 ### Changed
 
 - **Terminology: "thread" → "topic".** The conversation-workspace concept

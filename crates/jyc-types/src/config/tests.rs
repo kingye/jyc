@@ -190,7 +190,8 @@ mode = "agent"
         // Set explicitly -> parsed as the (channel, topic) mapping.
         let pipe = patterns[0].pipe.as_ref().unwrap();
         assert_eq!(pipe.channel, "local_dev");
-        assert_eq!(pipe.topic, "jyc");
+        assert_eq!(pipe.topic.as_deref(), Some("jyc"));
+        assert_eq!(pipe.pattern, None);
         // Omitted -> default None (routed normally).
         assert!(patterns[1].pipe.is_none());
     }

@@ -199,9 +199,11 @@ mode = "agent"
 "#;
 
         let err = load_config_from_str(toml).unwrap_err();
+        // anyhow's Debug format includes the full source chain; Display
+        // shows only the outermost context.
         assert!(
-            err.to_string().contains("unknown field"),
-            "expected unknown-field error, got: {err}"
+            format!("{err:?}").contains("unknown field"),
+            "expected unknown-field error, got: {err:?}"
         );
     }
 

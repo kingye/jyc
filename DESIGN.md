@@ -439,179 +439,68 @@ supports_images = true      # Model-level overrides provider-level
 
 ## Feishu Channel Implementation
 
-The Feishu (飞书) channel implementation provides real-time messaging capabilities through the Lark/Feishu platform. Unlike email which uses IMAP/SMTP, Feishu uses a modern API-based approach with WebSocket for real-time message reception.
+Feishu (飞书) is the first channel migrated to the **core / hub / adapters**
+architecture — see [docs/core-hub-adapters.md](docs/core-hub-adapters.md). It
+is a pipe-only adapter: it speaks the Feishu protocol and pipes messages into
+a websocket hub channel; it has no TopicManager, agent service, state, or
+outbound adapter of its own.
 
 ### Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Feishu Platform (Cloud)                   │
-│                                                             │
-│  ┌──────────────┐    API Calls    ┌────────────────────┐  │
-│  │  Feishu API  │◄───────────────►│ Feishu WebSocket  │  │
-│  │   (REST)     │                 │    (Real-time)    │  │
-│  └──────────────┘                 └─────────┬──────────┘  │
-└──────────────────────────────────────────────┼─────────────┘
-                                               │
-                                        WebSocket Events
-                                               │
-                                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     JYC Feishu Channel                      │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │             FeishuInboundAdapter                    │  │
-│  │  • LarkWsClient WebSocket connection management    │  │
-│  │  • Real-time message reception via WebSocket       │  │
-│  │  • Event parsing (im.message.receive_v1)           │  │
-│  │  • FeishuMatcher for matching and topic derivation│  │
-│  │  • Converts Feishu events to InboundMessage         │  │
-│  └─────────────────────────────────────────────────────┘  │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │             FeishuOutboundAdapter                   │  │
-│  │  • Feishu API client for message sending            │  │
-│  │  • Message formatting (markdown, text)              │  │
-│  │  • Alert notifications                              │  │
-│  └─────────────────────────────────────────────────────┘  │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │                FeishuClient                         │  │
-│  │  • Authentication and token management              │  │
-│  │  • API request handling                             │  │
-│  │  • Name lookup: get_chat_name, get_user_name        │  │
-│  │    (with in-memory caching)                         │  │
-│  │  • Error handling and retry logic                   │  │
-│  └─────────────────────────────────────────────────────┘  │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │              LarkWsClient                           │  │
-│  │  • WebSocket connection to Feishu platform          │  │
-│  │  • Automatic reconnection with exponential backoff  │  │
-│  │  • Event frame parsing and dispatch                 │  │
-│  └─────────────────────────────────────────────────────┘  │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │              FeishuFormatter                        │  │
-│  │  • Multi-format message support                     │  │
-│  │  • Markdown, text, and HTML formatting              │  │
-│  │  • Content escaping and sanitization                │  │
-│  └─────────────────────────────────────────────────────┘  │
+│  ┌──────────────┐    API Calls    ┌────────────────────┐    │
+│  │  Feishu API  │◄───────────────►│ Feishu WebSocket   │    │
+│  │   (REST)     │                 │    (Real-time)     │    │
+│  └──────▲───────┘                 └─────────┬──────────┘    │
+└─────────┼────────────────────────────────────┼──────────────┘
+          │ relay replies                      │ WebSocket events
+          │ (text + attachments)               ▼
+┌─────────┴───────────────────────────────────────────────────┐
+│                 JYC Feishu Adapter (pipe-only)               │
+│                                                              │
+│  FeishuWebSocket (websocket.rs)                              │
+│   • LarkWsClient connection, reconnect, event parsing        │
+│   • im.message.receive_v1 → InboundMessage (+ name lookups)  │
+│                                                              │
+│  FeishuMatcher (inbound.rs)                                  │
+│   • pattern rules: mentions / keywords / chat_name / sender  │
+│                                                              │
+│  Pipe wiring (jyc-cli serve/channels.rs)                     │
+│   • apply_pipe_retarget: rewrite channel/topic, resolve      │
+│     ${msg.chat_name}, record topic→chat_id mapping           │
+│   • route through the hub channel's own MessageRouter        │
+│   • reply forwarder: subscribe hub broadcast, relay via      │
+│     FeishuClient (attachments via inspect files endpoint)    │
+│                                                              │
+│  FeishuClient (client.rs)                                    │
+│   • auth/token management, send text/image/file, upload      │
+│   • name lookup: get_chat_name, get_user_name (cached)       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Key Features Implemented
-
-1. **Real-time Message Reception** via LarkWsClient WebSocket
-   - `LarkWsClient` manages WebSocket connection to Feishu platform
-   - Event frame parsing for `im.message.receive_v1` events
-   - Automatic reconnection with exponential backoff
-   - Configurable WebSocket enable/disable
-   - JSON event body extraction and validation
-
-2. **API-based Message Sending** via FeishuClient
-   - Full support for Feishu message types
-   - Proper authentication with app credentials
-   - Rate limiting and error handling
-   - Support for rich content formatting
-
-3. **Name Lookup with Caching**
-   - `get_chat_name()` resolves chat IDs to display names
-   - `get_user_name()` resolves user IDs to display names
-   - In-memory caching to reduce API calls
-   - Used by topic name derivation and message display
-
-4. **Multi-format Message Support**
-   - Markdown formatting (primary)
-   - Plain text fallback
-   - HTML support for complex formatting
-   - Automatic format detection and conversion
-
-5. **Topic Management**
-   - Topic name derivation from chat metadata
-   - Message pattern matching for routing
-   - Conversation context preservation
-   - Cross-channel topic compatibility
-
-6. **Error Handling and Recovery**
-   - Comprehensive FeishuError enum
-   - Automatic token refresh on expiration
-   - WebSocket reconnection on failure
-   - Graceful degradation when features unavailable
-
 ### Configuration
 
-Feishu channel configuration in `config.toml`:
-
 ```toml
-[channels.feishu]
+[channels.feishu_bot]
 type = "feishu"
 
-[channels.feishu.config]
-app_id = "your-app-id"
-app_secret = "your-app-secret"
-# Optional: WebSocket configuration
-websocket.enabled = true
-websocket.reconnect_delay_ms = 5000
+[channels.feishu_bot.feishu]
+app_id = "${FEISHU_APP_ID}"
+app_secret = "${FEISHU_APP_SECRET}"
+base_url = "https://open.feishu.cn"
+
+[[channels.feishu_bot.patterns]]
+name = "mention_bot"
+enabled = true
+# Required: pipe into a websocket hub channel. A matched pattern
+# without `pipe` drops the message with a warning.
+pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
+
+[channels.feishu_bot.patterns.rules]
+mentions = ["jyc"]
 ```
-
-### Implementation Phases
-
-The Feishu channel was implemented in multiple phases:
-
-**Phase 1: Foundation**
-
-- Basic FeishuConfig structure
-- Channel type registration
-- Skeleton adapters
-
-**Phase 2: Client Implementation**
-
-- FeishuClient with openlark SDK integration
-- Authentication and token management
-- Basic message sending capabilities
-
-**Phase 3: WebSocket Integration**
-
-- Real-time message reception
-- WebSocket connection management
-- Event parsing and routing
-
-**Phase 4: Complete Adapter Implementation**
-
-- Full InboundAdapter implementation
-- Complete OutboundAdapter implementation
-- Message formatting and validation
-
-**Phase 5: Production Readiness**
-
-- Comprehensive error handling
-- Unit test coverage
-- Configuration validation
-- Performance optimization
-
-### Integration with Core System
-
-The Feishu channel integrates seamlessly with the core JYC architecture:
-
-- Uses the same `InboundMessage` and `OutboundMessage` types
-- Follows the same pattern matching system
-- Integrates with the topic manager and queue system
-- Supports all existing AI features and command system
-- Compatible with MCP reply tool
-
-### Testing
-
-Comprehensive unit tests cover:
-
-- Client initialization and authentication
-- Message sending and receiving
-- WebSocket connection management
-- Error handling and recovery
-- Message formatting and parsing
-
-All Feishu channel tests pass as part of the 283 total tests in the test suite.
-
 ## GitHub Channel Implementation
 
 ### Architecture Overview

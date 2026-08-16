@@ -131,11 +131,10 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 - **Agents:** Planner, Developer, Reviewer templates for full PR workflow
 
 ### ✅ Feishu (飞书/Lark)
-- **Status:** Production ready (implemented in Phase 7)
-- **Features:** Real-time messaging via WebSocket, rich message formatting
+- **Status:** Production ready (implemented in Phase 7); pipe-only adapter (see [docs/core-hub-adapters.md](docs/core-hub-adapters.md))
+- **Features:** Real-time messaging via WebSocket, messages piped into a websocket hub channel, replies relayed back (text + attachments)
 - **API:** REST API with openlark SDK + WebSocket for real-time updates
 - **Authentication:** App credentials with automatic token refresh
-- **Formats:** Markdown, text, HTML, and rich interactive messages
 
 ### ✅ WeChat
 - **Status:** Implemented in v0.3.9

@@ -227,6 +227,15 @@ Pipe reply forwarders (e.g. feishu patterns with
 checked against `[attachments.outbound]`, and re-uploaded to the source
 chat (images as image messages, everything else as file messages).
 
+A pipe `topic` may embed the runtime placeholder `${msg.chat_name}`,
+resolved per message from the source channel's chat-name metadata
+(sanitized for filesystem use) — e.g.
+`pipe = { channel = "local_dev", topic = "${msg.chat_name}" }` lets one
+feishu `mentions` pattern route each group chat to its own topic here.
+Unlike load-time `${ENV_VAR}` expansion, the `msg.` namespace is resolved
+at runtime per message. Messages lacking a chat name (e.g. P2P chats) are
+dropped with a warning when the placeholder is used.
+
 ## Architecture
 
 ### Process Model

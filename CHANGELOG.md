@@ -21,6 +21,13 @@ All notable changes to JYC will be documented in this file.
   `[attachments.outbound]` policy, and re-uploads it to the feishu chat
   (image vs. file by content type).
 
+- **Dynamic pipe topics via `${msg.chat_name}`.** A pattern's `pipe.topic`
+  may embed the runtime placeholder `${msg.chat_name}`, resolved per message
+  from the chat-name metadata (sanitized for filesystem use), so one feishu
+  `mentions` pattern can route each group chat to its own topic. Messages
+  without a chat name are dropped with a warning when the placeholder is
+  used. (#568)
+
 ### Changed
 
 - **Terminology: "thread" → "topic".** The conversation-workspace concept

@@ -307,7 +307,7 @@ impl JycAgentService {
     /// values, even if a reload happens mid-request.
     pub(crate) fn create_provider(
         &self,
-        agent_cfg: &jyc_types::AgentConfig,
+        agent_cfg: &jyc_types::AiConfig,
         model_override: Option<&str>,
     ) -> Result<Box<dyn provider::Provider>> {
         let model = model_override

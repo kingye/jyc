@@ -2,10 +2,10 @@
 //!
 //! Inspired by jcode's clean architecture but minimal — only what JYC needs.
 //!
-//! **Config types** (`ProviderDef`, `ModelDef`, `AgentConfig`, `VisionConfig`)
+//! **Config types** (`ProviderDef`, `ModelDef`, `AiConfig`, `VisionConfig`)
 //! live in `jyc_types` and are the single source of truth — `jyc-agent`
 //! consumes them directly and does not define its own duplicates.
-//! `derive_agent_config` in `service.rs` returns `jyc_types::AgentConfig`.
+//! `derive_agent_config` in `service.rs` returns `jyc_types::AiConfig`.
 
 use serde::{Deserialize, Serialize};
 

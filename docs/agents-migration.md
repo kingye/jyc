@@ -83,7 +83,7 @@ model = "deepseek/deepseek-v4-pro"
 | D5 | One agent may be mounted on multiple channels | Explicit goal of the migration. |
 | D6 | TopicManager becomes keyed by agent (deep refactor) | Forced by D5: a topic receiving messages from several channels cannot be hosted by one channel's TopicManager; reply routing must resolve per-message origin channel. |
 | D7 | Channel side keeps a thin matching/forwarding/relay role | Working name: SubjectManager (final naming TBD during implementation). |
-| D8 | `[ai].mode` valid values are `agent` / `static`; template's `mode = "auto"` is stale and must be fixed | `agent_builder` bails on anything else at runtime; validation moves to load time. |
+| D8 | `[ai].mode` valid values are `agent` / `static`, enforced by `validate_config` at load time | `agent_builder` bails on anything else at runtime; load-time validation catches it earlier. (Verified during PR-2: the whitelist already existed and the template already used `mode = "agent"` — the earlier "stale `auto`" concern was mistaken.) |
 
 ## Phased plan
 
@@ -102,11 +102,14 @@ Migration design doc to preserve context (this file).
 
 ### PR-2 — `[agent]` → `[ai]` rename
 
-- Serde alias `agent` accepted with deprecation warning (D3).
-- Fix the stale `mode = "auto"` in `config.example.toml` to `mode = "agent"`;
-  add a `mode` whitelist (`agent`/`static`) to `validate_config` (D8).
+- Serde alias `agent` accepted with deprecation warning (D3), at all three
+  levels: top-level `[ai]`, `[channels.<x>.ai]`, topic-level `[ai]`.
+- Code rename: `AgentConfig` → `AiConfig`, `TopicAgentConfig` →
+  `TopicAiConfig`, config fields `.agent` → `.ai`.
+- `config.example.toml` uses the new `[ai]` key.
 - Rebuild the template-validation test (loads `config.example.toml`, asserts
-  `validate_config` is clean) so template rot is caught in CI.
+  `validate_config` is clean) so template rot is caught in CI. The existing
+  `mode` whitelist in `validate_config` (D8) is covered by it.
 
 ### PR-3 — `[agents]` behavior table + pattern routing target
 

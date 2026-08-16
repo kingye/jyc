@@ -96,7 +96,7 @@ pub fn compute_cost(
 /// unknown provider.
 pub fn lookup_pricing(config: &AppConfig, model: &str) -> Option<ModelPricing> {
     let (provider_name, model_id) = model.split_once('/')?;
-    let provider = config.agent.providers.get(provider_name)?;
+    let provider = config.ai.providers.get(provider_name)?;
 
     provider
         .models

@@ -91,7 +91,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     ));
 
     let config_snapshot = config.load();
-    let agent_config = Arc::new(config_snapshot.agent.clone());
+    let agent_config = Arc::new(config_snapshot.ai.clone());
     let config_for_spawn = Arc::clone(&config);
 
     // Initialize shared WeCom webhook server (if any wecom or wecomkf channel is configured)

@@ -5,7 +5,7 @@
 # Locations & layering (see README "Configuration & Data Layout"):
 #   L1 (global):  <config dir>/config.toml   (Linux/macOS: ~/.config/jyc/config.toml)
 #   L2 (workdir): <workdir>/config.toml      (--workdir, or platform data dir)
-#   L3 (topic):  <topic>/.jyc/config.toml  (restricted [agent] model overrides)
+#   L3 (topic):  <topic>/.jyc/config.toml  (restricted [ai] model overrides)
 # L2 is deep-merged over L1 (tables merge; arrays/scalars are replaced).
 
 [general]
@@ -53,7 +53,7 @@ folder = "INBOX"
 # [channels.jiny283.footer]
 # enabled = true
 
-# Per-channel model override: takes priority over global [agent].model,
+# Per-channel model override: takes priority over global [ai].model,
 # but below per-pattern model override.
 # model = "anthropic/claude-opus-4-6"
 # small_model = "deepseek/deepseek-v4-flash"
@@ -75,7 +75,7 @@ enabled = true
 # mode = "plan"
 
 # Per-pattern model override: takes priority over channel-level and global
-# [agent].model, but below the runtime .jyc/model-override file.
+# [ai].model, but below the runtime .jyc/model-override file.
 # model = "anthropic/claude-opus-4-6"
 # small_model = "deepseek/deepseek-v4-flash"
 
@@ -91,12 +91,12 @@ enabled = true
 # tool to load them on demand.
 # inject_inbound_images = true
 
-# Per-pattern session reset compression: overrides [agent].reset_compression.
+# Per-pattern session reset compression: overrides [ai].reset_compression.
 # mode: "llm" | "heuristic" | "none" (default: "llm")
 # keep_pairs: heuristic mode pairs to retain (default: 3)
 # reset_compression = { mode = "llm", keep_pairs = 3 }
 
-# Per-pattern auto-reset threshold (0.0~1.0): overrides [agent].auto_reset_threshold.
+# Per-pattern auto-reset threshold (0.0~1.0): overrides [ai].auto_reset_threshold.
 # When context_input_tokens >= context_window * threshold, auto-reset triggers.
 # Default: 0.95
 # auto_reset_threshold = 0.9
@@ -246,9 +246,9 @@ pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name
 [channels.feishu_bot.patterns.rules]
 mentions = ["jyc"]
 
-# --- Agent ---
+# --- AI (the shared brain) ---
 
-[agent]
+[ai]
 enabled = true
 mode = "agent"
 # mode = "static"
@@ -256,7 +256,7 @@ mode = "agent"
 
 # Model identifier (e.g., "SiliconFlow/Pro/zai-org/GLM-4.7").
 # This is the lowest-priority fallback in the resolution chain:
-#   .jyc/model-override > pattern-level model > channel-level model > global [agent].model
+#   .jyc/model-override > pattern-level model > channel-level model > global [ai].model
 # model = "ark/deepseek-v3.2"
 
 # Optional: a smaller / faster model used for ancillary LLM work, currently:
@@ -265,7 +265,7 @@ mode = "agent"
 #     the model's context window)
 # Falls back to `model` if unset, or if provider construction fails (logged
 # as a warning, the agent continues).
-# Resolution chain: pattern-level small_model > channel-level small_model > global [agent].small_model
+# Resolution chain: pattern-level small_model > channel-level small_model > global [ai].small_model
 # small_model = "deepseek/deepseek-v4-flash"
 
 system_prompt = "You are an AI assistant. Respond professionally and concisely."
@@ -279,7 +279,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # sends large reasoning blocks with extended gaps between tokens.
 # sse_read_timeout_secs = 120
 
-# --- Agent providers ---
+# --- AI providers ---
 #
 # Define one entry per provider. The `model` and `small_model` keys above
 # select which provider/model pair is active using `<provider>/<model-id>`.
@@ -289,7 +289,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # `read_image` built-in tool is registered, and per-pattern
 # `inject_inbound_images` (see channel patterns) can take effect.
 #
-# [agent.providers.deepseek]
+# [ai.providers.deepseek]
 # type = "openai-compatible"
 # base_url = "https://api.deepseek.com"
 # api_key = "${DEEPSEEK_API_KEY}"            # preferred (consistent with other secrets)
@@ -299,22 +299,22 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # # Useful for endpoints (e.g. Kimi coding) that gate access by client identity.
 # # user_agent = "opencode/1.15.13"
 #
-# [agent.providers.deepseek.models."deepseek-v4-pro"]
+# [ai.providers.deepseek.models."deepseek-v4-pro"]
 # supports_images = true
 # # Model-level user_agent overrides the provider-level value.
 # # user_agent = "opencode/1.15.13"
 # # Optional: actual model identifier sent to the remote LLM. When unset,
 # # the map key ("deepseek-v4-pro") is sent. This lets multiple aliases with
 # # different params share one remote model, e.g.:
-# #   [agent.providers.kimi.models."k3-high"]
+# #   [ai.providers.kimi.models."k3-high"]
 # #   model_id = "k3"
 # #   params = { reasoning_effort = "high" }
-# #   [agent.providers.kimi.models."k3-low"]
+# #   [ai.providers.kimi.models."k3-low"]
 # #   model_id = "k3"
 # #   params = { reasoning_effort = "low" }
 # # model_id = "ep-xxxxxxxx"
 #
-# [agent.providers.anthropic]
+# [ai.providers.anthropic]
 # type = "anthropic"
 # base_url = "https://api.anthropic.com/v1"
 # api_key = "${ANTHROPIC_API_KEY}"           # preferred
@@ -328,7 +328,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # # to fall back to `cache_hit_per_million` for both buckets.
 # pricing = { input_per_million = 3.0, output_per_million = 15.0, cache_hit_per_million = 0.3, cache_creation_per_million = 3.75, currency = "USD" }
 #
-# [agent.providers.anthropic.models."claude-opus-4-7"]
+# [ai.providers.anthropic.models."claude-opus-4-7"]
 # supports_images = true
 # # Model-level rates override the provider default above.
 # pricing = { input_per_million = 15.0, output_per_million = 75.0, cache_hit_per_million = 1.5, cache_creation_per_million = 18.75, currency = "USD" }
@@ -357,7 +357,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # `cache_hit_per_million`) — Anthropic is the only provider that
 # distinguishes cache writes from reads. A CNY-priced provider, for example:
 #
-# [agent.providers.my_cn_provider]
+# [ai.providers.my_cn_provider]
 # type = "openai-compatible"
 # base_url = "https://api.example.cn"
 # api_key = "${CN_API_KEY}"                  # preferred
@@ -371,17 +371,17 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 #   - today:   durable UTC-day total, appended per call to
 #     <topic>/.jyc/bill-YYYY-MM-DD.jsonl and never reset or truncated
 
-# --- Agent Vision Fallback ---
+# --- AI Vision Fallback ---
 #
 # When the primary model does not support images (supports_images = false),
 # the `read_image` tool can fall back to a separate vision model (e.g.,
 # DeepSeek-OCR) to analyze images and return text descriptions.
 #
-# The `provider` field references a named entry in `[agent.providers]` above
+# The `provider` field references a named entry in `[ai.providers]` above
 # to reuse its `base_url` and credentials (`api_key` or `api_key_env`),
 # avoiding duplicate credentials.
 #
-# [agent.vision]
+# [ai.vision]
 # enabled = true
 # provider = "deepseek"
 # model = "deepseek-ocr"
@@ -391,7 +391,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # --- Session Reset Compression ---
 #
 # Compression behavior when `/reset` or auto-reset triggers.
-# Per-pattern `reset_compression` takes priority over [agent].reset_compression.
+# Per-pattern `reset_compression` takes priority over [ai].reset_compression.
 #
 # mode: "llm" | "heuristic" | "none" (default: "llm")
 #   - "llm": use the small_model to generate an LLM summary of the conversation
@@ -405,7 +405,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # auto_reset_threshold = 0.95
 
 
-[agent.attachments]
+[ai.attachments]
 enabled = true
 max_file_size = "10mb"
 allowed_extensions = [".ppt", ".pptx", ".doc", ".docx", ".txt", ".md", ".pdf"]
@@ -999,7 +999,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #
 # Place a `<topic_path>/.jyc/config.toml` to add or replace MCPs for a
 # specific topic (e.g. one GitHub PR, one WeCom conversation). Layered on
-# top of the pattern → channel → global chain. The same `[agent] model`
+# top of the pattern → channel → global chain. The same `[ai] model`
 # overrides also live here.
 #
 # Default merge = ADDITIVE: topic MCPs union with the inherited set.
@@ -1013,7 +1013,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #
 #   # /<topic>/.jyc/config.toml
 #
-#   [agent]
+#   [ai]
 #   model = "anthropic/claude-opus-4-7"
 #
 #   # Default: additive. Adds a topic-only MCP without dropping inherited ones.

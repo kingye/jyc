@@ -54,7 +54,7 @@ pub struct AgentServiceResult {
 #[allow(clippy::too_many_arguments)]
 pub fn build_agent_service(
     live_config: Arc<ArcSwap<jyc_types::AppConfig>>,
-    agent_config: &jyc_types::AgentConfig,
+    agent_config: &jyc_types::AiConfig,
     channel_config: &ChannelConfig,
     workdir: &Path,
     outbound: Arc<dyn OutboundAdapter>,

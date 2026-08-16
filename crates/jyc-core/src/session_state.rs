@@ -203,7 +203,7 @@ pub fn resolve_reset_compression(
     // 3. Global [agent].reset_compression
     // 4. Default
     from_first
-        .or_else(|| config.agent.reset_compression.clone())
+        .or_else(|| config.ai.reset_compression.clone())
         .unwrap_or_default()
 }
 
@@ -288,7 +288,7 @@ async fn resolve_active_model(
     // 2. Topic config (`.jyc/config.toml`) — read once, then check both
     //    the mode-specific and the generic `model` field against the same
     //    loaded value (avoids re-reading the file in the common no-config case).
-    let topic_cfg = jyc_types::load_topic_config(topic_path).and_then(|c| c.agent);
+    let topic_cfg = jyc_types::load_topic_config(topic_path).and_then(|c| c.ai);
     let topic_cfg_override = topic_cfg
         .as_ref()
         .and_then(|a| match mode_override.as_deref() {
@@ -313,7 +313,7 @@ async fn resolve_active_model(
     };
 
     // 4. Global [agent] (apply channel-level model override on top of global)
-    let mut effective_agent = config.agent.clone();
+    let mut effective_agent = config.ai.clone();
     if let Some(ch) = config.channels.get(channel)
         && ch.model.is_some()
     {
@@ -335,7 +335,7 @@ async fn resolve_active_model(
 /// Per-model override > provider default > `DEFAULT_CONTEXT_WINDOW`.
 fn context_window_for_model(model_str: &str, config: &AppConfig) -> Option<u64> {
     if let Some((provider_name, model_id)) = model_str.split_once('/')
-        && let Some(provider) = config.agent.providers.get(provider_name)
+        && let Some(provider) = config.ai.providers.get(provider_name)
     {
         let per_model = provider.models.get(model_id).and_then(|m| m.context_window);
         if let Some(cw) = per_model.or(provider.context_window) {

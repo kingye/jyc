@@ -91,7 +91,7 @@ async fn refresh_max_input_tokens(context: &CommandContext) {
         &context.topic_path,
         &context.config,
         &context.channel,
-        context.config.agent.auto_reset_threshold,
+        context.config.ai.auto_reset_threshold,
     )
     .await;
     if let Some(new_max) = new_max {

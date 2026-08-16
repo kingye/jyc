@@ -113,7 +113,7 @@ fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {
             wecom_bot: None,
             monitor: None,
             patterns: Some(patterns),
-            agent: None,
+            ai: None,
             model: None,
             small_model: None,
             footer: None,
@@ -128,7 +128,7 @@ fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {
     jyc_types::AppConfig {
         general: jyc_types::GeneralConfig::default(),
         channels,
-        agent: jyc_types::AgentConfig {
+        ai: jyc_types::AiConfig {
             enabled: false,
             mode: "static".to_string(),
             model: None,

@@ -294,11 +294,11 @@ impl TopicManager {
             .or_else(|| {
                 let cfg = self.config.load();
                 match mode.as_deref() {
-                    Some("plan") => cfg.agent.plan_model.clone(),
-                    _ => cfg.agent.build_model.clone(), // None = build mode
+                    Some("plan") => cfg.ai.plan_model.clone(),
+                    _ => cfg.ai.build_model.clone(), // None = build mode
                 }
             })
-            .or_else(|| self.config.load().agent.model.clone());
+            .or_else(|| self.config.load().ai.model.clone());
 
             // Read skills from .jyc/skills.json
             let skills = read_skills(&topic_path).await;

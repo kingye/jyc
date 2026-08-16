@@ -4,8 +4,21 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **`[agent]` config table renamed to `[ai]`** at all levels (top-level,
+  `[channels.<x>]`, topic `.jyc/config.toml`). The legacy key `agent` is
+  still accepted with a deprecation warning. Code: `AgentConfig` →
+  `AiConfig`. See `docs/agents-migration.md` for the full migration plan.
+- **Reverted the `[hub]`/`[adapters]` config tables and `pipe.hub` rename
+  (#573)** — never deployed; `[channels]` is again the single channel table.
+
 ### Added
 
+- **Channels / agents / AI migration design doc** (`docs/agents-migration.md`):
+  locked decisions, target three-layer model, and phased PR plan.
+- **Config template regression test**: `config.example.toml` must parse and
+  pass `validate_config` in CI.
 - **Core / hub / adapters architecture document.** `docs/core-hub-adapters.md`
   describes the target three-layer architecture (core: per-topic queues +
   workers; hub: the websocket channel, the only layer owning topics and

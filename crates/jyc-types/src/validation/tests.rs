@@ -181,7 +181,7 @@ mode = "static"
 "#;
     let config = load_config_from_str(toml).unwrap();
     let errors = validate_config(&config);
-    assert!(errors.iter().any(|e| e.path == "agent.text"));
+    assert!(errors.iter().any(|e| e.path == "ai.text"));
 }
 
 #[test]

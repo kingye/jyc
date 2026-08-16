@@ -176,6 +176,42 @@ impl TopicManager {
                 }
             }
         }
+
+        // Restore agent-routed topics (PR-4 layout) into the registry so the
+        // job scheduler's per-TopicManager scan discovers their scheduled
+        // jobs after a restart, even before the first message arrives.
+        for agent_dir in self.agent_topics_dirs() {
+            let Ok(mut entries) = tokio::fs::read_dir(&agent_dir).await else {
+                continue;
+            };
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let topic_dir = entry.path();
+                if !topic_dir.is_dir() {
+                    continue;
+                }
+                let jyc_dir = topic_dir.join(".jyc");
+                crate::topic_path::migrate_topic_name_file(&jyc_dir);
+                let Ok(name) = tokio::fs::read_to_string(jyc_dir.join("topic-name")).await else {
+                    continue;
+                };
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                let mut paths = self.topic_paths.lock().await;
+                paths.entry(name.clone()).or_insert_with(|| {
+                    tracing::info!(
+                        path = %topic_dir.display(),
+                        "Restored agent-routed topic from disk"
+                    );
+                    topic_dir
+                });
+                drop(paths);
+                if self.enable_events {
+                    self.get_or_create_event_bus(&name).await;
+                }
+            }
+        }
     }
 
     /// List all open topics with their info, reading state from disk.

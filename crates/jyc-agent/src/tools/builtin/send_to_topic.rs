@@ -238,13 +238,24 @@ impl Tool for SendToThreadTool {
                         .metadata
                         .insert("role".to_string(), Value::String(role.clone()));
                 }
+                // Mirror MessageRouter: metadata override > pattern topic_path
+                // > agent dir (with lazy migration), so agent-routed topics
+                // resolve identically for cross-topic injection (#577 review).
+                let topic_path_override = jyc_core::topic_path::resolve_topic_path_override(
+                    Some(p),
+                    topic_name,
+                    target_tm.data_root(),
+                    channel,
+                    inbound
+                        .metadata
+                        .get("topic_path_override")
+                        .and_then(|v| v.as_str()),
+                );
                 (
                     p.name.clone(),
                     p.attachments.clone(),
                     p.live_injection,
-                    p.topic_path.as_ref().map(|tp| {
-                        jyc_core::topic_path::resolve_topic_path(tp, target_tm.data_root())
-                    }),
+                    topic_path_override,
                 )
             }
             None => (String::new(), None, true, None),

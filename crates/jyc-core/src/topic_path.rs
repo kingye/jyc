@@ -120,6 +120,41 @@ pub fn migrate_dir_if_needed(legacy: &Path, new: &Path) {
     }
 }
 
+/// Resolve the effective topic directory override for a matched pattern.
+///
+/// Precedence (first hit wins):
+/// 1. explicit `metadata_override` (dashboard `create_topic` path)
+/// 2. the pattern's `topic_path` override (custom path, `~`-expanded)
+/// 3. an agent-routed pattern: `<data_root>/agents/<agent>/<topic>` —
+///    lazily migrating a pre-existing legacy
+///    `<data_root>/<channel>/workspace/<topic>` dir into place
+///
+/// Shared by `MessageRouter` and the `send_to_topic` tool so agent-routed
+/// topics resolve identically everywhere.
+pub fn resolve_topic_path_override(
+    pattern: Option<&jyc_types::ChannelPattern>,
+    topic_name: &str,
+    data_root: &Path,
+    channel_name: &str,
+    metadata_override: Option<&str>,
+) -> Option<PathBuf> {
+    if let Some(p) = metadata_override {
+        return Some(PathBuf::from(p));
+    }
+    let pattern = pattern?;
+    if let Some(tp) = &pattern.topic_path {
+        return Some(resolve_topic_path(tp, data_root));
+    }
+    let agent = pattern.agent.as_deref()?;
+    let dir = resolve_agent_topics_dir(data_root, agent).join(topic_name);
+    let legacy = data_root
+        .join(channel_name)
+        .join("workspace")
+        .join(topic_name);
+    migrate_dir_if_needed(&legacy, &dir);
+    Some(dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +218,56 @@ mod tests {
         let new = tmp.path().join("agents/a/t");
         migrate_dir_if_needed(&legacy, &new);
         assert!(!new.exists());
+    }
+
+    fn pattern_with(agent: Option<&str>, topic_path: Option<&str>) -> ChannelPattern {
+        ChannelPattern {
+            name: "p".into(),
+            agent: agent.map(|s| s.to_string()),
+            topic_path: topic_path.map(|s| s.to_string()),
+            ..ChannelPattern::default()
+        }
+    }
+
+    #[test]
+    fn test_resolve_topic_path_override_precedence() {
+        let root = Path::new("/data");
+        let p = pattern_with(Some("a"), None);
+
+        // 1. metadata override wins
+        assert_eq!(
+            resolve_topic_path_override(Some(&p), "t", root, "ch", Some("/abs/x")),
+            Some(PathBuf::from("/abs/x"))
+        );
+        // 2. pattern topic_path beats agent dir
+        let p2 = pattern_with(Some("a"), Some("~/proj"));
+        let r = resolve_topic_path_override(Some(&p2), "t", root, "ch", None).unwrap();
+        assert!(r.ends_with("proj"));
+        // 3. agent dir
+        assert_eq!(
+            resolve_topic_path_override(Some(&p), "t", root, "ch", None),
+            Some(PathBuf::from("/data/agents/a/t"))
+        );
+        // 4. no pattern
+        assert_eq!(
+            resolve_topic_path_override(None, "t", root, "ch", None),
+            None
+        );
+    }
+
+    #[test]
+    fn test_resolve_topic_path_override_migrates_legacy() {
+        let tmp = tempdir().unwrap();
+        let legacy = tmp.path().join("ch/workspace/t");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("marker"), "x").unwrap();
+
+        let p = pattern_with(Some("a"), None);
+        let dir = resolve_topic_path_override(Some(&p), "t", tmp.path(), "ch", None).unwrap();
+
+        assert_eq!(dir, tmp.path().join("agents/a/t"));
+        assert!(!legacy.exists());
+        assert!(dir.join("marker").exists());
     }
 
     fn make_message(channel: &str, topic: &str) -> InboundMessage {

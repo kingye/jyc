@@ -124,7 +124,7 @@ impl JycAgentService {
         }
     }
 
-    /// Derive the effective `jyc_types::AgentConfig` for this service's
+    /// Derive the effective `jyc_types::AiConfig` for this service's
     /// channel from the live `AppConfig`.
     ///
     /// Reads the current `AppConfig` via the shared `ArcSwap` and applies
@@ -136,7 +136,7 @@ impl JycAgentService {
     /// Called on every agent request, so any reload of `config.toml` (via
     /// the TUI `reload config` action) takes effect immediately — no
     /// restart needed.
-    pub fn agent_config(&self) -> jyc_types::AgentConfig {
+    pub fn agent_config(&self) -> jyc_types::AiConfig {
         derive_agent_config(&self.config.load(), &self.channel_name)
     }
 
@@ -239,7 +239,7 @@ impl AgentService for JycAgentService {
         // Priority: file overrides > topic config > pattern > config.
         // `topic_cfg` was loaded once at the top of `process` and shared with
         // `build_tool_registry` (avoids a duplicate disk read per message).
-        let topic_agent_cfg = topic_cfg.as_ref().and_then(|c| c.agent.as_ref());
+        let topic_agent_cfg = topic_cfg.as_ref().and_then(|c| c.ai.as_ref());
         let topic_cfg_override = topic_agent_cfg
             .as_ref()
             .and_then(|a| match mode_override.as_deref() {
@@ -609,7 +609,7 @@ impl AgentService for JycAgentService {
     }
 }
 
-/// Derive the effective [`jyc_types::AgentConfig`] for a given channel from
+/// Derive the effective [`jyc_types::AiConfig`] for a given channel from
 /// the full [`jyc_types::AppConfig`].
 ///
 /// Applies the channel-level overrides (`channels.<name>.model`,
@@ -618,14 +618,11 @@ impl AgentService for JycAgentService {
 /// pass through unchanged from `app.agent`.
 ///
 /// Channel-level `[channels.<name>.agent]` overrides (a nested
-/// `AgentConfig` per channel) are intentionally **not** applied here; the
+/// `AiConfig` per channel) are intentionally **not** applied here; the
 /// current top-level fields `model` and `small_model` are the only
 /// per-channel knobs `JycAgentService` reads.
-pub fn derive_agent_config(
-    app: &jyc_types::AppConfig,
-    channel_name: &str,
-) -> jyc_types::AgentConfig {
-    let mut agent = app.agent.clone();
+pub fn derive_agent_config(app: &jyc_types::AppConfig, channel_name: &str) -> jyc_types::AiConfig {
+    let mut agent = app.ai.clone();
     if let Some(ch) = app.channels.get(channel_name) {
         if ch.model.is_some() {
             agent.model = ch.model.clone();

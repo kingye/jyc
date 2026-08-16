@@ -13,7 +13,7 @@ fn app_config_with_model(model: Option<&str>) -> Arc<ArcSwap<jyc_types::AppConfi
     let app = jyc_types::AppConfig {
         general: jyc_types::GeneralConfig::default(),
         channels: HashMap::new(),
-        agent: jyc_types::AgentConfig {
+        ai: jyc_types::AiConfig {
             enabled: true,
             mode: "agent".to_string(),
             model: model.map(|s| s.to_string()),
@@ -254,7 +254,7 @@ fn reload_picks_up_new_model_context_window_without_restart() {
     let app = jyc_types::AppConfig {
         general: jyc_types::GeneralConfig::default(),
         channels: HashMap::new(),
-        agent: jyc_types::AgentConfig {
+        ai: jyc_types::AiConfig {
             enabled: true,
             mode: "agent".to_string(),
             model: Some("openai/gpt-4".to_string()),
@@ -323,7 +323,7 @@ fn reload_picks_up_new_model_context_window_without_restart() {
     // Simulate a config reload: swap in a new AppConfig with an
     // additional model that has its own context_window.
     let mut new_app = config.load().as_ref().clone();
-    if let Some(openai) = new_app.agent.providers.get_mut("openai") {
+    if let Some(openai) = new_app.ai.providers.get_mut("openai") {
         openai.models.insert(
             "gpt-4-new".to_string(),
             jyc_types::ModelDef {
@@ -371,7 +371,7 @@ fn derive_agent_config_applies_channel_overrides() {
         wecom_bot: None,
         monitor: None,
         patterns: None,
-        agent: None,
+        ai: None,
         footer: None,
         mcps: None,
         disabled_tools: None,
@@ -385,7 +385,7 @@ fn derive_agent_config_applies_channel_overrides() {
     let app = jyc_types::AppConfig {
         general: jyc_types::GeneralConfig::default(),
         channels,
-        agent: jyc_types::AgentConfig {
+        ai: jyc_types::AiConfig {
             enabled: true,
             mode: "agent".to_string(),
             model: Some("global/main".to_string()),

@@ -100,7 +100,7 @@ async fn run_validate(
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        println!("  Agent mode: {}", config.agent.mode);
+        println!("  AI mode: {}", config.ai.mode);
         if let Some(ref inspect) = config.inspect {
             println!(
                 "  Inspect: {} (bind: {})",

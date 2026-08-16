@@ -185,6 +185,69 @@ mode = "static"
 }
 
 #[test]
+fn test_pattern_agent_dangling_reference() {
+    let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[[channels.work.patterns]]
+name = "invoice"
+agent = "ghost"
+[ai]
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.path.ends_with(".agent") && e.message.contains("ghost"))
+    );
+}
+
+#[test]
+fn test_pattern_agent_defined_reference_validates_clean() {
+    let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[[channels.work.patterns]]
+name = "invoice"
+agent = "invoice"
+[agents.invoice]
+template = "invoice"
+[ai]
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        !errors.iter().any(|e| e.path.ends_with(".agent")),
+        "unexpected agent-reference errors: {errors:?}"
+    );
+}
+
+#[test]
 fn test_invalid_mcp_in_pattern() {
     let toml = r#"
 [general]

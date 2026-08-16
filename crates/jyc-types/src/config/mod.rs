@@ -91,6 +91,13 @@ pub struct AppConfig {
     #[serde(default)]
     pub channels: HashMap<String, ChannelConfig>,
 
+    /// Agents (`[agents.<name>]`) — behavior config + topic ownership.
+    /// Referenced by channel patterns via `agent = "<name>"`; overlaid onto
+    /// the referencing patterns at load time by
+    /// [`AppConfig::apply_agent_overlays`]. See `docs/agents-migration.md`.
+    #[serde(default)]
+    pub agents: HashMap<String, crate::channel::AgentInstanceConfig>,
+
     /// AI configuration (model, prompts, providers) — the shared brain.
     /// Legacy key `[agent]` is accepted as an alias (deprecated).
     #[serde(rename = "ai", alias = "agent")]
@@ -120,6 +127,47 @@ pub struct AppConfig {
     /// User-defined slash commands (e.g. `/review`), declared as `[[commands]]`.
     #[serde(default)]
     pub commands: Vec<CustomCommand>,
+}
+
+impl AppConfig {
+    /// Overlay each `[agents.<name>]` entry onto the channel patterns that
+    /// reference it (`agent = "<name>"`), so downstream consumers read the
+    /// merged pattern exactly as before. Called by all config loaders.
+    ///
+    /// A dangling `agent` reference is logged here and reported by
+    /// `validate_config`. Legacy `pipe = { channel = ... }` usage is logged
+    /// as deprecated in favor of `agent`.
+    pub fn apply_agent_overlays(&mut self) {
+        for (ch_name, ch) in &mut self.channels {
+            if let Some(patterns) = &mut ch.patterns {
+                for p in patterns {
+                    if let Some(agent_name) = p.agent.clone() {
+                        match self.agents.get(&agent_name) {
+                            Some(agent) => {
+                                let agent = agent.clone();
+                                p.overlay_agent(&agent);
+                            }
+                            None => {
+                                tracing::warn!(
+                                    "channels.{ch_name}.patterns.{}: agent '{agent_name}' \
+                                     is not defined in [agents]",
+                                    p.name
+                                );
+                            }
+                        }
+                    }
+                    if p.pipe.is_some() {
+                        tracing::warn!(
+                            "channels.{ch_name}.patterns.{}: `pipe` is deprecated; \
+                             route to an agent instead (`agent = \"<name>\"`, see \
+                             docs/agents-migration.md)",
+                            p.name
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A user-defined slash command declared in `config.toml` as `[[commands]]`.

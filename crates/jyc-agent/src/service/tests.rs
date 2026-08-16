@@ -13,6 +13,7 @@ fn app_config_with_model(model: Option<&str>) -> Arc<ArcSwap<jyc_types::AppConfi
     let app = jyc_types::AppConfig {
         general: jyc_types::GeneralConfig::default(),
         channels: HashMap::new(),
+        agents: HashMap::new(),
         ai: jyc_types::AiConfig {
             enabled: true,
             mode: "agent".to_string(),
@@ -254,6 +255,7 @@ fn reload_picks_up_new_model_context_window_without_restart() {
     let app = jyc_types::AppConfig {
         general: jyc_types::GeneralConfig::default(),
         channels: HashMap::new(),
+        agents: HashMap::new(),
         ai: jyc_types::AiConfig {
             enabled: true,
             mode: "agent".to_string(),
@@ -385,6 +387,7 @@ fn derive_agent_config_applies_channel_overrides() {
     let app = jyc_types::AppConfig {
         general: jyc_types::GeneralConfig::default(),
         channels,
+        agents: HashMap::new(),
         ai: jyc_types::AiConfig {
             enabled: true,
             mode: "agent".to_string(),

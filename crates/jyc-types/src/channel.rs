@@ -503,6 +503,99 @@ pub struct ChannelPattern {
     /// ```
     #[serde(default)]
     pub access: Option<AccessConfig>,
+
+    /// Agent this pattern routes matched messages to.
+    ///
+    /// References a `[agents.<name>]` entry whose behavior config
+    /// (template, skills, model, …) is overlaid under this pattern's own
+    /// fields at load time (see [`AppConfig::apply_agent_overlays`]).
+    #[serde(default)]
+    pub agent: Option<String>,
+}
+
+/// Behavior configuration for an agent — the `[agents.<name>]` table.
+///
+/// An agent owns topics and works inside them; it has **no connection
+/// config and no matching rules** (those live on the channel). A channel
+/// pattern references an agent via `agent = "<name>"`; at load time the
+/// agent's fields are overlaid under the pattern's own fields (pattern
+/// wins when both set), so all downstream resolution chains are unchanged.
+///
+/// All fields are optional and mirror the behavior fields of
+/// [`ChannelPattern`]. Not mirrored (stay pattern-only): routing fields
+/// (`rules`, `pipe`, `topic_name`, `topic_prefix`), channel-specific
+/// semantics (`role`, `repo_group`, `attachments`), and bool-with-default
+/// fields (`live_injection`, `inject_inbound_images`) which cannot be
+/// overlaid cleanly.
+///
+/// See `docs/agents-migration.md` (PR-3).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentInstanceConfig {
+    /// Template name to initialize topics (from workdir/templates/).
+    pub template: Option<String>,
+    /// Custom filesystem path for topic directories.
+    pub topic_path: Option<String>,
+    /// Model override (e.g., "anthropic/claude-opus-4-6").
+    pub model: Option<String>,
+    /// Model override for plan (read-only) mode.
+    pub plan_model: Option<String>,
+    /// Model override for build (full execution) mode.
+    pub build_model: Option<String>,
+    /// Small/fast model override for ancillary LLM work.
+    pub small_model: Option<String>,
+    /// Initial agent mode for topics: "plan" or "build".
+    pub mode: Option<String>,
+    /// MCP server configurations for this agent's topics.
+    pub mcps: Option<Vec<McpServerConfig>>,
+    /// Tools to disable.
+    pub disabled_tools: Option<Vec<String>>,
+    /// MCP servers to disable.
+    pub disabled_mcp_servers: Option<Vec<String>>,
+    /// Skills whitelist.
+    pub skills: Option<Vec<String>>,
+    /// Skills to disable.
+    pub disabled_skills: Option<Vec<String>>,
+    /// Compression configuration for session reset.
+    pub reset_compression: Option<ResetCompressionConfig>,
+    /// Auto-reset threshold as a fraction of context window (0.0~1.0).
+    pub auto_reset_threshold: Option<f64>,
+    /// Filesystem access whitelist.
+    pub access: Option<AccessConfig>,
+}
+
+impl ChannelPattern {
+    /// Overlay an agent's behavior fields under this pattern's own fields.
+    ///
+    /// For every behavior field: the pattern's explicit value wins; when the
+    /// pattern leaves it unset, the agent's value (if any) applies. Routing
+    /// fields (`rules`, `pipe`, `topic_name`, …) are untouched.
+    pub fn overlay_agent(&mut self, agent: &AgentInstanceConfig) {
+        macro_rules! overlay {
+            ($($field:ident),* $(,)?) => {
+                $(if self.$field.is_none() {
+                    self.$field = agent.$field.clone();
+                })*
+            };
+        }
+        overlay!(
+            template,
+            topic_path,
+            model,
+            plan_model,
+            build_model,
+            small_model,
+            mode,
+            mcps,
+            disabled_tools,
+            disabled_mcp_servers,
+            skills,
+            disabled_skills,
+            reset_compression,
+            auto_reset_threshold,
+            access,
+        );
+    }
 }
 
 /// Compression strategy for session reset.
@@ -597,6 +690,7 @@ impl Default for ChannelPattern {
             reset_compression: None,
             auto_reset_threshold: None,
             access: None,
+            agent: None,
         }
     }
 }

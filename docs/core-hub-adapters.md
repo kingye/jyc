@@ -20,7 +20,7 @@ responsibilities:
 │   feishu · github · wecom_bot · wecom · wechat · (email)    │
 │   platform events ⇄ InboundMessage; relay replies back      │
 └───────────────────────────┬────────────────────────────────┘
-                            │ pipe = { hub, topic, pattern }
+                            │ pipe = { channel, topic, pattern }
 ┌───────────────────────────▼────────────────────────────────┐
 │ Hub (middle) — the websocket channel                        │
 │   owns topics, routing, agents; outbound broadcast bus      │
@@ -67,7 +67,7 @@ An adapter speaks exactly one platform protocol and nothing else.
 - translate platform events into `InboundMessage` (with platform metadata:
   chat_id, chat_name, mentions, sender),
 - match its own patterns and re-target matching messages into a hub channel
-  via `pipe = { hub, topic?, pattern? }` (legacy key `channel` is an alias),
+  via `pipe = { channel, topic?, pattern? }`,
 - record the resolved hub topic → platform address mapping for reply relay,
 - subscribe to the pipe target's broadcast and relay replies (text +
   attachments) back to the platform.
@@ -81,33 +81,6 @@ An adapter speaks exactly one platform protocol and nothing else.
 A matched pattern without `pipe` is a configuration error: the message is
 dropped with a warning at runtime, and startup logs a warning for each such
 pattern.
-
-## Configuration
-
-Config tables mirror the layers (unified into the internal channel map at
-load time):
-
-```toml
-[hub.local_dev]                    # websocket hub; `type` implied
-
-[adapters.feishu_bot]              # pipe-only adapter; `type` required
-type = "feishu"
-
-[[adapters.feishu_bot.patterns]]
-name = "mention_bot"
-pipe = { hub = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
-
-[adapters.feishu_bot.patterns.rules]
-mentions = ["jyc"]
-```
-
-- `[hub.<name>]` rejects a `type` other than `"websocket"`; `[adapters.<name>]`
-  requires `type` and rejects `"websocket"` (that belongs in `[hub]`).
-- A pipe target must name a configured websocket hub — startup validation
-  fails otherwise.
-- The legacy `[channels.<name>]` table still loads (deprecation warning) for
-  not-yet-migrated channel types and will be removed in a future release.
-
 
 ## Message flow
 

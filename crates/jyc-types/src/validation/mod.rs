@@ -339,29 +339,6 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
         }
     }
 
-    // Pipe targets must reference a configured websocket hub channel.
-    for (name, channel) in &config.channels {
-        for (i, pattern) in channel.patterns.iter().flatten().enumerate() {
-            if let Some(ref pipe) = pattern.pipe {
-                let pp = format!("channels.{name}.patterns[{i}].pipe.hub");
-                match config.channels.get(&pipe.hub) {
-                    Some(target) if target.channel_type == "websocket" => {}
-                    Some(_) => errors.push(ValidationError {
-                        path: pp,
-                        message: format!(
-                            "pipe target '{}' is not a websocket hub channel",
-                            pipe.hub
-                        ),
-                    }),
-                    None => errors.push(ValidationError {
-                        path: pp,
-                        message: format!("pipe target hub '{}' is not configured", pipe.hub),
-                    }),
-                }
-            }
-        }
-    }
-
     // Agent
     if config.agent.mode != "agent" && config.agent.mode != "static" {
         errors.push(ValidationError {

@@ -222,7 +222,7 @@ token links, which remain reserved for files the agent explicitly
 publishes via `jyc_publish_file`.
 
 Pipe reply forwarders (e.g. feishu patterns with
-`pipe = { hub = "local_dev", topic = "..." }`) consume the same
+`pipe = { channel = "local_dev", topic = "..." }`) consume the same
 `attachments` array: each file is fetched from the files endpoint,
 checked against `[attachments.outbound]`, and re-uploaded to the source
 chat (images as image messages, everything else as file messages).
@@ -236,9 +236,9 @@ A pipe target has two independent knobs:
   chat-name metadata (sanitized for filesystem use).
 
 `topic` defaults to `pattern` when omitted, so
-`pipe = { hub = "local_dev", pattern = "jyc" }` is shorthand for
+`pipe = { channel = "local_dev", pattern = "jyc" }` is shorthand for
 `pattern = "jyc", topic = "jyc"`. The full dynamic form
-`pipe = { hub = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }`
+`pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }`
 lets one feishu `mentions` pattern route each group chat to its own topic
 here while sharing the `group_chat` pattern's config. Unlike load-time
 `${ENV_VAR}` expansion, the `msg.` namespace is resolved at runtime per

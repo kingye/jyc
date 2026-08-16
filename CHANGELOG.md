@@ -6,18 +6,6 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
-- **`[hub]` and `[adapters]` config tables.** Config now mirrors the
-  core / hub / adapters architecture: `[hub.<name>]` declares a websocket
-  hub channel (`type = "websocket"` implied), `[adapters.<name>]` declares
-  a pipe-only adapter (`type` required, `"websocket"` rejected). Both are
-  unified into the internal channel map at load time; a name declared in
-  more than one table fails at startup. The legacy `[channels]` table still
-  loads with a deprecation warning and will be removed in a future release.
-
-- **Pipe target validation.** A pattern's `pipe.hub` must name a configured
-  websocket hub channel — unknown or non-hub targets fail startup validation
-  instead of silently dropping messages at runtime.
-
 - **Core / hub / adapters architecture document.** `docs/core-hub-adapters.md`
   describes the target three-layer architecture (core: per-topic queues +
   workers; hub: the websocket channel, the only layer owning topics and
@@ -55,10 +43,6 @@ All notable changes to JYC will be documented in this file.
   (#570)
 
 ### Changed
-
-- **`pipe.channel` renamed to `pipe.hub`.** The pipe target key is now `hub`
-  (`pipe = { hub = "local_dev", ... }`), matching the hub/adapters config
-  tables. The legacy `channel` key is still accepted as an alias.
 
 - **Feishu is now a pipe-only adapter.** Following the core / hub / adapters
   architecture, the feishu channel no longer creates its own outbound

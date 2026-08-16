@@ -483,22 +483,22 @@ outbound adapter of its own.
 ### Configuration
 
 ```toml
-[adapters.feishu_bot]
+[channels.feishu_bot]
 type = "feishu"
 
-[adapters.feishu_bot.feishu]
+[channels.feishu_bot.feishu]
 app_id = "${FEISHU_APP_ID}"
 app_secret = "${FEISHU_APP_SECRET}"
 base_url = "https://open.feishu.cn"
 
-[[adapters.feishu_bot.patterns]]
+[[channels.feishu_bot.patterns]]
 name = "mention_bot"
 enabled = true
 # Required: pipe into a websocket hub channel. A matched pattern
 # without `pipe` drops the message with a warning.
-pipe = { hub = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
+pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
 
-[adapters.feishu_bot.patterns.rules]
+[channels.feishu_bot.patterns.rules]
 mentions = ["jyc"]
 ```
 ## GitHub Channel Implementation

@@ -529,7 +529,8 @@ pub struct ChannelPattern {
 /// overlaid cleanly.
 ///
 /// See `docs/agents-migration.md` (PR-3).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentInstanceConfig {
     /// Template name to initialize topics (from workdir/templates/).
     pub template: Option<String>,

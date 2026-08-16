@@ -174,6 +174,38 @@ mode = "agent"
     }
 
     #[test]
+    fn test_agents_table_rejects_unknown_keys() {
+        let toml = r#"
+[general]
+
+[channels.work]
+type = "email"
+
+[channels.work.inbound]
+host = "imap.example.com"
+username = "user"
+password = "pass"
+
+[channels.work.outbound]
+host = "smtp.example.com"
+username = "user"
+password = "pass"
+
+[agents.invoice]
+tempalte = "invoice"
+
+[ai]
+mode = "agent"
+"#;
+
+        let err = load_config_from_str(toml).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown field"),
+            "expected unknown-field error, got: {err}"
+        );
+    }
+
+    #[test]
     fn test_load_ai_table_new_key() {
         // `[ai]` is the canonical key; the test above covers the legacy
         // `[agent]` alias.

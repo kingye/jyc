@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-use jyc_types::InboundAttachmentConfig;
 use jyc_types::{
     ChannelMatcher, ChannelPattern, InboundAdapterOptions, InboundMessage, PatternMatch,
 };
@@ -81,11 +80,6 @@ impl ChannelMatcher for FeishuMatcher {
         patterns: &[ChannelPattern],
     ) -> Option<PatternMatch> {
         feishu_match_message(message, patterns)
-    }
-
-    /// Feishu stores all messages for full conversation context, even if unmatched.
-    fn store_unmatched_messages(&self) -> bool {
-        true
     }
 }
 
@@ -264,35 +258,14 @@ pub struct FeishuInboundAdapter {
     config: FeishuConfig,
     /// Channel name from config (e.g., "feishu_bot")
     channel_name: String,
-    /// Workspace root path (e.g., "/home/jiny/projects/jyc-data")
-    workspace_root: std::path::PathBuf,
 }
 
 impl FeishuInboundAdapter {
     /// Create a new Feishu inbound adapter.
     pub fn new(config: &FeishuConfig, channel_name: String) -> Self {
-        // Determine workspace root from current working directory
-        let workspace_root =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-
         Self {
             config: config.clone(),
             channel_name,
-            workspace_root,
-        }
-    }
-
-    /// Create a new Feishu inbound adapter with custom workspace root.
-    #[allow(dead_code)]
-    pub fn new_with_workspace(
-        config: &FeishuConfig,
-        channel_name: String,
-        workspace_root: std::path::PathBuf,
-    ) -> Self {
-        Self {
-            config: config.clone(),
-            channel_name,
-            workspace_root,
         }
     }
 }
@@ -318,27 +291,6 @@ impl ChannelMatcher for FeishuInboundAdapter {
         patterns: &[ChannelPattern],
     ) -> Option<PatternMatch> {
         feishu_match_message(message, patterns)
-    }
-}
-
-impl FeishuInboundAdapter {
-    /// Save attachments to topic directory.
-    /// This method calculates the topic name and saves attachments.
-    pub async fn save_attachments_to_topic_directory(
-        &self,
-        message: &mut InboundMessage,
-        patterns: &[ChannelPattern],
-        attachment_config: Option<&InboundAttachmentConfig>,
-    ) -> Result<()> {
-        let topic_name = FeishuMatcher.derive_topic_name(message, patterns, None);
-        jyc_core::attachment_storage::save_attachments_to_topic_directory(
-            message,
-            &self.workspace_root,
-            &self.channel_name,
-            &topic_name,
-            attachment_config,
-        )
-        .await
     }
 }
 
@@ -778,200 +730,5 @@ mod tests {
         let name = matcher.derive_topic_name(&msg, &[], None);
         // sanitize_for_filesystem replaces / with _
         assert_eq!(name, "项目_测试群");
-    }
-
-    #[tokio::test]
-    async fn test_save_attachments_to_topic_directory() -> anyhow::Result<()> {
-        use jyc_types::{FeishuConfig, WebSocketConfig};
-        use jyc_types::{InboundMessage, MessageAttachment, MessageContent};
-        use tempfile::tempdir;
-
-        // Create a temporary directory for testing
-        let temp_dir = tempdir()?;
-
-        // Create a simple Feishu config
-        let config = FeishuConfig {
-            app_id: "test_app_id".to_string(),
-            app_secret: "test_app_secret".to_string(),
-            base_url: "https://open.feishu.cn".to_string(),
-            websocket: WebSocketConfig::default(),
-            events: vec!["im.message.receive_v1".to_string()],
-            message_format: "text".to_string(),
-            metadata: Default::default(),
-        };
-
-        // Create the adapter with custom workspace root
-        let adapter = FeishuInboundAdapter::new_with_workspace(
-            &config,
-            "feishu".to_string(),
-            temp_dir.path().to_path_buf(),
-        );
-
-        // Create a test message with attachments
-        let mut message = InboundMessage {
-            id: "test_message_123".to_string(),
-            channel: "feishu".to_string(),
-            channel_uid: "msg_123".to_string(),
-            sender: "Test User".to_string(),
-            sender_address: "user_123".to_string(),
-            recipients: vec![],
-            topic: "Test".to_string(),
-            content: MessageContent {
-                text: Some("Test message with attachment".to_string()),
-                html: None,
-                markdown: None,
-            },
-            timestamp: chrono::Utc::now(),
-            references: Some(vec!["topic_123".to_string()]),
-            reply_to_id: None,
-            external_id: Some("ext_123".to_string()),
-            attachments: vec![
-                MessageAttachment {
-                    filename: "test.txt".to_string(),
-                    content_type: "text/plain".to_string(),
-                    size: 15,
-                    content: Some(b"Hello, World!\n".to_vec()),
-                    saved_path: None,
-                },
-                MessageAttachment {
-                    filename: "data.json".to_string(),
-                    content_type: "application/json".to_string(),
-                    size: 25,
-                    content: Some(br#"{"test": "data"}"#.to_vec()),
-                    saved_path: None,
-                },
-            ],
-            metadata: {
-                let mut map = std::collections::HashMap::new();
-                map.insert(
-                    "chat_id".to_string(),
-                    serde_json::Value::String("oc_12345".to_string()),
-                );
-                map
-            },
-            matched_pattern: None,
-        };
-
-        // Create a simple pattern for topic matching
-        let patterns = vec![]; // Empty patterns - will use default topic name
-
-        // Save attachments
-        adapter
-            .save_attachments_to_topic_directory(&mut message, &patterns, None)
-            .await?;
-
-        // Verify attachments were saved
-        assert_eq!(message.attachments.len(), 2);
-
-        // Check saved_path was set
-        for attachment in &message.attachments {
-            assert!(attachment.saved_path.is_some());
-
-            // Verify file exists
-            let saved_path = attachment.saved_path.as_ref().unwrap();
-            assert!(
-                saved_path.exists(),
-                "File should exist: {}",
-                saved_path.display()
-            );
-
-            // Verify file content
-            let content = std::fs::read(saved_path)?;
-            assert_eq!(&content, attachment.content.as_ref().unwrap());
-        }
-
-        // Verify directory structure
-        let expected_topic_dir = temp_dir
-            .path()
-            .join("feishu")
-            .join("workspace")
-            .join("feishu_chat_oc_12345");
-        let expected_attachment_dir = expected_topic_dir.join("attachments");
-
-        // Verify directories exist
-        assert!(
-            expected_topic_dir.exists(),
-            "Topic directory should exist: {}",
-            expected_topic_dir.display()
-        );
-        assert!(
-            expected_attachment_dir.exists(),
-            "Attachment directory should exist: {}",
-            expected_attachment_dir.display()
-        );
-
-        // Count files in attachment directory
-        let file_count = std::fs::read_dir(&expected_attachment_dir)?.count();
-        assert_eq!(file_count, 2, "Should have 2 files in attachment directory");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_save_attachments_no_attachments() -> anyhow::Result<()> {
-        use jyc_types::{FeishuConfig, WebSocketConfig};
-        use jyc_types::{InboundMessage, MessageContent};
-        use tempfile::tempdir;
-
-        // Create a temporary directory
-        let temp_dir = tempdir()?;
-
-        // Create a simple Feishu config
-        let config = FeishuConfig {
-            app_id: "test_app_id".to_string(),
-            app_secret: "test_app_secret".to_string(),
-            base_url: "https://open.feishu.cn".to_string(),
-            websocket: WebSocketConfig::default(),
-            events: vec!["im.message.receive_v1".to_string()],
-            message_format: "text".to_string(),
-            metadata: Default::default(),
-        };
-
-        // Create the adapter with custom workspace root
-        let adapter = FeishuInboundAdapter::new_with_workspace(
-            &config,
-            "feishu".to_string(),
-            temp_dir.path().to_path_buf(),
-        );
-
-        // Create a test message WITHOUT attachments
-        let mut message = InboundMessage {
-            id: "test_message_no_attach".to_string(),
-            channel: "feishu".to_string(),
-            channel_uid: "msg_456".to_string(),
-            sender: "Another User".to_string(),
-            sender_address: "user_456".to_string(),
-            recipients: vec![],
-            topic: "Test".to_string(),
-            content: MessageContent {
-                text: Some("Test message without attachment".to_string()),
-                html: None,
-                markdown: None,
-            },
-            timestamp: chrono::Utc::now(),
-            references: Some(vec!["topic_456".to_string()]),
-            reply_to_id: None,
-            external_id: Some("ext_456".to_string()),
-            attachments: vec![],
-            metadata: {
-                let mut map = std::collections::HashMap::new();
-                map.insert(
-                    "chat_id".to_string(),
-                    serde_json::Value::String("oc_67890".to_string()),
-                );
-                map
-            },
-            matched_pattern: None,
-        };
-
-        // Save attachments (should do nothing)
-        adapter
-            .save_attachments_to_topic_directory(&mut message, &[], None)
-            .await?;
-
-        // Verify no error and attachments remain empty
-        assert_eq!(message.attachments.len(), 0);
-
-        Ok(())
     }
 }

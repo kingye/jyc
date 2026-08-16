@@ -5,6 +5,5 @@
 
 pub mod client;
 pub mod inbound;
-pub mod outbound;
 pub mod types;
 pub mod websocket;

@@ -192,6 +192,29 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     for (channel_name, channel_config) in &config_snapshot.channels {
         let channel_type = channel_config.channel_type.as_str();
 
+        // Feishu is a pipe-only adapter (see docs/core-hub-adapters.md):
+        // skip the full channel construction (outbound/agent/TopicManager/
+        // StateManager/orchestrator) — spawn only the inbound adapter plus
+        // pipe reply forwarders.
+        if channel_type == "feishu" {
+            let inbound_attachment_config = config_snapshot
+                .attachments
+                .as_ref()
+                .and_then(|att| att.inbound.clone());
+            crate::cli::serve::channels::spawn_feishu_adapter(
+                channel_config,
+                channel_name.clone(),
+                workdir,
+                inbound_attachment_config,
+                cancel.clone(),
+                &mut tasks,
+                config_for_spawn.clone(),
+                ws_broadcasts.clone(),
+                routers.clone(),
+            )?;
+            continue;
+        }
+
         // Workspace directory: always <workdir>/<channel>/workspace/
         let workspace_dir = jyc_core::topic_path::resolve_workspace(workdir, channel_name);
         let storage = Arc::new(MessageStorage::new(&workspace_dir));
@@ -371,8 +394,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             config_for_spawn: config_for_spawn.clone(),
             wecom_server: wecom_server.clone(),
             websocket_handlers: &mut websocket_handlers,
-            ws_broadcasts: ws_broadcasts.clone(),
-            routers: routers.clone(),
         };
         spawner.spawn().await?;
     }

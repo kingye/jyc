@@ -317,9 +317,11 @@ JYC uses TOML configuration with environment variable substitution (`${VAR}`).
 Key sections:
 
 - **`[general]`** -- Concurrency settings (max topics, queue size)
-- **`[channels.<name>]`** -- Per-channel config (type, patterns)
+- **`[hub.<name>]`** -- Websocket hub channel (owns topics/agents; `type` implied; see docs/core-hub-adapters.md)
+- **`[adapters.<name>]`** -- Pipe-only adapter channel (e.g. feishu; `type` required)
+- **`[channels.<name>]`** -- Legacy per-channel config (type, patterns); deprecated, still used by not-yet-migrated channel types
 - **`[channels.<name>.email]`** -- IMAP/SMTP settings (host, port, credentials)
-- **`[channels.<name>.feishu]`** -- Feishu app credentials (app_id, app_secret, websocket)
+- **`[adapters.<name>.feishu]`** -- Feishu app credentials (app_id, app_secret, websocket)
 - **`[channels.<name>.github]`** -- GitHub settings (owner, repo, token, poll_interval)
 - **`[channels.<name>.agent]`** -- Per-channel agent override (model, system prompt)
 - **`[agent]`** -- AI agent settings (model, system prompt, progress updates)

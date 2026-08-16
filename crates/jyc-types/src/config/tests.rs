@@ -175,6 +175,10 @@ app_secret = "b"
 
 [[channels.feishu_bot.patterns]]
 name = "piped"
+pipe = { hub = "local_dev", topic = "jyc" }
+
+[[channels.feishu_bot.patterns]]
+name = "piped_legacy_key"
 pipe = { channel = "local_dev", topic = "jyc" }
 
 [[channels.feishu_bot.patterns]]
@@ -187,13 +191,111 @@ mode = "agent"
         )
         .unwrap();
         let patterns = config.channels["feishu_bot"].patterns.as_ref().unwrap();
-        // Set explicitly -> parsed as the (channel, topic) mapping.
+        // Set explicitly -> parsed as the (hub, topic) mapping.
         let pipe = patterns[0].pipe.as_ref().unwrap();
-        assert_eq!(pipe.channel, "local_dev");
+        assert_eq!(pipe.hub, "local_dev");
         assert_eq!(pipe.topic.as_deref(), Some("jyc"));
         assert_eq!(pipe.pattern, None);
+        // Legacy `channel` key -> accepted as an alias for `hub`.
+        assert_eq!(patterns[1].pipe.as_ref().unwrap().hub, "local_dev");
         // Omitted -> default None (routed normally).
-        assert!(patterns[1].pipe.is_none());
+        assert!(patterns[2].pipe.is_none());
+    }
+
+    #[test]
+    fn test_hub_table_implies_websocket_type() {
+        let config = load_config_from_str(
+            r#"
+[hub.local_dev]
+
+[[hub.local_dev.patterns]]
+name = "general"
+
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.channels["local_dev"].channel_type, "websocket");
+        // Unified: the hub map is drained into `channels`.
+        assert!(config.hub.is_empty());
+    }
+
+    #[test]
+    fn test_hub_table_rejects_non_websocket_type() {
+        let err = load_config_from_str(
+            r#"
+[hub.local_dev]
+type = "feishu"
+
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("hub.local_dev"));
+    }
+
+    #[test]
+    fn test_adapters_table_requires_type_and_rejects_websocket() {
+        let base = r#"
+[agent]
+enabled = true
+mode = "agent"
+"#;
+        let err = load_config_from_str(&format!("[adapters.feishu_bot]\n{base}"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("adapters.feishu_bot: type is required"));
+
+        let err = load_config_from_str(&format!(
+            "[adapters.feishu_bot]\ntype = \"websocket\"\n{base}"
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("declare them in [hub]"));
+    }
+
+    #[test]
+    fn test_adapters_table_merge_and_name_conflict() {
+        // Adapter merges into the unified channels map.
+        let config = load_config_from_str(
+            r#"
+[adapters.feishu_bot]
+type = "feishu"
+
+[adapters.feishu_bot.feishu]
+app_id = "a"
+app_secret = "b"
+
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.channels["feishu_bot"].channel_type, "feishu");
+        assert!(config.adapters.is_empty());
+
+        // Same name in [channels] and [adapters] -> error.
+        let err = load_config_from_str(
+            r#"
+[channels.feishu_bot]
+type = "feishu"
+
+[adapters.feishu_bot]
+type = "feishu"
+
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("declared more than once"));
     }
 
     /// Legacy `thread_*` keys in `[general]` must fail loudly instead of

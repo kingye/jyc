@@ -5,6 +5,9 @@
 !templates/*/.jyc/
 !templates/*/.jyc/**
 
+# Local test data (inbound attachments dropped in the repo root)
+attachments/
+
 # Config files with credentials
 config.toml
 config.test.toml

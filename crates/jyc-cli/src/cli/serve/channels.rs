@@ -378,28 +378,27 @@ pub(crate) fn spawn_feishu_adapter(
         .ok_or_else(|| anyhow::anyhow!("channel '{channel_name}': missing feishu config"))?
         .clone();
     // Feishu is pipe-only: every enabled pattern must name a pipe target (a
-    // websocket hub channel). Patterns without one are a configuration
-    // error — warn at startup; matching messages are dropped at runtime.
+    // websocket hub channel). Collect the distinct target channels for reply
+    // relaying; patterns without one are a configuration error — warn at
+    // startup, drop matching messages at runtime.
+    let mut pipe_channels: std::collections::HashSet<String> = Default::default();
     for p in channel_config
         .patterns
         .iter()
         .flatten()
-        .filter(|p| p.enabled && p.pipe.is_none())
-    {
-        tracing::warn!(
-            channel = %channel_name,
-            pattern = %p.name,
-            "feishu pattern has no pipe target; matching messages will be dropped"
-        );
-    }
-    // Collect the distinct pipe target channels for reply relaying.
-    let pipe_channels: std::collections::HashSet<String> = channel_config
-        .patterns
-        .iter()
-        .flatten()
         .filter(|p| p.enabled)
-        .filter_map(|p| p.pipe.as_ref().map(|pipe| pipe.channel.clone()))
-        .collect();
+    {
+        match &p.pipe {
+            Some(pipe) => {
+                pipe_channels.insert(pipe.channel.clone());
+            }
+            None => tracing::warn!(
+                channel = %channel_name,
+                pattern = %p.name,
+                "feishu pattern has no pipe target; matching messages will be dropped"
+            ),
+        }
+    }
 
     let channel_span = tracing::info_span!("in", ch = %channel_name);
     // Owned copy for the task: `workdir` borrows from the caller.

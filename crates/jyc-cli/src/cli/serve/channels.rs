@@ -648,9 +648,14 @@ impl InboundSpawner<'_> {
                             // 3. Re-target into the target channel/topic —
                             //    resolves `${msg.chat_name}` placeholders in
                             //    `pipe.topic` against message metadata.
+                            // Identifiers captured before the move, for the
+                            // drop warning below.
+                            let drop_debug = (message.id.clone(), message.metadata.get("chat_id").cloned());
                             let Some(message) = apply_pipe_retarget(message, pipe) else {
                                 tracing::warn!(
                                     topic = %pipe.topic,
+                                    message_id = %drop_debug.0,
+                                    chat_id = ?drop_debug.1,
                                     "feishu pipe: ${{msg.chat_name}} placeholder unresolved (no chat_name metadata), dropping"
                                 );
                                 return;

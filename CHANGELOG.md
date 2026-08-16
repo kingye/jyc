@@ -15,6 +15,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **`[agents.<name>]` behavior table + pattern `agent` routing** (migration
+  PR-3, see `docs/agents-migration.md`): an agent carries behavior config
+  (template, skills, model, MCPs, tools, …) and owns topics — no connection,
+  no rules. Channel patterns reference an agent via `agent = "<name>"`; the
+  agent's fields are overlaid under the pattern's own fields at load time
+  (pattern wins). Patterns referencing an undefined agent fail validation.
+  `pipe = { channel = ... }` still works but logs a deprecation warning.
 - **Channels / agents / AI migration design doc** (`docs/agents-migration.md`):
   locked decisions, target three-layer model, and phased PR plan.
 - **Config template regression test**: `config.example.toml` must parse and

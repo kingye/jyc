@@ -128,6 +128,7 @@ fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {
     jyc_types::AppConfig {
         general: jyc_types::GeneralConfig::default(),
         channels,
+        agents: HashMap::new(),
         ai: jyc_types::AiConfig {
             enabled: false,
             mode: "static".to_string(),

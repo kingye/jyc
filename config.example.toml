@@ -206,51 +206,53 @@ allowed_extensions = [
 max_file_size = "25mb"
 max_per_message = 10
 
-# --- Feishu Adapter Example (pipe-only) ---
-# Feishu is a pipe-only adapter (see docs/core-hub-adapters.md): it owns no
-# topics, agents, or state — every enabled pattern must pipe into a websocket
-# hub channel. Uncomment and configure for Feishu/Lark integration.
-[adapters.feishu_bot]
-type = "feishu"
-#
-[adapters.feishu_bot.feishu]
-app_id = "cli_xxxxxxxxx"
-app_secret = "xxxxxxxxxxxx"
-base_url = "https://open.feishu.cn" # or "https://open.larksuite.com" for international
-
-[adapters.feishu_bot.feishu.websocket]
-enabled = true
-reconnect_delay_secs = 5
-max_reconnect_attempts = 10
-heartbeat_interval_secs = 30
-
-[[adapters.feishu_bot.patterns]]
-name = "feishu_bot"
-enabled = true
-# Required: pipe messages matching this pattern into a websocket hub
-# channel. The message is re-targeted and routed through the hub channel's
-# own router (identical to a chat-pane message), so the hub pattern's
-# topic_path/template/skills apply. A matched pattern without `pipe` drops
-# the message with a warning.
-#
-# Three forms:
-#   pipe = { hub = "local_dev", topic = "jyc" }
-#     Legacy: the topic name doubles as the target pattern name.
-#   pipe = { hub = "local_dev", pattern = "jyc" }
-#     Shorthand for pattern = "jyc", topic = "jyc".
-#   pipe = { hub = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
-#     `group_chat` supplies the pattern config; the topic name is derived per
-#     chat via the runtime placeholder `${msg.chat_name}` (resolved from the
-#     message's chat name, sanitized for filesystem use) — e.g. one `mentions`
-#     pattern serving many group chats. Distinct from load-time `${ENV_VAR}`
-#     expansion: the `msg.` namespace is resolved per message at runtime.
-#     Messages without a chat name (e.g. P2P chats) are dropped with a
-#     warning when the placeholder is used.
-pipe = { hub = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
-
-# Feishu-specific pattern matching
-[adapters.feishu_bot.patterns.rules]
-mentions = ["jyc"]
+# # --- Feishu Adapter Example (pipe-only) ---
+# # Feishu is a pipe-only adapter (see docs/core-hub-adapters.md): it owns no
+# # topics, agents, or state — every enabled pattern must pipe into a websocket
+# # hub channel. Requires a hub channel (e.g. [hub.local_dev], see the Hub
+# # section below) — startup validation fails if the pipe target is undefined.
+# # Uncomment and configure for Feishu/Lark integration.
+# [adapters.feishu_bot]
+# type = "feishu"
+# #
+# [adapters.feishu_bot.feishu]
+# app_id = "cli_xxxxxxxxx"
+# app_secret = "xxxxxxxxxxxx"
+# base_url = "https://open.feishu.cn" # or "https://open.larksuite.com" for international
+# 
+# [adapters.feishu_bot.feishu.websocket]
+# enabled = true
+# reconnect_delay_secs = 5
+# max_reconnect_attempts = 10
+# heartbeat_interval_secs = 30
+# 
+# [[adapters.feishu_bot.patterns]]
+# name = "feishu_bot"
+# enabled = true
+# # Required: pipe messages matching this pattern into a websocket hub
+# # channel. The message is re-targeted and routed through the hub channel's
+# # own router (identical to a chat-pane message), so the hub pattern's
+# # topic_path/template/skills apply. A matched pattern without `pipe` drops
+# # the message with a warning.
+# #
+# # Three forms:
+# #   pipe = { hub = "local_dev", topic = "jyc" }
+# #     Legacy: the topic name doubles as the target pattern name.
+# #   pipe = { hub = "local_dev", pattern = "jyc" }
+# #     Shorthand for pattern = "jyc", topic = "jyc".
+# #   pipe = { hub = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
+# #     `group_chat` supplies the pattern config; the topic name is derived per
+# #     chat via the runtime placeholder `${msg.chat_name}` (resolved from the
+# #     message's chat name, sanitized for filesystem use) — e.g. one `mentions`
+# #     pattern serving many group chats. Distinct from load-time `${ENV_VAR}`
+# #     expansion: the `msg.` namespace is resolved per message at runtime.
+# #     Messages without a chat name (e.g. P2P chats) are dropped with a
+# #     warning when the placeholder is used.
+# pipe = { hub = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
+# 
+# # Feishu-specific pattern matching
+# [adapters.feishu_bot.patterns.rules]
+# mentions = ["jyc"]
 
 # --- Agent ---
 

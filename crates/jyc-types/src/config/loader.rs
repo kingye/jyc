@@ -15,7 +15,8 @@ use crate::config::{
 pub fn load_config(path: &Path) -> Result<AppConfig> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
-    parse_and_deserialize(&content, &path.display().to_string())
+    let cfg: AppConfig = parse_and_deserialize(&content, &path.display().to_string())?;
+    cfg.normalize()
 }
 
 /// Topic-level configuration (L3), loaded from `<topic_path>/.jyc/config.toml`.
@@ -105,7 +106,8 @@ pub fn load_topic_config(topic_path: &Path) -> Option<TopicConfig> {
 ///
 /// Expands `${VAR}` environment variable references, then deserializes.
 pub fn load_config_from_str(content: &str) -> Result<AppConfig> {
-    parse_and_deserialize(content, "<inline>")
+    let cfg: AppConfig = parse_and_deserialize(content, "<inline>")?;
+    cfg.normalize()
 }
 
 /// Apply the topic-level (L3) MCP overlay onto a base list.
@@ -180,7 +182,8 @@ pub fn load_config_layered(global: Option<&Path>, path: &Path) -> Result<AppConf
     // Expansion happens after the merge so `${VAR}` resolves identically
     // regardless of which layer defined the key. Same expand+deserialize
     // tail as L1/L3 (see [`parse_and_deserialize_from_value`]).
-    parse_and_deserialize_from_value(value, &path.display().to_string())
+    let cfg: AppConfig = parse_and_deserialize_from_value(value, &path.display().to_string())?;
+    cfg.normalize()
 }
 
 /// Recursively expand `${VAR}` patterns in TOML string values

@@ -7,6 +7,12 @@
 #   L2 (workdir): <workdir>/config.toml      (--workdir, or platform data dir)
 #   L3 (topic):  <topic>/.jyc/config.toml  (restricted [agent] model overrides)
 # L2 is deep-merged over L1 (tables merge; arrays/scalars are replaced).
+#
+# Channel tables (see docs/core-hub-adapters.md):
+#   [hub.<name>]      — websocket hub channels (own topics/agents); `type` implied
+#   [adapters.<name>] — pipe-only adapters (e.g. feishu); `type` required
+#   [channels.<name>] — legacy; still accepted (deprecation warning) and used
+#                       by not-yet-migrated channel types (email, github, ...)
 
 [general]
 max_concurrent_topics = 3
@@ -204,21 +210,21 @@ max_per_message = 10
 # Feishu is a pipe-only adapter (see docs/core-hub-adapters.md): it owns no
 # topics, agents, or state — every enabled pattern must pipe into a websocket
 # hub channel. Uncomment and configure for Feishu/Lark integration.
-[channels.feishu_bot]
+[adapters.feishu_bot]
 type = "feishu"
 #
-[channels.feishu_bot.feishu]
+[adapters.feishu_bot.feishu]
 app_id = "cli_xxxxxxxxx"
 app_secret = "xxxxxxxxxxxx"
 base_url = "https://open.feishu.cn" # or "https://open.larksuite.com" for international
 
-[channels.feishu_bot.feishu.websocket]
+[adapters.feishu_bot.feishu.websocket]
 enabled = true
 reconnect_delay_secs = 5
 max_reconnect_attempts = 10
 heartbeat_interval_secs = 30
 
-[[channels.feishu_bot.patterns]]
+[[adapters.feishu_bot.patterns]]
 name = "feishu_bot"
 enabled = true
 # Required: pipe messages matching this pattern into a websocket hub
@@ -228,11 +234,11 @@ enabled = true
 # the message with a warning.
 #
 # Three forms:
-#   pipe = { channel = "local_dev", topic = "jyc" }
+#   pipe = { hub = "local_dev", topic = "jyc" }
 #     Legacy: the topic name doubles as the target pattern name.
-#   pipe = { channel = "local_dev", pattern = "jyc" }
+#   pipe = { hub = "local_dev", pattern = "jyc" }
 #     Shorthand for pattern = "jyc", topic = "jyc".
-#   pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
+#   pipe = { hub = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
 #     `group_chat` supplies the pattern config; the topic name is derived per
 #     chat via the runtime placeholder `${msg.chat_name}` (resolved from the
 #     message's chat name, sanitized for filesystem use) — e.g. one `mentions`
@@ -240,10 +246,10 @@ enabled = true
 #     expansion: the `msg.` namespace is resolved per message at runtime.
 #     Messages without a chat name (e.g. P2P chats) are dropped with a
 #     warning when the placeholder is used.
-pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
+pipe = { hub = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
 
 # Feishu-specific pattern matching
-[channels.feishu_bot.patterns.rules]
+[adapters.feishu_bot.patterns.rules]
 mentions = ["jyc"]
 
 # --- Agent ---
@@ -976,22 +982,23 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # [channels.my_wecom_bot.patterns.rules]
 # # keywords = ["help", "bot"]
 
-# --- Channel: WebSocket ---
+# --- Hub: WebSocket ---
 #
-# Runs a WebSocket handler on the inspect server port for interactive
-# terminal-based AI interaction via `jyc dashboard`. Press `c`
-# in the dashboard to open the chat pane.
+# The hub is the only channel type that owns topics, routing, and agents
+# (see docs/core-hub-adapters.md). Declare websocket channels in `[hub]`;
+# `type = "websocket"` is implied. Runs a WebSocket handler on the inspect
+# server port for interactive terminal-based AI interaction via
+# `jyc dashboard`. Press `c` in the dashboard to open the chat pane.
 # Requires `inspect.enabled = true`.
 #
-# [channels.my_ws]
-# type = "websocket"
+# [hub.my_ws]
 #
 # # Optional: override model for this channel
 # # model = "anthropic/claude-opus-4-6"
 # # small_model = "deepseek/deepseek-v4-flash"
 #
 # # Define patterns for the chat pane (first enabled pattern is the default)
-# [[channels.my_ws.patterns]]
+# [[hub.my_ws.patterns]]
 # name = "general"
 # enabled = true
 

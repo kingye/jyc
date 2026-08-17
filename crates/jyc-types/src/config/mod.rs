@@ -354,6 +354,34 @@ pub struct ChannelConfig {
     pub disabled_skills: Option<Vec<String>>,
 }
 
+impl Default for ChannelConfig {
+    fn default() -> Self {
+        Self {
+            channel_type: String::new(),
+            inbound: None,
+            outbound: None,
+            feishu: None,
+            gitee: None,
+            github: None,
+            wechat: None,
+            wecom: None,
+            wecom_kf: None,
+            wecom_bot: None,
+            monitor: None,
+            patterns: None,
+            ai: None,
+            model: None,
+            small_model: None,
+            footer: None,
+            mcps: None,
+            disabled_tools: None,
+            disabled_mcp_servers: None,
+            skills: None,
+            disabled_skills: None,
+        }
+    }
+}
+
 /// IMAP server configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImapConfig {

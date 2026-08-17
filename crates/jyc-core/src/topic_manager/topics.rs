@@ -116,6 +116,13 @@ impl TopicManager {
             return;
         };
         for pattern in patterns {
+            // Agent-routed patterns: their topics belong to the agent's
+            // TopicManager (agents/<agent>/), not this channel manager.
+            // Restoring them here would make the channel list idle ghosts
+            // alongside the agent's active entries (migration PR-5b-2).
+            if pattern.agent.is_some() {
+                continue;
+            }
             let Some(tp) = &pattern.topic_path else {
                 continue;
             };

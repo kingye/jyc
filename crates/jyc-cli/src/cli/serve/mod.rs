@@ -84,6 +84,10 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     let mut all_agent_services: Vec<Arc<JycAgentService>> = Vec::new();
     // Collect outbound adapters keyed by channel name for cross-channel messaging
     let mut all_outbounds: Vec<(String, Arc<dyn OutboundAdapter>)> = Vec::new();
+    // Agent-keyed TopicManagers (migration PR-5): agent name → manager,
+    // shared by all channel routers so agent-routed messages are processed
+    // by the agent's own manager (which owns `agents/<agent>/` topics).
+    let mut agent_topic_managers: HashMap<String, Arc<TopicManager>> = HashMap::new();
 
     let orchestrator = Arc::new(jyc_core::channel_orchestrator::ChannelOrchestrator::new(
         config.clone(),
@@ -305,10 +309,10 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             config_snapshot.general.max_queue_size_per_topic,
             storage.clone(),
             outbound.clone(),
-            agent,
+            agent.clone(),
             cancel.clone(),
             true, // enable_events: true for Topic Event system
-            template_dirs,
+            template_dirs.clone(),
             config.clone(),
             channel_name.clone(),
             channel_type.to_string(),
@@ -323,6 +327,58 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             ws_handler.set_topic_manager(topic_manager.clone());
         }
 
+        // Agent-keyed TopicManagers (migration PR-5): one per agent referenced
+        // by this channel's patterns, owning `agents/<agent>/` topics. The
+        // multi-channel sharing guard in validate_config keeps each agent on
+        // a single channel for now, so sharing this channel's outbound and
+        // agent service is sound. The managers are registered with the
+        // orchestrator (shared inspect/scheduler/cross-topic views) but are
+        // not channels: they are exempt from the reload diff.
+        for agent_name in patterns.iter().filter_map(|p| p.agent.as_deref()) {
+            if agent_topic_managers.contains_key(agent_name) {
+                continue;
+            }
+            let agent_workspace =
+                jyc_core::topic_path::resolve_agent_topics_dir(workdir, agent_name);
+            let agent_storage = Arc::new(MessageStorage::new(&agent_workspace));
+            let agent_tm = Arc::new(TopicManager::new_with_options(
+                config_snapshot.general.max_concurrent_topics,
+                config_snapshot.general.max_queue_size_per_topic,
+                agent_storage,
+                outbound.clone(),
+                agent.clone(),
+                cancel.clone(),
+                true, // enable_events
+                template_dirs.clone(),
+                config.clone(),
+                agent_name.to_string(),
+                "agent".to_string(),
+                workdir.to_path_buf(),
+                agent_workspace.clone(),
+                metrics_handle.clone(),
+                Some(config_path.clone()),
+            ));
+            agent_topic_managers.insert(agent_name.to_string(), agent_tm.clone());
+            orchestrator
+                .register_agent(jyc_core::channel_orchestrator::ChannelHandle {
+                    cancel: cancel.clone(),
+                    topic_manager: agent_tm,
+                    channel_info: jyc_types::ChannelInfo {
+                        name: agent_name.to_string(),
+                        channel_type: "agent".to_string(),
+                        active_workers: 0,
+                        max_concurrent: 0,
+                    },
+                    workspace_dir: agent_workspace,
+                })
+                .await;
+            tracing::info!(
+                agent = %agent_name,
+                channel = %channel_name,
+                "Spawned agent TopicManager (agent-keyed runtime)"
+            );
+        }
+
         // Collect for inspect server
         let channel_info = jyc_types::ChannelInfo {
             name: channel_name.clone(),
@@ -331,12 +387,15 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             max_concurrent: 0,
         };
 
-        let router = Arc::new(MessageRouter::new(
-            topic_manager.clone(),
-            storage.clone(),
-            config.clone(),
-            channel_name.clone(),
-        ));
+        let router = Arc::new(
+            MessageRouter::new(
+                topic_manager.clone(),
+                storage.clone(),
+                config.clone(),
+                channel_name.clone(),
+            )
+            .with_agent_topic_managers(agent_topic_managers.clone()),
+        );
         // Expose the router so piped channels can route through it.
         routers
             .lock()

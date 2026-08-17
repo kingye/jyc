@@ -15,6 +15,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Agent-keyed TopicManagers** (migration PR-5a, see
+  `docs/agents-migration.md`): one TopicManager per referenced agent owns
+  `agents/<agent>/` topics; routers and the `send_to_topic` tool dispatch
+  agent-routed messages to the agent's manager. Agents appear in the shared
+  inspect/scheduler views but are exempt from the channel reload diff.
+  Multi-channel agent sharing still requires the reply-path work (5b).
 - **New data directory layout** (migration PR-4, see `docs/agents-migration.md`):
   topics of agent-routed patterns live at `<data>/agents/<agent>/<topic>/`;
   channel state (github/gitee poll cursors) moves to

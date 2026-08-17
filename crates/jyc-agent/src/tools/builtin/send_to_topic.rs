@@ -225,6 +225,16 @@ impl Tool for SendToThreadTool {
         // attachment config, live_injection, custom topic_path — as
         // router-matched messages (mirrors MessageRouter, #542).
         let pattern = target_tm.pattern_for_topic(topic_name);
+        // Agent-keyed runtime (migration PR-5): when the target pattern
+        // routes to an agent, process the injected message in that agent's
+        // TopicManager (registered under the agent name) — the channel's
+        // manager would otherwise create a parallel topic.
+        let target_tm = if let Some(agent) = pattern.as_ref().and_then(|p| p.agent.as_deref()) {
+            let tms = ctx.topic_managers.as_ref().unwrap();
+            tms.lock().await.get(agent).cloned().unwrap_or(target_tm)
+        } else {
+            target_tm
+        };
         let (pattern_name, attachment_config, live_injection, topic_path_override) = match &pattern
         {
             Some(p) => {

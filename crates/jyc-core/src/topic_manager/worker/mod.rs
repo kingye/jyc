@@ -271,42 +271,6 @@ pub(crate) async fn process_message(
         return Ok(());
     }
 
-    // ── 4.75. SEND PROCESSING INDICATOR ───────────────────────────────
-    // For channels that support streaming (e.g., wecom_bot), send a
-    // "thinking..." indicator before AI processing begins so the user
-    // knows the message is being handled.
-    let indicator_handle = outbound
-        .send_processing_indicator(message)
-        .await
-        .ok()
-        .flatten();
-
-    // ── 4.8. START PROGRESS UPDATER ───────────────────────────────────
-    // For wecom_bot, spawn a background task that updates the processing
-    // indicator with a rotating spinner every 3 seconds.
-    let progress_cancel = tokio_util::sync::CancellationToken::new();
-    let progress_handle = if topic_manager.channel_type() == "wecom_bot" {
-        if let Some(ref stream_id) = indicator_handle {
-            let progress_outbound = outbound.clone();
-            let progress_message = message.clone();
-            let progress_stream_id = stream_id.clone();
-            let progress_cancel_child = progress_cancel.clone();
-            Some(tokio::spawn(async move {
-                update_progress_indicator(
-                    progress_outbound,
-                    progress_message,
-                    progress_stream_id,
-                    progress_cancel_child,
-                )
-                .await;
-            }))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
     // ── 5. DISPATCH TO AGENT ──────────────────────────────────────────
     // Build message with cleaned body for agent processing
     let message = {
@@ -486,18 +450,9 @@ pub(crate) async fn process_message(
     delivery_cancel.cancel();
     let _ = delivery_handle.await;
 
-    // Stop the progress updater
-    progress_cancel.cancel();
-    if let Some(handle) = progress_handle {
-        let _ = handle.await;
-    }
-
     // Propagate agent errors only AFTER the background tasks above are
     // stopped. Returning early via `?` inside the select loop would leak
-    // the progress updater: it has no self-termination and would keep
-    // sending stream updates for a long-expired req_id forever (visible
-    // as a never-ending WeCom "reply ack error errcode=846604" WARN storm
-    // even when no task is running).
+    // the delivery watcher.
     let result = result?;
 
     // ── 5.5. GUARD: skip reply if topic directory no longer exists ──
@@ -600,59 +555,9 @@ pub(crate) async fn process_message(
         topic_manager.metrics.reply_by_fallback(topic_name);
     } else {
         tracing::warn!("No reply text from AI");
-        // Clear the processing indicator so it doesn't remain stuck
-        // in an intermediate state (e.g., "正在思考中..." forever).
-        if let Err(e) = outbound.clear_processing_indicator(indicator_handle).await {
-            tracing::warn!(error = %format!("{:#}", e), "Failed to clear processing indicator");
-        }
     }
 
     Ok(())
-}
-
-/// Braille spinner frames for dynamic progress indicator.
-const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-/// Background task that updates the WeCom Bot processing indicator
-/// with a rotating spinner and elapsed time every 3 seconds.
-///
-/// The indicator content cycles through spinner frames while maintaining
-/// a consistent activity message, giving the user a sense of progress.
-async fn update_progress_indicator(
-    outbound: Arc<dyn OutboundAdapter>,
-    message: InboundMessage,
-    stream_id: String,
-    cancel: CancellationToken,
-) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(3));
-    let mut frame_idx = 0usize;
-    let mut elapsed_secs = 0u64;
-
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                let frame = SPINNER[frame_idx % SPINNER.len()];
-                let content = format!(
-                    "{} 正在处理中... (已用 {}s)",
-                    frame, elapsed_secs
-                );
-
-                if let Err(e) = outbound
-                    .update_processing_indicator(&message, &stream_id, &content)
-                    .await
-                {
-                    tracing::debug!(
-                        error = %format!("{:#}", e),
-                        "Failed to update progress indicator"
-                    );
-                }
-
-                frame_idx += 1;
-                elapsed_secs += 3;
-            }
-            _ = cancel.cancelled() => break,
-        }
-    }
 }
 
 /// Read skills from topic's .jyc/skills.json file.

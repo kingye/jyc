@@ -20,7 +20,7 @@ use jyc_types::WecomBotConfig;
 use super::types::{BotEvent, BotMessage};
 
 /// Generate a req_id matching the Node.js SDK format: `{prefix}_{timestamp}_{random}`.
-pub(crate) fn generate_req_id(prefix: &str) -> String {
+pub fn generate_req_id(prefix: &str) -> String {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

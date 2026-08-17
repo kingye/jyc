@@ -1946,6 +1946,7 @@ dependencies = [
  "tui-markdown",
  "unicode-width",
  "url",
+ "uuid",
 ]
 
 [[package]]

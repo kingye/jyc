@@ -35,6 +35,26 @@ pub fn resolve_agent_workspace(agent_name: &str) -> PathBuf {
     }
 }
 
+/// Resolve the workspace root for the synthesized "agents" channel.
+///
+/// This is the parent directory holding every agent's workspace:
+/// `<data_home>/agents/`. Each pattern (agent) inside the channel then
+/// uses `resolve_agent_workspace(<agent_name>)` as its `topic_path`
+/// override so its topics live under its own subtree.
+///
+/// Falls back to `<workdir>/agents` when `data_home()` is unavailable —
+/// matching `resolve_agent_workspace`'s fallback shape, but using
+/// `workdir` (the jyc instance root) instead of cwd so multi-instance
+/// setups don't accidentally share state.
+pub fn resolve_agents_workspace_root(workdir: &Path) -> PathBuf {
+    if let Some(home) = jyc_utils::paths::data_home() {
+        home.join("agents")
+    } else {
+        tracing::warn!("data_home() returned None; falling back to <workdir>/agents");
+        workdir.join("agents")
+    }
+}
+
 /// Resolve the shared repo directory for a repo group key.
 ///
 /// Convention: `<workspace>/repos/<group_key>/`

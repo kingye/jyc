@@ -1934,6 +1934,7 @@ dependencies = [
  "libc",
  "ratatui",
  "ratatui-textarea",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -1945,6 +1946,7 @@ dependencies = [
  "tui-markdown",
  "unicode-width",
  "url",
+ "uuid",
 ]
 
 [[package]]

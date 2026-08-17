@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use jyc_channels::websocket::inbound::WebsocketInboundAdapter;
 use jyc_channels::wecom::kf_client::KfApiClient;
 use jyc_channels::wecom::server::WecomWebhookServer;
-use jyc_channels::wecom_bot::client::WecomBotConnectionHandle;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsCollector;
@@ -248,6 +247,23 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             continue;
         }
 
+        // wecom_bot is also a pipe-only adapter (same architecture as
+        // feishu): protocol-only, no TopicManager/agent/orchestrator.
+        if channel_type == "wecom_bot" {
+            crate::cli::serve::channels::spawn_wecom_bot_adapter(
+                channel_config,
+                channel_name.clone(),
+                workdir,
+                inbound_attachment_config,
+                cancel.clone(),
+                &mut tasks,
+                config_for_spawn.clone(),
+                ws_broadcasts.clone(),
+                routers.clone(),
+            )?;
+            continue;
+        }
+
         // Workspace directory:
         //   - regular channels: <workdir>/<channel>/workspace/
         //   - synthesized "agents" channel: <data_home>/agents/
@@ -273,10 +289,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         let mut wechat_sender_arc: Option<
             std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
         > = None;
-        // For wecom_bot, we share the WebSocket connection handle between inbound and outbound
-        let mut wecom_bot_handle_arc: Option<
-            std::sync::Arc<tokio::sync::Mutex<Option<WecomBotConnectionHandle>>>,
-        > = None;
         // For wecomkf, we share the KfApiClient between inbound and outbound
         let mut wecomkf_kf_client: Option<Arc<KfApiClient>> = None;
         let Some(outbound) = crate::cli::serve::channels::build_outbound_adapter(
@@ -289,7 +301,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             &workspace_dir,
             inspect_broadcast.clone(),
             &mut wechat_sender_arc,
-            &mut wecom_bot_handle_arc,
             &mut wecomkf_kf_client,
             &mut ws_handler_for_channel,
             &mut websocket_handlers,
@@ -422,7 +433,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             cancel_child,
             tasks: &mut tasks,
             wechat_sender_arc: &mut wechat_sender_arc,
-            wecom_bot_handle_arc: &mut wecom_bot_handle_arc,
             wecomkf_kf_client: &mut wecomkf_kf_client,
             orchestrator: orchestrator.clone(),
             channel_info,

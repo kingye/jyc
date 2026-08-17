@@ -2132,11 +2132,13 @@ mod tests {
     }
 
     /// Multiple placeholders in one template all resolve, in left-to-right
-    /// order. Sanitization happens per substitution.
+    /// order. Sanitization happens per substitution (the `chatid`
+    /// contains a `/` so the result is `chat_1`, exercising the
+    /// filesystem-safe substitution).
     #[test]
     fn pipe_retarget_resolves_multiple_placeholders() {
         let mut metadata = std::collections::HashMap::new();
-        metadata.insert("chatid".to_string(), serde_json::json!("chat 1"));
+        metadata.insert("chatid".to_string(), serde_json::json!("chat/1"));
         let pipe = agent_pipe_target("jin", Some("agent/${msg.chatid}/${msg.channel_uid}"));
         let mut msg = pipe_msg(metadata);
         msg.channel_uid = "u1".to_string();

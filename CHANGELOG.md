@@ -6,6 +6,15 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Time-of-day pricing.** `ModelPricing` gains optional `time_windows`
+  (each window supplies its own per-1M rates for the hours between
+  `start` and `end`; rates omitted on a window inherit the flat values)
+  and `utc_offset` (fixed UTC offset, default UTC).
+  Every LLM call bills at the rates in effect when it completes: the
+  first window containing the current local time wins, otherwise the
+  flat rates apply. Supports DeepSeek-style off-peak discounts,
+  including windows that wrap past midnight (e.g. `16:30` → `00:30`).
+
 - **`[agents.<name>]` config table** — each entry becomes a websocket
   endpoint with behavior fields (template, topic_path, skills, access,
   attachments, model overrides, mcps, tools, disabled_*,

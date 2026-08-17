@@ -365,6 +365,25 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # # `currency = "CNY"` is the default and may be omitted; shown here for clarity.
 # pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_million = 0.5, currency = "CNY" }
 #
+# # Time-of-day pricing: providers like DeepSeek discount off-peak hours.
+# # Add `time_windows` to a `pricing` block — each window overrides the
+# # flat rates above during its hours (rates omitted on a window inherit
+# # the flat values). Times are `HH:MM` (or `HH:MM:SS`)
+# # in the fixed UTC offset named by `utc_offset` (default UTC; DeepSeek's
+# # discount schedule is Beijing time → "+08:00"). A window whose
+# # `start > end` wraps past midnight. First matching window wins;
+# # outside every window the flat rates above apply. Example: standard
+# # ¥2/M in, ¥8/M out; 50% off 00:30–08:30 and 25% off 16:30–00:30:
+# #
+# # [ai.providers.deepseek]
+# # type = "openai-compatible"
+# # base_url = "https://api.deepseek.com"
+# # api_key = "${DEEPSEEK_API_KEY}"
+# # pricing = { input_per_million = 2.0, output_per_million = 8.0, currency = "CNY", utc_offset = "+08:00", time_windows = [
+# #   { start = "00:30", end = "08:30", input_per_million = 1.0, output_per_million = 4.0 },
+# #   { start = "16:30", end = "00:30", input_per_million = 1.5, output_per_million = 6.0 },
+# # ] }
+# #
 # Two figures are tracked per topic:
 #   - session: resets when the agent session resets (context auto-reset,
 #     /reset, or a model switch to a smaller context window)

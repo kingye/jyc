@@ -1012,8 +1012,7 @@ pub(crate) fn spawn_wecom_bot_adapter(
                         let recipient = message.channel_uid.clone();
                         if let Some(req_id) = req_id.as_deref()
                             && let Some(handle) = handle_arc.lock().await.clone()
-                        {
-                            if let Err(e) = wecom_bot::send_stream_reply(
+                            && let Err(e) = wecom_bot::send_stream_reply(
                                 &handle,
                                 req_id,
                                 &stream_id,
@@ -1021,12 +1020,11 @@ pub(crate) fn spawn_wecom_bot_adapter(
                                 false,
                             )
                             .await
-                            {
-                                tracing::warn!(
-                                    error = format!("{e:#}"),
-                                    "wecom_bot pipe: failed to send processing indicator"
-                                );
-                            }
+                        {
+                            tracing::warn!(
+                                error = format!("{e:#}"),
+                                "wecom_bot pipe: failed to send processing indicator"
+                            );
                         }
 
                         // 5. Record resolved topic → streaming state for
@@ -1095,8 +1093,7 @@ pub(crate) fn spawn_wecom_bot_adapter(
                                     );
                                     if let Some(handle) =
                                         keep_alive_handle_arc.lock().await.clone()
-                                    {
-                                        if let Err(e) = wecom_bot::send_stream_reply(
+                                        && let Err(e) = wecom_bot::send_stream_reply(
                                             &handle,
                                             &keep_alive_req_id,
                                             &keep_alive_stream_id,
@@ -1104,13 +1101,12 @@ pub(crate) fn spawn_wecom_bot_adapter(
                                             false,
                                         )
                                         .await
-                                        {
-                                            tracing::debug!(
-                                                error = format!("{e:#}"),
-                                                topic = %keep_alive_topic,
-                                                "wecom_bot keep-alive: send failed (window may be closed)"
-                                            );
-                                        }
+                                    {
+                                        tracing::debug!(
+                                            error = format!("{e:#}"),
+                                            topic = %keep_alive_topic,
+                                            "wecom_bot keep-alive: send failed (window may be closed)"
+                                        );
                                     }
                                     frame_idx += 1;
                                 }

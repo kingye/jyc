@@ -545,21 +545,23 @@ pub struct ModelPricing {
     /// the default for any time outside every window. First matching
     /// window wins (windows are expected to be non-overlapping).
     /// Empty by default — flat rates always apply.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub time_windows: Vec<TimeWindowPricing>,
     /// Fixed UTC offset used to interpret `time_windows` `start`/`end`
     /// times, e.g. `"+08:00"` for Beijing time (DeepSeek's off-peak
     /// discount schedule). Defaults to UTC when omitted or unparseable.
     #[serde(default)]
-    pub timezone: Option<String>,
+    pub utc_offset: Option<String>,
 }
 
 /// Rates for one time-of-day window within [`ModelPricing`].
 ///
 /// `start`/`end` are `"HH:MM"` or `"HH:MM:SS"` local times (in the
-/// pricing's `timezone`). A window whose `start > end` wraps past
+/// pricing's `utc_offset`). A window whose `start > end` wraps past
 /// midnight (e.g. `16:30` → `00:30`). The interval is
-/// start-inclusive / end-exclusive.
+/// start-inclusive / end-exclusive. Rates omitted on a window inherit
+/// the flat [`ModelPricing`] values, so a window that only varies
+/// input/output keeps the flat cache rates.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct TimeWindowPricing {
     /// Window start, `"HH:MM"` or `"HH:MM:SS"` (inclusive).
@@ -572,11 +574,13 @@ pub struct TimeWindowPricing {
     /// Price per 1M output tokens during this window.
     pub output_per_million: f64,
     /// Price per 1M prompt-cache-hit (read) tokens during this window.
+    /// `None` inherits `ModelPricing::cache_hit_per_million`.
     #[serde(default)]
-    pub cache_hit_per_million: f64,
+    pub cache_hit_per_million: Option<f64>,
     /// Price per 1M prompt-cache-creation (write) tokens during this
-    /// window. `None` collapses writes into `cache_hit_per_million`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// window. `None` inherits `ModelPricing::cache_creation_per_million`
+    /// and then falls back to the (resolved) cache-hit rate.
+    #[serde(default)]
     pub cache_creation_per_million: Option<f64>,
 }
 

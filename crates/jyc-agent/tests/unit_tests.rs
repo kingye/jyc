@@ -1903,7 +1903,7 @@ mod billing_integration {
             cache_creation_per_million: None,
             currency: Some("USD".to_string()),
             time_windows: Vec::new(),
-            timezone: None,
+            utc_offset: None,
         }
     }
 

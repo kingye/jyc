@@ -37,16 +37,17 @@ fn parse_time(s: &str) -> Option<NaiveTime> {
 
 /// Resolve the rates in effect at `now`: the first `time_windows` entry
 /// whose `[start, end)` contains the local time at `now` (interpreted in
-/// `pricing.timezone`, a fixed UTC offset defaulting to UTC) wins;
+/// `pricing.utc_offset`, a fixed UTC offset defaulting to UTC) wins;
 /// otherwise the flat rates on `pricing` apply. A window with
 /// `start > end` wraps past midnight. A window with an unparseable
-/// start/end is skipped.
+/// start/end is skipped. Cache rates omitted on a window inherit the
+/// flat [`ModelPricing`] cache rates.
 fn effective_rates(pricing: &ModelPricing, now: DateTime<Utc>) -> Rates {
-    let offset = match pricing.timezone.as_deref() {
-        Some(tz) => match tz.parse::<FixedOffset>() {
+    let offset = match pricing.utc_offset.as_deref() {
+        Some(off) => match off.parse::<FixedOffset>() {
             Ok(off) => off,
             Err(e) => {
-                tracing::warn!(timezone = tz, error = %e, "invalid pricing timezone, using UTC");
+                tracing::warn!(utc_offset = off, error = %e, "invalid pricing utc_offset, using UTC");
                 FixedOffset::east_opt(0).expect("zero offset is always valid")
             }
         },
@@ -68,8 +69,12 @@ fn effective_rates(pricing: &ModelPricing, now: DateTime<Utc>) -> Rates {
             return Rates {
                 input: w.input_per_million,
                 output: w.output_per_million,
-                cache_hit: w.cache_hit_per_million,
-                cache_creation: w.cache_creation_per_million,
+                cache_hit: w
+                    .cache_hit_per_million
+                    .unwrap_or(pricing.cache_hit_per_million),
+                cache_creation: w
+                    .cache_creation_per_million
+                    .or(pricing.cache_creation_per_million),
             };
         }
     }
@@ -110,7 +115,7 @@ fn effective_rates(pricing: &ModelPricing, now: DateTime<Utc>) -> Rates {
 ///
 /// When `pricing.time_windows` is set, the rates in effect at the moment
 /// of the call are used: the first window containing the current local
-/// time (in `pricing.timezone`) wins, falling back to the flat rates
+/// time (in `pricing.utc_offset`) wins, falling back to the flat rates
 /// outside all windows. The clock is read once per call at billing time
 /// — a call straddling a window boundary bills at the end-of-call rate,
 /// the same instant the ledger `ts` is stamped.
@@ -207,7 +212,7 @@ mod tests {
             cache_creation_per_million: None,
             currency: None,
             time_windows: Vec::new(),
-            timezone: None,
+            utc_offset: None,
         }
     }
 
@@ -221,7 +226,7 @@ mod tests {
             cache_creation_per_million: Some(cache_create),
             currency: None,
             time_windows: Vec::new(),
-            timezone: None,
+            utc_offset: None,
         }
     }
 
@@ -458,7 +463,7 @@ mod tests {
                 cache_creation_per_million: None,
                 currency: None,
                 time_windows: Vec::new(),
-                timezone: None,
+                utc_offset: None,
             };
             assert_eq!(compute_cost_split(&p, 0, 0, 0, 0), 0.0);
         }
@@ -492,7 +497,7 @@ mod tests {
                 end: end.to_string(),
                 input_per_million: input,
                 output_per_million: output,
-                cache_hit_per_million: 0.0,
+                cache_hit_per_million: None,
                 cache_creation_per_million: None,
             }
         }
@@ -511,7 +516,7 @@ mod tests {
                     window("00:30", "08:30", 1.0, 4.0),
                     window("16:30", "00:30", 1.5, 6.0),
                 ],
-                timezone: None,
+                utc_offset: None,
             }
         }
 
@@ -562,13 +567,13 @@ mod tests {
             assert_eq!(effective_rates(&p, utc(8, 30)).input, 2.0);
         }
 
-        /// `timezone` shifts the window clock: a Beijing-time window
+        /// `utc_offset` shifts the window clock: a Beijing-time window
         /// 00:30–08:30 is 16:30–00:30 UTC, so 20:00 UTC (04:00 Beijing)
         /// is in the window but 10:00 UTC (18:00 Beijing) is not.
         #[test]
-        fn timezone_offset_shifts_windows() {
+        fn utc_offset_shifts_windows() {
             let mut p = deepseek_pricing();
-            p.timezone = Some("+08:00".to_string());
+            p.utc_offset = Some("+08:00".to_string());
             // Window times are now Beijing local.
             p.time_windows = vec![window("00:30", "08:30", 1.0, 4.0)];
             assert_eq!(effective_rates(&p, utc(20, 0)).input, 1.0);
@@ -587,9 +592,9 @@ mod tests {
         }
 
         /// An unparseable window time skips that window; an unparseable
-        /// `timezone` falls back to UTC rather than failing the call.
+        /// `utc_offset` falls back to UTC rather than failing the call.
         #[test]
-        fn unparseable_window_or_timezone_degrades_to_flat() {
+        fn unparseable_window_or_utc_offset_degrades_to_flat() {
             let mut p = deepseek_pricing();
             p.time_windows = vec![
                 TimeWindowPricing {
@@ -597,15 +602,15 @@ mod tests {
                     end: "08:30".to_string(),
                     input_per_million: 1.0,
                     output_per_million: 4.0,
-                    cache_hit_per_million: 0.0,
+                    cache_hit_per_million: None,
                     cache_creation_per_million: None,
                 },
                 window("00:30", "08:30", 1.0, 4.0),
             ];
             // The bogus window is skipped; the valid one still matches.
             assert_eq!(effective_rates(&p, utc(3, 0)).input, 1.0);
-            // Bad timezone → UTC, so the UTC-time window still matches.
-            p.timezone = Some("not-a-timezone".to_string());
+            // Bad offset → UTC, so the UTC-time window still matches.
+            p.utc_offset = Some("not-an-offset".to_string());
             assert_eq!(effective_rates(&p, utc(3, 0)).input, 1.0);
         }
 
@@ -623,10 +628,10 @@ mod tests {
                     end: "12:00".to_string(),
                     input_per_million: 2.0,
                     output_per_million: 8.0,
-                    cache_hit_per_million: 0.25,
+                    cache_hit_per_million: Some(0.25),
                     cache_creation_per_million: Some(0.5),
                 }],
-                timezone: None,
+                utc_offset: None,
             };
             // 100 input, all cached-read → 100 * 0.25 / 1e6.
             let read = compute_cost_split_at(&p, utc(6, 0), 100, 0, 100, 0);
@@ -634,6 +639,22 @@ mod tests {
             // 100 input, all cache-creation → 100 * 0.5 / 1e6.
             let write = compute_cost_split_at(&p, utc(6, 0), 100, 0, 0, 100);
             assert!((write - 50e-6).abs() < 1e-12, "got {write}");
+        }
+
+        /// A window that only varies input/output inherits the flat cache
+        /// rates — cache reads stay billed at the flat rate in-window.
+        #[test]
+        fn unset_window_cache_inherits_flat_rate() {
+            let p = deepseek_pricing(); // flat cache_hit 0.5, windows set only in/out
+            let r = effective_rates(&p, utc(3, 0));
+            assert_eq!(r.cache_hit, 0.5, "must inherit flat cache-hit rate");
+            assert_eq!(
+                r.cache_creation, None,
+                "no flat cache-creation rate to inherit"
+            );
+            // 100 input, all cached-read → 100 * 0.5 / 1e6 (not 0).
+            let cost = compute_cost_split_at(&p, utc(3, 0), 100, 0, 100, 0);
+            assert!((cost - 50e-6).abs() < 1e-12, "got {cost}");
         }
 
         /// `"HH:MM"` and `"HH:MM:SS"` both parse.

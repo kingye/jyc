@@ -8,7 +8,8 @@ All notable changes to JYC will be documented in this file.
 
 - **Time-of-day pricing.** `ModelPricing` gains optional `time_windows`
   (each window supplies its own per-1M rates for the hours between
-  `start` and `end`) and `timezone` (fixed UTC offset, default UTC).
+  `start` and `end`; rates omitted on a window inherit the flat values)
+  and `utc_offset` (fixed UTC offset, default UTC).
   Every LLM call bills at the rates in effect when it completes: the
   first window containing the current local time wins, otherwise the
   flat rates apply. Supports DeepSeek-style off-peak discounts,

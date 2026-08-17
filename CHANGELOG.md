@@ -15,12 +15,6 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
-- **Default console channel (migration PR-5b-2, D9)**: when no websocket
-  channel is declared, serve synthesizes an in-memory `local_dev` console
-  whose patterns are the declared `[agents]` — `[channels.local_dev]` can
-  be deleted from config entirely. Channel TopicManagers no longer restore
-  topics of agent-referenced patterns (no idle ghost entries next to the
-  agent's active ones).
 - **Reply routing per origin channel + multi-channel agents** (migration
   PR-5b-1, see `docs/agents-migration.md`): TopicManagers resolve the reply
   adapter from the message's origin channel (falling back to the manager's

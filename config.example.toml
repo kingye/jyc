@@ -967,9 +967,24 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 
 # --- Channel: WeCom Smart Robot (wecom_bot) ---
 #
-# Uses WebSocket long connection (wss://openws.work.weixin.qq.com).
-# No token or encoding_aes_key required (unlike wecom HTTP callback).
-# Supports outbound attachments (file/image/voice/video) via WebSocket upload.
+# Pipe-only adapter (same shape as feishu). The protocol layer keeps
+# the WebSocket connection and forwards inbound messages to a hub
+# channel (websocket or synthesized agents channel); the hub's agent
+# produces the reply, which the adapter relays back via the WebSocket
+# streaming reply (`aibot_respond_msg` + `msgtype: stream`,
+# `finish=false` on receipt, `finish=true` on reply). Outbound
+# attachments are relayed via proactive `aibot_send_msg`.
+#
+# Use `${msg.<key>}` placeholders in `pipe.topic` to scope topics per
+# conversation. Useful keys:
+#   - `${msg.chatid}`    — group chat id (group chats only)
+#   - `${msg.userid}`    — sender user id (single chats only)
+#   - `${msg.channel_uid}` — group chatid (group) or userid (single);
+#                            unifies both in one template
+#   - `${msg.chat_name}` — any metadata key (e.g. feishu-style chat name)
+#
+# Every enabled pattern must have a `pipe` — a pattern without one
+# drops the message with a warning at runtime.
 #
 # [channels.my_wecom_bot]
 # type = "wecom_bot"
@@ -991,9 +1006,12 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # [[channels.my_wecom_bot.patterns]]
 # name = "bot_all"
 # enabled = true
+# # Reach the agent named `jin`; one hub topic per group chat.
+# pipe = { agent = "jin", topic = "bot-${msg.channel_uid}" }
 #
 # [channels.my_wecom_bot.patterns.rules]
 # # keywords = ["help", "bot"]
+# # sender = { exact = ["userid_xxx"] }   # optional: whitelist senders
 
 # --- Agents ---
 #

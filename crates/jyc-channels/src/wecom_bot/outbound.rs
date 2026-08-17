@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
@@ -24,8 +24,8 @@ use jyc_utils::attachment_validator;
 
 use super::client::{WecomBotConnectionHandle, generate_req_id};
 use super::types::{
-    CMD_AIBOT_UPLOAD_MEDIA_CHUNK, CMD_AIBOT_UPLOAD_MEDIA_FINISH, CMD_AIBOT_UPLOAD_MEDIA_INIT,
-    UploadMediaChunkBody, UploadMediaFinishBody, UploadMediaInitBody,
+    CMD_AIBOT_RESPOND_MSG, CMD_AIBOT_UPLOAD_MEDIA_CHUNK, CMD_AIBOT_UPLOAD_MEDIA_FINISH,
+    CMD_AIBOT_UPLOAD_MEDIA_INIT, UploadMediaChunkBody, UploadMediaFinishBody, UploadMediaInitBody,
 };
 
 /// Tracks an active streaming message so the final reply can reuse the same
@@ -393,27 +393,12 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
         _subject: &str,
         body: &str,
     ) -> Result<SendResult> {
-        // Proactive message: use aibot_send_msg with nested format
-        let use_markdown = body.contains("**")
-            || body.contains("*")
-            || body.contains("`")
-            || body.contains("#")
-            || body.contains("[")
-            || body.contains("- ");
-
-        let body_json = if use_markdown {
-            serde_json::json!({
-                "msgtype": "markdown",
-                "chatid": recipient,
-                "markdown": {"content": body}
-            })
-        } else {
-            serde_json::json!({
-                "msgtype": "text",
-                "chatid": recipient,
-                "text": {"content": body}
-            })
-        };
+        // Proactive message: use aibot_send_msg with nested format.
+        // Body shape (msgtype + chatid + text/markdown content) is built
+        // by the shared `build_proactive_text_body` helper so the wire
+        // format is defined in one place and matches the pipe reply
+        // forwarder's fallback path.
+        let body_json = build_proactive_text_body(recipient, body);
 
         let json = serde_json::json!({
             "cmd": "aibot_send_msg",
@@ -652,6 +637,142 @@ const VOICE_MAX_SIZE: usize = 2 * 1024 * 1024;
 const VIDEO_MAX_SIZE: usize = 10 * 1024 * 1024;
 const FILE_MAX_SIZE: usize = 20 * 1024 * 1024;
 
+// ─── Public helpers exposed for the pipe adapter ───────────────────
+//
+// The pipe-only `spawn_wecom_bot_adapter` (jyc-cli) reuses these
+// directly instead of going through `WecomBotOutboundAdapter` (which
+// carries the full reply-lifecycle surface: footer, reply context,
+// session tokens, chat-log storage). Keeping them as free functions
+// leaves one canonical wire-format definition instead of duplicating
+// the JSON shape in two places.
+
+/// Send a streaming reply chunk (`aibot_respond_msg` + `msgtype: stream`).
+///
+/// `finish=false` opens a streaming window for the user-visible
+/// "thinking" indicator; `finish=true` completes the stream with the
+/// final reply content. Both share the same `stream_id` so the client's
+/// message is updated in-place rather than posted twice.
+///
+/// This is the same wire format that `WecomBotOutboundAdapter::send_reply`
+/// uses; it is exposed here so the pipe reply forwarder does not have
+/// to construct the JSON inline.
+pub async fn send_stream_reply(
+    handle: &WecomBotConnectionHandle,
+    req_id: &str,
+    stream_id: &str,
+    content: &str,
+    finish: bool,
+) -> Result<()> {
+    let json = serde_json::json!({
+        "cmd": "aibot_respond_msg",
+        "headers": {"req_id": req_id},
+        "body": {
+            "msgtype": "stream",
+            "stream": {
+                "id": stream_id,
+                "content": content,
+                "finish": finish,
+            }
+        }
+    })
+    .to_string();
+    handle
+        .sender
+        .send(json)
+        .map_err(|e| anyhow::anyhow!("Failed to send WeCom Bot stream reply: {e}"))
+}
+
+/// Send a streaming reply chunk and wait for the server ack.
+///
+/// Returns `Ok(())` on `errcode == 0`; `Err` on any other ack (`errcode`
+/// is surfaced, including `846604` for an expired passive-reply window)
+/// or transport failure (timeout, channel closed). The pipe reply
+/// forwarder uses this for the `finish=true` final reply and falls back
+/// to proactive `aibot_send_msg` on error, so the user still receives
+/// the text when the streaming window has closed (common for long
+/// agent runs that exceed the WeCom passive-reply window).
+pub async fn send_stream_reply_and_wait(
+    handle: &WecomBotConnectionHandle,
+    req_id: &str,
+    stream_id: &str,
+    content: &str,
+    finish: bool,
+) -> Result<()> {
+    let body = serde_json::json!({
+        "msgtype": "stream",
+        "stream": {
+            "id": stream_id,
+            "content": content,
+            "finish": finish,
+        }
+    });
+    match handle
+        .send_and_wait(
+            CMD_AIBOT_RESPOND_MSG,
+            req_id,
+            body,
+            std::time::Duration::from_secs(10),
+        )
+        .await
+    {
+        Ok(ack) => {
+            let errcode = ack["errcode"].as_i64().unwrap_or(-1);
+            if errcode == 0 {
+                Ok(())
+            } else {
+                let errmsg = ack["errmsg"].as_str().unwrap_or("unknown");
+                Err(anyhow!(
+                    "wecom_bot stream reply rejected: errcode={errcode}, errmsg={errmsg}"
+                ))
+            }
+        }
+        Err(e) => {
+            // Timeout or transport error. The frame was (probably) sent
+            // before the failure surfaced; we can't tell whether the
+            // server actually delivered it. Treat as best-effort
+            // streamed (return Ok) so the caller does not fall back to a
+            // proactive send — a duplicate would be worse than a rare
+            // missing reply, and if the connection is dead the fallback
+            // would fail anyway.
+            tracing::warn!(
+                error = format!("{e:#}"),
+                "wecom_bot stream reply ack not received; assuming best-effort delivery"
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Build the body JSON for a proactive `aibot_send_msg` text/markdown
+/// message. Used by `WecomBotOutboundAdapter::send_message` and the pipe
+/// reply forwarder's fallback path so the wire format is defined in one
+/// place.
+///
+/// Markdown detection is a simple heuristic (presence of common markdown
+/// sigils). The caller is responsible for the surrounding `cmd` and
+/// `headers` frame.
+pub fn build_proactive_text_body(recipient: &str, text: &str) -> serde_json::Value {
+    let use_markdown = text.contains("**")
+        || text.contains("*")
+        || text.contains("`")
+        || text.contains("#")
+        || text.contains("[")
+        || text.contains("- ");
+    if use_markdown {
+        serde_json::json!({
+            "msgtype": "markdown",
+            "chatid": recipient,
+            "markdown": {"content": text},
+        })
+    } else {
+        serde_json::json!({
+            "msgtype": "text",
+            "chatid": recipient,
+            "text": {"content": text},
+        })
+    }
+}
+
 /// Map a filename/extension to WeCom media type.
 ///
 /// WeCom supports:
@@ -659,7 +780,7 @@ const FILE_MAX_SIZE: usize = 20 * 1024 * 1024;
 /// - voice: amr (max 2MB)
 /// - video: mp4 (max 10MB)
 /// - file: everything else (max 20MB)
-fn wecom_media_type(_content_type: &str, filename: &str) -> &'static str {
+pub fn wecom_media_type(_content_type: &str, filename: &str) -> &'static str {
     let ext = std::path::Path::new(filename)
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
@@ -674,7 +795,7 @@ fn wecom_media_type(_content_type: &str, filename: &str) -> &'static str {
 }
 
 /// Validate that a payload does not exceed WeCom media type limits.
-fn validate_wecom_media_size(bytes: &[u8], media_type: &str) -> Result<()> {
+pub fn validate_wecom_media_size(bytes: &[u8], media_type: &str) -> Result<()> {
     let max = match media_type {
         "image" => IMAGE_MAX_SIZE,
         "voice" => VOICE_MAX_SIZE,
@@ -693,7 +814,9 @@ fn validate_wecom_media_size(bytes: &[u8], media_type: &str) -> Result<()> {
 }
 
 /// Upload a file through the WeCom Bot WebSocket and return the `media_id`.
-async fn upload_attachment(
+///
+/// Used by the pipe reply forwarder to relay outbound attachments.
+pub async fn upload_attachment(
     handle: &WecomBotConnectionHandle,
     path: &Path,
     filename: &str,
@@ -816,7 +939,7 @@ async fn upload_attachment(
 }
 
 /// Build an `aibot_respond_msg` body for a media attachment.
-fn build_media_message_body(media_type: &str, media_id: &str) -> serde_json::Value {
+pub fn build_media_message_body(media_type: &str, media_id: &str) -> serde_json::Value {
     match media_type {
         "image" => serde_json::json!({
             "msgtype": "image",

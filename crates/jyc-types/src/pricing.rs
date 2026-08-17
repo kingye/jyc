@@ -12,10 +12,75 @@
 //!    payload**, so the math is exactly that call's breakdown rather
 //!    than an approximation across calls.
 
+use chrono::{DateTime, FixedOffset, NaiveTime, Utc};
+
 use crate::config::{AppConfig, ModelPricing};
 
 /// Tokens in one million — the denominator for every configured rate.
 const TOKENS_PER_MILLION: f64 = 1_000_000.0;
+
+/// The four rates that apply to one LLM call, resolved from
+/// [`ModelPricing`] at a specific instant.
+struct Rates {
+    input: f64,
+    output: f64,
+    cache_hit: f64,
+    cache_creation: Option<f64>,
+}
+
+/// Parse a `"HH:MM"` or `"HH:MM:SS"` time-of-day string.
+fn parse_time(s: &str) -> Option<NaiveTime> {
+    NaiveTime::parse_from_str(s, "%H:%M:%S")
+        .or_else(|_| NaiveTime::parse_from_str(s, "%H:%M"))
+        .ok()
+}
+
+/// Resolve the rates in effect at `now`: the first `time_windows` entry
+/// whose `[start, end)` contains the local time at `now` (interpreted in
+/// `pricing.timezone`, a fixed UTC offset defaulting to UTC) wins;
+/// otherwise the flat rates on `pricing` apply. A window with
+/// `start > end` wraps past midnight. A window with an unparseable
+/// start/end is skipped.
+fn effective_rates(pricing: &ModelPricing, now: DateTime<Utc>) -> Rates {
+    let offset = match pricing.timezone.as_deref() {
+        Some(tz) => match tz.parse::<FixedOffset>() {
+            Ok(off) => off,
+            Err(e) => {
+                tracing::warn!(timezone = tz, error = %e, "invalid pricing timezone, using UTC");
+                FixedOffset::east_opt(0).expect("zero offset is always valid")
+            }
+        },
+        None => FixedOffset::east_opt(0).expect("zero offset is always valid"),
+    };
+    let local = now.with_timezone(&offset).time();
+
+    for w in &pricing.time_windows {
+        let (Some(start), Some(end)) = (parse_time(&w.start), parse_time(&w.end)) else {
+            continue;
+        };
+        // start-inclusive / end-exclusive; start > end wraps past midnight.
+        let in_window = if start <= end {
+            local >= start && local < end
+        } else {
+            local >= start || local < end
+        };
+        if in_window {
+            return Rates {
+                input: w.input_per_million,
+                output: w.output_per_million,
+                cache_hit: w.cache_hit_per_million,
+                cache_creation: w.cache_creation_per_million,
+            };
+        }
+    }
+
+    Rates {
+        input: pricing.input_per_million,
+        output: pricing.output_per_million,
+        cache_hit: pricing.cache_hit_per_million,
+        cache_creation: pricing.cache_creation_per_million,
+    }
+}
 
 /// Compute the cost of a **single** LLM call with read+write cache
 /// tokens billed separately.
@@ -42,6 +107,13 @@ const TOKENS_PER_MILLION: f64 = 1_000_000.0;
 /// `cache_creation_tokens` is `0` for every provider except Anthropic —
 /// callers that only have a single bucket should pass it through
 /// [`compute_cost`] (which forwards as `0` for the creation bucket).
+///
+/// When `pricing.time_windows` is set, the rates in effect at the moment
+/// of the call are used: the first window containing the current local
+/// time (in `pricing.timezone`) wins, falling back to the flat rates
+/// outside all windows. The clock is read once per call at billing time
+/// — a call straddling a window boundary bills at the end-of-call rate,
+/// the same instant the ledger `ts` is stamped.
 pub fn compute_cost_split(
     pricing: &ModelPricing,
     input_tokens: u64,
@@ -49,17 +121,35 @@ pub fn compute_cost_split(
     cache_read_tokens: u64,
     cache_creation_tokens: u64,
 ) -> f64 {
+    compute_cost_split_at(
+        pricing,
+        Utc::now(),
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+    )
+}
+
+/// [`compute_cost_split`] at an explicit instant — lets tests exercise
+/// time-of-day windows deterministically instead of reading the clock.
+fn compute_cost_split_at(
+    pricing: &ModelPricing,
+    now: DateTime<Utc>,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+) -> f64 {
+    let r = effective_rates(pricing, now);
     let uncached_input = input_tokens
         .saturating_sub(cache_read_tokens)
         .saturating_sub(cache_creation_tokens);
 
-    let input_cost = uncached_input as f64 * pricing.input_per_million;
-    let output_cost = output_tokens as f64 * pricing.output_per_million;
-    let read_cost = cache_read_tokens as f64 * pricing.cache_hit_per_million;
-    let write_cost = cache_creation_tokens as f64
-        * pricing
-            .cache_creation_per_million
-            .unwrap_or(pricing.cache_hit_per_million);
+    let input_cost = uncached_input as f64 * r.input;
+    let output_cost = output_tokens as f64 * r.output;
+    let read_cost = cache_read_tokens as f64 * r.cache_hit;
+    let write_cost = cache_creation_tokens as f64 * r.cache_creation.unwrap_or(r.cache_hit);
 
     (input_cost + output_cost + read_cost + write_cost) / TOKENS_PER_MILLION
 }

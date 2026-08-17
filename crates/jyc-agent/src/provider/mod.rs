@@ -354,6 +354,7 @@ pub fn create_provider(
                 api_key.as_deref(),
                 params,
                 supports_images,
+                user_agent,
             )?))
         }
         "openai-compatible" | "openai" => {

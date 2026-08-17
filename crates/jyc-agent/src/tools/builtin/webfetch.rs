@@ -55,7 +55,15 @@ impl Tool for WebfetchTool {
 
         let resp = client
             .get(url)
-            .header("user-agent", "jyc-agent/0.1")
+            // Modern Chrome UA on Linux — most public sites reject the
+            // reqwest default and we don't want to fingerprint jyc. Bump
+            // the version by hand every few releases; not worth the
+            // maintenance cost of a dynamic version lookup.
+            .header(
+                "user-agent",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
+                 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            )
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("Request failed: {e}"))?;

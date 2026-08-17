@@ -1,8 +1,9 @@
 use anyhow::Result;
 use regex::Regex;
 
-use crate::channel::ChannelPattern;
+use crate::channel::{ChannelPattern, PatternRules};
 use crate::config::AppConfig;
+use crate::config::agent::AgentConfig;
 
 /// A single validation error with context.
 #[derive(Debug)]
@@ -83,6 +84,17 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                 path: format!("{prefix}.type"),
                 message: "channel type is required".into(),
             });
+        }
+
+        // [channels.<name>] type="websocket" with no matching
+        // [agents.<name>] is deprecated — but `channels.agents` is the
+        // synthesized target of `[agents.*]`, so it is exempted.
+        if channel.channel_type == "websocket"
+            && name != "agents"
+            && !config.agents.contains_key(name)
+        {
+            // Allowed (deprecated). The CLI emits a runtime warn; we
+            // don't fail validation so existing configs keep loading.
         }
 
         // Validate email channel specifics
@@ -464,7 +476,69 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
         }
     }
 
+    // Agents: per-agent skill / tool / mcps sanity, pipe exclusivity,
+    // reserved-name check, and the synthesized "agents" collision.
+    validate_agents(config, &mut errors);
+
     errors
+}
+
+fn validate_agent(
+    prefix: &str,
+    agent_name: &str,
+    agent: &AgentConfig,
+    errors: &mut Vec<ValidationError>,
+) {
+    // [channels.<name>] type="websocket" + [agents.<name>] — name
+    // collision: the synthesized channel would overwrite the legacy
+    // one. Reject to surface the conflict instead of silently
+    // dropping the user's legacy config.
+    if agent_name == "agents" {
+        errors.push(ValidationError {
+            path: format!("{prefix}.{agent_name}"),
+            message: "agent name \"agents\" is reserved (it's the synthesized channel name)".into(),
+        });
+    }
+
+    // Reuse pattern's empty-string checks for the shared fields.
+    let p = ChannelPattern {
+        name: agent_name.to_string(),
+        channel: "agents".to_string(),
+        enabled: true,
+        rules: PatternRules::default(),
+        pipe: None,
+        attachments: agent.attachments.clone(),
+        template: agent.template.clone(),
+        topic_name: None,
+        topic_prefix: None,
+        topic_path: agent.topic_path.clone(),
+        role: agent.role.clone(),
+        live_injection: agent.live_injection,
+        repo_group: None,
+        inject_inbound_images: agent.inject_inbound_images,
+        model: agent.model.clone(),
+        plan_model: agent.plan_model.clone(),
+        build_model: agent.build_model.clone(),
+        small_model: agent.small_model.clone(),
+        mode: agent.mode.clone(),
+        mcps: agent.mcps.clone(),
+        disabled_tools: agent.disabled_tools.clone(),
+        disabled_builtin_tools: agent.disabled_builtin_tools.clone(),
+        disabled_mcp_servers: agent.disabled_mcp_servers.clone(),
+        skills: agent.skills.clone(),
+        disabled_skills: agent.disabled_skills.clone(),
+        reset_compression: agent.reset_compression.clone(),
+        auto_reset_threshold: agent.auto_reset_threshold,
+        access: agent.access.clone(),
+    };
+    validate_pattern(prefix, &p, errors);
+}
+
+fn validate_agents(config: &AppConfig, errors: &mut Vec<ValidationError>) {
+    for (name, agent) in &config.agents {
+        let prefix = format!("agents.{name}");
+        validate_agent(&prefix, name, agent, errors);
+    }
 }
 
 fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<ValidationError>) {
@@ -472,6 +546,31 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
         errors.push(ValidationError {
             path: format!("{prefix}.name"),
             message: "pattern name is required".into(),
+        });
+    }
+
+    // Pipe target: agent XOR (channel OR pattern). Mixing them is a
+    // configuration error caught at load time.
+    if let Some(pipe) = &pattern.pipe
+        && pipe.agent.is_some()
+        && (pipe.channel.is_some() || pipe.pattern.is_some())
+    {
+        errors.push(ValidationError {
+            path: format!("{prefix}.pipe"),
+            message: "pipe.agent is mutually exclusive with pipe.channel / pipe.pattern".into(),
+        });
+    }
+    // Legacy form requires pipe.channel (channel used to be required).
+    if let Some(pipe) = &pattern.pipe
+        && pipe.agent.is_none()
+        && pipe.channel.is_none()
+        && (pipe.pattern.is_some() || pipe.topic.is_some())
+    {
+        errors.push(ValidationError {
+            path: format!("{prefix}.pipe"),
+            message:
+                "pipe.channel is required when pipe.pattern or pipe.topic is set without pipe.agent"
+                    .into(),
         });
     }
 

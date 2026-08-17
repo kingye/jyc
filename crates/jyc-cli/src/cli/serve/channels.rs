@@ -444,6 +444,15 @@ pub(crate) fn spawn_feishu_adapter(
             Some(pipe) => {
                 if let Some(ch) = &pipe.channel {
                     pipe_channels.insert(ch.clone());
+                } else if pipe.agent.is_some() {
+                    // New form: pipe.agent routes through the synthesized
+                    // "agents" channel. Subscribe to its broadcast so the
+                    // reply forwarder can relay replies back to the
+                    // originating feishu chat. Without this, the
+                    // forwarder task is never spawned and feishu
+                    // replies vanish into the dashboard's broadcast
+                    // only.
+                    pipe_channels.insert("agents".to_string());
                 }
                 // One-shot deprecation at startup: don't repeat per
                 // message. Per-pattern (not per-message) so a feishu

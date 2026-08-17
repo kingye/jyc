@@ -46,8 +46,8 @@ use jyc_core::state_manager::StateManager;
 use jyc_core::topic_manager::TopicManager;
 use jyc_services::imap::monitor::ImapMonitor;
 use jyc_types::{
-    ChannelConfig, ChannelInfo, ChannelMatcher, InboundAdapter, InboundAttachmentConfig,
-    MonitorConfig, OutboundAdapter, OutboundAttachmentConfig,
+    ChannelConfig, ChannelInfo, ChannelMatcher, ChannelPattern, InboundAdapter,
+    InboundAttachmentConfig, MonitorConfig, OutboundAdapter, OutboundAttachmentConfig,
 };
 
 /// Build the outbound adapter for a channel.
@@ -405,6 +405,30 @@ async fn relay_attachment(
     Ok(())
 }
 
+/// Collect the distinct WebSocket-channel broadcast targets that a
+/// feishu adapter's pipe patterns route through. One entry per
+/// distinct channel — the reply-forwarder spawns one subscriber per
+/// entry, so missing a target here means feishu replies on that
+/// channel vanish into the dashboard's broadcast only.
+///
+/// Two forms accepted per pattern:
+/// - legacy `pipe = { channel = "x" }` → inserts "x"
+/// - new `pipe = { agent = "x", topic = "..." }` → inserts "agents"
+///   (the synthesized channel name)
+fn collect_pipe_target_channels(patterns: &[ChannelPattern]) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for p in patterns.iter().filter(|p| p.enabled) {
+        if let Some(pipe) = &p.pipe {
+            if let Some(ch) = &pipe.channel {
+                out.insert(ch.clone());
+            } else if pipe.agent.is_some() {
+                out.insert("agents".to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Spawn a pipe-only feishu adapter: the inbound adapter plus one reply
 /// forwarder per distinct pipe target channel.
 ///
@@ -433,7 +457,8 @@ pub(crate) fn spawn_feishu_adapter(
     // websocket hub channel). Collect the distinct target channels for reply
     // relaying; patterns without one are a configuration error — warn at
     // startup, drop matching messages at runtime.
-    let mut pipe_channels: std::collections::HashSet<String> = Default::default();
+    let pipe_channels =
+        collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
     for p in channel_config
         .patterns
         .iter()
@@ -442,9 +467,6 @@ pub(crate) fn spawn_feishu_adapter(
     {
         match &p.pipe {
             Some(pipe) => {
-                if let Some(ch) = &pipe.channel {
-                    pipe_channels.insert(ch.clone());
-                }
                 // One-shot deprecation at startup: don't repeat per
                 // message. Per-pattern (not per-message) so a feishu
                 // adapter with 5 legacy pipes still emits 5 warns.
@@ -1594,5 +1616,82 @@ mod tests {
     fn pipe_retarget_agent_unresolved_placeholder_returns_none() {
         let pipe = agent_pipe_target("jyc", Some("${msg.chat_name}"));
         assert!(apply_pipe_retarget(pipe_msg(Default::default()), &pipe).is_none());
+    }
+
+    // ---- collect_pipe_target_channels ----
+
+    fn pattern_with(pipe: jyc_types::PipeTarget) -> ChannelPattern {
+        ChannelPattern {
+            name: format!("p-{}", pipe.topic.clone().unwrap_or_default()),
+            channel: "feishu_bot".to_string(),
+            enabled: true,
+            pipe: Some(pipe),
+            ..Default::default()
+        }
+    }
+
+    /// Regression for PR #582: pipe.agent form was missing from
+    /// pipe_channels, so the feishu reply forwarder wasn't subscribed
+    /// to the synthesized "agents" channel's broadcast. As a result,
+    /// feishu replies on agent-form pipes vanished into the dashboard
+    /// only. (Catches the next time someone rearranges this loop.)
+    #[test]
+    fn collect_pipe_target_channels_legacy_form() {
+        // Legacy pipe_target helper hardcodes channel = "local_dev";
+        // the collector must use pipe.channel (not the pattern name).
+        let patterns = vec![pattern_with(pipe_target(Some("jyc"), None))];
+        let targets = collect_pipe_target_channels(&patterns);
+        assert_eq!(
+            targets,
+            std::collections::HashSet::from(["local_dev".to_string()])
+        );
+    }
+
+    #[test]
+    fn collect_pipe_target_channels_agent_form_routes_to_agents() {
+        let patterns = vec![pattern_with(agent_pipe_target("group_chat", Some("foo")))];
+        let targets = collect_pipe_target_channels(&patterns);
+        assert_eq!(
+            targets,
+            std::collections::HashSet::from(["agents".to_string()]),
+            "pipe.agent must route to the synthesized 'agents' channel"
+        );
+    }
+
+    #[test]
+    fn collect_pipe_target_channels_dedupes_repeated_targets() {
+        // Two patterns, both pointing at the same agent → one entry.
+        let patterns = vec![
+            pattern_with(agent_pipe_target("jyc", None)),
+            pattern_with(agent_pipe_target("jyc", Some("topic"))),
+        ];
+        let targets = collect_pipe_target_channels(&patterns);
+        assert_eq!(targets.len(), 1);
+    }
+
+    #[test]
+    fn collect_pipe_target_channels_handles_empty_and_disabled() {
+        let patterns = vec![
+            // No pipe → no entry.
+            ChannelPattern {
+                name: "no-pipe".to_string(),
+                enabled: true,
+                ..Default::default()
+            },
+            // Disabled pattern with pipe → ignored.
+            ChannelPattern {
+                name: "disabled".to_string(),
+                enabled: false,
+                pipe: Some(agent_pipe_target("jyc", None)),
+                ..Default::default()
+            },
+            // Enabled legacy form → still works (channel = "local_dev").
+            pattern_with(pipe_target(Some("legacy"), None)),
+        ];
+        let targets = collect_pipe_target_channels(&patterns);
+        assert_eq!(
+            targets,
+            std::collections::HashSet::from(["local_dev".to_string()])
+        );
     }
 }

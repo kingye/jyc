@@ -13,9 +13,10 @@
 //! `serve::synthesize_agents_channel`).
 
 use serde::Deserialize;
+use std::path::PathBuf;
 
 use super::{InboundAttachmentConfig, McpServerConfig};
-use crate::channel::{AccessConfig, ResetCompressionConfig};
+use crate::channel::{AccessConfig, ChannelPattern, PatternRules, ResetCompressionConfig};
 
 /// Behavior surface for a single `[agents.<name>]` entry.
 ///
@@ -124,4 +125,58 @@ pub struct AgentConfig {
 
 fn default_true() -> bool {
     true
+}
+
+impl AgentConfig {
+    /// Copy every AgentConfig behavior field into a `ChannelPattern`,
+    /// setting the pattern's identity fields to point at this agent.
+    ///
+    /// Single source of truth for the AgentConfig → ChannelPattern
+    /// mirror. Adding a new behavior field to AgentConfig only requires
+    /// updating this method; both the CLI synthesis
+    /// (`synthesize_agent_pattern`) and the validation pass
+    /// (`validate_agent`) use it, so they cannot drift.
+    ///
+    /// The caller supplies `agent_name` (the TOML table key, not a
+    /// field on AgentConfig itself) and the resolved default
+    /// `topic_path` when the user did not set one.
+    pub fn fill_into_pattern(
+        &self,
+        pattern: &mut ChannelPattern,
+        agent_name: &str,
+        default_topic_path: PathBuf,
+    ) {
+        pattern.name = agent_name.to_string();
+        pattern.channel = "agents".to_string();
+        pattern.enabled = true;
+        pattern.rules = PatternRules::default();
+        pattern.pipe = None;
+        pattern.topic_path = Some(
+            self.topic_path
+                .clone()
+                .unwrap_or_else(|| default_topic_path.to_string_lossy().into_owned()),
+        );
+        pattern.topic_name = None;
+        pattern.topic_prefix = None;
+        pattern.repo_group = None;
+        pattern.attachments = self.attachments.clone();
+        pattern.template = self.template.clone();
+        pattern.role = self.role.clone();
+        pattern.live_injection = self.live_injection;
+        pattern.inject_inbound_images = self.inject_inbound_images;
+        pattern.model = self.model.clone();
+        pattern.plan_model = self.plan_model.clone();
+        pattern.build_model = self.build_model.clone();
+        pattern.small_model = self.small_model.clone();
+        pattern.mode = self.mode.clone();
+        pattern.mcps = self.mcps.clone();
+        pattern.disabled_tools = self.disabled_tools.clone();
+        pattern.disabled_builtin_tools = self.disabled_builtin_tools.clone();
+        pattern.disabled_mcp_servers = self.disabled_mcp_servers.clone();
+        pattern.skills = self.skills.clone();
+        pattern.disabled_skills = self.disabled_skills.clone();
+        pattern.reset_compression = self.reset_compression.clone();
+        pattern.auto_reset_threshold = self.auto_reset_threshold;
+        pattern.access = self.access.clone();
+    }
 }

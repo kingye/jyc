@@ -500,38 +500,15 @@ fn validate_agent(
         });
     }
 
-    // Reuse pattern's empty-string checks for the shared fields.
-    let p = ChannelPattern {
-        name: agent_name.to_string(),
-        channel: "agents".to_string(),
-        enabled: true,
-        rules: PatternRules::default(),
-        pipe: None,
-        attachments: agent.attachments.clone(),
-        template: agent.template.clone(),
-        topic_name: None,
-        topic_prefix: None,
-        topic_path: agent.topic_path.clone(),
-        role: agent.role.clone(),
-        live_injection: agent.live_injection,
-        repo_group: None,
-        inject_inbound_images: agent.inject_inbound_images,
-        model: agent.model.clone(),
-        plan_model: agent.plan_model.clone(),
-        build_model: agent.build_model.clone(),
-        small_model: agent.small_model.clone(),
-        mode: agent.mode.clone(),
-        mcps: agent.mcps.clone(),
-        disabled_tools: agent.disabled_tools.clone(),
-        disabled_builtin_tools: agent.disabled_builtin_tools.clone(),
-        disabled_mcp_servers: agent.disabled_mcp_servers.clone(),
-        skills: agent.skills.clone(),
-        disabled_skills: agent.disabled_skills.clone(),
-        reset_compression: agent.reset_compression.clone(),
-        auto_reset_threshold: agent.auto_reset_threshold,
-        access: agent.access.clone(),
-    };
-    validate_pattern(prefix, &p, errors);
+    // Use AgentConfig::fill_into_pattern as the single source of
+    // truth so any new behavior field added to AgentConfig is
+    // automatically validated here.
+    let mut pattern = ChannelPattern::default();
+    // For validation, the default topic_path doesn't need to point
+    // at a real directory — the per-field checks below ignore it.
+    // Passing an empty PathBuf keeps the synthetic pattern minimal.
+    agent.fill_into_pattern(&mut pattern, agent_name, std::path::PathBuf::new());
+    validate_pattern(prefix, &pattern, errors);
 }
 
 fn validate_agents(config: &AppConfig, errors: &mut Vec<ValidationError>) {

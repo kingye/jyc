@@ -187,13 +187,25 @@ Migration design doc to preserve context (this file).
 - The multi-channel sharing guard is **lifted**: an agent may now be
   referenced by patterns of several channels (D5).
 
-**5b-2 — Remaining**
+**5b-2 — Default console + ghost fix ✅ (core)**
 
-- The websocket channel dissolves (D9): the inspect server serves one ws
-  endpoint; the panel lists declared `[agents]` directly (Agents area) and
-  legacy channel topics separately (Channels area, D11).
-- Lookup polish at the remaining channel-name call sites (inspect
-  topic_proxy, websocket inbound).
+- **Synthesized default console (D9)**: when no websocket channel is
+  declared, serve synthesizes an in-memory `local_dev` channel whose
+  patterns are the declared agents — the interactive console for the panel.
+  `[channels.local_dev]` can now be deleted from config entirely (the
+  synthesized entry lives only in memory, never written to the file).
+  Feishu pipes targeting `local_dev` keep working (the synthesized patterns
+  cover every declared agent).
+- **Ghost fix**: the channel TopicManager's `restore_custom_topic_paths`
+  skips patterns that reference an agent (their topics belong to the agent's
+  manager), eliminating the idle duplicate entries in the dashboard overview.
+
+**5b-2 — Remaining (PR-6)**
+
+- The dashboard panel's visual two-area grouping (Agents vs Channels) — the
+  data is already there (agent entries have `channel_type = "agent"`).
+- Direct `agent = "..."` on feishu patterns (feishu currently routes via
+  `pipe`; the pipe path keeps working against the synthesized console).
 - `pipe = { channel = ... }` fully retires in favor of `agent` (kept
   readable with a deprecation warning meanwhile).
 

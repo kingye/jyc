@@ -38,6 +38,15 @@ All notable changes to JYC will be documented in this file.
   `AiConfig`. See `docs/agents-migration.md` for the full migration plan.
 - **Reverted the `[hub]`/`[adapters]` config tables and `pipe.hub` rename
   (#573)** — never deployed; `[channels]` is again the single channel table.
+- **Aligned HTTP `User-Agent` defaults.** The Anthropic native provider
+  (`type = "anthropic"`) now honors `ai_providers.<name>.user_agent`
+  instead of silently dropping it; behavior matches the OpenAI-compat
+  provider. When no `user_agent` is configured, all provider requests
+  fall back to reqwest's default `reqwest/<version>` UA — no jyc
+  fingerprint leaks unless the operator opts in. The `webfetch` tool
+  switched from a hardcoded `jyc-agent/0.1` to a modern Chrome UA
+  (`Mozilla/5.0 ... Chrome/131.0.0.0 ...`) for compatibility with
+  common anti-bot sites.
 
 ### Added
 

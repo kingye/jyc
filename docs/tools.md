@@ -138,7 +138,7 @@ Fetch content from a URL.
 - `url` (string, required): URL to fetch
 - `timeout` (integer, optional): Timeout in seconds (default: 30)
 
-**Limits:** Response truncated at 512 KB. User-agent: `jyc-agent/0.1`.
+**Limits:** Response truncated at 512 KB. User-agent: `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36`.
 
 **Example:**
 ```json

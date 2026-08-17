@@ -23,6 +23,8 @@ pub struct AnthropicProvider {
     params: Option<serde_json::Value>,
     /// Whether the active model accepts image content blocks.
     supports_images: bool,
+    /// Optional User-Agent header override.
+    user_agent: Option<String>,
 }
 
 impl AnthropicProvider {
@@ -32,6 +34,7 @@ impl AnthropicProvider {
         api_key: Option<&str>,
         params: Option<serde_json::Value>,
         supports_images: bool,
+        user_agent: Option<&str>,
     ) -> Result<Self> {
         // See `openai_compat::OpenAiCompatProvider::new` for the full
         // rationale on connection-pool hygiene. Same defaults are
@@ -50,6 +53,7 @@ impl AnthropicProvider {
             api_key: api_key.map(|s| s.to_string()),
             params,
             supports_images,
+            user_agent: user_agent.map(|s| s.to_string()),
         })
     }
 }
@@ -124,6 +128,10 @@ impl Provider for AnthropicProvider {
 
         if let Some(ref key) = self.api_key {
             req = req.header("x-api-key", key);
+        }
+
+        if let Some(ref ua) = self.user_agent {
+            req = req.header("user-agent", ua.as_str());
         }
 
         req = req.json(&body);
@@ -298,6 +306,10 @@ impl Provider for AnthropicProvider {
 
         if let Some(ref key) = self.api_key {
             req = req.header("x-api-key", key);
+        }
+
+        if let Some(ref ua) = self.user_agent {
+            req = req.header("user-agent", ua.as_str());
         }
 
         req = req.json(&body);
@@ -813,6 +825,7 @@ mod tests {
             Some("test-key"),
             None,
             false,
+            None,
         )
         .expect("provider construction");
 
@@ -856,6 +869,45 @@ mod tests {
         assert!(
             msg.contains("invalid_request_error"),
             "expected upstream error type in captured body, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_sends_custom_user_agent() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .and(header("content-type", "application/json"))
+            .and(header("anthropic-version", "2023-06-01"))
+            .and(header("x-api-key", "test-key"))
+            .and(header("user-agent", "opencode/1.15.13"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-test-model",
+            Some("test-key"),
+            None,
+            false,
+            Some("opencode/1.15.13"),
+        )
+        .expect("provider construction");
+
+        let messages = vec![Message::user("hello")];
+        let mut stream = provider
+            .complete(&messages, &[], "")
+            .await
+            .expect("complete should return a stream");
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].headers.get("user-agent").unwrap(),
+            "opencode/1.15.13"
         );
     }
 
@@ -1132,7 +1184,8 @@ mod tests {
         ];
 
         let provider =
-            AnthropicProvider::new(&server.uri(), "claude-test", Some("k"), None, false).unwrap();
+            AnthropicProvider::new(&server.uri(), "claude-test", Some("k"), None, false, None)
+                .unwrap();
         let stream = provider
             .complete_raw(&raw, &tools, "system prompt here")
             .await

@@ -152,9 +152,11 @@ Migration design doc to preserve context (this file).
   state dir, the legacy `<workdir>/<channel>/...` path is renamed into the
   new location via `migrate_dir_if_needed`. Explicit `topic_path` overrides
   continue to win over both layouts.
-- `list_topics` / `topic_path` scan the agent topics dirs of the agents
-  referenced by the channel's patterns, so agent-routed topics survive
-  restarts.
+- `list_topics` / `topic_path` use `workspace_dir` — which is
+  `agents/<agent>` for agent-keyed TopicManagers (PR-5a) and
+  `<channel>/workspace` for channel ones — so agent topics survive restarts
+  under their owning manager without any agent-dir special-casing in the
+  channel manager.
 - Guards added to `validate_config`: `agents`/`channels` are reserved
   channel names (would collide with the new data-root dirs); an agent
   referenced from patterns of **more than one channel** is rejected until

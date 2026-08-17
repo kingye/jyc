@@ -848,6 +848,67 @@ mode = "agent"
 }
 
 #[tokio::test]
+async fn test_restore_agent_workspace_topics_from_disk() {
+    let tmp = tempdir().unwrap();
+    // Agent TM: workspace = <data>/agents/<agent>
+    let workspace = tmp.path().join("agents").join("jyc");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    // Two previously initialized agent topics (with .jyc/topic-name)
+    for (dir, name) in [("agents/jyc/jyc", "jyc"), ("agents/jyc/dev-jyc", "dev-jyc")] {
+        let topic_dir = tmp.path().join(dir);
+        tokio::fs::create_dir_all(topic_dir.join(".jyc"))
+            .await
+            .unwrap();
+        tokio::fs::write(topic_dir.join(".jyc").join("topic-name"), name)
+            .await
+            .unwrap();
+    }
+
+    // Config with no channel named "jyc" — the restore takes the
+    // agent-TopicManager branch and scans workspace_dir directly.
+    let config_str = r#"
+[general]
+[channels.other]
+type = "email"
+[channels.other.inbound]
+host = "h"
+username = "u"
+password = "p"
+[channels.other.outbound]
+host = "h"
+username = "u"
+password = "p"
+[ai]
+mode = "agent"
+"#;
+
+    let tm = make_test_tm_with_config(&workspace, config_str);
+
+    tm.restore_custom_topic_paths().await;
+
+    let paths = tm.custom_topic_paths().await;
+    assert_eq!(
+        paths.get("jyc"),
+        Some(&workspace.join("jyc")),
+        "agent workspace topic 'jyc' should be restored"
+    );
+    assert_eq!(
+        paths.get("dev-jyc"),
+        Some(&workspace.join("dev-jyc")),
+        "agent workspace topic 'dev-jyc' should be restored"
+    );
+
+    // list_topics sees them too (agent TM's workspace_dir scan)
+    let topics = tm.list_topics().await;
+    let names: Vec<&str> = topics.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"jyc"));
+    assert!(names.contains(&"dev-jyc"));
+
+    tm.shutdown().await;
+}
+
+#[tokio::test]
 async fn test_restore_skips_missing_topic_name_file() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");

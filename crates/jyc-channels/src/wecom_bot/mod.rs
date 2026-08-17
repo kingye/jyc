@@ -34,7 +34,7 @@ pub mod types;
 pub use client::{ConnectionState, ServerMessage, WecomBotWsClient};
 pub use inbound::{WecomBotInboundAdapter, WecomBotMatcher};
 pub use outbound::{
-    WecomBotOutboundAdapter, build_media_message_body, send_stream_reply, upload_attachment,
-    validate_wecom_media_size, wecom_media_type,
+    WecomBotOutboundAdapter, build_media_message_body, send_stream_reply,
+    send_stream_reply_and_wait, upload_attachment, validate_wecom_media_size, wecom_media_type,
 };
 pub use types::*;

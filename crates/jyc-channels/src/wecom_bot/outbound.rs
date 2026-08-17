@@ -24,8 +24,8 @@ use jyc_utils::attachment_validator;
 
 use super::client::{WecomBotConnectionHandle, generate_req_id};
 use super::types::{
-    CMD_AIBOT_UPLOAD_MEDIA_CHUNK, CMD_AIBOT_UPLOAD_MEDIA_FINISH, CMD_AIBOT_UPLOAD_MEDIA_INIT,
-    UploadMediaChunkBody, UploadMediaFinishBody, UploadMediaInitBody,
+    CMD_AIBOT_RESPOND_MSG, CMD_AIBOT_UPLOAD_MEDIA_CHUNK, CMD_AIBOT_UPLOAD_MEDIA_FINISH,
+    CMD_AIBOT_UPLOAD_MEDIA_INIT, UploadMediaChunkBody, UploadMediaFinishBody, UploadMediaInitBody,
 };
 
 /// Tracks an active streaming message so the final reply can reuse the same
@@ -695,6 +695,47 @@ pub async fn send_stream_reply(
         .sender
         .send(json)
         .map_err(|e| anyhow::anyhow!("Failed to send WeCom Bot stream reply: {e}"))
+}
+
+/// Send a streaming reply chunk and wait for the server ack.
+///
+/// Returns `Ok(())` on `errcode == 0`; `Err` on any other ack (`errcode`
+/// is surfaced, including `846604` for an expired passive-reply window)
+/// or transport failure (timeout, channel closed). The pipe reply
+/// forwarder uses this for the `finish=true` final reply and falls back
+/// to proactive `aibot_send_msg` on error, so the user still receives
+/// the text when the streaming window has closed (common for long
+/// agent runs that exceed the WeCom passive-reply window).
+pub async fn send_stream_reply_and_wait(
+    handle: &WecomBotConnectionHandle,
+    req_id: &str,
+    stream_id: &str,
+    content: &str,
+    finish: bool,
+) -> Result<()> {
+    let body = serde_json::json!({
+        "msgtype": "stream",
+        "stream": {
+            "id": stream_id,
+            "content": content,
+            "finish": finish,
+        }
+    });
+    let ack = handle
+        .send_and_wait(
+            CMD_AIBOT_RESPOND_MSG,
+            req_id,
+            body,
+            std::time::Duration::from_secs(10),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("wecom_bot stream reply: {e}"))?;
+    let errcode = ack["errcode"].as_i64().unwrap_or(-1);
+    if errcode != 0 {
+        let errmsg = ack["errmsg"].as_str().unwrap_or("unknown");
+        anyhow::bail!("wecom_bot stream reply rejected: errcode={errcode}, errmsg={errmsg}");
+    }
+    Ok(())
 }
 
 /// Map a filename/extension to WeCom media type.

@@ -218,15 +218,15 @@ fn loopback_addr(bind: &str) -> String {
         .replace("[::]", "127.0.0.1")
 }
 
-/// Runtime placeholder resolved from message metadata (or core fields) when
-/// retargeting a piped message. The `msg.` namespace keeps it immune to the
-/// load-time `${ENV_VAR}` expansion (whose regex requires `\w+`, no dots).
+/// Runtime placeholder resolved from message metadata (or the
+/// `channel_uid` core field) when retargeting a piped message. The
+/// `msg.` namespace keeps it immune to the load-time `${ENV_VAR}`
+/// expansion (whose regex requires `\w+`, no dots).
 ///
-/// Resolution order per `${msg.<key>}`:
-/// 1. `metadata[key]` (any string field) — sanitized for filesystem use.
-/// 2. `channel_uid` if `key == "channel_uid"` — the channel's conversation
-///    identity (group chat id / single chat user id). This unifies group
-///    and single chat in one topic template.
+/// Resolution: `${msg.<key>}` looks up `metadata[key]` first; if the
+/// key is `channel_uid` and the metadata lookup misses, the message's
+/// `channel_uid` field is used instead. This unifies group chat id
+/// and single chat user id in one topic template.
 ///
 /// If any placeholder is present but the value is missing/empty, the
 /// caller drops the message with a warning (avoids misrouting to a
@@ -310,24 +310,19 @@ fn resolve_msg_placeholders(template: &str, msg: &jyc_types::InboundMessage) -> 
     Some(out)
 }
 
-/// Look up a single `${msg.<key>}` value: metadata first, then a small set
-/// of message core fields. Returns `None` when the key is missing/empty.
+/// Look up a single `${msg.<key>}` value: metadata first, then the
+/// `channel_uid` core field (unifies group chatid / single-chat userid
+/// in one template). Returns `None` when the key is missing/empty.
 fn lookup_msg_placeholder(key: &str, msg: &jyc_types::InboundMessage) -> Option<String> {
-    if let Some(v) = msg.metadata.get(key).and_then(|v| v.as_str()) {
-        if !v.is_empty() {
-            return Some(v.to_string());
-        }
+    if let Some(v) = msg.metadata.get(key).and_then(|v| v.as_str())
+        && !v.is_empty()
+    {
+        return Some(v.to_string());
     }
-    // Fallback to message core fields. The set is intentionally small so
-    // the placeholder namespace stays predictable; channels that need
-    // more can populate the corresponding metadata key at ingest.
-    match key {
-        "channel_uid" => Some(msg.channel_uid.clone()),
-        "sender_address" => Some(msg.sender_address.clone()),
-        "sender" => Some(msg.sender.clone()),
-        "external_id" => msg.external_id.clone(),
-        _ => None,
+    if key == "channel_uid" && !msg.channel_uid.is_empty() {
+        return Some(msg.channel_uid.clone());
     }
+    None
 }
 
 /// One attachment entry parsed from a websocket `reply` broadcast payload.
@@ -716,10 +711,12 @@ struct WecomReplyState {
 ///   arrives (the user-visible "thinking" indicator). The streaming
 ///   window must be opened before the agent runs because the agent
 ///   can take minutes and the WeCom passive reply window is short.
-/// - Outbound attachments are sent via `aibot_send_msg` (proactive)
-///   with the stored recipient, not `aibot_respond_msg` (passive),
-///   because the agent's reply is async and the streaming window may
-///   have closed by the time the forwarder relays attachments.
+/// - Text replies try `finish=true` first; when the streaming window
+///   has already closed (no keep-alive spinner, common for long
+///   agent runs) the server rejects the ack and the forwarder falls
+///   back to proactive `aibot_send_msg` so the user still receives
+///   the answer. Likewise, attachments always go via proactive
+///   `aibot_send_msg` for the same reason.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_wecom_bot_adapter(
     channel_config: &ChannelConfig,
@@ -739,7 +736,7 @@ pub(crate) fn spawn_wecom_bot_adapter(
         .ok_or_else(|| anyhow::anyhow!("channel '{channel_name}': missing wecom_bot config"))?
         .clone();
 
-    // wemco_bot is pipe-only: every enabled pattern must name a pipe
+    // wecom_bot is pipe-only: every enabled pattern must name a pipe
     // target (a websocket hub channel). Collect the distinct targets
     // for reply relaying; patterns without one are a configuration
     // error — warn at startup, drop matching messages at runtime.
@@ -837,6 +834,17 @@ pub(crate) fn spawn_wecom_bot_adapter(
                         };
 
                         // Look up the streaming reply state for this topic.
+                        //
+                        // Known limitation: state is keyed by topic, so
+                        // rapid successive messages in the same chat
+                        // before a reply overwrites the previous entry —
+                        // the older stream stays at "thinking…".
+                        // The hub's reply broadcast does not carry the
+                        // original req_id / stream_id, so per-message
+                        // correlation would require threading a
+                        // correlation id through the hub. Documented
+                        // here; consider narrowing the key when a
+                        // concrete case appears.
                         let state = topic_state.lock().await.remove(topic);
                         let Some(state) = state else {
                             tracing::debug!(
@@ -858,20 +866,39 @@ pub(crate) fn spawn_wecom_bot_adapter(
                         };
 
                         // 1. Stream the final reply text (finish=true).
-                        if let Err(e) = wecom_bot::send_stream_reply(
+                        //    If the streaming window has already closed
+                        //    (common for long agent runs — no keep-alive
+                        //    spinner) the server rejects with errcode
+                        //    846604. Fall back to proactive
+                        //    aibot_send_msg so the user still receives
+                        //    the answer.
+                        let streamed = wecom_bot::send_stream_reply_and_wait(
                             &handle,
                             &state.req_id,
                             &state.stream_id,
                             text,
                             true,
                         )
-                        .await
-                        {
-                            tracing::error!(
+                        .await;
+                        if let Err(e) = streamed {
+                            tracing::warn!(
                                 error = format!("{e:#}"),
                                 topic = %topic,
-                                "wecom_bot pipe: failed to stream reply"
+                                "wecom_bot pipe: stream reply rejected, falling back to proactive send"
                             );
+                            if let Err(e2) = send_wecom_proactive_text(
+                                &handle,
+                                &state.recipient,
+                                text,
+                            )
+                            .await
+                            {
+                                tracing::error!(
+                                    error = format!("{e2:#}"),
+                                    topic = %topic,
+                                    "wecom_bot pipe: proactive fallback also failed"
+                                );
+                            }
                         }
 
                         // 2. Relay attachments via proactive aibot_send_msg.
@@ -1092,6 +1119,56 @@ async fn relay_wecom_attachment(
         filename = %att.filename,
         recipient = %recipient,
         "wecom_bot pipe: attachment relayed"
+    );
+    Ok(())
+}
+
+/// Send a text reply via proactive `aibot_send_msg` to the recipient.
+///
+/// Fallback path when the streaming `finish=true` ack is rejected
+/// (typically errcode 846604 — the WeCom passive-reply window has
+/// closed, common for long agent runs). Same wire format as
+/// `WecomBotOutboundAdapter::send_message` (text vs markdown chosen
+/// by a simple heuristic).
+async fn send_wecom_proactive_text(
+    handle: &jyc_channels::wecom_bot::client::WecomBotConnectionHandle,
+    recipient: &str,
+    text: &str,
+) -> Result<()> {
+    let use_markdown = text.contains("**")
+        || text.contains('*')
+        || text.contains('`')
+        || text.contains('#')
+        || text.contains('[')
+        || text.contains("- ");
+    let body = if use_markdown {
+        serde_json::json!({
+            "msgtype": "markdown",
+            "chatid": recipient,
+            "markdown": {"content": text},
+        })
+    } else {
+        serde_json::json!({
+            "msgtype": "text",
+            "chatid": recipient,
+            "text": {"content": text},
+        })
+    };
+    let req_id = jyc_channels::wecom_bot::client::generate_req_id("aibot_send_msg");
+    let json = serde_json::json!({
+        "cmd": "aibot_send_msg",
+        "headers": {"req_id": req_id},
+        "body": body,
+    })
+    .to_string();
+    handle
+        .sender
+        .send(json)
+        .map_err(|e| anyhow::anyhow!("wecom_bot pipe: proactive text send failed: {e}"))?;
+    tracing::info!(
+        recipient = %recipient,
+        text_len = text.len(),
+        "wecom_bot pipe: proactive text reply sent"
     );
     Ok(())
 }
@@ -1957,7 +2034,7 @@ mod tests {
     /// (not just hardcoded `chat_name`). Used by wecom_bot pipe configs
     /// like `topic = "bot-${msg.chatid}"`.
     #[test]
-    fn pipe_retagent_resolves_arbitrary_metadata_key() {
+    fn pipe_retarget_resolves_arbitrary_metadata_key() {
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("chatid".to_string(), serde_json::json!("chat_abc"));
         let pipe = agent_pipe_target("jin", Some("bot-${msg.chatid}"));

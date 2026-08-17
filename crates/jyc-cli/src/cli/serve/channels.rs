@@ -697,6 +697,18 @@ struct WecomReplyState {
     recipient: String,
 }
 
+/// Cadence at which the keep-alive task pings `finish=false` to keep
+/// the WeCom passive-reply window open during long agent runs.
+const WECOM_KEEP_ALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Safety deadline for the keep-alive task. If no reply is delivered
+/// within this window (e.g. agent crashed or stuck), the task stops
+/// itself and removes the recorded state so the entry does not leak.
+const WECOM_KEEP_ALIVE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Braille spinner frames for the keep-alive "thinking…" indicator.
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 /// Spawn a pipe-only wecom_bot adapter: the inbound adapter plus one
 /// reply forwarder per distinct pipe target channel.
 ///
@@ -1018,15 +1030,92 @@ pub(crate) fn spawn_wecom_bot_adapter(
                         }
 
                         // 5. Record resolved topic → streaming state for
-                        //    the reply forwarder.
-                        topic_state.lock().await.insert(
-                            message.topic.clone(),
-                            WecomReplyState {
-                                req_id: req_id.unwrap_or_default(),
-                                stream_id,
-                                recipient,
-                            },
-                        );
+                        //    the reply forwarder (and the keep-alive).
+                        let resolved_topic = message.topic.clone();
+                        let resolved_state = WecomReplyState {
+                            req_id: req_id.unwrap_or_default(),
+                            stream_id,
+                            recipient,
+                        };
+                        topic_state
+                            .lock()
+                            .await
+                            .insert(resolved_topic.clone(), resolved_state.clone());
+
+                        // 5.5. Spawn keep-alive task to keep the streaming
+                        //      window open during long agent runs. Sends
+                        //      `finish=false` with a rotating spinner every
+                        //      WECOM_KEEP_ALIVE_INTERVAL. Self-terminates
+                        //      when the reply is delivered (state removed
+                        //      by the forwarder) or when the safety
+                        //      deadline expires. No-op when the original
+                        //      message lacked a req_id (no stream was
+                        //      opened, so nothing to keep alive).
+                        if !resolved_state.req_id.is_empty() {
+                            let keep_alive_handle_arc = handle_arc.clone();
+                            let keep_alive_topic_state = topic_state.clone();
+                            let keep_alive_topic = resolved_topic.clone();
+                            let keep_alive_req_id = resolved_state.req_id.clone();
+                            let keep_alive_stream_id = resolved_state.stream_id.clone();
+                            tokio::spawn(async move {
+                                let mut interval = tokio::time::interval(WECOM_KEEP_ALIVE_INTERVAL);
+                                let started = std::time::Instant::now();
+                                let mut frame_idx = 0usize;
+                                loop {
+                                    interval.tick().await;
+                                    // Reply delivered (forwarder removed the entry).
+                                    if !keep_alive_topic_state
+                                        .lock()
+                                        .await
+                                        .contains_key(&keep_alive_topic)
+                                    {
+                                        break;
+                                    }
+                                    // Safety deadline: give up after the
+                                    // deadline and clean up the entry so it
+                                    // does not leak (avoids the old
+                                    // progress-oner "never-ending 846604
+                                    // WARN storm" bug).
+                                    if started.elapsed() > WECOM_KEEP_ALIVE_DEADLINE {
+                                        tracing::warn!(
+                                            topic = %keep_alive_topic,
+                                            "wecom_bot keep-alive: deadline reached, cleaning up state"
+                                        );
+                                        keep_alive_topic_state
+                                            .lock()
+                                            .await
+                                            .remove(&keep_alive_topic);
+                                        break;
+                                    }
+                                    let frame = SPINNER_FRAMES[frame_idx % SPINNER_FRAMES.len()];
+                                    let elapsed = started.elapsed().as_secs();
+                                    let content = format!(
+                                        "{} 正在处理中... (已用 {}s)",
+                                        frame, elapsed
+                                    );
+                                    if let Some(handle) =
+                                        keep_alive_handle_arc.lock().await.clone()
+                                    {
+                                        if let Err(e) = wecom_bot::send_stream_reply(
+                                            &handle,
+                                            &keep_alive_req_id,
+                                            &keep_alive_stream_id,
+                                            &content,
+                                            false,
+                                        )
+                                        .await
+                                        {
+                                            tracing::debug!(
+                                                error = format!("{e:#}"),
+                                                topic = %keep_alive_topic,
+                                                "wecom_bot keep-alive: send failed (window may be closed)"
+                                            );
+                                        }
+                                    }
+                                    frame_idx += 1;
+                                }
+                            });
+                        }
 
                         // 6. Route through the target channel's own
                         //    MessageRouter (identical to a chat-pane
@@ -1127,33 +1216,15 @@ async fn relay_wecom_attachment(
 ///
 /// Fallback path when the streaming `finish=true` ack is rejected
 /// (typically errcode 846604 — the WeCom passive-reply window has
-/// closed, common for long agent runs). Same wire format as
-/// `WecomBotOutboundAdapter::send_message` (text vs markdown chosen
-/// by a simple heuristic).
+/// closed, common for long agent runs). The body wire format is built
+/// by the shared `build_proactive_text_body` helper so the response
+/// shape matches `WecomBotOutboundAdapter::send_message` exactly.
 async fn send_wecom_proactive_text(
     handle: &jyc_channels::wecom_bot::client::WecomBotConnectionHandle,
     recipient: &str,
     text: &str,
 ) -> Result<()> {
-    let use_markdown = text.contains("**")
-        || text.contains('*')
-        || text.contains('`')
-        || text.contains('#')
-        || text.contains('[')
-        || text.contains("- ");
-    let body = if use_markdown {
-        serde_json::json!({
-            "msgtype": "markdown",
-            "chatid": recipient,
-            "markdown": {"content": text},
-        })
-    } else {
-        serde_json::json!({
-            "msgtype": "text",
-            "chatid": recipient,
-            "text": {"content": text},
-        })
-    };
+    let body = jyc_channels::wecom_bot::build_proactive_text_body(recipient, text);
     let req_id = jyc_channels::wecom_bot::client::generate_req_id("aibot_send_msg");
     let json = serde_json::json!({
         "cmd": "aibot_send_msg",

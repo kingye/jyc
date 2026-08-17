@@ -6,6 +6,7 @@ use serde_json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use tokio::sync::broadcast;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
@@ -229,36 +230,19 @@ fn loopback_addr(bind: &str) -> String {
         .replace("[::]", "127.0.0.1")
 }
 
-/// Runtime placeholder resolved from message metadata when retargeting a
-/// piped message. The `msg.` namespace keeps it immune to the load-time
-/// `${ENV_VAR}` expansion (whose regex requires `\w+`, no dots).
-const PIPE_TOPIC_CHAT_NAME_PLACEHOLDER: &str = "${msg.chat_name}";
-
-/// Re-target a piped inbound message into the target channel/topic.
+/// Runtime placeholder resolved from message metadata (or core fields) when
+/// retargeting a piped message. The `msg.` namespace keeps it immune to the
+/// load-time `${ENV_VAR}` expansion (whose regex requires `\w+`, no dots).
 ///
-/// Two forms are accepted:
+/// Resolution order per `${msg.<key>}`:
+/// 1. `metadata[key]` (any string field) — sanitized for filesystem use.
+/// 2. `channel_uid` if `key == "channel_uid"` — the channel's conversation
+///    identity (group chat id / single chat user id). This unifies group
+///    and single chat in one topic template.
 ///
-/// - **New form**: `pipe.agent = "<name>"`. Retargets into the
-///   synthesized "agents" channel; the agent name becomes the topic
-///   identity (paired with `pipe.topic` if present).
-/// - **Legacy form**: `pipe.channel` + optional `pipe.pattern` +
-///   optional `pipe.topic`. `pipe.channel` is required.
-///
-/// Both forms may embed `${msg.chat_name}` in `pipe.topic`, resolved from
-/// `metadata["chat_name"]` (sanitized for the filesystem). The legacy
-/// form's `pipe.pattern` is recorded in message metadata as a hint for
-/// the target matcher; the new form leaves `PIPE_PATTERN_METADATA_KEY`
-/// unset since the agent name is already the routing identity.
-///
-/// Returns `None` when:
-/// - neither form has enough info (no `agent`, and no `channel`/`pattern`),
-/// - the placeholder is present but the metadata is missing/empty
-///   (e.g. P2P chats),
-/// - `pipe.agent` is set alongside `pipe.channel`/`pipe.pattern`
-///   (mutually exclusive).
-///
-/// On `None`, the caller drops the message with a warning rather than
-/// misrouting it.
+/// If any placeholder is present but the value is missing/empty, the
+/// caller drops the message with a warning (avoids misrouting to a
+/// literal `"${msg.<key>}"` topic).
 fn apply_pipe_retarget(
     mut msg: jyc_types::InboundMessage,
     pipe: &jyc_types::PipeTarget,
@@ -280,19 +264,7 @@ fn apply_pipe_retarget(
     // (if present) selects the sub-topic.
     if let Some(agent_name) = &pipe.agent {
         let template = pipe.topic.as_deref().unwrap_or(agent_name.as_str());
-        let topic = if template.contains(PIPE_TOPIC_CHAT_NAME_PLACEHOLDER) {
-            let chat_name = msg
-                .metadata
-                .get("chat_name")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())?;
-            template.replace(
-                PIPE_TOPIC_CHAT_NAME_PLACEHOLDER,
-                &jyc_utils::helpers::sanitize_for_filesystem(chat_name),
-            )
-        } else {
-            template.to_string()
-        };
+        let topic = resolve_msg_placeholders(template, &msg)?;
         msg.channel = "agents".to_string();
         msg.topic = topic;
         return Some(msg);
@@ -303,19 +275,7 @@ fn apply_pipe_retarget(
     // not per-message — keeps the chat log clean when the adapter is
     // chatty.)
     let template = pipe.topic.as_deref().or(pipe.pattern.as_deref())?;
-    let topic = if template.contains(PIPE_TOPIC_CHAT_NAME_PLACEHOLDER) {
-        let chat_name = msg
-            .metadata
-            .get("chat_name")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())?;
-        template.replace(
-            PIPE_TOPIC_CHAT_NAME_PLACEHOLDER,
-            &jyc_utils::helpers::sanitize_for_filesystem(chat_name),
-        )
-    } else {
-        template.to_string()
-    };
+    let topic = resolve_msg_placeholders(template, &msg)?;
     if let Some(pattern) = &pipe.pattern {
         msg.metadata.insert(
             jyc_types::PIPE_PATTERN_METADATA_KEY.to_string(),
@@ -328,6 +288,58 @@ fn apply_pipe_retarget(
         .expect("legacy pipe form requires channel");
     msg.topic = topic;
     Some(msg)
+}
+
+/// Resolve every `${msg.<key>}` in `template` against the message's metadata
+/// (or `channel_uid` for the special key). Returns `None` if any placeholder
+/// is present but the resolved value is missing/empty (caller drops with
+/// warning). When the template contains no `${msg.*}` placeholders, returns
+/// the template unchanged.
+fn resolve_msg_placeholders(template: &str, msg: &jyc_types::InboundMessage) -> Option<String> {
+    static PLACEHOLDER_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re =
+        PLACEHOLDER_RE.get_or_init(|| regex::Regex::new(r"\$\{msg\.([A-Za-z0-9_]+)\}").unwrap());
+
+    if !template.contains("${msg.") {
+        return Some(template.to_string());
+    }
+
+    let mut out = template.to_string();
+    for caps in re.captures_iter(template) {
+        let full = caps.get(0).unwrap().as_str();
+        let key = caps.get(1).unwrap().as_str();
+        let raw = lookup_msg_placeholder(key, msg)?;
+        let sanitized = jyc_utils::helpers::sanitize_for_filesystem(&raw);
+        if sanitized.is_empty() {
+            tracing::warn!(
+                key = %key,
+                "pipe topic placeholder ${{msg.<key>}} resolved to empty after sanitization, dropping"
+            );
+            return None;
+        }
+        out = out.replace(full, &sanitized);
+    }
+    Some(out)
+}
+
+/// Look up a single `${msg.<key>}` value: metadata first, then a small set
+/// of message core fields. Returns `None` when the key is missing/empty.
+fn lookup_msg_placeholder(key: &str, msg: &jyc_types::InboundMessage) -> Option<String> {
+    if let Some(v) = msg.metadata.get(key).and_then(|v| v.as_str()) {
+        if !v.is_empty() {
+            return Some(v.to_string());
+        }
+    }
+    // Fallback to message core fields. The set is intentionally small so
+    // the placeholder namespace stays predictable; channels that need
+    // more can populate the corresponding metadata key at ingest.
+    match key {
+        "channel_uid" => Some(msg.channel_uid.clone()),
+        "sender_address" => Some(msg.sender_address.clone()),
+        "sender" => Some(msg.sender.clone()),
+        "external_id" => msg.external_id.clone(),
+        _ => None,
+    }
 }
 
 /// One attachment entry parsed from a websocket `reply` broadcast payload.
@@ -1616,6 +1628,53 @@ mod tests {
     fn pipe_retarget_agent_unresolved_placeholder_returns_none() {
         let pipe = agent_pipe_target("jyc", Some("${msg.chat_name}"));
         assert!(apply_pipe_retarget(pipe_msg(Default::default()), &pipe).is_none());
+    }
+
+    /// Generalized placeholder: `${msg.<key>}` resolves any metadata key
+    /// (not just hardcoded `chat_name`). Used by wecom_bot pipe configs
+    /// like `topic = "bot-${msg.chatid}"`.
+    #[test]
+    fn pipe_retagent_resolves_arbitrary_metadata_key() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("chatid".to_string(), serde_json::json!("chat_abc"));
+        let pipe = agent_pipe_target("jin", Some("bot-${msg.chatid}"));
+        let out = apply_pipe_retarget(pipe_msg(metadata), &pipe).unwrap();
+        assert_eq!(out.channel, "agents");
+        assert_eq!(out.topic, "bot-chat_abc");
+    }
+
+    /// `${msg.channel_uid}` unifies group chat (channel_uid = chatid) and
+    /// single chat (channel_uid = userid) in one topic template — matches
+    /// the wecom_bot `derive_topic_name` behavior.
+    #[test]
+    fn pipe_retarget_resolves_channel_uid_placeholder() {
+        // channel_uid is set on the message itself (not metadata).
+        let mut msg = pipe_msg(Default::default());
+        msg.channel_uid = "user_xyz".to_string();
+        let pipe = agent_pipe_target("jin", Some("bot-${msg.channel_uid}"));
+        let out = apply_pipe_retarget(msg, &pipe).unwrap();
+        assert_eq!(out.topic, "bot-user_xyz");
+    }
+
+    /// Unresolved `${msg.<key>}` with no metadata and no fallback field
+    /// returns None (caller drops with warning).
+    #[test]
+    fn pipe_retarget_unresolved_unknown_key_returns_none() {
+        let pipe = agent_pipe_target("jin", Some("bot-${msg.nonexistent}"));
+        assert!(apply_pipe_retarget(pipe_msg(Default::default()), &pipe).is_none());
+    }
+
+    /// Multiple placeholders in one template all resolve, in left-to-right
+    /// order. Sanitization happens per substitution.
+    #[test]
+    fn pipe_retarget_resolves_multiple_placeholders() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("chatid".to_string(), serde_json::json!("chat 1"));
+        let pipe = agent_pipe_target("jin", Some("agent/${msg.chatid}/${msg.channel_uid}"));
+        let mut msg = pipe_msg(metadata);
+        msg.channel_uid = "u1".to_string();
+        let out = apply_pipe_retarget(msg, &pipe).unwrap();
+        assert_eq!(out.topic, "agent/chat_1/u1");
     }
 
     // ---- collect_pipe_target_channels ----

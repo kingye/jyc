@@ -2384,6 +2384,15 @@ impl ChatState {
                 if let Some(entry) = payload.get("entry").and_then(|v| {
                     serde_json::from_value::<jyc_types::ChatMessageEntry>(v.clone()).ok()
                 }) {
+                    // The user's own pane message is already echoed locally
+                    // (sender "user") by send_message_inner; the server
+                    // re-emits it via the TopicProxyHandler with sender
+                    // "dashboard". Skip the re-emission or it shows twice
+                    // (migration PR-5b-2: agent chat panes route through the
+                    // proxy, whose events now reach the pane).
+                    if entry.sender == "dashboard" {
+                        return;
+                    }
                     // AI reply delivered — clear local waiting flag so the
                     // progress indicator disappears immediately instead of
                     // waiting for the next poll cycle.

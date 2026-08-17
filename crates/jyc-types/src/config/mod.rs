@@ -257,7 +257,7 @@ pub struct FooterConfig {
 }
 
 /// Configuration for a single channel (e.g., one email account).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ChannelConfig {
     /// Channel type: "email", "feishu", etc.
     #[serde(rename = "type")]

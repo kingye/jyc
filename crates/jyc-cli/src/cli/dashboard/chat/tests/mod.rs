@@ -1115,6 +1115,34 @@ fn handle_ws_message_routes_chat_message_to_live_buffer() {
 }
 
 #[test]
+fn handle_ws_message_drops_dashboard_sender_reemission() {
+    // The user's own pane message is echoed locally (sender "user"); the
+    // server re-emits it via TopicProxyHandler with sender "dashboard".
+    // The re-emission must be dropped or the message shows twice.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+
+    let payload = serde_json::json!({
+        "type": "chat_message",
+        "channel": "jyc",
+        "topic": "jyc",
+        "id": 5,
+        "entry": {
+            "sender": "dashboard",
+            "text": "hello",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "id": 0,
+        }
+    });
+    app.chat.handle_ws_message(&payload.to_string());
+    assert_eq!(
+        app.chat.live_chat_for("jyc", "jyc").count(),
+        0,
+        "dashboard-sender re-emission must be dropped (already echoed locally)"
+    );
+}
+
+#[test]
 fn handle_ws_message_routes_thinking_to_live_buffer() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);

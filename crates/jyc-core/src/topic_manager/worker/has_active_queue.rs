@@ -928,6 +928,63 @@ async fn test_resolve_outbound_uses_origin_channel() {
 }
 
 #[tokio::test]
+async fn test_restore_skips_agent_referenced_patterns() {
+    let tmp = tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    // Topic dir that would be restored IF the pattern were channel-owned.
+    let custom_path = tmp.path().join("agent-owned-topic");
+    tokio::fs::create_dir_all(custom_path.join(".jyc"))
+        .await
+        .unwrap();
+    tokio::fs::write(
+        custom_path.join(".jyc").join("topic-name"),
+        "my-agent-topic",
+    )
+    .await
+    .unwrap();
+
+    // Pattern references an agent AND has a topic_path — the topic belongs
+    // to the agent's TopicManager, so this (channel) TM must NOT restore it
+    // (migration PR-5b-2: no idle ghost alongside the agent's active entry).
+    let config_str = format!(
+        r#"
+[general]
+[channels.test-channel]
+type = "email"
+[channels.test-channel.inbound]
+host = "h"
+username = "u"
+password = "p"
+[channels.test-channel.outbound]
+host = "h"
+username = "u"
+password = "p"
+[[channels.test-channel.patterns]]
+name = "p1"
+agent = "a"
+topic_path = "{}"
+[agents.a]
+[ai]
+mode = "agent"
+"#,
+        custom_path.display()
+    );
+
+    let tm = make_test_tm_with_config(&workspace, &config_str);
+    tm.restore_custom_topic_paths().await;
+
+    let paths = tm.custom_topic_paths().await;
+    assert!(
+        paths.is_empty(),
+        "agent-referenced pattern topics must not be restored by the channel TM, got: {paths:?}"
+    );
+
+    tm.shutdown().await;
+}
+
+#[tokio::test]
 async fn test_restore_agent_workspace_topics_from_disk() {
     let tmp = tempdir().unwrap();
     // Agent TM: workspace = <data>/agents/<agent>

@@ -15,6 +15,12 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Reply routing per origin channel + multi-channel agents** (migration
+  PR-5b-1, see `docs/agents-migration.md`): TopicManagers resolve the reply
+  adapter from the message's origin channel (falling back to the manager's
+  own when unknown), so one agent can now receive from multiple channels —
+  the sharing guard in `validate_config` is lifted. Replaces the ws pipe
+  relay for direct channel→agent routing.
 - **Agent-keyed TopicManagers** (migration PR-5a, see
   `docs/agents-migration.md`): one TopicManager per referenced agent owns
   `agents/<agent>/` topics; routers and the `send_to_topic` tool dispatch

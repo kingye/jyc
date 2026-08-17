@@ -848,6 +848,86 @@ mode = "agent"
 }
 
 #[tokio::test]
+async fn test_resolve_outbound_uses_origin_channel() {
+    let tmp = tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let tm = make_test_tm(&workspace);
+
+    // A distinguishable adapter for the "origin" channel.
+    struct FeishuOutbound;
+    #[async_trait::async_trait]
+    impl jyc_types::OutboundAdapter for FeishuOutbound {
+        fn channel_type(&self) -> &str {
+            "feishu"
+        }
+        async fn connect(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn disconnect(&self) -> Result<()> {
+            Ok(())
+        }
+        fn clean_body(&self, raw_body: &str) -> String {
+            raw_body.to_string()
+        }
+        async fn send_reply(
+            &self,
+            _original: &InboundMessage,
+            _reply_text: &str,
+            _topic_path: &Path,
+            _message_dir: &str,
+            _attachments: Option<&[jyc_types::OutboundAttachment]>,
+        ) -> Result<jyc_types::SendResult> {
+            Ok(jyc_types::SendResult {
+                message_id: "feishu".to_string(),
+            })
+        }
+        async fn send_message(
+            &self,
+            _recipient: &str,
+            _subject: &str,
+            _body: &str,
+        ) -> Result<jyc_types::SendResult> {
+            Ok(jyc_types::SendResult {
+                message_id: "feishu".to_string(),
+            })
+        }
+    }
+
+    let origin: Arc<dyn jyc_types::OutboundAdapter> = Arc::new(FeishuOutbound);
+    let mut map = HashMap::new();
+    map.insert("feishu".to_string(), origin.clone());
+    tm.set_outbounds(Arc::new(tokio::sync::Mutex::new(map)));
+
+    let msg = |channel: &str| InboundMessage {
+        id: "1".to_string(),
+        channel: channel.to_string(),
+        channel_uid: "1".to_string(),
+        sender: "s".to_string(),
+        sender_address: "s@x".to_string(),
+        recipients: vec![],
+        topic: "t".to_string(),
+        content: jyc_types::MessageContent::default(),
+        timestamp: chrono::Utc::now(),
+        references: None,
+        reply_to_id: None,
+        external_id: None,
+        attachments: vec![],
+        metadata: HashMap::new(),
+        matched_pattern: None,
+    };
+
+    // Origin channel in the map → its adapter wins
+    let resolved = tm.resolve_outbound(&msg("feishu")).await;
+    assert_eq!(resolved.channel_type(), "feishu");
+    // Unknown channel → fallback to the TM's own outbound ("test")
+    let resolved = tm.resolve_outbound(&msg("nope")).await;
+    assert_eq!(resolved.channel_type(), "test");
+
+    tm.shutdown().await;
+}
+
+#[tokio::test]
 async fn test_restore_agent_workspace_topics_from_disk() {
     let tmp = tempdir().unwrap();
     // Agent TM: workspace = <data>/agents/<agent>

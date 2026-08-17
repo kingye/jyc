@@ -475,6 +475,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         );
 
         // Build and inject outbound adapters map
+        let all_outbounds_for_tms = all_outbounds.clone();
         let outbounds_map: HashMap<String, Arc<dyn OutboundAdapter>> =
             all_outbounds.into_iter().collect();
         let outbounds_map = Arc::new(tokio::sync::Mutex::new(outbounds_map));
@@ -484,6 +485,20 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         tracing::info!(
             "Wired outbound adapters into {} agent service(s)",
             all_agent_services.len()
+        );
+
+        // Migration PR-5b: attach the same map to every TopicManager so
+        // replies are routed back via the message's origin channel (agents
+        // may receive from multiple channels).
+        let tm_outbounds: jyc_core::topic_manager::OutboundsMap = Arc::new(
+            tokio::sync::Mutex::new(all_outbounds_for_tms.into_iter().collect()),
+        );
+        for tm in tms.iter() {
+            tm.set_outbounds(tm_outbounds.clone());
+        }
+        tracing::info!(
+            "Wired per-origin reply routing into {} TopicManager(s)",
+            tms.len()
         );
 
         // Start JobScheduler (if scheduler is enabled in config)

@@ -39,7 +39,7 @@ pub(crate) async fn process_message(
     item: &mut QueueItem,
     topic_name: &str,
     storage: &MessageStorage,
-    outbound: Arc<dyn OutboundAdapter>,
+    _outbound: Arc<dyn OutboundAdapter>,
     agent: Arc<dyn AgentService>,
     pending_rx: &mut mpsc::Receiver<QueueItem>,
     template_dirs: &crate::template_dirs::TemplateDirs,
@@ -49,6 +49,12 @@ pub(crate) async fn process_message(
     topic_cancel: CancellationToken,
 ) -> Result<()> {
     // ── 1. STORE ──────────────────────────────────────────────────────
+    // Migration PR-5b: replies go back via the message's *origin* channel
+    // adapter (an agent may receive from multiple channels). Falls back to
+    // this manager's own outbound when the map is absent or the channel is
+    // unknown — identical behavior for legacy single-channel managers.
+    let outbound = topic_manager.resolve_outbound(&item.message).await;
+
     let is_matched = !item.pattern_match.pattern_name.is_empty();
     let store_result: StoreResult = match &item.topic_path_override {
         Some(path) => {

@@ -15,32 +15,6 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
-- **Reply routing per origin channel + multi-channel agents** (migration
-  PR-5b-1, see `docs/agents-migration.md`): TopicManagers resolve the reply
-  adapter from the message's origin channel (falling back to the manager's
-  own when unknown), so one agent can now receive from multiple channels —
-  the sharing guard in `validate_config` is lifted. Replaces the ws pipe
-  relay for direct channel→agent routing.
-- **Agent-keyed TopicManagers** (migration PR-5a, see
-  `docs/agents-migration.md`): one TopicManager per referenced agent owns
-  `agents/<agent>/` topics; routers and the `send_to_topic` tool dispatch
-  agent-routed messages to the agent's manager. Agents appear in the shared
-  inspect/scheduler views but are exempt from the channel reload diff.
-  Multi-channel agent sharing still requires the reply-path work (5b).
-- **New data directory layout** (migration PR-4, see `docs/agents-migration.md`):
-  topics of agent-routed patterns live at `<data>/agents/<agent>/<topic>/`;
-  channel state (github/gitee poll cursors) moves to
-  `<data>/channels/<channel>/`. Legacy paths are lazily renamed on first
-  touch; explicit `topic_path` overrides unchanged. `agents`/`channels` are
-  now reserved channel names; sharing one agent across multiple channels is
-  rejected until the agent-keyed runtime lands (PR-5).
-- **`[agents.<name>]` behavior table + pattern `agent` routing** (migration
-  PR-3, see `docs/agents-migration.md`): an agent carries behavior config
-  (template, skills, model, MCPs, tools, …) and owns topics — no connection,
-  no rules. Channel patterns reference an agent via `agent = "<name>"`; the
-  agent's fields are overlaid under the pattern's own fields at load time
-  (pattern wins). Patterns referencing an undefined agent fail validation.
-  `pipe = { channel = ... }` still works but logs a deprecation warning.
 - **Channels / agents / AI migration design doc** (`docs/agents-migration.md`):
   locked decisions, target three-layer model, and phased PR plan.
 - **Config template regression test**: `config.example.toml` must parse and

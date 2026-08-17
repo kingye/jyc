@@ -113,14 +113,7 @@ pub struct GiteeInboundAdapter {
 
 impl GiteeInboundAdapter {
     pub fn new(config: &GiteeConfig, channel_name: String, workdir: &Path) -> Self {
-        // Channel state lives under `channels/<channel>/` (migration PR-4);
-        // lazily migrate the legacy `<channel>/.gitee` dir.
-        let state_dir =
-            jyc_core::topic_path::resolve_channel_state_dir(workdir, &channel_name).join(".gitee");
-        jyc_core::topic_path::migrate_dir_if_needed(
-            &workdir.join(&channel_name).join(".gitee"),
-            &state_dir,
-        );
+        let state_dir = workdir.join(&channel_name).join(".gitee");
         Self {
             config: config.clone(),
             channel_name,

@@ -19,14 +19,7 @@ impl GithubInboundAdapter {
         workdir: &Path,
         app_config: Option<Arc<ArcSwap<jyc_types::AppConfig>>>,
     ) -> Self {
-        // Channel state lives under `channels/<channel>/` (migration PR-4);
-        // lazily migrate the legacy `<channel>/.github` dir.
-        let state_dir =
-            jyc_core::topic_path::resolve_channel_state_dir(workdir, &channel_name).join(".github");
-        jyc_core::topic_path::migrate_dir_if_needed(
-            &workdir.join(&channel_name).join(".github"),
-            &state_dir,
-        );
+        let state_dir = workdir.join(&channel_name).join(".github");
         Self {
             config: config.clone(),
             channel_name,

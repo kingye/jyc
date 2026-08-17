@@ -30,9 +30,6 @@ pub struct ChannelHandle {
 ///   no restart needed for pattern-only changes.
 pub struct ChannelOrchestrator {
     channels: Mutex<HashMap<String, ChannelHandle>>,
-    /// Agent-keyed TopicManagers (migration PR-5): not channels, so they are
-    /// exempt from the reload diff — registered for shared state only.
-    agents: Mutex<Vec<ChannelHandle>>,
     config: Arc<ArcSwap<AppConfig>>,
     topic_managers: Arc<ArcSwap<Vec<Arc<TopicManager>>>>,
     channel_infos: Arc<ArcSwap<Vec<ChannelInfo>>>,
@@ -43,7 +40,6 @@ impl ChannelOrchestrator {
     pub fn new(config: Arc<ArcSwap<AppConfig>>, _workdir: &Path) -> Self {
         Self {
             channels: Mutex::new(HashMap::new()),
-            agents: Mutex::new(Vec::new()),
             config,
             topic_managers: Arc::new(ArcSwap::from_pointee(Vec::new())),
             channel_infos: Arc::new(ArcSwap::from_pointee(Vec::new())),
@@ -71,21 +67,6 @@ impl ChannelOrchestrator {
         let mut channels = self.channels.lock().await;
         channels.insert(name, handle);
         drop(channels);
-        self.update_shared_state().await;
-    }
-
-    /// Register an agent-keyed TopicManager (migration PR-5).
-    ///
-    /// Agents are not channels: they appear in the shared TopicManager /
-    /// ChannelInfo views (inspect, scheduler, cross-topic injection) but are
-    /// exempt from the reload diff. Their topics dirs are NOT added to
-    /// `workspace_dirs` — the scheduler finds them via the per-TopicManager
-    /// scan (custom topic paths), which avoids deriving a wrong channel name
-    /// from the `agents/<agent>` parent.
-    pub async fn register_agent(&self, handle: ChannelHandle) {
-        let mut agents = self.agents.lock().await;
-        agents.push(handle);
-        drop(agents);
         self.update_shared_state().await;
     }
 
@@ -131,21 +112,12 @@ impl ChannelOrchestrator {
     /// Update the shared ArcSwap views for InspectContext.
     async fn update_shared_state(&self) {
         let channels = self.channels.lock().await;
-        let agents = self.agents.lock().await;
-        let tms: Vec<Arc<TopicManager>> = channels
-            .values()
-            .map(|h| h.topic_manager.clone())
-            .chain(agents.iter().map(|h| h.topic_manager.clone()))
-            .collect();
-        let infos: Vec<ChannelInfo> = channels
-            .values()
-            .map(|h| h.channel_info.clone())
-            .chain(agents.iter().map(|h| h.channel_info.clone()))
-            .collect();
+        let tms: Vec<Arc<TopicManager>> =
+            channels.values().map(|h| h.topic_manager.clone()).collect();
+        let infos: Vec<ChannelInfo> = channels.values().map(|h| h.channel_info.clone()).collect();
         let dirs: Vec<std::path::PathBuf> =
             channels.values().map(|h| h.workspace_dir.clone()).collect();
         drop(channels);
-        drop(agents);
 
         self.topic_managers.store(Arc::new(tms));
         self.channel_infos.store(Arc::new(infos));

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -17,8 +16,6 @@ use jyc_types::{ChannelMatcher, ChannelPattern, InboundMessage};
 /// so changes to config.toml are effective immediately after reload.
 pub struct MessageRouter {
     topic_manager: Arc<TopicManager>,
-    /// Agent-keyed TopicManagers (migration PR-5): agent name → manager.
-    agent_topic_managers: HashMap<String, Arc<TopicManager>>,
     storage: Arc<MessageStorage>,
     config: Arc<ArcSwap<jyc_types::AppConfig>>,
     channel_name: String,
@@ -33,34 +30,10 @@ impl MessageRouter {
     ) -> Self {
         Self {
             topic_manager,
-            agent_topic_managers: HashMap::new(),
             storage,
             config,
             channel_name,
         }
-    }
-
-    /// Attach per-agent TopicManagers (agent-keyed runtime, migration PR-5).
-    ///
-    /// Messages whose matched pattern references an agent are processed by
-    /// that agent's TopicManager (which owns `agents/<agent>/` topics),
-    /// instead of this channel's manager. Maps agent name → manager.
-    pub fn with_agent_topic_managers(
-        mut self,
-        agent_topic_managers: HashMap<String, Arc<TopicManager>>,
-    ) -> Self {
-        self.agent_topic_managers = agent_topic_managers;
-        self
-    }
-
-    /// The TopicManager that owns a given pattern's topics: the agent's
-    /// manager when the pattern references an agent, else this channel's.
-    pub fn topic_manager_for(&self, pattern: Option<&ChannelPattern>) -> Arc<TopicManager> {
-        pattern
-            .and_then(|p| p.agent.as_deref())
-            .and_then(|a| self.agent_topic_managers.get(a))
-            .cloned()
-            .unwrap_or_else(|| self.topic_manager.clone())
     }
 
     /// Read the current patterns for this channel from the live config.
@@ -193,24 +166,26 @@ impl MessageRouter {
                 .insert("repo_group_key".to_string(), serde_json::Value::String(key));
         }
 
-        // 4. Resolve the effective topic dir (metadata override > pattern
-        // topic_path > agent dir, with lazy migration) — shared logic with
-        // the send_to_topic tool.
-        let owner_tm = self.topic_manager_for(matched_pattern);
-        let topic_path_override: Option<PathBuf> = crate::topic_path::resolve_topic_path_override(
-            matched_pattern,
-            &topic_name,
-            owner_tm.data_root(),
-            &self.channel_name,
-            message
-                .metadata
-                .get("topic_path_override")
-                .and_then(|v| v.as_str()),
-        );
-        // 5. Enqueue into the owning manager (the agent's TopicManager for
-        // agent-routed patterns — channel-agnostic).
+        // 4. Resolve topic_path override: prefer explicit metadata from
+        // WebSocket create_topic, then fall back to the matched pattern's
+        // configured topic_path.
+        let topic_path_override: Option<PathBuf> = message
+            .metadata
+            .get("topic_path_override")
+            .and_then(|v| v.as_str())
+            // Dashboard client sends absolute paths; raw PathBuf::from is
+            // correct here (resolves relative paths against the CLI cwd).
+            .map(PathBuf::from)
+            .or_else(|| {
+                matched_pattern
+                    .and_then(|p| p.topic_path.as_ref())
+                    .map(|tp| {
+                        crate::topic_path::resolve_topic_path(tp, self.topic_manager.data_root())
+                    })
+            });
+        // 5. Enqueue (channel-agnostic)
         let pm = pattern_match.expect("pattern_match should be Some");
-        owner_tm
+        self.topic_manager
             .enqueue(
                 message,
                 topic_name,

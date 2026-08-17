@@ -299,13 +299,9 @@ fn apply_pipe_retarget(
     }
 
     // Legacy form.
-    if pipe.channel.is_some() || pipe.pattern.is_some() {
-        tracing::warn!(
-            channel = ?pipe.channel,
-            pattern = ?pipe.pattern,
-            "pipe.channel/pipe.pattern is deprecated; use pipe = {{ agent = \"...\", topic = \"...\" }}"
-        );
-    }
+    // (Deprecation warning fires once at startup in spawn_feishu_adapter,
+    // not per-message — keeps the chat log clean when the adapter is
+    // chatty.)
     let template = pipe.topic.as_deref().or(pipe.pattern.as_deref())?;
     let topic = if template.contains(PIPE_TOPIC_CHAT_NAME_PLACEHOLDER) {
         let chat_name = msg
@@ -448,6 +444,16 @@ pub(crate) fn spawn_feishu_adapter(
             Some(pipe) => {
                 if let Some(ch) = &pipe.channel {
                     pipe_channels.insert(ch.clone());
+                }
+                // One-shot deprecation at startup: don't repeat per
+                // message. Per-pattern (not per-message) so a feishu
+                // adapter with 5 legacy pipes still emits 5 warns.
+                if pipe.channel.is_some() || pipe.pattern.is_some() {
+                    tracing::warn!(
+                        channel = %channel_name,
+                        pattern = %p.name,
+                        "pipe.channel/pipe.pattern is deprecated; use pipe = {{ agent = \"...\", topic = \"...\" }}"
+                    );
                 }
             }
             None => tracing::warn!(

@@ -32,6 +32,11 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **`[agent]` config table renamed to `[ai]`** at all levels (top-level,
+  `[channels.<x>]`, topic `.jyc/config.toml`). The legacy key `agent` is
+  still accepted with a deprecation warning. Code: `AgentConfig` →
+  `AiConfig`. See `docs/agents-migration.md` for the full migration plan.
+
 - **wecom_bot channel is pipe-only** — `wecom_bot` (WeCom Smart Robot)
   joins `feishu` as a pipe-only adapter (see `docs/core-hub-adapters.md`).
   Every enabled pattern must declare a `pipe` target; the adapter owns

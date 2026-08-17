@@ -95,44 +95,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     ));
 
     let config_snapshot = config.load();
-
-    // Migration PR-5b-2 (D9): if no websocket channel is declared, synthesize
-    // a default console channel named "local_dev" whose patterns are the
-    // declared agents — the interactive console for the dashboard panel. This
-    // lets users drop `[channels.local_dev]` entirely; the synthesized entry
-    // lives only in the in-memory config (never written to the file).
-    let has_ws = config_snapshot
-        .channels
-        .values()
-        .any(|c| c.channel_type == "websocket");
-    if !has_ws && !config_snapshot.agents.is_empty() {
-        let patterns: Vec<jyc_types::ChannelPattern> = config_snapshot
-            .agents
-            .keys()
-            .map(|a| jyc_types::ChannelPattern {
-                name: a.clone(),
-                agent: Some(a.clone()),
-                enabled: true,
-                ..Default::default()
-            })
-            .collect();
-        let mut updated = (**config_snapshot).clone();
-        updated.channels.insert(
-            "local_dev".to_string(),
-            jyc_types::ChannelConfig {
-                channel_type: "websocket".to_string(),
-                patterns: Some(patterns),
-                ..Default::default()
-            },
-        );
-        config.store(updated.into());
-        tracing::info!(
-            agents = %config_snapshot.agents.len(),
-            "No websocket channel declared — synthesized default console channel 'local_dev'"
-        );
-    }
-    let config_snapshot = config.load();
-
     let agent_config = Arc::new(config_snapshot.ai.clone());
     let config_for_spawn = Arc::clone(&config);
 

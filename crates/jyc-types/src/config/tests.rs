@@ -257,9 +257,10 @@ mode = "agent"
         let patterns = config.channels["feishu_bot"].patterns.as_ref().unwrap();
         // Set explicitly -> parsed as the (channel, topic) mapping.
         let pipe = patterns[0].pipe.as_ref().unwrap();
-        assert_eq!(pipe.channel, "local_dev");
+        assert_eq!(pipe.channel.as_deref(), Some("local_dev"));
         assert_eq!(pipe.topic.as_deref(), Some("jyc"));
         assert_eq!(pipe.pattern, None);
+        assert_eq!(pipe.agent, None);
         // Omitted -> default None (routed normally).
         assert!(patterns[1].pipe.is_none());
     }
@@ -711,6 +712,133 @@ mode = "static"
     fn test_load_topic_config_missing_file() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(load_topic_config(tmp.path()).is_none());
+    }
+
+    /// `[agents.<name>]` table parses; behavior fields mirror the legacy
+    /// pattern surface (minus `rules`).
+    #[test]
+    fn test_load_agents_table_parses() {
+        let toml = r#"
+[agents.jyc]
+template = "jyc"
+topic_path = "~/projects/jyc"
+skills = ["coding-principles"]
+disabled_skills = []
+access = { read = ["~/.cargo/registry/src"], write = ["/tmp/jyc-builds"] }
+attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
+reset_compression = { mode = "llm", keep_pairs = 3 }
+auto_reset_threshold = 0.9
+model = "anthropic/claude-opus-4-6"
+small_model = "deepseek/deepseek-v4-flash"
+mcps = []
+disabled_tools = []
+disabled_mcp_servers = []
+live_injection = true
+inject_inbound_images = false
+mode = "build"
+role = "Developer"
+
+[ai]
+mode = "agent"
+"#;
+        let cfg = load_config_from_str(toml).unwrap();
+        assert_eq!(cfg.agents.len(), 1, "one agent parsed");
+        let agent = cfg.agents.get("jyc").expect("jyc agent");
+        assert_eq!(agent.template.as_deref(), Some("jyc"));
+        assert_eq!(agent.topic_path.as_deref(), Some("~/projects/jyc"));
+        assert_eq!(
+            agent.skills.as_deref(),
+            Some(&["coding-principles".to_string()][..])
+        );
+        let access = agent.access.as_ref().expect("access present");
+        assert_eq!(access.read, vec!["~/.cargo/registry/src".to_string()]);
+        assert_eq!(access.write, vec!["/tmp/jyc-builds".to_string()]);
+        let atts = agent.attachments.as_ref().expect("attachments present");
+        assert!(atts.enabled);
+        assert_eq!(
+            atts.allowed_extensions,
+            vec![".pdf".to_string(), ".md".to_string()]
+        );
+        let rc = agent.reset_compression.as_ref().expect("reset_compression");
+        assert!(matches!(rc.mode, crate::channel::CompressionMode::Llm));
+        assert_eq!(rc.keep_pairs, 3);
+        assert_eq!(agent.auto_reset_threshold, Some(0.9));
+        assert_eq!(agent.model.as_deref(), Some("anthropic/claude-opus-4-6"));
+        assert_eq!(
+            agent.small_model.as_deref(),
+            Some("deepseek/deepseek-v4-flash")
+        );
+        assert!(agent.mcps.as_ref().unwrap().is_empty());
+        assert!(agent.live_injection);
+        assert!(!agent.inject_inbound_images);
+        assert_eq!(agent.mode.as_deref(), Some("build"));
+        assert_eq!(agent.role.as_deref(), Some("Developer"));
+    }
+
+    /// Agents config defaults: empty when absent (backward-compatible).
+    #[test]
+    fn test_load_agents_defaults_to_empty() {
+        let cfg = load_config_from_str(
+            r#"
+[ai]
+mode = "agent"
+"#,
+        )
+        .unwrap();
+        assert!(cfg.agents.is_empty());
+    }
+
+    /// `pipe = { agent = "...", topic = "..." }` parses; old fields stay None.
+    #[test]
+    fn test_pipe_target_agent_form_parses() {
+        let cfg = load_config_from_str(
+            r#"
+[channels.feishu_bot]
+type = "feishu"
+
+[channels.feishu_bot.feishu]
+app_id = "a"
+app_secret = "b"
+
+[[channels.feishu_bot.patterns]]
+name = "piped_agent"
+pipe = { agent = "jyc", topic = "${msg.chat_name}" }
+
+[ai]
+mode = "agent"
+"#,
+        )
+        .unwrap();
+        let pipe = cfg.channels["feishu_bot"].patterns.as_ref().unwrap()[0]
+            .pipe
+            .as_ref()
+            .unwrap();
+        assert_eq!(pipe.agent.as_deref(), Some("jyc"));
+        assert_eq!(pipe.topic.as_deref(), Some("${msg.chat_name}"));
+        assert_eq!(pipe.channel, None);
+        assert_eq!(pipe.pattern, None);
+    }
+
+    /// Agent table with no `topic_path` is allowed (default resolves at
+    /// runtime in the CLI layer).
+    #[test]
+    fn test_load_agents_minimal() {
+        let cfg = load_config_from_str(
+            r#"
+[agents.jyc]
+template = "jyc"
+
+[ai]
+mode = "agent"
+"#,
+        )
+        .unwrap();
+        let agent = cfg.agents.get("jyc").expect("jyc agent");
+        assert_eq!(agent.template.as_deref(), Some("jyc"));
+        assert_eq!(agent.topic_path, None);
+        assert!(agent.access.is_none());
+        assert!(agent.skills.is_none());
+        assert!(agent.live_injection, "live_injection defaults to true");
     }
 
     #[test]

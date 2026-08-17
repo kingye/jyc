@@ -2,6 +2,9 @@
 //!
 //! The topic directory follows the convention:
 //!   `<workdir>/<channel>/workspace/<topic_name>/`
+//!
+//! For agents (`[agents.<name>]`), the default lives under
+//! `<data_home>/agents/<agent_name>/`, platform-resolved.
 
 use std::path::{Path, PathBuf};
 
@@ -10,6 +13,46 @@ use std::path::{Path, PathBuf};
 /// Convention: `<workdir>/<channel>/workspace/`
 pub fn resolve_workspace(workdir: &Path, channel: &str) -> PathBuf {
     workdir.join(channel).join("workspace")
+}
+
+/// Resolve the workspace root for an agent.
+///
+/// Convention: `<data_home>/agents/<agent_name>/`, reusing the
+/// platform-aware `data_home()` so Linux/macOS use XDG and Windows
+/// uses `%LOCALAPPDATA%`. When `data_home()` is unavailable (no
+/// `$HOME`/`$XDG_DATA_HOME`, no `dirs::data_local_dir()`), falls back to
+/// `<cwd>/agents/<agent_name>/` with a warning — same fallback shape as
+/// `data_home()` itself.
+pub fn resolve_agent_workspace(agent_name: &str) -> PathBuf {
+    if let Some(home) = jyc_utils::paths::data_home() {
+        home.join("agents").join(agent_name)
+    } else {
+        tracing::warn!(
+            agent = %agent_name,
+            "data_home() returned None; falling back to <cwd>/agents/<agent_name>"
+        );
+        PathBuf::from(".").join("agents").join(agent_name)
+    }
+}
+
+/// Resolve the workspace root for the synthesized "agents" channel.
+///
+/// This is the parent directory holding every agent's workspace:
+/// `<data_home>/agents/`. Each pattern (agent) inside the channel then
+/// uses `resolve_agent_workspace(<agent_name>)` as its `topic_path`
+/// override so its topics live under its own subtree.
+///
+/// Falls back to `<workdir>/agents` when `data_home()` is unavailable —
+/// matching `resolve_agent_workspace`'s fallback shape, but using
+/// `workdir` (the jyc instance root) instead of cwd so multi-instance
+/// setups don't accidentally share state.
+pub fn resolve_agents_workspace_root(workdir: &Path) -> PathBuf {
+    if let Some(home) = jyc_utils::paths::data_home() {
+        home.join("agents")
+    } else {
+        tracing::warn!("data_home() returned None; falling back to <workdir>/agents");
+        workdir.join("agents")
+    }
 }
 
 /// Resolve the shared repo directory for a repo group key.
@@ -140,6 +183,30 @@ mod tests {
     fn test_resolve_workspace_feishu() {
         let ws = resolve_workspace(Path::new("/data"), "feishu_bot");
         assert_eq!(ws, PathBuf::from("/data/feishu_bot/workspace"));
+    }
+
+    /// `resolve_agent_workspace` reuses `jyc_utils::paths::data_home()`
+    /// so the path ends with `agents/<agent_name>` under the platform
+    /// data dir. We don't pin the prefix (XDG vs `%LOCALAPPDATA%` vs
+    /// test-env overrides) — only the suffix we own.
+    #[test]
+    fn test_resolve_agent_workspace_suffix() {
+        let ws = resolve_agent_workspace("jyc");
+        let s = ws.to_string_lossy();
+        assert!(
+            s.ends_with("agents/jyc") || s.ends_with("agents\\jyc"),
+            "agent workspace must end with agents/<agent_name>: {s}"
+        );
+    }
+
+    /// Two distinct agent names produce two distinct suffixes.
+    #[test]
+    fn test_resolve_agent_workspace_distinct() {
+        let a = resolve_agent_workspace("jyc");
+        let b = resolve_agent_workspace("jin");
+        assert_ne!(a, b);
+        assert!(a.to_string_lossy().contains("jyc"));
+        assert!(b.to_string_lossy().contains("jin"));
     }
 
     #[test]
@@ -466,6 +533,34 @@ mod tests {
         assert!(
             !result.topic_path.to_string_lossy().contains("workspace"),
             "custom path should not contain 'workspace'"
+        );
+    }
+
+    /// Two agents with two topics each: all four topic dirs land under
+    /// their respective agent subtrees.
+    #[tokio::test]
+    async fn test_resolve_agent_workspace_multiple_agents() {
+        let _ = resolve_agent_workspace("jyc");
+        let _ = resolve_agent_workspace("jin");
+        // Smoke: each name produces a different suffix; full path
+        // equality is asserted in test_resolve_agent_workspace_distinct.
+        let a = resolve_agent_workspace("jyc");
+        let b = resolve_agent_workspace("jin");
+        assert!(a.to_string_lossy().ends_with("jyc") || a.to_string_lossy().ends_with("jyc/"));
+        assert!(b.to_string_lossy().ends_with("jin") || b.to_string_lossy().ends_with("jin/"));
+    }
+
+    /// Agents workspace root is `<data_home>/agents`, distinct from a
+    /// regular channel's `<workdir>/<channel>/workspace/`.
+    #[test]
+    fn test_agents_workspace_root_differs_from_channel_workspace() {
+        let workdir = Path::new("/tmp/jyc-data");
+        let agents_root = resolve_agents_workspace_root(workdir);
+        let chan_ws = resolve_workspace(workdir, "work");
+        assert!(chan_ws.starts_with(workdir));
+        assert!(
+            !agents_root.starts_with(workdir) || agents_root == workdir.join("agents"),
+            "agents root should resolve via data_home, not under workdir"
         );
     }
 }

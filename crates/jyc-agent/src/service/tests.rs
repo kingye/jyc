@@ -36,6 +36,7 @@ fn app_config_with_model(model: Option<&str>) -> Arc<ArcSwap<jyc_types::AppConfi
         mcps: Vec::new(),
         scheduler: jyc_types::SchedulerConfig::default(),
         commands: Vec::new(),
+        agents: std::collections::HashMap::new(),
     };
     Arc::new(ArcSwap::from_pointee(app))
 }
@@ -295,6 +296,7 @@ fn reload_picks_up_new_model_context_window_without_restart() {
         mcps: Vec::new(),
         scheduler: jyc_types::SchedulerConfig::default(),
         commands: Vec::new(),
+        agents: std::collections::HashMap::new(),
     };
     let config = Arc::new(ArcSwap::from_pointee(app));
     let svc = JycAgentService::new(
@@ -408,6 +410,7 @@ fn derive_agent_config_applies_channel_overrides() {
         mcps: Vec::new(),
         scheduler: jyc_types::SchedulerConfig::default(),
         commands: Vec::new(),
+        agents: std::collections::HashMap::new(),
     };
     let cfg = derive_agent_config(&app, "test");
     assert_eq!(cfg.model.as_deref(), Some("override/main"));

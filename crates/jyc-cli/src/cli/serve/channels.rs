@@ -236,23 +236,72 @@ const PIPE_TOPIC_CHAT_NAME_PLACEHOLDER: &str = "${msg.chat_name}";
 
 /// Re-target a piped inbound message into the target channel/topic.
 ///
-/// Attachments and metadata ride along untouched — only the routing
-/// identity (channel + topic) is rewritten.
+/// Two forms are accepted:
 ///
-/// The effective topic template is `pipe.topic ?? pipe.pattern`; it may
-/// contain `${msg.chat_name}`, resolved from the message's `chat_name`
-/// metadata (sanitized via `sanitize_for_filesystem`, same as feishu's own
-/// topic derivation). An explicit `pipe.pattern` is recorded in message
-/// metadata as a hint for the target channel's matcher.
+/// - **New form**: `pipe.agent = "<name>"`. Retargets into the
+///   synthesized "agents" channel; the agent name becomes the topic
+///   identity (paired with `pipe.topic` if present).
+/// - **Legacy form**: `pipe.channel` + optional `pipe.pattern` +
+///   optional `pipe.topic`. `pipe.channel` is required.
 ///
-/// Returns `None` when neither `topic` nor `pattern` is set (config error)
-/// or when the placeholder is present but the metadata is missing/empty
-/// (e.g. P2P chats) — the caller drops the message with a warning rather
-/// than misrouting it.
+/// Both forms may embed `${msg.chat_name}` in `pipe.topic`, resolved from
+/// `metadata["chat_name"]` (sanitized for the filesystem). The legacy
+/// form's `pipe.pattern` is recorded in message metadata as a hint for
+/// the target matcher; the new form leaves `PIPE_PATTERN_METADATA_KEY`
+/// unset since the agent name is already the routing identity.
+///
+/// Returns `None` when:
+/// - neither form has enough info (no `agent`, and no `channel`/`pattern`),
+/// - the placeholder is present but the metadata is missing/empty
+///   (e.g. P2P chats),
+/// - `pipe.agent` is set alongside `pipe.channel`/`pipe.pattern`
+///   (mutually exclusive).
+///
+/// On `None`, the caller drops the message with a warning rather than
+/// misrouting it.
 fn apply_pipe_retarget(
     mut msg: jyc_types::InboundMessage,
     pipe: &jyc_types::PipeTarget,
 ) -> Option<jyc_types::InboundMessage> {
+    // Mutually exclusive: reject configs that mix the new agent form
+    // with the legacy channel/pattern form.
+    if pipe.agent.is_some() && (pipe.channel.is_some() || pipe.pattern.is_some()) {
+        tracing::warn!(
+            agent = ?pipe.agent,
+            channel = ?pipe.channel,
+            pattern = ?pipe.pattern,
+            "pipe.agent is mutually exclusive with pipe.channel/pipe.pattern; dropping"
+        );
+        return None;
+    }
+
+    // New form: pipe.agent routes through the synthesized "agents"
+    // channel. The agent name is the routing identity; pipe.topic
+    // (if present) selects the sub-topic.
+    if let Some(agent_name) = &pipe.agent {
+        let template = pipe.topic.as_deref().unwrap_or(agent_name.as_str());
+        let topic = if template.contains(PIPE_TOPIC_CHAT_NAME_PLACEHOLDER) {
+            let chat_name = msg
+                .metadata
+                .get("chat_name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())?;
+            template.replace(
+                PIPE_TOPIC_CHAT_NAME_PLACEHOLDER,
+                &jyc_utils::helpers::sanitize_for_filesystem(chat_name),
+            )
+        } else {
+            template.to_string()
+        };
+        msg.channel = "agents".to_string();
+        msg.topic = topic;
+        return Some(msg);
+    }
+
+    // Legacy form.
+    // (Deprecation warning fires once at startup in spawn_feishu_adapter,
+    // not per-message — keeps the chat log clean when the adapter is
+    // chatty.)
     let template = pipe.topic.as_deref().or(pipe.pattern.as_deref())?;
     let topic = if template.contains(PIPE_TOPIC_CHAT_NAME_PLACEHOLDER) {
         let chat_name = msg
@@ -273,7 +322,10 @@ fn apply_pipe_retarget(
             serde_json::Value::String(pattern.clone()),
         );
     }
-    msg.channel = pipe.channel.clone();
+    msg.channel = pipe
+        .channel
+        .clone()
+        .expect("legacy pipe form requires channel");
     msg.topic = topic;
     Some(msg)
 }
@@ -390,7 +442,19 @@ pub(crate) fn spawn_feishu_adapter(
     {
         match &p.pipe {
             Some(pipe) => {
-                pipe_channels.insert(pipe.channel.clone());
+                if let Some(ch) = &pipe.channel {
+                    pipe_channels.insert(ch.clone());
+                }
+                // One-shot deprecation at startup: don't repeat per
+                // message. Per-pattern (not per-message) so a feishu
+                // adapter with 5 legacy pipes still emits 5 warns.
+                if pipe.channel.is_some() || pipe.pattern.is_some() {
+                    tracing::warn!(
+                        channel = %channel_name,
+                        pattern = %p.name,
+                        "pipe.channel/pipe.pattern is deprecated; use pipe = {{ agent = \"...\", topic = \"...\" }}"
+                    );
+                }
             }
             None => tracing::warn!(
                 channel = %channel_name,
@@ -540,6 +604,7 @@ pub(crate) fn spawn_feishu_adapter(
                             tracing::warn!(
                                 topic = ?pipe.topic,
                                 pattern = ?pipe.pattern,
+                                agent = ?pipe.agent,
                                 message_id = %drop_debug.0,
                                 chat_id = ?drop_debug.1,
                                 "feishu pipe: unresolvable target (no topic/pattern configured, or ${{msg.chat_name}} without chat_name metadata), dropping"
@@ -558,14 +623,21 @@ pub(crate) fn spawn_feishu_adapter(
                         // 5. Route through the target's own MessageRouter —
                         //    the exact same path as a chat-pane message, so
                         //    topic_path/template/skills apply identically.
+                        //    New form: pipe.agent routes into the synthesized
+                        //    "agents" channel; legacy form: pipe.channel.
+                        let target_channel = pipe
+                            .channel
+                            .clone()
+                            .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
+                            .expect("validated upstream: agent or channel required");
                         let Some(target_router) =
-                            routers.lock().unwrap().get(&pipe.channel).cloned()
+                            routers.lock().unwrap().get(&target_channel).cloned()
                         else {
-                            tracing::warn!(channel = %pipe.channel, "feishu pipe: target channel router not found, dropping");
+                            tracing::warn!(channel = %target_channel, "feishu pipe: target channel router not found, dropping");
                             return;
                         };
                         target_router
-                            .route(&WebsocketMatcher::new(pipe.channel.clone()), message)
+                            .route(&WebsocketMatcher::new(target_channel), message)
                             .await;
                     });
                     Ok(())
@@ -1341,8 +1413,18 @@ mod tests {
 
     fn pipe_target(pattern: Option<&str>, topic: Option<&str>) -> jyc_types::PipeTarget {
         jyc_types::PipeTarget {
-            channel: "local_dev".to_string(),
+            agent: None,
+            channel: Some("local_dev".to_string()),
             pattern: pattern.map(str::to_string),
+            topic: topic.map(str::to_string),
+        }
+    }
+
+    fn agent_pipe_target(agent: &str, topic: Option<&str>) -> jyc_types::PipeTarget {
+        jyc_types::PipeTarget {
+            agent: Some(agent.to_string()),
+            channel: None,
+            pattern: None,
             topic: topic.map(str::to_string),
         }
     }
@@ -1443,6 +1525,74 @@ mod tests {
     #[test]
     fn pipe_retarget_no_target_returns_none() {
         let pipe = pipe_target(None, None);
+        assert!(apply_pipe_retarget(pipe_msg(Default::default()), &pipe).is_none());
+    }
+
+    /// New form: `pipe.agent` retargets into the synthesized "agents"
+    /// channel with the agent name as the topic identity (when no
+    /// `pipe.topic` is set).
+    #[test]
+    fn pipe_retarget_agent_only_uses_agent_name_as_topic() {
+        let pipe = agent_pipe_target("jyc", None);
+        let out = apply_pipe_retarget(pipe_msg(Default::default()), &pipe).unwrap();
+        assert_eq!(out.channel, "agents");
+        assert_eq!(out.topic, "jyc");
+        // agent form does NOT carry the legacy pattern hint
+        assert!(
+            !out.metadata
+                .contains_key(jyc_types::PIPE_PATTERN_METADATA_KEY)
+        );
+    }
+
+    /// New form with `${msg.chat_name}` placeholder in `pipe.topic`.
+    #[test]
+    fn pipe_retarget_agent_with_chat_name_placeholder() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("chat_name".to_string(), serde_json::json!("dev-jyc"));
+        let pipe = agent_pipe_target("jyc", Some("${msg.chat_name}"));
+        let out = apply_pipe_retarget(pipe_msg(metadata), &pipe).unwrap();
+        assert_eq!(out.channel, "agents");
+        assert_eq!(out.topic, "dev-jyc");
+    }
+
+    /// New form without `pipe.topic`: falls back to the agent name.
+    #[test]
+    fn pipe_retarget_agent_explicit_topic_wins() {
+        let pipe = agent_pipe_target("jyc", Some("general"));
+        let out = apply_pipe_retarget(pipe_msg(Default::default()), &pipe).unwrap();
+        assert_eq!(out.channel, "agents");
+        assert_eq!(out.topic, "general");
+    }
+
+    /// `pipe.agent` mixed with `pipe.channel` is rejected (mutual exclusion).
+    #[test]
+    fn pipe_retarget_agent_channel_mix_returns_none() {
+        let pipe = jyc_types::PipeTarget {
+            agent: Some("jyc".to_string()),
+            channel: Some("local_dev".to_string()),
+            pattern: None,
+            topic: None,
+        };
+        assert!(apply_pipe_retarget(pipe_msg(Default::default()), &pipe).is_none());
+    }
+
+    /// `pipe.agent` mixed with `pipe.pattern` is rejected too.
+    #[test]
+    fn pipe_retarget_agent_pattern_mix_returns_none() {
+        let pipe = jyc_types::PipeTarget {
+            agent: Some("jyc".to_string()),
+            channel: None,
+            pattern: Some("jyc".to_string()),
+            topic: None,
+        };
+        assert!(apply_pipe_retarget(pipe_msg(Default::default()), &pipe).is_none());
+    }
+
+    /// `${msg.chat_name}` placeholder with no `chat_name` metadata:
+    /// agent form returns None (drops with warning at the call site).
+    #[test]
+    fn pipe_retarget_agent_unresolved_placeholder_returns_none() {
+        let pipe = agent_pipe_target("jyc", Some("${msg.chat_name}"));
         assert!(apply_pipe_retarget(pipe_msg(Default::default()), &pipe).is_none());
     }
 }

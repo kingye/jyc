@@ -94,6 +94,33 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     let agent_config = Arc::new(config_snapshot.ai.clone());
     let config_for_spawn = Arc::clone(&config);
 
+    // Synthesize the implicit `channels.agents` channel from
+    // `[agents.<name>]` so the existing websocket channel construction
+    // path can pick it up unchanged. No-op when there are no agents.
+    crate::cli::serve::agents_synth::install_agents_channel(&config);
+
+    // Emit a one-shot deprecation warning for legacy
+    // `[channels.<name>] type = "websocket"` configs (those without a
+    // matching `[agents.<name>]`).
+    let snap_for_warning = config.load();
+    let legacy_ws: Vec<&str> = snap_for_warning
+        .channels
+        .iter()
+        .filter(|(name, c)| {
+            c.channel_type == "websocket"
+                && !snap_for_warning.agents.contains_key(*name)
+                && *name != "agents"
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    if !legacy_ws.is_empty() {
+        tracing::warn!(
+            channels = ?legacy_ws,
+            "[channels.<name>] type=\"websocket\" is deprecated; \
+             rename to [agents.<name>] (legacy form still works in this release)"
+        );
+    }
+
     // Initialize shared WeCom webhook server (if any wecom or wecomkf channel is configured)
     let has_wecom = config_snapshot
         .channels
@@ -217,8 +244,15 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             continue;
         }
 
-        // Workspace directory: always <workdir>/<channel>/workspace/
-        let workspace_dir = jyc_core::topic_path::resolve_workspace(workdir, channel_name);
+        // Workspace directory:
+        //   - regular channels: <workdir>/<channel>/workspace/
+        //   - synthesized "agents" channel: <data_home>/agents/
+        //     (each agent pattern has its own topic_path under there)
+        let workspace_dir = if channel_name == "agents" {
+            jyc_core::topic_path::resolve_agents_workspace_root(workdir)
+        } else {
+            jyc_core::topic_path::resolve_workspace(workdir, channel_name)
+        };
         let storage = Arc::new(MessageStorage::new(&workspace_dir));
 
         let patterns = channel_config.patterns.clone().unwrap_or_default();
@@ -546,6 +580,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     Ok(())
 }
 
+mod agents_synth;
 mod channels;
 mod shutdown;
 

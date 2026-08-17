@@ -3,6 +3,7 @@ use regex::Regex;
 
 use crate::channel::ChannelPattern;
 use crate::config::AppConfig;
+use crate::config::agent::AgentConfig;
 
 /// A single validation error with context.
 #[derive(Debug)]
@@ -83,6 +84,17 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                 path: format!("{prefix}.type"),
                 message: "channel type is required".into(),
             });
+        }
+
+        // [channels.<name>] type="websocket" with no matching
+        // [agents.<name>] is deprecated — but `channels.agents` is the
+        // synthesized target of `[agents.*]`, so it is exempted.
+        if channel.channel_type == "websocket"
+            && name != "agents"
+            && !config.agents.contains_key(name)
+        {
+            // Allowed (deprecated). The CLI emits a runtime warn; we
+            // don't fail validation so existing configs keep loading.
         }
 
         // Validate email channel specifics
@@ -464,7 +476,68 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
         }
     }
 
+    // Agents: per-agent skill / tool / mcps sanity, pipe exclusivity,
+    // reserved-name check, and the synthesized "agents" collision.
+    validate_agents(config, &mut errors);
+
+    // The synthesized "agents" channel is unconditionally inserted by
+    // install_agents_channel at startup. If the user also wrote a
+    // [channels.agents] block (legacy or otherwise), it would be
+    // silently overwritten — surface this as a config error instead.
+    if config.agents.contains_key("agents") {
+        errors.push(ValidationError {
+            path: "agents.agents".into(),
+            message: "agent name \"agents\" is reserved (it's the synthesized channel name)".into(),
+        });
+    }
+    if !config.agents.is_empty()
+        && config.channels.contains_key("agents")
+        && config.channels["agents"].channel_type == "websocket"
+    {
+        errors.push(ValidationError {
+            path: "channels.agents".into(),
+            message: "channels.agents is reserved (synthesized from [agents.<name>]); \
+                     rename your agent or remove the [channels.agents] block"
+                .into(),
+        });
+    }
+
     errors
+}
+
+fn validate_agent(
+    prefix: &str,
+    agent_name: &str,
+    agent: &AgentConfig,
+    errors: &mut Vec<ValidationError>,
+) {
+    // [channels.<name>] type="websocket" + [agents.<name>] — name
+    // collision: the synthesized channel would overwrite the legacy
+    // one. Reject to surface the conflict instead of silently
+    // dropping the user's legacy config.
+    if agent_name == "agents" {
+        errors.push(ValidationError {
+            path: format!("{prefix}.{agent_name}"),
+            message: "agent name \"agents\" is reserved (it's the synthesized channel name)".into(),
+        });
+    }
+
+    // Use AgentConfig::fill_into_pattern as the single source of
+    // truth so any new behavior field added to AgentConfig is
+    // automatically validated here.
+    let mut pattern = ChannelPattern::default();
+    // For validation, the default topic_path doesn't need to point
+    // at a real directory — the per-field checks below ignore it.
+    // Passing an empty PathBuf keeps the synthetic pattern minimal.
+    agent.fill_into_pattern(&mut pattern, agent_name, std::path::PathBuf::new());
+    validate_pattern(prefix, &pattern, errors);
+}
+
+fn validate_agents(config: &AppConfig, errors: &mut Vec<ValidationError>) {
+    for (name, agent) in &config.agents {
+        let prefix = format!("agents.{name}");
+        validate_agent(&prefix, name, agent, errors);
+    }
 }
 
 fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<ValidationError>) {
@@ -472,6 +545,31 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
         errors.push(ValidationError {
             path: format!("{prefix}.name"),
             message: "pattern name is required".into(),
+        });
+    }
+
+    // Pipe target: agent XOR (channel OR pattern). Mixing them is a
+    // configuration error caught at load time.
+    if let Some(pipe) = &pattern.pipe
+        && pipe.agent.is_some()
+        && (pipe.channel.is_some() || pipe.pattern.is_some())
+    {
+        errors.push(ValidationError {
+            path: format!("{prefix}.pipe"),
+            message: "pipe.agent is mutually exclusive with pipe.channel / pipe.pattern".into(),
+        });
+    }
+    // Legacy form requires pipe.channel (channel used to be required).
+    if let Some(pipe) = &pattern.pipe
+        && pipe.agent.is_none()
+        && pipe.channel.is_none()
+        && (pipe.pattern.is_some() || pipe.topic.is_some())
+    {
+        errors.push(ValidationError {
+            path: format!("{prefix}.pipe"),
+            message:
+                "pipe.channel is required when pipe.pattern or pipe.topic is set without pipe.agent"
+                    .into(),
         });
     }
 

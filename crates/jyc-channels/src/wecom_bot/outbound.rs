@@ -652,6 +652,51 @@ const VOICE_MAX_SIZE: usize = 2 * 1024 * 1024;
 const VIDEO_MAX_SIZE: usize = 10 * 1024 * 1024;
 const FILE_MAX_SIZE: usize = 20 * 1024 * 1024;
 
+// ─── Public helpers exposed for the pipe adapter ───────────────────
+//
+// The pipe-only `spawn_wecom_bot_adapter` (jyc-cli) reuses these
+// directly instead of going through `WecomBotOutboundAdapter` (which
+// carries the full reply-lifecycle surface: footer, reply context,
+// session tokens, chat-log storage). Keeping them as free functions
+// leaves one canonical wire-format definition instead of duplicating
+// the JSON shape in two places.
+
+/// Send a streaming reply chunk (`aibot_respond_msg` + `msgtype: stream`).
+///
+/// `finish=false` opens a streaming window for the user-visible
+/// "thinking" indicator; `finish=true` completes the stream with the
+/// final reply content. Both share the same `stream_id` so the client's
+/// message is updated in-place rather than posted twice.
+///
+/// This is the same wire format that `WecomBotOutboundAdapter::send_reply`
+/// uses; it is exposed here so the pipe reply forwarder does not have
+/// to construct the JSON inline.
+pub async fn send_stream_reply(
+    handle: &WecomBotConnectionHandle,
+    req_id: &str,
+    stream_id: &str,
+    content: &str,
+    finish: bool,
+) -> Result<()> {
+    let json = serde_json::json!({
+        "cmd": "aibot_respond_msg",
+        "headers": {"req_id": req_id},
+        "body": {
+            "msgtype": "stream",
+            "stream": {
+                "id": stream_id,
+                "content": content,
+                "finish": finish,
+            }
+        }
+    })
+    .to_string();
+    handle
+        .sender
+        .send(json)
+        .map_err(|e| anyhow::anyhow!("Failed to send WeCom Bot stream reply: {e}"))
+}
+
 /// Map a filename/extension to WeCom media type.
 ///
 /// WeCom supports:
@@ -659,7 +704,7 @@ const FILE_MAX_SIZE: usize = 20 * 1024 * 1024;
 /// - voice: amr (max 2MB)
 /// - video: mp4 (max 10MB)
 /// - file: everything else (max 20MB)
-fn wecom_media_type(_content_type: &str, filename: &str) -> &'static str {
+pub fn wecom_media_type(_content_type: &str, filename: &str) -> &'static str {
     let ext = std::path::Path::new(filename)
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
@@ -674,7 +719,7 @@ fn wecom_media_type(_content_type: &str, filename: &str) -> &'static str {
 }
 
 /// Validate that a payload does not exceed WeCom media type limits.
-fn validate_wecom_media_size(bytes: &[u8], media_type: &str) -> Result<()> {
+pub fn validate_wecom_media_size(bytes: &[u8], media_type: &str) -> Result<()> {
     let max = match media_type {
         "image" => IMAGE_MAX_SIZE,
         "voice" => VOICE_MAX_SIZE,
@@ -693,7 +738,9 @@ fn validate_wecom_media_size(bytes: &[u8], media_type: &str) -> Result<()> {
 }
 
 /// Upload a file through the WeCom Bot WebSocket and return the `media_id`.
-async fn upload_attachment(
+///
+/// Used by the pipe reply forwarder to relay outbound attachments.
+pub async fn upload_attachment(
     handle: &WecomBotConnectionHandle,
     path: &Path,
     filename: &str,
@@ -816,7 +863,7 @@ async fn upload_attachment(
 }
 
 /// Build an `aibot_respond_msg` body for a media attachment.
-fn build_media_message_body(media_type: &str, media_id: &str) -> serde_json::Value {
+pub fn build_media_message_body(media_type: &str, media_id: &str) -> serde_json::Value {
     match media_type {
         "image" => serde_json::json!({
             "msgtype": "image",

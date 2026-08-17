@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use toml_edit::DocumentMut;
 
 use super::handler::CommandContext;
 use crate::topic_manager::TopicManager;
@@ -11,7 +10,6 @@ pub struct PinContext {
     pub config_path: PathBuf,
     pub topic_name: String,
     pub adhoc_path: PathBuf,
-    pub doc: DocumentMut,
 }
 
 /// Build a `PinContext` from the command context, validating that this is a
@@ -43,16 +41,10 @@ pub async fn build_pin_context(
             .unwrap_or_else(|| context.topic_path.clone())
     };
 
-    let content = tokio::fs::read_to_string(&config_path)
-        .await
-        .with_context(|| format!("failed to read config file: {}", config_path.display()))?;
-    let doc: DocumentMut = content.parse().context("failed to parse config.toml")?;
-
     Ok(PinContext {
         config_path,
         topic_name,
         adhoc_path,
-        doc,
     })
 }
 
@@ -208,13 +200,6 @@ fn normalize_path_line(path: &str) -> String {
         .unwrap_or(p)
         .to_string_lossy()
         .to_string()
-}
-
-/// Write the TOML document back to the config file.
-pub async fn write_config(config_path: &std::path::Path, doc: &DocumentMut) -> Result<()> {
-    tokio::fs::write(config_path, doc.to_string())
-        .await
-        .with_context(|| format!("failed to write config file: {}", config_path.display()))
 }
 
 #[cfg(test)]

@@ -90,14 +90,18 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         workdir,
     ));
 
+    // Synthesize the implicit `channels.agents` channel from
+    // `[agents.<name>]` BEFORE the snapshot below. The channel loop
+    // iterates over `config_snapshot.channels`, so the snapshot must
+    // be read after the synthesis mutates the ArcSwap — otherwise the
+    // synthesized entry is silently skipped and the orchestrator never
+    // sees it, breaking `jyc open` / dashboard discoverability.
+    // (Regression caught end-to-end: see PR #582 for the post-mortem.)
+    crate::cli::serve::agents_synth::install_agents_channel(&config);
+
     let config_snapshot = config.load();
     let agent_config = Arc::new(config_snapshot.ai.clone());
     let config_for_spawn = Arc::clone(&config);
-
-    // Synthesize the implicit `channels.agents` channel from
-    // `[agents.<name>]` so the existing websocket channel construction
-    // path can pick it up unchanged. No-op when there are no agents.
-    crate::cli::serve::agents_synth::install_agents_channel(&config);
 
     // Emit a one-shot deprecation warning for legacy
     // `[channels.<name>] type = "websocket"` configs (those without a

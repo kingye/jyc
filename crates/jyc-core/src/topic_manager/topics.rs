@@ -159,7 +159,7 @@ impl TopicManager {
     /// Shared by the legacy single-topic-per-pattern restore and the new
     /// multi-topic-per-agent scan; extracted so both branches share the
     /// same locking + tracing.
-    async fn register_custom_path(self: &Self, topic_name: &str, resolved: PathBuf) {
+    async fn register_custom_path(&self, topic_name: &str, resolved: PathBuf) {
         let mut paths = self.topic_paths.lock().await;
         paths.entry(topic_name.to_string()).or_insert_with(|| {
             tracing::info!(
@@ -180,7 +180,7 @@ impl TopicManager {
     /// restore path: the synthesized pattern's `topic_path` points at the
     /// agent root, and each sub-topic lives at
     /// `<agent_root>/<topic>/.jyc/topic-name`.
-    async fn scan_subdirs_for_topics(self: &Self, agent_root: &std::path::Path) {
+    async fn scan_subdirs_for_topics(&self, agent_root: &std::path::Path) {
         let Ok(mut entries) = tokio::fs::read_dir(agent_root).await else {
             return;
         };

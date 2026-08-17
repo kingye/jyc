@@ -78,16 +78,6 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
     for (name, channel) in &config.channels {
         let prefix = format!("channels.{name}");
 
-        // `agents`/`channels` are reserved directory names under the data
-        // root (docs/agents-migration.md, PR-4); a channel with such a name
-        // would collide with them on disk.
-        if name == "agents" || name == "channels" {
-            errors.push(ValidationError {
-                path: prefix.clone(),
-                message: format!("'{name}' is a reserved name and cannot be used for a channel"),
-            });
-        }
-
         if channel.channel_type.is_empty() {
             errors.push(ValidationError {
                 path: format!("{prefix}.type"),
@@ -323,16 +313,6 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
             for (i, pattern) in patterns.iter().enumerate() {
                 let pp = format!("{prefix}.patterns[{i}]");
                 validate_pattern(&pp, pattern, &mut errors);
-
-                // Pattern agent references must resolve to an [agents] entry
-                if let Some(ref agent_name) = pattern.agent
-                    && !config.agents.contains_key(agent_name)
-                {
-                    errors.push(ValidationError {
-                        path: format!("{pp}.agent"),
-                        message: format!("agent '{agent_name}' is not defined in [agents]"),
-                    });
-                }
 
                 // Feishu-specific pattern validation
                 if channel.channel_type == "feishu" && pattern.enabled {

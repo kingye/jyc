@@ -13,10 +13,6 @@ use crate::message_storage::MessageStorage;
 use crate::metrics::MetricsHandle;
 use jyc_types::{OutboundAdapter, QueueItem};
 
-/// All channels' outbound adapters, keyed by channel name — the cross-channel
-/// reply map (migration PR-5b).
-pub type OutboundsMap = Arc<Mutex<HashMap<String, Arc<dyn OutboundAdapter>>>>;
-
 mod events;
 mod git;
 mod lifecycle;
@@ -53,11 +49,6 @@ pub struct TopicManager {
     // Shared dependencies
     storage: Arc<MessageStorage>,
     outbound: Arc<dyn OutboundAdapter>,
-    /// All channels' outbound adapters keyed by channel name, for
-    /// per-message reply routing (migration PR-5b): a topic processed by an
-    /// agent that receives from multiple channels replies via the *origin*
-    /// channel's adapter. Set after all channels have connected.
-    outbounds: Arc<std::sync::Mutex<Option<OutboundsMap>>>,
     agent: Arc<dyn AgentService>,
 
     // Topic-isolated event buses (optional feature)
@@ -166,7 +157,6 @@ impl TopicManager {
             max_queue_size,
             storage,
             outbound,
-            outbounds: Arc::new(std::sync::Mutex::new(None)),
             agent,
             event_buses: Mutex::new(HashMap::new()),
             enable_events,
@@ -210,34 +200,6 @@ impl TopicManager {
     /// Return the workdir (data root) for this channel.
     pub fn data_root(&self) -> &Path {
         &self.workdir
-    }
-
-    /// Attach the cross-channel outbound map (migration PR-5b). Called after
-    /// all channels have connected their outbound adapters.
-    pub fn set_outbounds(&self, outbounds: OutboundsMap) {
-        *self.outbounds.lock().expect("outbounds poisoned") = Some(outbounds);
-    }
-
-    /// Resolve the outbound adapter for a message: the *origin channel's*
-    /// adapter when this manager serves an agent that may receive from
-    /// multiple channels, else the manager's own fallback.
-    ///
-    /// Fallback to `self.outbound` keeps legacy single-channel managers
-    /// (and managers without the map) behaving exactly as before.
-    pub async fn resolve_outbound(
-        &self,
-        message: &jyc_types::InboundMessage,
-    ) -> Arc<dyn OutboundAdapter> {
-        // Clone the map Arc out of the (std) guard first, so the guard is
-        // not held across the tokio lock await inside spawned workers.
-        let map = self.outbounds.lock().ok().and_then(|o| o.clone());
-        if let Some(map) = map
-            && let map = map.lock().await
-            && let Some(outbound) = map.get(&message.channel)
-        {
-            return outbound.clone();
-        }
-        self.outbound.clone()
     }
 
     /// Return the max concurrent topics (semaphore capacity).

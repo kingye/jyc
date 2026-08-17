@@ -246,27 +246,6 @@ pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name
 [channels.feishu_bot.patterns.rules]
 mentions = ["jyc"]
 
-# --- Agents (behavior + topics; see docs/agents-migration.md) ---
-#
-# An agent owns topics and works inside them. It carries behavior config
-# only — template, skills, model, MCPs, tools — no connection settings and
-# no matching rules. Channels route matched messages to an agent via
-# `agent = "<name>"` on a pattern; the agent's fields apply wherever the
-# pattern leaves them unset (the pattern's own explicit values win).
-#
-# [agents.invoice]
-# template = "invoice"
-# skills = ["invoice-processing"]
-# # model = "deepseek/deepseek-v4-pro"
-#
-# Referenced from a channel pattern:
-#
-#   [[channels.jiny283.patterns]]
-#   name = "invoice"
-#   agent = "invoice"
-#   [channels.jiny283.patterns.rules]
-#   subject = { contains = ["invoice"] }
-
 # --- AI (the shared brain) ---
 
 [ai]

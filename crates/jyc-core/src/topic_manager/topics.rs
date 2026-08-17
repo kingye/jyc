@@ -18,10 +18,7 @@ impl TopicManager {
         if let Some(path) = paths.get(topic_name) {
             return Some(path.clone());
         }
-        drop(paths);
-        // Fallback: try the default workspace path. Agent-keyed TMs have
-        // `workspace_dir = <data>/agents/<agent>` (migration PR-5a), so this
-        // covers both layouts.
+        // Fallback: try the default workspace path
         let default_path = self.workspace_dir.join(topic_name);
         if tokio::fs::metadata(&default_path).await.is_ok() {
             return Some(default_path);
@@ -104,12 +101,6 @@ impl TopicManager {
     pub async fn restore_custom_topic_paths(&self) {
         let config = self.config.load();
         let Some(channel_cfg) = config.channels.get(&self.channel_name) else {
-            // Agent-keyed TM (migration PR-5a): `channel_name` is an agent,
-            // not a channel — its topics live directly under `workspace_dir`
-            // (`<data>/agents/<agent>`). Restore them so the job scheduler's
-            // per-TopicManager scan finds their scheduled jobs after a
-            // restart, before the first message arrives.
-            self.restore_workspace_topics().await;
             return;
         };
         let Some(patterns) = &channel_cfg.patterns else {
@@ -158,48 +149,6 @@ impl TopicManager {
                         "Failed to read topic-name file during restore"
                     );
                 }
-            }
-        }
-    }
-
-    /// Register every initialized topic directly under `workspace_dir` into
-    /// the in-memory `topic_paths` registry.
-    ///
-    /// Used by agent-keyed TopicManagers whose `workspace_dir` is
-    /// `<data>/agents/<agent>` (migration PR-5a): the topics have no pattern
-    /// `topic_path` override, so the channel-style restore above does not
-    /// apply. Registration keeps the job scheduler's per-TopicManager scan
-    /// (`custom_topic_paths`) able to find their scheduled jobs after a
-    /// restart, and pre-creates event buses for the ActivityTracker.
-    async fn restore_workspace_topics(&self) {
-        let Ok(mut entries) = tokio::fs::read_dir(&self.workspace_dir).await else {
-            return;
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let topic_dir = entry.path();
-            if !topic_dir.is_dir() {
-                continue;
-            }
-            let jyc_dir = topic_dir.join(".jyc");
-            crate::topic_path::migrate_topic_name_file(&jyc_dir);
-            let Ok(name) = tokio::fs::read_to_string(jyc_dir.join("topic-name")).await else {
-                continue;
-            };
-            let name = name.trim().to_string();
-            if name.is_empty() {
-                continue;
-            }
-            let mut paths = self.topic_paths.lock().await;
-            paths.entry(name.clone()).or_insert_with(|| {
-                tracing::info!(
-                    path = %topic_dir.display(),
-                    "Restored agent topic from disk"
-                );
-                topic_dir
-            });
-            drop(paths);
-            if self.enable_events {
-                self.get_or_create_event_bus(&name).await;
             }
         }
     }

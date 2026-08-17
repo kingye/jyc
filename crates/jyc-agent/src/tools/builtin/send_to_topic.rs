@@ -225,16 +225,6 @@ impl Tool for SendToThreadTool {
         // attachment config, live_injection, custom topic_path — as
         // router-matched messages (mirrors MessageRouter, #542).
         let pattern = target_tm.pattern_for_topic(topic_name);
-        // Agent-keyed runtime (migration PR-5): when the target pattern
-        // routes to an agent, process the injected message in that agent's
-        // TopicManager (registered under the agent name) — the channel's
-        // manager would otherwise create a parallel topic.
-        let target_tm = if let Some(agent) = pattern.as_ref().and_then(|p| p.agent.as_deref()) {
-            let tms = ctx.topic_managers.as_ref().unwrap();
-            tms.lock().await.get(agent).cloned().unwrap_or(target_tm)
-        } else {
-            target_tm
-        };
         let (pattern_name, attachment_config, live_injection, topic_path_override) = match &pattern
         {
             Some(p) => {
@@ -248,24 +238,13 @@ impl Tool for SendToThreadTool {
                         .metadata
                         .insert("role".to_string(), Value::String(role.clone()));
                 }
-                // Mirror MessageRouter: metadata override > pattern topic_path
-                // > agent dir (with lazy migration), so agent-routed topics
-                // resolve identically for cross-topic injection (#577 review).
-                let topic_path_override = jyc_core::topic_path::resolve_topic_path_override(
-                    Some(p),
-                    topic_name,
-                    target_tm.data_root(),
-                    channel,
-                    inbound
-                        .metadata
-                        .get("topic_path_override")
-                        .and_then(|v| v.as_str()),
-                );
                 (
                     p.name.clone(),
                     p.attachments.clone(),
                     p.live_injection,
-                    topic_path_override,
+                    p.topic_path.as_ref().map(|tp| {
+                        jyc_core::topic_path::resolve_topic_path(tp, target_tm.data_root())
+                    }),
                 )
             }
             None => (String::new(), None, true, None),

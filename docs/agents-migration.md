@@ -84,9 +84,6 @@ model = "deepseek/deepseek-v4-pro"
 | D6 | TopicManager becomes keyed by agent (deep refactor) | Forced by D5: a topic receiving messages from several channels cannot be hosted by one channel's TopicManager; reply routing must resolve per-message origin channel. |
 | D7 | Channel side keeps a thin matching/forwarding/relay role | Working name: SubjectManager (final naming TBD during implementation). |
 | D8 | `[ai].mode` valid values are `agent` / `static`, enforced by `validate_config` at load time | `agent_builder` bails on anything else at runtime; load-time validation catches it earlier. (Verified during PR-2: the whitelist already existed and the template already used `mode = "agent"` — the earlier "stale `auto`" concern was mistaken.) |
-| D9 | **Websocket is not a channel.** It is the console every *declared* agent carries; the inspect server provides the endpoint. `[channels.local_dev]`-style declarations disappear entirely | The ws "channel" was never an external protocol — it is the agent's own interactive interface. |
-| D10 | **Declaration = registration.** `[agents.x]` (even empty) registers an agent on the panel. A pattern's `agent = "<name>"` must reference a declared agent (strict validation error otherwise) | Empty tables are the explicit "exists with defaults" statement; typos fail loudly. Define-on-use was considered and rejected. |
-| D11 | **Implicit-owner bridge** for unmigrated patterns: at runtime each legacy pattern gets an internal owner named `<channel>/<pattern>`; topics stay in the legacy workspace layout, appear in the panel's Channels area, and never enter the Agents area | Zero-config-change compatibility. Panel has two areas: Agents (declared, interactive console) and Channels (background topics, observable as today). Migration to the Agents area is per-pattern and opt-in. |
 
 ## Phased plan
 
@@ -114,88 +111,47 @@ Migration design doc to preserve context (this file).
   `validate_config` is clean) so template rot is caught in CI. The existing
   `mode` whitelist in `validate_config` (D8) is covered by it.
 
-### PR-3 — `[agents]` behavior table + pattern routing target ✅
+### PR-3 — `[agents]` behavior table + pattern routing target
 
 - New `[agents.<name>]` table carrying today's pattern-level behavior fields:
-  `template`, `topic_path`, `model`, `plan_model`, `build_model`,
-  `small_model`, `mode`, `mcps`, `disabled_tools`, `disabled_mcp_servers`,
-  `skills`, `disabled_skills`, `reset_compression`, `auto_reset_threshold`,
-  `access` — all optional. **No connection fields, no rules.**
-- `ChannelPattern` gains `agent = "<name>"`. At load time
-  (`AppConfig::apply_agent_overlays`, called by all loaders) the agent's
-  fields are overlaid under the pattern's own fields — the pattern's explicit
-  values win — so the existing matcher/router/resolution chains are
-  **unchanged**. Topic naming stays on the pattern (`topic_name`,
-  `topic_prefix`, `topic_path`) — no separate `topic` field was needed.
-- Scope decisions made during implementation:
-  - `live_injection` and `inject_inbound_images` stay pattern-only —
-    bool-with-default fields cannot distinguish "unset" from "explicitly
-    default", so they cannot be overlaid cleanly.
-  - `role`, `repo_group`, `attachments` stay pattern-only — channel-specific
-    semantics, not agent behavior.
+  `template`, `skills`, `disabled_skills`, `model`, `small_model`, `mcps`,
+  `disabled_tools`, `disabled_mcp_servers`, `live_injection`, `topic_path`.
+  **No connection fields, no rules.**
+- `ChannelPattern` gains `agent = "<name>"` and `topic` fields. Behavior
+  resolution chain: pattern legacy fields → referenced agent → channel-level
+  → global `[ai]`.
+- Internally the matched pattern + referenced agent are merged into the
+  effective behavior fed to the existing matcher/router — **no runtime
+  changes in this phase**.
 - `pipe = { channel = "...", ... }` keeps working with a deprecation
   warning (feishu pipe predates #573 and may be deployed); the new form is
   `agent = "..."` on the pattern.
-- Validation: a pattern referencing an undefined agent is a
-  `validate_config` error.
 
-### PR-4 — Data directory layout ✅
+### PR-4 — Data directory layout
 
-- Topic dirs: `~/.local/share/jyc/agents/<agent>/<topic>/` for patterns with
-  an agent reference — implemented in the router by mapping agent-routed
-  topics onto the existing `topic_path_override` mechanism, so the worker,
-  storage, and template init are unchanged.
-- Channel state files: `~/.local/share/jyc/channels/<channel>/` (github
-  `.github` and gitee `.gitee` state dirs moved; other channel types keep
-  no on-disk state).
-- Migration is **lazy** (not a startup scan): on first touch of a topic or
-  state dir, the legacy `<workdir>/<channel>/...` path is renamed into the
-  new location via `migrate_dir_if_needed`. Explicit `topic_path` overrides
-  continue to win over both layouts.
-- `list_topics` / `topic_path` use `workspace_dir` — which is
-  `agents/<agent>` for agent-keyed TopicManagers (PR-5a) and
-  `<channel>/workspace` for channel ones — so agent topics survive restarts
-  under their owning manager without any agent-dir special-casing in the
-  channel manager.
-- Guards added to `validate_config`: `agents`/`channels` are reserved
-  channel names (would collide with the new data-root dirs).
+- Topic dirs: `~/.local/share/jyc/agents/<agent>/<topic>/` for patterns
+  with an agent reference.
+- Channel state files: `~/.local/share/jyc/channels/<channel>/`.
+- One-time startup migration: legacy `<workdir>/<channel>/workspace/<topic>`
+  is moved (same-filesystem `rename`) to the new location, mirroring the
+  existing topic-name migration in `topic_path.rs`. Explicit `topic_path`
+  overrides continue to win.
 - Legacy patterns without an agent reference keep the old layout until
-  migrated (D11).
+  migrated.
 
-### PR-5 — Runtime convergence (the deep one, D6) — split into 5a/5b
+### PR-5 — Runtime convergence (the deep one, D6)
 
-**5a — Agent-keyed TopicManagers ✅**
-
-- One TopicManager per agent referenced by any channel pattern is
-  constructed at startup (`agents/<agent>/` workspace), registered with the
-  orchestrator as an agent (shared inspect/scheduler/cross-topic views,
-  exempt from the reload diff, not added to the scheduler's workspace scan —
-  the per-TopicManager custom-path scan covers it).
-- `MessageRouter` gains `agent_topic_managers`; `route()` dispatches to the
-  owning agent's manager when the matched pattern references an agent
-  (`topic_manager_for`).
-- `send_to_topic` follows the same dispatch: when the target pattern routes
-  to an agent, the injected message is processed by the agent's manager.
-
-**5b-1 — Reply path per origin channel + multi-channel lift ✅**
-
-- `TopicManager` gains the cross-channel `OutboundsMap` (`set_outbounds`);
-  the worker resolves the reply adapter per message from its **origin
-  channel** (`resolve_outbound`), falling back to the manager's own adapter
-  when the map is absent or the channel unknown (legacy behavior intact).
-  This generalizes the feishu pipe relay to arbitrary channel→agent.
-- The multi-channel sharing guard is **lifted**: an agent may now be
-  referenced by patterns of several channels (D5).
-
-**5b-2 — Remaining**
-
-- The websocket channel dissolves (D9): the inspect server serves one ws
-  endpoint; the panel lists declared `[agents]` directly (Agents area) and
-  legacy channel topics separately (Channels area, D11).
-- Lookup polish at the remaining channel-name call sites (inspect
-  topic_proxy, websocket inbound).
-- `pipe = { channel = ... }` fully retires in favor of `agent` (kept
-  readable with a deprecation warning meanwhile).
+- TopicManager keyed by agent instead of channel. Internals (queue, worker,
+  semaphore, event buses, template init) stay; the change is in wiring:
+  - construction: one TopicManager per agent;
+  - lookup key: every `TopicManager`-by-channel-name call site
+    (job_scheduler, inspect/topic_proxy, websocket inbound, `send_to_topic`
+    tool, agent_builder) switches to agent key;
+  - reply path: `outbound` is resolved per message from its origin channel
+    (generalizing the feishu pipe relay), not held fixed by the manager.
+- Channel side keeps the thin matching/forwarding/relay role (D7).
+- Magnitude: medium-large, mostly mechanical lookup rewiring; reply-path
+  and live-injection semantics need the most care.
 
 ### PR-6 — Docs & cleanup
 

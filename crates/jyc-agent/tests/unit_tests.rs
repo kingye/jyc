@@ -1630,7 +1630,6 @@ mod skills {
         let app = AppConfig {
             general: jyc_types::GeneralConfig::default(),
             channels: std::collections::HashMap::new(),
-            agents: std::collections::HashMap::new(),
             ai: jyc_types::AiConfig {
                 enabled: true,
                 mode: "agent".to_string(),

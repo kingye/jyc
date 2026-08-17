@@ -44,26 +44,17 @@ impl CommandHandler for UnpinCommandHandler {
             }
         };
 
-        if ctx.ws_channels.is_empty() {
-            return Ok(CommandResult {
-                success: false,
-                message: "No websocket channels in config. Nothing to unpin.".into(),
-                error: Some("no websocket channels".into()),
-                append_body: None,
-            });
-        }
-
         let removed =
-            pin_common::remove_pattern_from_config(&ctx.config_path, &ctx.adhoc_path).await?;
+            pin_common::remove_pinned_from_config(&ctx.config_path, &ctx.adhoc_path).await?;
 
         if !removed {
             return Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "Topic '{}' is not pinned. No matching pattern found.",
+                    "Topic '{}' is not pinned. No matching section found.",
                     ctx.topic_name
                 ),
-                error: Some("pattern not found".into()),
+                error: Some("section not found".into()),
                 append_body: None,
             });
         }

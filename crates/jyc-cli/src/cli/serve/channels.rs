@@ -273,7 +273,13 @@ fn apply_pipe_retarget(
             serde_json::Value::String(pattern.clone()),
         );
     }
-    msg.channel = pipe.channel.clone();
+    // Legacy form: pipe.channel required. New `pipe.agent` form is handled
+    // in apply_pipe_retarget_agent (Step 4); this path only runs for the
+    // legacy form today.
+    msg.channel = pipe
+        .channel
+        .clone()
+        .expect("legacy pipe form requires channel");
     msg.topic = topic;
     Some(msg)
 }
@@ -390,7 +396,9 @@ pub(crate) fn spawn_feishu_adapter(
     {
         match &p.pipe {
             Some(pipe) => {
-                pipe_channels.insert(pipe.channel.clone());
+                if let Some(ch) = &pipe.channel {
+                    pipe_channels.insert(ch.clone());
+                }
             }
             None => tracing::warn!(
                 channel = %channel_name,
@@ -558,14 +566,21 @@ pub(crate) fn spawn_feishu_adapter(
                         // 5. Route through the target's own MessageRouter —
                         //    the exact same path as a chat-pane message, so
                         //    topic_path/template/skills apply identically.
+                        let Some(target_channel) = pipe.channel.clone() else {
+                            tracing::warn!(
+                                pattern = ?pipe.pattern,
+                                "feishu pipe: pipe.channel missing (pipe.agent form is not yet supported here)"
+                            );
+                            return;
+                        };
                         let Some(target_router) =
-                            routers.lock().unwrap().get(&pipe.channel).cloned()
+                            routers.lock().unwrap().get(&target_channel).cloned()
                         else {
-                            tracing::warn!(channel = %pipe.channel, "feishu pipe: target channel router not found, dropping");
+                            tracing::warn!(channel = %target_channel, "feishu pipe: target channel router not found, dropping");
                             return;
                         };
                         target_router
-                            .route(&WebsocketMatcher::new(pipe.channel.clone()), message)
+                            .route(&WebsocketMatcher::new(target_channel), message)
                             .await;
                     });
                     Ok(())
@@ -1341,7 +1356,8 @@ mod tests {
 
     fn pipe_target(pattern: Option<&str>, topic: Option<&str>) -> jyc_types::PipeTarget {
         jyc_types::PipeTarget {
-            channel: "local_dev".to_string(),
+            agent: None,
+            channel: Some("local_dev".to_string()),
             pattern: pattern.map(str::to_string),
             topic: topic.map(str::to_string),
         }

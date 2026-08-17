@@ -13,6 +13,9 @@ use crate::wecom_bot_config::WecomBotConfig;
 use crate::wecom_config::WecomConfig;
 use crate::wecom_kf_config::WecomKfConfig;
 
+pub mod agent;
+pub use agent::AgentConfig;
+
 /// MCP server configuration for agent dynamic tool loading.
 ///
 /// Supports both `local` (subprocess) and `remote` (HTTP) MCP server types.
@@ -90,6 +93,14 @@ pub struct AppConfig {
     /// Named channels (e.g., "work", "personal")
     #[serde(default)]
     pub channels: HashMap<String, ChannelConfig>,
+
+    /// Named agents — websocket-based endpoints with behavior but no
+    /// matching rules. Each `[agents.<name>]` becomes one pattern
+    /// inside the synthesized channel "agents" (channel_type =
+    /// "websocket"). Supersedes the legacy
+    /// `[channels.<name>] type = "websocket"` + `[[patterns]]` form.
+    #[serde(default)]
+    pub agents: HashMap<String, AgentConfig>,
 
     /// AI configuration (model, prompts, providers) — the shared brain.
     /// Legacy key `[agent]` is accepted as an alias (deprecated).

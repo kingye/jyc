@@ -158,10 +158,7 @@ Migration design doc to preserve context (this file).
   under their owning manager without any agent-dir special-casing in the
   channel manager.
 - Guards added to `validate_config`: `agents`/`channels` are reserved
-  channel names (would collide with the new data-root dirs); an agent
-  referenced from patterns of **more than one channel** is rejected until
-  the runtime is agent-keyed (PR-5) — sharing would race two per-channel
-  TopicManagers on the same topic dirs. Pipe into a hub channel instead.
+  channel names (would collide with the new data-root dirs).
 - Legacy patterns without an agent reference keep the old layout until
   migrated (D11).
 
@@ -179,20 +176,26 @@ Migration design doc to preserve context (this file).
   (`topic_manager_for`).
 - `send_to_topic` follows the same dispatch: when the target pattern routes
   to an agent, the injected message is processed by the agent's manager.
-- The multi-channel sharing guard (PR-4) stays for now: each agent TM holds
-  the referencing channel's outbound and agent service, which is only sound
-  for a single referencing channel.
 
-**5b — Remaining**
+**5b-1 — Reply path per origin channel + multi-channel lift ✅**
 
-- Reply path: `outbound` resolved per message from its origin channel
-  (generalizing the feishu pipe relay), not held fixed by the manager —
-  required before lifting the multi-channel guard (D5).
+- `TopicManager` gains the cross-channel `OutboundsMap` (`set_outbounds`);
+  the worker resolves the reply adapter per message from its **origin
+  channel** (`resolve_outbound`), falling back to the manager's own adapter
+  when the map is absent or the channel unknown (legacy behavior intact).
+  This generalizes the feishu pipe relay to arbitrary channel→agent.
+- The multi-channel sharing guard is **lifted**: an agent may now be
+  referenced by patterns of several channels (D5).
+
+**5b-2 — Remaining**
+
 - The websocket channel dissolves (D9): the inspect server serves one ws
   endpoint; the panel lists declared `[agents]` directly (Agents area) and
   legacy channel topics separately (Channels area, D11).
 - Lookup polish at the remaining channel-name call sites (inspect
   topic_proxy, websocket inbound).
+- `pipe = { channel = ... }` fully retires in favor of `agent` (kept
+  readable with a deprecation warning meanwhile).
 
 ### PR-6 — Docs & cleanup
 

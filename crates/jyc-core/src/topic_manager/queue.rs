@@ -145,6 +145,7 @@ impl TopicManager {
             max_queue_size: self.max_queue_size,
             storage: self.storage.clone(),
             outbound: self.outbound.clone(),
+            outbounds: self.outbounds.clone(),
             agent: self.agent.clone(),
             event_buses: Mutex::new(HashMap::new()),
             enable_events: self.enable_events,

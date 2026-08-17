@@ -214,7 +214,9 @@ mode = "agent"
 }
 
 #[test]
-fn test_agent_shared_across_channels_rejected() {
+fn test_agent_shared_across_channels_allowed() {
+    // Migration PR-5b lifts the sharing restriction: one agent may receive
+    // from multiple channels (per-origin reply routing is in place).
     let toml = r#"
 [general]
 [channels.a]
@@ -250,10 +252,8 @@ mode = "agent"
     let config = load_config_from_str(toml).unwrap();
     let errors = validate_config(&config);
     assert!(
-        errors
-            .iter()
-            .any(|e| e.path == "agents.shared" && e.message.contains("multiple channels")),
-        "expected multi-channel sharing error, got: {errors:?}"
+        !errors.iter().any(|e| e.path == "agents.shared"),
+        "multi-channel agent sharing should now validate clean, got: {errors:?}"
     );
 }
 

@@ -324,6 +324,8 @@ mod tests {
             cache_hit_per_million: 1.5,
             cache_creation_per_million: None,
             currency: None,
+            time_windows: Vec::new(),
+            timezone: None,
         };
         let usage = json!({
             "input_tokens": 2_800,

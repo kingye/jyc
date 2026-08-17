@@ -1902,6 +1902,8 @@ mod billing_integration {
             cache_hit_per_million: 1.5,
             cache_creation_per_million: None,
             currency: Some("USD".to_string()),
+            time_windows: Vec::new(),
+            timezone: None,
         }
     }
 

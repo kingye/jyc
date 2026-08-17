@@ -116,6 +116,8 @@ mod tests {
             cache_hit_per_million: cache,
             cache_creation_per_million: None,
             currency: None,
+            time_windows: Vec::new(),
+            timezone: None,
         }
     }
 
@@ -128,6 +130,8 @@ mod tests {
             cache_hit_per_million: cache_read,
             cache_creation_per_million: Some(cache_create),
             currency: None,
+            time_windows: Vec::new(),
+            timezone: None,
         }
     }
 
@@ -363,6 +367,8 @@ mod tests {
                 cache_hit_per_million: 0.0,
                 cache_creation_per_million: None,
                 currency: None,
+                time_windows: Vec::new(),
+                timezone: None,
             };
             assert_eq!(compute_cost_split(&p, 0, 0, 0, 0), 0.0);
         }

@@ -540,6 +540,44 @@ pub struct ModelPricing {
     /// jyc never converts between currencies, so a provider billing in
     /// USD must say so explicitly.
     pub currency: Option<String>,
+    /// Time-of-day rate overrides. Each window supplies its own rates for
+    /// the hours between `start` and `end`; the flat fields above act as
+    /// the default for any time outside every window. First matching
+    /// window wins (windows are expected to be non-overlapping).
+    /// Empty by default — flat rates always apply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub time_windows: Vec<TimeWindowPricing>,
+    /// Fixed UTC offset used to interpret `time_windows` `start`/`end`
+    /// times, e.g. `"+08:00"` for Beijing time (DeepSeek's off-peak
+    /// discount schedule). Defaults to UTC when omitted or unparseable.
+    #[serde(default)]
+    pub timezone: Option<String>,
+}
+
+/// Rates for one time-of-day window within [`ModelPricing`].
+///
+/// `start`/`end` are `"HH:MM"` or `"HH:MM:SS"` local times (in the
+/// pricing's `timezone`). A window whose `start > end` wraps past
+/// midnight (e.g. `16:30` → `00:30`). The interval is
+/// start-inclusive / end-exclusive.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct TimeWindowPricing {
+    /// Window start, `"HH:MM"` or `"HH:MM:SS"` (inclusive).
+    pub start: String,
+    /// Window end, `"HH:MM"` or `"HH:MM:SS"` (exclusive; `<= start`
+    /// wraps past midnight).
+    pub end: String,
+    /// Price per 1M uncached input tokens during this window.
+    pub input_per_million: f64,
+    /// Price per 1M output tokens during this window.
+    pub output_per_million: f64,
+    /// Price per 1M prompt-cache-hit (read) tokens during this window.
+    #[serde(default)]
+    pub cache_hit_per_million: f64,
+    /// Price per 1M prompt-cache-creation (write) tokens during this
+    /// window. `None` collapses writes into `cache_hit_per_million`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_per_million: Option<f64>,
 }
 
 /// Currency assumed when a `ModelPricing` omits `currency`.

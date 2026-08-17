@@ -37,9 +37,7 @@ use jyc_channels::wecom::kf_outbound::WecomKfOutboundAdapter;
 use jyc_channels::wecom::outbound::WecomOutboundAdapter;
 use jyc_channels::wecom::server::WecomWebhookServer;
 use jyc_channels::wecom::token_cache::AccessTokenCache;
-use jyc_channels::wecom_bot::client::WecomBotConnectionHandle;
 use jyc_channels::wecom_bot::inbound::{WecomBotInboundAdapter, WecomBotMatcher};
-use jyc_channels::wecom_bot::outbound::WecomBotOutboundAdapter;
 use jyc_core::channel_orchestrator::ChannelOrchestrator;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
@@ -66,7 +64,6 @@ pub(crate) fn build_outbound_adapter(
     workspace_dir: &std::path::Path,
     inspect_broadcast: Arc<broadcast::Sender<String>>,
     wechat_sender_arc: &mut Option<Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>>,
-    wecom_bot_handle_arc: &mut Option<Arc<Mutex<Option<WecomBotConnectionHandle>>>>,
     wecomkf_kf_client: &mut Option<Arc<KfApiClient>>,
     ws_handler_for_channel: &mut HashMap<String, Arc<WebsocketInboundAdapter>>,
     websocket_handlers: &mut Vec<Arc<WebsocketInboundAdapter>>,
@@ -118,15 +115,6 @@ pub(crate) fn build_outbound_adapter(
             );
             // Store the sender_arc for later use in the inbound section
             *wechat_sender_arc = Some(adapter.sender_arc());
-            Arc::new(adapter)
-        }
-        "wecom_bot" => {
-            let adapter = WecomBotOutboundAdapter::new_with_attachments(
-                storage.clone(),
-                outbound_attachment_config,
-                footer_enabled,
-            );
-            *wecom_bot_handle_arc = Some(adapter.handle_arc());
             Arc::new(adapter)
         }
         "wecom" => {
@@ -1068,9 +1056,7 @@ async fn relay_wecom_attachment(
     att: &ReplyAttachmentRef,
     config: &arc_swap::ArcSwap<jyc_types::AppConfig>,
 ) -> Result<()> {
-    use jyc_channels::wecom_bot::{
-        build_media_message_body, upload_attachment, wecom_media_type,
-    };
+    use jyc_channels::wecom_bot::{build_media_message_body, upload_attachment, wecom_media_type};
 
     let bytes = inspect.download_topic_file(&att.url_path).await?;
     let tmp = tempfile::NamedTempFile::new()?;
@@ -1128,7 +1114,6 @@ pub(crate) struct InboundSpawner<'a> {
     pub(crate) cancel_child: CancellationToken,
     pub(crate) tasks: &'a mut Vec<JoinHandle<()>>,
     pub(crate) wechat_sender_arc: &'a mut Option<Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>>,
-    pub(crate) wecom_bot_handle_arc: &'a mut Option<Arc<Mutex<Option<WecomBotConnectionHandle>>>>,
     pub(crate) wecomkf_kf_client: &'a mut Option<Arc<KfApiClient>>,
     pub(crate) orchestrator: Arc<ChannelOrchestrator>,
     pub(crate) channel_info: ChannelInfo,
@@ -1158,7 +1143,6 @@ impl InboundSpawner<'_> {
             cancel_child,
             tasks,
             wechat_sender_arc,
-            wecom_bot_handle_arc,
             wecomkf_kf_client,
             orchestrator,
             channel_info,
@@ -1435,81 +1419,6 @@ impl InboundSpawner<'_> {
                 }
 
                 // Shutdown topic manager for this channel
-                tm.shutdown().await;
-            }.instrument(channel_span));
-
-                orchestrator
-                    .register_channel(
-                        channel_name.to_string(),
-                        jyc_core::channel_orchestrator::ChannelHandle {
-                            cancel: cancel.clone(),
-
-                            topic_manager: topic_manager.clone(),
-
-                            channel_info: channel_info.clone(),
-
-                            workspace_dir: workspace_dir.clone(),
-                        },
-                    )
-                    .await;
-
-                tasks.push(task);
-            }
-            "wecom_bot" => {
-                let wecom_bot_config = channel_config
-                    .wecom_bot
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("channel '{channel_name}': missing wecom_bot config")
-                    })?
-                    .clone();
-
-                let router_for_callback = router.clone();
-                let wecom_bot_handle_arc_clone = wecom_bot_handle_arc.clone().unwrap();
-
-                let topic_manager_for_task = topic_manager.clone();
-
-                let task = tokio::spawn(async move {
-
-                let adapter = WecomBotInboundAdapter::with_shared_handle(
-                    &wecom_bot_config,
-                    channel_name_owned.clone(),
-                    wecom_bot_handle_arc_clone,
-                );
-
-                let topic_manager_clone = topic_manager_for_task.clone();
-                let options = jyc_types::InboundAdapterOptions {
-                    on_message: Box::new(move |message| {
-                        let router = router_for_callback.clone();
-
-                        tokio::spawn(async move {
-                            router.route(&WecomBotMatcher, message).await;
-                        });
-
-                        Ok(())
-                    }),
-                    on_topic_close: Some(Box::new(move |topic_name: String| {
-                        let tm = topic_manager_clone.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = tm.close_topic(&topic_name).await {
-                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
-                            }
-                        });
-                        Ok(())
-                    })),
-                    on_error: Box::new(|error| {
-                        tracing::error!(error = %error, "WeCom Bot inbound error");
-                    }),
-                    attachment_config: inbound_attachment_config.clone(),
-                };
-
-                if let Err(e) = adapter.start(options, cancel_child).await {
-                    tracing::error!(
-                        error = %e,
-                        "WeCom Bot inbound adapter error"
-                    );
-                }
-
                 tm.shutdown().await;
             }.instrument(channel_span));
 

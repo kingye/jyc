@@ -41,12 +41,17 @@ All notable changes to JYC will be documented in this file.
   joins `feishu` as a pipe-only adapter (see `docs/core-hub-adapters.md`).
   Every enabled pattern must declare a `pipe` target; the adapter owns
   the WebSocket long connection and the streaming-reply lifecycle
-  (`finish=false` indicator on receipt, `finish=true` on reply,
-  attachments relayed via proactive `aibot_send_msg`). Inbound
-  attachments continue to flow through `media::process_bot_attachments`
-  unchanged. The TopicManager/agent/orchestrator registration for
-  `wecom_bot` is removed; the `channel_type() == "wecom_bot"` progress
-  spinner path in the worker is dropped (core stays channel-agnostic).
+  (`finish=false` indicator on receipt, a self-terminating keep-alive
+  task that re-sends `finish=false` with a spinning-elapsed indicator
+  every 3s to keep the WeCom passive-reply window open during long
+  agent runs, `finish=true` on reply, and proactive-`aibot_send_msg`
+  fallback for both the text and attachments when the streaming
+  window has already closed). Inbound attachments continue to flow
+  through `media::process_bot_attachments` unchanged. The
+  TopicManager/agent/orchestrator registration for `wecom_bot` is
+  removed; the `channel_type() == "wecom_bot"` progress-spinner path
+  in the worker is dropped (the pipe adapter owns the streaming
+  lifecycle).
 
 - **Pipe topic templates support `${msg.<key>}` for any metadata key**
   (previously hardcoded to `chat_name`). Convenience: `channel_uid`

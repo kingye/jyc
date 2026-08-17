@@ -4,6 +4,23 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`[agents.<name>]` config table** — each entry becomes a websocket
+  endpoint with behavior fields (template, topic_path, skills, access,
+  attachments, model overrides, mcps, tools, disabled_*,
+  live_injection, inject_inbound_images, mode, reset_compression,
+  auto_reset_threshold, role). WebSocket transport is unchanged
+  (`/ws/agents/<topic>`). Default workspace root:
+  `<data_home>/agents/<agent_name>/`. Each `[agents.<name>]` is one
+  pattern inside the synthesized channel "agents" (channel_type =
+  "websocket"); the agent name is the routing identity, picked by
+  `WebsocketMatcher::match_message` against `message.topic`.
+
+- **`pipe = { agent = "<name>", topic = "..." }`** — new pipe target
+  form. Mutually exclusive with `pipe.channel`/`pipe.pattern` (validated
+  at load time). Legacy form still works with a deprecation warning.
+
 ### Changed
 
 - **`[agent]` config table renamed to `[ai]`** at all levels (top-level,

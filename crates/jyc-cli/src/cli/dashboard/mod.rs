@@ -960,7 +960,8 @@ async fn resolve_websocket_channel(
 
     match ws_channels.len() {
         0 => anyhow::bail!(
-            "No websocket channel configured. Add a [channels.<name>] with type = \"websocket\" to config.toml."
+            "No agent / websocket channel configured. Add a [agents.<name>] \
+             (preferred) or [channels.<name>] type=\"websocket\" (deprecated) to config.toml."
         ),
         1 => Ok(ws_channels.into_iter().next().unwrap()),
         _ => anyhow::bail!(

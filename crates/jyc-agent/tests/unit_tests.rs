@@ -1653,6 +1653,7 @@ mod skills {
             mcps: Vec::new(),
             scheduler: jyc_types::SchedulerConfig::default(),
             commands: Vec::new(),
+            agents: std::collections::HashMap::new(),
         };
         JycAgentService::new(
             Arc::new(ArcSwap::from_pointee(app)),

@@ -292,15 +292,29 @@ pub const PIPE_PATTERN_METADATA_KEY: &str = "pipe_pattern";
 /// `${msg.chat_name}`. Resolution: `effective_topic = topic ?? pattern`;
 /// at least one must be set. Legacy `topic`-only form keeps the implicit
 /// "topic name == pattern name" selection of websocket channels.
+///
+/// **New form** (preferred): `pipe = { agent = "jyc", topic = "..." }` —
+/// targets the agent by name. `agent` and `channel`/`pattern` are
+/// mutually exclusive (config error if both set).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PipeTarget {
+    /// New form: target agent name. Resolves to the agent's channel +
+    /// topic dir via the synthesized "agents" channel.
+    #[serde(default)]
+    pub agent: Option<String>,
+
     /// Target channel name (typically a websocket-type channel).
-    pub channel: String,
+    /// **Deprecated** alongside `pattern`: prefer `agent` for new configs.
+    #[serde(default)]
+    pub channel: Option<String>,
+
     /// Target pattern name whose config applies. When `topic` is omitted,
     /// the pattern name doubles as the topic name.
+    /// **Deprecated** alongside `channel`: prefer `agent` for new configs.
     #[serde(default)]
     pub pattern: Option<String>,
+
     /// Target topic name; supports the `${msg.chat_name}` runtime
     /// placeholder. Defaults to `pattern` when omitted.
     #[serde(default)]

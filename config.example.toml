@@ -976,24 +976,52 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # [channels.my_wecom_bot.patterns.rules]
 # # keywords = ["help", "bot"]
 
-# --- Channel: WebSocket ---
+# --- Agents ---
 #
-# Runs a WebSocket handler on the inspect server port for interactive
-# terminal-based AI interaction via `jyc dashboard`. Press `c`
-# in the dashboard to open the chat pane.
-# Requires `inspect.enabled = true`.
+# An agent is a websocket-based endpoint with behavior but no matching
+# rules. Each [agents.<name>] entry synthesizes a channel of
+# channel_type = "websocket" with one implicit pattern whose name equals
+# the agent name. WebSocket mechanism (broadcast, dashboard chat pane,
+# /ws/agents/<topic> URL) stays the same.
+#
+# Default workspace root: <data_home>/agents/<agent_name>/
+# (Linux/macOS: ~/.local/share/jyc/agents/<agent_name>/
+#  Windows:     %LOCALAPPDATA%\jyc\agents\<agent_name>\
+# Override with topic_path.
+#
+# [agents.jyc]
+# template = "jyc"
+# # topic_path = "~/projects/jyc"
+# skills = ["coding-principles", "internal-comms"]
+# access = { read = ["~/.cargo/registry/src"], write = ["/tmp/jyc-builds"] }
+# model = "anthropic/claude-opus-4-6"
+# small_model = "deepseek/deepseek-v4-flash"
+# mcps = []
+# disabled_tools = []
+# live_injection = true
+# inject_inbound_images = false
+# mode = "build"
+# reset_compression = { mode = "llm", keep_pairs = 3 }
+# auto_reset_threshold = 0.95
+# role = "Developer"
+# attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
+
+# --- Channel: WebSocket (LEGACY — deprecated) ---
+#
+# Pre-agents form. Still works in this release; new configs should use
+# [agents.<name>] above. The CLI emits a deprecation warning at startup
+# when a websocket channel has no matching [agents.<name>].
 #
 # [channels.my_ws]
 # type = "websocket"
-#
-# # Optional: override model for this channel
-# # model = "anthropic/claude-opus-4-6"
-# # small_model = "deepseek/deepseek-v4-flash"
 #
 # # Define patterns for the chat pane (first enabled pattern is the default)
 # [[channels.my_ws.patterns]]
 # name = "general"
 # enabled = true
+# template = "general"
+# topic_path = "~/projects/general"
+# skills = []
 
 # --- Per-Topic MCP Overrides (L3) ---
 #

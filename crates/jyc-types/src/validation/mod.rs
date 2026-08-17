@@ -1,7 +1,7 @@
 use anyhow::Result;
 use regex::Regex;
 
-use crate::channel::{ChannelPattern, PatternRules};
+use crate::channel::ChannelPattern;
 use crate::config::AppConfig;
 use crate::config::agent::AgentConfig;
 
@@ -479,6 +479,28 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
     // Agents: per-agent skill / tool / mcps sanity, pipe exclusivity,
     // reserved-name check, and the synthesized "agents" collision.
     validate_agents(config, &mut errors);
+
+    // The synthesized "agents" channel is unconditionally inserted by
+    // install_agents_channel at startup. If the user also wrote a
+    // [channels.agents] block (legacy or otherwise), it would be
+    // silently overwritten — surface this as a config error instead.
+    if config.agents.contains_key("agents") {
+        errors.push(ValidationError {
+            path: "agents.agents".into(),
+            message: "agent name \"agents\" is reserved (it's the synthesized channel name)".into(),
+        });
+    }
+    if !config.agents.is_empty()
+        && config.channels.contains_key("agents")
+        && config.channels["agents"].channel_type == "websocket"
+    {
+        errors.push(ValidationError {
+            path: "channels.agents".into(),
+            message: "channels.agents is reserved (synthesized from [agents.<name>]); \
+                     rename your agent or remove the [channels.agents] block"
+                .into(),
+        });
+    }
 
     errors
 }

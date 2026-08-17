@@ -125,8 +125,10 @@ mod tests {
 
     #[test]
     fn synthesize_agent_pattern_user_topic_path_wins() {
-        let mut a = AgentConfig::default();
-        a.topic_path = Some("~/projects/jyc".to_string());
+        let a = AgentConfig {
+            topic_path: Some("~/projects/jyc".to_string()),
+            ..Default::default()
+        };
         let mut p = ChannelPattern::default();
         a.fill_into_pattern(
             &mut p,

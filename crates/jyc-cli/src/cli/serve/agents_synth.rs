@@ -188,4 +188,37 @@ mod tests {
         assert!(!after.channels.contains_key("agents"));
         assert!(after.channels.contains_key("work"));
     }
+
+    /// Regression for the snapshot-order bug (PR #582): taking
+    /// `config.load()` BEFORE `install_agents_channel` returns the
+    /// pre-synth view (no "agents" channel). The serve::run startup
+    /// must read the snapshot AFTER synth — see serve/mod.rs.
+    ///
+    /// This pins the contract: any code that wants the synthesized
+    /// entry in its view of `config.channels` must call
+    /// `install_agents_channel` first.
+    #[test]
+    fn snapshot_before_install_does_not_contain_synthesized_channel() {
+        let mut snap = minimal_app_config();
+        snap.agents.insert("jyc".to_string(), agent("jyc", "jyc"));
+        let cfg = Arc::new(ArcSwap::from_pointee(snap));
+
+        // Snapshot BEFORE install — mimics the old (buggy) ordering.
+        let before = cfg.load();
+        assert!(
+            !before.channels.contains_key("agents"),
+            "snapshot before install must not contain the synthesized 'agents' channel"
+        );
+
+        // Install synthesizes the channel.
+        install_agents_channel(&cfg);
+
+        // Snapshot AFTER install — the correct ordering.
+        let after = cfg.load();
+        assert!(
+            after.channels.contains_key("agents"),
+            "snapshot after install must contain the synthesized 'agents' channel"
+        );
+        assert_eq!(after.channels["agents"].channel_type, "websocket");
+    }
 }

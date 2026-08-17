@@ -317,6 +317,39 @@ pub struct ChannelConfig {
     pub disabled_skills: Option<Vec<String>>,
 }
 
+impl Default for ChannelConfig {
+    fn default() -> Self {
+        // Empty `channel_type` is the signal that the synthesized
+        // "agents" channel is unconfigured; `install_agents_channel`
+        // and the websocket branch fill it in. Every optional field
+        // defaults to None so callers can `..Default::default()` and
+        // override only what they need (e.g. the agents_synth module).
+        Self {
+            channel_type: String::new(),
+            inbound: None,
+            outbound: None,
+            feishu: None,
+            gitee: None,
+            github: None,
+            wechat: None,
+            wecom: None,
+            wecom_kf: None,
+            wecom_bot: None,
+            monitor: None,
+            patterns: None,
+            ai: None,
+            model: None,
+            small_model: None,
+            footer: None,
+            mcps: None,
+            disabled_tools: None,
+            disabled_mcp_servers: None,
+            skills: None,
+            disabled_skills: None,
+        }
+    }
+}
+
 /// IMAP server configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImapConfig {

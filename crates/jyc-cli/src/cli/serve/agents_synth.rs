@@ -78,25 +78,7 @@ pub fn synthesize_agents_channel(snapshot: &AppConfig) -> Option<ChannelConfig> 
     Some(ChannelConfig {
         channel_type: "websocket".to_string(),
         patterns: Some(patterns),
-        inbound: None,
-        outbound: None,
-        feishu: None,
-        gitee: None,
-        github: None,
-        wechat: None,
-        wecom: None,
-        wecom_kf: None,
-        wecom_bot: None,
-        monitor: None,
-        ai: None,
-        model: None,
-        small_model: None,
-        footer: None,
-        mcps: None,
-        disabled_tools: None,
-        disabled_mcp_servers: None,
-        skills: None,
-        disabled_skills: None,
+        ..Default::default()
     })
 }
 

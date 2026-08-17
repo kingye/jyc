@@ -14,7 +14,7 @@
 
 use chrono::{DateTime, FixedOffset, NaiveTime, Utc};
 
-use crate::config::{AppConfig, ModelPricing, TimeWindowPricing};
+use crate::config::{AppConfig, ModelPricing};
 
 /// Tokens in one million — the denominator for every configured rate.
 const TOKENS_PER_MILLION: f64 = 1_000_000.0;
@@ -479,6 +479,7 @@ mod tests {
     mod time_windows {
         //! Tests for time-of-day pricing windows.
         use super::*;
+        use crate::config::TimeWindowPricing;
         use chrono::TimeZone;
 
         fn utc(h: u32, m: u32) -> DateTime<Utc> {

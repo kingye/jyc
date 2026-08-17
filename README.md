@@ -375,6 +375,32 @@ type = "openai-compatible"
 pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_million = 0.5 }
 ```
 
+**Time-of-day pricing.** Providers like DeepSeek bill different rates at
+different hours (off-peak discounts). Add `time_windows` to a `pricing`
+block — each window supplies its own rates for the hours between `start`
+and `end` (`"HH:MM"` or `"HH:MM:SS"`), and the flat fields act as the
+default outside every window:
+
+```toml
+[agent.providers.deepseek]
+type = "openai-compatible"
+base_url = "https://api.deepseek.com"
+api_key = "${DEEPSEEK_API_KEY}"
+# Standard ¥2/M in, ¥8/M out; 50% off 00:30–08:30 and 25% off
+# 16:30–00:30 (Beijing time). `timezone` is a fixed UTC offset,
+# default UTC — DeepSeek's schedule is Beijing time, so set "+08:00".
+pricing = { input_per_million = 2.0, output_per_million = 8.0, currency = "CNY", timezone = "+08:00", time_windows = [
+  { start = "00:30", end = "08:30", input_per_million = 1.0, output_per_million = 4.0 },
+  { start = "16:30", end = "00:30", input_per_million = 1.5, output_per_million = 6.0 },
+] }
+```
+
+Windows are start-inclusive / end-exclusive; a window whose `start > end`
+wraps past midnight (the `16:30` → `00:30` evening discount above). The
+first matching window wins (windows are expected to be non-overlapping).
+Each LLM call bills at the rates in effect when it completes — the same
+instant the ledger `ts` is stamped.
+
 Prompt-cache hits are billed at their own (usually much cheaper) rate rather
 than the full input rate. `cache_hit_per_million` defaults to `0.0`; set it
 equal to `input_per_million` for providers that bill cache hits normally.

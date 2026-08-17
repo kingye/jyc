@@ -34,6 +34,81 @@ fn test_valid_config_passes() {
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
+/// `[agents.agents]` is reserved (the synthesized channel name) —
+/// must be rejected at load time, not silently dropped at runtime.
+#[test]
+fn test_agents_reserved_name_agents_fails() {
+    let toml = r#"
+[agents.agents]
+template = "self"
+
+[ai]
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors.iter().any(|e| e.path == "agents.agents.agents"),
+        "expected agents.agents.agents error, got: {:?}",
+        errors
+    );
+}
+
+/// `[channels.agents]` + `[agents.*]` collision: the synth channel
+/// would overwrite the user's channels.agents. Surface the error.
+#[test]
+fn test_channels_agents_collision_with_agents_fails() {
+    let toml = r#"
+[channels.agents]
+type = "websocket"
+
+[agents.jyc]
+template = "jyc"
+
+[ai]
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors.iter().any(|e| e.path == "channels.agents"),
+        "expected channels.agents error, got: {:?}",
+        errors
+    );
+}
+
+/// `channels.agents` with a non-websocket type is NOT a collision
+/// (the synth always uses channel_type="websocket"). It should
+/// validate cleanly — the user clearly intends something different.
+#[test]
+fn test_channels_agents_non_websocket_does_not_collide() {
+    let toml = r#"
+[channels.agents]
+type = "email"
+inbound_host = "imap.example.com"
+inbound_port = 993
+inbound_username = "u"
+inbound_password = "p"
+outbound_host = "smtp.example.com"
+outbound_port = 465
+outbound_username = "u"
+outbound_password = "p"
+
+[agents.jyc]
+template = "jyc"
+
+[ai]
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        !errors.iter().any(|e| e.path == "channels.agents"),
+        "channels.agents=email should not collide, got: {:?}",
+        errors
+    );
+}
+
 /// `base_url` is an opaque link prefix, so scheme + host,
 /// optional port, and an optional subpath must all be accepted.
 #[test]

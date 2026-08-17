@@ -71,3 +71,119 @@ pub fn install_agents_channel(config: &Arc<ArcSwap<AppConfig>>) {
         .insert("agents".to_string(), synthesized);
     config.store(Arc::new(new_config));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jyc_types::AiConfig;
+
+    fn minimal_app_config() -> AppConfig {
+        // AppConfig doesn't derive Default; build the minimum needed
+        // for synthesize_agents_channel / install_agents_channel.
+        AppConfig {
+            general: Default::default(),
+            channels: Default::default(),
+            agents: Default::default(),
+            ai: AiConfig::default(),
+            inspect: None,
+            attachments: None,
+            wecom: None,
+            mcps: vec![],
+            scheduler: Default::default(),
+            commands: vec![],
+        }
+    }
+
+    fn agent(name: &str, template: &str) -> AgentConfig {
+        let _ = name; // Name is the TOML table key, not a field on the config.
+        AgentConfig {
+            template: Some(template.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn synthesize_agent_pattern_default_topic_path() {
+        let mut p = ChannelPattern::default();
+        agent("jyc", "jyc").fill_into_pattern(
+            &mut p,
+            "jyc",
+            std::path::PathBuf::from("/data/jyc/agents/jyc"),
+        );
+        assert_eq!(p.name, "jyc");
+        assert_eq!(p.channel, "agents");
+        assert!(p.enabled);
+        assert_eq!(p.template.as_deref(), Some("jyc"));
+        // No explicit topic_path on the agent → default is used.
+        assert_eq!(p.topic_path.as_deref(), Some("/data/jyc/agents/jyc"));
+        // Pattern identity fields that agents don't carry are None.
+        assert!(p.topic_name.is_none());
+        assert!(p.topic_prefix.is_none());
+        assert!(p.repo_group.is_none());
+        assert!(p.pipe.is_none());
+    }
+
+    #[test]
+    fn synthesize_agent_pattern_user_topic_path_wins() {
+        let mut a = AgentConfig::default();
+        a.topic_path = Some("~/projects/jyc".to_string());
+        let mut p = ChannelPattern::default();
+        a.fill_into_pattern(
+            &mut p,
+            "jyc",
+            std::path::PathBuf::from("/default/should/not/be/used"),
+        );
+        assert_eq!(p.topic_path.as_deref(), Some("~/projects/jyc"));
+    }
+
+    #[test]
+    fn synthesize_agents_channel_none_when_empty() {
+        let snap = minimal_app_config();
+        assert!(synthesize_agents_channel(&snap).is_none());
+    }
+
+    #[test]
+    fn synthesize_agents_channel_one_pattern_per_agent() {
+        let mut snap = minimal_app_config();
+        snap.agents.insert("jyc".to_string(), agent("jyc", "jyc"));
+        snap.agents.insert("jin".to_string(), agent("jin", "jin"));
+        let cc = synthesize_agents_channel(&snap).expect("synth");
+        assert_eq!(cc.channel_type, "websocket");
+        let pats = cc.patterns.expect("patterns");
+        assert_eq!(pats.len(), 2);
+        let names: Vec<&str> = pats.iter().map(|p| p.name.as_str()).collect();
+        // Sorted for deterministic dashboard order.
+        assert_eq!(names, vec!["jin", "jyc"]);
+    }
+
+    #[test]
+    fn install_agents_channel_publishes_augmented_snapshot() {
+        let mut snap = minimal_app_config();
+        snap.agents.insert("jyc".to_string(), agent("jyc", "jyc"));
+        let cfg = Arc::new(ArcSwap::from_pointee(snap));
+        install_agents_channel(&cfg);
+        let after = cfg.load();
+        assert!(after.channels.contains_key("agents"));
+        let ch = &after.channels["agents"];
+        assert_eq!(ch.channel_type, "websocket");
+        assert_eq!(ch.patterns.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn install_agents_channel_noop_when_no_agents() {
+        let mut snap = minimal_app_config();
+        snap.channels.insert(
+            "work".to_string(),
+            ChannelConfig {
+                channel_type: "email".to_string(),
+                ..Default::default()
+            },
+        );
+        let cfg = Arc::new(ArcSwap::from_pointee(snap));
+        install_agents_channel(&cfg);
+        // No agents → no synth → channels unchanged.
+        let after = cfg.load();
+        assert!(!after.channels.contains_key("agents"));
+        assert!(after.channels.contains_key("work"));
+    }
+}

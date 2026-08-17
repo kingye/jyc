@@ -965,6 +965,102 @@ async fn test_list_topics_cleans_stale_custom_path() {
 
     tm.shutdown().await;
 }
+
+/// Multi-topic-per-agent restore: when `pattern.topic_path` is the
+/// agent root, each subdirectory `<agent>/<topic>/.jyc/topic-name`
+/// must be rediscovered on startup. This is the layout used by the
+/// synthesized "agents" channel.
+#[tokio::test]
+async fn test_restore_multi_topic_per_agent_layout() {
+    let tmp = tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    // Agent root sits OUTSIDE the workspace (it's the
+    // `<data_home>/agents/<agent_name>/` dir).
+    let agent_root = tmp.path().join("agents").join("jyc");
+    let topic_a = agent_root.join("topic-a");
+    let topic_b = agent_root.join("topic-b");
+    for t in [&topic_a, &topic_b] {
+        tokio::fs::create_dir_all(t.join(".jyc")).await.unwrap();
+        tokio::fs::write(
+            t.join(".jyc").join("topic-name"),
+            t.file_name().unwrap().to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+
+    // Config: pattern's topic_path points at the agent root, with
+    // no legacy single-topic `.jyc/topic-name` at the root itself.
+    let config_str = format!(
+        r#"
+[general]
+[channels.test-channel]
+type = "websocket"
+[[channels.test-channel.patterns]]
+name = "jyc"
+topic_path = "{}"
+[ai]
+enabled = true
+mode = "agent"
+"#,
+        agent_root.display()
+    );
+
+    let config = Arc::new(ArcSwap::from_pointee(
+        jyc_types::load_config_from_str(&config_str).unwrap(),
+    ));
+
+    let storage = Arc::new(MessageStorage::new(&workspace));
+    let cancel = CancellationToken::new();
+    let metrics_cancel = CancellationToken::new();
+    let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
+
+    let tm = Arc::new(TopicManager::new_with_options(
+        1,
+        10,
+        storage,
+        Arc::new(NoopOutbound),
+        Arc::new(StaticAgentService::new("ok")),
+        cancel,
+        true,
+        workspace.join("templates"),
+        config,
+        "test-channel".to_string(),
+        "websocket".to_string(),
+        workspace.parent().unwrap_or(&workspace).to_path_buf(),
+        workspace.to_path_buf(),
+        metrics,
+        None,
+    ));
+
+    tm.restore_custom_topic_paths().await;
+
+    let paths = tm.custom_topic_paths().await;
+    assert_eq!(
+        paths.get("topic-a"),
+        Some(&topic_a),
+        "multi-topic restore: topic-a should be rediscovered"
+    );
+    assert_eq!(
+        paths.get("topic-b"),
+        Some(&topic_b),
+        "multi-topic restore: topic-b should be rediscovered"
+    );
+
+    // list_topics must include both rediscovered topics.
+    let topics = tm.list_topics().await;
+    let names: Vec<&str> = topics.iter().map(|t| t.name.as_str()).collect();
+    assert!(names.contains(&"topic-a"), "list_topics: {names:?}");
+    assert!(names.contains(&"topic-b"), "list_topics: {names:?}");
+
+    // Event bus pre-create for both.
+    assert!(tm.get_event_bus("topic-a").await.is_some());
+    assert!(tm.get_event_bus("topic-b").await.is_some());
+
+    tm.shutdown().await;
+}
 /// Build a TM whose config prices `cnprov/m1` in CNY, so
 /// `list_topics` has a real pricing entry to resolve a currency from.
 fn make_priced_tm(workspace: &std::path::Path) -> Arc<TopicManager> {

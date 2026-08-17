@@ -139,8 +139,41 @@ Removed in the migration: `FeishuOutboundAdapter` (direct-mode delivery),
 fallback, the channel's own TopicManager/agent/state/orchestrator
 registration, and topic-close handling (a no-op for piped topics).
 
+## WeCom Bot — second migration
+
+`wecom_bot` (WeCom Smart Robot, WebSocket long connection) follows the
+same pipe-only migration as feishu. The adapter retains only:
+
+- `client.rs` — WebSocket lifecycle (connect, subscribe, heartbeat, reconnect).
+- `inbound.rs` — WebSocket frames → `InboundMessage` (with attach-download via
+  `media::process_bot_attachments` for image/file/mixed).
+- `outbound.rs` — wire-format helpers (streaming reply, attachment upload,
+  media body) re-exported as `pub` so the pipe adapter can drive them
+  directly. The full `WecomBotOutboundAdapter` struct is kept (public API)
+  for callers that still want the full reply-lifecycle surface (footer,
+  chat-log storage, etc.).
+- The new `spawn_wecom_bot_adapter` in `crates/jyc-cli/src/cli/serve/channels.rs`.
+
+Removed in the migration: the `WecomBotOutboundAdapter` registration in
+`build_outbound_adapter`, the `"wecom_bot"` arm in `InboundSpawner::spawn`,
+the `wecom_bot_handle_arc` plumbing, and the channel-specific processing
+indicator / progress spinner code in `TopicManager::worker` (the core
+stays channel-agnostic — the pipe adapter owns the streaming reply).
+
+**Placeholders.** Unlike feishu, wecom_bot does not populate a
+`chat_name` on the inbound message. The pipe topic template uses
+`${msg.<key>}` against any metadata key (channel_uid, chatid, userid,
+chat_name, ...) — `channel_uid` unifies group chat (chatid) and single
+chat (userid) in one template (`topic = "bot-${msg.channel_uid}"`).
+
+**Streaming reply.** Because the WeCom passive reply window is short and
+the agent can take minutes, the adapter sends a `finish=false` streaming
+indicator immediately on inbound (the user-visible "thinking…" message).
+The reply forwarder completes the stream with `finish=true` and sends
+any attachments via proactive `aibot_send_msg` (no window constraint).
+
 ## Migrating other channels
 
-To be documented per channel when migration starts (github, wecom_bot, wecom,
-wechat; email last). The feishu cleanup serves as the checklist template:
-strip everything except protocol code + pipe wiring.
+To be documented per channel when migration starts (github, wecom,
+wechat; email last). The feishu/wecom_bot cleanup serves as the
+checklist template: strip everything except protocol code + pipe wiring.

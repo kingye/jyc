@@ -439,11 +439,12 @@ supports_images = true      # Model-level overrides provider-level
 
 ## Feishu Channel Implementation
 
-Feishu (飞书) is the first channel migrated to the **core / hub / adapters**
-architecture — see [docs/core-hub-adapters.md](docs/core-hub-adapters.md). It
-is a pipe-only adapter: it speaks the Feishu protocol and pipes messages into
-a websocket hub channel; it has no TopicManager, agent service, state, or
-outbound adapter of its own.
+Feishu (飞书) and WeCom Bot (`wecom_bot`) are migrated to the **core / hub / adapters**
+architecture — see [docs/core-hub-adapters.md](docs/core-hub-adapters.md). They
+are pipe-only adapters: they speak the channel protocol and pipe messages into
+a websocket hub channel; they have no TopicManager, agent service, state, or
+outbound adapter of their own. Feishu was the first; wecom_bot follows the
+same pattern (with a streaming-reply twist for the WeCom passive reply window).
 
 ### Architecture Overview
 

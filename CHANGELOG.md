@@ -32,10 +32,24 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
-- **`[agent]` config table renamed to `[ai]`** at all levels (top-level,
-  `[channels.<x>]`, topic `.jyc/config.toml`). The legacy key `agent` is
-  still accepted with a deprecation warning. Code: `AgentConfig` →
-  `AiConfig`. See `docs/agents-migration.md` for the full migration plan.
+- **wecom_bot channel is pipe-only** — `wecom_bot` (WeCom Smart Robot)
+  joins `feishu` as a pipe-only adapter (see `docs/core-hub-adapters.md`).
+  Every enabled pattern must declare a `pipe` target; the adapter owns
+  the WebSocket long connection and the streaming-reply lifecycle
+  (`finish=false` indicator on receipt, `finish=true` on reply,
+  attachments relayed via proactive `aibot_send_msg`). Inbound
+  attachments continue to flow through `media::process_bot_attachments`
+  unchanged. The TopicManager/agent/orchestrator registration for
+  `wecom_bot` is removed; the `channel_type() == "wecom_bot"` progress
+  spinner path in the worker is dropped (core stays channel-agnostic).
+
+- **Pipe topic templates support `${msg.<key>}` for any metadata key**
+  (previously hardcoded to `chat_name`). Convenience: `channel_uid`
+  resolves to the channel's conversation identity (group chatid /
+  single chat userid), so `topic = "bot-${msg.channel_uid}"` unifies
+  group and single chats in one template. Compatible with the
+  existing `${msg.chat_name}` form.
+
 - **Reverted the `[hub]`/`[adapters]` config tables and `pipe.hub` rename
   (#573)** — never deployed; `[channels]` is again the single channel table.
 - **Aligned HTTP `User-Agent` defaults.** The Anthropic native provider

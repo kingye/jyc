@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
@@ -393,27 +393,12 @@ impl OutboundAdapter for WecomBotOutboundAdapter {
         _subject: &str,
         body: &str,
     ) -> Result<SendResult> {
-        // Proactive message: use aibot_send_msg with nested format
-        let use_markdown = body.contains("**")
-            || body.contains("*")
-            || body.contains("`")
-            || body.contains("#")
-            || body.contains("[")
-            || body.contains("- ");
-
-        let body_json = if use_markdown {
-            serde_json::json!({
-                "msgtype": "markdown",
-                "chatid": recipient,
-                "markdown": {"content": body}
-            })
-        } else {
-            serde_json::json!({
-                "msgtype": "text",
-                "chatid": recipient,
-                "text": {"content": body}
-            })
-        };
+        // Proactive message: use aibot_send_msg with nested format.
+        // Body shape (msgtype + chatid + text/markdown content) is built
+        // by the shared `build_proactive_text_body` helper so the wire
+        // format is defined in one place and matches the pipe reply
+        // forwarder's fallback path.
+        let body_json = build_proactive_text_body(recipient, body);
 
         let json = serde_json::json!({
             "cmd": "aibot_send_msg",
@@ -721,7 +706,7 @@ pub async fn send_stream_reply_and_wait(
             "finish": finish,
         }
     });
-    let ack = handle
+    match handle
         .send_and_wait(
             CMD_AIBOT_RESPOND_MSG,
             req_id,
@@ -729,13 +714,63 @@ pub async fn send_stream_reply_and_wait(
             std::time::Duration::from_secs(10),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("wecom_bot stream reply: {e}"))?;
-    let errcode = ack["errcode"].as_i64().unwrap_or(-1);
-    if errcode != 0 {
-        let errmsg = ack["errmsg"].as_str().unwrap_or("unknown");
-        anyhow::bail!("wecom_bot stream reply rejected: errcode={errcode}, errmsg={errmsg}");
+    {
+        Ok(ack) => {
+            let errcode = ack["errcode"].as_i64().unwrap_or(-1);
+            if errcode == 0 {
+                Ok(())
+            } else {
+                let errmsg = ack["errmsg"].as_str().unwrap_or("unknown");
+                Err(anyhow!(
+                    "wecom_bot stream reply rejected: errcode={errcode}, errmsg={errmsg}"
+                ))
+            }
+        }
+        Err(e) => {
+            // Timeout or transport error. The frame was (probably) sent
+            // before the failure surfaced; we can't tell whether the
+            // server actually delivered it. Treat as best-effort
+            // streamed (return Ok) so the caller does not fall back to a
+            // proactive send — a duplicate would be worse than a rare
+            // missing reply, and if the connection is dead the fallback
+            // would fail anyway.
+            tracing::warn!(
+                error = format!("{e:#}"),
+                "wecom_bot stream reply ack not received; assuming best-effort delivery"
+            );
+            Ok(())
+        }
     }
-    Ok(())
+}
+
+/// Build the body JSON for a proactive `aibot_send_msg` text/markdown
+/// message. Used by `WecomBotOutboundAdapter::send_message` and the pipe
+/// reply forwarder's fallback path so the wire format is defined in one
+/// place.
+///
+/// Markdown detection is a simple heuristic (presence of common markdown
+/// sigils). The caller is responsible for the surrounding `cmd` and
+/// `headers` frame.
+pub fn build_proactive_text_body(recipient: &str, text: &str) -> serde_json::Value {
+    let use_markdown = text.contains("**")
+        || text.contains("*")
+        || text.contains("`")
+        || text.contains("#")
+        || text.contains("[")
+        || text.contains("- ");
+    if use_markdown {
+        serde_json::json!({
+            "msgtype": "markdown",
+            "chatid": recipient,
+            "markdown": {"content": text},
+        })
+    } else {
+        serde_json::json!({
+            "msgtype": "text",
+            "chatid": recipient,
+            "text": {"content": text},
+        })
+    }
 }
 
 /// Map a filename/extension to WeCom media type.

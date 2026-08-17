@@ -105,10 +105,19 @@ impl WecomBotConnectionHandle {
             anyhow::bail!("Failed to send WeCom Bot {cmd} command: {e}");
         }
 
-        let response = tokio::time::timeout(timeout, rx)
-            .await
-            .with_context(|| format!("WeCom Bot {cmd} command timed out waiting for ack"))?
-            .with_context(|| format!("WeCom Bot {cmd} ack channel closed"))?;
+        let response = match tokio::time::timeout(timeout, rx).await {
+            Err(_elapsed) => {
+                // Timeout: clean up the pending entry so it does not leak.
+                // If the ack arrives later, handle_text_message will
+                // log it as a non-fatal reply ack (no one to receive).
+                self.pending_responses.lock().await.remove(req_id);
+                anyhow::bail!("WeCom Bot {cmd} command timed out waiting for ack");
+            }
+            Ok(Err(_recv)) => {
+                anyhow::bail!("WeCom Bot {cmd} ack channel closed");
+            }
+            Ok(Ok(v)) => v,
+        };
 
         Ok(response)
     }

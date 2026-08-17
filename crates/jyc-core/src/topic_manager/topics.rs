@@ -139,8 +139,72 @@ impl TopicManager {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // Directory exists but no topic-name file — not yet
-                    // initialized, or pre-this-feature topic. Skip.
+                    // Legacy single-topic file missing — fall through
+                    // to the multi-topic-per-agent scan underneath.
+                    self.scan_subdirs_for_topics(&resolved).await;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        path = %topic_name_file.display(),
+                        "Failed to read topic-name file during restore"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Register one custom-path entry (with event-bus pre-create).
+    ///
+    /// Shared by the legacy single-topic-per-pattern restore and the new
+    /// multi-topic-per-agent scan; extracted so both branches share the
+    /// same locking + tracing.
+    async fn register_custom_path(self: &Self, topic_name: &str, resolved: PathBuf) {
+        let mut paths = self.topic_paths.lock().await;
+        paths.entry(topic_name.to_string()).or_insert_with(|| {
+            tracing::info!(
+                topic = %topic_name,
+                path = %resolved.display(),
+                "Restored custom topic_path from disk"
+            );
+            resolved.clone()
+        });
+        drop(paths);
+        if self.enable_events {
+            self.get_or_create_event_bus(topic_name).await;
+        }
+    }
+
+    /// Scan a directory for entries whose `.jyc/topic-name` exists, and
+    /// register each one in `topic_paths`. Used by the multi-topic-per-agent
+    /// restore path: the synthesized pattern's `topic_path` points at the
+    /// agent root, and each sub-topic lives at
+    /// `<agent_root>/<topic>/.jyc/topic-name`.
+    async fn scan_subdirs_for_topics(self: &Self, agent_root: &std::path::Path) {
+        let Ok(mut entries) = tokio::fs::read_dir(agent_root).await else {
+            return;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let jyc_dir = path.join(".jyc");
+            if !jyc_dir.is_dir() {
+                continue;
+            }
+            crate::topic_path::migrate_topic_name_file(&jyc_dir);
+            let topic_name_file = jyc_dir.join("topic-name");
+            match tokio::fs::read_to_string(&topic_name_file).await {
+                Ok(name) => {
+                    let name = name.trim().to_string();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    self.register_custom_path(&name, path.clone()).await;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Empty `.jyc/` (template init not finished yet) — skip.
                 }
                 Err(e) => {
                     tracing::warn!(

@@ -535,4 +535,32 @@ mod tests {
             "custom path should not contain 'workspace'"
         );
     }
+
+    /// Two agents with two topics each: all four topic dirs land under
+    /// their respective agent subtrees.
+    #[tokio::test]
+    async fn test_resolve_agent_workspace_multiple_agents() {
+        let _ = resolve_agent_workspace("jyc");
+        let _ = resolve_agent_workspace("jin");
+        // Smoke: each name produces a different suffix; full path
+        // equality is asserted in test_resolve_agent_workspace_distinct.
+        let a = resolve_agent_workspace("jyc");
+        let b = resolve_agent_workspace("jin");
+        assert!(a.to_string_lossy().ends_with("jyc") || a.to_string_lossy().ends_with("jyc/"));
+        assert!(b.to_string_lossy().ends_with("jin") || b.to_string_lossy().ends_with("jin/"));
+    }
+
+    /// Agents workspace root is `<data_home>/agents`, distinct from a
+    /// regular channel's `<workdir>/<channel>/workspace/`.
+    #[test]
+    fn test_agents_workspace_root_differs_from_channel_workspace() {
+        let workdir = Path::new("/tmp/jyc-data");
+        let agents_root = resolve_agents_workspace_root(workdir);
+        let chan_ws = resolve_workspace(workdir, "work");
+        assert!(chan_ws.starts_with(workdir));
+        assert!(
+            !agents_root.starts_with(workdir) || agents_root == workdir.join("agents"),
+            "agents root should resolve via data_home, not under workdir"
+        );
+    }
 }

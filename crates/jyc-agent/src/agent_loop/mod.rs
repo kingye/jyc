@@ -967,13 +967,14 @@ fn bill_call(
         return 0.0;
     }
 
-    let cost = jyc_types::pricing::compute_cost_split(
+    let (cost, rates) = jyc_types::pricing::compute_cost_split_with_rates(
         p,
         input_tokens,
         output_tokens,
         cache_hit_tokens,
         cache_creation_tokens,
     );
+    let (time_window, utc_offset) = rates.source.billing_fields();
     let entry = jyc_core::billing_log_store::BillingEntry {
         ts: Utc::now().to_rfc3339(),
         model: model_label.to_string(),
@@ -984,6 +985,11 @@ fn bill_call(
         cost,
         currency: p.currency_label().to_string(),
         kind: kind.to_string(),
+        input_rate_per_million: rates.input_per_million,
+        output_rate_per_million: rates.output_per_million,
+        cache_hit_rate_per_million: rates.cache_hit_per_million,
+        time_window,
+        utc_offset,
     };
     if let Err(e) = jyc_core::billing_log_store::BillingLogStore::append(topic_path, &entry) {
         tracing::warn!(error = %e, kind, "Failed to append billing entry");

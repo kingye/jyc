@@ -30,6 +30,15 @@ All notable changes to JYC will be documented in this file.
   form. Mutually exclusive with `pipe.channel`/`pipe.pattern` (validated
   at load time). Legacy form still works with a deprecation warning.
 
+- **Billing ledger records applied rate + time-window provenance.**
+  Every line in `.jyc/bill-YYYY-MM-DD.jsonl` now carries
+  `input_rate_per_million`, `output_rate_per_million`,
+  `cache_hit_rate_per_million`, `time_window` (e.g. `"16:30-00:30"` or
+  `null` for flat rates), and `utc_offset`. The pricing module also
+  emits a `tracing::debug!` line on each call naming the rates in
+  effect, so a misconfigured `time_windows` shows up in the logs
+  rather than only at month-end reconciliation.
+
 ### Changed
 
 - **`[agent]` config table renamed to `[ai]`** at all levels (top-level,

@@ -19,6 +19,43 @@ use crate::config::{AppConfig, ModelPricing};
 /// Tokens in one million — the denominator for every configured rate.
 const TOKENS_PER_MILLION: f64 = 1_000_000.0;
 
+/// Where the rates applied to one LLM call came from.
+///
+/// `Flat` = the rates on `ModelPricing` itself (no `time_windows` configured,
+/// or the call fell outside every window). `Window` = the named
+/// `time_windows` entry that contained the call at its `utc_offset`.
+/// `utc_offset` is always populated so the caller can verify which clock
+/// the window judgement ran against.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RateSource {
+    Flat { utc_offset: String },
+    Window { label: String, utc_offset: String },
+}
+
+impl RateSource {
+    /// Collapse to the two ledger-shaped fields: `time_window` is `Some(label)`
+    /// for window hits and `None` for flat rates; `utc_offset` is always set.
+    /// Keeps callers from duplicating the variant match.
+    pub fn billing_fields(&self) -> (Option<String>, String) {
+        match self {
+            RateSource::Flat { utc_offset } => (None, utc_offset.clone()),
+            RateSource::Window { label, utc_offset } => (Some(label.clone()), utc_offset.clone()),
+        }
+    }
+}
+
+/// The four rates in effect for one LLM call, plus where they came from.
+/// Returned by [`compute_cost_split_with_rates`] so callers can record
+/// provenance in the billing ledger.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppliedRates {
+    pub input_per_million: f64,
+    pub output_per_million: f64,
+    pub cache_hit_per_million: f64,
+    pub cache_creation_per_million: Option<f64>,
+    pub source: RateSource,
+}
+
 /// The four rates that apply to one LLM call, resolved from
 /// [`ModelPricing`] at a specific instant.
 struct Rates {
@@ -42,16 +79,18 @@ fn parse_time(s: &str) -> Option<NaiveTime> {
 /// `start > end` wraps past midnight. A window with an unparseable
 /// start/end is skipped. Cache rates omitted on a window inherit the
 /// flat [`ModelPricing`] cache rates.
-fn effective_rates(pricing: &ModelPricing, now: DateTime<Utc>) -> Rates {
-    let offset = match pricing.utc_offset.as_deref() {
-        Some(off) => match off.parse::<FixedOffset>() {
-            Ok(off) => off,
-            Err(e) => {
-                tracing::warn!(utc_offset = off, error = %e, "invalid pricing utc_offset, using UTC");
-                FixedOffset::east_opt(0).expect("zero offset is always valid")
-            }
-        },
-        None => FixedOffset::east_opt(0).expect("zero offset is always valid"),
+///
+/// Emits a `tracing::debug!` line on each resolution so operators can
+/// see which rates applied to each call. The call site (billing ledger)
+/// also persists the rates; the debug line is the live observability path.
+fn effective_rates(pricing: &ModelPricing, now: DateTime<Utc>) -> (Rates, RateSource) {
+    let utc_offset = pricing.utc_offset.clone().unwrap_or_default();
+    let offset = match utc_offset.parse::<FixedOffset>() {
+        Ok(off) => off,
+        Err(e) => {
+            tracing::warn!(utc_offset = %utc_offset, error = %e, "invalid pricing utc_offset, using UTC");
+            FixedOffset::east_opt(0).expect("zero offset is always valid")
+        }
     };
     let local = now.with_timezone(&offset).time();
 
@@ -66,25 +105,51 @@ fn effective_rates(pricing: &ModelPricing, now: DateTime<Utc>) -> Rates {
             local >= start || local < end
         };
         if in_window {
-            return Rates {
-                input: w.input_per_million,
-                output: w.output_per_million,
-                cache_hit: w
-                    .cache_hit_per_million
-                    .unwrap_or(pricing.cache_hit_per_million),
-                cache_creation: w
-                    .cache_creation_per_million
-                    .or(pricing.cache_creation_per_million),
-            };
+            let cache_hit = w
+                .cache_hit_per_million
+                .unwrap_or(pricing.cache_hit_per_million);
+            tracing::debug!(
+                utc_offset = %utc_offset,
+                window = format!("{}-{}", w.start, w.end),
+                input_per_million = w.input_per_million,
+                output_per_million = w.output_per_million,
+                cache_hit_per_million = cache_hit,
+                "billing rates: matched time_windows entry",
+            );
+            return (
+                Rates {
+                    input: w.input_per_million,
+                    output: w.output_per_million,
+                    cache_hit,
+                    cache_creation: w
+                        .cache_creation_per_million
+                        .or(pricing.cache_creation_per_million),
+                },
+                RateSource::Window {
+                    label: format!("{}-{}", w.start, w.end),
+                    utc_offset: utc_offset.clone(),
+                },
+            );
         }
     }
 
-    Rates {
-        input: pricing.input_per_million,
-        output: pricing.output_per_million,
-        cache_hit: pricing.cache_hit_per_million,
-        cache_creation: pricing.cache_creation_per_million,
-    }
+    tracing::debug!(
+        utc_offset = %utc_offset,
+        input_per_million = pricing.input_per_million,
+        output_per_million = pricing.output_per_million,
+        cache_hit_per_million = pricing.cache_hit_per_million,
+        cache_creation_per_million = ?pricing.cache_creation_per_million,
+        "billing rates: using flat rates (outside all time_windows)",
+    );
+    (
+        Rates {
+            input: pricing.input_per_million,
+            output: pricing.output_per_million,
+            cache_hit: pricing.cache_hit_per_million,
+            cache_creation: pricing.cache_creation_per_million,
+        },
+        RateSource::Flat { utc_offset },
+    )
 }
 
 /// Compute the cost of a **single** LLM call with read+write cache
@@ -126,7 +191,28 @@ pub fn compute_cost_split(
     cache_read_tokens: u64,
     cache_creation_tokens: u64,
 ) -> f64 {
-    compute_cost_split_at(
+    compute_cost_split_with_rates(
+        pricing,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+    )
+    .0
+}
+
+/// Like [`compute_cost_split`] but also returns [`AppliedRates`] — the
+/// exact per-million rates (and which `time_windows` entry, if any,
+/// produced them) used to compute the cost. Callers persist this into
+/// the billing ledger so each entry's cost is auditable after the fact.
+pub fn compute_cost_split_with_rates(
+    pricing: &ModelPricing,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+) -> (f64, AppliedRates) {
+    compute_cost_split_at_with_rates(
         pricing,
         Utc::now(),
         input_tokens,
@@ -136,17 +222,18 @@ pub fn compute_cost_split(
     )
 }
 
-/// [`compute_cost_split`] at an explicit instant — lets tests exercise
-/// time-of-day windows deterministically instead of reading the clock.
-fn compute_cost_split_at(
+/// [`compute_cost_split_with_rates`] at an explicit instant — lets tests
+/// exercise time-of-day windows deterministically instead of reading the
+/// clock.
+fn compute_cost_split_at_with_rates(
     pricing: &ModelPricing,
     now: DateTime<Utc>,
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
     cache_creation_tokens: u64,
-) -> f64 {
-    let r = effective_rates(pricing, now);
+) -> (f64, AppliedRates) {
+    let (r, source) = effective_rates(pricing, now);
     let uncached_input = input_tokens
         .saturating_sub(cache_read_tokens)
         .saturating_sub(cache_creation_tokens);
@@ -156,7 +243,15 @@ fn compute_cost_split_at(
     let read_cost = cache_read_tokens as f64 * r.cache_hit;
     let write_cost = cache_creation_tokens as f64 * r.cache_creation.unwrap_or(r.cache_hit);
 
-    (input_cost + output_cost + read_cost + write_cost) / TOKENS_PER_MILLION
+    let cost = (input_cost + output_cost + read_cost + write_cost) / TOKENS_PER_MILLION;
+    let applied = AppliedRates {
+        input_per_million: r.input,
+        output_per_million: r.output,
+        cache_hit_per_million: r.cache_hit,
+        cache_creation_per_million: r.cache_creation,
+        source,
+    };
+    (cost, applied)
 }
 
 /// Compute the cost of a **single** LLM call.
@@ -203,6 +298,13 @@ pub fn lookup_pricing(config: &AppConfig, model: &str) -> Option<ModelPricing> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
+
+    /// Build a UTC `DateTime` at a chosen wall-clock time — lets window
+    /// tests pin a specific instant without mocking the clock.
+    fn utc(h: u32, m: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 8, 17, h, m, 0).unwrap()
+    }
 
     fn pricing(input: f64, output: f64, cache: f64) -> ModelPricing {
         ModelPricing {
@@ -485,11 +587,6 @@ mod tests {
         //! Tests for time-of-day pricing windows.
         use super::*;
         use crate::config::TimeWindowPricing;
-        use chrono::TimeZone;
-
-        fn utc(h: u32, m: u32) -> DateTime<Utc> {
-            Utc.with_ymd_and_hms(2026, 8, 17, h, m, 0).unwrap()
-        }
 
         fn window(start: &str, end: &str, input: f64, output: f64) -> TimeWindowPricing {
             TimeWindowPricing {
@@ -524,11 +621,11 @@ mod tests {
         #[test]
         fn window_rates_apply_inside_the_window() {
             let p = deepseek_pricing();
-            let r = effective_rates(&p, utc(3, 0));
+            let r = effective_rates(&p, utc(3, 0)).0;
             assert_eq!(r.input, 1.0);
             assert_eq!(r.output, 4.0);
             // And through the full cost path: 1M input at ¥1/M = ¥1.0.
-            let cost = compute_cost_split_at(&p, utc(3, 0), 1_000_000, 0, 0, 0);
+            let cost = compute_cost_split_at_with_rates(&p, utc(3, 0), 1_000_000, 0, 0, 0).0;
             assert!((cost - 1.0).abs() < 1e-9, "got {cost}");
         }
 
@@ -537,10 +634,10 @@ mod tests {
         #[test]
         fn flat_rates_apply_outside_all_windows() {
             let p = deepseek_pricing();
-            let r = effective_rates(&p, utc(12, 0));
+            let r = effective_rates(&p, utc(12, 0)).0;
             assert_eq!(r.input, 2.0);
             assert_eq!(r.output, 8.0);
-            let cost = compute_cost_split_at(&p, utc(12, 0), 1_000_000, 0, 0, 0);
+            let cost = compute_cost_split_at_with_rates(&p, utc(12, 0), 1_000_000, 0, 0, 0).0;
             assert!((cost - 2.0).abs() < 1e-9, "got {cost}");
         }
 
@@ -550,11 +647,11 @@ mod tests {
         fn midnight_wrapping_window_covers_both_sides() {
             let p = deepseek_pricing();
             // 20:00 and 00:15 are both inside [16:30, 00:30).
-            assert_eq!(effective_rates(&p, utc(20, 0)).input, 1.5);
-            assert_eq!(effective_rates(&p, utc(0, 15)).input, 1.5);
+            assert_eq!(effective_rates(&p, utc(20, 0)).0.input, 1.5);
+            assert_eq!(effective_rates(&p, utc(0, 15)).0.input, 1.5);
             // 00:30 is the wrap window's end (exclusive) → off-peak window
             // [00:30, 08:30) takes over.
-            assert_eq!(effective_rates(&p, utc(0, 30)).input, 1.0);
+            assert_eq!(effective_rates(&p, utc(0, 30)).0.input, 1.0);
         }
 
         /// Boundaries are start-inclusive / end-exclusive.
@@ -562,9 +659,9 @@ mod tests {
         fn boundaries_are_start_inclusive_end_exclusive() {
             let p = deepseek_pricing();
             // 00:30 is the off-peak start → in.
-            assert_eq!(effective_rates(&p, utc(0, 30)).input, 1.0);
+            assert_eq!(effective_rates(&p, utc(0, 30)).0.input, 1.0);
             // 08:30 is the off-peak end → out (flat standard applies).
-            assert_eq!(effective_rates(&p, utc(8, 30)).input, 2.0);
+            assert_eq!(effective_rates(&p, utc(8, 30)).0.input, 2.0);
         }
 
         /// `utc_offset` shifts the window clock: a Beijing-time window
@@ -576,8 +673,8 @@ mod tests {
             p.utc_offset = Some("+08:00".to_string());
             // Window times are now Beijing local.
             p.time_windows = vec![window("00:30", "08:30", 1.0, 4.0)];
-            assert_eq!(effective_rates(&p, utc(20, 0)).input, 1.0);
-            assert_eq!(effective_rates(&p, utc(10, 0)).input, 2.0);
+            assert_eq!(effective_rates(&p, utc(20, 0)).0.input, 1.0);
+            assert_eq!(effective_rates(&p, utc(10, 0)).0.input, 2.0);
         }
 
         /// The first matching window wins when windows overlap.
@@ -588,7 +685,7 @@ mod tests {
                 window("00:00", "12:00", 1.0, 1.0),
                 window("06:00", "18:00", 5.0, 5.0),
             ];
-            assert_eq!(effective_rates(&p, utc(8, 0)).input, 1.0);
+            assert_eq!(effective_rates(&p, utc(8, 0)).0.input, 1.0);
         }
 
         /// An unparseable window time skips that window; an unparseable
@@ -608,10 +705,10 @@ mod tests {
                 window("00:30", "08:30", 1.0, 4.0),
             ];
             // The bogus window is skipped; the valid one still matches.
-            assert_eq!(effective_rates(&p, utc(3, 0)).input, 1.0);
+            assert_eq!(effective_rates(&p, utc(3, 0)).0.input, 1.0);
             // Bad offset → UTC, so the UTC-time window still matches.
             p.utc_offset = Some("not-an-offset".to_string());
-            assert_eq!(effective_rates(&p, utc(3, 0)).input, 1.0);
+            assert_eq!(effective_rates(&p, utc(3, 0)).0.input, 1.0);
         }
 
         /// A window's cache buckets bill at the window's cache rates.
@@ -634,10 +731,10 @@ mod tests {
                 utc_offset: None,
             };
             // 100 input, all cached-read → 100 * 0.25 / 1e6.
-            let read = compute_cost_split_at(&p, utc(6, 0), 100, 0, 100, 0);
+            let read = compute_cost_split_at_with_rates(&p, utc(6, 0), 100, 0, 100, 0).0;
             assert!((read - 25e-6).abs() < 1e-12, "got {read}");
             // 100 input, all cache-creation → 100 * 0.5 / 1e6.
-            let write = compute_cost_split_at(&p, utc(6, 0), 100, 0, 0, 100);
+            let write = compute_cost_split_at_with_rates(&p, utc(6, 0), 100, 0, 0, 100).0;
             assert!((write - 50e-6).abs() < 1e-12, "got {write}");
         }
 
@@ -646,14 +743,14 @@ mod tests {
         #[test]
         fn unset_window_cache_inherits_flat_rate() {
             let p = deepseek_pricing(); // flat cache_hit 0.5, windows set only in/out
-            let r = effective_rates(&p, utc(3, 0));
+            let r = effective_rates(&p, utc(3, 0)).0;
             assert_eq!(r.cache_hit, 0.5, "must inherit flat cache-hit rate");
             assert_eq!(
                 r.cache_creation, None,
                 "no flat cache-creation rate to inherit"
             );
             // 100 input, all cached-read → 100 * 0.5 / 1e6 (not 0).
-            let cost = compute_cost_split_at(&p, utc(3, 0), 100, 0, 100, 0);
+            let cost = compute_cost_split_at_with_rates(&p, utc(3, 0), 100, 0, 100, 0).0;
             assert!((cost - 50e-6).abs() < 1e-12, "got {cost}");
         }
 
@@ -669,6 +766,131 @@ mod tests {
                 Some(NaiveTime::from_hms_opt(16, 30, 0).unwrap())
             );
             assert_eq!(parse_time("nope"), None);
+        }
+    }
+
+    mod applied_rates {
+        //! Tests for [`compute_cost_split_with_rates`] — the cost path
+        //! that also returns [`AppliedRates`] so callers can persist
+        //! which `time_windows` entry (or flat rates) produced the cost.
+        use super::*;
+        use crate::TimeWindowPricing;
+
+        fn pricing_with_window() -> ModelPricing {
+            ModelPricing {
+                input_per_million: 2.0,
+                output_per_million: 8.0,
+                cache_hit_per_million: 0.5,
+                cache_creation_per_million: None,
+                currency: None,
+                time_windows: vec![TimeWindowPricing {
+                    start: "00:00".to_string(),
+                    end: "08:00".to_string(),
+                    input_per_million: 1.0,
+                    output_per_million: 4.0,
+                    cache_hit_per_million: Some(0.25),
+                    cache_creation_per_million: None,
+                }],
+                utc_offset: None,
+            }
+        }
+
+        /// Inside a window: rates come from the window, `RateSource::Window`
+        /// with the window's `start-end` label and the configured `utc_offset`.
+        #[test]
+        fn inside_window_returns_window_source() {
+            let p = pricing_with_window();
+            let (cost, rates) = compute_cost_split_at_with_rates(&p, utc(3, 0), 1_000_000, 0, 0, 0);
+            assert!((cost - 1.0).abs() < 1e-9, "got {cost}");
+            assert_eq!(rates.input_per_million, 1.0);
+            assert_eq!(rates.output_per_million, 4.0);
+            assert_eq!(rates.cache_hit_per_million, 0.25);
+            assert_eq!(rates.cache_creation_per_million, None);
+            assert_eq!(
+                rates.source,
+                RateSource::Window {
+                    label: "00:00-08:00".to_string(),
+                    utc_offset: String::new(),
+                },
+            );
+        }
+
+        /// Outside every window: rates come from the flat fields,
+        /// `RateSource::Flat` with the configured `utc_offset`.
+        #[test]
+        fn outside_window_returns_flat_source() {
+            let p = pricing_with_window();
+            let (cost, rates) =
+                compute_cost_split_at_with_rates(&p, utc(12, 0), 1_000_000, 0, 0, 0);
+            assert!((cost - 2.0).abs() < 1e-9, "got {cost}");
+            assert_eq!(rates.input_per_million, 2.0);
+            assert_eq!(rates.output_per_million, 8.0);
+            assert_eq!(rates.cache_hit_per_million, 0.5);
+            assert_eq!(
+                rates.source,
+                RateSource::Flat {
+                    utc_offset: String::new()
+                }
+            );
+        }
+
+        /// A window that omits `cache_hit_per_million` inherits the flat
+        /// cache rate — `AppliedRates` carries the inherited value.
+        #[test]
+        fn window_inherits_flat_cache_rate() {
+            let mut p = pricing_with_window();
+            // Remove the cache_hit override on the window → flat 0.5 wins.
+            p.time_windows[0].cache_hit_per_million = None;
+            let (_, rates) = compute_cost_split_at_with_rates(&p, utc(3, 0), 0, 0, 1_000_000, 0);
+            assert_eq!(rates.cache_hit_per_million, 0.5);
+            assert!(matches!(rates.source, RateSource::Window { .. }));
+        }
+
+        /// A configured `utc_offset` flows into `RateSource` so the
+        /// caller can verify which clock the window judgement ran against.
+        #[test]
+        fn utc_offset_propagates_to_rate_source() {
+            let mut p = pricing_with_window();
+            p.utc_offset = Some("+08:00".to_string());
+            // 20:00 UTC = 04:00 Beijing, inside the 00:00–08:00 window.
+            let (_, rates) = compute_cost_split_at_with_rates(&p, utc(20, 0), 1_000_000, 0, 0, 0);
+            assert_eq!(
+                rates.source,
+                RateSource::Window {
+                    label: "00:00-08:00".to_string(),
+                    utc_offset: "+08:00".to_string(),
+                },
+            );
+        }
+
+        /// The wrapper [`compute_cost_split_with_rates`] returns the same
+        /// cost as [`compute_cost_split`] — the rate provenance is
+        /// additive, not a behaviour change.
+        #[test]
+        fn with_rates_wrapper_matches_cost_only() {
+            let p = pricing_with_window();
+            let cost_only = compute_cost_split(&p, 1_000_000, 0, 0, 0);
+            let cost_via_rates = compute_cost_split_with_rates(&p, 1_000_000, 0, 0, 0).0;
+            assert_eq!(cost_only, cost_via_rates);
+        }
+
+        /// [`RateSource::billing_fields`] collapses each variant into the
+        /// two ledger-shaped fields both production callers write into
+        /// `BillingEntry` (`time_window`, `utc_offset`).
+        #[test]
+        fn billing_fields_collapses_both_variants() {
+            let flat = RateSource::Flat {
+                utc_offset: "+08:00".to_string(),
+            };
+            assert_eq!(flat.billing_fields(), (None, "+08:00".to_string()));
+            let windowed = RateSource::Window {
+                label: "16:30-00:30".to_string(),
+                utc_offset: "+08:00".to_string(),
+            };
+            assert_eq!(
+                windowed.billing_fields(),
+                (Some("16:30-00:30".to_string()), "+08:00".to_string()),
+            );
         }
     }
 }

@@ -2089,6 +2089,15 @@ mod tests {
         let out = apply_pipe_retarget(pipe_msg(Default::default()), &pipe).unwrap();
         assert_eq!(out.channel, "agents");
         assert_eq!(out.topic, "general");
+        // The pattern hint must still be the agent name even when
+        // pipe.topic is a static literal — WebsocketMatcher selects
+        // [agents.jyc] by name, not the topic directory.
+        assert_eq!(
+            out.metadata
+                .get(jyc_types::PIPE_PATTERN_METADATA_KEY)
+                .and_then(|v| v.as_str()),
+            Some("jyc")
+        );
     }
 
     /// `pipe.agent` mixed with `pipe.channel` is rejected (mutual exclusion).

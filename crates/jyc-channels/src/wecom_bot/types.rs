@@ -448,16 +448,20 @@ mod tests {
     /// chat). `chatid` must default to empty so the event still parses;
     /// before the fix this payload returned "missing field `chatid`"
     /// and the event was dropped with a WARN.
+    ///
+    /// Identifiers are intentionally placeholder values — never paste
+    /// real `msgid`/`aibotid`/`userid`/`req_id` from production into
+    /// tests.
     #[test]
     fn test_parse_event_real_payload_without_chatid() {
         let json = r#"{
             "cmd": "aibot_event_callback",
-            "headers": {"req_id": "40i11V-sQEi6vRq3TrTlswAA"},
+            "headers": {"req_id": "aaaaaaaaaaaaaaaaaaaaaaaa"},
             "body": {
-                "msgid": "e733f4987effa842343598a8dbe32b1a",
-                "aibotid": "aibhJ39X1kuUvS-tbkxZbm8_PRVLllDYV6X",
+                "msgid": "00000000000000000000000000000001",
+                "aibotid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "chattype": "single",
-                "from": {"userid": "MianMianRuoCun"},
+                "from": {"userid": "test_user_id_0001"},
                 "msgtype": "event",
                 "create_time": 1787025907,
                 "event": {"eventtype": "enter_chat"}

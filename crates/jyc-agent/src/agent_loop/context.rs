@@ -2,6 +2,10 @@
 //!
 //! Extracted from the monolithic `agent_loop.rs`.
 
+use std::borrow::Cow;
+
+use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
+
 use crate::types::{Message, Role};
 
 pub(crate) fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
@@ -122,9 +126,40 @@ pub(crate) fn compact_history_heuristic(history: &[Message], keep_pairs: usize) 
         .collect()
 }
 
+/// Build the context to send to the LLM for the next request.
+///
+/// The full `raw_context` is always persisted to `.jyc/agent-context.json`
+/// untouched; this function only shapes what is sent to the LLM.
+///
+/// * `Full` — borrow the full context (no copy).
+/// * `SlidingWindow` — keep the last `strategy.window` user+assistant turns
+///   from the prior context (everything before `prior_len`), plus the full
+///   current turn (`raw_context[prior_len..]`) so tool calls/results stay
+///   coherent mid-loop.
+pub(crate) fn build_send_context<'a>(
+    raw_context: &'a [serde_json::Value],
+    prior_len: usize,
+    strategy: &ContextStrategyConfig,
+) -> Cow<'a, [serde_json::Value]> {
+    match strategy.mode {
+        ContextStrategy::Full => Cow::Borrowed(raw_context),
+        ContextStrategy::SlidingWindow => {
+            // Mid-loop compression can shorten `raw_context` below `prior_len`;
+            // clamp so the slice math never underflows.
+            let boundary = prior_len.min(raw_context.len());
+            let prior = &raw_context[..boundary];
+            let current = &raw_context[boundary..];
+            let mut windowed = crate::session::extract_user_assistant_pairs(prior, strategy.window);
+            windowed.extend_from_slice(current);
+            Cow::Owned(windowed)
+        }
+    }
+}
+
 #[cfg(test)]
 mod render_raw_context_tests {
     use super::*;
+    use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
     use serde_json::json;
 
     #[test]
@@ -172,5 +207,96 @@ mod render_raw_context_tests {
         let rendered = render_raw_context_as_text(&ctx);
         assert!(!rendered.contains("ignored"));
         assert!(rendered.contains("USER: real"));
+    }
+
+    #[test]
+    fn full_strategy_borrows_unchanged() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+        ];
+        let prior_len = 2;
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::Full,
+            window: 10,
+        };
+        let sent = build_send_context(&ctx, prior_len, &cfg);
+        assert!(matches!(sent, Cow::Borrowed(_)));
+        assert_eq!(sent.len(), ctx.len());
+    }
+
+    #[test]
+    fn sliding_window_keeps_last_pairs_and_current_turn() {
+        // Prior: 3 user+assistant turns, plus 2 tool messages.
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "out"}),
+            json!({"role": "user", "content": "u3"}),
+            json!({"role": "assistant", "content": "a3"}),
+        ];
+        let current = vec![
+            json!({"role": "user", "content": "u4"}),
+            json!({"role": "assistant", "content": "a4", "tool_calls": [{"id":"2","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "2", "content": "out2"}),
+        ];
+        let prior_len = prior.len();
+        let mut ctx = prior.clone();
+        ctx.extend(current.clone());
+
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 2,
+        };
+        let sent = build_send_context(&ctx, prior_len, &cfg);
+        assert!(matches!(sent, Cow::Owned(_)));
+        let sent = sent.into_owned();
+
+        // Last 2 user+assistant text pairs from prior → {u2,a2_clean,u3,a3}.
+        // Tool role from prior is dropped. Then current turn is appended
+        // verbatim so tool calls/results remain coherent.
+        let expected: Vec<serde_json::Value> = vec![
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+            json!({"role": "user", "content": "u3"}),
+            json!({"role": "assistant", "content": "a3"}),
+            current[0].clone(),
+            current[1].clone(),
+            current[2].clone(),
+        ];
+        assert_eq!(sent, expected);
+    }
+
+    #[test]
+    fn sliding_window_prior_shorter_than_raw_context() {
+        // After mid-loop compression, prior_len could exceed raw_context.len().
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+        ];
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 5,
+        };
+        let sent = build_send_context(&ctx, 99, &cfg).into_owned();
+        // Clamps boundary → whole ctx treated as prior, windowed.
+        assert_eq!(sent.len(), 2);
+    }
+
+    #[test]
+    fn sliding_window_empty_prior_returns_only_current() {
+        let ctx = vec![
+            json!({"role": "user", "content": "current"}),
+            json!({"role": "assistant", "content": "reply"}),
+        ];
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 10,
+        };
+        let sent = build_send_context(&ctx, 0, &cfg).into_owned();
+        assert_eq!(sent, ctx);
     }
 }

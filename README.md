@@ -200,6 +200,10 @@ Send commands at the top of an email body. These commands work across all channe
 | `/close` | Close topic and delete directory (requires `--confirm` or `-y`) |
 | `/template` | Apply template files to topic (skip existing) |
 | `/template update` | Re-apply template, overwrite existing files |
+| `/context` | Show the context management strategy (`full` / `sliding_window`) |
+| `/context full` | Send the full conversation context to the LLM (default) |
+| `/context sliding [N]` | Send only the last N user+assistant turns to the LLM (default N=10); `.jyc/agent-context.json` keeps the full history |
+| `/context reset` | Remove the runtime override and revert to the configured default |
 
 ### Custom Commands
 

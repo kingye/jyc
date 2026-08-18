@@ -1,5 +1,5 @@
 use jyc_types::AppConfig;
-use jyc_types::channel::ResetCompressionConfig;
+use jyc_types::channel::{ContextStrategyConfig, ResetCompressionConfig};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -343,6 +343,58 @@ fn context_window_for_model(model_str: &str, config: &AppConfig) -> Option<u64> 
         }
     }
     Some(DEFAULT_CONTEXT_WINDOW)
+}
+
+/// File name for the runtime context-strategy override written by the
+/// `/context` command. Persisted as JSON (mode + optional window).
+pub const CONTEXT_STRATEGY_FILE: &str = "context-strategy.json";
+
+/// Read the runtime context-strategy override if it exists.
+///
+/// Returns `None` when the file is missing, malformed, or `window == 0`.
+/// `window == 0` is rejected (validation also rejects it at config load)
+/// because a zero-window prior context would break coherence.
+pub async fn read_context_strategy_override(topic_path: &Path) -> Option<ContextStrategyConfig> {
+    let path = topic_path.join(".jyc").join(CONTEXT_STRATEGY_FILE);
+    let content = tokio::fs::read_to_string(&path).await.ok()?;
+    let cfg: ContextStrategyConfig = serde_json::from_str(&content).ok()?;
+    if cfg.window == 0 {
+        return None;
+    }
+    Some(cfg)
+}
+
+/// Resolve the `ContextStrategyConfig` for a topic from config alone.
+///
+/// Priority: matched pattern > first pattern > global `[ai].context_strategy` >
+/// `ContextStrategyConfig::default()` (full / window=10).
+///
+/// Pass `matched_pattern = Some(name)` when the caller has access to the
+/// pattern that created the topic (e.g. `process()` with
+/// `message.matched_pattern`). Pass `None` when the caller doesn't (e.g.
+/// `/context` command handler without topic context) — the first pattern
+/// on the channel is used as the best available signal.
+pub fn resolve_context_strategy(
+    config: &AppConfig,
+    channel: &str,
+    matched_pattern: Option<&str>,
+) -> ContextStrategyConfig {
+    let channel_cfg = config.channels.get(channel);
+    let patterns = channel_cfg.and_then(|c| c.patterns.as_ref());
+
+    let from_matched = matched_pattern
+        .and_then(|name| patterns.and_then(|p| p.iter().find(|p| p.name == name)))
+        .and_then(|p| p.context_strategy.clone());
+
+    let from_first = from_matched.or_else(|| {
+        patterns
+            .and_then(|p| p.first())
+            .and_then(|p| p.context_strategy.clone())
+    });
+
+    from_first
+        .or_else(|| config.ai.context_strategy.clone())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -784,5 +836,139 @@ auto_reset_threshold = 0.95
             first_mtime, second_mtime,
             "file should not be rewritten when value unchanged"
         );
+    }
+
+    // ── resolve_context_strategy ──────────────────────────────────────
+
+    use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
+
+    fn config_with_strategies(
+        patterns: Vec<(&str, Option<ContextStrategyConfig>)>,
+        global: Option<ContextStrategyConfig>,
+    ) -> AppConfig {
+        let mut toml = String::from(
+            r#"
+[general]
+[channels.c]
+type = "email"
+[channels.c.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.c.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        );
+        for (name, s) in &patterns {
+            toml.push_str(&format!("\n[[channels.c.patterns]]\nname = \"{name}\"\n"));
+            if let Some(c) = s {
+                let mode = match c.mode {
+                    ContextStrategy::Full => "full",
+                    ContextStrategy::SlidingWindow => "sliding_window",
+                };
+                toml.push_str(&format!(
+                    "context_strategy = {{ mode = \"{mode}\", window = {} }}\n",
+                    c.window
+                ));
+            }
+        }
+        if let Some(g) = &global {
+            let mode = match g.mode {
+                ContextStrategy::Full => "full",
+                ContextStrategy::SlidingWindow => "sliding_window",
+            };
+            toml.push_str(&format!(
+                "context_strategy = {{ mode = \"{mode}\", window = {} }}\n",
+                g.window
+            ));
+        }
+        jyc_types::load_config_from_str(&toml).expect("config should parse")
+    }
+
+    #[test]
+    fn resolve_context_strategy_uses_matched_pattern() {
+        let slide = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 4,
+        };
+        let app = config_with_strategies(vec![("a", None), ("b", Some(slide.clone()))], None);
+        let resolved = resolve_context_strategy(&app, "c", Some("b"));
+        assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
+        assert_eq!(resolved.window, 4);
+    }
+
+    #[test]
+    fn resolve_context_strategy_falls_back_to_first_pattern() {
+        let slide = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 6,
+        };
+        let app = config_with_strategies(vec![("a", Some(slide.clone()))], None);
+        let resolved = resolve_context_strategy(&app, "c", None);
+        assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
+        assert_eq!(resolved.window, 6);
+    }
+
+    #[test]
+    fn resolve_context_strategy_falls_back_to_global() {
+        let slide = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 8,
+        };
+        let app = config_with_strategies(vec![], Some(slide.clone()));
+        let resolved = resolve_context_strategy(&app, "c", Some("a"));
+        assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
+        assert_eq!(resolved.window, 8);
+    }
+
+    #[test]
+    fn resolve_context_strategy_default_is_full_window10() {
+        let app = config_with_strategies(vec![], None);
+        let resolved = resolve_context_strategy(&app, "c", Some("a"));
+        assert_eq!(resolved.mode, ContextStrategy::Full);
+        assert_eq!(resolved.window, 10);
+    }
+
+    #[tokio::test]
+    async fn read_context_strategy_override_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join(CONTEXT_STRATEGY_FILE),
+            r#"{"mode":"sliding_window","window":3}"#,
+        )
+        .await
+        .unwrap();
+        let cfg = read_context_strategy_override(tmp.path()).await.unwrap();
+        assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
+        assert_eq!(cfg.window, 3);
+    }
+
+    #[tokio::test]
+    async fn read_context_strategy_override_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(read_context_strategy_override(tmp.path()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_context_strategy_override_window_zero_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join(CONTEXT_STRATEGY_FILE),
+            r#"{"mode":"sliding_window","window":0}"#,
+        )
+        .await
+        .unwrap();
+        assert!(read_context_strategy_override(tmp.path()).await.is_none());
     }
 }

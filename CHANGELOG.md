@@ -39,6 +39,18 @@ All notable changes to JYC will be documented in this file.
   effect, so a misconfigured `time_windows` shows up in the logs
   rather than only at month-end reconciliation.
 
+- **Context management strategy** — a new `context_strategy` field on
+  `[ai]`, `[[channels.<name>.patterns]]`, and `[agents.<name>]`
+  controls how prior conversation history is sent to the LLM, plus a
+  `/context` slash command for runtime switching. Two modes:
+  `full` (default — current behavior) and `sliding_window` (only the
+  last N user+assistant turns, default N=10; the current turn is kept
+  intact). The on-disk `.jyc/agent-context.json` always stores the
+  full raw context unchanged — the strategy only shapes the wire
+  payload — so switching back to `full` recovers the entire history.
+  Runtime override is persisted at `.jyc/context-strategy.json` by
+  `/context full | sliding [N] | reset`.
+
 ### Changed
 
 - **`[agent]` config table renamed to `[ai]`** at all levels (top-level,

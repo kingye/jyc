@@ -418,6 +418,20 @@ impl AgentService for JycAgentService {
             message.matched_pattern.as_deref(),
         );
 
+        // Resolve the context management strategy. Runtime override
+        // (`.jyc/context-strategy.json` written by `/context`) wins over
+        // configured defaults (matched pattern > first pattern > global
+        // [ai] > full/window=10).
+        let context_strategy = jyc_core::session_state::read_context_strategy_override(topic_path)
+            .await
+            .unwrap_or_else(|| {
+                jyc_core::session_state::resolve_context_strategy(
+                    &self.config.load(),
+                    &self.channel_name,
+                    message.matched_pattern.as_deref(),
+                )
+            });
+
         // Pre-loop pre-check: if the active model has a smaller context
         // window than the loaded session, reset the session BEFORE the
         // agent loop. Without this, the first LLM call rejects the
@@ -481,6 +495,7 @@ impl AgentService for JycAgentService {
             thinking_enabled: read_thinking_enabled(topic_path),
             pricing,
             model_label: model_str,
+            context_strategy,
         })
         .await?;
 

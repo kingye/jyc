@@ -78,6 +78,19 @@ impl JycAgentService {
         let matched_pattern =
             matched_pattern_name.and_then(|name| self.patterns.iter().find(|p| p.name == name));
 
+        // TEMP DEBUG: trace the MCP resolution pipeline.
+        tracing::warn!(
+            channel = %self.channel_name,
+            topic = %topic_name,
+            matched_pattern_name = ?matched_pattern_name,
+            patterns_count = self.patterns.len(),
+            pattern_names = ?self.patterns.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+            matched_pattern_mcps_len = matched_pattern.as_ref().and_then(|p| p.mcps.as_ref()).map(|v| v.len()),
+            channel_mcp_configs_len = self.channel_mcp_configs.as_ref().map(|v| v.len()).unwrap_or(0),
+            global_mcp_configs_len = self.mcp_configs.len(),
+            "DEBUG agent MCP resolution pipeline (delete before merge)"
+        );
+
         // --- L3 topic-local config lifecycle log ---
         // Always emit one of three outcomes so a remote-deploy grep on
         // "topic-local MCP" or "topic config loaded" reveals whether the
@@ -251,6 +264,14 @@ impl JycAgentService {
                 from_topic_replace = mcps.iter().filter(|s| s.ends_with(":topic-replace")).count(),
                 mcps = ?mcps,
                 "Resolved MCP servers for topic"
+            );
+        } else {
+            tracing::warn!(
+                channel = %self.channel_name,
+                topic = %topic_name,
+                pattern = ?matched_pattern_name,
+                disabled = ?disabled_mcp_servers,
+                "DEBUG no MCP servers resolved for topic (delete before merge)"
             );
         }
 

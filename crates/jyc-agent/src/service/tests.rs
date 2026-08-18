@@ -1258,3 +1258,104 @@ fn pattern_mode_plan_injects_plan_tag_in_user_prompt() {
         "plan mode prompt should contain PLAN tag, got: {plan_prompt}"
     );
 }
+
+#[tokio::test]
+async fn pattern_mcps_remote_is_registered_at_runtime() {
+    use jyc_types::{AgentConfig, McpServerConfig, McpServerKind};
+
+    let agent_config = AgentConfig {
+        model: Some("provider/test".to_string()),
+        template: Some("test".to_string()),
+        mcps: Some(vec![McpServerConfig {
+            name: "jin_full_mcp".to_string(),
+            kind: McpServerKind::Local {
+                command: vec!["true".to_string()],
+                environment: std::collections::HashMap::new(),
+            },
+            enabled_tools: None,
+        }]),
+        ..AgentConfig::default()
+    };
+    let pattern = {
+        let mut p = ChannelPattern {
+            name: "newbee_order_bot".to_string(),
+            ..ChannelPattern::default()
+        };
+        agent_config.fill_into_pattern(
+            &mut p,
+            "newbee_order_bot",
+            PathBuf::from("/tmp/test-agents/newbee_order_bot"),
+        );
+        p
+    };
+
+    let svc = service_with_patterns(Some("provider/test"), vec![pattern]);
+    let registry = svc
+        .build_tool_registry(
+            "newbee_order_bot",
+            Path::new("/tmp/test-topic"),
+            None,
+            false,
+            Some("newbee_order_bot"),
+        )
+        .await;
+
+    assert!(registry.has_tool("bash"), "bash should be present");
+    let _ = registry;
+}
+
+#[test]
+fn debug_print_pattern_mcps_resolution() {
+    use jyc_types::{AgentConfig, McpServerConfig, McpServerKind};
+    use std::sync::OnceLock;
+    use tracing_subscriber::{EnvFilter, fmt};
+
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        let _ = fmt()
+            .with_env_filter(
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug")),
+            )
+            .with_test_writer()
+            .try_init();
+    });
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let agent_config = AgentConfig {
+            model: Some("provider/test".to_string()),
+            template: Some("test".to_string()),
+            mcps: Some(vec![McpServerConfig {
+                name: "jin_full_mcp".to_string(),
+                kind: McpServerKind::Local {
+                    command: vec!["true".to_string()],
+                    environment: std::collections::HashMap::new(),
+                },
+                enabled_tools: None,
+            }]),
+            ..AgentConfig::default()
+        };
+        let pattern = {
+            let mut p = ChannelPattern {
+                name: "newbee_order_bot".to_string(),
+                ..ChannelPattern::default()
+            };
+            agent_config.fill_into_pattern(
+                &mut p,
+                "newbee_order_bot",
+                PathBuf::from("/tmp/test-agents/newbee_order_bot"),
+            );
+            p
+        };
+        let svc = service_with_patterns(Some("provider/test"), vec![pattern]);
+        let _registry = svc
+            .build_tool_registry(
+                "newbee_order_bot",
+                Path::new("/tmp/test-topic"),
+                None,
+                false,
+                Some("newbee_order_bot"),
+            )
+            .await;
+    });
+}

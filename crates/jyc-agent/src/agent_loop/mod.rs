@@ -422,6 +422,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // accumulate current-turn messages and is what we persist at the
         // end of the loop — the strategy only changes what the LLM sees.
         let send_context = crate::agent_loop::context::build_send_context(
+            provider,
             &raw_context,
             prior_len,
             &context_strategy,

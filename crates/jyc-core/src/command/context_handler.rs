@@ -1,8 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::template_dirs::TemplateDirs;
-
 use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
 use serde::{Deserialize, Serialize};
 
@@ -176,6 +174,7 @@ fn describe(cfg: &ContextStrategyConfig) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::template_dirs::TemplateDirs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 

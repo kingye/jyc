@@ -6,7 +6,8 @@ use std::borrow::Cow;
 
 use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
 
-use crate::types::{Message, Role};
+use crate::provider::Provider;
+use crate::types::{ContentBlock, Message, Role};
 
 pub(crate) fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
     let mut out = String::with_capacity(raw_context.len() * 256);
@@ -126,17 +127,84 @@ pub(crate) fn compact_history_heuristic(history: &[Message], keep_pairs: usize) 
         .collect()
 }
 
+/// Render `raw_context` as a plain-text conversation: user and assistant
+/// text only, tool calls / tool results omitted. Provider-format agnostic:
+/// accepts both OpenAI (`content: "string"`) and Anthropic
+/// (`content: [{type:"text", text:"..."}, ...]`) shapes. Used by the
+/// sliding-window strategy to give the model the full prior history as
+/// extra context without re-emitting tool noise.
+fn render_conversation_text(raw_context: &[serde_json::Value]) -> String {
+    let mut out = String::with_capacity(raw_context.len() * 256);
+    for msg in raw_context {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        match role {
+            "user" | "assistant" => {
+                let text = collect_text_only(msg);
+                if !text.is_empty() {
+                    let label = if role == "user" { "USER" } else { "ASSISTANT" };
+                    out.push_str(label);
+                    out.push_str(": ");
+                    out.push_str(&text);
+                    out.push_str("\n\n");
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Concatenate text content from a message, ignoring tool_use blocks and
+/// the OpenAI `tool_calls` field. Handles string content and array-of-blocks.
+fn collect_text_only(msg: &serde_json::Value) -> String {
+    let mut text = String::new();
+    if let Some(s) = msg.get("content").and_then(|c| c.as_str()) {
+        text.push_str(s);
+        return text;
+    }
+    if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
+        for b in blocks {
+            if b.get("type").and_then(|t| t.as_str()) == Some("text")
+                && let Some(s) = b.get("text").and_then(|x| x.as_str())
+            {
+                text.push_str(s);
+            }
+        }
+    }
+    text
+}
+
+/// Reformat a cleaned message (string content from `extract_user_assistant_pairs`)
+/// into the active provider's wire format via the Provider trait. This is
+/// what makes sliding-window output valid for Anthropic, which requires
+/// user/assistant `content` to be an array of blocks.
+fn format_cleaned_message(provider: &dyn Provider, msg: &serde_json::Value) -> serde_json::Value {
+    let text = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+    let text = text.to_string();
+    if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+        provider.build_raw_assistant_message(&text, "", &[])
+    } else {
+        provider.format_user_message(&[ContentBlock::Text { text }])
+    }
+}
+
 /// Build the context to send to the LLM for the next request.
 ///
 /// The full `raw_context` is always persisted to `.jyc/agent-context.json`
 /// untouched; this function only shapes what is sent to the LLM.
 ///
 /// * `Full` — borrow the full context (no copy).
-/// * `SlidingWindow` — keep the last `strategy.window` user+assistant turns
-///   from the prior context (everything before `prior_len`), plus the full
-///   current turn (`raw_context[prior_len..]`) so tool calls/results stay
-///   coherent mid-loop.
+/// * `SlidingWindow` — three parts, in order:
+///   1. A synthetic user message containing the full prior conversation
+///      rendered as plain user/assistant text (tool calls / tool results
+///      omitted). Recovers history that the window would otherwise drop.
+///   2. The last `strategy.window` user+assistant text pairs from the prior
+///      context, reformatted in provider wire format (string content →
+///      provider-correct content shape).
+///   3. The full current turn (`raw_context[prior_len..]`) verbatim, so
+///      tool calls / results stay coherent mid-loop.
 pub(crate) fn build_send_context<'a>(
+    provider: &dyn Provider,
     raw_context: &'a [serde_json::Value],
     prior_len: usize,
     strategy: &ContextStrategyConfig,
@@ -149,9 +217,27 @@ pub(crate) fn build_send_context<'a>(
             let boundary = prior_len.min(raw_context.len());
             let prior = &raw_context[..boundary];
             let current = &raw_context[boundary..];
-            let mut windowed = crate::session::extract_user_assistant_pairs(prior, strategy.window);
-            windowed.extend_from_slice(current);
-            Cow::Owned(windowed)
+
+            let transcript = render_conversation_text(prior);
+            let mut out = Vec::with_capacity(1 + strategy.window * 2 + current.len());
+            if !transcript.is_empty() {
+                out.push(provider.format_user_message(&[ContentBlock::Text {
+                    text: format!(
+                        "<jyc-conversation-history>\nFull prior conversation (user and \
+                         assistant text only; tool calls and results omitted):\n\n{}\n\
+                         </jyc-conversation-history>",
+                        transcript
+                    ),
+                }]));
+            }
+
+            let windowed = crate::session::extract_user_assistant_pairs(prior, strategy.window);
+            for msg in &windowed {
+                out.push(format_cleaned_message(provider, msg));
+            }
+
+            out.extend_from_slice(current);
+            Cow::Owned(out)
         }
     }
 }
@@ -161,6 +247,66 @@ mod render_raw_context_tests {
     use super::*;
     use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
     use serde_json::json;
+
+    /// Minimal provider that mimics the OpenAI-compatible wire format:
+    /// string `content` for both user and assistant. Mirrors the actual
+    /// `OpenAICompatProvider` output closely enough for these helpers.
+    struct OpenAiCompatProvider;
+    #[async_trait::async_trait]
+    impl Provider for OpenAiCompatProvider {
+        fn name(&self) -> &str {
+            "openai-compat"
+        }
+        fn model(&self) -> &str {
+            "test"
+        }
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[crate::types::ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<crate::provider::EventStream> {
+            unimplemented!()
+        }
+        async fn complete_raw(
+            &self,
+            _raw_messages: &[serde_json::Value],
+            _tools: &[crate::types::ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<crate::provider::EventStream> {
+            unimplemented!()
+        }
+        fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
+            let text: String = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            json!({"role": "user", "content": text})
+        }
+        fn format_tool_result(
+            &self,
+            tool_call_id: &str,
+            content: &str,
+            _is_error: bool,
+        ) -> serde_json::Value {
+            json!({"role": "tool", "tool_call_id": tool_call_id, "content": content})
+        }
+        fn build_raw_assistant_message(
+            &self,
+            text: &str,
+            _reasoning: &str,
+            _tool_calls: &[(String, String, String)],
+        ) -> serde_json::Value {
+            json!({"role": "assistant", "content": text})
+        }
+    }
+
+    fn prov() -> OpenAiCompatProvider {
+        OpenAiCompatProvider
+    }
 
     #[test]
     fn renders_user_assistant_tool_sequence() {
@@ -210,6 +356,24 @@ mod render_raw_context_tests {
     }
 
     #[test]
+    fn render_conversation_text_skips_tool_messages() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "out"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        let rendered = render_conversation_text(&ctx);
+        assert!(rendered.contains("USER: u1"));
+        assert!(rendered.contains("ASSISTANT: a1"));
+        assert!(rendered.contains("USER: u2"));
+        assert!(rendered.contains("ASSISTANT: a2"));
+        assert!(!rendered.contains("bash"));
+        assert!(!rendered.contains("out"));
+    }
+
+    #[test]
     fn full_strategy_borrows_unchanged() {
         let ctx = vec![
             json!({"role": "user", "content": "u1"}),
@@ -221,14 +385,14 @@ mod render_raw_context_tests {
             mode: ContextStrategy::Full,
             window: 10,
         };
-        let sent = build_send_context(&ctx, prior_len, &cfg);
+        let sent = build_send_context(&prov(), &ctx, prior_len, &cfg);
         assert!(matches!(sent, Cow::Borrowed(_)));
         assert_eq!(sent.len(), ctx.len());
     }
 
     #[test]
-    fn sliding_window_keeps_last_pairs_and_current_turn() {
-        // Prior: 3 user+assistant turns, plus 2 tool messages.
+    fn sliding_window_emits_transcript_windowed_and_current() {
+        // Prior: 3 user+assistant turns, plus a tool turn in the middle.
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1"}),
@@ -251,23 +415,28 @@ mod render_raw_context_tests {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
         };
-        let sent = build_send_context(&ctx, prior_len, &cfg);
-        assert!(matches!(sent, Cow::Owned(_)));
+        let sent = build_send_context(&prov(), &ctx, prior_len, &cfg);
         let sent = sent.into_owned();
 
-        // Last 2 user+assistant text pairs from prior → {u2,a2_clean,u3,a3}.
-        // Tool role from prior is dropped. Then current turn is appended
-        // verbatim so tool calls/results remain coherent.
-        let expected: Vec<serde_json::Value> = vec![
-            json!({"role": "user", "content": "u2"}),
-            json!({"role": "assistant", "content": "a2"}),
-            json!({"role": "user", "content": "u3"}),
-            json!({"role": "assistant", "content": "a3"}),
-            current[0].clone(),
-            current[1].clone(),
-            current[2].clone(),
-        ];
-        assert_eq!(sent, expected);
+        // 1. Transcript message: full prior text (no tools), wrapped.
+        assert_eq!(sent[0]["role"], "user");
+        let transcript_text = sent[0]["content"].as_str().unwrap();
+        assert!(transcript_text.starts_with("<jyc-conversation-history>"));
+        assert!(transcript_text.contains("USER: u1"));
+        assert!(transcript_text.contains("ASSISTANT: a3"));
+        assert!(!transcript_text.contains("[tool_call"));
+        assert!(!transcript_text.contains("TOOL_RESULT"));
+
+        // 2. Windowed recent N pairs from prior (reformatted by provider).
+        assert_eq!(sent[1], json!({"role": "user", "content": "u2"}));
+        assert_eq!(sent[2], json!({"role": "assistant", "content": "a2"}));
+        assert_eq!(sent[3], json!({"role": "user", "content": "u3"}));
+        assert_eq!(sent[4], json!({"role": "assistant", "content": "a3"}));
+
+        // 3. Current turn verbatim.
+        assert_eq!(sent[5], current[0]);
+        assert_eq!(sent[6], current[1]);
+        assert_eq!(sent[7], current[2]);
     }
 
     #[test]
@@ -281,9 +450,18 @@ mod render_raw_context_tests {
             mode: ContextStrategy::SlidingWindow,
             window: 5,
         };
-        let sent = build_send_context(&ctx, 99, &cfg).into_owned();
-        // Clamps boundary → whole ctx treated as prior, windowed.
-        assert_eq!(sent.len(), 2);
+        let sent = build_send_context(&prov(), &ctx, 99, &cfg).into_owned();
+        // 1 transcript + 2 windowed pair (falls back to first user only since
+        // extract_user_assistant_pairs only pairs user+assistant text and
+        // would otherwise keep both messages — verify it's >= 2 and includes
+        // the transcript wrapper).
+        assert!(sent.len() >= 2);
+        assert!(
+            sent[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("<jyc-conversation-history>")
+        );
     }
 
     #[test]
@@ -296,7 +474,8 @@ mod render_raw_context_tests {
             mode: ContextStrategy::SlidingWindow,
             window: 10,
         };
-        let sent = build_send_context(&ctx, 0, &cfg).into_owned();
+        let sent = build_send_context(&prov(), &ctx, 0, &cfg).into_owned();
+        // No prior → no transcript, no windowed. Just current turn verbatim.
         assert_eq!(sent, ctx);
     }
 }

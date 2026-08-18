@@ -248,11 +248,24 @@ fn apply_pipe_retarget(
     }
 
     // New form: pipe.agent routes through the synthesized "agents"
-    // channel. The agent name is the routing identity; pipe.topic
-    // (if present) selects the sub-topic.
+    // channel. The agent name is the routing identity (selects which
+    // [agents.<name>] pattern to apply); pipe.topic (if present) selects
+    // the per-conversation sub-topic directory under the agent's
+    // workspace.
+    //
+    // Record the agent name as `pipe_pattern` so the WebsocketMatcher
+    // selects the agent's pattern by name — even when pipe.topic is
+    // dynamic (e.g. `${msg.channel_uid}`) and the resolved topic name
+    // matches no existing pattern. Without this hint, the matcher
+    // would fall back to using the topic name as the pattern name and
+    // the agent's mcps/skills/model/template would never apply.
     if let Some(agent_name) = &pipe.agent {
         let template = pipe.topic.as_deref().unwrap_or(agent_name.as_str());
         let topic = resolve_msg_placeholders(template, &msg)?;
+        msg.metadata.insert(
+            jyc_types::PIPE_PATTERN_METADATA_KEY.to_string(),
+            serde_json::Value::String(agent_name.clone()),
+        );
         msg.channel = "agents".to_string();
         msg.topic = topic;
         return Some(msg);
@@ -2038,10 +2051,14 @@ mod tests {
         let out = apply_pipe_retarget(pipe_msg(Default::default()), &pipe).unwrap();
         assert_eq!(out.channel, "agents");
         assert_eq!(out.topic, "jyc");
-        // agent form does NOT carry the legacy pattern hint
-        assert!(
-            !out.metadata
-                .contains_key(jyc_types::PIPE_PATTERN_METADATA_KEY)
+        // agent form records the agent name as the pattern hint so
+        // WebsocketMatcher selects the [agents.jyc] pattern by name
+        // (even when pipe.topic is dynamic).
+        assert_eq!(
+            out.metadata
+                .get(jyc_types::PIPE_PATTERN_METADATA_KEY)
+                .and_then(|v| v.as_str()),
+            Some("jyc")
         );
     }
 
@@ -2054,6 +2071,15 @@ mod tests {
         let out = apply_pipe_retarget(pipe_msg(metadata), &pipe).unwrap();
         assert_eq!(out.channel, "agents");
         assert_eq!(out.topic, "dev-jyc");
+        // The pattern hint must still be the agent name (not the resolved
+        // topic) so WebsocketMatcher selects the [agents.jyc] pattern by
+        // name even when the topic is dynamic.
+        assert_eq!(
+            out.metadata
+                .get(jyc_types::PIPE_PATTERN_METADATA_KEY)
+                .and_then(|v| v.as_str()),
+            Some("jyc")
+        );
     }
 
     /// New form without `pipe.topic`: falls back to the agent name.
@@ -2063,6 +2089,15 @@ mod tests {
         let out = apply_pipe_retarget(pipe_msg(Default::default()), &pipe).unwrap();
         assert_eq!(out.channel, "agents");
         assert_eq!(out.topic, "general");
+        // The pattern hint must still be the agent name even when
+        // pipe.topic is a static literal — WebsocketMatcher selects
+        // [agents.jyc] by name, not the topic directory.
+        assert_eq!(
+            out.metadata
+                .get(jyc_types::PIPE_PATTERN_METADATA_KEY)
+                .and_then(|v| v.as_str()),
+            Some("jyc")
+        );
     }
 
     /// `pipe.agent` mixed with `pipe.channel` is rejected (mutual exclusion).

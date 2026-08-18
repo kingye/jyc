@@ -198,6 +198,28 @@ All notable changes to JYC will be documented in this file.
   saves piped attachments), feishu-side topic-close handling, and the
   non-pipe routing fallback.
 
+### Fixed
+
+- **`pipe = { agent, topic }` with dynamic topic lost the agent identity.**
+  The agent form only set `channel`/`topic` without recording the agent
+  name, so when `pipe.topic` used `${msg.<key>}` placeholders the
+  WebsocketMatcher treated the resolved topic as an ad-hoc pattern name
+  and the agent's `mcps` / `skills` / `template` / `model` never applied
+  (the LLM saw only builtin tools and the global model). The agent name
+  is now written as the `pipe_pattern` hint, so the matcher selects the
+  right `[agents.<name>]` pattern by name regardless of the (dynamic)
+  topic. (#589)
+
+- **WeCom Bot `enter_chat` event parsing failed with `missing field chatid`.**
+  The real WeCom `aibot_event_callback` body for events like
+  `enter_chat` (captured from a live single-chat event) does not include
+  a top-level `chatid` — the conversation identity is `chattype` +
+  `from.userid`. `BotEvent.chatid` was declared as a required `String`,
+  so the parser returned `missing field "chatid"` and the event was
+  dropped with a non-fatal WARN. `chatid` now defaults to empty so
+  `enter_chat` and other events without a top-level `chatid` parse
+  cleanly. (#588)
+
 ## [0.3.15] - 2026-08-14
 
 ### Added

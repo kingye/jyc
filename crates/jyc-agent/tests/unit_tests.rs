@@ -2158,10 +2158,8 @@ mod billing_integration {
         )
         .unwrap();
 
-        let entries = BillingLogStore::load_date(
-            path,
-            &chrono::Utc::now().format("%Y-%m-%d").to_string(),
-        );
+        let entries =
+            BillingLogStore::load_date(path, &chrono::Utc::now().format("%Y-%m-%d").to_string());
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
         // Window rates persisted, not the flat ones.

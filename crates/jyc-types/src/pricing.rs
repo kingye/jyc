@@ -94,7 +94,9 @@ fn effective_rates(pricing: &ModelPricing, now: DateTime<Utc>) -> (Rates, RateSo
             local >= start || local < end
         };
         if in_window {
-            let cache_hit = w.cache_hit_per_million.unwrap_or(pricing.cache_hit_per_million);
+            let cache_hit = w
+                .cache_hit_per_million
+                .unwrap_or(pricing.cache_hit_per_million);
             tracing::debug!(
                 utc_offset = %utc_offset,
                 window = format!("{}-{}", w.start, w.end),
@@ -108,7 +110,9 @@ fn effective_rates(pricing: &ModelPricing, now: DateTime<Utc>) -> (Rates, RateSo
                     input: w.input_per_million,
                     output: w.output_per_million,
                     cache_hit,
-                    cache_creation: w.cache_creation_per_million.or(pricing.cache_creation_per_million),
+                    cache_creation: w
+                        .cache_creation_per_million
+                        .or(pricing.cache_creation_per_million),
                 },
                 RateSource::Window {
                     label: format!("{}-{}", w.start, w.end),
@@ -785,8 +789,7 @@ mod tests {
         #[test]
         fn inside_window_returns_window_source() {
             let p = pricing_with_window();
-            let (cost, rates) =
-                compute_cost_split_at_with_rates(&p, utc(3, 0), 1_000_000, 0, 0, 0);
+            let (cost, rates) = compute_cost_split_at_with_rates(&p, utc(3, 0), 1_000_000, 0, 0, 0);
             assert!((cost - 1.0).abs() < 1e-9, "got {cost}");
             assert_eq!(rates.input_per_million, 1.0);
             assert_eq!(rates.output_per_million, 4.0);
@@ -812,7 +815,12 @@ mod tests {
             assert_eq!(rates.input_per_million, 2.0);
             assert_eq!(rates.output_per_million, 8.0);
             assert_eq!(rates.cache_hit_per_million, 0.5);
-            assert_eq!(rates.source, RateSource::Flat { utc_offset: String::new() });
+            assert_eq!(
+                rates.source,
+                RateSource::Flat {
+                    utc_offset: String::new()
+                }
+            );
         }
 
         /// A window that omits `cache_hit_per_million` inherits the flat
@@ -822,8 +830,7 @@ mod tests {
             let mut p = pricing_with_window();
             // Remove the cache_hit override on the window → flat 0.5 wins.
             p.time_windows[0].cache_hit_per_million = None;
-            let (_, rates) =
-                compute_cost_split_at_with_rates(&p, utc(3, 0), 0, 0, 1_000_000, 0);
+            let (_, rates) = compute_cost_split_at_with_rates(&p, utc(3, 0), 0, 0, 1_000_000, 0);
             assert_eq!(rates.cache_hit_per_million, 0.5);
             assert!(matches!(rates.source, RateSource::Window { .. }));
         }
@@ -835,8 +842,7 @@ mod tests {
             let mut p = pricing_with_window();
             p.utc_offset = Some("+08:00".to_string());
             // 20:00 UTC = 04:00 Beijing, inside the 00:00–08:00 window.
-            let (_, rates) =
-                compute_cost_split_at_with_rates(&p, utc(20, 0), 1_000_000, 0, 0, 0);
+            let (_, rates) = compute_cost_split_at_with_rates(&p, utc(20, 0), 1_000_000, 0, 0, 0);
             assert_eq!(
                 rates.source,
                 RateSource::Window {

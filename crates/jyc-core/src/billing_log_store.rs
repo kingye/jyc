@@ -215,7 +215,10 @@ mod tests {
     fn legacy_ledger_line_without_rate_fields_deserializes() {
         let dir = tempdir().unwrap();
         let legacy = r#"{"ts":"2026-01-01T00:00:00Z","model":"x/y","input_tokens":1,"output_tokens":2,"cache_hit_tokens":0,"cost":0.05,"currency":"USD"}"#;
-        let path = dir.path().join(".jyc").join(format!("bill-{}.jsonl", BillingLogStore::today()));
+        let path = dir
+            .path()
+            .join(".jyc")
+            .join(format!("bill-{}.jsonl", BillingLogStore::today()));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, format!("{legacy}\n")).unwrap();
         let loaded = BillingLogStore::load_date(dir.path(), &BillingLogStore::today());

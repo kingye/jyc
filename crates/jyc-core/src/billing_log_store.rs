@@ -72,6 +72,30 @@ pub struct BillingEntry {
     /// field existed still deserialize.
     #[serde(default = "default_kind")]
     pub kind: String,
+    /// Input rate per million tokens actually applied to this call —
+    /// either the flat rate or the window rate, frozen at billing time.
+    /// `serde(default)` so old ledger lines (which never wrote the
+    /// field) deserialize as `0.0`.
+    #[serde(default)]
+    pub input_rate_per_million: f64,
+    /// Output rate per million tokens applied to this call. Same
+    /// defaulting as `input_rate_per_million`.
+    #[serde(default)]
+    pub output_rate_per_million: f64,
+    /// Cache-hit rate per million tokens applied to this call. Same
+    /// defaulting as `input_rate_per_million`.
+    #[serde(default)]
+    pub cache_hit_rate_per_million: f64,
+    /// Label of the `time_windows` entry whose rates applied, e.g.
+    /// `"16:30-00:30"`. `None` means flat rates (no `time_windows`
+    /// configured, or the call fell outside every window).
+    #[serde(default)]
+    pub time_window: Option<String>,
+    /// Fixed UTC offset (`"+08:00"` etc.) used to judge which window
+    /// applied, taken from `pricing.utc_offset`. Empty string for the
+    /// default UTC clock.
+    #[serde(default)]
+    pub utc_offset: String,
 }
 
 /// Ledger `kind` for a normal agent-loop LLM call.
@@ -176,7 +200,49 @@ mod tests {
             cost,
             currency: currency.to_string(),
             kind: KIND_CALL.to_string(),
+            input_rate_per_million: 0.0,
+            output_rate_per_million: 0.0,
+            cache_hit_rate_per_million: 0.0,
+            time_window: None,
+            utc_offset: String::new(),
         }
+    }
+
+    /// Backwards compatibility: ledger lines written before the rate
+    /// provenance fields existed must still deserialize, with the new
+    /// fields defaulting to `0.0` / `None` / `""`.
+    #[test]
+    fn legacy_ledger_line_without_rate_fields_deserializes() {
+        let dir = tempdir().unwrap();
+        let legacy = r#"{"ts":"2026-01-01T00:00:00Z","model":"x/y","input_tokens":1,"output_tokens":2,"cache_hit_tokens":0,"cost":0.05,"currency":"USD"}"#;
+        let path = dir.path().join(".jyc").join(format!("bill-{}.jsonl", BillingLogStore::today()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, format!("{legacy}\n")).unwrap();
+        let loaded = BillingLogStore::load_date(dir.path(), &BillingLogStore::today());
+        assert_eq!(loaded.len(), 1);
+        let e = &loaded[0];
+        assert_eq!(e.cost, 0.05);
+        assert_eq!(e.input_rate_per_million, 0.0);
+        assert_eq!(e.output_rate_per_million, 0.0);
+        assert_eq!(e.cache_hit_rate_per_million, 0.0);
+        assert_eq!(e.time_window, None);
+        assert_eq!(e.utc_offset, "");
+    }
+
+    /// A round-tripped entry with rates + window preserves them — the
+    /// new fields are actually written and read back, not silently lost.
+    #[test]
+    fn round_trip_preserves_rate_provenance() {
+        let dir = tempdir().unwrap();
+        let mut e = entry(0.10, "USD");
+        e.input_rate_per_million = 3.0;
+        e.output_rate_per_million = 15.0;
+        e.cache_hit_rate_per_million = 1.5;
+        e.time_window = Some("16:30-00:30".to_string());
+        e.utc_offset = "+08:00".to_string();
+        BillingLogStore::append(dir.path(), &e).unwrap();
+        let loaded = BillingLogStore::load_date(dir.path(), &BillingLogStore::today());
+        assert_eq!(loaded[0], e);
     }
 
     #[test]

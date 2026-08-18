@@ -207,6 +207,13 @@ pub struct BotEvent {
     /// Smart Robot ID
     pub aibotid: String,
     /// Chat ID
+    ///
+    /// Optional: real WeCom event payloads (e.g. `enter_chat` for a
+    /// single chat) do not always include a top-level `chatid` — the
+    /// conversation identity is `chattype` + `from.userid`. Default to
+    /// empty so the event still parses and is logged (the event is
+    /// informational; the bot does not need `chatid` to handle it).
+    #[serde(default)]
     pub chatid: String,
     /// Event type: enter_chat, template_card_event, feedback_event, disconnected_event
     #[serde(deserialize_with = "deserialize_event_field")]
@@ -433,6 +440,37 @@ mod tests {
         let event: BotEvent = serde_json::from_value(body).unwrap();
         assert_eq!(event.event, "enter_chat");
         assert_eq!(event.chatid, "chat_456");
+    }
+
+    /// Regression for the real WeCom `aibot_event_callback` body shape
+    /// (captured from a live `enter_chat` event). No top-level `chatid` —
+    /// the conversation identity is `chattype` + `from.userid` (single
+    /// chat). `chatid` must default to empty so the event still parses;
+    /// before the fix this payload returned "missing field `chatid`"
+    /// and the event was dropped with a WARN.
+    #[test]
+    fn test_parse_event_real_payload_without_chatid() {
+        let json = r#"{
+            "cmd": "aibot_event_callback",
+            "headers": {"req_id": "40i11V-sQEi6vRq3TrTlswAA"},
+            "body": {
+                "msgid": "e733f4987effa842343598a8dbe32b1a",
+                "aibotid": "aibhJ39X1kuUvS-tbkxZbm8_PRVLllDYV6X",
+                "chattype": "single",
+                "from": {"userid": "MianMianRuoCun"},
+                "msgtype": "event",
+                "create_time": 1787025907,
+                "event": {"eventtype": "enter_chat"}
+            }
+        }"#;
+        let raw: serde_json::Value = serde_json::from_str(json).unwrap();
+        let body = raw.get("body").cloned().unwrap();
+        let event: BotEvent = serde_json::from_value(body)
+            .expect("real WeCom event payload must parse even without chatid");
+        assert_eq!(event.event, "enter_chat");
+        assert_eq!(event.chatid, "", "missing chatid should default to empty");
+        assert_eq!(event.req_id, "");
+        assert!(event.data.is_none());
     }
 
     #[test]

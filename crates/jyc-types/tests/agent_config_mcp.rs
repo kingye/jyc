@@ -79,8 +79,7 @@ fn parsed_agent(config: &jyc_types::AppConfig) -> &jyc_types::AgentConfig {
 
 #[test]
 fn agent_mcps_array_of_tables_populates_mcps_field() {
-    let config = load_config_from_str(&user_config())
-        .expect("config must parse and deserialize");
+    let config = load_config_from_str(&user_config()).expect("config must parse and deserialize");
     let agent = parsed_agent(&config);
 
     let mcps = agent.mcps.as_ref().unwrap_or_else(|| {
@@ -99,20 +98,14 @@ fn agent_mcps_array_of_tables_populates_mcps_field() {
 
 #[test]
 fn synthesize_agent_pattern_carries_mcps() {
-    let config = load_config_from_str(&user_config())
-        .expect("config must parse and deserialize");
+    let config = load_config_from_str(&user_config()).expect("config must parse and deserialize");
     let agent = parsed_agent(&config);
 
     // Drive the same `fill_into_pattern` the runtime uses (the
     // `synthesize_agent_pattern` helper is a thin wrapper around it).
     let mut pattern = jyc_types::ChannelPattern::default();
-    let default_topic_path =
-        std::path::PathBuf::from(format!("/data/agents/{AGENT_NAME}"));
-    agent.fill_into_pattern(
-        &mut pattern,
-        AGENT_NAME,
-        default_topic_path,
-    );
+    let default_topic_path = std::path::PathBuf::from(format!("/data/agents/{AGENT_NAME}"));
+    agent.fill_into_pattern(&mut pattern, AGENT_NAME, default_topic_path);
 
     let mcps = pattern.mcps.as_ref().unwrap_or_else(|| {
         panic!(

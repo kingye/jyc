@@ -584,7 +584,10 @@ pub enum ContextStrategy {
     #[default]
     Full,
     /// Send only the last N user+assistant turns from the prior context
-    /// (tool calls/results are dropped), plus the full current turn.
+    /// (tool calls/results are dropped), plus the full current turn
+    /// kept verbatim. A full text-only transcript of the prior
+    /// conversation is also prepended as a synthetic user message so
+    /// the model retains the full history.
     #[serde(alias = "sliding")]
     SlidingWindow,
 }
@@ -791,5 +794,24 @@ topic_path = "~/projects/jyc"
             Some("~/projects/jyc"),
             "topic_path should deserialize correctly"
         );
+    }
+
+    #[test]
+    fn test_context_strategy_serde_aliases() {
+        // The primary name and the `sliding` alias should both deserialize
+        // to SlidingWindow.
+        for s in ["sliding_window", "sliding"] {
+            let cfg: ContextStrategyConfig = toml::from_str(&format!(r#"mode = "{s}""#)).unwrap();
+            assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
+            // window falls back to the default when omitted.
+            assert_eq!(cfg.window, 10);
+        }
+
+        let cfg: ContextStrategyConfig = toml::from_str(r#"mode = "full""#).unwrap();
+        assert_eq!(cfg.mode, ContextStrategy::Full);
+
+        // Default for an empty table is Full / window 10.
+        let cfg: ContextStrategyConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg, ContextStrategyConfig::default());
     }
 }

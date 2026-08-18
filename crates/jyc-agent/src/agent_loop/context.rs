@@ -219,7 +219,7 @@ pub(crate) fn build_send_context<'a>(
             let current = &raw_context[boundary..];
 
             let transcript = render_conversation_text(prior);
-            let mut out = Vec::with_capacity(1 + strategy.window * 2 + current.len());
+            let mut out = Vec::new();
             if !transcript.is_empty() {
                 out.push(provider.format_user_message(&[ContentBlock::Text {
                     text: format!(
@@ -451,17 +451,18 @@ mod render_raw_context_tests {
             window: 5,
         };
         let sent = build_send_context(&prov(), &ctx, 99, &cfg).into_owned();
-        // 1 transcript + 2 windowed pair (falls back to first user only since
-        // extract_user_assistant_pairs only pairs user+assistant text and
-        // would otherwise keep both messages — verify it's >= 2 and includes
-        // the transcript wrapper).
-        assert!(sent.len() >= 2);
+        // boundary clamps to raw_context.len(), so the whole ctx is
+        // treated as prior. Expected: 1 transcript + 1 complete pair
+        // (u1, a1) = 3 messages.
+        assert_eq!(sent.len(), 3);
         assert!(
             sent[0]["content"]
                 .as_str()
                 .unwrap()
                 .contains("<jyc-conversation-history>")
         );
+        assert_eq!(sent[1], json!({"role": "user", "content": "u1"}));
+        assert_eq!(sent[2], json!({"role": "assistant", "content": "a1"}));
     }
 
     #[test]

@@ -53,7 +53,11 @@ All notable changes to JYC will be documented in this file.
   full raw context unchanged — the strategy only shapes the wire
   payload — so switching back to `full` recovers the entire history.
   Runtime override is persisted at `.jyc/context-strategy.json` by
-  `/context full | sliding [N] | reset`.
+  `/context full | sliding [N] | reset`. `sliding` is accepted as an
+  alias for `sliding_window`; `/context sliding N` accepts N in
+  `1..=200`. The send context is reformatted via the active
+  `Provider`, so Anthropic and OpenAI-compatible wire formats both
+  stay valid.
 
 ### Changed
 

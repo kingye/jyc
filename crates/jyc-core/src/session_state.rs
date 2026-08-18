@@ -352,8 +352,10 @@ pub const CONTEXT_STRATEGY_FILE: &str = "context-strategy.json";
 /// Read the runtime context-strategy override if it exists.
 ///
 /// Returns `None` when the file is missing, malformed, or `window == 0`.
-/// `window == 0` is rejected (validation also rejects it at config load)
-/// because a zero-window prior context would break coherence.
+/// A zero-window prior context would degrade to a single fallback user
+/// message (see `extract_user_assistant_pairs`), which is almost
+/// certainly not what the user wants; we silently fall back to the
+/// configured default rather than persist a broken strategy.
 pub async fn read_context_strategy_override(topic_path: &Path) -> Option<ContextStrategyConfig> {
     let path = topic_path.join(".jyc").join(CONTEXT_STRATEGY_FILE);
     let content = tokio::fs::read_to_string(&path).await.ok()?;

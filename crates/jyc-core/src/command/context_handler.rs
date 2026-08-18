@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
@@ -17,15 +17,16 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///   /context reset      Remove runtime override (revert to configured default)
 pub struct ContextCommandHandler;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ContextStrategyFile {
-    mode: ContextStrategy,
-    #[serde(default = "default_window")]
-    window: usize,
-}
+/// Upper bound on the `window` accepted from the user via `/context`. A
+/// larger value degenerates into "keep all prior pairs" (full mode minus
+/// tools) and risks unbounded memory growth when paired with very long
+/// histories, so we cap it here at the command boundary.
+const MAX_WINDOW: usize = 200;
 
-fn default_window() -> usize {
-    10
+#[derive(Debug, Clone, Serialize)]
+struct ContextStrategyOverride {
+    mode: ContextStrategy,
+    window: usize,
 }
 
 #[async_trait]
@@ -54,14 +55,8 @@ impl CommandHandler for ContextCommandHandler {
             let runtime =
                 crate::session_state::read_context_strategy_override(&context.topic_path).await;
             let (label, source) = match &runtime {
-                Some(cs) => (
-                    format!("{} (window={})", describe(cs), cs.window),
-                    "override",
-                ),
-                None => (
-                    format!("{} (window={})", describe(&configured), configured.window),
-                    "default",
-                ),
+                Some(cs) => (describe_strategy(cs), "override"),
+                None => (describe_strategy(&configured), "default"),
             };
             return Ok(CommandResult {
                 success: true,
@@ -78,16 +73,21 @@ impl CommandHandler for ContextCommandHandler {
                 Ok(CommandResult {
                     success: true,
                     message: format!(
-                        "/context: cleared override, now using {} (window={})",
-                        describe(&configured),
-                        configured.window,
+                        "/context: cleared override, now using {}",
+                        describe_strategy(&configured),
                     ),
                     error: None,
                     append_body: None,
                 })
             }
             "full" => {
-                write_override(&jyc_dir, &override_path, "full", None).await?;
+                write_override(
+                    &jyc_dir,
+                    &override_path,
+                    ContextStrategy::Full,
+                    configured.window,
+                )
+                .await?;
                 Ok(CommandResult {
                     success: true,
                     message: "/context: switched to full (all history sent)".into(),
@@ -98,11 +98,13 @@ impl CommandHandler for ContextCommandHandler {
             "sliding" | "sliding_window" => {
                 let window = if let Some(arg) = context.args.get(1) {
                     match arg.parse::<usize>() {
-                        Ok(n) if n > 0 => Some(n),
+                        Ok(n) if n > 0 && n <= MAX_WINDOW => Some(n),
                         Ok(_) => {
                             return Ok(CommandResult {
                                 success: false,
-                                message: "/context: window must be > 0".into(),
+                                message: format!(
+                                    "/context: window must be between 1 and {MAX_WINDOW}"
+                                ),
                                 error: None,
                                 append_body: None,
                             });
@@ -121,17 +123,17 @@ impl CommandHandler for ContextCommandHandler {
                 } else {
                     None
                 };
-                write_override(&jyc_dir, &override_path, "sliding_window", window).await?;
-                let cfg = ContextStrategyConfig {
-                    mode: ContextStrategy::SlidingWindow,
-                    window: window.unwrap_or_else(default_window),
-                };
+                let window = window.unwrap_or(configured.window);
+                write_override(
+                    &jyc_dir,
+                    &override_path,
+                    ContextStrategy::SlidingWindow,
+                    window,
+                )
+                .await?;
                 Ok(CommandResult {
                     success: true,
-                    message: format!(
-                        "/context: switched to sliding_window (window={})",
-                        cfg.window,
-                    ),
+                    message: format!("/context: switched to sliding_window (window={window})"),
                     error: None,
                     append_body: None,
                 })
@@ -151,23 +153,20 @@ impl CommandHandler for ContextCommandHandler {
 async fn write_override(
     jyc_dir: &std::path::Path,
     path: &std::path::Path,
-    mode: &str,
-    window: Option<usize>,
+    mode: ContextStrategy,
+    window: usize,
 ) -> Result<()> {
     tokio::fs::create_dir_all(jyc_dir).await?;
-    let payload = ContextStrategyFile {
-        mode: serde_json::from_str(&format!("\"{mode}\"")).expect("valid mode"),
-        window: window.unwrap_or_else(default_window),
-    };
+    let payload = ContextStrategyOverride { mode, window };
     let json = serde_json::to_string(&payload)?;
     tokio::fs::write(path, json).await?;
     Ok(())
 }
 
-fn describe(cfg: &ContextStrategyConfig) -> &'static str {
+fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
     match cfg.mode {
-        ContextStrategy::Full => "full",
-        ContextStrategy::SlidingWindow => "sliding_window",
+        ContextStrategy::Full => "full".to_string(),
+        ContextStrategy::SlidingWindow => format!("sliding_window (window={})", cfg.window),
     }
 }
 
@@ -237,6 +236,9 @@ mode = "agent"
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["mode"], "full");
+        // full preserves the configured window (10) so toggling
+        // full → sliding later still has a sensible default.
+        assert_eq!(v["window"], 10);
     }
 
     #[tokio::test]
@@ -269,18 +271,30 @@ mode = "agent"
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["mode"], "sliding_window");
+        // No explicit window → falls back to the configured default (10).
         assert_eq!(v["window"], 10);
     }
 
     #[tokio::test]
-    async fn test_sliding_window_must_be_positive() {
+    async fn test_sliding_window_rejects_zero() {
         let tmp = tempfile::tempdir().unwrap();
         let handler = ContextCommandHandler;
         let mut ctx = test_context(tmp.path());
         ctx.args = vec!["sliding".into(), "0".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
-        assert!(result.message.contains("window must be"));
+        assert!(result.message.contains("window must be between"));
+    }
+
+    #[tokio::test]
+    async fn test_sliding_window_rejects_above_max() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["sliding".into(), "9999".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(!result.success);
+        assert!(result.message.contains("window must be between"));
     }
 
     #[tokio::test]

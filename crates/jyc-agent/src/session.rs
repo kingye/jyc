@@ -698,13 +698,14 @@ async fn summarize_context(
             || cache_hit_tokens > 0
             || cache_creation_tokens > 0
         {
-            let cost = jyc_types::pricing::compute_cost_split(
+            let (cost, rates) = jyc_types::pricing::compute_cost_split_with_rates(
                 &b.pricing,
                 input_tokens,
                 output_tokens,
                 cache_hit_tokens,
                 cache_creation_tokens,
             );
+            let (time_window, utc_offset) = rates.source.billing_fields();
             let entry = jyc_core::billing_log_store::BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
                 model: b.model_label.clone(),
@@ -715,6 +716,11 @@ async fn summarize_context(
                 cost,
                 currency: b.pricing.currency_label().to_string(),
                 kind: jyc_core::billing_log_store::KIND_SUMMARY.to_string(),
+                input_rate_per_million: rates.input_per_million,
+                output_rate_per_million: rates.output_per_million,
+                cache_hit_rate_per_million: rates.cache_hit_per_million,
+                time_window,
+                utc_offset,
             };
             if let Err(e) = jyc_core::billing_log_store::BillingLogStore::append(topic_path, &entry)
             {

@@ -698,20 +698,14 @@ async fn summarize_context(
             || cache_hit_tokens > 0
             || cache_creation_tokens > 0
         {
-            let cost = jyc_types::pricing::compute_cost_split_with_rates(
+            let (cost, rates) = jyc_types::pricing::compute_cost_split_with_rates(
                 &b.pricing,
                 input_tokens,
                 output_tokens,
                 cache_hit_tokens,
                 cache_creation_tokens,
             );
-            let (cost, rates) = cost;
-            let (time_window, utc_offset) = match &rates.source {
-                jyc_types::pricing::RateSource::Flat { utc_offset } => (None, utc_offset.clone()),
-                jyc_types::pricing::RateSource::Window { label, utc_offset } => {
-                    (Some(label.clone()), utc_offset.clone())
-                }
-            };
+            let (time_window, utc_offset) = rates.source.billing_fields();
             let entry = jyc_core::billing_log_store::BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
                 model: b.model_label.clone(),

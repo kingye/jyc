@@ -13,7 +13,6 @@
 //!    than an approximation across calls.
 
 use chrono::{DateTime, FixedOffset, NaiveTime, Utc};
-use serde::{Deserialize, Serialize};
 
 use crate::config::{AppConfig, ModelPricing};
 
@@ -27,16 +26,28 @@ const TOKENS_PER_MILLION: f64 = 1_000_000.0;
 /// `time_windows` entry that contained the call at its `utc_offset`.
 /// `utc_offset` is always populated so the caller can verify which clock
 /// the window judgement ran against.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RateSource {
     Flat { utc_offset: String },
     Window { label: String, utc_offset: String },
 }
 
+impl RateSource {
+    /// Collapse to the two ledger-shaped fields: `time_window` is `Some(label)`
+    /// for window hits and `None` for flat rates; `utc_offset` is always set.
+    /// Keeps callers from duplicating the variant match.
+    pub fn billing_fields(&self) -> (Option<String>, String) {
+        match self {
+            RateSource::Flat { utc_offset } => (None, utc_offset.clone()),
+            RateSource::Window { label, utc_offset } => (Some(label.clone()), utc_offset.clone()),
+        }
+    }
+}
+
 /// The four rates in effect for one LLM call, plus where they came from.
 /// Returned by [`compute_cost_split_with_rates`] so callers can record
 /// provenance in the billing ledger.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AppliedRates {
     pub input_per_million: f64,
     pub output_per_million: f64,
@@ -861,6 +872,25 @@ mod tests {
             let cost_only = compute_cost_split(&p, 1_000_000, 0, 0, 0);
             let cost_via_rates = compute_cost_split_with_rates(&p, 1_000_000, 0, 0, 0).0;
             assert_eq!(cost_only, cost_via_rates);
+        }
+
+        /// [`RateSource::billing_fields`] collapses each variant into the
+        /// two ledger-shaped fields both production callers write into
+        /// `BillingEntry` (`time_window`, `utc_offset`).
+        #[test]
+        fn billing_fields_collapses_both_variants() {
+            let flat = RateSource::Flat {
+                utc_offset: "+08:00".to_string(),
+            };
+            assert_eq!(flat.billing_fields(), (None, "+08:00".to_string()));
+            let windowed = RateSource::Window {
+                label: "16:30-00:30".to_string(),
+                utc_offset: "+08:00".to_string(),
+            };
+            assert_eq!(
+                windowed.billing_fields(),
+                (Some("16:30-00:30".to_string()), "+08:00".to_string()),
+            );
         }
     }
 }

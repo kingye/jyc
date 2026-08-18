@@ -2107,7 +2107,7 @@ mod billing_integration {
     #[tokio::test]
     async fn banked_entry_inside_window_records_window_label_and_rates() {
         use jyc_types::config::TimeWindowPricing;
-        use jyc_types::pricing::{RateSource, compute_cost_split_with_rates};
+        use jyc_types::pricing::compute_cost_split_with_rates;
 
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path();
@@ -2133,10 +2133,7 @@ mod billing_integration {
         };
 
         let (cost, rates) = compute_cost_split_with_rates(&p, 1000, 100, 0, 0);
-        let (time_window, utc_offset) = match &rates.source {
-            RateSource::Flat { utc_offset } => (None, utc_offset.clone()),
-            RateSource::Window { label, utc_offset } => (Some(label.clone()), utc_offset.clone()),
-        };
+        let (time_window, utc_offset) = rates.source.billing_fields();
         BillingLogStore::append(
             path,
             &BillingEntry {
@@ -2148,12 +2145,12 @@ mod billing_integration {
                 cache_creation_tokens: 0,
                 cost,
                 currency: p.currency_label().to_string(),
-                kind: "call".to_string(),
+                kind: jyc_core::billing_log_store::KIND_CALL.to_string(),
                 input_rate_per_million: rates.input_per_million,
                 output_rate_per_million: rates.output_per_million,
                 cache_hit_rate_per_million: rates.cache_hit_per_million,
-                time_window: time_window.clone(),
-                utc_offset: utc_offset.clone(),
+                time_window,
+                utc_offset,
             },
         )
         .unwrap();

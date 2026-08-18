@@ -2100,6 +2100,80 @@ mod billing_integration {
         );
     }
 
+    /// End-to-end billing behaviour with a `time_windows` config: the
+    /// call uses the same `compute_cost_split_with_rates` + BillingEntry
+    /// construction as `bill_call`, so a real call inside a window must
+    /// persist that window's label and rates into the ledger.
+    #[tokio::test]
+    async fn banked_entry_inside_window_records_window_label_and_rates() {
+        use jyc_types::config::TimeWindowPricing;
+        use jyc_types::pricing::{RateSource, compute_cost_split_with_rates};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path();
+
+        let p = ModelPricing {
+            // Flat: $15/M in, $75/M out, $1.50/M cache.
+            input_per_million: 15.0,
+            output_per_million: 75.0,
+            cache_hit_per_million: 1.5,
+            cache_creation_per_million: None,
+            currency: Some("USD".to_string()),
+            // Off-peak window covers every hour of every day → the call
+            // is guaranteed to land inside it without clock mocking.
+            time_windows: vec![TimeWindowPricing {
+                start: "00:00".to_string(),
+                end: "23:59".to_string(),
+                input_per_million: 1.0,
+                output_per_million: 2.0,
+                cache_hit_per_million: Some(0.5),
+                cache_creation_per_million: None,
+            }],
+            utc_offset: None,
+        };
+
+        let (cost, rates) = compute_cost_split_with_rates(&p, 1000, 100, 0, 0);
+        let (time_window, utc_offset) = match &rates.source {
+            RateSource::Flat { utc_offset } => (None, utc_offset.clone()),
+            RateSource::Window { label, utc_offset } => (Some(label.clone()), utc_offset.clone()),
+        };
+        BillingLogStore::append(
+            path,
+            &BillingEntry {
+                ts: chrono::Utc::now().to_rfc3339(),
+                model: "anthropic/claude-opus-4-7".to_string(),
+                input_tokens: 1000,
+                output_tokens: 100,
+                cache_hit_tokens: 0,
+                cache_creation_tokens: 0,
+                cost,
+                currency: p.currency_label().to_string(),
+                kind: "call".to_string(),
+                input_rate_per_million: rates.input_per_million,
+                output_rate_per_million: rates.output_per_million,
+                cache_hit_rate_per_million: rates.cache_hit_per_million,
+                time_window: time_window.clone(),
+                utc_offset: utc_offset.clone(),
+            },
+        )
+        .unwrap();
+
+        let entries = BillingLogStore::load_date(
+            path,
+            &chrono::Utc::now().format("%Y-%m-%d").to_string(),
+        );
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        // Window rates persisted, not the flat ones.
+        assert!((e.input_rate_per_million - 1.0).abs() < 1e-9);
+        assert!((e.output_rate_per_million - 2.0).abs() < 1e-9);
+        assert!((e.cache_hit_rate_per_million - 0.5).abs() < 1e-9);
+        assert_eq!(e.time_window.as_deref(), Some("00:00-23:59"));
+        assert_eq!(e.utc_offset, "");
+        // Cost matches window rate: 1000 * 1 + 100 * 2 = 1200; / 1e6 = 1.2e-3.
+        assert!((e.cost - 1.2e-3).abs() < 1e-9, "got {}", e.cost);
+    }
+
     /// `add_session_cost` must not disturb the token counters -- summary
     /// tokens are real spend but are NOT part of the main loop's context
     /// accounting, and folding them in would corrupt the auto-reset math.

@@ -1928,6 +1928,11 @@ mod billing_integration {
                 cost,
                 currency: p.currency_label().to_string(),
                 kind: jyc_core::billing_log_store::KIND_CALL.to_string(),
+                input_rate_per_million: 0.0,
+                output_rate_per_million: 0.0,
+                cache_hit_rate_per_million: 0.0,
+                time_window: None,
+                utc_offset: String::new(),
             },
         )
         .unwrap();
@@ -2052,6 +2057,11 @@ mod billing_integration {
                 cost: summary_cost,
                 currency: p.currency_label().to_string(),
                 kind: KIND_SUMMARY.to_string(),
+                input_rate_per_million: 0.0,
+                output_rate_per_million: 0.0,
+                cache_hit_rate_per_million: 0.0,
+                time_window: None,
+                utc_offset: String::new(),
             },
         )
         .unwrap();

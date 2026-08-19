@@ -1490,12 +1490,22 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(info, detail_chunks[0]);
 
     // Activity log panel — read from the WS-fed live buffer for this topic.
+    // LEFT/RIGHT borders continue the info pane's left border and close the
+    // panel at the right edge; TOP sits against the info pane.
     let activity_vec: Vec<jyc_types::ActivityEntry> = app
         .chat
         .live_activity_for(&selected.channel, &selected.name)
         .cloned()
         .collect();
-    render_activity_log_inner(frame, detail_chunks[1], &activity_vec, 0, 0, false);
+    render_activity_log_inner(
+        frame,
+        detail_chunks[1],
+        &activity_vec,
+        0,
+        0,
+        false,
+        Borders::TOP | Borders::LEFT | Borders::RIGHT,
+    );
 }
 
 /// Open (or swap to a new) overview WS for the selected topic.
@@ -2020,5 +2030,55 @@ mod tests {
 
         // No topics -> no auto-select.
         assert!(app.table_state.selected().is_none());
+    }
+
+    /// Regression: the dashboard **overview** Details panel wraps the
+    /// activity log in `Borders::TOP | Borders::LEFT | Borders::RIGHT`.
+    /// Drives `render_details` end-to-end (rather than calling the inner
+    /// renderer directly) so the assertion pins the *call-site* wiring:
+    /// if the overview caller ever reverts to `Borders::TOP` only, this
+    /// test fails because the activity pane loses its `│` sides.
+    #[test]
+    fn overview_activity_pane_has_left_and_right_borders() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = make_test_app();
+        app.state = Some(make_overview_with_topics(&["alpha"]));
+        app.table_state.select(Some(0));
+
+        let width: u16 = 40;
+        let height: u16 = 20;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_details(frame, frame.area(), &app))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer().clone();
+        // detail_chunks: info pane is 9 rows tall, so the activity pane
+        // starts at y = 9. With TOP | LEFT | RIGHT (no BOTTOM):
+        //   y = 9              → top corners ┌ / ┐
+        //   y = 10 .. height   → side borders │ / │
+        let activity_top: u16 = 9;
+        assert_eq!(
+            buffer[(0, activity_top)].symbol(),
+            "┌",
+            "activity pane top-left corner"
+        );
+        assert_eq!(
+            buffer[(width - 1, activity_top)].symbol(),
+            "┐",
+            "activity pane top-right corner"
+        );
+        for y in (activity_top + 1)..height {
+            let left = buffer[(0, y)].symbol();
+            let right = buffer[(width - 1, y)].symbol();
+            assert_eq!(left, "│", "row {y} left edge should be `│`, got {left:?}");
+            assert_eq!(
+                right, "│",
+                "row {y} right edge should be `│`, got {right:?}"
+            );
+        }
     }
 }

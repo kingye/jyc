@@ -16,7 +16,9 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 use super::{InboundAttachmentConfig, McpServerConfig};
-use crate::channel::{AccessConfig, ChannelPattern, PatternRules, ResetCompressionConfig};
+use crate::channel::{
+    AccessConfig, ChannelPattern, ContextStrategyConfig, PatternRules, ResetCompressionConfig,
+};
 
 /// Behavior surface for a single `[agents.<name>]` entry.
 ///
@@ -121,6 +123,12 @@ pub struct AgentConfig {
     /// Falls back to `[ai].auto_reset_threshold` (default 0.95) when unset.
     #[serde(default)]
     pub auto_reset_threshold: Option<f64>,
+
+    /// Per-agent context management strategy.
+    ///
+    /// Falls back to `[ai].context_strategy` when unset.
+    #[serde(default)]
+    pub context_strategy: Option<ContextStrategyConfig>,
 }
 
 fn default_true() -> bool {
@@ -178,5 +186,6 @@ impl AgentConfig {
         pattern.reset_compression = self.reset_compression.clone();
         pattern.auto_reset_threshold = self.auto_reset_threshold;
         pattern.access = self.access.clone();
+        pattern.context_strategy = self.context_strategy.clone();
     }
 }

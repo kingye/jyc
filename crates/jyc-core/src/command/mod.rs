@@ -1,5 +1,6 @@
 pub mod cancel_handler;
 pub mod close_handler;
+pub mod context_handler;
 pub mod custom_handler;
 pub mod exchange_handler;
 pub mod handler;
@@ -78,6 +79,10 @@ pub fn all_commands() -> Vec<CommandInfo> {
             name: "/exchange".into(),
             description: "Show shareable URLs for this topic's published files".into(),
         },
+        CommandInfo {
+            name: "/context".into(),
+            description: "View or change the context management strategy for this topic".into(),
+        },
     ]
 }
 
@@ -125,6 +130,7 @@ mod tests {
             "/unpin",
             "/thinking",
             "/exchange",
+            "/context",
         ] {
             assert!(
                 names.contains(expected),
@@ -133,7 +139,7 @@ mod tests {
         }
         assert_eq!(
             commands.len(),
-            13,
+            14,
             "all_commands() count changed. Update this test if intentional."
         );
     }

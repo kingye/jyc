@@ -644,6 +644,16 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
         }
     }
 
+    // Validate per-pattern context strategy if present
+    if let Some(cs) = &pattern.context_strategy
+        && cs.window == 0
+    {
+        errors.push(ValidationError {
+            path: format!("{prefix}.context_strategy.window"),
+            message: "must be at least 1".into(),
+        });
+    }
+
     // Validate per-pattern MCP configs if present
     if let Some(ref mcps) = pattern.mcps {
         for (j, mcp) in mcps.iter().enumerate() {

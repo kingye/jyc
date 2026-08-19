@@ -1857,6 +1857,35 @@ The agent relies on in-process agent's built-in session memory for multi-turn co
    - Used by `build_full_reply_text()` for quoted history in reply emails
    - NOT loaded into the AI prompt
 
+8. **Context Management Strategy** — How the prior `agent-context.json`
+   is shaped into the wire payload on each LLM request. The on-disk
+   file always stores the full raw context unchanged; only the request
+   payload is shaped. Configured per-pattern / per-agent / globally
+   (`context_strategy`), overridable at runtime via `.jyc/context-strategy.json`
+   (written by `/context full | sliding [N] | reset`).
+
+   * `full` (default) — send the entire `agent-context.json`.
+   * `sliding_window` — emits three parts in order:
+     1. A synthetic user message with a full text-only rendering of the
+        prior conversation (user/assistant text, tool calls and tool
+        results omitted) wrapped in `<jyc-conversation-history>`.
+        Recovers the full history even with a small window.
+     2. The last N user+assistant text pairs from the prior context,
+        reformatted in provider wire format via the active
+        `Provider` (`format_user_message` / `build_raw_assistant_message`).
+     3. The current turn verbatim (`raw_context[prior_len..]`) so
+        tool calls / results stay coherent mid-loop.
+
+   Resolution chain: runtime override file > matched pattern (or
+   synthesized `[agents.<name>]` pattern) > first pattern fallback
+   > global `[ai].context_strategy` > default. Implemented in
+   `build_send_context` (`crates/jyc-agent/src/agent_loop/context.rs`):
+   for `full` it returns `Cow::Borrowed(&raw_context)`; for
+   `sliding_window` it returns `Cow::Owned` of `[transcript_msg,
+   windowed_prior, current_turn]`. Synthetic messages use the provider's
+   own formatter, so Anthropic (`content: [...]`) and OpenAI-compat
+   (`content: "..."`) wire formats both stay valid.
+
 **Context Limits:**
 pub const MAX_BODY_IN_PROMPT: usize = 2000;
 

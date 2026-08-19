@@ -15,6 +15,8 @@ use tracing;
 use jyc_core::topic_event::TopicEvent;
 use jyc_core::topic_event_bus::TopicEventBusRef;
 
+use jyc_types::channel::ContextStrategyConfig;
+
 use crate::provider::Provider;
 use crate::tools::{
     OutboundsMap, ToolContext, ToolOutput, TopicManagersMap, registry::ToolRegistry,
@@ -112,6 +114,11 @@ pub struct AgentLoopConfig<'a> {
     /// Only used for billing, so an empty string is harmless when
     /// `pricing` is `None`.
     pub model_label: &'a str,
+    /// Context management strategy. Controls how prior conversation history
+    /// is shaped before being sent to the LLM. The on-disk
+    /// `.jyc/agent-context.json` is always the full raw context; this
+    /// field only affects the wire payload.
+    pub context_strategy: ContextStrategyConfig,
 }
 
 /// Run the agent loop to completion.
@@ -145,6 +152,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         thinking_enabled,
         pricing,
         model_label,
+        context_strategy,
     } = config;
 
     // Provider used for the cycle-boundary progress summary. Falls back to
@@ -158,7 +166,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let mut history: Vec<Message> = prior_history;
     history.push(Message::user_with_blocks(user_blocks.clone()));
 
-    // Build raw context: prior raw + current user message
+    // Build raw context: prior raw + current user message. The full context
+    // is persisted to `.jyc/agent-context.json` unchanged at the end of the
+    // loop; the strategy decides what is sent to the LLM (see
+    // `build_send_context`).
+    let prior_len = prior_raw_context.len();
     let mut raw_context: Vec<serde_json::Value> = prior_raw_context;
     raw_context.push(provider.format_user_message(&user_blocks));
 
@@ -405,6 +417,17 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // 1. Send to LLM using raw context (preserves provider-specific fields)
         // 2. Collect the response
         //
+        // `send_context` is the strategy-shaped view of `raw_context` used
+        // for the wire payload. The full `raw_context` continues to
+        // accumulate current-turn messages and is what we persist at the
+        // end of the loop — the strategy only changes what the LLM sees.
+        let send_context = crate::agent_loop::context::build_send_context(
+            provider,
+            &raw_context,
+            prior_len,
+            &context_strategy,
+        );
+        //
         // Wrapped in a bounded retry loop: transient SSE failures (TCP RST
         // mid-stream, body decode glitch, idle timeout) get a few automatic
         // retries with backoff before the topic is failed. See
@@ -416,7 +439,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // "AI thinking" state only on that event).
         let response = match complete_with_retry(
             provider,
-            &raw_context,
+            &send_context,
             &tools.definitions(),
             system_prompt,
             topic_name,
@@ -1293,6 +1316,7 @@ mod no_reply_tests {
             thinking_enabled: false,
             pricing: None,
             model_label: "empty-test-1",
+            context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
         })
         .await
         .expect("agent loop should run to completion");
@@ -1616,6 +1640,7 @@ mod cancel_during_tool_tests {
                 thinking_enabled: false,
                 pricing: None,
                 model_label: "",
+                context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
             }),
         )
         .await;
@@ -1706,6 +1731,7 @@ mod cancel_during_tool_tests {
                 thinking_enabled: false,
                 pricing: None,
                 model_label: "",
+                context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
             }),
         )
         .await;

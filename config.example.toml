@@ -101,6 +101,17 @@ enabled = true
 # Default: 0.95
 # auto_reset_threshold = 0.9
 
+# Per-pattern context management strategy. Controls how prior conversation
+# history is sent to the LLM on each request. The on-disk
+# .jyc/agent-context.json always stores the full raw context unchanged;
+# this field only shapes the wire payload.
+# mode: "full" (default) | "sliding_window" (alias "sliding")
+# window: user+assistant turns to keep in sliding_window mode (default: 10).
+# In sliding_window mode the send context also carries a full text-only
+# transcript of the prior conversation (tool calls and tool results
+# omitted) so the model retains the full history.
+# context_strategy = { mode = "sliding_window", window = 10 }
+
 # Custom filesystem path for the topic directory.
 # When set, the topic's working directory is this path instead of the
 # default <workspace>/<topic_name>/. Supports ~ expansion to $HOME.
@@ -422,6 +433,13 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 #   Per-pattern `auto_reset_threshold` takes priority.
 # reset_compression = { mode = "llm", keep_pairs = 3 }
 # auto_reset_threshold = 0.95
+
+# Default context management strategy. Per-pattern `context_strategy`
+# takes priority. Overridden at runtime by the `.jyc/context-strategy.json`
+# file written by `/context`.
+# mode: "full" (default) | "sliding_window" (alias "sliding")
+# window: user+assistant turns to keep in sliding_window mode (default: 10)
+# context_strategy = { mode = "sliding_window", window = 10 }
 
 
 [ai.attachments]
@@ -1040,6 +1058,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # mode = "build"
 # reset_compression = { mode = "llm", keep_pairs = 3 }
 # auto_reset_threshold = 0.95
+# context_strategy = { mode = "sliding_window", window = 10 }
 # role = "Developer"
 # attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
 

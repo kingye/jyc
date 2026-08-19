@@ -894,6 +894,27 @@ fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
     out
 }
 
+/// Concatenate text content from a message in provider wire format. Handles
+/// both OpenAI (`content: "string"`) and Anthropic (`content: [{type:"text",...}]`)
+/// shapes. Tool_use / tool_result / tool_calls are ignored.
+pub(crate) fn extract_message_text(msg: &serde_json::Value) -> String {
+    let mut text = String::new();
+    if let Some(s) = msg.get("content").and_then(|c| c.as_str()) {
+        text.push_str(s);
+        return text;
+    }
+    if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
+        for b in blocks {
+            if b.get("type").and_then(|t| t.as_str()) == Some("text")
+                && let Some(s) = b.get("text").and_then(|x| x.as_str())
+            {
+                text.push_str(s);
+            }
+        }
+    }
+    text
+}
+
 /// Extract user+assistant text pairs from raw context, cleaning assistant
 /// messages to only keep role + content (strip reasoning_content, tool_calls).
 /// Returns the last `keep_pairs` pairs flattened into a single Vec.
@@ -910,10 +931,17 @@ pub(crate) fn extract_user_assistant_pairs(
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
         match role {
             "user" => {
-                last_user = Some(msg.clone());
+                // Skip user-role messages with no extractable text — for
+                // Anthropic-shaped contexts these are tool_result wrappers
+                // (role "user" with `tool_result` blocks), which must not be
+                // promoted to `last_user` and paired with the next assistant
+                // reply.
+                if !extract_message_text(msg).is_empty() {
+                    last_user = Some(msg.clone());
+                }
             }
             "assistant" => {
-                let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                let content = extract_message_text(msg);
                 if !content.is_empty()
                     && let Some(user_msg) = last_user.take()
                 {

@@ -139,7 +139,7 @@ fn render_conversation_text(raw_context: &[serde_json::Value]) -> String {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
         match role {
             "user" | "assistant" => {
-                let text = collect_text_only(msg);
+                let text = crate::session::extract_message_text(msg);
                 if !text.is_empty() {
                     let label = if role == "user" { "USER" } else { "ASSISTANT" };
                     out.push_str(label);
@@ -154,38 +154,26 @@ fn render_conversation_text(raw_context: &[serde_json::Value]) -> String {
     out
 }
 
-/// Concatenate text content from a message, ignoring tool_use blocks and
-/// the OpenAI `tool_calls` field. Handles string content and array-of-blocks.
-fn collect_text_only(msg: &serde_json::Value) -> String {
-    let mut text = String::new();
-    if let Some(s) = msg.get("content").and_then(|c| c.as_str()) {
-        text.push_str(s);
-        return text;
-    }
-    if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
-        for b in blocks {
-            if b.get("type").and_then(|t| t.as_str()) == Some("text")
-                && let Some(s) = b.get("text").and_then(|x| x.as_str())
-            {
-                text.push_str(s);
-            }
-        }
-    }
-    text
-}
-
 /// Reformat a cleaned message (string content from `extract_user_assistant_pairs`)
 /// into the active provider's wire format via the Provider trait. This is
 /// what makes sliding-window output valid for Anthropic, which requires
-/// user/assistant `content` to be an array of blocks.
-fn format_cleaned_message(provider: &dyn Provider, msg: &serde_json::Value) -> serde_json::Value {
-    let text = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-    let text = text.to_string();
-    if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+/// user/assistant `content` to be an array of blocks. Returns `None` when
+/// the message has no extractable text, so callers must never emit empty
+/// text blocks (Anthropic rejects them).
+fn format_cleaned_message(
+    provider: &dyn Provider,
+    msg: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let text = crate::session::extract_message_text(msg);
+    if text.is_empty() {
+        return None;
+    }
+    let formatted = if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
         provider.build_raw_assistant_message(&text, "", &[])
     } else {
         provider.format_user_message(&[ContentBlock::Text { text }])
-    }
+    };
+    Some(formatted)
 }
 
 /// Build the context to send to the LLM for the next request.
@@ -233,7 +221,12 @@ pub(crate) fn build_send_context<'a>(
 
             let windowed = crate::session::extract_user_assistant_pairs(prior, strategy.window);
             for msg in &windowed {
-                out.push(format_cleaned_message(provider, msg));
+                // Defensive: skip messages with no extractable text so the
+                // wire payload never contains empty text blocks (which
+                // Anthropic rejects, especially under cache_control).
+                if let Some(formatted) = format_cleaned_message(provider, msg) {
+                    out.push(formatted);
+                }
             }
 
             out.extend_from_slice(current);
@@ -304,8 +297,77 @@ mod render_raw_context_tests {
         }
     }
 
+    /// Mirrors `AnthropicProvider` wire format: `content` is an array of
+    /// blocks for both user and assistant. Used to assert that
+    /// `build_send_context` never emits empty text blocks — which Anthropic
+    /// rejects with 400 `cache_control cannot be set for empty text blocks`
+    /// when `apply_cache_breakpoints` lands on a `n-3`/`n-2` message.
+    struct AnthropicProvider;
+    #[async_trait::async_trait]
+    impl Provider for AnthropicProvider {
+        fn name(&self) -> &str {
+            "anthropic"
+        }
+        fn model(&self) -> &str {
+            "test"
+        }
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[crate::types::ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<crate::provider::EventStream> {
+            unimplemented!()
+        }
+        async fn complete_raw(
+            &self,
+            _raw_messages: &[serde_json::Value],
+            _tools: &[crate::types::ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<crate::provider::EventStream> {
+            unimplemented!()
+        }
+        fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
+            let content: Vec<serde_json::Value> = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(json!({"type": "text", "text": text})),
+                    _ => None,
+                })
+                .collect();
+            json!({"role": "user", "content": content})
+        }
+        fn format_tool_result(
+            &self,
+            tool_use_id: &str,
+            content: &str,
+            _is_error: bool,
+        ) -> serde_json::Value {
+            json!({
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": content}],
+            })
+        }
+        fn build_raw_assistant_message(
+            &self,
+            text: &str,
+            _reasoning: &str,
+            _tool_calls: &[(String, String, String)],
+        ) -> serde_json::Value {
+            let mut content = Vec::new();
+            if !text.is_empty() {
+                content.push(json!({"type": "text", "text": text}));
+            }
+            json!({"role": "assistant", "content": content})
+        }
+    }
+
     fn prov() -> OpenAiCompatProvider {
         OpenAiCompatProvider
+    }
+
+    fn anthropic() -> AnthropicProvider {
+        AnthropicProvider
     }
 
     #[test]
@@ -478,5 +540,81 @@ mod render_raw_context_tests {
         let sent = build_send_context(&prov(), &ctx, 0, &cfg).into_owned();
         // No prior → no transcript, no windowed. Just current turn verbatim.
         assert_eq!(sent, ctx);
+    }
+
+    /// Regression: with Anthropic-shaped prior context, sliding-window must
+    /// not produce empty text blocks (Anthropic rejects them, especially
+    /// under cache_control on `messages[n-3]`/`[n-2]`). Also verifies that
+    /// assistant text in array form is recognized by pairing, and tool_result
+    /// user-role wrappers are excluded from the windowed pairs.
+    #[test]
+    fn sliding_window_anthropic_shaped_prior_emits_no_empty_blocks() {
+        let prior = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "u1"}]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "a1"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "text", "text": "calling bash"},
+                {"type": "tool_use", "id": "t1", "name": "bash", "input": {}},
+            ]}),
+            // Anthropic tool result: role "user" with tool_result block, no text.
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "u2"}]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "a2"}]}),
+        ];
+        let current = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "u3"}]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "a3"}]}),
+        ];
+        let prior_len = prior.len();
+        let mut ctx = prior.clone();
+        ctx.extend(current.clone());
+
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 4,
+        };
+        let sent = build_send_context(&anthropic(), &ctx, prior_len, &cfg).into_owned();
+
+        // Walk every emitted message: assert no text block has empty text.
+        for (i, msg) in sent.iter().enumerate() {
+            let role = msg["role"].as_str().unwrap_or("");
+            if let Some(blocks) = msg["content"].as_array() {
+                for b in blocks {
+                    if b["type"].as_str() == Some("text") {
+                        let text = b["text"].as_str().unwrap_or("");
+                        assert!(
+                            !text.is_empty(),
+                            "empty text block at messages.{i} (role={role})",
+                        );
+                    }
+                }
+            }
+        }
+
+        // The windowed pairs (u1,a1)(u2,a2) should be present; the
+        // tool_result user-role wrapper must be excluded.
+        assert!(
+            sent.iter()
+                .any(|m| m["role"] == "user" && m["content"][0]["text"].as_str() == Some("u1"))
+        );
+        assert!(sent.iter().any(|m| m["role"] == "assistant"
+            && m["content"][0]["text"].as_str() == Some("a1")));
+        assert!(
+            sent.iter()
+                .any(|m| m["role"] == "user" && m["content"][0]["text"].as_str() == Some("u2"))
+        );
+        assert!(sent.iter().any(|m| m["role"] == "assistant"
+            && m["content"][0]["text"].as_str() == Some("a2")));
+        // No standalone tool_result user message (its text would be empty).
+        assert!(
+            !sent
+                .iter()
+                .any(|m| m["content"][0]["type"].as_str() == Some("tool_result")),
+            "tool_result wrapper leaked into windowed output"
+        );
+
+        // Current turn preserved verbatim at the tail.
+        let tail_start = sent.len() - current.len();
+        assert_eq!(&sent[tail_start..], current.as_slice());
     }
 }

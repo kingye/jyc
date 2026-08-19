@@ -1372,10 +1372,12 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         ])
         .split(area);
 
-    // Topic info panel
+    // Topic info panel. TOP closes the gap against the topics table above;
+    // LEFT/RIGHT frame the pane and continue into the activity panel below.
+    // No BOTTOM — the activity panel's TOP border is the divider between them.
     let info_block = Block::default()
         .title(format!(" {} ", selected.name))
-        .borders(Borders::LEFT);
+        .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT);
 
     let mut info_lines = vec![];
 
@@ -1490,8 +1492,8 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(info, detail_chunks[0]);
 
     // Activity log panel — read from the WS-fed live buffer for this topic.
-    // LEFT/RIGHT borders continue the info pane's left border and close the
-    // panel at the right edge; TOP sits against the info pane.
+    // LEFT/RIGHT continue the info pane's side borders; TOP doubles as the
+    // divider between the two panes (hence no BOTTOM on the info pane).
     let activity_vec: Vec<jyc_types::ActivityEntry> = app
         .chat
         .live_activity_for(&selected.channel, &selected.name)
@@ -2032,14 +2034,15 @@ mod tests {
         assert!(app.table_state.selected().is_none());
     }
 
-    /// Regression: the dashboard **overview** Details panel wraps the
-    /// activity log in `Borders::TOP | Borders::LEFT | Borders::RIGHT`.
-    /// Drives `render_details` end-to-end (rather than calling the inner
-    /// renderer directly) so the assertion pins the *call-site* wiring:
-    /// if the overview caller ever reverts to `Borders::TOP` only, this
-    /// test fails because the activity pane loses its `│` sides.
+    /// Regression: the dashboard **overview** Details panel frames both the
+    /// topic info pane and the activity log in
+    /// `Borders::TOP | Borders::LEFT | Borders::RIGHT`, giving a continuous
+    /// left/right edge with no gap at the top. Drives `render_details`
+    /// end-to-end (rather than calling the inner renderers directly) so the
+    /// assertions pin the *call-site* wiring: if either caller drops a
+    /// border flag, the corresponding `│` / `┌` / `┐` cells disappear.
     #[test]
-    fn overview_activity_pane_has_left_and_right_borders() {
+    fn overview_details_panes_have_continuous_side_borders() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -2056,8 +2059,17 @@ mod tests {
             .expect("draw");
 
         let buffer = terminal.backend().buffer().clone();
-        // detail_chunks: info pane is 9 rows tall, so the activity pane
-        // starts at y = 9. With TOP | LEFT | RIGHT (no BOTTOM):
+        // detail_chunks: info pane occupies y = 0..9, activity pane y = 9..
+        // Info pane has TOP | LEFT | RIGHT (no BOTTOM):
+        //   y = 0     → top corners ┌ / ┐
+        //   y = 1..9  → side borders │ / │
+        assert_eq!(buffer[(0, 0)].symbol(), "┌", "info pane top-left corner");
+        assert_eq!(
+            buffer[(width - 1, 0)].symbol(),
+            "┐",
+            "info pane top-right corner"
+        );
+        // Activity pane has TOP | LEFT | RIGHT (no BOTTOM):
         //   y = 9              → top corners ┌ / ┐
         //   y = 10 .. height   → side borders │ / │
         let activity_top: u16 = 9;
@@ -2071,7 +2083,8 @@ mod tests {
             "┐",
             "activity pane top-right corner"
         );
-        for y in (activity_top + 1)..height {
+        // Every other row in both panes carries continuous side borders.
+        for y in (1..height).filter(|y| *y != activity_top) {
             let left = buffer[(0, y)].symbol();
             let right = buffer[(width - 1, y)].symbol();
             assert_eq!(left, "│", "row {y} left edge should be `│`, got {left:?}");

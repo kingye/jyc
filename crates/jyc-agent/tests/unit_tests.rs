@@ -1646,6 +1646,7 @@ mod skills {
                 vision: None,
                 reset_compression: None,
                 auto_reset_threshold: 0.95,
+                context_strategy: None,
             },
             inspect: None,
             attachments: None,

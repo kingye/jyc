@@ -517,6 +517,16 @@ pub struct ChannelPattern {
     /// ```
     #[serde(default)]
     pub access: Option<AccessConfig>,
+
+    /// Per-pattern context management strategy.
+    ///
+    /// Controls how prior conversation history is sent to the LLM. The
+    /// on-disk `.jyc/agent-context.json` always stores the full raw
+    /// context unchanged; this field only shapes what is sent to the
+    /// LLM on each request. Falls back to `[ai].context_strategy` when
+    /// unset.
+    #[serde(default)]
+    pub context_strategy: Option<ContextStrategyConfig>,
 }
 
 /// Compression strategy for session reset.
@@ -561,6 +571,53 @@ impl Default for ResetCompressionConfig {
 
 fn default_keep_pairs() -> usize {
     3
+}
+
+/// Context management strategy controlling how prior conversation history is
+/// sent to the LLM on each request. The on-disk `.jyc/agent-context.json`
+/// always stores the full raw context unchanged; only what is sent to the
+/// LLM is shaped by this strategy.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextStrategy {
+    /// Send the full persisted context (current behavior).
+    #[default]
+    Full,
+    /// Send only the last N user+assistant turns from the prior context
+    /// (tool calls/results are dropped), plus the full current turn
+    /// kept verbatim. A full text-only transcript of the prior
+    /// conversation is also prepended as a synthetic user message so
+    /// the model retains the full history.
+    #[serde(alias = "sliding")]
+    SlidingWindow,
+}
+
+/// Configuration for the context strategy.
+///
+/// `mode` selects which strategy to apply; `window` is the number of
+/// latest user+assistant turns to keep in `sliding_window` mode.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextStrategyConfig {
+    /// Context strategy mode. Default: `full`.
+    #[serde(default)]
+    pub mode: ContextStrategy,
+    /// Number of latest user+assistant turns to keep in `sliding_window`.
+    /// Default: 10. Only meaningful when `mode = "sliding_window"`.
+    #[serde(default = "default_context_window_size")]
+    pub window: usize,
+}
+
+impl Default for ContextStrategyConfig {
+    fn default() -> Self {
+        Self {
+            mode: ContextStrategy::default(),
+            window: default_context_window_size(),
+        }
+    }
+}
+
+fn default_context_window_size() -> usize {
+    10
 }
 
 /// Per-pattern filesystem access whitelist.
@@ -611,6 +668,7 @@ impl Default for ChannelPattern {
             reset_compression: None,
             auto_reset_threshold: None,
             access: None,
+            context_strategy: None,
         }
     }
 }
@@ -736,5 +794,24 @@ topic_path = "~/projects/jyc"
             Some("~/projects/jyc"),
             "topic_path should deserialize correctly"
         );
+    }
+
+    #[test]
+    fn test_context_strategy_serde_aliases() {
+        // The primary name and the `sliding` alias should both deserialize
+        // to SlidingWindow.
+        for s in ["sliding_window", "sliding"] {
+            let cfg: ContextStrategyConfig = toml::from_str(&format!(r#"mode = "{s}""#)).unwrap();
+            assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
+            // window falls back to the default when omitted.
+            assert_eq!(cfg.window, 10);
+        }
+
+        let cfg: ContextStrategyConfig = toml::from_str(r#"mode = "full""#).unwrap();
+        assert_eq!(cfg.mode, ContextStrategy::Full);
+
+        // Default for an empty table is Full / window 10.
+        let cfg: ContextStrategyConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg, ContextStrategyConfig::default());
     }
 }

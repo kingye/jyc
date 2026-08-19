@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use crate::WecomGlobalConfig;
 
 use crate::channel::ChannelPattern;
-use crate::channel::ResetCompressionConfig;
+use crate::channel::{ContextStrategyConfig, ResetCompressionConfig};
 use crate::feishu_config::FeishuConfig;
 use crate::gitee_config::GiteeConfig;
 use crate::github_config::GithubConfig;
@@ -184,6 +184,7 @@ pub const BUILTIN_COMMAND_NAMES: &[&str] = &[
     "/unpin",
     "/thinking",
     "/exchange",
+    "/context",
 ];
 
 /// General application settings.
@@ -469,6 +470,11 @@ pub struct AiConfig {
     /// Default: 0.95.
     #[serde(default = "default_auto_reset_threshold")]
     pub auto_reset_threshold: f64,
+
+    /// Default context management strategy. Per-pattern `context_strategy`
+    /// takes priority when set.
+    #[serde(default)]
+    pub context_strategy: Option<ContextStrategyConfig>,
 }
 
 impl Default for AiConfig {
@@ -489,6 +495,7 @@ impl Default for AiConfig {
             vision: None,
             reset_compression: None,
             auto_reset_threshold: default_auto_reset_threshold(),
+            context_strategy: None,
         }
     }
 }

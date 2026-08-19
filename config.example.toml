@@ -22,7 +22,12 @@ max_queue_size_per_topic = 10
 # scan_interval_secs = 60    # How often to scan for due jobs
 # max_jobs_per_topic = 10   # Max jobs per topic (prevents unbounded creation)
 
-# --- Channel: jiny283 ---
+# --- Channel: jiny283 (email, pipe-only) ---
+# Email is a pipe-only adapter (see docs/core-hub-adapters.md): it owns no
+# topics or agents — every enabled pattern must pipe into a hub channel /
+# agent. IMAP still receives and SMTP still replies (threaded into the
+# original mail thread); only the mailbox cursor lives with the adapter, at
+# <workdir>/channels/<channel_name>/.imap/.
 
 [channels.jiny283]
 type = "email"
@@ -48,8 +53,8 @@ poll_interval_secs = 30
 max_retries = 5
 folder = "INBOX"
 
-# Footer configuration: controls whether model/mode/tokens footer is appended to replies.
-# Default is enabled = true when omitted. Set enabled = false to disable the footer.
+# Footer configuration: NOT applicable to email channels — pipe-only email
+# replies are plain agent text. Still honored by other channel types.
 # [channels.jiny283.footer]
 # enabled = true
 
@@ -68,6 +73,13 @@ folder = "INBOX"
 [[channels.jiny283.patterns]]
 name = "xxx"
 enabled = true
+
+# Required: pipe messages matching this pattern into a hub channel / agent.
+# Without `topic`, the subject-derived topic name is used (prefixes stripped),
+# i.e. one topic per mail subject — email's natural topic identity.
+#   pipe = { agent = "jin" }                       # topic = subject
+#   pipe = { agent = "jin", topic = "invoices" }   # all mail into one topic
+pipe = { agent = "jin" }
 
 # Initial agent mode for topics matching this pattern. Valid values: "plan", "build".
 # When set, topics matching this pattern start in the specified mode, unless the
@@ -143,6 +155,9 @@ exact = ["kingye@petalmail.com"]
 [channels.jiny283.patterns.rules.subject]
 prefix = ["283", "jiny"]
 
+# NOTE: per-pattern attachment policy does not apply to pipe-only channels
+# (the hub channel's patterns are matched at route time); the global
+# [attachments.inbound] policy still applies.
 [channels.jiny283.patterns.attachments]
 enabled = true
 allowed_extensions = [
@@ -188,6 +203,7 @@ folder = "INBOX"
 [[channels.jiny283a.patterns]]
 name = "jiny-m"
 enabled = true
+pipe = { agent = "jin" }
 
 [channels.jiny283a.patterns.rules.sender]
 exact = ["kingye@petalmail.com", "kingye283@163.com"]

@@ -82,6 +82,26 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **email channel is pipe-only** — `email` joins `feishu`/`wecom_bot` as a
+  pipe-only adapter (see `docs/core-hub-adapters.md`). Every enabled
+  pattern must declare a `pipe` target; the adapter keeps only the IMAP
+  monitor and SMTP reply forwarders (one per pipe target channel), which
+  reply into the original mail thread (`In-Reply-To`/`References`).
+  A pattern without `pipe.topic` uses the subject-derived topic name.
+  Email replies are now plain agent text — no model/mode/tokens footer,
+  so `[channels.<name>.footer]` no longer applies to email channels; nor
+  does per-pattern `[channels.<name>.patterns.attachments]` (the global
+  `[attachments.inbound]` policy still applies). The email channel no
+  longer appears in the orchestrator / dashboard channel list, and
+  `jyc_send_message` addressed to an email channel name is no longer
+  supported (send to the hub topic instead).
+
+- **IMAP mailbox cursor state moved to `<workdir>/channels/<channel>/.imap/`**
+  (was `<workdir>/<channel>/.imap/`). Existing state is not migrated: after
+  upgrading, the monitor starts from the newest message in the mailbox (no
+  re-processing flood). The generic per-channel `StateManager` in
+  `serve` is gone — email was its only consumer.
+
 - **Dashboard overview Details panel panes are now framed** — the topic
   info pane is fully enclosed (`Borders::ALL`) and the activity log uses
   `Borders::TOP | Borders::LEFT | Borders::RIGHT`, giving the panel a
@@ -246,6 +266,14 @@ All notable changes to JYC will be documented in this file.
   reply (`sender != "ai"`) now renders on the human side.
 
 ### Removed
+
+- **Email direct-mode code.** `EmailOutboundAdapter` (whole file — replies
+  now flow via the hub broadcast + SMTP pipe forwarder), the dead
+  `EmailInboundAdapter` and its duplicate `parse_raw_email` in
+  `jyc-channels/src/email/inbound.rs` (the live parser is
+  `jyc-services/src/imap/parse_email.rs`), and
+  `email_parser::build_full_reply_text` (`build_footer` stays for the other
+  channels).
 
 - **Feishu direct-mode code.** `FeishuOutboundAdapter` (direct-mode reply
   delivery — replies now flow via the hub broadcast + pipe forwarder), the

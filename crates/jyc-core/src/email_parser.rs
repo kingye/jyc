@@ -396,42 +396,6 @@ pub fn build_footer(
     }
 }
 
-/// Build reply text with footer (no quoted history).
-///
-/// Format:
-/// ```text
-/// <AI reply text>
-///
-/// ---
-/// Model: <model> | Mode: <mode> | Tokens: <current>K/<max>K
-/// ```
-#[allow(clippy::too_many_arguments)]
-pub async fn build_full_reply_text(
-    reply_text: &str,
-    _topic_path: &std::path::Path,
-    _sender: &str,
-    _timestamp: &str,
-    _topic: &str,
-    _body_text: &str,
-    _message_dir: &str,
-    model: Option<&str>,
-    mode: Option<&str>,
-    input_tokens: Option<u64>,
-    max_tokens: Option<u64>,
-    footer_enabled: bool,
-) -> String {
-    let footer = build_footer(model, mode, input_tokens, max_tokens, footer_enabled);
-
-    // Clean reply text to remove any trailing `---` separators
-    let clean_reply = strip_trailing_separators(reply_text);
-
-    if footer.is_empty() {
-        clean_reply
-    } else {
-        format!("{}\n\n{}", clean_reply, footer)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -742,49 +706,5 @@ Hello, I need help with X.
         assert!(footer.contains("Model: gpt-4"));
         assert!(footer.contains("Mode: agent"));
         assert!(footer.contains("Tokens:"));
-    }
-
-    // --- build_full_reply_text footer tests ---
-
-    #[tokio::test]
-    async fn test_build_full_reply_text_footer_disabled() {
-        let reply = build_full_reply_text(
-            "Hello world",
-            std::path::Path::new("/tmp"),
-            "sender",
-            "2026-01-01T00:00:00Z",
-            "topic",
-            "body",
-            "msg",
-            Some("model"),
-            Some("agent"),
-            Some(5000),
-            Some(120000),
-            false,
-        )
-        .await;
-        assert_eq!(reply, "Hello world");
-        assert!(!reply.contains("Model:"));
-    }
-
-    #[tokio::test]
-    async fn test_build_full_reply_text_footer_enabled() {
-        let reply = build_full_reply_text(
-            "Hello world",
-            std::path::Path::new("/tmp"),
-            "sender",
-            "2026-01-01T00:00:00Z",
-            "topic",
-            "body",
-            "msg",
-            Some("model"),
-            Some("agent"),
-            Some(5000),
-            Some(120000),
-            true,
-        )
-        .await;
-        assert!(reply.contains("Hello world"));
-        assert!(reply.contains("Model: model"));
     }
 }

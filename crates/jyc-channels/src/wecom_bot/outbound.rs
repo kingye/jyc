@@ -377,48 +377,26 @@ mod tests {
         assert!("- list".contains("- "));
     }
 
-    /// Documents the wire format for a processing indicator.
-    #[test]
-    fn test_processing_indicator_wire_format() {
-        let json = serde_json::json!({
-            "cmd": "aibot_respond_msg",
-            "headers": {"req_id": "req_123"},
-            "body": {
-                "msgtype": "stream",
-                "stream": {
-                    "id": "stream_abc",
-                    "content": "正在思考中...",
-                    "finish": false
-                }
-            }
-        });
+    /// `send_stream_reply` must emit `aibot_respond_msg` with the
+    /// `stream` payload carrying the caller's id/content/finish flag —
+    /// the wire format the pipe reply forwarder depends on.
+    #[tokio::test]
+    async fn test_send_stream_reply_wire_format() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let handle = WecomBotConnectionHandle::new(tx, Arc::new(Mutex::new(HashMap::new())));
 
-        assert_eq!(json["cmd"], "aibot_respond_msg");
-        assert_eq!(json["headers"]["req_id"], "req_123");
-        assert_eq!(json["body"]["msgtype"], "stream");
-        assert_eq!(json["body"]["stream"]["id"], "stream_abc");
-        assert_eq!(json["body"]["stream"]["content"], "正在思考中...");
-        assert_eq!(json["body"]["stream"]["finish"], false);
-    }
+        send_stream_reply(&handle, "req_123", "stream_abc", "thinking...", false)
+            .await
+            .expect("stream reply sent");
 
-    /// Documents the wire format for clearing a processing indicator.
-    #[test]
-    fn test_clear_indicator_wire_format() {
-        let json = serde_json::json!({
-            "cmd": "aibot_respond_msg",
-            "headers": {"req_id": "req_123"},
-            "body": {
-                "msgtype": "stream",
-                "stream": {
-                    "id": "stream_abc",
-                    "content": "处理失败，请稍后重试",
-                    "finish": true
-                }
-            }
-        });
-
-        assert_eq!(json["body"]["stream"]["finish"], true);
-        assert_eq!(json["body"]["stream"]["content"], "处理失败，请稍后重试");
+        let sent: serde_json::Value =
+            serde_json::from_str(&rx.recv().await.expect("frame sent")).unwrap();
+        assert_eq!(sent["cmd"], "aibot_respond_msg");
+        assert_eq!(sent["headers"]["req_id"], "req_123");
+        assert_eq!(sent["body"]["msgtype"], "stream");
+        assert_eq!(sent["body"]["stream"]["id"], "stream_abc");
+        assert_eq!(sent["body"]["stream"]["content"], "thinking...");
+        assert_eq!(sent["body"]["stream"]["finish"], false);
     }
 
     #[test]

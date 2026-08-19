@@ -284,6 +284,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Removed
 
+- **Dead code left over from the pipe-only migrations.**
+  `WecomBotOutboundAdapter` (struct, its `OutboundAdapter` impl and its
+  tests — the pipe adapter drives the `outbound.rs` wire-format free
+  functions directly, so nothing constructed it), the
+  `OutboundAdapter::{send,update,clear}_processing_indicator` trait
+  methods (the adapter above was their only implementor; the worker-side
+  calls went away with the wecom_bot migration), and the unused
+  `mail-parser` dependency of `jyc-channels` (email parsing lives in
+  `jyc-services`). Behavior unchanged — none of it was reachable. (#599)
+
 - **Email direct-mode code.** `EmailOutboundAdapter` (whole file — replies
   now flow via the hub broadcast + SMTP pipe forwarder), the dead
   `EmailInboundAdapter` and its duplicate `parse_raw_email` in

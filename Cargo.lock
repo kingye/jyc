@@ -1893,7 +1893,6 @@ dependencies = [
  "jyc-services",
  "jyc-types",
  "jyc-utils",
- "mail-parser",
  "md5",
  "openlark-client",
  "regex",

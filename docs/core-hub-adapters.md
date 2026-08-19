@@ -149,11 +149,9 @@ same pipe-only migration as feishu. The adapter retains only:
 - `client.rs` — WebSocket lifecycle (connect, subscribe, heartbeat, reconnect).
 - `inbound.rs` — WebSocket frames → `InboundMessage` (with attach-download via
   `media::process_bot_attachments` for image/file/mixed).
-- `outbound.rs` — wire-format helpers (streaming reply, attachment upload,
-  media body) re-exported as `pub` so the pipe adapter can drive them
-  directly. The full `WecomBotOutboundAdapter` struct is kept (public API)
-  for callers that still want the full reply-lifecycle surface (footer,
-  chat-log storage, etc.).
+- `outbound.rs` — wire-format helpers only (streaming reply, attachment
+  upload, media body), re-exported as `pub` so the pipe adapter drives
+  them directly.
 - The new `spawn_wecom_bot_adapter` in `crates/jyc-cli/src/cli/serve/channels.rs`.
 
 Removed in the migration: the `WecomBotOutboundAdapter` registration in
@@ -161,6 +159,9 @@ Removed in the migration: the `WecomBotOutboundAdapter` registration in
 the `wecom_bot_handle_arc` plumbing, and the channel-specific processing
 indicator / progress spinner code in `TopicManager::worker` (the core
 stays channel-agnostic — the pipe adapter owns the streaming reply).
+The `WecomBotOutboundAdapter` struct itself was deleted afterwards
+(#599) — with the pipe adapter driving the free functions, nothing
+constructed it.
 
 **Placeholders.** Unlike feishu, wecom_bot does not populate a
 `chat_name` on the inbound message. The pipe topic template uses

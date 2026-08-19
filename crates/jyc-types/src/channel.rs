@@ -235,44 +235,6 @@ pub trait OutboundAdapter: Send + Sync {
             "Attachments not supported for this channel type"
         ))
     }
-
-    /// Send a processing indicator to inform the user that AI is working.
-    ///
-    /// Channels that support streaming (e.g., WeCom Bot) can show a
-    /// "thinking..." message before the final reply arrives.
-    ///
-    /// Returns an optional handle that the channel can use to correlate
-    /// the final reply with the indicator.
-    async fn send_processing_indicator(
-        &self,
-        _original: &InboundMessage,
-    ) -> Result<Option<String>> {
-        Ok(None)
-    }
-
-    /// Update a previously sent processing indicator with new content.
-    ///
-    /// Channels that support streaming can update the indicator text
-    /// in-place (e.g., showing a rotating spinner or changing activity).
-    ///
-    /// The `handle` is the value returned by `send_processing_indicator`.
-    async fn update_processing_indicator(
-        &self,
-        _original: &InboundMessage,
-        _handle: &str,
-        _content: &str,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    /// Clear a previously sent processing indicator.
-    ///
-    /// Called when AI processing fails or produces no reply, to ensure
-    /// the indicator does not remain stuck in an intermediate state.
-    /// The `handle` is the value returned by `send_processing_indicator`.
-    async fn clear_processing_indicator(&self, _handle: Option<String>) -> Result<()> {
-        Ok(())
-    }
 }
 
 // --- Pattern Types ---

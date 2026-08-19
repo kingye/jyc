@@ -1622,8 +1622,7 @@ async fn relay_wecom_attachment(
 /// Fallback path when the streaming `finish=true` ack is rejected
 /// (typically errcode 846604 — the WeCom passive-reply window has
 /// closed, common for long agent runs). The body wire format is built
-/// by the shared `build_proactive_text_body` helper so the response
-/// shape matches `WecomBotOutboundAdapter::send_message` exactly.
+/// by the shared `build_proactive_text_body` helper.
 async fn send_wecom_proactive_text(
     handle: &jyc_channels::wecom_bot::client::WecomBotConnectionHandle,
     recipient: &str,

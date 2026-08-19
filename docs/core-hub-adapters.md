@@ -204,6 +204,17 @@ an explicit `topic` falls back to the subject-derived topic name
 (`EmailMatcher::derive_topic_name`, i.e. prefixes stripped). An explicit
 `pipe.topic` (including `${msg.<key>}` templates) wins.
 
+**Placeholders.** Email populates `from` (sender address) and `in_reply_to`
+metadata; `${msg.channel_uid}` is the IMAP UID (per-message — not a usable
+topic). The useful email keys are `${msg.from}` (one topic per sender) and
+`${msg.topic}`, which resolves to the subject-derived name: `Re:`/`Fw:`/
+`回复:`/`转发:` prefixes are stripped at parse time
+(`email_parser::strip_reply_prefix`), configured pattern prefixes and
+filesystem sanitization by `derive_topic_name`. So `topic = "mail-${msg.topic}"`
+turns a `Re: Fw: Invoice 42` subject into the topic `mail-Invoice 42`. The
+adapter sets `message.topic` to the derived name before retargeting, which is
+what makes the placeholder see the pattern-stripped value.
+
 **Reply threading.** The forwarder keeps a `topic → { recipient, subject,
 in_reply_to, references }` map recorded on inbound, so replies land in the
 original mail thread (`In-Reply-To` = original `Message-ID`, `References` =

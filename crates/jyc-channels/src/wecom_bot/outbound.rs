@@ -36,12 +36,11 @@ const FILE_MAX_SIZE: usize = 20 * 1024 * 1024;
 
 // ─── Public helpers exposed for the pipe adapter ───────────────────
 //
-// The pipe-only `spawn_wecom_bot_adapter` (jyc-cli) reuses these
-// directly instead of going through `WecomBotOutboundAdapter` (which
-// carries the full reply-lifecycle surface: footer, reply context,
-// session tokens, chat-log storage). Keeping them as free functions
-// leaves one canonical wire-format definition instead of duplicating
-// the JSON shape in two places.
+// The pipe-only `spawn_wecom_bot_adapter` (jyc-cli) calls these
+// directly: the hub channel owns the reply lifecycle (footer, reply
+// context, session tokens, chat-log storage), so all that is left here
+// is the wire format. Keeping them as free functions leaves one
+// canonical definition instead of duplicating the JSON shape.
 
 /// Send a streaming reply chunk (`aibot_respond_msg` + `msgtype: stream`).
 ///
@@ -50,9 +49,8 @@ const FILE_MAX_SIZE: usize = 20 * 1024 * 1024;
 /// final reply content. Both share the same `stream_id` so the client's
 /// message is updated in-place rather than posted twice.
 ///
-/// This is the same wire format that `WecomBotOutboundAdapter::send_reply`
-/// uses; it is exposed here so the pipe reply forwarder does not have
-/// to construct the JSON inline.
+/// Exposed here so the pipe reply forwarder does not have to construct
+/// the JSON inline.
 pub async fn send_stream_reply(
     handle: &WecomBotConnectionHandle,
     req_id: &str,
@@ -141,9 +139,7 @@ pub async fn send_stream_reply_and_wait(
 }
 
 /// Build the body JSON for a proactive `aibot_send_msg` text/markdown
-/// message. Used by `WecomBotOutboundAdapter::send_message` and the pipe
-/// reply forwarder's fallback path so the wire format is defined in one
-/// place.
+/// message. Used by the pipe reply forwarder's fallback path.
 ///
 /// Markdown detection is a simple heuristic (presence of common markdown
 /// sigils). The caller is responsible for the surrounding `cmd` and

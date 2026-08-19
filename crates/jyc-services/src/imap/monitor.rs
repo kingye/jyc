@@ -1,12 +1,15 @@
 use anyhow::Result;
-use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::imap::client::ImapClient;
-use jyc_core::message_router::MessageRouter;
 use jyc_core::state_manager::StateManager;
-use jyc_types::ChannelMatcher;
-use jyc_types::{ImapConfig, MonitorConfig};
+use jyc_types::{ImapConfig, InboundMessage, MonitorConfig};
+
+/// Callback invoked for every parsed inbound email.
+///
+/// Mirrors `jyc_types::InboundAdapterOptions::on_message`: the callback
+/// returns immediately (spawning its own task for routing work).
+pub type OnEmail = Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>;
 
 /// IMAP email monitor — connects to IMAP, fetches new emails, dispatches them.
 ///
@@ -19,31 +22,27 @@ pub struct ImapMonitor {
     channel_name: String,
     imap_config: ImapConfig,
     monitor_config: MonitorConfig,
-    router: Arc<MessageRouter>,
     state_manager: StateManager,
     cancel: CancellationToken,
-    matcher: Arc<dyn ChannelMatcher>,
+    on_message: OnEmail,
 }
 
 impl ImapMonitor {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         channel_name: String,
         imap_config: ImapConfig,
         monitor_config: MonitorConfig,
-        router: Arc<MessageRouter>,
         state_manager: StateManager,
         cancel: CancellationToken,
-        matcher: Arc<dyn ChannelMatcher>,
+        on_message: OnEmail,
     ) -> Self {
         Self {
             channel_name,
             imap_config,
             monitor_config,
-            router,
             state_manager,
             cancel,
-            matcher,
+            on_message,
         }
     }
 
@@ -289,8 +288,8 @@ impl ImapMonitor {
         // This ensures attachments go to the right directory when
         // topic_name override is configured on the pattern.
 
-        // Route through the message router (pattern match → topic queue)
-        self.router.route(&*self.matcher, message).await;
+        // Hand off to the adapter's callback (pattern match → pipe → route)
+        (self.on_message)(message)?;
 
         Ok(())
     }

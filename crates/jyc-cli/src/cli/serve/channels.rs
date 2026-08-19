@@ -1334,14 +1334,20 @@ impl InboundSpawner<'_> {
 
                 let task = tokio::spawn(
                     async move {
+                        let router_for_callback = router.clone();
                         let mut monitor = ImapMonitor::new(
                             channel_name_owned.clone(),
                             inbound_config,
                             monitor_config,
-                            router,
                             state_manager,
                             cancel_child,
-                            Arc::new(EmailMatcher),
+                            Box::new(move |message| {
+                                let router = router_for_callback.clone();
+                                tokio::spawn(async move {
+                                    router.route(&EmailMatcher, message).await;
+                                });
+                                Ok(())
+                            }),
                         );
 
                         if let Err(e) = monitor.start().await {

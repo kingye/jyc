@@ -92,7 +92,7 @@ JYC separates **user-edited configuration** from **generated data**, following p
 Three-level layering applies to `config.toml`, `skills/`, and `templates/`:
 
 - **L1 (global)** — `<config dir>/`: shared `config.toml`, `skills/`, `templates/`
-- **L2 (workdir / data root)** — `--workdir` if given, else the data dir: its own `config.toml` (`--config`), `skills/`, `templates/`, and all generated state (`<channel>/.imap/`, `<channel>/.github/`, `<channel>/workspace/<topic>/`)
+- **L2 (workdir / data root)** — `--workdir` if given, else the data dir: its own `config.toml` (`--config`), `skills/`, `templates/`, and all generated state (`channels/<channel>/.imap/`, `<channel>/.github/`, `<channel>/workspace/<topic>/`)
 - **L3 (topic)** — `<topic_path>/.jyc/`: `config.toml` (restricted `[agent]` model overrides), `skills/`, `templates/`, sessions, chat history
 
 Merge/lookup rules:

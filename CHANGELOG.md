@@ -61,6 +61,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **A `pipe` naming no destination is now rejected at load time.**
+  `pipe = { topic = "x" }` without `agent`/`channel` was accepted by
+  validation and then unwrapped `pipe.channel` per message at runtime —
+  reachable via the email adapter, which fills in the subject-derived
+  topic. Validation now requires `pipe.agent` or `pipe.channel` whenever
+  `pipe` is present (replacing the narrower "required when pattern/topic
+  is set" check).
+
 - **Sliding-window strategy crashed Anthropic calls with empty text
   blocks.** When `context_strategy.mode = "sliding_window"` was paired
   with an Anthropic provider, `extract_user_assistant_pairs` read

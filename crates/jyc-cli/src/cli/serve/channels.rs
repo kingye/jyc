@@ -356,22 +356,18 @@ fn parse_reply_attachments(v: &serde_json::Value) -> Vec<ReplyAttachmentRef> {
         .collect()
 }
 
-/// Download one reply attachment from the inspect server and send it to the
-/// feishu chat (image vs. file chosen by content type).
-async fn relay_attachment(
+/// Download one reply attachment from the inspect server, apply the
+/// operator's outbound policy, and stage it in a temp file.
+///
+/// Shared by all pipe reply forwarders (feishu / email / wecom_bot): the
+/// upload APIs take a path, the validator takes a path, SMTP takes bytes —
+/// so both are returned. The temp file lives until the caller drops it.
+async fn fetch_reply_attachment(
     inspect: &jyc_inspect::client::InspectClient,
-    client: &FeishuClient,
-    chat_id: &str,
     att: &ReplyAttachmentRef,
     config: &arc_swap::ArcSwap<jyc_types::AppConfig>,
-) -> Result<()> {
-    use jyc_channels::feishu::client::{feishu_file_type, is_image_content_type};
-
+) -> Result<(Vec<u8>, tempfile::NamedTempFile)> {
     let bytes = inspect.download_topic_file(&att.url_path).await?;
-
-    // The feishu upload APIs take a path — stage the bytes in a temp file.
-    // The operator's outbound policy (extension allowlist / size cap) applies
-    // to files delivered to feishu users, same as the channel's own send path.
     let tmp = tempfile::NamedTempFile::new()?;
     tokio::fs::write(tmp.path(), &bytes).await?;
     if let Some(cfg) = config
@@ -383,6 +379,21 @@ async fn relay_attachment(
         jyc_utils::attachment_validator::validate_outbound_file(tmp.path(), &att.filename, &cfg)
             .await?;
     }
+    Ok((bytes, tmp))
+}
+
+/// Download one reply attachment from the inspect server and send it to the
+/// feishu chat (image vs. file chosen by content type).
+async fn relay_attachment(
+    inspect: &jyc_inspect::client::InspectClient,
+    client: &FeishuClient,
+    chat_id: &str,
+    att: &ReplyAttachmentRef,
+    config: &arc_swap::ArcSwap<jyc_types::AppConfig>,
+) -> Result<()> {
+    use jyc_channels::feishu::client::{feishu_file_type, is_image_content_type};
+
+    let (_bytes, tmp) = fetch_reply_attachment(inspect, att, config).await?;
 
     if is_image_content_type(&att.content_type) {
         let key = client.upload_image(tmp.path(), &att.filename).await?;
@@ -809,19 +820,7 @@ async fn load_reply_attachment(
     att: &ReplyAttachmentRef,
     config: &arc_swap::ArcSwap<jyc_types::AppConfig>,
 ) -> Result<jyc_services::smtp::client::EmailAttachment> {
-    let bytes = inspect.download_topic_file(&att.url_path).await?;
-    if let Some(cfg) = config
-        .load()
-        .attachments
-        .as_ref()
-        .and_then(|a| a.outbound.clone())
-    {
-        // The validator works on a path — stage the bytes in a temp file.
-        let tmp = tempfile::NamedTempFile::new()?;
-        tokio::fs::write(tmp.path(), &bytes).await?;
-        jyc_utils::attachment_validator::validate_outbound_file(tmp.path(), &att.filename, &cfg)
-            .await?;
-    }
+    let (bytes, _tmp) = fetch_reply_attachment(inspect, att, config).await?;
     Ok(jyc_services::smtp::client::EmailAttachment {
         filename: att.filename.clone(),
         content_type: att.content_type.clone(),
@@ -1575,18 +1574,7 @@ async fn relay_wecom_attachment(
 ) -> Result<()> {
     use jyc_channels::wecom_bot::{build_media_message_body, upload_attachment, wecom_media_type};
 
-    let bytes = inspect.download_topic_file(&att.url_path).await?;
-    let tmp = tempfile::NamedTempFile::new()?;
-    tokio::fs::write(tmp.path(), &bytes).await?;
-    if let Some(cfg) = config
-        .load()
-        .attachments
-        .as_ref()
-        .and_then(|a| a.outbound.clone())
-    {
-        jyc_utils::attachment_validator::validate_outbound_file(tmp.path(), &att.filename, &cfg)
-            .await?;
-    }
+    let (_bytes, tmp) = fetch_reply_attachment(inspect, att, config).await?;
 
     let media_id = upload_attachment(handle, tmp.path(), &att.filename, &att.content_type).await?;
     let media_type = wecom_media_type(&att.content_type, &att.filename);
@@ -2579,5 +2567,25 @@ mod tests {
             targets,
             std::collections::HashSet::from(["local_dev".to_string()])
         );
+    }
+
+    // ---- email_pipe_with_topic ----
+
+    /// Without an explicit `pipe.topic`, email falls back to the derived
+    /// topic (subject / pattern `topic_name`) — one thread per subject, the
+    /// pre-migration MessageRouter behavior.
+    #[test]
+    fn email_pipe_with_topic_fills_derived_topic() {
+        let pipe = email_pipe_with_topic(&agent_pipe_target("jin", None), "Invoice 42");
+        assert_eq!(pipe.topic.as_deref(), Some("Invoice 42"));
+        assert_eq!(pipe.agent.as_deref(), Some("jin"));
+    }
+
+    /// An explicit `pipe.topic` wins (including `${msg.*}` templates, which
+    /// are resolved later by `apply_pipe_retarget`).
+    #[test]
+    fn email_pipe_with_topic_keeps_explicit_topic() {
+        let pipe = email_pipe_with_topic(&agent_pipe_target("jin", Some("invoices")), "Invoice 42");
+        assert_eq!(pipe.topic.as_deref(), Some("invoices"));
     }
 }

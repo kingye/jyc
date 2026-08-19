@@ -283,10 +283,8 @@ impl ImapMonitor {
             "Message received"
         );
 
-        // Note: Attachments are saved later by the topic manager after
-        // pattern matching determines the correct topic name.
-        // This ensures attachments go to the right directory when
-        // topic_name override is configured on the pattern.
+        // Note: attachment bytes travel with the message; they are saved by
+        // the topic manager of whichever channel the callback routes into.
 
         // Hand off to the adapter's callback (pattern match → pipe → route)
         (self.on_message)(message)?;

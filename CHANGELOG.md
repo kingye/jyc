@@ -82,11 +82,11 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
-- **Dashboard overview Details panel activity pane now has left and right
-  borders** — the activity log is framed on three sides
-  (`Borders::TOP | Borders::LEFT | Borders::RIGHT`), continuing the topic
-  info pane's left border and closing the panel at the right edge. The
-  chat-screen activity pane is unaffected (still top-only).
+- **Dashboard overview Details panel panes are now framed on three sides** —
+  both the topic info pane and the activity log use
+  `Borders::TOP | Borders::LEFT | Borders::RIGHT`, giving the panel a
+  continuous left/right edge with no open gap above the info pane. The
+  chat-screen info and activity panes are unaffected.
 
 - **`[agent]` config table renamed to `[ai]`** at all levels (top-level,
   `[channels.<x>]`, topic `.jyc/config.toml`). The legacy key `agent` is

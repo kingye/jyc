@@ -79,6 +79,11 @@ enabled = true
 # i.e. one topic per mail subject — email's natural topic identity.
 #   pipe = { agent = "jin" }                       # topic = subject
 #   pipe = { agent = "jin", topic = "invoices" }   # all mail into one topic
+# `${msg.<key>}` templates resolve per message. Email's useful keys:
+#   topic — subject-derived name (Re:/Fw:/回复:/转发: prefixes stripped)
+#   from  — sender address
+#   pipe = { agent = "jin", topic = "mail-${msg.topic}" }  # "Re: Invoice 42" -> mail-Invoice 42
+#   pipe = { agent = "jin", topic = "${msg.from}" }        # one topic per sender
 pipe = { agent = "jin" }
 
 # Initial agent mode for topics matching this pattern. Valid values: "plan", "build".

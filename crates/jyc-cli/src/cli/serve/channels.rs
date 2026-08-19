@@ -214,7 +214,9 @@ fn loopback_addr(bind: &str) -> String {
 /// Resolution: `${msg.<key>}` looks up `metadata[key]` first; if the
 /// key is `channel_uid` and the metadata lookup misses, the message's
 /// `channel_uid` field is used instead. This unifies group chat id
-/// and single chat user id in one topic template.
+/// and single chat user id in one topic template. The key `topic`
+/// likewise falls back to the message's `topic` field (the channel's
+/// own derived conversation name).
 ///
 /// If any placeholder is present but the value is missing/empty, the
 /// caller drops the message with a warning (avoids misrouting to a
@@ -280,10 +282,10 @@ fn apply_pipe_retarget(
 }
 
 /// Resolve every `${msg.<key>}` in `template` against the message's metadata
-/// (or `channel_uid` for the special key). Returns `None` if any placeholder
-/// is present but the resolved value is missing/empty (caller drops with
-/// warning). When the template contains no `${msg.*}` placeholders, returns
-/// the template unchanged.
+/// (or the `channel_uid`/`topic` core fields for those special keys). Returns
+/// `None` if any placeholder is present but the resolved value is
+/// missing/empty (caller drops with warning). When the template contains no
+/// `${msg.*}` placeholders, returns the template unchanged.
 fn resolve_msg_placeholders(template: &str, msg: &jyc_types::InboundMessage) -> Option<String> {
     static PLACEHOLDER_RE: OnceLock<regex::Regex> = OnceLock::new();
     let re =
@@ -313,7 +315,9 @@ fn resolve_msg_placeholders(template: &str, msg: &jyc_types::InboundMessage) -> 
 
 /// Look up a single `${msg.<key>}` value: metadata first, then the
 /// `channel_uid` core field (unifies group chatid / single-chat userid
-/// in one template). Returns `None` when the key is missing/empty.
+/// in one template) or the `topic` core field (the channel's own derived
+/// conversation name — for email, the subject with `Re:`/`Fw:` prefixes
+/// already stripped). Returns `None` when the key is missing/empty.
 fn lookup_msg_placeholder(key: &str, msg: &jyc_types::InboundMessage) -> Option<String> {
     if let Some(v) = msg.metadata.get(key).and_then(|v| v.as_str())
         && !v.is_empty()
@@ -322,6 +326,9 @@ fn lookup_msg_placeholder(key: &str, msg: &jyc_types::InboundMessage) -> Option<
     }
     if key == "channel_uid" && !msg.channel_uid.is_empty() {
         return Some(msg.channel_uid.clone());
+    }
+    if key == "topic" && !msg.topic.is_empty() {
+        return Some(msg.topic.clone());
     }
     None
 }
@@ -697,6 +704,7 @@ pub(crate) async fn spawn_email_adapter(
                     let channel_name_self = channel_name_for_monitor.clone();
                     let routers = routers.clone();
                     tokio::spawn(async move {
+                        let mut message = message;
                         // 1. Match this channel's patterns (rules).
                         let patterns = config_for_pipe
                             .load()
@@ -739,12 +747,20 @@ pub(crate) async fn spawn_email_adapter(
                         //    `topic_name` override wins, else the
                         //    subject-derived topic name (same precedence the
                         //    MessageRouter applied before the migration).
+                        //    The derived name also replaces `message.topic`
+                        //    (the parse-time subject, already `Re:`/`Fw:`
+                        //    stripped but not pattern-prefix stripped or
+                        //    sanitized) so `${msg.topic}` in a template
+                        //    resolves to the same name the no-template path
+                        //    would use. `apply_pipe_retarget` overwrites
+                        //    `message.topic` with the resolved template anyway.
                         let derived_topic = matched
                             .and_then(|p| p.topic_name.clone())
                             .unwrap_or_else(|| {
                                 EmailMatcher.derive_topic_name(&message, &patterns, Some(&pm))
                             });
                         let pipe = email_pipe_with_topic(pipe, &derived_topic);
+                        message.topic = derived_topic;
                         let drop_debug = message.id.clone();
                         let Some(message) = apply_pipe_retarget(message, &pipe) else {
                             tracing::warn!(
@@ -2475,6 +2491,29 @@ mod tests {
     fn pipe_retarget_unresolved_unknown_key_returns_none() {
         let pipe = agent_pipe_target("jin", Some("bot-${msg.nonexistent}"));
         assert!(apply_pipe_retarget(pipe_msg(Default::default()), &pipe).is_none());
+    }
+
+    /// `${msg.topic}` resolves to the message's own topic field — the
+    /// channel's derived conversation name. For email the adapter sets it
+    /// to the subject with `Re:`/`Fw:` prefixes already stripped, so
+    /// `topic = "mail-${msg.topic}"` composes a prefix with the subject.
+    #[test]
+    fn pipe_retarget_resolves_topic_placeholder() {
+        let mut msg = pipe_msg(Default::default());
+        msg.topic = "Invoice 42".to_string();
+        let pipe = agent_pipe_target("jin", Some("mail-${msg.topic}"));
+        let out = apply_pipe_retarget(msg, &pipe).unwrap();
+        assert_eq!(out.topic, "mail-Invoice 42");
+    }
+
+    /// `${msg.topic}` on a message with an empty topic returns None
+    /// (dropped rather than misrouted to a literal placeholder).
+    #[test]
+    fn pipe_retarget_empty_topic_placeholder_returns_none() {
+        let mut msg = pipe_msg(Default::default());
+        msg.topic = String::new();
+        let pipe = agent_pipe_target("jin", Some("mail-${msg.topic}"));
+        assert!(apply_pipe_retarget(msg, &pipe).is_none());
     }
 
     /// Multiple placeholders in one template all resolve, in left-to-right

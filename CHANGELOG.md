@@ -6,6 +6,15 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **`${msg.topic}` pipe topic placeholder** — resolves to the inbound
+  message's own derived conversation name, so a pipe topic can compose a
+  prefix with it: `pipe = { agent = "jin", topic = "mail-${msg.topic}" }`.
+  For email the adapter feeds it the subject-derived name, i.e. `Re:` /
+  `Fw:` / `回复:` / `转发:` and configured pattern prefixes already
+  stripped (a `Re: Fw: Invoice 42` subject yields topic
+  `mail-Invoice 42`). Missing/empty values still drop the message with a
+  warning rather than routing to a literal `${msg.topic}` topic. (#598)
+
 - **Time-of-day pricing.** `ModelPricing` gains optional `time_windows`
   (each window supplies its own per-1M rates for the hours between
   `start` and `end`; rates omitted on a window inherit the flat values)

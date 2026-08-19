@@ -168,12 +168,13 @@ fn format_cleaned_message(
     if text.is_empty() {
         return None;
     }
-    let formatted = if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
-        provider.build_raw_assistant_message(&text, "", &[])
-    } else {
-        provider.format_user_message(&[ContentBlock::Text { text }])
-    };
-    Some(formatted)
+    Some(
+        if msg.get("role").and_then(|r| r.as_str()) == Some("assistant") {
+            provider.build_raw_assistant_message(&text, "", &[])
+        } else {
+            provider.format_user_message(&[ContentBlock::Text { text }])
+        },
+    )
 }
 
 /// Build the context to send to the LLM for the next request.
@@ -339,14 +340,11 @@ mod render_raw_context_tests {
         }
         fn format_tool_result(
             &self,
-            tool_use_id: &str,
-            content: &str,
+            _tool_use_id: &str,
+            _content: &str,
             _is_error: bool,
         ) -> serde_json::Value {
-            json!({
-                "role": "user",
-                "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": content}],
-            })
+            unimplemented!()
         }
         fn build_raw_assistant_message(
             &self,

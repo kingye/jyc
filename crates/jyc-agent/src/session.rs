@@ -898,11 +898,10 @@ fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
 /// both OpenAI (`content: "string"`) and Anthropic (`content: [{type:"text",...}]`)
 /// shapes. Tool_use / tool_result / tool_calls are ignored.
 pub(crate) fn extract_message_text(msg: &serde_json::Value) -> String {
-    let mut text = String::new();
     if let Some(s) = msg.get("content").and_then(|c| c.as_str()) {
-        text.push_str(s);
-        return text;
+        return s.to_string();
     }
+    let mut text = String::new();
     if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
         for b in blocks {
             if b.get("type").and_then(|t| t.as_str()) == Some("text")
@@ -1143,4 +1142,30 @@ fn parse_jsonl_entries(
     }
 
     messages
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    /// Anthropic-shaped context (array content): assistant text pairs
+    /// correctly; tool_result user-role wrappers are skipped.
+    #[test]
+    fn extract_pairs_anthropic_shape() {
+        let ctx = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "u1"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "text", "text": "a1"},
+                {"type": "tool_use", "id": "t1", "name": "bash", "input": {}}
+            ]}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
+            ]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "done"}]}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], ctx[0]);
+        assert_eq!(pairs[1], json!({"role": "assistant", "content": "a1"}));
+    }
 }

@@ -748,11 +748,12 @@ pub(crate) async fn spawn_email_adapter(
                         //    subject-derived topic name (same precedence the
                         //    MessageRouter applied before the migration).
                         //    The derived name also replaces `message.topic`
-                        //    (still the raw subject at this point) so that
-                        //    `${msg.topic}` in a template resolves to the
-                        //    cleaned name — `Re:`/`Fw:` prefixes stripped.
-                        //    `apply_pipe_retarget` overwrites `message.topic`
-                        //    with the resolved template anyway.
+                        //    (the parse-time subject, already `Re:`/`Fw:`
+                        //    stripped but not pattern-prefix stripped or
+                        //    sanitized) so `${msg.topic}` in a template
+                        //    resolves to the same name the no-template path
+                        //    would use. `apply_pipe_retarget` overwrites
+                        //    `message.topic` with the resolved template anyway.
                         let derived_topic = matched
                             .and_then(|p| p.topic_name.clone())
                             .unwrap_or_else(|| {

@@ -1645,6 +1645,7 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
         app.chat.activity_scroll,
         app.chat.activity_hscroll,
         focused,
+        Borders::TOP,
     );
 }
 
@@ -1655,10 +1656,9 @@ pub(super) fn render_activity_log_inner(
     scroll_offset: usize,
     hscroll: usize,
     focused: bool,
+    borders: Borders,
 ) {
-    // Only the top edge (against the chat pane) gets a border. Bottom,
-    // left, and right are at the screen edge or redundant.
-    let mut block = Block::default().title("── Activity ").borders(Borders::TOP);
+    let mut block = Block::default().title("── Activity ").borders(borders);
     if focused {
         block = block.border_style(
             Style::default()

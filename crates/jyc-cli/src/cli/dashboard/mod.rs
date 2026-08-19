@@ -1490,12 +1490,22 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(info, detail_chunks[0]);
 
     // Activity log panel — read from the WS-fed live buffer for this topic.
+    // LEFT/RIGHT borders continue the info pane's left border and close the
+    // panel at the right edge; TOP sits against the info pane.
     let activity_vec: Vec<jyc_types::ActivityEntry> = app
         .chat
         .live_activity_for(&selected.channel, &selected.name)
         .cloned()
         .collect();
-    render_activity_log_inner(frame, detail_chunks[1], &activity_vec, 0, 0, false);
+    render_activity_log_inner(
+        frame,
+        detail_chunks[1],
+        &activity_vec,
+        0,
+        0,
+        false,
+        Borders::TOP | Borders::LEFT | Borders::RIGHT,
+    );
 }
 
 /// Open (or swap to a new) overview WS for the selected topic.

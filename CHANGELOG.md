@@ -59,6 +59,27 @@ All notable changes to JYC will be documented in this file.
   `Provider`, so Anthropic and OpenAI-compatible wire formats both
   stay valid.
 
+### Fixed
+
+- **Sliding-window strategy crashed Anthropic calls with empty text
+  blocks.** When `context_strategy.mode = "sliding_window"` was paired
+  with an Anthropic provider, `extract_user_assistant_pairs` read
+  assistant text via `content.as_str()` (which returns `None` for the
+  Anthropic array-of-blocks shape), so all assistant replies were
+  silently dropped from the windowed pairs. The remaining fallback then
+  emitted a user message whose `content` extracted to `""`, which the
+  Anthropic provider rendered as `{"type":"text","text":""}` —
+  rejected by the API with 400 `cache_control cannot be set for empty
+  text blocks` once `apply_cache_breakpoints` marked it on
+  `messages[n-3]`/`[n-2]`. Extraction now uses a shared
+  `extract_message_text` helper that handles both string and
+  array-of-blocks content, and `format_cleaned_message` skips any
+  message with empty extracted text so empty blocks never reach the
+  wire. Anthropic `tool_result` user-role wrappers are also excluded
+  from windowed pairing. Heuristic compaction (mid-loop compression +
+  reset) shared the same code path and was equally broken for
+  Anthropic contexts — fixed by the same change.
+
 ### Changed
 
 - **`[agent]` config table renamed to `[ai]`** at all levels (top-level,

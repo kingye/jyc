@@ -559,17 +559,17 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
             message: "pipe.agent is mutually exclusive with pipe.channel / pipe.pattern".into(),
         });
     }
-    // Legacy form requires pipe.channel (channel used to be required).
+    // A pipe must name a destination: an agent, or a channel (legacy form,
+    // where channel used to be required). Neither means the message has
+    // nowhere to go — reject at load time rather than dropping (or panicking
+    // on the channel-less legacy path) per message at runtime.
     if let Some(pipe) = &pattern.pipe
         && pipe.agent.is_none()
         && pipe.channel.is_none()
-        && (pipe.pattern.is_some() || pipe.topic.is_some())
     {
         errors.push(ValidationError {
             path: format!("{prefix}.pipe"),
-            message:
-                "pipe.channel is required when pipe.pattern or pipe.topic is set without pipe.agent"
-                    .into(),
+            message: "pipe requires either pipe.agent or pipe.channel".into(),
         });
     }
 

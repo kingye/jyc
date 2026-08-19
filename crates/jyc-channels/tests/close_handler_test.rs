@@ -3,14 +3,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-use jyc_channels::email::outbound::EmailOutboundAdapter;
+use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_core::command::close_handler::CloseCommandHandler;
 use jyc_core::command::handler::{CommandContext, CommandHandler};
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsHandle;
 use jyc_core::static_agent::StaticAgentService;
 use jyc_core::topic_manager::TopicManager;
-use jyc_types::{AppConfig, SmtpConfig, load_config_from_str};
+use jyc_types::{AppConfig, load_config_from_str};
 
 fn test_config() -> Arc<AppConfig> {
     Arc::new(
@@ -74,16 +74,8 @@ async fn test_close_command_deletes_topic_directory() {
         3,
         10,
         storage.clone(),
-        Arc::new(EmailOutboundAdapter::new(
-            &SmtpConfig {
-                host: "smtp.example.com".into(),
-                port: 465,
-                secure: true,
-                username: "test".into(),
-                password: "test".into(),
-                from_address: Some("test@example.com".into()),
-                from_name: None,
-            },
+        Arc::new(WebsocketOutboundAdapter::new(
+            tokio::sync::broadcast::channel(4).0,
             storage,
         )),
         Arc::new(StaticAgentService::new("test reply")),
@@ -119,16 +111,8 @@ async fn test_close_command_nonexistent_topic_succeeds() {
         3,
         10,
         storage.clone(),
-        Arc::new(EmailOutboundAdapter::new(
-            &SmtpConfig {
-                host: "smtp.example.com".into(),
-                port: 465,
-                secure: true,
-                username: "test".into(),
-                password: "test".into(),
-                from_address: Some("test@example.com".into()),
-                from_name: None,
-            },
+        Arc::new(WebsocketOutboundAdapter::new(
+            tokio::sync::broadcast::channel(4).0,
             storage,
         )),
         Arc::new(StaticAgentService::new("test reply")),
@@ -161,16 +145,8 @@ async fn test_close_command_invalid_topic_path() {
         3,
         10,
         storage.clone(),
-        Arc::new(EmailOutboundAdapter::new(
-            &SmtpConfig {
-                host: "smtp.example.com".into(),
-                port: 465,
-                secure: true,
-                username: "test".into(),
-                password: "test".into(),
-                from_address: Some("test@example.com".into()),
-                from_name: None,
-            },
+        Arc::new(WebsocketOutboundAdapter::new(
+            tokio::sync::broadcast::channel(4).0,
             storage,
         )),
         Arc::new(StaticAgentService::new("test reply")),
@@ -217,16 +193,8 @@ async fn test_close_command_without_confirm_keeps_directory() {
         3,
         10,
         storage.clone(),
-        Arc::new(EmailOutboundAdapter::new(
-            &SmtpConfig {
-                host: "smtp.example.com".into(),
-                port: 465,
-                secure: true,
-                username: "test".into(),
-                password: "test".into(),
-                from_address: Some("test@example.com".into()),
-                from_name: None,
-            },
+        Arc::new(WebsocketOutboundAdapter::new(
+            tokio::sync::broadcast::channel(4).0,
             storage,
         )),
         Arc::new(StaticAgentService::new("test reply")),

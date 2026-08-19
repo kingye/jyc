@@ -996,6 +996,29 @@ user_prompt = "x"
     );
 }
 
+/// A pipe with neither `agent` nor `channel` has no destination. It used to
+/// pass validation and then blow up per message at runtime (the legacy
+/// retarget path unwraps `pipe.channel`) — reject it at load time.
+#[test]
+fn pipe_without_agent_or_channel_fails() {
+    let toml = config_with(
+        r#"
+[[channels.work.patterns]]
+name = "inbox"
+enabled = true
+pipe = { topic = "inbox" }
+"#,
+    );
+    let config = load_config_from_str(&toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors.iter().any(|e| e
+            .message
+            .contains("pipe requires either pipe.agent or pipe.channel")),
+        "pipe without a destination must be rejected, got: {errors:?}"
+    );
+}
+
 /// `review` and `/review` normalize to the same registered name, so the
 /// duplicate check must compare the normalized form.
 #[test]

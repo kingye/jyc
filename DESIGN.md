@@ -239,7 +239,7 @@ Each component has a single, clear responsibility. Data flows through the system
 - Adds `Re:` to subject, sets `In-Reply-To` and `References` headers for References
 - Does NOT build quoted history, does NOT clean or transform content
 - **Structured error handling**: Uses lettre's structured SmtpError API for error classification: permanent errors (5xx) fail immediately, transient errors (4xx) retry with exponential backoff (3 attempts, 5-60s), connection/timeout errors reconnect with backoff (2 attempts).
-- **Shared instance**: A single `SmtpClient` (via `EmailOutboundAdapter`) is created at monitor startup and shared across TopicManager fallback and monitor reply send path (when MCP tool appends to chat log)
+- **Shared instance**: A single `SmtpClient` is created by the pipe-only email adapter at startup and shared by its reply forwarders (see `docs/core-hub-adapters.md`)
 
 **Topic Event System**
 
@@ -381,7 +381,7 @@ Email arrives
 - **InboundAdapter** is the only place where data is cleaned (subject + body)
 - **MessageStorage** stores data as-is (with full frontmatter metadata) — the authoritative source of message data
 - **PromptBuilder** strips quoted history from body for the AI prompt; does NOT include conversation history (the agent session memory handles that)
-- **`build_full_reply_text()`** is the single shared function for assembling the full reply (AI text + quoted history) — called by `EmailOutboundAdapter` and the monitor's reply send path, NOT by agents or TopicManager
+- **`build_footer()`** is the single shared function for the model/mode/tokens footer — called by outbound adapters, NOT by agents or TopicManager (email replies carry no footer)
 - **SmtpClient** is a dumb transport: markdown→HTML + headers + attachments + send
 - **reply-context.json** is a minimal routing token (5 fields) — all message metadata comes from chat log frontmatter
 - **Chat log entries** = exactly what the recipient receives (minus HTML formatting)
@@ -733,7 +733,7 @@ Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) 
 | Windows | `%APPDATA%\jyc` | `%LOCALAPPDATA%\jyc` |
 
 - **Config dir** holds user-edited files: `config.toml`, `skills/`, `templates/`.
-- **Data dir** (= default workdir / data root) holds generated state: `<channel>/.imap/`, `<channel>/.github/`, `<channel>/workspace/<topic>/`.
+- **Data dir** (= default workdir / data root) holds generated state: `channels/<channel>/.imap/`, `<channel>/.github/`, `<channel>/workspace/<topic>/`.
 - `jyc serve` without `--workdir` uses the data dir (never the current directory). Without `--config`, the config is `<config dir>/config.toml`; with an explicit `--workdir` but no `--config`, it's `<workdir>/config.toml`.
 - **First run**: if the default config is missing on a flag-less invocation, jyc creates it from `config.example.toml` (plus empty `skills/` and `templates/`), prints edit instructions, and exits.
 
@@ -1489,10 +1489,11 @@ Each agent mode implements this trait. Adding a new agent requires only implemen
 - Fallback: passes raw AI text to outbound adapter if MCP tool wasn't used
 - Does NOT know about: sessions, prompts, SSE, reply formatting, email quoting
 
-**OutboundAdapter** (`src/channels/email/outbound.rs`) — Channel-specific reply lifecycle:
+**OutboundAdapter** (e.g. `crates/jyc-channels/src/websocket/outbound.rs`) — Channel-specific reply lifecycle:
 
-- Builds channel-formatted reply (email: `build_full_reply_text()` with quoted history)
-- Sends via channel transport (SMTP with References headers + attachments)
+- Builds channel-formatted reply (footer, formatting)
+- Sends via channel transport
+  (email is now a pipe-only adapter — see `docs/core-hub-adapters.md`)
 - Appends reply to chat log
 - Different channels (FeiShu, Slack) would implement different formatting + transport
 
@@ -1922,12 +1923,12 @@ Topic files still provide recent conversation context
 
 ### Reply Text Building Pipeline
 
-`build_full_reply_text()` (`src/core/email_parser.rs`) is the **single shared function** for assembling a complete reply email. It is called by:
-
-1. **EmailOutboundAdapter::send_reply()** — the outbound adapter calls it internally when formatting replies (both fallback and command results)
-2. **Monitor reply send path** — when the MCP tool writes reply.md and signal file, the monitor reads reply.md and calls `send_reply()` on the pre-warmed outbound adapter (which calls `build_full_reply_text()`)
-
-This ensures all reply emails have the same format regardless of the send path. The MCP reply tool no longer sends messages directly — it only writes reply.md and signal file to disk. The agent (AgentService/StaticAgentService) never calls this function — it's a channel-specific concern owned by the outbound adapter.
+`build_footer()` (`crates/jyc-core/src/email_parser.rs`) is the **single shared
+function** for the model/mode/tokens footer appended to replies. It is called by
+the outbound adapters (gitee, github, wechat, wecom, wecomkf, wecom_bot) when
+`[channels.<name>.footer]` is enabled. Email is a pipe-only adapter and sends
+plain agent text — no footer. The agent (AgentService/StaticAgentService) never
+calls this function — it's a channel-specific concern owned by the adapter.
 
 **Reply format:**
 ```
@@ -2388,13 +2389,15 @@ fn expand_env_vars(value: &mut toml::Value) {
 ### State Files (Per-Channel)
 
 ```
-<channel-name>/
+channels/<channel-name>/
 ├── .imap/
 │   ├── .state.json                  # { last_sequence_number, last_processed_uid, uid_validity }
 │   └── .processed-uids.txt         # One UID per line, append-only
 ```
 
-Each channel manages its own state independently. For email, state tracks IMAP sequence numbers and processed UIDs.
+Only the email adapter keeps state: the IMAP mailbox cursor (sequence number +
+processed UIDs), a protocol-level dedup concern. It lives under
+`<workdir>/channels/<channel_name>/.imap/`.
 
 ### Per-Pattern Overrides
 
@@ -2434,10 +2437,11 @@ assignees = ["kingye"]
 ```
 <root-dir>/
 ├── config.toml                          # Master config (TOML)
+├── channels/<channel-name>/             # Email adapter state (e.g., "jiny283")
+│   └── .imap/
+│       ├── .state.json                  # IMAP monitor state
+│       └── .processed-uids.txt         # One UID per line, append-only
 ├── <channel-name>/                      # Per-channel directory (e.g., "jiny283")
-│   ├── .imap/
-│   │   ├── .state.json                  # IMAP monitor state
-│   │   └── .processed-uids.txt         # One UID per line, append-only
 │   └── workspace/                       # Topic workspaces (hardcoded: <workdir>/<channel_name>/workspace/)
 │       ├── <topic-dir-1>/              # in-process agent cwd for this topic
 │       │   ├── chat_history_2026-03-19.jsonl   # Daily chat log (messages + replies)
@@ -2968,8 +2972,7 @@ jyc/
 │   │   ├── registry.rs                  # ChannelRegistry
 │   │   ├── email/
 │   │   │   ├── mod.rs
-│   │   │   ├── inbound.rs              # EmailInboundAdapter
-│   │   │   └── outbound.rs             # EmailOutboundAdapter
+│   │   │   └── inbound.rs              # EmailMatcher (pattern matching)
 │   │   ├── feishu/
 │   │   │   ├── mod.rs
 │   │   │   ├── client.rs               # Feishu API client (auth, token mgmt)

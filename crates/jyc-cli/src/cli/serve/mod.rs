@@ -19,7 +19,6 @@ use jyc_channels::wecom::server::WecomWebhookServer;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsCollector;
-use jyc_core::state_manager::StateManager;
 use jyc_core::topic_manager::TopicManager;
 use jyc_types::OutboundAdapter;
 use jyc_types::{load_config_layered, validation};
@@ -247,6 +246,26 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             continue;
         }
 
+        // Email is also a pipe-only adapter (same architecture as feishu).
+        // It keeps a StateManager under <workdir>/channels/<channel>/.imap/
+        // for the mailbox cursor — protocol dedup state, not conversation
+        // state.
+        if channel_type == "email" {
+            crate::cli::serve::channels::spawn_email_adapter(
+                channel_config,
+                channel_name.clone(),
+                workdir,
+                args,
+                cancel.clone(),
+                &mut tasks,
+                config_for_spawn.clone(),
+                ws_broadcasts.clone(),
+                routers.clone(),
+            )
+            .await?;
+            continue;
+        }
+
         // wecom_bot is also a pipe-only adapter (same architecture as
         // feishu): protocol-only, no TopicManager/agent/orchestrator.
         if channel_type == "wecom_bot" {
@@ -392,21 +411,11 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             .unwrap()
             .insert(channel_name.clone(), router.clone());
 
-        let mut state_manager = StateManager::for_channel(workdir, channel_name);
-        state_manager.initialize().await?;
-
-        if args.reset {
-            state_manager.reset().await?;
-            tracing::info!(channel = %channel_name, "State reset");
-        }
-
         tracing::info!(
             channel = %channel_name,
             channel_type = %channel_type,
             mode = %agent_config.mode,
-            last_seq = state_manager.last_sequence_number(),
-            processed_uids = state_manager.processed_uid_count(),
-            "State loaded"
+            "Channel ready"
         );
 
         // Spawn the inbound monitor as a task (channel-type-specific)
@@ -424,11 +433,9 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             channel_name: channel_name.clone(),
             workdir,
             workspace_dir: workspace_dir.clone(),
-            args,
             inbound_attachment_config,
             topic_manager: topic_manager.clone(),
             router: router.clone(),
-            state_manager,
             cancel: cancel.clone(),
             cancel_child,
             tasks: &mut tasks,

@@ -2031,4 +2031,54 @@ mod tests {
         // No topics -> no auto-select.
         assert!(app.table_state.selected().is_none());
     }
+
+    /// Regression: the dashboard **overview** Details panel wraps the
+    /// activity log in `Borders::TOP | Borders::LEFT | Borders::RIGHT`.
+    /// Drives `render_details` end-to-end (rather than calling the inner
+    /// renderer directly) so the assertion pins the *call-site* wiring:
+    /// if the overview caller ever reverts to `Borders::TOP` only, this
+    /// test fails because the activity pane loses its `│` sides.
+    #[test]
+    fn overview_activity_pane_has_left_and_right_borders() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = make_test_app();
+        app.state = Some(make_overview_with_topics(&["alpha"]));
+        app.table_state.select(Some(0));
+
+        let width: u16 = 40;
+        let height: u16 = 20;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_details(frame, frame.area(), &app))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer().clone();
+        // detail_chunks: info pane is 9 rows tall, so the activity pane
+        // starts at y = 9. With TOP | LEFT | RIGHT (no BOTTOM):
+        //   y = 9              → top corners ┌ / ┐
+        //   y = 10 .. height   → side borders │ / │
+        let activity_top: u16 = 9;
+        assert_eq!(
+            buffer[(0, activity_top)].symbol(),
+            "┌",
+            "activity pane top-left corner"
+        );
+        assert_eq!(
+            buffer[(width - 1, activity_top)].symbol(),
+            "┐",
+            "activity pane top-right corner"
+        );
+        for y in (activity_top + 1)..height {
+            let left = buffer[(0, y)].symbol();
+            let right = buffer[(width - 1, y)].symbol();
+            assert_eq!(left, "│", "row {y} left edge should be `│`, got {left:?}");
+            assert_eq!(
+                right, "│",
+                "row {y} right edge should be `│`, got {right:?}"
+            );
+        }
+    }
 }

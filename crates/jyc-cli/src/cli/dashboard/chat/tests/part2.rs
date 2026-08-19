@@ -533,53 +533,6 @@ fn activity_pane_title_has_double_dash_prefix() {
     );
 }
 
-/// Regression: the dashboard **overview** Details panel wraps the activity
-/// log in `Borders::TOP | Borders::LEFT | Borders::RIGHT`, so the left
-/// and right columns of every row below the title must be the `│`
-/// border glyph (matching the info pane's `Borders::LEFT` directly above).
-#[test]
-fn overview_activity_pane_has_left_and_right_borders() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    use ratatui::layout::Rect;
-    use ratatui::widgets::Borders;
-
-    let width = 40;
-    let height = 6;
-    let area = Rect::new(0, 0, width, height);
-    let backend = TestBackend::new(width, height);
-    let mut terminal = Terminal::new(backend).expect("terminal");
-    terminal
-        .draw(|frame| {
-            render_activity_log_inner(
-                frame,
-                area,
-                &[],
-                0,
-                0,
-                false,
-                Borders::TOP | Borders::LEFT | Borders::RIGHT,
-            )
-        })
-        .expect("draw");
-
-    let buffer = terminal.backend().buffer().clone();
-    // Row 0 = top border (corners `┌`/`┐`); rows 1..height are the inner
-    // area with `│` side borders (no BOTTOM border, so the last row is
-    // still a side `│`, not a corner).
-    assert_eq!(buffer[(0, 0)].symbol(), "┌", "top-left corner");
-    assert_eq!(buffer[(width - 1, 0)].symbol(), "┐", "top-right corner");
-    for y in 1..height {
-        let left = buffer[(0, y)].symbol();
-        let right = buffer[(width - 1, y)].symbol();
-        assert_eq!(left, "│", "row {y} left edge should be `│`, got {left:?}");
-        assert_eq!(
-            right, "│",
-            "row {y} right edge should be `│`, got {right:?}"
-        );
-    }
-}
-
 /// Regression: the topic info pane title row must start with the `──`
 /// prefix and the inner content area must start at y=1 (the top border
 /// row acts as a separator).

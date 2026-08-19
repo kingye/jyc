@@ -1645,6 +1645,9 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
         app.chat.activity_scroll,
         app.chat.activity_hscroll,
         focused,
+        // Chat screen: only the top edge borders the chat pane above;
+        // bottom/left/right sit at the screen edge or against an adjacent
+        // pane and are intentionally left open.
         Borders::TOP,
     );
 }

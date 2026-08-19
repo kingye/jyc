@@ -1772,9 +1772,7 @@ JYC uses the following subset of the agent service API:
 - Sessions are deleted for error recovery (ContextOverflow, stale session detection)
 - On session reset: AI prompt includes notification and reference to chat history
 
-### Context Management Strategy
 
-The agent relies on in-process agent's built-in session memory for multi-turn conversation context. JYC does NOT inject conversation history into the prompt.
 
 1. **in-process agent Session (Primary)** — Conversation memory maintained by in-process agent
    - Session is reused across messages in the same topic (`agent-session.json`)
@@ -1857,7 +1855,7 @@ The agent relies on in-process agent's built-in session memory for multi-turn co
    - Used by `build_full_reply_text()` for quoted history in reply emails
    - NOT loaded into the AI prompt
 
-8. **Context Management Strategy** — How the prior `agent-context.json`
+8. **Wire Payload Shaping (Context Strategy)** — How the prior `agent-context.json`
    is shaped into the wire payload on each LLM request. The on-disk
    file always stores the full raw context unchanged; only the request
    payload is shaped. Configured per-pattern / per-agent / globally

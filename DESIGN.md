@@ -952,7 +952,6 @@ pub struct ChannelPattern {
     pub topic_prefix: Option<String>,        // Topic name prefix (e.g. "issue", "pr")
     pub topic_path: Option<String>,          // Custom filesystem path for topic dir
     pub role: Option<String>,                 // Agent role (e.g., "Planner", "Developer", "Reviewer")
-    pub repo_group: Option<String>,           // Shared repo directory group key
     #[serde(default = "default_true")]
     pub live_injection: bool,                 // Inject into active AI session (default: true)
     pub inject_inbound_images: bool,          // Auto-inject image attachments (default: false)
@@ -2987,8 +2986,7 @@ jyc/
 │   │       ├── mod.rs
 │   │       ├── client.rs               # GitHub REST API v3 client
 │   │       ├── config.rs               # GithubConfig (owner, repo, token, api_url)
-│   │       ├── inbound.rs              # GithubInboundAdapter (polling + matcher)
-│   │       └── outbound.rs             # GithubOutboundAdapter (comment poster)
+│   │       └── inbound.rs              # GithubInboundAdapter (polling + matcher)
 │   ├── core/
 │   │   ├── mod.rs
 │   │   ├── topic_manager.rs           # Per-topic queues + semaphore

@@ -119,7 +119,6 @@ mod tests {
         // Pattern identity fields that agents don't carry are None.
         assert!(p.topic_name.is_none());
         assert!(p.topic_prefix.is_none());
-        assert!(p.repo_group.is_none());
         assert!(p.pipe.is_none());
     }
 

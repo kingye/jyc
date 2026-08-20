@@ -9,14 +9,14 @@ use jyc_types::{ChangeKind, ChangedFileEntry};
 /// Read the current branch name from `.git/HEAD` under `path`.
 ///
 /// Looks first at `<path>/.git/HEAD`, then falls back to
-/// `<path>/repo/.git/HEAD` (the shared-repo symlink layout used when
-/// a pattern sets `repo_group`). Returns:
+/// `<path>/repo/.git/HEAD` (the layout used when the agent clones into
+/// `repo/`). Returns:
 /// - `Some(branch)` for a symbolic ref `ref: refs/heads/<branch>`
 /// - `Some("(detached)")` for a raw SHA in `.git/HEAD`
 /// - `None` when neither file is readable (not a git repo, perms, etc.)
 ///
 /// No `git` CLI — `.git/HEAD` is git's stable on-disk format and
-/// `std::fs::read_to_string` follows the `repo/` symlink for us.
+/// `std::fs::read_to_string` follows a `repo/` symlink for us.
 pub(crate) fn branch_for_topic_path(path: &Path) -> Option<String> {
     let head_path = if path.join(".git").join("HEAD").is_file() {
         path.join(".git").join("HEAD")

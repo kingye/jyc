@@ -30,6 +30,7 @@ async fn test_websocket_adapter_start_and_handle() {
             Ok(())
         }),
         on_topic_close: None,
+        on_close_event: None,
         on_error: Box::new(|e| {
             tracing::error!("Inbound error: {e}");
         }),

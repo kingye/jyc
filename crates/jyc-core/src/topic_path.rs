@@ -55,13 +55,6 @@ pub fn resolve_agents_workspace_root(workdir: &Path) -> PathBuf {
     }
 }
 
-/// Resolve the shared repo directory for a repo group key.
-///
-/// Convention: `<workspace>/repos/<group_key>/`
-pub fn resolve_shared_repo_dir(workspace: &Path, group_key: &str) -> PathBuf {
-    workspace.join("repos").join(group_key)
-}
-
 /// Resolve a custom topic path from a pattern's `topic_path` config.
 ///
 /// - `~` is expanded to `$HOME`
@@ -86,14 +79,6 @@ pub fn resolve_topic_path(path: &str, data_root: &Path) -> PathBuf {
             data_root.join(p)
         }
     }
-}
-
-/// Compute the repo group key from a `repo_group` config value and issue/PR number.
-///
-/// Returns `"{repo_group}-{number}"`.
-/// Works for GitHub (u64), Gitee issues (string like "IJROW7"), and Gitee PRs (u64).
-pub fn compute_repo_group_key(repo_group: &str, number: &str) -> String {
-    format!("{}-{}", repo_group, number)
 }
 
 /// One-time migration for the `topic` → `topic` rename.
@@ -207,78 +192,6 @@ mod tests {
         assert_ne!(a, b);
         assert!(a.to_string_lossy().contains("jyc"));
         assert!(b.to_string_lossy().contains("jin"));
-    }
-
-    #[test]
-    fn test_resolve_shared_repo_dir() {
-        let ws = Path::new("/data/github/workspace");
-        let shared = resolve_shared_repo_dir(ws, "pr-42");
-        assert_eq!(shared, PathBuf::from("/data/github/workspace/repos/pr-42"));
-    }
-
-    #[test]
-    fn test_compute_repo_group_key() {
-        assert_eq!(compute_repo_group_key("pr", "42"), "pr-42");
-        assert_eq!(compute_repo_group_key("repo", "1"), "repo-1");
-        assert_eq!(compute_repo_group_key("pr", "IJROW7"), "pr-IJROW7");
-    }
-
-    #[tokio::test]
-    async fn test_symlink_creation_with_repo_group_key() {
-        let tmp = tempfile::tempdir().unwrap();
-        let workspace = tmp.path().join("github").join("workspace");
-        tokio::fs::create_dir_all(&workspace).await.unwrap();
-
-        let group_key = compute_repo_group_key("pr", "42");
-        let shared_repo_dir = resolve_shared_repo_dir(&workspace, &group_key);
-        let topic_path = workspace.join("pr-42");
-
-        tokio::fs::create_dir_all(&shared_repo_dir).await.unwrap();
-        tokio::fs::create_dir_all(&topic_path).await.unwrap();
-
-        let symlink_path = topic_path.join("repo");
-        assert!(!symlink_path.exists());
-
-        std::os::unix::fs::symlink(&shared_repo_dir, &symlink_path).unwrap();
-        assert!(symlink_path.exists());
-        assert!(
-            tokio::fs::symlink_metadata(&symlink_path)
-                .await
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-
-        let target = std::fs::read_link(&symlink_path).unwrap();
-        assert_eq!(target, shared_repo_dir);
-    }
-
-    #[test]
-    fn test_repo_group_backward_compatibility_no_field() {
-        let pattern: jyc_types::ChannelPattern = toml::from_str(
-            r#"
-            name = "test"
-            [rules]
-        "#,
-        )
-        .unwrap();
-        assert!(
-            pattern.repo_group.is_none(),
-            "repo_group should default to None when omitted from config"
-        );
-    }
-
-    #[test]
-    fn test_repo_group_set_via_serde() {
-        let pattern: jyc_types::ChannelPattern = toml::from_str(
-            r#"
-            name = "test"
-            repo_group = "pr"
-            [rules]
-        "#,
-        )
-        .unwrap();
-        assert_eq!(pattern.repo_group.as_deref(), Some("pr"));
     }
 
     // === MessageStorage.store_with_match (real production path) ===

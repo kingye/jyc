@@ -17,11 +17,12 @@ pub fn resolve_workspace(workdir: &Path, channel: &str) -> PathBuf {
 
 /// Resolve the workspace root for the synthesized "agents" channel.
 ///
-/// This is the parent directory holding every agent topic:
-/// `<data_home>/agents/`. Agent patterns leave `topic_path` unset, so
-/// each topic resolves to `<data_home>/agents/<topic_name>/` — the
-/// agent's own name for the 1:1 dashboard topic, and one directory per
-/// pipe-routed dynamic topic (`plan-42`, `review-7`, …).
+/// This is the parent directory holding every agent's subtree:
+/// `<data_home>/agents/`. Each agent's topics live one level deeper at
+/// `<data_home>/agents/<agent>/<topic>/` — the 1:1 dashboard topic and
+/// every pipe-routed dynamic topic (`plan-42`, `review-7`, …) get their
+/// own directory. An agent that configures `topic_path` pins only its
+/// 1:1 topic there.
 ///
 /// Falls back to `<workdir>/agents` when `data_home()` is unavailable —
 /// using `workdir` (the jyc instance root) instead of cwd so

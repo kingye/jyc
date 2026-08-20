@@ -148,13 +148,13 @@ impl AgentConfig {
     /// field on AgentConfig itself).
     ///
     /// `topic_path` is left `None` unless the agent sets one
-    /// explicitly. A pinned `topic_path` is a *fixed* directory, not a
-    /// subtree root, so defaulting it would collapse every topic of the
-    /// agent into one directory — sharing one chat history and one
-    /// checkout. Left `None`, the router falls back to
-    /// `<agents-workspace>/<topic_name>`, which yields the same path as
-    /// the old default for the 1:1 case (topic name == agent name) and
-    /// one directory per topic for pipe-routed dynamic topics.
+    /// explicitly. A configured `topic_path` pins the agent's *1:1*
+    /// topic (the one named after the agent) to that directory — it is
+    /// the agent's own home, usually a code checkout. Defaulting it
+    /// would instead make every topic of the agent resolve to one
+    /// directory, sharing a chat history and a checkout. Left `None`,
+    /// the router places each topic at
+    /// `<agents-workspace>/<agent>/<topic>`.
     pub fn fill_into_pattern(&self, pattern: &mut ChannelPattern, agent_name: &str) {
         pattern.name = agent_name.to_string();
         pattern.channel = "agents".to_string();

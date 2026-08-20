@@ -118,7 +118,7 @@ All notable changes to JYC will be documented in this file.
   issue/PR trigger was dropped with "unresolvable target, dropping".
   Numeric metadata now stringifies during lookup; a pattern configured
   with `topic = "plan-${msg.issue_number}"` routes to `plan-<N>` as
-  documented.
+  documented. (#606)
 
 - **Pre-loop reset after switching to a smaller-window model now actually
   uses the compacted context.** The per-message flow loaded

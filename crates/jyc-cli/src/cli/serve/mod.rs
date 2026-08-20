@@ -266,6 +266,25 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             continue;
         }
 
+        // github is also a pipe-only adapter: the poller plus reply
+        // forwarders. State (dedup/cursor) lives under
+        // <workdir>/channels/<channel>/.github/. Topic initialization is a
+        // skill on the agent side — no per-pattern template.
+        if channel_type == "github" {
+            crate::cli::serve::channels::spawn_github_adapter(
+                channel_config,
+                channel_name.clone(),
+                workdir,
+                inbound_attachment_config,
+                cancel.clone(),
+                &mut tasks,
+                config_for_spawn.clone(),
+                ws_broadcasts.clone(),
+                routers.clone(),
+            )?;
+            continue;
+        }
+
         // wecom_bot is also a pipe-only adapter (same architecture as
         // feishu): protocol-only, no TopicManager/agent/orchestrator.
         if channel_type == "wecom_bot" {
@@ -443,7 +462,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             wecomkf_kf_client: &mut wecomkf_kf_client,
             orchestrator: orchestrator.clone(),
             channel_info,
-            config_for_spawn: config_for_spawn.clone(),
             wecom_server: wecom_server.clone(),
             websocket_handlers: &mut websocket_handlers,
         };

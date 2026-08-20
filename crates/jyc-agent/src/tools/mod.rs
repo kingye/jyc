@@ -142,9 +142,9 @@ impl<'a> ToolContext<'a> {
     /// the boundary, or an `Err` with a user-facing access-denied message.
     ///
     /// **Symlink exemption**: when any ancestor component of `resolved`
-    /// above `working_dir` is a symlink (e.g. the `repo_group` feature
-    /// where `repo/ -> /other/path`), the check is skipped. This lets the
-    /// agent work with symlinked repos without false positives.
+    /// above `working_dir` is a symlink (e.g. `repo/ -> /other/path`), the
+    /// check is skipped. This lets the agent work with symlinked repos
+    /// without false positives.
     ///
     /// **Temp-dir exemption**: paths under `std::env::temp_dir()` are always
     /// accepted, so tools have scratch space without per-pattern `access`
@@ -157,8 +157,8 @@ impl<'a> ToolContext<'a> {
         resolved: &Path,
     ) -> std::result::Result<(), String> {
         // Symlink exemption: skip the boundary check when a symlink
-        // component is found above working_dir. This preserves the
-        // repo_group feature where working_dir/repo -> /other/path.
+        // component is found above working_dir (e.g. working_dir/repo
+        // symlinked to a clone elsewhere).
         let has_symlink = resolved
             .ancestors()
             .any(|ancestor| ancestor != self.working_dir && ancestor.is_symlink());

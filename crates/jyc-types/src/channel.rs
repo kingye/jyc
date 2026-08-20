@@ -363,12 +363,6 @@ pub struct ChannelPattern {
     /// When false, messages queue and are processed sequentially.
     #[serde(default = "default_true")]
     pub live_injection: bool,
-    /// Repo group key for shared repo directories among GitHub topics.
-    /// When set, topics matching this pattern share a single repo clone
-    /// via symlinks, saving disk space. The group key is `"{repo_group}-{github_number}"`.
-    /// Patterns without `repo_group` keep existing behavior (no symlink, no sharing).
-    #[serde(default)]
-    pub repo_group: Option<String>,
     /// Whether to auto-inject inbound `image/*` attachments into the first
     /// user turn of the agent loop as multimodal content blocks.
     ///
@@ -619,7 +613,6 @@ impl Default for ChannelPattern {
             topic_path: None,
             role: None,
             live_injection: true,
-            repo_group: None,
             inject_inbound_images: false,
             model: None,
             plan_model: None,

@@ -142,30 +142,6 @@ impl MessageRouter {
                 .insert("role".to_string(), serde_json::Value::String(role));
         }
 
-        // Store repo_group_key in message metadata if repo_group is configured.
-        // Supports GitHub (github_number u64) and Gitee (gitee_number string or u64).
-        let number_opt = message
-            .metadata
-            .get("github_number")
-            .and_then(|v| v.as_u64())
-            .map(|n| n.to_string())
-            .or_else(|| {
-                message.metadata.get("gitee_number").and_then(|v| {
-                    v.as_str()
-                        .map(|s| s.to_string())
-                        .or_else(|| v.as_u64().map(|n| n.to_string()))
-                })
-            });
-
-        if let Some(repo_group) = matched_pattern.and_then(|p| p.repo_group.clone())
-            && let Some(number) = number_opt
-        {
-            let key = crate::topic_path::compute_repo_group_key(&repo_group, &number);
-            message
-                .metadata
-                .insert("repo_group_key".to_string(), serde_json::Value::String(key));
-        }
-
         // 4. Resolve topic_path override: prefer explicit metadata from
         // WebSocket create_topic, then fall back to the matched pattern's
         // configured topic_path.

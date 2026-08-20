@@ -853,7 +853,7 @@ async fn load_reply_attachment(
 ///
 /// Differences from the old full-channel architecture:
 /// - No template/metadata injection (initialization is a skill on the agent side).
-/// - No repo_group (shared-repo symlink feature removed).
+/// - No shared-repo directory grouping (that feature was removed).
 /// - Comments carry the [Role] prefix (GPT summarizer, GitHub reviewer, etc.)
 ///   but no model/mode/token footer.
 /// - Close events (issue/PR closed) use the hub registry's TopicManager to
@@ -1064,7 +1064,7 @@ pub(crate) fn spawn_github_adapter(
                             .to_string();
 
                         // 4. Re-target into the target channel/topic.
-                        //    No template/repo_group metadata injection.
+                        //    No template metadata injection.
                         let drop_debug = message.id.clone();
                         let Some(message) = apply_pipe_retarget(message, &pipe) else {
                             tracing::warn!(

@@ -73,7 +73,7 @@ impl Tool for ReadTool {
 
         // Security: ensure path is within working directory.
         // Uses the shared boundary check from ToolContext, which handles
-        // canonicalization, repo_group symlink exemption, and
+        // canonicalization, the symlink exemption, and
         // additional_read_roots.
         if let Err(msg) = ctx.check_path_boundary(file_path, &path) {
             return Ok(ToolOutput::error(msg));

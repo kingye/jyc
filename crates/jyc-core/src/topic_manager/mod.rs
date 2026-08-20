@@ -87,8 +87,6 @@ pub struct TopicManager {
     cancel: CancellationToken,
     worker_handles: Mutex<Vec<JoinHandle<()>>>,
 
-    repo_group_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
-
     // Custom topic paths (from pattern topic_path override), shared with
     // worker clones so list_topics() on the main TM sees paths from workers.
     pub(crate) topic_paths: Arc<Mutex<HashMap<String, PathBuf>>>,
@@ -171,7 +169,6 @@ impl TopicManager {
             metrics,
             cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
-            repo_group_locks: Arc::new(Mutex::new(HashMap::new())),
             topic_paths: Arc::new(Mutex::new(HashMap::new())),
         }
     }

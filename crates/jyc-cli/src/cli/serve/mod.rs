@@ -210,7 +210,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     // Per-channel MessageRouters, keyed by channel name. Used by piped
     // channels (e.g. feishu with `pipe`) to route re-targeted messages
     // through the target channel's router (identical to a chat-pane message).
-    let routers: std::sync::Arc<std::sync::Mutex<HashMap<String, Arc<MessageRouter>>>> =
+    let routers: crate::cli::serve::channels::HubRegistry =
         std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
     // Create the inspect-broadcast bus that ActivityTracker publishes to.
     // Shared with websocket inbound adapters so they can forward live
@@ -263,6 +263,25 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
                 routers.clone(),
             )
             .await?;
+            continue;
+        }
+
+        // github is also a pipe-only adapter: the poller plus reply
+        // forwarders. State (dedup/cursor) lives under
+        // <workdir>/channels/<channel>/.github/. Topic initialization is a
+        // skill on the agent side — no per-pattern template.
+        if channel_type == "github" {
+            crate::cli::serve::channels::spawn_github_adapter(
+                channel_config,
+                channel_name.clone(),
+                workdir,
+                inbound_attachment_config,
+                cancel.clone(),
+                &mut tasks,
+                config_for_spawn.clone(),
+                ws_broadcasts.clone(),
+                routers.clone(),
+            )?;
             continue;
         }
 
@@ -406,10 +425,10 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             channel_name.clone(),
         ));
         // Expose the router so piped channels can route through it.
-        routers
-            .lock()
-            .unwrap()
-            .insert(channel_name.clone(), router.clone());
+        routers.lock().unwrap().insert(
+            channel_name.clone(),
+            (router.clone(), topic_manager.clone()),
+        );
 
         tracing::info!(
             channel = %channel_name,
@@ -443,7 +462,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             wecomkf_kf_client: &mut wecomkf_kf_client,
             orchestrator: orchestrator.clone(),
             channel_info,
-            config_for_spawn: config_for_spawn.clone(),
             wecom_server: wecom_server.clone(),
             websocket_handlers: &mut websocket_handlers,
         };

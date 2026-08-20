@@ -970,6 +970,58 @@ fn test_build_trigger_message_pr() {
 }
 
 #[test]
+fn test_build_trigger_message_number_aliases_are_type_gated() {
+    // Pipe topic templates use `${msg.pr_number}` / `${msg.issue_number}`.
+    // Only the key matching the event type is set, so a planner pattern
+    // configured with `plan-${msg.issue_number}` that accidentally matches a
+    // PR event fails placeholder resolution (message dropped with a warning)
+    // instead of silently landing PR traffic in an issue topic.
+    let config = GithubConfig {
+        owner: "kingye".to_string(),
+        repo: "jyc".to_string(),
+        token: "test".to_string(),
+        api_url: "https://api.github.com".to_string(),
+        poll_interval_secs: 60,
+        poll_ci_status: true,
+    };
+    let tmpdir = tempfile::tempdir().unwrap();
+    let adapter =
+        GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path(), None);
+
+    let issue = adapter.build_trigger_message(
+        "issue_comment",
+        42,
+        "Add dark mode",
+        "issue",
+        "created",
+        "user1",
+        &[],
+        &[],
+        "comment-1",
+    );
+    assert_eq!(issue.metadata.get("issue_number").unwrap(), 42);
+    assert!(!issue.metadata.contains_key("pr_number"));
+
+    let pr = adapter.build_trigger_message(
+        "pull_request",
+        43,
+        "Fix it",
+        "pull_request",
+        "opened",
+        "user1",
+        &[],
+        &[],
+        "pr-43-opened",
+    );
+    assert_eq!(pr.metadata.get("pr_number").unwrap(), 43);
+    assert!(!pr.metadata.contains_key("issue_number"));
+
+    // `repo` disambiguates topics when several github channels pipe into the
+    // same agent (`review-${msg.repo}-${msg.pr_number}`).
+    assert_eq!(pr.metadata.get("repo").unwrap(), "jyc");
+}
+
+#[test]
 fn test_build_trigger_message_enterprise_gh_host() {
     let config = GithubConfig {
         owner: "Climate-21".to_string(),

@@ -115,8 +115,8 @@ pub struct TopicSummary {
     pub topic_path: Option<std::path::PathBuf>,
     /// Resolved git branch for the topic's working directory, when it is
     /// a git repo. `None` when the path isn't a git repo, or the server
-    /// couldn't read `.git/HEAD` (perms, etc.). For the shared-repo layout
-    /// (`repo_group`), `.git/HEAD` is read under `<topic_path>/repo/`.
+    /// couldn't read `.git/HEAD` (perms, etc.). When the agent clones into
+    /// `repo/`, `.git/HEAD` is read under `<topic_path>/repo/`.
     /// `"(detached)"` is returned when HEAD is a raw SHA (no symbolic ref).
     /// `#[serde(default)]` so old payloads (pre-this-field) still load.
     #[serde(default)]

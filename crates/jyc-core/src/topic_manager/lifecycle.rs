@@ -95,9 +95,6 @@ impl TopicManager {
             tracing::info!(topic = %topic_name, "Topic directory deleted");
         }
 
-        // Clean up orphaned shared repos (repos/ dirs no longer referenced by any topic)
-        self.cleanup_orphaned_shared_repos().await;
-
         self.cleanup_topic_state(topic_name).await;
         Ok(())
     }
@@ -166,68 +163,5 @@ impl TopicManager {
         }
 
         tracing::debug!(topic = %topic_name, "Topic in-memory state cleaned up");
-    }
-
-    /// Clean up shared repos that are no longer referenced by any active topic.
-    ///
-    /// Scans `<workspace>/repos/` and checks if any topic directory still has
-    /// a symlink pointing to each shared repo. Orphaned shared repos are deleted.
-    async fn cleanup_orphaned_shared_repos(&self) {
-        let workspace = self.storage.workspace();
-        let repos_dir = workspace.join("repos");
-
-        let mut repos_entries = match tokio::fs::read_dir(&repos_dir).await {
-            Ok(entries) => entries,
-            Err(_) => return,
-        };
-
-        while let Ok(Some(entry)) = repos_entries.next_entry().await {
-            let shared_repo_path = entry.path();
-            if !shared_repo_path.is_dir() {
-                continue;
-            }
-
-            let group_key = match entry.file_name().to_str() {
-                Some(name) => name.to_string(),
-                None => continue,
-            };
-
-            let mut is_referenced = false;
-            if let Ok(mut topic_entries) = tokio::fs::read_dir(&workspace).await {
-                while let Ok(Some(topic_entry)) = topic_entries.next_entry().await {
-                    let topic_path = topic_entry.path();
-                    if !topic_path.is_dir() {
-                        continue;
-                    }
-                    let repo_link = topic_path.join("repo");
-                    match tokio::fs::symlink_metadata(&repo_link).await {
-                        Ok(meta) if meta.file_type().is_symlink() => {
-                            if let Ok(target) = std::fs::read_link(&repo_link)
-                                && target == shared_repo_path
-                            {
-                                is_referenced = true;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            if !is_referenced {
-                if let Err(e) = tokio::fs::remove_dir_all(&shared_repo_path).await {
-                    tracing::warn!(
-                        error = %e,
-                        path = %shared_repo_path.display(),
-                        "Failed to remove orphaned shared repo"
-                    );
-                } else {
-                    tracing::info!(
-                        group_key = %group_key,
-                        "Removed orphaned shared repo"
-                    );
-                }
-            }
-        }
     }
 }

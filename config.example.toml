@@ -733,13 +733,13 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # role = "Developer"
 # template = "github-developer"
 # live_injection = false
-# repo_group = "pr"  # Share repo clone with other patterns in the same group
+# (repo_group was removed — the init skill handles repo setup)
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]
 # labels = ["ready-for-dev"]
 #
-# # Idle cleanup has been removed — use repo_group shared symlinks instead.
+# # Idle cleanup and repo_group were removed — the init skill handles repo setup.
 #
 # # Pattern: PRs with 'ready-for-review' label → Reviewer agent (auto-trigger)
 # # MUST declare a distinct prefix because the `developer` pattern already
@@ -750,7 +750,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # role = "Reviewer"
 # template = "github-reviewer"
 # topic_prefix = "review-pr"          # → workspace/review-pr-43/
-# repo_group = "pr"                    # Share repo clone with developer pattern
+# (repo_group was removed — each topic clones its own repo via the init skill)
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]

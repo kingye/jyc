@@ -159,7 +159,6 @@ impl TopicManager {
             metrics: self.metrics.clone(),
             cancel: self.cancel.clone(),
             worker_handles: Mutex::new(vec![]),
-            repo_group_locks: self.repo_group_locks.clone(),
             topic_paths: self.topic_paths.clone(),
         }
     }
@@ -332,36 +331,6 @@ impl TopicManager {
                         }
                     }
 
-                    if let Some(repo_group_key) = item.message.metadata.get("repo_group_key").and_then(|v| v.as_str()) {
-                        let shared_repo_dir = crate::topic_path::resolve_shared_repo_dir(workspace, repo_group_key);
-                        let symlink_path = topic_path.join("repo");
-
-                        if let Err(e) = tokio::fs::create_dir_all(&shared_repo_dir).await {
-                            tracing::warn!(
-                                error = %e,
-                                path = %shared_repo_dir.display(),
-                                "Failed to create shared repo directory"
-                            );
-                        }
-
-                        if std::fs::symlink_metadata(&symlink_path).is_err() {
-                            if let Err(e) = std::os::unix::fs::symlink(&shared_repo_dir, &symlink_path) {
-                                tracing::warn!(
-                                    error = %e,
-                                    target = %shared_repo_dir.display(),
-                                    link = %symlink_path.display(),
-                                    "Failed to create repo symlink"
-                                );
-                            } else {
-                                tracing::info!(
-                                    topic = %topic_name,
-                                    group_key = %repo_group_key,
-                                    shared_repo = %shared_repo_dir.display(),
-                                    "Created shared repo symlink"
-                                );
-                            }
-                        }
-                    }
                 }
 
                 // Always ensure .jyc/ directory and metadata files exist,
@@ -386,63 +355,6 @@ impl TopicManager {
                 let topic_name_file = jyc_dir.join("topic-name");
                 if let Err(e) = tokio::fs::write(&topic_name_file, &topic_name).await {
                     tracing::warn!(error = %e, "Failed to write topic-name file");
-                }
-
-                // Acquire repo group lock to prevent concurrent initialization
-                // of the shared repo directory. If the shared dir is already
-                // non-empty (a previous agent initialized it), skip the wait.
-                // Otherwise, hold the lock for a fixed delay so the first
-                // agent's clone can complete before the second agent starts.
-                if let Some(repo_group_key) = item.message.metadata.get("repo_group_key").and_then(|v| v.as_str()) {
-                    let lock = {
-                        let mut locks = tm.repo_group_locks.lock().await;
-                        locks.entry(repo_group_key.to_string())
-                            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                            .clone()
-                    };
-
-                    let workspace = storage.workspace();
-                    let shared_repo_dir = crate::topic_path::resolve_shared_repo_dir(workspace, repo_group_key);
-
-                    if let Ok(guard) = lock.clone().try_lock_owned() {
-                        let is_empty = match tokio::fs::read_dir(&shared_repo_dir).await {
-                            Ok(mut entries) => entries.next_entry().await.unwrap_or(None).is_none(),
-                            Err(_) => true,
-                        };
-
-                        if is_empty {
-                            tracing::info!(
-                                topic = %topic_name,
-                                group_key = %repo_group_key,
-                                "Shared repo dir empty, holding repo group lock for 120s"
-                            );
-                            let key = repo_group_key.to_string();
-                            tokio::spawn(async move {
-                                tokio::time::sleep(std::time::Duration::from_secs(120)).await;
-                                drop(guard);
-                                tracing::debug!(group_key = %key, "Repo group lock released after delay");
-                            });
-                        } else {
-                            tracing::debug!(
-                                topic = %topic_name,
-                                group_key = %repo_group_key,
-                                "Shared repo dir already initialized, proceeding immediately"
-                            );
-                            drop(guard);
-                        }
-                    } else {
-                        tracing::info!(
-                            topic = %topic_name,
-                            group_key = %repo_group_key,
-                            "Repo group lock held by another worker, waiting..."
-                        );
-                        let _guard = lock.lock().await;
-                        tracing::info!(
-                            topic = %topic_name,
-                            group_key = %repo_group_key,
-                            "Repo group lock acquired, proceeding"
-                        );
-                    }
                 }
 
                 let processing_started = std::time::Instant::now();
@@ -500,36 +412,6 @@ impl TopicManager {
                                 }
                             }
                         });
-                    }
-                }
-
-                // Check symlink integrity after AI processing completes
-                if let Some(repo_group_key) = item.message.metadata.get("repo_group_key").and_then(|v| v.as_str()) {
-                    let topic_path = item
-                        .topic_path_override
-                        .clone()
-                        .unwrap_or_else(|| storage.workspace().join(&topic_name));
-                    let symlink_path = topic_path.join("repo");
-                    match tokio::fs::symlink_metadata(&symlink_path).await {
-                        Ok(meta) if meta.file_type().is_symlink() => {
-                            // Symlink intact — good
-                        }
-                        Ok(_) => {
-                            tracing::warn!(
-                                topic = %topic_name,
-                                group_key = %repo_group_key,
-                                path = %symlink_path.display(),
-                                "Shared repo symlink was replaced by a regular directory (agent likely ran rm -rf repo && mkdir repo)"
-                            );
-                        }
-                        Err(_) => {
-                            tracing::warn!(
-                                topic = %topic_name,
-                                group_key = %repo_group_key,
-                                path = %symlink_path.display(),
-                                "Shared repo symlink is missing after processing"
-                            );
-                        }
                     }
                 }
 

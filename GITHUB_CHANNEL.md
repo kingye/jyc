@@ -3,61 +3,25 @@
 GitHub Issue/PR channel for JYC — enables multi-agent workflows on GitHub
 repositories through issue discussion, PR development, and code review.
 
-## repo_group — Shared Repo Directories
+## Architecture: pipe-only channel
 
-When multiple GitHub agent topics (e.g., Developer and Reviewer) work on the
-same PR, each normally clones the repository independently, wasting disk space.
-The `repo_group` field on `ChannelPattern` enables shared repo directories via
-symlinks.
+The GitHub channel is a **pipe-only adapter**: it polls the REST API, matches
+patterns, and re-targets each message into a hub channel (or an agent topic).
+It owns no TopicManager, agent service, or outbound adapter — see
+[docs/core-hub-adapters.md](docs/core-hub-adapters.md). Consequences:
 
-### How It Works
-
-1. Add `repo_group = "pr"` to patterns that should share a repo clone
-2. JYC computes a group key: `"{repo_group}-{github_number}"` (e.g., `"pr-42"`)
-3. On topic init, JYC creates `<workspace>/repos/<group_key>/` and symlinks
-   `<topic_path>/repo` → the shared directory
-4. Agents are group-agnostic — they just `cd repo` and clone if `.git` is missing
-5. When a topic is closed, the symlink is removed first (before `remove_dir_all`)
-6. Shared repos are cleaned up when no remaining topic references them
-
-### Directory Structure
-
-```
-<workdir>/<channel>/workspace/
-  pr-42/               ← Developer agent
-    .jyc/
-    repo/ → ../../repos/pr-42/   ← symlink
-  review-pr-42/        ← Reviewer agent
-    .jyc/
-    repo/ → ../../repos/pr-42/   ← symlink (same shared repo)
-  repos/
-    pr-42/             ← Shared repo directory (actual clone)
-      .git/
-      src/
-      ...
-```
-
-### Configuration
-
-```toml
-# Developer and Reviewer share the same repo clone for a PR
-[[channels.my_repo.patterns]]
-name = "developer"
-role = "Developer"
-template = "github-developer"
-repo_group = "pr"
-
-[[channels.my_repo.patterns]]
-name = "reviewer"
-role = "Reviewer"
-template = "github-reviewer"
-repo_group = "pr"
-```
-
-### Backward Compatibility
-
-Patterns without `repo_group` keep existing behavior — no symlink, no sharing.
-`repo_group` is fully opt-in and does not affect non-GitHub channels.
+- Every enabled pattern **must** declare a `pipe` target; patterns without one
+  drop their matching messages (with a startup warning).
+- Topics live in the pipe target's workspace, named by the `pipe.topic`
+  template. Available placeholders include `${msg.pr_number}`,
+  `${msg.issue_number}`, `${msg.repo}`, and `${msg.github_number}`.
+- Replies are relayed as issue/PR comments by a per-target reply forwarder,
+  keeping the `[Role]` prefix (self-loop prevention) and no footer.
+- Dedup/cursor state lives at `<workdir>/channels/<channel>/.github/`.
+- There is **no** per-pattern `template`: the agent initializes its own topic
+  directory (cloning the repository into the topic directory itself) by following
+  the `github-init` skill placed in `{workdir}/skills/`. The former `repo_group`
+  shared-clone feature is gone — each topic clones its own repo.
 
 ## Design Principles
 
@@ -117,8 +81,8 @@ GitHub API (polling)
 └─────────────────────────────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│ GitHub OutboundAdapter                                          │
-│   └─ jyc_reply_message → POST comment on issue/PR       │
+│ Pipe reply forwarder                                            │
+│   └─ jyc_reply_message → hub broadcast → POST comment    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -269,7 +233,7 @@ poll_ci_status = true
 name = "planner"
 role = "Planner"
 enabled = true
-template = "github-planner"
+pipe = { agent = "jyc_git", topic = "plan-${msg.issue_number}" }
 
 [channels.my_repo.patterns.rules]
 github_type = ["issue"]
@@ -280,8 +244,7 @@ github_type = ["issue"]
 name = "developer"
 role = "Developer"
 enabled = true
-template = "github-developer"
-live_injection = false
+pipe = { agent = "jyc_git", topic = "dev-${msg.pr_number}" }
 
 [channels.my_repo.patterns.rules]
 github_type = ["pull_request"]
@@ -292,12 +255,18 @@ github_type = ["pull_request"]
 name = "reviewer"
 role = "Reviewer"
 enabled = true
-template = "github-reviewer"
+pipe = { agent = "jyc_git", topic = "review-${msg.pr_number}" }
 
 [channels.my_repo.patterns.rules]
 github_type = ["pull_request"]
 # Auto-label "jyc:review" is implicit from role = "Reviewer"
 ```
+
+Every enabled pattern needs a `pipe` target — without one, matching events are
+dropped (warned at startup). Roles can share one topic (use the same template
+string) or stay separate, as above. When several GitHub channels pipe into the
+same agent, add `${msg.repo}` to keep numbers from colliding:
+`topic = "review-${msg.repo}-${msg.pr_number}"`.
 
 ## Topic Naming
 
@@ -312,15 +281,12 @@ events and `pr` for pull-request events when no prefix is configured.
 | `topic_prefix = "plan"`       | `plan-{number}`       | `plan-42`        |
 | `topic_prefix = "review-pr"`  | `review-pr-{number}`  | `review-pr-43`   |
 
-Two patterns that can match the same GitHub identity (e.g., both target
-issues but are split by labels) MUST declare distinct `topic_prefix` values.
-If they don't, both patterns route to the same workspace directory and the
-second pattern's template / `AGENTS.md` would be silently dropped — jyc
-detects this and refuses to dispatch with a `TemplateMismatch` error.
-
-The reviewer pattern is the canonical example: developer (default `pr-{N}`)
-and reviewer (`topic_prefix = "review-pr"`) both run on the same PR in
-parallel, each with its own workspace and AGENTS.md.
+With a pipe, the `pipe.topic` template decides the topic name outright, so
+`topic_prefix` only matters as the fallback when a pipe names no topic. Two
+patterns can share one topic deliberately (give them the same template) or stay
+separate (`review-${msg.pr_number}` vs `dev-${msg.pr_number}`) — the framework
+does not care either way now that no template/`AGENTS.md` is written per
+pattern.
 
 Each topic gets its own directory:
 ```
@@ -469,32 +435,24 @@ PR #43 merged
 └─ Delete workspace/issue-42/    (GitHub auto-closes issue #42)
 ```
 
-## Outbound Adapter
+## Reply Relaying
 
 ### jyc_reply → GitHub Comment
 
-When an agent uses `jyc_reply_message`, the OutboundAdapter posts a
-comment on the corresponding issue/PR.
+When an agent uses `jyc_reply_message`, the hub broadcasts the reply and this
+channel's reply forwarder posts it as a comment on the corresponding issue/PR.
+The forwarder keeps a `topic → (number, role)` map recorded when the message was
+routed inbound, so it knows which item to comment on.
 
-```rust
-async fn send_reply(&self, original, reply_text, ...) -> Result<SendResult> {
-    let number = original.metadata["github_number"];
-    // POST /repos/{owner}/{repo}/issues/{number}/comments
-    // (GitHub API uses /issues/ endpoint for both issue and PR comments)
-    let comment_body = format!("[{}] {}", agent_role, reply_text);
-    github_client.create_comment(number, &comment_body).await
-}
-```
-
-**Role prefix**: The OutboundAdapter reads the agent role from the topic's
-template/config and prepends `[Planner]`, `[Developer]`, or `[Reviewer]`.
-These prefixes are used for self-loop prevention: each pattern skips comments
-from its own role but allows comments from other roles through.
+**Role prefix**: the forwarder prepends the matched pattern's `role`
+(`[Planner]`, `[Developer]`, `[Reviewer]`). These prefixes drive self-loop
+prevention: each pattern skips comments from its own role but lets other roles
+through. GitHub comments carry no attachments, so reply attachments are ignored.
 
 ### Direct gh CLI Operations
 
-Agents can also interact with GitHub directly via `gh` CLI (not through
-OutboundAdapter). This is used for:
+Agents can also interact with GitHub directly via `gh` CLI (not through the
+reply forwarder). This is used for:
 - Cross-topic communication (planner commenting on PR)
 - Creating PRs, branches
 - Adding/removing labels
@@ -631,6 +589,10 @@ User1                    Agent A (Planner)        Agent B (Developer)      Agent
 ```
 
 ## Implementation Phases
+
+> Historical record of the original build-out. The outbound adapter and
+> template phases described below were later replaced by the pipe-only
+> architecture and init skills (see "Architecture: pipe-only channel").
 
 Each phase has a **clear test objective**. Only proceed to next phase after
 the current phase passes human testing.

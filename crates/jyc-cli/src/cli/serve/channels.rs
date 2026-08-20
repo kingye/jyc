@@ -2,6 +2,7 @@
 //!
 //! Extracted from the monolithic `serve.rs` run() function.
 
+use anyhow::Context;
 use serde_json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,7 +22,6 @@ use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
 use jyc_channels::gitee::inbound::GiteeMatcher;
 use jyc_channels::gitee::outbound::GiteeOutboundAdapter;
 use jyc_channels::github::inbound::GithubMatcher;
-use jyc_channels::github::outbound::GithubOutboundAdapter;
 use jyc_channels::websocket::inbound::{WebsocketInboundAdapter, WebsocketMatcher};
 use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
 
@@ -77,18 +77,6 @@ pub(crate) fn build_outbound_adapter(
                 .clone();
             Arc::new(GiteeOutboundAdapter::with_footer_enabled(
                 gitee_config,
-                storage.clone(),
-                footer_enabled,
-            )?)
-        }
-        "github" => {
-            let github_config = channel_config
-                .github
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("channel '{channel_name}': missing github config"))?
-                .clone();
-            Arc::new(GithubOutboundAdapter::with_footer_enabled(
-                github_config,
                 storage.clone(),
                 footer_enabled,
             )?)
@@ -443,6 +431,14 @@ fn collect_pipe_target_channels(patterns: &[ChannelPattern]) -> std::collections
     out
 }
 
+/// Hub channels a pipe-only adapter can route into, keyed by channel name.
+///
+/// Carries the `TopicManager` alongside the router because pipe-only adapters
+/// own no workspace: routing needs the router, and close events (GitHub
+/// issue/PR closed) need the hub's TopicManager.
+pub(crate) type HubRegistry =
+    std::sync::Arc<std::sync::Mutex<HashMap<String, (Arc<MessageRouter>, Arc<TopicManager>)>>>;
+
 /// State recorded per piped topic so the email reply forwarder can
 /// reply into the original mail thread.
 ///
@@ -484,7 +480,7 @@ pub(crate) async fn spawn_email_adapter(
     tasks: &mut Vec<JoinHandle<()>>,
     config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
     ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
-    routers: std::sync::Arc<std::sync::Mutex<HashMap<String, Arc<MessageRouter>>>>,
+    routers: HubRegistry,
 ) -> Result<()> {
     let imap_config = channel_config
         .inbound
@@ -787,7 +783,11 @@ pub(crate) async fn spawn_email_adapter(
                             .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
                             .expect("validated upstream: agent or channel required");
                         let Some(target_router) =
-                            routers.lock().unwrap().get(&target_channel).cloned()
+                            routers
+                                .lock()
+                                .unwrap()
+                                .get(&target_channel)
+                                .map(|(r, _)| r.clone())
                         else {
                             tracing::warn!(
                                 channel = %target_channel,
@@ -844,6 +844,338 @@ async fn load_reply_attachment(
     })
 }
 
+/// Spawn a pipe-only GitHub adapter: the poller inbound adapter plus one
+/// reply forwarder per distinct pipe target channel.
+///
+/// Mirrors spawn_email_adapter. Unlike full channels, owns no
+/// TopicManager/agent/orchestrator — all topics live in the pipe target
+/// (hub) channel. Keeps a GithubInboundAdapter under
+/// <workdir>/channels/<channel>/.github/ for dedup/cursor state.
+///
+/// Differences from the old full-channel architecture:
+/// - No template/metadata injection (initialization is a skill on the agent side).
+/// - No shared-repo directory grouping (that feature was removed).
+/// - Comments carry the [Role] prefix (GPT summarizer, GitHub reviewer, etc.)
+///   but no model/mode/token footer.
+/// - Close events (issue/PR closed) use the hub registry's TopicManager to
+///   close the routed topics in the hub workspace.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_github_adapter(
+    channel_config: &ChannelConfig,
+    channel_name: String,
+    workdir: &Path,
+    inbound_attachment_config: Option<InboundAttachmentConfig>,
+    cancel: CancellationToken,
+    tasks: &mut Vec<JoinHandle<()>>,
+    config_for_spawn: std::sync::Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
+    ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
+    routers: HubRegistry,
+) -> Result<()> {
+    use jyc_channels::github::inbound::GithubInboundAdapter;
+
+    let github_config = channel_config
+        .github
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("channel '{channel_name}': missing github config"))?
+        .clone();
+
+    // Pipe-only validation: every enabled pattern must have a pipe target.
+    let pipe_channels =
+        collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
+    for p in channel_config
+        .patterns
+        .iter()
+        .flatten()
+        .filter(|p| p.enabled)
+    {
+        match &p.pipe {
+            Some(pipe) => {
+                if pipe.channel.is_some() || pipe.pattern.is_some() {
+                    tracing::warn!(
+                        channel = %channel_name,
+                        pattern = %p.name,
+                        "github pipe.channel/pipe.pattern is deprecated; use pipe = {{ agent = \"...\", topic = \"...\" }}"
+                    );
+                }
+            }
+            None => tracing::warn!(
+                channel = %channel_name,
+                pattern = %p.name,
+                "github pattern has no pipe target; matching messages will be dropped"
+            ),
+        }
+    }
+
+    // State (dedup, cursor) lives under <workdir>/channels/<channel>/.github/.
+    // One-time rename migration from the old location.
+    let old_state_dir = workdir.join(&channel_name).join(".github");
+    let new_state_dir = workdir.join("channels").join(&channel_name).join(".github");
+    if old_state_dir.exists() && !new_state_dir.exists() {
+        if let Some(parent) = new_state_dir.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::rename(&old_state_dir, &new_state_dir) {
+            tracing::warn!(
+                from = %old_state_dir.display(),
+                to = %new_state_dir.display(),
+                error = %e,
+                "github state dir migration failed (dedup will start fresh)"
+            );
+        }
+    }
+
+    // Build the client before spawning: an unusable token (invalid header bytes)
+    // must fail startup, not panic a detached task and leave a silently dead channel.
+    let client = Arc::new(
+        jyc_channels::github::client::GithubClient::new(&github_config)
+            .with_context(|| format!("github client for channel '{channel_name}'"))?,
+    );
+
+    let channel_span = tracing::info_span!("in", ch = %channel_name);
+    let workdir_for_task = workdir.to_path_buf();
+    let channel_name_for_task = channel_name.clone();
+    let cancel_child = cancel.child_token();
+
+    let task = tokio::spawn(
+        async move {
+            // Shared topic -> reply state for pipe relaying.
+            let topic_state: std::sync::Arc<
+                std::sync::Mutex<HashMap<String, (u64, String) /* number, role */>>,
+            > = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+
+            // One reply forwarder per distinct pipe target channel.
+            for channel in &pipe_channels {
+                let ws_broadcasts = ws_broadcasts.clone();
+                let topic_state = topic_state.clone();
+                let client = client.clone();
+                let channel = channel.clone();
+                tokio::spawn(async move {
+                    let Some(broadcast_tx) = wait_for_broadcast(&ws_broadcasts, &channel).await
+                    else {
+                        tracing::error!(
+                            channel = %channel,
+                            "github pipe: target channel broadcast never appeared (is it a websocket channel?), reply forwarder not started"
+                        );
+                        return;
+                    };
+                    let mut rx = broadcast_tx.subscribe();
+                    tracing::info!(channel = %channel, "github pipe reply forwarder subscribed");
+                    while let Ok(payload) = rx.recv().await {
+                        let v: serde_json::Value = match serde_json::from_str(&payload) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        if v.get("type").and_then(|t| t.as_str()) != Some("reply") {
+                            continue;
+                        }
+                        let (Some(topic), Some(text)) = (
+                            v.get("topic").and_then(|t| t.as_str()),
+                            v.get("text").and_then(|t| t.as_str()),
+                        ) else {
+                            continue;
+                        };
+                        let Some((number, role)) =
+                            topic_state.lock().unwrap().get(topic).cloned()
+                        else {
+                            tracing::debug!(
+                                topic = %topic,
+                                "github pipe: no number mapping for reply, skipping"
+                            );
+                            continue;
+                        };
+
+                        // Build comment body: [Role] prefix, no footer
+                        let clean_reply =
+                            jyc_core::email_parser::strip_trailing_separators(text);
+                        let body = if role.is_empty()
+                            || clean_reply.trim_start().starts_with(&format!("[{role}]"))
+                        {
+                            clean_reply
+                        } else {
+                            format!("[{role}] {clean_reply}")
+                        };
+
+                        // Post comment via GitHub API (attachments not supported)
+                        if let Err(e) = client.create_comment(number, &body).await {
+                            tracing::error!(
+                                error = format!("{e:#}"),
+                                topic = %topic,
+                                number = number,
+                                "github pipe: failed to relay reply"
+                            );
+                        }
+                    }
+                });
+            }
+
+            // Hub TopicManager lookup for close events.
+            let routers = routers.clone();
+
+            // Inbound adapter: poller + pattern matching + pipe retarget.
+            // Passing <workdir>/channels makes the adapter compute its
+            // state_dir as <workdir>/channels/<channel>/.github (same
+            // convention as the email adapter's StateManager).
+            let adapter = GithubInboundAdapter::new(
+                &github_config,
+                channel_name_for_task.clone(),
+                &workdir_for_task.join("channels"),
+                Some(config_for_spawn.clone()),
+            );
+            // The close handler needs its own handles (on_message takes ownership).
+            let topic_state_for_close = topic_state.clone();
+            let routers_for_close = routers.clone();
+            let options = jyc_types::InboundAdapterOptions {
+                on_message: Box::new(move |message| {
+                    let config_for_pipe = config_for_spawn.clone();
+                    let topic_state = topic_state.clone();
+                    let channel_name_self = channel_name_for_task.clone();
+                    let routers = routers.clone();
+                    tokio::spawn(async move {
+                        // 1. Match this channel's patterns (GithubMatcher,
+                        //    reviewer-priority ordering).
+                        let patterns = config_for_pipe
+                            .load()
+                            .channels
+                            .get(&channel_name_self)
+                            .and_then(|c| c.patterns.clone())
+                            .unwrap_or_default();
+                        let Some(pm) = GithubMatcher.match_message(&message, &patterns) else {
+                            tracing::debug!(
+                                number = ?message.metadata.get("github_number"),
+                                "github: no pattern matched, dropping"
+                            );
+                            return;
+                        };
+                        // 2. Per-pattern pipe.
+                        let matched = patterns.iter().find(|p| p.name == pm.pattern_name);
+                        let Some(pipe) = matched.and_then(|p| p.pipe.as_ref()) else {
+                            tracing::warn!(
+                                pattern = %pm.pattern_name,
+                                "github: matched pattern has no pipe target, dropping message"
+                            );
+                            return;
+                        };
+
+                        // 3. Capture number and role for reply routing. Without a
+                        //    number a reply could not be addressed, so drop loudly
+                        //    rather than commenting on issue #0.
+                        let Some(number) = message
+                            .metadata
+                            .get("github_number")
+                            .and_then(|v| v.as_u64())
+                        else {
+                            tracing::warn!(
+                                message_id = %message.id,
+                                "github: message has no github_number metadata, dropping"
+                            );
+                            return;
+                        };
+                        let role = matched
+                            .and_then(|p| p.role.as_deref())
+                            .unwrap_or("")
+                            .to_string();
+
+                        // 4. Re-target into the target channel/topic.
+                        //    No template metadata injection.
+                        let drop_debug = message.id.clone();
+                        let Some(message) = apply_pipe_retarget(message, pipe) else {
+                            tracing::warn!(
+                                topic = ?pipe.topic,
+                                pattern = ?pipe.pattern,
+                                agent = ?pipe.agent,
+                                message_id = %drop_debug,
+                                "github pipe: unresolvable target, dropping"
+                            );
+                            return;
+                        };
+
+                        // 5. Record resolved topic -> (number, role).
+                        topic_state.lock().unwrap().insert(
+                            message.topic.clone(),
+                            (number, role),
+                        );
+
+                        // 6. Route through the target's own MessageRouter.
+                        let target_channel = pipe
+                            .channel
+                            .clone()
+                            .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
+                            .expect("validated upstream: agent or channel required");
+                        let Some(target_router) =
+                            routers
+                                .lock()
+                                .unwrap()
+                                .get(&target_channel)
+                                .map(|(r, _)| r.clone())
+                        else {
+                            tracing::warn!(
+                                channel = %target_channel,
+                                "github pipe: target channel router not found, dropping"
+                            );
+                            return;
+                        };
+                        target_router
+                            .route(&WebsocketMatcher::new(target_channel), message)
+                            .await;
+                    });
+                    Ok(())
+                }),
+                on_topic_close: None,
+                on_close_event: Some(Box::new(move |number: u64| {
+                    let topic_state = topic_state_for_close.clone();
+                    let routers = routers_for_close.clone();
+                    tokio::spawn(async move {
+                        // Collect out of both std mutexes before awaiting:
+                        // their guards are not Send.
+                        let topics_to_close: Vec<String> = {
+                            let state = topic_state.lock().unwrap();
+                            state
+                                .iter()
+                                .filter(|(_, v)| v.0 == number)
+                                .map(|(t, _)| t.clone())
+                                .collect()
+                        };
+                        if topics_to_close.is_empty() {
+                            return;
+                        }
+                        let hubs: Vec<(String, Arc<TopicManager>)> = {
+                            let reg = routers.lock().unwrap();
+                            reg.iter()
+                                .map(|(name, (_, tm))| (name.clone(), tm.clone()))
+                                .collect()
+                        };
+                        for topic in &topics_to_close {
+                            for (hub_name, tm) in &hubs {
+                                if let Err(e) = tm.close_topic(topic).await {
+                                    tracing::debug!(
+                                        hub = %hub_name,
+                                        topic = %topic,
+                                        number = number,
+                                        error = %e,
+                                        "github pipe: close_topic ignored (no such topic in this hub)"
+                                    );
+                                }
+                            }
+                        }
+                        topic_state.lock().unwrap().retain(|_, v| v.0 != number);
+                    });
+                })),
+                on_error: Box::new(|error| {
+                    tracing::error!(error = %error, "GitHub inbound error");
+                }),
+                attachment_config: inbound_attachment_config.clone(),
+            };
+
+            if let Err(e) = adapter.start(options, cancel_child).await {
+                tracing::error!(error = %e, "GitHub inbound adapter error");
+            }
+        }
+        .instrument(channel_span),
+    );
+    tasks.push(task);
+    Ok(())
+}
+
 /// Spawn a pipe-only feishu adapter: the inbound adapter plus one reply
 /// forwarder per distinct pipe target channel.
 ///
@@ -861,7 +1193,7 @@ pub(crate) fn spawn_feishu_adapter(
     tasks: &mut Vec<JoinHandle<()>>,
     config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
     ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
-    routers: std::sync::Arc<std::sync::Mutex<HashMap<String, Arc<MessageRouter>>>>,
+    routers: HubRegistry,
 ) -> Result<()> {
     let feishu_config = channel_config
         .feishu
@@ -1068,7 +1400,11 @@ pub(crate) fn spawn_feishu_adapter(
                             .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
                             .expect("validated upstream: agent or channel required");
                         let Some(target_router) =
-                            routers.lock().unwrap().get(&target_channel).cloned()
+                            routers
+                                .lock()
+                                .unwrap()
+                                .get(&target_channel)
+                                .map(|(r, _)| r.clone())
                         else {
                             tracing::warn!(channel = %target_channel, "feishu pipe: target channel router not found, dropping");
                             return;
@@ -1080,6 +1416,7 @@ pub(crate) fn spawn_feishu_adapter(
                     Ok(())
                 }),
                 on_topic_close: None,
+                on_close_event: None,
                 on_error: Box::new(|error| {
                     tracing::error!(error = %error, "Feishu inbound error");
                 }),
@@ -1159,7 +1496,7 @@ pub(crate) fn spawn_wecom_bot_adapter(
     tasks: &mut Vec<JoinHandle<()>>,
     config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
     ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
-    routers: std::sync::Arc<std::sync::Mutex<HashMap<String, Arc<MessageRouter>>>>,
+    routers: HubRegistry,
 ) -> Result<()> {
     use jyc_channels::wecom_bot;
     let wecom_bot_config = channel_config
@@ -1542,7 +1879,11 @@ pub(crate) fn spawn_wecom_bot_adapter(
                             .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
                             .expect("validated upstream: agent or channel required");
                         let Some(target_router) =
-                            routers.lock().unwrap().get(&target_channel).cloned()
+                            routers
+                                .lock()
+                                .unwrap()
+                                .get(&target_channel)
+                                .map(|(r, _)| r.clone())
                         else {
                             tracing::warn!(
                                 channel = %target_channel,
@@ -1557,6 +1898,7 @@ pub(crate) fn spawn_wecom_bot_adapter(
                     Ok(())
                 }),
                 on_topic_close: None,
+                on_close_event: None,
                 on_error: Box::new(|error| {
                     tracing::error!(error = %error, "WeCom Bot inbound error");
                 }),
@@ -1665,7 +2007,6 @@ pub(crate) struct InboundSpawner<'a> {
     pub(crate) wecomkf_kf_client: &'a mut Option<Arc<KfApiClient>>,
     pub(crate) orchestrator: Arc<ChannelOrchestrator>,
     pub(crate) channel_info: ChannelInfo,
-    pub(crate) config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
     pub(crate) wecom_server: Option<Arc<WecomWebhookServer>>,
     pub(crate) websocket_handlers: &'a mut [Arc<WebsocketInboundAdapter>],
 }
@@ -1692,7 +2033,6 @@ impl InboundSpawner<'_> {
             wecomkf_kf_client,
             orchestrator,
             channel_info,
-            config_for_spawn,
             wecom_server,
             websocket_handlers,
         } = self;
@@ -1739,7 +2079,8 @@ impl InboundSpawner<'_> {
                         });
                         Ok(())
                     })),
-                    on_error: Box::new(|error| {
+                    on_close_event: None,
+                on_error: Box::new(|error| {
                         tracing::error!(error = %error, "Gitee inbound error");
                     }),
                     attachment_config: inbound_attachment_config.clone(),
@@ -1749,80 +2090,6 @@ impl InboundSpawner<'_> {
                     tracing::error!(error = %e, "Gitee inbound adapter error");
                 }
 
-                tm.shutdown().await;
-            }.instrument(channel_span));
-
-                orchestrator
-                    .register_channel(
-                        channel_name.to_string(),
-                        jyc_core::channel_orchestrator::ChannelHandle {
-                            cancel: cancel.clone(),
-
-                            topic_manager: topic_manager.clone(),
-
-                            channel_info: channel_info.clone(),
-
-                            workspace_dir: workspace_dir.clone(),
-                        },
-                    )
-                    .await;
-
-                tasks.push(task);
-            }
-            "github" => {
-                let github_config = channel_config
-                    .github
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("channel '{channel_name}': missing github config")
-                    })?
-                    .clone();
-
-                let config_for_adapter = config_for_spawn.clone();
-                let router_for_callback = router.clone();
-                let workdir_owned = workdir.to_path_buf();
-
-                let topic_manager_for_task = topic_manager.clone();
-
-                let task = tokio::spawn(async move {
-                use jyc_channels::github::inbound::GithubInboundAdapter;
-
-                let adapter = GithubInboundAdapter::new(&github_config, channel_name_owned.clone(), &workdir_owned, Some(config_for_adapter));
-
-                let topic_manager_clone = topic_manager_for_task.clone();
-                let options = jyc_types::InboundAdapterOptions {
-                    on_message: Box::new(move |message| {
-                        let router = router_for_callback.clone();
-
-                        tokio::spawn(async move {
-                            router.route(&GithubMatcher, message).await;
-                        });
-
-                        Ok(())
-                    }),
-                    on_topic_close: Some(Box::new(move |topic_name: String| {
-                        let tm = topic_manager_clone.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = tm.close_topic(&topic_name).await {
-                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
-                            }
-                        });
-                        Ok(())
-                    })),
-                    on_error: Box::new(|error| {
-                        tracing::error!(error = %error, "GitHub inbound error");
-                    }),
-                    attachment_config: inbound_attachment_config.clone(),
-                };
-
-                if let Err(e) = adapter.start(options, cancel_child).await {
-                    tracing::error!(
-                        error = %e,
-                        "GitHub inbound adapter error"
-                    );
-                }
-
-                // Shutdown topic manager for this channel
                 tm.shutdown().await;
             }.instrument(channel_span));
 
@@ -1888,7 +2155,8 @@ impl InboundSpawner<'_> {
                         });
                         Ok(())
                     })),
-                    on_error: Box::new(|error| {
+                    on_close_event: None,
+                on_error: Box::new(|error| {
                         tracing::error!(error = %error, "WeChat inbound error");
                     }),
                     attachment_config: inbound_attachment_config.clone(),
@@ -1968,7 +2236,8 @@ impl InboundSpawner<'_> {
                         });
                         Ok(())
                     })),
-                    on_error: Box::new(|error| {
+                    on_close_event: None,
+                on_error: Box::new(|error| {
                         tracing::error!(error = %error, "WeCom inbound error");
                     }),
                     attachment_config: inbound_attachment_config.clone(),
@@ -2062,7 +2331,8 @@ impl InboundSpawner<'_> {
                         });
                         Ok(())
                     })),
-                    on_error: Box::new(|error| {
+                    on_close_event: None,
+                on_error: Box::new(|error| {
                         tracing::error!(error = %error, "WeCom KF inbound error");
                     }),
                     attachment_config: inbound_attachment_config.clone(),
@@ -2129,6 +2399,7 @@ impl InboundSpawner<'_> {
                         });
                         Ok(())
                     })),
+                    on_close_event: None,
                     on_error: Box::new(|error| {
                         tracing::error!(error = %error, "WebSocket inbound error");
                     }),

@@ -47,7 +47,7 @@ Read a file or directory listing.
 - `offset` (integer, optional): Line number to start from, 1-indexed (default: 1)
 - `limit` (integer, optional): Maximum lines to read (default: 2000)
 
-**Security:** Path must be within `working_dir`, the system temp dir, `additional_read_roots`, or `additional_write_roots`. Symlink exemption supported for `repo_group` setups.
+**Security:** Path must be within `working_dir`, the system temp dir, `additional_read_roots`, or `additional_write_roots`. Symlink exemption supported for symlinked repos (e.g. `topic/repo -> /other/path`).
 
 **Example:**
 ```json
@@ -387,7 +387,7 @@ disabled_mcp_servers = ["*"]  # Disables all external MCP servers
 | Tool | Boundary Check | Notes |
 |------|---------------|-------|
 | `bash` | `check_write_boundary()` — scans unquoted absolute-path tokens | Not a sandbox; OS-level isolation recommended for untrusted input |
-| `read` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | Symlink exemption for repo_group |
+| `read` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | Symlink exemption for symlinked repos |
 | `write` | `check_write_boundary()` working_dir + temp dir + write_roots | Creates parent dirs automatically |
 | `edit` | `check_write_boundary()` working_dir + temp dir + write_roots | — |
 | `glob` | `check_path_boundary()` only when explicit `path` provided | Default working_dir is trusted |

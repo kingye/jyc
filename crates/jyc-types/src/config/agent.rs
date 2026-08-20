@@ -6,7 +6,7 @@
 //! implicit pattern whose name equals the agent name. The agent's
 //! fields mirror `ChannelPattern`'s behavior surface, minus `rules`
 //! and the pattern-identification fields (`name`, `channel`,
-//! `enabled`, `pipe`, `topic_prefix`, `repo_group`).
+//! `enabled`, `pipe`, `topic_prefix`).
 //!
 //! Backward compat: `[channels.<name>] type = "websocket"` with
 //! patterns is still accepted (deprecated, see
@@ -166,7 +166,6 @@ impl AgentConfig {
         );
         pattern.topic_name = None;
         pattern.topic_prefix = None;
-        pattern.repo_group = None;
         pattern.attachments = self.attachments.clone();
         pattern.template = self.template.clone();
         pattern.role = self.role.clone();

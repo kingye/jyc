@@ -230,8 +230,106 @@ no longer applies to email channels. Per-pattern
 (the hub channel's patterns are matched there) — the global
 `[attachments.inbound]` policy still applies, same as feishu/wecom_bot.
 
+## GitHub
+
+GitHub (REST polling in, issue/PR comments out) follows the same pipe-only
+migration, plus a deeper refactor: no initialization templates and no shared
+repo directories.
+
+Retained:
+
+- `jyc-channels/src/github/client.rs` — REST client (polling + comment posting).
+- `jyc-channels/src/github/inbound/` — the poller (`poll.rs`), dedup/cursor
+  state (`state.rs`), and `GithubMatcher` (reviewer-priority pattern ordering,
+  topic-name derivation).
+- The new `spawn_github_adapter` in `crates/jyc-cli/src/cli/serve/channels.rs`.
+
+Removed: `GithubOutboundAdapter` (whole file), the `"github"` arms in
+`build_outbound_adapter` / `InboundSpawner::spawn`, and — repo-wide — the
+`repo_group` shared-repo feature.
+
+**Dedup/cursor state.** Like email, the adapter keeps its own protocol state,
+at `<workdir>/channels/<channel_name>/.github/` (processed comments, seen
+issues, CI status, close-event notifications). A one-time rename migrates the
+old `<workdir>/<channel_name>/.github/` location on first start; if the rename
+fails, dedup starts fresh (the poller then only reports items newer than
+startup, so no comment flood).
+
+**Placeholders.** GitHub messages populate `repo`, `github_number`,
+`github_type` (`pull_request` / `issue`), `github_action`, `github_labels`,
+`github_assignees`, plus `pr_number` **or** `issue_number` — type-gated, so a
+PR event carries only `pr_number` and an issue event only `issue_number`. That
+gating is deliberate: a planner pattern configured with
+`topic = "plan-${msg.issue_number}"` that accidentally matches a PR event fails
+placeholder resolution and drops the message with a warning, instead of
+silently landing PR traffic in an issue topic.
+
+Typical routing — three roles, one agent, one topic per item per role:
+
+```toml
+pipe = { agent = "jyc_git", topic = "review-${msg.pr_number}" }   # review pattern
+pipe = { agent = "jyc_git", topic = "dev-${msg.pr_number}" }      # develop pattern
+pipe = { agent = "jyc_git", topic = "plan-${msg.issue_number}" }  # planner pattern
+```
+
+Collapsing roles into one shared topic is purely a config choice: give the
+patterns the same `topic` template. Splitting them is the same choice inverted
+— the framework does not care.
+
+**Cross-repo collision is the operator's responsibility.** A template like
+`review-${msg.pr_number}` has no repo qualifier, so two GitHub channels piping
+into the same agent both map their PR #5 onto `review-5` — and both forwarders
+then comment on their own repo for every reply in that topic. Qualify the topic
+(`review-${msg.repo}-${msg.pr_number}`) or give each repo its own agent.
+
+**Reply relaying.** The forwarder keeps a `topic → (number, role)` map recorded
+on inbound and posts replies as comments via `create_comment`. The `[Role]`
+prefix is preserved — it is also how the poller recognizes its own comments and
+avoids self-loops (`extract_comment_role`). There is **no** model/mode/token
+footer, and GitHub comments carry no attachments (reply attachments are
+ignored, same as before the migration). Same in-memory limitation as the other
+adapters: the map is rebuilt from inbound traffic after a restart.
+
+**Close events.** A closed issue/PR must close the topics in the *hub*
+workspace, which a pipe-only adapter cannot find by scanning its own
+(nonexistent) workspace. `InboundAdapterOptions` therefore carries an
+`on_close_event: Option<Fn(u64)>` callback: the poller reports the item number,
+and the adapter closes every topic it routed for that number (so `review-5` and
+`dev-5` close together, matching the old `*-{N}` scan semantics). The hub's
+`TopicManager` is reached through the shared hub registry, which carries
+`(MessageRouter, TopicManager)` per hub channel. Gitee/wechat/wecom keep using
+the name-based `on_topic_close` and are unaffected.
+
+**No templates — initialization is a skill.** GitHub patterns no longer inject
+a `template`; the agent initializes its own topic directory by following an init
+skill. Skills are discovered from the layered skill roots, so
+`{workdir}/skills/<name>/SKILL.md` is visible to every topic — that is where the
+init skill belongs. Note that per-pattern `skills`, `mode`, and `attachments`
+settings on GitHub patterns stop applying (the hub channel's patterns are matched
+at route time), same as the other pipe-only adapters. The `template` machinery
+itself stays for Gitee.
+
+Two ready-made skills ship in `skills/`; copy them into `{workdir}/skills/`:
+
+| skill | job |
+|---|---|
+| `github-init` | Clones the repository **into the topic directory itself** (not a `repo/` subdirectory), and excludes framework files via `.git/info/exclude`. |
+| `github-planner` | The planner role, ported from `templates/github-planner/AGENTS.md`; delegates setup to `github-init`. |
+
+The trigger message already carries `repository: <owner>/<repo>` and the item
+number (see `build_trigger_message`), so the init skill needs no extra plumbing —
+it reads the repository straight out of the message body. Because it is a skill
+rather than a template, editing it does not require a jyc restart.
+
+Cloning into the topic root rather than a `repo/` subdirectory means the
+repository's own `AGENTS.md` lands at the topic root, where the prompt builder
+already loads it as project instructions on every turn — a stronger guarantee
+than a skill that must first be triggered. Repository-shipped skills under
+`.claude/skills/`, `.opencode/skills/`, and `.jyc/skills/` are likewise picked up
+by the existing topic-root scan.
+
 ## Migrating other channels
 
-To be documented per channel when migration starts (github, wecom,
-wechat). The feishu/wecom_bot/email cleanup serves as the checklist
-template: strip everything except protocol code + pipe wiring.
+To be documented per channel when migration starts (wecom, wechat, gitee).
+The feishu/wecom_bot/email/github cleanup serves as the checklist template:
+strip everything except protocol code + pipe wiring.

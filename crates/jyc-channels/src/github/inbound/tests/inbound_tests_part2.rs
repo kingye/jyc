@@ -931,57 +931,6 @@ fn test_ci_polling_no_active_topics_skips_all() {
     );
 }
 
-// --- scan_topics_for_number tests ---
-
-#[test]
-fn test_scan_topics_for_number_matches_all_prefixes() {
-    // Closing an issue/PR should enumerate every workspace dir whose name
-    // ends in `-{N}`, regardless of which prefix patterns are configured.
-    // This is the channel-agnostic close-topic enumeration used by the
-    // GitHub close path.
-    let tmpdir = tempfile::tempdir().unwrap();
-    let config = make_ci_test_config();
-    let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
-
-    let workspace = tmpdir.path().join("test_ch").join("workspace");
-    std::fs::create_dir_all(workspace.join("issue-42")).unwrap();
-    std::fs::create_dir_all(workspace.join("plan-42")).unwrap();
-    std::fs::create_dir_all(workspace.join("issue-99")).unwrap();
-    // Tricky: ends in -42 but with empty prefix should be ignored if it
-    // happens to materialize as a literal "-42" dir; here we add a normal
-    // unrelated one to confirm the strict suffix match.
-    std::fs::create_dir_all(workspace.join("unrelated-43")).unwrap();
-
-    let mut result = adapter.scan_topics_for_number(42);
-    result.sort();
-    assert_eq!(result, vec!["issue-42".to_string(), "plan-42".to_string()]);
-}
-
-#[test]
-fn test_scan_topics_for_number_empty_workspace() {
-    let tmpdir = tempfile::tempdir().unwrap();
-    let config = make_ci_test_config();
-    let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
-    let result = adapter.scan_topics_for_number(42);
-    assert!(result.is_empty());
-}
-
-#[test]
-fn test_scan_topics_for_number_no_substring_false_match() {
-    // A directory ending in -420 must NOT match number 42.
-    let tmpdir = tempfile::tempdir().unwrap();
-    let config = make_ci_test_config();
-    let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
-
-    let workspace = tmpdir.path().join("test_ch").join("workspace");
-    std::fs::create_dir_all(workspace.join("issue-420")).unwrap();
-    std::fs::create_dir_all(workspace.join("issue-42")).unwrap();
-
-    let mut result = adapter.scan_topics_for_number(42);
-    result.sort();
-    assert_eq!(result, vec!["issue-42".to_string()]);
-}
-
 // --- Dedup tests for triggered_in_cycle ---
 
 #[test]

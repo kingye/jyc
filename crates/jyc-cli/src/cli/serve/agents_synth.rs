@@ -19,14 +19,13 @@ use jyc_types::{AgentConfig, AppConfig, ChannelConfig, ChannelPattern};
 /// Build one `ChannelPattern` from one `[agents.<name>]` entry.
 ///
 /// Thin wrapper over `AgentConfig::fill_into_pattern` — kept as a
-/// function so the CLI callers don't have to know about the resolved
-/// default `topic_path`. Adding a new behavior field to
-/// `AgentConfig` requires updating `fill_into_pattern` only; both
-/// this function and `validate_agent` route through it.
+/// function so callers have one obvious entry point. Adding a new
+/// behavior field to `AgentConfig` requires updating
+/// `fill_into_pattern` only; both this function and `validate_agent`
+/// route through it.
 pub fn synthesize_agent_pattern(agent_name: &str, agent: &AgentConfig) -> ChannelPattern {
     let mut pattern = ChannelPattern::default();
-    let default_topic_path = jyc_core::topic_path::resolve_agent_workspace(agent_name);
-    agent.fill_into_pattern(&mut pattern, agent_name, default_topic_path);
+    agent.fill_into_pattern(&mut pattern, agent_name);
     pattern
 }
 
@@ -103,19 +102,17 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_agent_pattern_default_topic_path() {
+    fn synthesize_agent_pattern_leaves_topic_path_unset() {
         let mut p = ChannelPattern::default();
-        agent("jyc", "jyc").fill_into_pattern(
-            &mut p,
-            "jyc",
-            std::path::PathBuf::from("/data/jyc/agents/jyc"),
-        );
+        agent("jyc", "jyc").fill_into_pattern(&mut p, "jyc");
         assert_eq!(p.name, "jyc");
         assert_eq!(p.channel, "agents");
         assert!(p.enabled);
         assert_eq!(p.template.as_deref(), Some("jyc"));
-        // No explicit topic_path on the agent → default is used.
-        assert_eq!(p.topic_path.as_deref(), Some("/data/jyc/agents/jyc"));
+        // No explicit topic_path → stays None so the router falls back to
+        // <agents-workspace>/<topic_name>, giving each topic of the agent
+        // its own directory instead of collapsing them into one.
+        assert!(p.topic_path.is_none());
         // Pattern identity fields that agents don't carry are None.
         assert!(p.topic_name.is_none());
         assert!(p.topic_prefix.is_none());
@@ -129,11 +126,7 @@ mod tests {
             ..Default::default()
         };
         let mut p = ChannelPattern::default();
-        a.fill_into_pattern(
-            &mut p,
-            "jyc",
-            std::path::PathBuf::from("/default/should/not/be/used"),
-        );
+        a.fill_into_pattern(&mut p, "jyc");
         assert_eq!(p.topic_path.as_deref(), Some("~/projects/jyc"));
     }
 

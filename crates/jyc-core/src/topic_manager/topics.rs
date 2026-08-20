@@ -107,10 +107,16 @@ impl TopicManager {
             return;
         };
         for pattern in patterns {
-            let Some(tp) = &pattern.topic_path else {
-                continue;
+            // A pinned `topic_path` holds exactly one topic (the self-named
+            // one); an agent's default root holds one subdirectory per
+            // topic. Scan whichever this pattern has — for the agents
+            // channel that is always the default root, since a pinned path
+            // never contains sibling topics.
+            let resolved = match &pattern.topic_path {
+                Some(tp) => crate::topic_path::resolve_topic_path(tp, self.data_root()),
+                None if self.channel_name == "agents" => self.workspace_dir.join(&pattern.name),
+                None => continue,
             };
-            let resolved = crate::topic_path::resolve_topic_path(tp, self.data_root());
             let jyc_dir = resolved.join(".jyc");
             // One-time migration for the topic → topic rename.
             crate::topic_path::migrate_topic_name_file(&jyc_dir);

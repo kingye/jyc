@@ -1061,6 +1061,72 @@ mode = "agent"
 
     tm.shutdown().await;
 }
+
+/// Same multi-topic-per-agent restore, but for an agent with **no**
+/// configured `topic_path`: its root is `<agents-workspace>/<agent>/`,
+/// derived rather than configured. Without this the nested topics are
+/// invisible after a restart.
+#[tokio::test]
+async fn test_restore_agent_default_root_without_topic_path() {
+    let tmp = tempdir().unwrap();
+    // The agents channel's workspace is `<data_home>/agents/`.
+    let workspace = tmp.path().join("agents");
+    let agent_root = workspace.join("planner");
+    let topic = agent_root.join("plan-197");
+    tokio::fs::create_dir_all(topic.join(".jyc")).await.unwrap();
+    tokio::fs::write(topic.join(".jyc").join("topic-name"), "plan-197")
+        .await
+        .unwrap();
+
+    let config_str = r#"
+[general]
+[channels.agents]
+type = "websocket"
+[[channels.agents.patterns]]
+name = "planner"
+[channels.agents.patterns.rules]
+[ai]
+enabled = true
+mode = "agent"
+"#;
+
+    let config = Arc::new(ArcSwap::from_pointee(
+        jyc_types::load_config_from_str(config_str).unwrap(),
+    ));
+    let storage = Arc::new(MessageStorage::new(&workspace));
+    let cancel = CancellationToken::new();
+    let metrics_cancel = CancellationToken::new();
+    let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
+
+    let tm = Arc::new(TopicManager::new_with_options(
+        1,
+        10,
+        storage,
+        Arc::new(NoopOutbound),
+        Arc::new(StaticAgentService::new("ok")),
+        cancel,
+        true,
+        workspace.join("templates"),
+        config,
+        "agents".to_string(),
+        "websocket".to_string(),
+        tmp.path().to_path_buf(),
+        workspace.clone(),
+        metrics,
+        None,
+    ));
+
+    tm.restore_custom_topic_paths().await;
+
+    assert_eq!(
+        tm.custom_topic_paths().await.get("plan-197"),
+        Some(&topic),
+        "agent without topic_path: nested topic must survive restart"
+    );
+
+    tm.shutdown().await;
+}
+
 /// Build a TM whose config prices `cnprov/m1` in CNY, so
 /// `list_topics` has a real pricing entry to resolve a currency from.
 fn make_priced_tm(workspace: &std::path::Path) -> Arc<TopicManager> {

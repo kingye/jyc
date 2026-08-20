@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -6,6 +6,41 @@ use arc_swap::ArcSwap;
 use crate::message_storage::MessageStorage;
 use crate::topic_manager::TopicManager;
 use jyc_types::{ChannelMatcher, ChannelPattern, InboundMessage};
+
+/// Resolve which directory a topic's files (chat history, session state,
+/// repo checkout) live in, given the pattern it matched.
+///
+/// Two rules, in order:
+///
+/// 1. A configured `topic_path` is the pattern's *own* home directory, so
+///    it pins only the self-named topic (agent `jyc` ↔ topic `jyc`).
+///    Sibling topics stay out of it — a pinned path is usually a code
+///    checkout, not a container for unrelated conversations.
+/// 2. On the synthesized `agents` channel every other topic nests under
+///    the agent's root: `<agents-workspace>/<agent>/<topic>`. Each topic
+///    then owns its directory instead of sharing the agent's, which is
+///    what keeps two pipe-routed topics (`plan-197`, `plan-198`) from
+///    writing into one chat history.
+///
+/// `None` means "no override" — the caller falls back to
+/// `<workspace>/<topic>`.
+fn topic_dir_for(
+    matched: Option<&ChannelPattern>,
+    topic_name: &str,
+    channel_name: &str,
+    data_root: &Path,
+    workspace_dir: &Path,
+) -> Option<PathBuf> {
+    let pattern = matched?;
+    if let Some(tp) = pattern
+        .topic_path
+        .as_ref()
+        .filter(|_| pattern.name == topic_name)
+    {
+        return Some(crate::topic_path::resolve_topic_path(tp, data_root));
+    }
+    (channel_name == "agents").then(|| workspace_dir.join(&pattern.name).join(topic_name))
+}
 
 /// Routes inbound messages to the appropriate topic queue.
 ///
@@ -143,8 +178,7 @@ impl MessageRouter {
         }
 
         // 4. Resolve topic_path override: prefer explicit metadata from
-        // WebSocket create_topic, then fall back to the matched pattern's
-        // configured topic_path.
+        // WebSocket create_topic, then the pattern/agent layout rules.
         let topic_path_override: Option<PathBuf> = message
             .metadata
             .get("topic_path_override")
@@ -153,11 +187,13 @@ impl MessageRouter {
             // correct here (resolves relative paths against the CLI cwd).
             .map(PathBuf::from)
             .or_else(|| {
-                matched_pattern
-                    .and_then(|p| p.topic_path.as_ref())
-                    .map(|tp| {
-                        crate::topic_path::resolve_topic_path(tp, self.topic_manager.data_root())
-                    })
+                topic_dir_for(
+                    matched_pattern,
+                    &topic_name,
+                    &self.channel_name,
+                    self.topic_manager.data_root(),
+                    self.topic_manager.workspace_dir(),
+                )
             });
         // 5. Enqueue (channel-agnostic)
         let pm = pattern_match.expect("pattern_match should be Some");
@@ -282,6 +318,69 @@ mod tests {
             topic_name: topic_name.map(|s| s.to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn test_topic_dir_layout_rules() {
+        use super::topic_dir_for;
+        use std::path::{Path, PathBuf};
+
+        let data_root = Path::new("/data");
+        let agents_ws = Path::new("/data/agents");
+
+        let planner = test_pattern("planner", None);
+        let mut pinned = test_pattern("jyc", None);
+        pinned.topic_path = Some("/projects/jyc".to_string());
+
+        // Pipe-routed topics nest under the agent root, one dir each.
+        assert_eq!(
+            topic_dir_for(Some(&planner), "plan-197", "agents", data_root, agents_ws),
+            Some(PathBuf::from("/data/agents/planner/plan-197"))
+        );
+        assert_eq!(
+            topic_dir_for(Some(&planner), "plan-198", "agents", data_root, agents_ws),
+            Some(PathBuf::from("/data/agents/planner/plan-198")),
+            "two topics of one agent must not share a directory"
+        );
+
+        // No pipe topic → topic name defaults to the agent name, which
+        // still gets its own directory under the agent root.
+        assert_eq!(
+            topic_dir_for(Some(&planner), "planner", "agents", data_root, agents_ws),
+            Some(PathBuf::from("/data/agents/planner/planner"))
+        );
+
+        // A pinned topic_path holds the self-named topic only...
+        assert_eq!(
+            topic_dir_for(Some(&pinned), "jyc", "agents", data_root, agents_ws),
+            Some(PathBuf::from("/projects/jyc"))
+        );
+        // ...and never swallows the agent's other topics.
+        assert_eq!(
+            topic_dir_for(
+                Some(&pinned),
+                "mail-invoice",
+                "agents",
+                data_root,
+                agents_ws
+            ),
+            Some(PathBuf::from("/data/agents/jyc/mail-invoice"))
+        );
+
+        // Regular channels: only the self-named pin, otherwise no override
+        // (caller falls back to `<workspace>/<topic>`).
+        assert_eq!(
+            topic_dir_for(Some(&pinned), "jyc", "email", data_root, agents_ws),
+            Some(PathBuf::from("/projects/jyc"))
+        );
+        assert_eq!(
+            topic_dir_for(Some(&planner), "anything", "email", data_root, agents_ws),
+            None
+        );
+        assert_eq!(
+            topic_dir_for(None, "x", "agents", data_root, agents_ws),
+            None
+        );
     }
 
     #[test]

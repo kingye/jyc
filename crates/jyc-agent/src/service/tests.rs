@@ -1284,11 +1284,7 @@ async fn pattern_mcps_remote_is_registered_at_runtime() {
             name: "newbee_order_bot".to_string(),
             ..ChannelPattern::default()
         };
-        agent_config.fill_into_pattern(
-            &mut p,
-            "newbee_order_bot",
-            PathBuf::from("/tmp/test-agents/newbee_order_bot"),
-        );
+        agent_config.fill_into_pattern(&mut p, "newbee_order_bot");
         p
     };
 
@@ -1343,11 +1339,7 @@ fn debug_print_pattern_mcps_resolution() {
                 name: "newbee_order_bot".to_string(),
                 ..ChannelPattern::default()
             };
-            agent_config.fill_into_pattern(
-                &mut p,
-                "newbee_order_bot",
-                PathBuf::from("/tmp/test-agents/newbee_order_bot"),
-            );
+            agent_config.fill_into_pattern(&mut p, "newbee_order_bot");
             p
         };
         let svc = service_with_patterns(Some("provider/test"), vec![pattern]);

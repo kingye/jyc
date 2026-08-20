@@ -104,8 +104,7 @@ fn synthesize_agent_pattern_carries_mcps() {
     // Drive the same `fill_into_pattern` the runtime uses (the
     // `synthesize_agent_pattern` helper is a thin wrapper around it).
     let mut pattern = jyc_types::ChannelPattern::default();
-    let default_topic_path = std::path::PathBuf::from(format!("/data/agents/{AGENT_NAME}"));
-    agent.fill_into_pattern(&mut pattern, AGENT_NAME, default_topic_path);
+    agent.fill_into_pattern(&mut pattern, AGENT_NAME);
 
     let mcps = pattern.mcps.as_ref().unwrap_or_else(|| {
         panic!(

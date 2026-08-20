@@ -199,6 +199,12 @@ impl TopicManager {
         &self.workdir
     }
 
+    /// Return this channel's workspace directory (the parent of its
+    /// default per-topic directories).
+    pub fn workspace_dir(&self) -> &Path {
+        &self.workspace_dir
+    }
+
     /// Return the max concurrent topics (semaphore capacity).
     pub fn max_concurrent(&self) -> usize {
         self.semaphore.available_permits() + self.active_worker_count()

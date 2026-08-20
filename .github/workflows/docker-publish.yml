@@ -7,6 +7,10 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
+  # Manual retrigger for when GitHub drops a push event (observed 2026-08-20).
+  # Note: an empty-commit retrigger does NOT work here — with an empty diff
+  # every changed path falls under paths-ignore and the run is skipped.
+  workflow_dispatch:
 
 concurrency:
   group: docker-publish-${{ github.ref }}

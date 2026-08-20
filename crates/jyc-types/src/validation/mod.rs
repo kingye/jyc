@@ -526,10 +526,7 @@ fn validate_agent(
     // truth so any new behavior field added to AgentConfig is
     // automatically validated here.
     let mut pattern = ChannelPattern::default();
-    // For validation, the default topic_path doesn't need to point
-    // at a real directory — the per-field checks below ignore it.
-    // Passing an empty PathBuf keeps the synthetic pattern minimal.
-    agent.fill_into_pattern(&mut pattern, agent_name, std::path::PathBuf::new());
+    agent.fill_into_pattern(&mut pattern, agent_name);
     validate_pattern(prefix, &pattern, errors);
 }
 

@@ -13,7 +13,6 @@
 //! `serve::synthesize_agents_channel`).
 
 use serde::Deserialize;
-use std::path::PathBuf;
 
 use super::{InboundAttachmentConfig, McpServerConfig};
 use crate::channel::{
@@ -146,24 +145,23 @@ impl AgentConfig {
     /// (`validate_agent`) use it, so they cannot drift.
     ///
     /// The caller supplies `agent_name` (the TOML table key, not a
-    /// field on AgentConfig itself) and the resolved default
-    /// `topic_path` when the user did not set one.
-    pub fn fill_into_pattern(
-        &self,
-        pattern: &mut ChannelPattern,
-        agent_name: &str,
-        default_topic_path: PathBuf,
-    ) {
+    /// field on AgentConfig itself).
+    ///
+    /// `topic_path` is left `None` unless the agent sets one
+    /// explicitly. A pinned `topic_path` is a *fixed* directory, not a
+    /// subtree root, so defaulting it would collapse every topic of the
+    /// agent into one directory — sharing one chat history and one
+    /// checkout. Left `None`, the router falls back to
+    /// `<agents-workspace>/<topic_name>`, which yields the same path as
+    /// the old default for the 1:1 case (topic name == agent name) and
+    /// one directory per topic for pipe-routed dynamic topics.
+    pub fn fill_into_pattern(&self, pattern: &mut ChannelPattern, agent_name: &str) {
         pattern.name = agent_name.to_string();
         pattern.channel = "agents".to_string();
         pattern.enabled = true;
         pattern.rules = PatternRules::default();
         pattern.pipe = None;
-        pattern.topic_path = Some(
-            self.topic_path
-                .clone()
-                .unwrap_or_else(|| default_topic_path.to_string_lossy().into_owned()),
-        );
+        pattern.topic_path = self.topic_path.clone();
         pattern.topic_name = None;
         pattern.topic_prefix = None;
         pattern.attachments = self.attachments.clone();

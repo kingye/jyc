@@ -67,8 +67,10 @@ All notable changes to JYC will be documented in this file.
   attachments, model overrides, mcps, tools, disabled_*,
   live_injection, inject_inbound_images, mode, reset_compression,
   auto_reset_threshold, role). WebSocket transport is unchanged
-  (`/ws/agents/<topic>`). Default workspace root:
-  `<data_home>/agents/<agent_name>/`. Each `[agents.<name>]` is one
+  (`/ws/agents/<topic>`). Each topic gets its own directory under
+  `<data_home>/agents/<topic_name>/` (the agent's own name for the 1:1
+  topic); an explicit `topic_path` instead pins one fixed directory for
+  all of the agent's topics. Each `[agents.<name>]` is one
   pattern inside the synthesized channel "agents" (channel_type =
   "websocket"); the agent name is the routing identity, picked by
   `WebsocketMatcher::match_message` against `message.topic`.
@@ -107,6 +109,25 @@ All notable changes to JYC will be documented in this file.
   stay valid.
 
 ### Fixed
+
+- **Pipe-routed agent topics no longer collapse into one shared
+  directory.** Every synthesized `[agents.<name>]` pattern pinned
+  `topic_path` to `<data_home>/agents/<agent_name>/`, and a pinned
+  `topic_path` is a *fixed* directory rather than a subtree root — so all
+  topics of an agent resolved to the same path and shared one chat
+  history, one session state, and one repository checkout. With
+  `pipe = { agent = "jyc_git", topic = "plan-${msg.issue_number}" }`,
+  issue #197 and #198 landed in the same directory and each saw the
+  other's conversation. Agent patterns now leave `topic_path` unset
+  unless the agent sets one explicitly, so the router's normal fallback
+  gives each topic its own `<data_home>/agents/<topic_name>/`. The 1:1
+  case (topic name == agent name) resolves to the exact same path as
+  before, so existing single-topic agents need no migration; agents with
+  an explicit `topic_path` keep pinning it (documented as the
+  single-topic form). This also fixes the same collapse for email/feishu/
+  wecom_bot topics piped with `pipe.agent`. Pipe-routed topics created
+  before this fix keep their old shared directory as the agent's 1:1
+  topic and start fresh per-topic directories.
 
 - **A `pipe` naming no destination is now rejected at load time.**
   `pipe = { topic = "x" }` without `agent`/`channel` was accepted by

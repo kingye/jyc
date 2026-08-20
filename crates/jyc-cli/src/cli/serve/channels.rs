@@ -1080,6 +1080,7 @@ pub(crate) fn spawn_feishu_adapter(
                     Ok(())
                 }),
                 on_topic_close: None,
+                on_close_event: None,
                 on_error: Box::new(|error| {
                     tracing::error!(error = %error, "Feishu inbound error");
                 }),
@@ -1557,6 +1558,7 @@ pub(crate) fn spawn_wecom_bot_adapter(
                     Ok(())
                 }),
                 on_topic_close: None,
+                on_close_event: None,
                 on_error: Box::new(|error| {
                     tracing::error!(error = %error, "WeCom Bot inbound error");
                 }),
@@ -1739,7 +1741,8 @@ impl InboundSpawner<'_> {
                         });
                         Ok(())
                     })),
-                    on_error: Box::new(|error| {
+                    on_close_event: None,
+                on_error: Box::new(|error| {
                         tracing::error!(error = %error, "Gitee inbound error");
                     }),
                     attachment_config: inbound_attachment_config.clone(),
@@ -1809,7 +1812,8 @@ impl InboundSpawner<'_> {
                         });
                         Ok(())
                     })),
-                    on_error: Box::new(|error| {
+                    on_close_event: None,
+                on_error: Box::new(|error| {
                         tracing::error!(error = %error, "GitHub inbound error");
                     }),
                     attachment_config: inbound_attachment_config.clone(),
@@ -1888,7 +1892,8 @@ impl InboundSpawner<'_> {
                         });
                         Ok(())
                     })),
-                    on_error: Box::new(|error| {
+                    on_close_event: None,
+                on_error: Box::new(|error| {
                         tracing::error!(error = %error, "WeChat inbound error");
                     }),
                     attachment_config: inbound_attachment_config.clone(),
@@ -1968,7 +1973,8 @@ impl InboundSpawner<'_> {
                         });
                         Ok(())
                     })),
-                    on_error: Box::new(|error| {
+                    on_close_event: None,
+                on_error: Box::new(|error| {
                         tracing::error!(error = %error, "WeCom inbound error");
                     }),
                     attachment_config: inbound_attachment_config.clone(),
@@ -2062,7 +2068,8 @@ impl InboundSpawner<'_> {
                         });
                         Ok(())
                     })),
-                    on_error: Box::new(|error| {
+                    on_close_event: None,
+                on_error: Box::new(|error| {
                         tracing::error!(error = %error, "WeCom KF inbound error");
                     }),
                     attachment_config: inbound_attachment_config.clone(),
@@ -2129,6 +2136,7 @@ impl InboundSpawner<'_> {
                         });
                         Ok(())
                     })),
+                    on_close_event: None,
                     on_error: Box::new(|error| {
                         tracing::error!(error = %error, "WebSocket inbound error");
                     }),

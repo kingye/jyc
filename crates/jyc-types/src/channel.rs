@@ -113,6 +113,11 @@ pub struct InboundAdapterOptions {
     pub on_message: Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>,
     /// Callback for topic close events (e.g., chat disbanded)
     pub on_topic_close: Option<Box<dyn Fn(String) -> Result<()> + Send + Sync>>,
+    /// Callback for close events identified by an upstream item number
+    /// (GitHub issue/PR). Pipe-only adapters own no workspace, so they cannot
+    /// resolve topic names by scanning directories — they map the number to
+    /// the topics they routed and close those in the hub.
+    pub on_close_event: Option<Box<dyn Fn(u64) + Send + Sync>>,
     /// Callback for errors
     #[allow(dead_code)]
     pub on_error: Box<dyn Fn(anyhow::Error) + Send + Sync>,

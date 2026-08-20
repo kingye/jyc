@@ -862,6 +862,9 @@ impl GithubInboundAdapter {
                                 let _ = (on_close)(topic_name);
                             }
                         }
+                        if let Some(ref on_close) = options.on_close_event {
+                            (on_close)(cached_number);
+                        }
 
                         processed_events.insert(event_uid);
                     }
@@ -918,6 +921,9 @@ impl GithubInboundAdapter {
                 for topic_name in topic_names {
                     let _ = (on_close)(topic_name);
                 }
+            }
+            if let Some(ref on_close) = options.on_close_event {
+                (on_close)(item.number);
             }
 
             // Remove from issue cache

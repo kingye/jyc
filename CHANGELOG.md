@@ -6,6 +6,34 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **GitHub is now a pipe-only channel adapter.** The poller matches its
+  own patterns, re-targets each event into a hub channel (or an agent
+  topic), and a per-target reply forwarder posts agent replies back as
+  issue/PR comments. The channel no longer owns a TopicManager, agent
+  service, outbound adapter, or orchestrator registration — all topics
+  live in the pipe target. Dedup/cursor state moves to
+  `<workdir>/channels/<channel>/.github/` (one-time rename from the old
+  `<workdir>/<channel>/.github/`; if the rename fails, dedup starts fresh
+  and the poller only reports items newer than startup, so there is no
+  comment flood). Comments keep the `[Role]` prefix (self-loop
+  prevention) but no longer carry a model/mode/token footer.
+  **BREAKING: every enabled GitHub pattern must now declare a `pipe`
+  target — matching messages are dropped otherwise (warned at startup).**
+
+- **`${msg.pr_number}` / `${msg.issue_number}` / `${msg.repo}` pipe topic
+  placeholders for GitHub.** The number aliases are type-gated: a PR event
+  carries only `pr_number`, an issue event only `issue_number`, so a
+  pattern configured with `topic = "plan-${msg.issue_number}"` that
+  accidentally matches a PR event fails placeholder resolution and drops
+  the message with a warning instead of silently landing PR traffic in an
+  issue topic. `${msg.repo}` disambiguates topics when several GitHub
+  channels pipe into the same agent
+  (`review-${msg.repo}-${msg.pr_number}`). Typical routing:
+  `pipe = { agent = "jyc_git", topic = "review-${msg.pr_number}" }` for
+  review, `dev-${msg.pr_number}` for develop, `plan-${msg.issue_number}`
+  for planning — collapsing roles into one shared topic or splitting them
+  is purely a config choice.
+
 - **`${msg.topic}` pipe topic placeholder** — resolves to the inbound
   message's own derived conversation name, so a pipe topic can compose a
   prefix with it: `pipe = { agent = "jin", topic = "mail-${msg.topic}" }`.
@@ -293,6 +321,21 @@ All notable changes to JYC will be documented in this file.
   calls went away with the wecom_bot migration), and the unused
   `mail-parser` dependency of `jyc-channels` (email parsing lives in
   `jyc-services`). Behavior unchanged — none of it was reachable. (#599)
+
+- **`repo_group` shared-repo feature.** The `ChannelPattern.repo_group`
+  field, the router's `repo_group_key` metadata injection, the symlink
+  creation and 120s initialization lock in the topic worker, and the
+  orphaned-shared-repo cleanup. Repo setup is now the agent's
+  responsibility (init skill). **BREAKING: configs with `repo_group`
+  fail to load (unknown field).**
+
+- **GitHub direct-mode code.** `GithubOutboundAdapter` (whole file —
+  comments now flow via the hub broadcast + the pipe reply forwarder) and
+  the `"github"` arms in `build_outbound_adapter` /
+  `InboundSpawner::spawn`. Per-pattern `template` injection for GitHub is
+  gone too: topic initialization (cloning into `repo/`) is now an
+  agent-side skill. **BREAKING: `template` on a GitHub pattern is
+  ignored.**
 
 - **Email direct-mode code.** `EmailOutboundAdapter` (whole file — replies
   now flow via the hub broadcast + SMTP pipe forwarder), the dead

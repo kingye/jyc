@@ -1000,7 +1000,7 @@ fn test_build_trigger_message_number_aliases_are_type_gated() {
         "comment-1",
     );
     assert_eq!(issue.metadata.get("issue_number").unwrap(), 42);
-    assert!(issue.metadata.get("pr_number").is_none());
+    assert!(!issue.metadata.contains_key("pr_number"));
 
     let pr = adapter.build_trigger_message(
         "pull_request",
@@ -1014,7 +1014,7 @@ fn test_build_trigger_message_number_aliases_are_type_gated() {
         "pr-43-opened",
     );
     assert_eq!(pr.metadata.get("pr_number").unwrap(), 43);
-    assert!(pr.metadata.get("issue_number").is_none());
+    assert!(!pr.metadata.contains_key("issue_number"));
 
     // `repo` disambiguates topics when several github channels pipe into the
     // same agent (`review-${msg.repo}-${msg.pr_number}`).

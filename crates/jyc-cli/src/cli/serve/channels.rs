@@ -1066,7 +1066,7 @@ pub(crate) fn spawn_github_adapter(
                         // 4. Re-target into the target channel/topic.
                         //    No template metadata injection.
                         let drop_debug = message.id.clone();
-                        let Some(message) = apply_pipe_retarget(message, &pipe) else {
+                        let Some(message) = apply_pipe_retarget(message, pipe) else {
                             tracing::warn!(
                                 topic = ?pipe.topic,
                                 pattern = ?pipe.pattern,
@@ -1165,7 +1165,6 @@ pub(crate) fn spawn_github_adapter(
 }
 
 /// Spawn a pipe-only feishu adapter: the inbound adapter plus one reply
-
 /// forwarder per distinct pipe target channel.
 ///
 /// Unlike full channels, a feishu adapter has no outbound adapter, agent

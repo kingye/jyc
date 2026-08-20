@@ -2,6 +2,7 @@
 //!
 //! Extracted from the monolithic `serve.rs` run() function.
 
+use anyhow::Context;
 use serde_json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -923,6 +924,13 @@ pub(crate) fn spawn_github_adapter(
         }
     }
 
+    // Build the client before spawning: an unusable token (invalid header bytes)
+    // must fail startup, not panic a detached task and leave a silently dead channel.
+    let client = Arc::new(
+        jyc_channels::github::client::GithubClient::new(&github_config)
+            .with_context(|| format!("github client for channel '{channel_name}'"))?,
+    );
+
     let channel_span = tracing::info_span!("in", ch = %channel_name);
     let workdir_for_task = workdir.to_path_buf();
     let channel_name_for_task = channel_name.clone();
@@ -930,11 +938,7 @@ pub(crate) fn spawn_github_adapter(
 
     let task = tokio::spawn(
         async move {
-            // Shared GitHub client + topic -> reply state for pipe relaying.
-            let client = Arc::new(
-                jyc_channels::github::client::GithubClient::new(&github_config)
-                    .expect("github client creation failed"),
-            );
+            // Shared topic -> reply state for pipe relaying.
             let topic_state: std::sync::Arc<
                 std::sync::Mutex<HashMap<String, (u64, String) /* number, role */>>,
             > = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
@@ -1052,12 +1056,20 @@ pub(crate) fn spawn_github_adapter(
                             return;
                         };
 
-                        // 3. Capture number and role for reply routing.
-                        let number = message
+                        // 3. Capture number and role for reply routing. Without a
+                        //    number a reply could not be addressed, so drop loudly
+                        //    rather than commenting on issue #0.
+                        let Some(number) = message
                             .metadata
                             .get("github_number")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
+                        else {
+                            tracing::warn!(
+                                message_id = %message.id,
+                                "github: message has no github_number metadata, dropping"
+                            );
+                            return;
+                        };
                         let role = matched
                             .and_then(|p| p.role.as_deref())
                             .unwrap_or("")

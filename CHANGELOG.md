@@ -34,6 +34,16 @@ All notable changes to JYC will be documented in this file.
   for planning — collapsing roles into one shared topic or splitting them
   is purely a config choice.
 
+- **`github-init` and `github-planner` skills** (`skills/`). `github-init`
+  clones the repository **into the topic directory itself** (not a `repo/`
+  subdirectory) and excludes framework files (`.jyc/`, `attachments/`) via
+  `.git/info/exclude`; the repository's own `AGENTS.md` therefore lands at
+  the topic root, where the prompt builder already loads it as project
+  instructions every turn. `github-planner` ports
+  `templates/github-planner/AGENTS.md` to a skill and delegates setup to
+  `github-init`. Copy them into `{workdir}/skills/` to replace the GitHub
+  pattern templates.
+
 - **`${msg.topic}` pipe topic placeholder** — resolves to the inbound
   message's own derived conversation name, so a pipe topic can compose a
   prefix with it: `pipe = { agent = "jin", topic = "mail-${msg.topic}" }`.
@@ -333,9 +343,12 @@ All notable changes to JYC will be documented in this file.
   comments now flow via the hub broadcast + the pipe reply forwarder) and
   the `"github"` arms in `build_outbound_adapter` /
   `InboundSpawner::spawn`. Per-pattern `template` injection for GitHub is
-  gone too: topic initialization (cloning into `repo/`) is now an
-  agent-side skill. **BREAKING: `template` on a GitHub pattern is
-  ignored.**
+  gone too: topic initialization (cloning the repository into the topic
+  directory) is now an agent-side skill. **BREAKING: `template` on a GitHub
+  pattern is ignored.** The workspace-scanning close path
+  (`scan_topics_for_number` plus the two `on_topic_close` blocks in the
+  GitHub poller) went with it: the pipe adapter owns no workspace to scan
+  and closes topics by number instead.
 
 - **Email direct-mode code.** `EmailOutboundAdapter` (whole file — replies
   now flow via the hub broadcast + SMTP pipe forwarder), the dead

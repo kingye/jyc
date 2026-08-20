@@ -850,18 +850,6 @@ impl GithubInboundAdapter {
                             "GitHub close event detected (via cache comparison) → closing topics"
                         );
 
-                        if let Some(ref on_close) = options.on_topic_close {
-                            // Close every topic directory whose name ends with
-                            // `-{N}`. This catches default prefixes (issue/pr/
-                            // review-pr) as well as any user-defined prefix.
-                            // For PRs we also include the linked issue topic
-                            // (any directory matching `*-{N}` regardless of
-                            // event type).
-                            let topic_names = self.scan_topics_for_number(cached_number);
-                            for topic_name in topic_names {
-                                let _ = (on_close)(topic_name);
-                            }
-                        }
                         if let Some(ref on_close) = options.on_close_event {
                             (on_close)(cached_number);
                         }
@@ -910,19 +898,10 @@ impl GithubInboundAdapter {
                 "GitHub close event detected → closing topics"
             );
 
-            // Close topics (Phase 6 will delete directories).
-            // Enumerate every topic directory whose name ends with `-{N}` so
-            // that user-defined `topic_prefix` values (e.g. `plan`, `qa-pr`)
-            // are also closed alongside the defaults (`issue`, `pr`, `review-pr`).
-            if let Some(ref on_close) = options.on_topic_close {
+            // Close every topic the pipe adapter routed for this number.
+            if let Some(ref on_close) = options.on_close_event {
                 let _ = github_type; // event-type no longer drives the prefix list
                 let _ = is_merged; // merge state currently doesn't change cleanup
-                let topic_names = self.scan_topics_for_number(item.number);
-                for topic_name in topic_names {
-                    let _ = (on_close)(topic_name);
-                }
-            }
-            if let Some(ref on_close) = options.on_close_event {
                 (on_close)(item.number);
             }
 

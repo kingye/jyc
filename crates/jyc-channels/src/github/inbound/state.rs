@@ -260,38 +260,6 @@ impl GithubInboundAdapter {
         pr_numbers
     }
 
-    /// Enumerate all topic directories in the workspace whose name has the
-    /// strict form `{anything}-{N}` for the given GitHub number.
-    ///
-    /// Used on issue/PR close to close every topic that is associated with
-    /// that GitHub identity, regardless of which `topic_prefix` patterns
-    /// happen to be configured. The match is strict: the directory name must
-    /// end with `-{N}` and the trailing `{N}` must parse cleanly to the same
-    /// `u64`. This avoids false matches like `feature-plan-43-extra`.
-    ///
-    /// Returns an empty Vec if the workspace directory does not exist.
-    pub(crate) fn scan_topics_for_number(&self, number: u64) -> Vec<String> {
-        let workspace = jyc_core::topic_path::resolve_workspace(&self.workdir, &self.channel_name);
-
-        let Ok(entries) = std::fs::read_dir(&workspace) else {
-            return Vec::new();
-        };
-
-        let suffix = format!("-{}", number);
-        let mut matches = Vec::new();
-        for entry in entries.flatten() {
-            let file_name = entry.file_name();
-            let name = file_name.to_string_lossy().to_string();
-            // Require strict suffix `-{N}` AND a non-empty prefix before it.
-            if let Some(prefix) = name.strip_suffix(&suffix)
-                && !prefix.is_empty()
-            {
-                matches.push(name);
-            }
-        }
-        matches
-    }
-
     /// Build a minimal InboundMessage from a GitHub event.
     /// Contains only trigger metadata — agent uses `gh` CLI for actual content.
     #[allow(clippy::too_many_arguments)]

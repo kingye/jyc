@@ -19,9 +19,9 @@ It owns no TopicManager, agent service, or outbound adapter — see
   keeping the `[Role]` prefix (self-loop prevention) and no footer.
 - Dedup/cursor state lives at `<workdir>/channels/<channel>/.github/`.
 - There is **no** per-pattern `template`: the agent initializes its own topic
-  directory (e.g. cloning into `repo/`) by following an init skill placed in
-  `{workdir}/skills/`. The former `repo_group` shared-clone feature is gone —
-  each topic clones its own repo.
+  directory (cloning the repository into the topic directory itself) by following
+  the `github-init` skill placed in `{workdir}/skills/`. The former `repo_group`
+  shared-clone feature is gone — each topic clones its own repo.
 
 ## Design Principles
 
@@ -233,7 +233,7 @@ poll_ci_status = true
 name = "planner"
 role = "Planner"
 enabled = true
-template = "github-planner"
+pipe = { agent = "jyc_git", topic = "plan-${msg.issue_number}" }
 
 [channels.my_repo.patterns.rules]
 github_type = ["issue"]
@@ -244,8 +244,7 @@ github_type = ["issue"]
 name = "developer"
 role = "Developer"
 enabled = true
-template = "github-developer"
-live_injection = false
+pipe = { agent = "jyc_git", topic = "dev-${msg.pr_number}" }
 
 [channels.my_repo.patterns.rules]
 github_type = ["pull_request"]
@@ -256,12 +255,18 @@ github_type = ["pull_request"]
 name = "reviewer"
 role = "Reviewer"
 enabled = true
-template = "github-reviewer"
+pipe = { agent = "jyc_git", topic = "review-${msg.pr_number}" }
 
 [channels.my_repo.patterns.rules]
 github_type = ["pull_request"]
 # Auto-label "jyc:review" is implicit from role = "Reviewer"
 ```
+
+Every enabled pattern needs a `pipe` target — without one, matching events are
+dropped (warned at startup). Roles can share one topic (use the same template
+string) or stay separate, as above. When several GitHub channels pipe into the
+same agent, add `${msg.repo}` to keep numbers from colliding:
+`topic = "review-${msg.repo}-${msg.pr_number}"`.
 
 ## Topic Naming
 

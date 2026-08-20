@@ -374,6 +374,22 @@ impl GithubInboundAdapter {
         metadata.insert("github_event".to_string(), serde_json::json!(event_type));
         metadata.insert("github_number".to_string(), serde_json::json!(number));
         metadata.insert("github_type".to_string(), serde_json::json!(github_type));
+        // Repo name for pipe topic templates that need cross-repo disambiguation
+        // (`${msg.repo}`), e.g. two channels piping into the same agent topic space.
+        metadata.insert("repo".to_string(), serde_json::json!(self.config.repo));
+        // Type-gated number aliases for pipe topic templates
+        // (`${msg.pr_number}` / `${msg.issue_number}`): a PR event carries
+        // only `pr_number`, an issue event only `issue_number`, so a
+        // misrouted event fails placeholder resolution loudly instead of
+        // landing in the wrong topic.
+        match github_type {
+            "pull_request" => {
+                metadata.insert("pr_number".to_string(), serde_json::json!(number));
+            }
+            _ => {
+                metadata.insert("issue_number".to_string(), serde_json::json!(number));
+            }
+        }
         metadata.insert("github_action".to_string(), serde_json::json!(action));
         metadata.insert("github_labels".to_string(), serde_json::json!(labels));
         metadata.insert("github_assignees".to_string(), serde_json::json!(assignees));

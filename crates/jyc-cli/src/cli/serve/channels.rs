@@ -306,11 +306,16 @@ fn resolve_msg_placeholders(template: &str, msg: &jyc_types::InboundMessage) -> 
 /// in one template) or the `topic` core field (the channel's own derived
 /// conversation name — for email, the subject with `Re:`/`Fw:` prefixes
 /// already stripped). Returns `None` when the key is missing/empty.
+///
+/// Numeric metadata (e.g. GitHub `issue_number`/`pr_number`/
+/// `github_number`, stored as JSON integers) is stringified — a
+/// string-only lookup would silently fail to resolve and drop the
+/// message as "unresolvable target".
 fn lookup_msg_placeholder(key: &str, msg: &jyc_types::InboundMessage) -> Option<String> {
-    if let Some(v) = msg.metadata.get(key).and_then(|v| v.as_str())
-        && !v.is_empty()
-    {
-        return Some(v.to_string());
+    match msg.metadata.get(key) {
+        Some(serde_json::Value::String(s)) if !s.is_empty() => return Some(s.clone()),
+        Some(serde_json::Value::Number(n)) => return Some(n.to_string()),
+        _ => {}
     }
     if key == "channel_uid" && !msg.channel_uid.is_empty() {
         return Some(msg.channel_uid.clone());
@@ -2799,6 +2804,20 @@ mod tests {
         msg.channel_uid = "u1".to_string();
         let out = apply_pipe_retarget(msg, &pipe).unwrap();
         assert_eq!(out.topic, "agent/chat_1/u1");
+    }
+
+    /// Numeric metadata resolves in `${msg.<key>}` templates: the GitHub
+    /// adapter stores `issue_number`/`pr_number` as JSON integers (the
+    /// matcher consumes them via `as_u64()`), so a string-only lookup
+    /// would fail and drop the message as "unresolvable target". Mirrors
+    /// the documented `topic = "plan-${msg.issue_number}"` config.
+    #[test]
+    fn pipe_retarget_resolves_numeric_metadata_placeholder() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("issue_number".to_string(), serde_json::json!(605));
+        let pipe = agent_pipe_target("jyc_git_planner", Some("plan-${msg.issue_number}"));
+        let out = apply_pipe_retarget(pipe_msg(metadata), &pipe).unwrap();
+        assert_eq!(out.topic, "plan-605");
     }
 
     // ---- collect_pipe_target_channels ----

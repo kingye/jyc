@@ -67,8 +67,10 @@ All notable changes to JYC will be documented in this file.
   attachments, model overrides, mcps, tools, disabled_*,
   live_injection, inject_inbound_images, mode, reset_compression,
   auto_reset_threshold, role). WebSocket transport is unchanged
-  (`/ws/agents/<topic>`). Default workspace root:
-  `<data_home>/agents/<agent_name>/`. Each `[agents.<name>]` is one
+  (`/ws/agents/<topic>`). Each topic gets its own directory under
+  `<data_home>/agents/<agent_name>/<topic_name>/`; an explicit
+  `topic_path` instead pins the agent's 1:1 topic (topic name == agent
+  name) to that directory. Each `[agents.<name>]` is one
   pattern inside the synthesized channel "agents" (channel_type =
   "websocket"); the agent name is the routing identity, picked by
   `WebsocketMatcher::match_message` against `message.topic`.
@@ -107,6 +109,30 @@ All notable changes to JYC will be documented in this file.
   stay valid.
 
 ### Fixed
+
+- **Pipe-routed agent topics no longer collapse into one shared
+  directory.** Every synthesized `[agents.<name>]` pattern pinned
+  `topic_path` to `<data_home>/agents/<agent_name>/`, and a pinned
+  `topic_path` is a *fixed* directory rather than a subtree root — so all
+  topics of an agent resolved to the same path and shared one chat
+  history, one session state, and one repository checkout. With
+  `pipe = { agent = "jyc_git", topic = "plan-${msg.issue_number}" }`,
+  issue #197 and #198 landed in the same directory and each saw the
+  other's conversation. Topic directories now follow two rules: a
+  configured `topic_path` pins only the agent's **1:1 topic** (the topic
+  whose name equals the agent name — its own home, usually a code
+  checkout), and every other agent topic gets
+  `<data_home>/agents/<agent_name>/<topic_name>/`. Dynamic pipe topics
+  therefore never land inside a pinned `topic_path`, and two topics of
+  one agent never share a directory. This also fixes the same collapse
+  for email/feishu/wecom_bot topics piped with `pipe.agent`. Startup
+  restore now scans an agent's default root as well, so nested topics
+  survive a restart even when the agent configures no `topic_path`.
+  Topics created before this fix keep whichever directory is recorded in
+  their `.jyc/topic-name` marker; new topics use the layout above.
+  Narrowing note: a `topic_path` on a *regular* channel pattern
+  (uncommon) likewise now pins only the topic named after that pattern
+  instead of every topic it matches.
 
 - **A `pipe` naming no destination is now rejected at load time.**
   `pipe = { topic = "x" }` without `agent`/`channel` was accepted by

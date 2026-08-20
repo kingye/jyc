@@ -323,15 +323,6 @@ impl AgentService for JycAgentService {
                 }
             });
 
-        // 3. Load session and prior raw context
-        let (prior_history, prior_raw_context) = session::load_context(topic_path).await;
-
-        tracing::debug!(
-            prior_messages = prior_history.len(),
-            prior_raw_context = prior_raw_context.len(),
-            "Loaded prior context"
-        );
-
         // 4. Build prompts (image-injection gated by per-pattern flag and
         //    per-model `supports_images`)
         // 3a. Build system prompt (available channels, skills, AGENTS.md, etc.)
@@ -449,14 +440,31 @@ impl AgentService for JycAgentService {
             .await;
         }
 
-        // Ensure the session file exists BEFORE the agent loop runs.
-        // Placed after the pre-loop pre-check because that pre-check may
-        // have deleted the file via `reset_session`. Without this, the
-        // dashboard and outbound probes see `(None, None, None)` for the
-        // window between "user sends message" and "first LLM response
-        // arrives + persist_tokens writes". The helper is a no-op when
-        // the file already exists, so existing token data is preserved.
+        // Ensure the session file exists BEFORE loading context and running
+        // the agent loop. Placed after the pre-loop pre-check because that
+        // pre-check may have deleted the file via `reset_session`, and
+        // `load_context` below returns empty when the session file is
+        // missing — which would silently discard the compacted context the
+        // pre-check just wrote. Without this, the dashboard and outbound
+        // probes also see `(None, None, None)` for the window between "user
+        // sends message" and "first LLM response arrives + persist_tokens
+        // writes". The helper is a no-op when the file already exists, so
+        // existing token data is preserved.
         session::ensure_session_file(topic_path, context_window, auto_reset_threshold).await;
+
+        // Load session and prior raw context AFTER the pre-loop pre-check
+        // above: if the pre-check just reset the session (e.g. the active
+        // model switched to a smaller context window), this must read the
+        // freshly compacted agent-context.json — not the stale pre-reset
+        // contents, which would be sent verbatim on the first LLM call and
+        // immediately re-inflate the wire context.
+        let (prior_history, prior_raw_context) = session::load_context(topic_path).await;
+
+        tracing::debug!(
+            prior_messages = prior_history.len(),
+            prior_raw_context = prior_raw_context.len(),
+            "Loaded prior context"
+        );
 
         let additional_read_roots = self.resolve_additional_read_roots(message, topic_path);
         let additional_write_roots = self.resolve_additional_write_roots(message);

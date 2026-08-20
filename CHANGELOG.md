@@ -110,6 +110,17 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Pre-loop reset after switching to a smaller-window model now actually
+  uses the compacted context.** The per-message flow loaded
+  `agent-context.json` into memory *before* `maybe_reset_for_new_context`
+  ran, so when the pre-check fired (old session over the new model's
+  limit), the on-disk file was compacted but the agent loop still received
+  the stale oversized context — re-inflating the wire context to ~80% on
+  the very first call of the next round. `load_context` now runs after the
+  pre-check (with `ensure_session_file` in between, since the reset
+  deletes the session file and `load_context` returns empty without it).
+  (#603)
+
 - **Pipe-routed agent topics no longer collapse into one shared
   directory.** Every synthesized `[agents.<name>]` pattern pinned
   `topic_path` to `<data_home>/agents/<agent_name>/`, and a pinned

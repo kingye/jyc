@@ -633,6 +633,63 @@ mod session {
         assert!(jyc_dir.join("agent-session.json").exists());
     }
 
+    /// Ordering regression (service/mod.rs message flow): after the pre-loop
+    /// pre-check resets the session (model switched to a smaller window),
+    /// `ensure_session_file` + `load_context` must return the compacted
+    /// context — not empty, and not the stale pre-reset messages.
+    /// `reset_session` deletes the session file and `load_context` returns
+    /// empty without it, so the ensure call must come between the two.
+    #[tokio::test]
+    async fn pre_check_ensure_then_load_returns_compacted_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+
+        // Oversized session carried over from a previous larger-window model.
+        tokio::fs::write(
+            jyc_dir.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01","context_input_tokens":600000,"total_output_tokens":0,"max_input_tokens":950000}"#,
+        )
+        .await
+        .unwrap();
+        // Prior context: several user/assistant pairs plus tool noise that
+        // heuristic compaction must drop.
+        let big_context = serde_json::json!([
+            {"role":"user","content":"first question"},
+            {"role":"assistant","content":"first answer"},
+            {"role":"user","content":"second question"},
+            {"role":"assistant","content":"second answer","reasoning_content":"noise"},
+            {"role":"tool","content":"tool output that must be dropped"},
+            {"role":"user","content":"third question"},
+            {"role":"assistant","content":"third answer"}
+        ]);
+        tokio::fs::write(
+            jyc_dir.join("agent-context.json"),
+            serde_json::to_string(&big_context).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let config = ResetCompressionConfig {
+            mode: jyc_types::channel::CompressionMode::Heuristic,
+            keep_pairs: 1,
+        };
+
+        // The exact sequence service/mod.rs runs per message.
+        let reset =
+            session::maybe_reset_for_new_context(tmp.path(), 250_000, &config, None, None).await;
+        assert!(reset, "pre-check should have triggered reset");
+        session::ensure_session_file(tmp.path(), Some(256_000), 0.95).await;
+        let (_history, raw) = session::load_context(tmp.path()).await;
+
+        // Heuristic keep_pairs=1 → only the last user+assistant pair survives.
+        let texts: Vec<&str> = raw
+            .iter()
+            .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+            .collect();
+        assert_eq!(texts, ["third question", "third answer"]);
+    }
+
     /// `persist_tokens` must write the latest input/output counts but NEVER
     /// trigger `reset_session`, even when input crosses the auto-reset
     /// threshold. Mid-loop the in-memory `raw_context` is the source of

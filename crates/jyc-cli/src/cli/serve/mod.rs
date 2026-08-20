@@ -210,7 +210,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     // Per-channel MessageRouters, keyed by channel name. Used by piped
     // channels (e.g. feishu with `pipe`) to route re-targeted messages
     // through the target channel's router (identical to a chat-pane message).
-    let routers: std::sync::Arc<std::sync::Mutex<HashMap<String, Arc<MessageRouter>>>> =
+    let routers: crate::cli::serve::channels::HubRegistry =
         std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
     // Create the inspect-broadcast bus that ActivityTracker publishes to.
     // Shared with websocket inbound adapters so they can forward live
@@ -406,10 +406,10 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             channel_name.clone(),
         ));
         // Expose the router so piped channels can route through it.
-        routers
-            .lock()
-            .unwrap()
-            .insert(channel_name.clone(), router.clone());
+        routers.lock().unwrap().insert(
+            channel_name.clone(),
+            (router.clone(), topic_manager.clone()),
+        );
 
         tracing::info!(
             channel = %channel_name,

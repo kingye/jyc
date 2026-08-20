@@ -443,6 +443,14 @@ fn collect_pipe_target_channels(patterns: &[ChannelPattern]) -> std::collections
     out
 }
 
+/// Hub channels a pipe-only adapter can route into, keyed by channel name.
+///
+/// Carries the `TopicManager` alongside the router because pipe-only adapters
+/// own no workspace: routing needs the router, and close events (GitHub
+/// issue/PR closed) need the hub's TopicManager.
+pub(crate) type HubRegistry =
+    std::sync::Arc<std::sync::Mutex<HashMap<String, (Arc<MessageRouter>, Arc<TopicManager>)>>>;
+
 /// State recorded per piped topic so the email reply forwarder can
 /// reply into the original mail thread.
 ///
@@ -484,7 +492,7 @@ pub(crate) async fn spawn_email_adapter(
     tasks: &mut Vec<JoinHandle<()>>,
     config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
     ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
-    routers: std::sync::Arc<std::sync::Mutex<HashMap<String, Arc<MessageRouter>>>>,
+    routers: HubRegistry,
 ) -> Result<()> {
     let imap_config = channel_config
         .inbound
@@ -787,7 +795,11 @@ pub(crate) async fn spawn_email_adapter(
                             .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
                             .expect("validated upstream: agent or channel required");
                         let Some(target_router) =
-                            routers.lock().unwrap().get(&target_channel).cloned()
+                            routers
+                                .lock()
+                                .unwrap()
+                                .get(&target_channel)
+                                .map(|(r, _)| r.clone())
                         else {
                             tracing::warn!(
                                 channel = %target_channel,
@@ -861,7 +873,7 @@ pub(crate) fn spawn_feishu_adapter(
     tasks: &mut Vec<JoinHandle<()>>,
     config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
     ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
-    routers: std::sync::Arc<std::sync::Mutex<HashMap<String, Arc<MessageRouter>>>>,
+    routers: HubRegistry,
 ) -> Result<()> {
     let feishu_config = channel_config
         .feishu
@@ -1068,7 +1080,11 @@ pub(crate) fn spawn_feishu_adapter(
                             .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
                             .expect("validated upstream: agent or channel required");
                         let Some(target_router) =
-                            routers.lock().unwrap().get(&target_channel).cloned()
+                            routers
+                                .lock()
+                                .unwrap()
+                                .get(&target_channel)
+                                .map(|(r, _)| r.clone())
                         else {
                             tracing::warn!(channel = %target_channel, "feishu pipe: target channel router not found, dropping");
                             return;
@@ -1160,7 +1176,7 @@ pub(crate) fn spawn_wecom_bot_adapter(
     tasks: &mut Vec<JoinHandle<()>>,
     config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
     ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
-    routers: std::sync::Arc<std::sync::Mutex<HashMap<String, Arc<MessageRouter>>>>,
+    routers: HubRegistry,
 ) -> Result<()> {
     use jyc_channels::wecom_bot;
     let wecom_bot_config = channel_config
@@ -1543,7 +1559,11 @@ pub(crate) fn spawn_wecom_bot_adapter(
                             .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
                             .expect("validated upstream: agent or channel required");
                         let Some(target_router) =
-                            routers.lock().unwrap().get(&target_channel).cloned()
+                            routers
+                                .lock()
+                                .unwrap()
+                                .get(&target_channel)
+                                .map(|(r, _)| r.clone())
                         else {
                             tracing::warn!(
                                 channel = %target_channel,

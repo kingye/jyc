@@ -110,6 +110,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **`${msg.issue_number}` / `${msg.pr_number}` pipe topic placeholders
+  now actually resolve.** The GitHub adapter stores these (and
+  `github_number`) as JSON integers — the matcher consumes them via
+  `as_u64()` — but the `${msg.<key>}` placeholder lookup only accepted
+  JSON strings, so resolution returned `None` and every GitHub
+  issue/PR trigger was dropped with "unresolvable target, dropping".
+  Numeric metadata now stringifies during lookup; a pattern configured
+  with `topic = "plan-${msg.issue_number}"` routes to `plan-<N>` as
+  documented.
+
 - **Pre-loop reset after switching to a smaller-window model now actually
   uses the compacted context.** The per-message flow loaded
   `agent-context.json` into memory *before* `maybe_reset_for_new_context`

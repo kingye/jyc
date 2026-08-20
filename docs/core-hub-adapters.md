@@ -309,6 +309,36 @@ that is the natural home for a repo-init skill. Note that per-pattern `skills`,
 channel's patterns are matched at route time), same as the other pipe-only
 adapters. The `template` machinery itself stays for Gitee.
 
+A minimal `{workdir}/skills/repo-init/SKILL.md` for that job:
+
+```markdown
+---
+name: repo-init
+description: >
+  Prepare a GitHub topic working directory. Use when the topic has no `repo/`
+  checkout yet and the task needs repository code (reading source, running
+  tests, committing). Do NOT use for topics that only discuss an issue.
+---
+
+# Repo init
+
+1. If `repo/.git` already exists, do nothing — the checkout is ready.
+2. Pick the clone URL from the repository named in the trigger message
+   (`repository: <owner>/<repo>`):
+
+   | repo          | clone                                    |
+   |---------------|------------------------------------------|
+   | `jyc`         | `gh repo clone kingye/jyc repo`          |
+   | `invoice`     | `gh repo clone kingye/invoice repo`      |
+
+3. For a PR topic, check out the PR branch: `cd repo && gh pr checkout <N>`.
+4. For an issue topic, stay on the default branch.
+```
+
+The trigger message already carries `repository: <owner>/<repo>` and the item
+number, so the skill needs no extra plumbing — and because it is a skill rather
+than a template, changing the mapping does not require a jyc restart.
+
 ## Migrating other channels
 
 To be documented per channel when migration starts (wecom, wechat, gitee).

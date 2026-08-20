@@ -119,6 +119,7 @@ All notable changes to JYC will be documented in this file.
   the very first call of the next round. `load_context` now runs after the
   pre-check (with `ensure_session_file` in between, since the reset
   deletes the session file and `load_context` returns empty without it).
+  (#603)
 
 - **Pipe-routed agent topics no longer collapse into one shared
   directory.** Every synthesized `[agents.<name>]` pattern pinned

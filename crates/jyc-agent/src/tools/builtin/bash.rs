@@ -17,6 +17,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::path::Path;
 use tokio::process::Command;
 use tracing;
 
@@ -98,6 +99,7 @@ impl Tool for BashTool {
                 .arg("-c")
                 .arg(command)
                 .current_dir(ctx.working_dir)
+                .envs(git_ignore_env())
                 .output(),
         )
         .await;
@@ -152,6 +154,48 @@ impl Tool for BashTool {
             ))),
         }
     }
+}
+
+/// Name of the global git excludes file, written inside the JYC data dir
+/// (outside every repo).
+const GIT_IGNORE_GLOBAL_FILENAME: &str = "git-ignore-global";
+
+/// Environment variables injected into every bash command so that **any**
+/// `git` invocation inside the tool ignores JYC's runtime `.jyc/` directory
+/// — regardless of which repo the command runs in, and without writing
+/// anything into the repo (no `.gitignore`, no `.git/info/exclude`, no
+/// visible trace for collaborators).
+///
+/// Works by pointing `core.excludesfile` at a global excludes file living
+/// under the JYC data dir, via `GIT_CONFIG_*` env vars — git config
+/// injected this way has the highest precedence, above system/global/local
+/// config files.
+///
+/// Tradeoff: a user-level `core.excludesfile` in `~/.gitconfig` is
+/// overridden inside bash-tool git commands.
+/// `ponytail:` no merge support — append the user's existing excludes file
+/// later, only if that scenario is ever observed in practice.
+fn git_ignore_env() -> Vec<(&'static str, String)> {
+    match jyc_utils::paths::data_home() {
+        Some(dir) => git_ignore_env_in(&dir),
+        None => Vec::new(),
+    }
+}
+
+/// `git_ignore_env()` for an explicit data directory — the file is created
+/// on first use. Kept separate from [`git_ignore_env`] so tests can point
+/// it at a tempdir instead of the real data home.
+fn git_ignore_env_in(data_dir: &Path) -> Vec<(&'static str, String)> {
+    let excludes = data_dir.join(GIT_IGNORE_GLOBAL_FILENAME);
+    if !excludes.exists() {
+        let _ = std::fs::create_dir_all(data_dir);
+        let _ = std::fs::write(&excludes, ".jyc/\n");
+    }
+    vec![
+        ("GIT_CONFIG_COUNT", "1".to_string()),
+        ("GIT_CONFIG_KEY_0", "core.excludesfile".to_string()),
+        ("GIT_CONFIG_VALUE_0", excludes.display().to_string()),
+    ]
 }
 
 /// Extract absolute-path tokens (starting with `/`) from the **unquoted**
@@ -315,5 +359,72 @@ mod tests {
         let cmd = r###"cd repo && gh pr comment 273 --body "see // here" && cat /etc/hostname"###;
         let tokens = unquoted_path_tokens(cmd);
         assert_eq!(tokens, vec!["/etc/hostname"]);
+    }
+
+    #[test]
+    fn git_ignore_env_creates_excludes_file_in_data_dir() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let env = git_ignore_env_in(dir.path());
+
+        assert_eq!(env.len(), 3);
+        assert_eq!(env[0], ("GIT_CONFIG_COUNT", "1".to_string()));
+        assert_eq!(
+            env[1],
+            ("GIT_CONFIG_KEY_0", "core.excludesfile".to_string())
+        );
+
+        let excludes = Path::new(&env[2].1);
+        assert!(excludes.starts_with(dir.path()));
+        assert_eq!(
+            std::fs::read_to_string(excludes).expect("read excludes file"),
+            ".jyc/\n"
+        );
+
+        // Idempotent: repeated calls neither error nor rewrite
+        let env2 = git_ignore_env_in(dir.path());
+        assert_eq!(env2, env);
+    }
+
+    /// The injected env genuinely makes `git` ignore `.jyc/` in a fresh
+    /// repo. Skipped when the `git` binary is unavailable (minimal CI
+    /// images, etc.) — the exclude-file mechanics are still covered by
+    /// [`git_ignore_env_creates_excludes_file_in_data_dir`].
+    #[test]
+    fn injected_env_makes_git_ignore_jyc() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".jyc")).expect("create .jyc dir");
+        std::fs::write(repo.join(".jyc/secret"), "x").expect("write secret");
+
+        let init = std::process::Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .current_dir(&repo)
+            .output()
+            .expect("git init");
+        assert!(init.status.success(), "git init failed");
+
+        let env = git_ignore_env_in(dir.path());
+        let out = std::process::Command::new("git")
+            .arg("check-ignore")
+            .arg(".jyc/secret")
+            .current_dir(&repo)
+            .env("GIT_CONFIG_COUNT", env[0].1.as_str())
+            .env("GIT_CONFIG_KEY_0", env[1].1.as_str())
+            .env("GIT_CONFIG_VALUE_0", env[2].1.as_str())
+            .output()
+            .expect("git check-ignore");
+        assert!(
+            out.status.success(),
+            ".jyc/secret should be ignored: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 }

@@ -115,6 +115,18 @@ impl JycAgentService {
              `read` tool if you need context from prior conversations, or use `grep` to search.\n",
         );
 
+        // Version control hygiene: `.jyc/` is JYC's private runtime state
+        // (credentials, chat history, sessions) and must never be committed.
+        // The bash tool already injects a global git excludes file that
+        // ignores `.jyc/` everywhere; this rule is the backstop against
+        // `git add -f`, which bypasses all ignore rules.
+        prompt.push_str(
+            "## Version Control\n\
+             The `.jyc/` directory is JYC's private runtime state (credentials, chat history, sessions).\n\
+             NEVER stage or commit it: do not run `git add .jyc`, do not run `git add -f` on it, and\n\
+             before `git add .`, check that it will not include `.jyc/`.\n\n",
+        );
+
         // Cross-Topic Communication section (when topic managers are available)
         let tm_map_opt = self
             .topic_managers

@@ -6,6 +6,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Agent never stages JYC's private `.jyc/` runtime data.** The `bash`
+  tool injects a global git excludes file (`$XDG_DATA_HOME/jyc/git-ignore-global`)
+  via `GIT_CONFIG_*` env vars, so `git add .` / `git status` ignore `.jyc/`
+  in **any** repo with zero repo footprint (no `.gitignore` entry, no
+  `.git/info/exclude` — nothing visible to collaborators). The system
+  prompt additionally instructs agents to never stage `.jyc/` (including
+  `git add -f`, which bypasses all ignore rules). (#620)
+
 - **`[agents.<name>]` inheritance via `extends = "<base>"`.** A new agent
   can reuse most of another agent's config and override only the fields
   that differ: child fields win over the base, arrays/lists are replaced

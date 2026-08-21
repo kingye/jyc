@@ -400,17 +400,22 @@ topic directory is deleted.
 
 ### Close Event Matrix
 
-On any close event, jyc enumerates the workspace and closes every topic
-directory whose name matches `*-{N}` for the closed identity. This works
-uniformly across the default prefixes (`issue`, `pr`, `review-pr`) and any
-user-defined `topic_prefix` values.
+On any close event, jyc re-renders every enabled pattern's `pipe.topic`
+template for the closed number and closes the resulting topics in the hub
+workspace. Deriving the names from config (rather than remembering what was
+routed) means a close event still works after a jyc restart.
+
+Only number-dependent templates participate: a static `pipe.topic` collects
+many items into one shared topic, which survives any single item closing.
+`${msg.pr_number}` / `${msg.issue_number}` are type-gated exactly as at routing
+time, so an issue close never resolves a PR topic.
 
 | Event | Topics Closed & Deleted |
 |-------|--------------------------|
-| Issue closed (manually) | every `*-{N}` for that issue (e.g. `issue-{N}`, `plan-{N}`) |
-| Issue closed (by PR merge "Fixes #N") | every `*-{N}` for that issue |
-| PR merged | every `*-{N}` for that PR (e.g. `pr-{N}`, `review-pr-{N}`) |
-| PR closed (not merged) | every `*-{N}` for that PR |
+| Issue closed (manually) | every `${msg.issue_number}` topic for that issue (e.g. `plan-{N}`) |
+| Issue closed (by PR merge "Fixes #N") | every `${msg.issue_number}` topic for that issue |
+| PR merged | every `${msg.pr_number}` topic for that PR (e.g. `dev-{N}`, `review-{N}`) |
+| PR closed (not merged) | every `${msg.pr_number}` topic for that PR |
 
 ### Close Flow
 

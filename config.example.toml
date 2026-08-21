@@ -124,9 +124,8 @@ pipe = { agent = "jin" }
 # this field only shapes the wire payload.
 # mode: "full" (default) | "sliding_window" (alias "sliding")
 # window: user+assistant turns to keep in sliding_window mode (default: 10).
-# In sliding_window mode the send context also carries a full text-only
-# transcript of the prior conversation (tool calls and tool results
-# omitted) so the model retains the full history.
+# In sliding_window mode the send context carries the last N text pairs
+# plus the current turn verbatim (tool calls / results intact).
 # context_strategy = { mode = "sliding_window", window = 10 }
 
 # Custom filesystem path for the topic directory.

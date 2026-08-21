@@ -551,9 +551,7 @@ pub enum ContextStrategy {
     Full,
     /// Send only the last N user+assistant turns from the prior context
     /// (tool calls/results are dropped), plus the full current turn
-    /// kept verbatim. A full text-only transcript of the prior
-    /// conversation is also prepended as a synthetic user message so
-    /// the model retains the full history.
+    /// kept verbatim.
     #[serde(alias = "sliding")]
     SlidingWindow,
 }

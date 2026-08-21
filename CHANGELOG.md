@@ -159,11 +159,8 @@ All notable changes to JYC will be documented in this file.
   `/context` slash command for runtime switching. Two modes:
   `full` (default — current behavior) and `sliding_window` (only the
   last N user+assistant turns, default N=10; the current turn is kept
-  intact). In `sliding_window` mode the send context also carries a
-  full text-only transcript of the prior conversation (tool calls /
-  tool results omitted) wrapped in `<jyc-conversation-history>`, so
-  the model retains knowledge of the full history even with a small
-  window. The on-disk `.jyc/agent-context.json` always stores the
+  intact with all tool calls/results). The on-disk
+  `.jyc/agent-context.json` always stores the
   full raw context unchanged — the strategy only shapes the wire
   payload — so switching back to `full` recovers the entire history.
   Runtime override is persisted at `.jyc/context-strategy.json` by

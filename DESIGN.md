@@ -1863,15 +1863,11 @@ JYC uses the following subset of the agent service API:
    (written by `/context full | sliding [N] | reset`).
 
    * `full` (default) — send the entire `agent-context.json`.
-   * `sliding_window` — emits three parts in order:
-     1. A synthetic user message with a full text-only rendering of the
-        prior conversation (user/assistant text, tool calls and tool
-        results omitted) wrapped in `<jyc-conversation-history>`.
-        Recovers the full history even with a small window.
-     2. The last N user+assistant text pairs from the prior context,
+   * `sliding_window` — emits two parts in order:
+     1. The last N user+assistant text pairs from the prior context,
         reformatted in provider wire format via the active
         `Provider` (`format_user_message` / `build_raw_assistant_message`).
-     3. The current turn verbatim (`raw_context[prior_len..]`) so
+     2. The current turn verbatim (`raw_context[prior_len..]`) so
         tool calls / results stay coherent mid-loop.
 
    Resolution chain: runtime override file > matched pattern (or
@@ -1879,8 +1875,8 @@ JYC uses the following subset of the agent service API:
    > global `[ai].context_strategy` > default. Implemented in
    `build_send_context` (`crates/jyc-agent/src/agent_loop/context.rs`):
    for `full` it returns `Cow::Borrowed(&raw_context)`; for
-   `sliding_window` it returns `Cow::Owned` of `[transcript_msg,
-   windowed_prior, current_turn]`. Synthetic messages use the provider's
+   `sliding_window` it returns `Cow::Owned` of `[windowed_prior,
+   current_turn]`. Synthetic messages use the provider's
    own formatter, so Anthropic (`content: [...]`) and OpenAI-compat
    (`content: "..."`) wire formats both stay valid.
 

@@ -127,6 +127,13 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Agents-only configs no longer fail startup validation.** A config
+  with `[agents.<name>]` entries but no `[channels.*]` block was
+  rejected with "at least one channel must be configured", even though
+  the `agents` websocket channel is synthesized at startup
+  (`install_agents_channel`) — which runs *after* validation. Validation
+  now requires at least one channel **or** agent. (#PR)
+
 - **`${msg.issue_number}` / `${msg.pr_number}` pipe topic placeholders
   now actually resolve.** The GitHub adapter stores these (and
   `github_number`) as JSON integers — the matcher consumes them via

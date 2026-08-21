@@ -180,6 +180,18 @@ fn loopback_addr(bind: &str) -> String {
         .replace("[::]", "127.0.0.1")
 }
 
+/// Strip trailing separators and prefix a reply with its `[Role]` header
+/// (skipped when the reply already carries it). Shared by the GitHub and
+/// Gitee pipe reply forwarders.
+fn role_prefixed_body(text: &str, role: &str) -> String {
+    let clean_reply = jyc_core::email_parser::strip_trailing_separators(text);
+    if role.is_empty() || clean_reply.trim_start().starts_with(&format!("[{role}]")) {
+        clean_reply
+    } else {
+        format!("[{role}] {clean_reply}")
+    }
+}
+
 /// Runtime placeholder resolved from message metadata (or the
 /// `channel_uid` core field) when retargeting a piped message. The
 /// `msg.` namespace keeps it immune to the load-time `${ENV_VAR}`
@@ -1033,15 +1045,7 @@ pub(crate) fn spawn_github_adapter(
                         };
 
                         // Build comment body: [Role] prefix, no footer
-                        let clean_reply =
-                            jyc_core::email_parser::strip_trailing_separators(text);
-                        let body = if role.is_empty()
-                            || clean_reply.trim_start().starts_with(&format!("[{role}]"))
-                        {
-                            clean_reply
-                        } else {
-                            format!("[{role}] {clean_reply}")
-                        };
+                        let body = role_prefixed_body(text, &role);
 
                         // Post comment via GitHub API (attachments not supported)
                         if let Err(e) = client.create_comment(number, &body).await {
@@ -1252,6 +1256,20 @@ pub(crate) fn spawn_github_adapter(
     Ok(())
 }
 
+/// Reply routing state for the Gitee pipe forwarder, keyed by resolved topic.
+/// Gitee keeps issues and PRs in separate number spaces, so the reply needs
+/// both the number and the item type (`create_comment` takes an explicit
+/// `is_pr` flag), and a close event only removes same-type entries.
+#[derive(Debug, Clone)]
+struct GiteeReplyState {
+    /// Gitee issue/PR number (string, the format the API expects).
+    number: String,
+    /// Matched pattern role (e.g. "Planner"), rendered as a `[Role]` prefix.
+    role: String,
+    /// Whether the item is a pull request (vs an issue).
+    is_pr: bool,
+}
+
 /// Spawn a pipe-only Gitee adapter: the poller inbound adapter plus one
 /// reply forwarder per distinct pipe target channel.
 ///
@@ -1342,10 +1360,10 @@ pub(crate) fn spawn_gitee_adapter(
     let task = tokio::spawn(
         async move {
             // Shared topic -> reply state for pipe relaying.
-            // (number, role, is_pr) — Gitee keeps issues and PRs in separate
-            // number spaces, so the reply needs both the number and the type.
+            // Gitee keeps issues and PRs in separate number spaces, so the
+            // reply state carries both the number and the item type.
             let topic_state: std::sync::Arc<
-                std::sync::Mutex<HashMap<String, (String, String, bool) /* number, role, is_pr */>>,
+                std::sync::Mutex<HashMap<String, GiteeReplyState>>,
             > = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
 
             // One reply forwarder per distinct pipe target channel.
@@ -1379,8 +1397,11 @@ pub(crate) fn spawn_gitee_adapter(
                         ) else {
                             continue;
                         };
-                        let Some((number, role, is_pr)) =
-                            topic_state.lock().unwrap().get(topic).cloned()
+                        let Some(GiteeReplyState {
+                            number,
+                            role,
+                            is_pr,
+                        }) = topic_state.lock().unwrap().get(topic).cloned()
                         else {
                             tracing::debug!(
                                 topic = %topic,
@@ -1390,15 +1411,7 @@ pub(crate) fn spawn_gitee_adapter(
                         };
 
                         // Build comment body: [Role] prefix, no footer
-                        let clean_reply =
-                            jyc_core::email_parser::strip_trailing_separators(text);
-                        let body = if role.is_empty()
-                            || clean_reply.trim_start().starts_with(&format!("[{role}]"))
-                        {
-                            clean_reply
-                        } else {
-                            format!("[{role}] {clean_reply}")
-                        };
+                        let body = role_prefixed_body(text, &role);
 
                         // Post comment via Gitee API (attachments not supported)
                         if let Err(e) = client.create_comment(&number, &body, is_pr).await {
@@ -1503,7 +1516,11 @@ pub(crate) fn spawn_gitee_adapter(
                         // 5. Record resolved topic -> (number, role, is_pr).
                         topic_state.lock().unwrap().insert(
                             message.topic.clone(),
-                            (number, role, is_pr),
+                            GiteeReplyState {
+                                number,
+                                role,
+                                is_pr,
+                            },
                         );
 
                         // 6. Route through the target's own MessageRouter.
@@ -1554,7 +1571,10 @@ pub(crate) fn spawn_gitee_adapter(
                             let state = topic_state.lock().unwrap();
                             for topic in state
                                 .iter()
-                                .filter(|(_, v)| v.0 == number.to_string() && v.2 == (gitee_type == "pull_request"))
+                                .filter(|(_, v)| {
+                                    v.number == number.to_string()
+                                        && v.is_pr == (gitee_type == "pull_request")
+                                })
                                 .map(|(t, _)| t.clone())
                             {
                                 if !targets.iter().any(|(t, _)| *t == topic) {
@@ -1593,7 +1613,12 @@ pub(crate) fn spawn_gitee_adapter(
                                 }
                             }
                         }
-                        topic_state.lock().unwrap().retain(|_, v| v.0 != number.to_string());
+                        topic_state.lock().unwrap().retain(|_, v| {
+                            // Only purge same-type entries: Gitee keeps
+                            // separate number spaces, so closing issue #5
+                            // must not erase the PR #5 reply mapping.
+                            !(v.number == number.to_string() && v.is_pr == (gitee_type == "pull_request"))
+                        });
                     });
                 })),
                 on_error: Box::new(|error| {

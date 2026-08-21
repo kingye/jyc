@@ -898,7 +898,8 @@ impl GithubInboundAdapter {
                 "GitHub close event detected → closing topics"
             );
 
-            // Close every topic the pipe adapter routed for this number.
+            // Close every topic the pipe adapter routed or would route for
+            // this number (config-derived, restart-proof).
             if let Some(ref on_close) = options.on_close_event {
                 let _ = is_merged; // merge state currently doesn't change cleanup
                 (on_close)(item.number, github_type);

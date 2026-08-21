@@ -233,7 +233,9 @@ fn close_event_topics(
         .filter(|p| p.enabled)
         .filter_map(|p| {
             let pipe = p.pipe.as_ref()?;
-            let template = pipe.topic.as_deref()?;
+            // Same template resolution as apply_pipe_retarget: pipe.topic
+            // wins, legacy pipe.pattern is the fallback.
+            let template = pipe.topic.as_deref().or(pipe.pattern.as_deref())?;
             if !template.contains("${msg.") {
                 return None;
             }
@@ -3099,6 +3101,20 @@ mod tests {
         assert_eq!(
             close_event_topics(&patterns, 42, "pull_request", "jyc"),
             vec![("review-jyc-42".to_string(), "local_dev".to_string())]
+        );
+    }
+
+    /// The legacy form may carry the template in `pipe.pattern` when
+    /// `pipe.topic` is absent — mirror apply_pipe_retarget's fallback.
+    #[test]
+    fn close_event_topics_legacy_pattern_template_fallback() {
+        let patterns = vec![pattern_with(pipe_target(
+            Some("dev-${msg.pr_number}"),
+            None,
+        ))];
+        assert_eq!(
+            close_event_topics(&patterns, 609, "pull_request", "jyc"),
+            vec![("dev-609".to_string(), "local_dev".to_string())]
         );
     }
 }

@@ -132,13 +132,17 @@ All notable changes to JYC will be documented in this file.
   only by inbound traffic in the current process, so an issue/PR routed
   before a jyc restart closed nothing — silently, since the "closing
   topics" log is emitted before the handler runs. Topic names are now
-  re-rendered from each enabled pattern's `pipe.topic` template for the
-  closed number (unioned with the in-memory map), which is restart-proof.
-  Static `pipe.topic` values are excluded — a shared topic must survive
+  re-rendered from each enabled pattern's `pipe.topic` template (or the
+  legacy `pipe.pattern` fallback) for the closed number (unioned with the
+  in-memory map), which is restart-proof.
+  Static templates are excluded — a shared topic must survive
   any single item closing — and `${msg.pr_number}` /
   `${msg.issue_number}` stay type-gated, so an issue close never resolves
-  a PR topic. A close event that resolves no topics now logs at info
-  instead of returning silently. (#611)
+  a PR topic. Only templates over number/repo/type placeholders are
+  re-derivable; topics built from other metadata (`${msg.github_type}`,
+  `${msg.channel_uid}`, …) are closed solely via the in-memory union. A
+  close event that resolves no topics now logs at info instead of
+  returning silently. (#611)
 
 - **Agents-only configs no longer fail startup validation.** A config
   with `[agents.<name>]` entries but no `[channels.*]` block was

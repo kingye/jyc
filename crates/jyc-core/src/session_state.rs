@@ -171,6 +171,34 @@ pub async fn read_pattern(topic_path: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Resolve the effective mode for a topic:
+/// `.jyc/mode-override` > pattern `mode` from channel config (looked up via
+/// `.jyc/pattern`) > `None` (= build default).
+///
+/// Mirrors the runtime chain in `jyc-agent::service::process()` so that
+/// non-runtime paths (dashboard topic list, `/model` command) agree with the
+/// mode the agent actually runs in. Config-derived mode is never persisted
+/// to `.jyc/mode-override`; that file remains reserved for explicit user
+/// overrides via `/mode`.
+pub async fn resolve_effective_mode(
+    topic_path: &Path,
+    config: &AppConfig,
+    channel_name: &str,
+) -> Option<String> {
+    if let Some(mode) = read_mode_override(topic_path).await {
+        return Some(mode);
+    }
+    let pattern_name = read_pattern(topic_path).await?;
+    config
+        .channels
+        .get(channel_name)?
+        .patterns
+        .as_ref()?
+        .iter()
+        .find(|p| p.name == pattern_name)
+        .and_then(|p| p.mode.clone())
+}
+
 /// Resolve the `ResetCompressionConfig` for a topic.
 ///
 /// Priority: matched pattern > first pattern > global `[agent].reset_compression` > default.
@@ -667,6 +695,116 @@ mod tests {
     async fn read_mode_override_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let result = read_mode_override(tmp.path()).await;
+        assert_eq!(result, None);
+    }
+
+    // ── resolve_effective_mode ──────────────────────────────────────
+
+    fn config_with_pattern_mode(pattern_name: &str, mode: Option<&str>) -> AppConfig {
+        let mut toml = String::from(
+            r#"
+[general]
+[channels.c]
+type = "email"
+[channels.c.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.c.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        );
+        toml.push_str(&format!(
+            "\n[[channels.c.patterns]]\nname = \"{pattern_name}\"\n"
+        ));
+        if let Some(m) = mode {
+            toml.push_str(&format!("mode = \"{m}\"\n"));
+        }
+        jyc_types::load_config_from_str(&toml).expect("config should parse")
+    }
+
+    #[tokio::test]
+    async fn resolve_effective_mode_override_file_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(jyc_dir.join("mode-override"), "build\n")
+            .await
+            .unwrap();
+        tokio::fs::write(jyc_dir.join("pattern"), "p1\n")
+            .await
+            .unwrap();
+        let config = config_with_pattern_mode("p1", Some("plan"));
+        let result = resolve_effective_mode(tmp.path(), &config, "c").await;
+        assert_eq!(result, Some("build".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_effective_mode_uses_pattern_config_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(jyc_dir.join("pattern"), "p1\n")
+            .await
+            .unwrap();
+        let config = config_with_pattern_mode("p1", Some("plan"));
+        let result = resolve_effective_mode(tmp.path(), &config, "c").await;
+        assert_eq!(result, Some("plan".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_effective_mode_none_when_neither_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let config = config_with_pattern_mode("p1", Some("plan"));
+        let result = resolve_effective_mode(tmp.path(), &config, "c").await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_effective_mode_empty_pattern_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(jyc_dir.join("pattern"), "  \n")
+            .await
+            .unwrap();
+        let config = config_with_pattern_mode("p1", Some("plan"));
+        let result = resolve_effective_mode(tmp.path(), &config, "c").await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_effective_mode_pattern_without_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(jyc_dir.join("pattern"), "p1\n")
+            .await
+            .unwrap();
+        let config = config_with_pattern_mode("p1", None);
+        let result = resolve_effective_mode(tmp.path(), &config, "c").await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_effective_mode_unknown_channel() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(jyc_dir.join("pattern"), "p1\n")
+            .await
+            .unwrap();
+        let config = config_with_pattern_mode("p1", Some("plan"));
+        let result = resolve_effective_mode(tmp.path(), &config, "other").await;
         assert_eq!(result, None);
     }
 

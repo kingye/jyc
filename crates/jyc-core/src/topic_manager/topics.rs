@@ -229,7 +229,7 @@ impl TopicManager {
     /// This includes both actively queued topics and idle topics that have been
     /// created but have no messages pending.
     pub async fn list_topics(&self) -> Vec<TopicInfo> {
-        use crate::session_state::{read_mode_override, read_session_cost, read_token_state};
+        use crate::session_state::{read_session_cost, read_token_state};
 
         // Collect names of actively queued topics
         let queues = self.topic_queues.lock().await;
@@ -304,7 +304,13 @@ impl TopicManager {
             ) = read_token_state(&topic_path).await;
 
             // Read mode first — needed to resolve mode-specific model overrides.
-            let mode = read_mode_override(&topic_path).await;
+            // Chain: .jyc/mode-override > pattern mode from config > build default.
+            let mode = crate::session_state::resolve_effective_mode(
+                &topic_path,
+                &self.config.load(),
+                &self.channel_name,
+            )
+            .await;
 
             // Read mode-specific override file first, fallback to legacy.
             let file_override = {
@@ -468,5 +474,167 @@ impl TopicManager {
         }
 
         topics
+    }
+}
+
+#[cfg(test)]
+mod list_topics_tests {
+    use super::*;
+    use crate::message_storage::MessageStorage;
+    use crate::metrics::MetricsCollector;
+    use crate::static_agent::StaticAgentService;
+    use anyhow::Result;
+    use jyc_types::{InboundMessage, OutboundAdapter};
+    use std::path::Path;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+    use tokio_util::sync::CancellationToken;
+
+    /// Minimal outbound adapter that does nothing.
+    struct NoopOutbound;
+
+    #[async_trait::async_trait]
+    impl OutboundAdapter for NoopOutbound {
+        fn channel_type(&self) -> &str {
+            "test"
+        }
+        async fn connect(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn disconnect(&self) -> Result<()> {
+            Ok(())
+        }
+        fn clean_body(&self, raw_body: &str) -> String {
+            raw_body.to_string()
+        }
+        async fn send_reply(
+            &self,
+            _original: &InboundMessage,
+            _reply_text: &str,
+            _topic_path: &Path,
+            _message_dir: &str,
+            _attachments: Option<&[jyc_types::OutboundAttachment]>,
+        ) -> Result<jyc_types::SendResult> {
+            Ok(jyc_types::SendResult {
+                message_id: "test".to_string(),
+            })
+        }
+        async fn send_message(
+            &self,
+            _recipient: &str,
+            _subject: &str,
+            _body: &str,
+        ) -> Result<jyc_types::SendResult> {
+            Ok(jyc_types::SendResult {
+                message_id: "test".to_string(),
+            })
+        }
+    }
+
+    /// Config with channel `test` and one pattern `p1` whose mode is "plan"
+    /// and which carries distinct plan/build models.
+    fn test_config_str() -> &'static str {
+        r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[[channels.test.patterns]]
+name = "p1"
+mode = "plan"
+plan_model = "deepseek/deepseek-reasoner"
+build_model = "deepseek/deepseek-chat"
+[agent]
+enabled = true
+mode = "agent"
+"#
+    }
+
+    fn make_tm(workspace: &Path) -> Arc<TopicManager> {
+        let storage = Arc::new(MessageStorage::new(workspace));
+        let cancel = CancellationToken::new();
+        let metrics_cancel = CancellationToken::new();
+        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
+        let config = Arc::new(arc_swap::ArcSwap::from_pointee(
+            jyc_types::load_config_from_str(test_config_str()).unwrap(),
+        ));
+        Arc::new(TopicManager::new_with_options(
+            1,
+            10,
+            storage,
+            Arc::new(NoopOutbound),
+            Arc::new(StaticAgentService::new("ok")),
+            cancel,
+            true,
+            workspace.join("templates"),
+            config,
+            "test".to_string(),
+            "websocket".to_string(),
+            workspace.parent().unwrap_or(workspace).to_path_buf(),
+            workspace.to_path_buf(),
+            metrics,
+            None,
+        ))
+    }
+
+    /// #615: a topic whose mode comes from pattern config (no
+    /// `.jyc/mode-override` file) must display that mode and resolve the
+    /// mode-specific model chain accordingly.
+    #[tokio::test]
+    async fn list_topics_resolves_mode_from_pattern_config() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let topic_path = workspace.join("plan-615");
+        tokio::fs::create_dir_all(topic_path.join(".jyc"))
+            .await
+            .unwrap();
+        tokio::fs::write(topic_path.join(".jyc").join("pattern"), "p1\n")
+            .await
+            .unwrap();
+        let tm = make_tm(&workspace);
+
+        let topics = tm.list_topics().await;
+        let info = topics
+            .iter()
+            .find(|t| t.name == "plan-615")
+            .expect("topic should be listed");
+        assert_eq!(info.mode.as_deref(), Some("plan"));
+        assert_eq!(info.model.as_deref(), Some("deepseek/deepseek-reasoner"));
+    }
+
+    /// The explicit `.jyc/mode-override` file still wins over the pattern
+    /// config mode.
+    #[tokio::test]
+    async fn list_topics_mode_override_wins_over_pattern_config() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let topic_path = workspace.join("plan-615");
+        tokio::fs::create_dir_all(topic_path.join(".jyc"))
+            .await
+            .unwrap();
+        tokio::fs::write(topic_path.join(".jyc").join("pattern"), "p1\n")
+            .await
+            .unwrap();
+        tokio::fs::write(topic_path.join(".jyc").join("mode-override"), "build\n")
+            .await
+            .unwrap();
+        let tm = make_tm(&workspace);
+
+        let topics = tm.list_topics().await;
+        let info = topics
+            .iter()
+            .find(|t| t.name == "plan-615")
+            .expect("topic should be listed");
+        assert_eq!(info.mode.as_deref(), Some("build"));
+        assert_eq!(info.model.as_deref(), Some("deepseek/deepseek-chat"));
     }
 }

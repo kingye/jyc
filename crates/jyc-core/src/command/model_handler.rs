@@ -54,7 +54,15 @@ impl CommandHandler for ModelCommandHandler {
         let providers = &context.config.ai.providers;
 
         // Read current mode to determine which override file to use.
-        let current_mode = crate::session_state::read_mode_override(&context.topic_path).await;
+        // Chain: .jyc/mode-override > pattern mode from config > build default,
+        // matching the agent runtime so the written override file actually
+        // takes effect for pattern-mode topics.
+        let current_mode = crate::session_state::resolve_effective_mode(
+            &context.topic_path,
+            &context.config,
+            &context.channel,
+        )
+        .await;
 
         if context.args.is_empty() {
             // /model — list all available models
@@ -405,6 +413,70 @@ mode = "agent"
 
         // Should write to plan-model-override, not model-override
         assert!(jyc_dir.join("plan-model-override").exists());
+        assert!(!jyc_dir.join("model-override").exists());
+        let content = tokio::fs::read_to_string(jyc_dir.join("plan-model-override"))
+            .await
+            .unwrap();
+        assert_eq!(content, "deepseek/deepseek-reasoner");
+    }
+
+    /// #615: topic mode comes from pattern config (`.jyc/pattern` set, no
+    /// `mode-override` file) — `/model` must still write the plan-specific
+    /// override file so the runtime picks it up.
+    #[tokio::test]
+    async fn test_switch_model_with_pattern_mode_writes_plan_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        // Topic created by pattern "p1" (mode = "plan" in config below);
+        // no .jyc/mode-override file.
+        tokio::fs::write(jyc_dir.join("pattern"), "p1\n")
+            .await
+            .unwrap();
+
+        let mut ctx = test_context(tmp.path());
+        ctx.config = Arc::new(
+            jyc_types::load_config_from_str(
+                r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[[channels.test.patterns]]
+name = "p1"
+mode = "plan"
+[agent]
+enabled = true
+mode = "agent"
+
+[agent.providers.deepseek]
+type = "openai-compatible"
+base_url = "https://api.deepseek.com"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[agent.providers.deepseek.models.deepseek-reasoner]
+context_window = 64000
+"#,
+            )
+            .unwrap(),
+        );
+        ctx.args = vec!["deepseek/deepseek-reasoner".into()];
+        let handler = ModelCommandHandler;
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+
+        // Pattern mode "plan" must select the plan override file.
+        assert!(jyc_dir.join("plan-model-override").exists());
+        assert!(!jyc_dir.join("build-model-override").exists());
         assert!(!jyc_dir.join("model-override").exists());
         let content = tokio::fs::read_to_string(jyc_dir.join("plan-model-override"))
             .await

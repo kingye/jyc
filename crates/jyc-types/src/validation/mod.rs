@@ -69,10 +69,13 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
     }
 
     // Channels
-    if config.channels.is_empty() {
+    // `[agents.<name>]` entries synthesize the "agents" websocket channel at
+    // startup (install_agents_channel), which runs after validation — so an
+    // agents-only config is complete even with no `[channels.*]` block.
+    if config.channels.is_empty() && config.agents.is_empty() {
         errors.push(ValidationError {
             path: "channels".into(),
-            message: "at least one channel must be configured".into(),
+            message: "at least one channel or agent must be configured".into(),
         });
     }
 

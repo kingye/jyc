@@ -252,18 +252,15 @@ fn resolve_agent_extends_one(
 /// already overridden the base's value; dropping the key then makes the
 /// field deserialize as `None` — the documented "clear" semantics.
 fn drop_empty_string_markers(value: &mut toml::Value) {
-    match value {
-        toml::Value::Table(t) => {
-            t.retain(|_, v| {
-                if matches!(v, toml::Value::String(s) if s.is_empty()) {
-                    false // empty-string leaf = "clear" marker → drop
-                } else {
-                    drop_empty_string_markers(v);
-                    true
-                }
-            });
-        }
-        _ => {}
+    if let toml::Value::Table(t) = value {
+        t.retain(|_, v| {
+            if matches!(v, toml::Value::String(s) if s.is_empty()) {
+                false // empty-string leaf = "clear" marker → drop
+            } else {
+                drop_empty_string_markers(v);
+                true
+            }
+        });
     }
 }
 

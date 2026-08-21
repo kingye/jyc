@@ -108,7 +108,6 @@ pub struct GiteeInboundAdapter {
     config: GiteeConfig,
     channel_name: String,
     state_dir: PathBuf,
-    workdir: PathBuf,
 }
 
 impl GiteeInboundAdapter {
@@ -118,7 +117,6 @@ impl GiteeInboundAdapter {
             config: config.clone(),
             channel_name,
             state_dir,
-            workdir: workdir.to_path_buf(),
         }
     }
 
@@ -210,6 +208,28 @@ impl GiteeInboundAdapter {
         metadata.insert("gitee_event".to_string(), serde_json::json!(event_type));
         metadata.insert("gitee_number".to_string(), serde_json::json!(number));
         metadata.insert("gitee_type".to_string(), serde_json::json!(gitee_type));
+        // Repo name for pipe topic templates that need cross-repo disambiguation
+        // (`${msg.repo}`), e.g. two channels piping into the same agent topic space.
+        metadata.insert("repo".to_string(), serde_json::json!(self.config.repo));
+        // Type-gated number aliases for pipe topic templates
+        // (`${msg.pr_number}` / `${msg.issue_number}`): a PR event carries
+        // only `pr_number`, an issue event only `issue_number`, so a
+        // misrouted event fails placeholder resolution loudly instead of
+        // landing in the wrong topic.
+        match gitee_type {
+            "pull_request" => {
+                metadata.insert(
+                    "pr_number".to_string(),
+                    serde_json::json!(number.parse::<u64>().unwrap_or(0)),
+                );
+            }
+            _ => {
+                metadata.insert(
+                    "issue_number".to_string(),
+                    serde_json::json!(number.parse::<u64>().unwrap_or(0)),
+                );
+            }
+        }
         metadata.insert("gitee_action".to_string(), serde_json::json!(action));
         metadata.insert("gitee_labels".to_string(), serde_json::json!(labels));
         metadata.insert("gitee_assignees".to_string(), serde_json::json!(assignees));
@@ -678,23 +698,16 @@ impl GiteeInboundAdapter {
                             event = "closed",
                             number = %cached_number,
                             gitee_type = gitee_type,
-                            "Gitee close event detected"
+                            "Gitee close event detected (via cache comparison) → closing topics"
                         );
 
-                        if let Some(ref on_close) = options.on_topic_close
-                            && let Ok(entries) =
-                                std::fs::read_dir(jyc_core::topic_path::resolve_workspace(
-                                    &self.workdir,
-                                    &self.channel_name,
-                                ))
+                        // Gitee numbers are numeric; parse for the close-event
+                        // callback. On parse failure (should not happen in
+                        // practice), skip rather than guess.
+                        if let Some(ref on_close) = options.on_close_event
+                            && let Ok(number_u64) = cached_number.parse::<u64>()
                         {
-                            let suffix = format!("-{}", cached_number);
-                            for entry in entries.flatten() {
-                                let name = entry.file_name().to_string_lossy().to_string();
-                                if name.ends_with(&suffix) && name.len() > suffix.len() {
-                                    let _ = (on_close)(name);
-                                }
-                            }
+                            (on_close)(number_u64, gitee_type);
                         }
 
                         processed_events.insert(event_uid);
@@ -708,5 +721,61 @@ impl GiteeInboundAdapter {
         *last_poll = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pipe topic templates use `${msg.pr_number}` / `${msg.issue_number}`.
+    /// Only the key matching the event type is set, so a planner pattern
+    /// configured with `plan-${msg.issue_number}` that accidentally matches a
+    /// PR event fails placeholder resolution (message dropped with a warning)
+    /// instead of silently landing PR traffic in an issue topic.
+    #[test]
+    fn build_trigger_message_number_aliases_are_type_gated() {
+        let config = GiteeConfig {
+            owner: "kingye".to_string(),
+            repo: "jyc".to_string(),
+            token: "test".to_string(),
+            api_url: "https://gitee.com/api/v5".to_string(),
+            poll_interval_secs: 60,
+            poll_ci_status: true,
+        };
+        let tmpdir = tempfile::tempdir().unwrap();
+        let adapter = GiteeInboundAdapter::new(&config, "test_gitee".to_string(), tmpdir.path());
+
+        let issue = adapter.build_trigger_message(
+            "issue_comment",
+            "42",
+            "Add dark mode",
+            "issue",
+            "created",
+            "user1",
+            &[],
+            &[],
+            "comment-1",
+        );
+        assert_eq!(issue.metadata.get("issue_number").unwrap(), 42);
+        assert!(!issue.metadata.contains_key("pr_number"));
+
+        let pr = adapter.build_trigger_message(
+            "pull_request",
+            "43",
+            "Fix it",
+            "pull_request",
+            "opened",
+            "user1",
+            &[],
+            &[],
+            "pr-43-opened",
+        );
+        assert_eq!(pr.metadata.get("pr_number").unwrap(), 43);
+        assert!(!pr.metadata.contains_key("issue_number"));
+
+        // `repo` disambiguates topics when several gitee channels pipe into the
+        // same agent (`review-${msg.repo}-${msg.pr_number}`).
+        assert_eq!(pr.metadata.get("repo").unwrap(), "jyc");
     }
 }

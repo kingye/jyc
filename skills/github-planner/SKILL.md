@@ -273,7 +273,7 @@ gh pr edit <pr_number> --add-label "ready-for-dev"
 
 #### 6. Review PR on Request
 
-When the user asks you (the planner) to review a specific PR (e.g., "review PR #42", "please review the PR"), perform a **deep technical review**. This is distinct from the lightweight/convention-focused review done by the `github-reviewer` agent — your review is architecture- and correctness-focused.
+When the user asks you (the planner) to review a specific PR (e.g., "review PR #42", "please review the PR"), perform a **deep technical review** — architecture- and correctness-focused.
 
 **How to fetch the PR content:**
 ```bash
@@ -323,7 +323,7 @@ After submitting the review, use the `jyc_reply` tool (NOT `gh issue comment`) t
 2. `gh pr comment` — **Mandatory** PR comment. This is the core channel for developer feedback. Always executed regardless of `gh pr review` outcome.
 3. `jyc_reply` — **Mandatory** issue reply for user-facing summary. Keeps the issue topic in sync.
 
-**Important:** Do NOT delegate PR review to the `github-reviewer` agent. The planner's review is a deep technical/architectural review that complements (does not replace) the reviewer's lightweight pass.
+**Important:** The planner's review is a deep technical/architectural review — the PR is not reviewed by a separate reviewer agent.
 
 ### Rules (MANDATORY)
 - ALWAYS analyze the relevant source code BEFORE proposing any solution
@@ -335,7 +335,7 @@ After submitting the review, use the `jyc_reply` tool (NOT `gh issue comment`) t
 - ALWAYS run commands from the topic directory (it is the checkout — there is no `repo/` subdirectory)
 - ALWAYS include `Fixes #<issue_number>` in PR body
 - ALWAYS add the `ready-for-dev` label after creating the PR — this auto-triggers the Developer agent via pattern matching
-- **⚠️ NON-NEGOTIABLE — Review:** When asked to review a PR, ALWAYS post the review feedback via `gh pr comment` on the PR AND via `jyc_reply` on the issue. The PR comment is NON-NEGOTIABLE — even if `gh pr review` succeeds (or fails), you MUST still post the PR comment. Additionally, perform a deep technical review covering all seven dimensions (architecture, reusability, logic, security, performance, robustness, requirements alignment) — do NOT delegate to the `github-reviewer` agent.
+- **⚠️ NON-NEGOTIABLE — Review:** When asked to review a PR, ALWAYS post the review feedback via `gh pr comment` on the PR AND via `jyc_reply` on the issue. The PR comment is NON-NEGOTIABLE — even if `gh pr review` succeeds (or fails), you MUST still post the PR comment. Additionally, perform a deep technical review covering all seven dimensions (architecture, reusability, logic, security, performance, robustness, requirements alignment).
 - **⚠️ NON-NEGOTIABLE — Requirements change:** When requirements change after the PR has been created, BOTH `gh pr edit --body` (update PR description) AND `gh pr comment` (post a PR comment) are NON-NEGOTIABLE. Editing only the description without the PR comment will cause the developer agent to miss the update.
 - **⚠️ ONE CHANNEL PER REPLY:** Outside of Scenario 6 (PR review), NEVER use both `gh pr comment` and `jyc_reply_message` for the same message. Pick ONE channel: `jyc_reply_message` for user-facing discussion on the issue, `gh pr comment` for developer notifications or review feedback on the PR. When Scenario 6 requires both, the CONTENT MUST BE DIFFERENT — `gh pr comment` targets the developer on the PR, `jyc_reply_message` targets the user on the issue.
 - Reply in the same language as the user

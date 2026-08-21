@@ -239,7 +239,11 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 
 # --- Channel: GitHub Repository ---
 # Enables multi-agent workflow on GitHub issues and PRs.
-# See GITHUB_CHANNEL.md for full architecture and workflow.
+# Pipe-only adapter: the poller matches patterns and re-targets each event
+# into a hub channel / agent topic; a reply forwarder posts agent replies
+# back as issue/PR comments. State (dedup/cursor) lives under
+# <workdir>/channels/<channel>/.github/. Topic initialization is a skill
+# (github-init), not a per-pattern template.
 
 # [channels.my_repo]
 # type = "github"
@@ -250,101 +254,62 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # token = "${GITHUB_TOKEN}"           # PAT scopes: repo, read:user
 # poll_interval_secs = 60
 # # api_url = "https://api.github.com"  # Default. For GitHub Enterprise, use: https://github.example.com/api/v3
+# # (Pipe-only: no footer — comments are plain agent text via the reply
+# # forwarder, so [channels.<name>.footer] does not apply.)
 #
-# # Disable footer for GitHub channel (comments don't need model info)
-# [channels.my_repo.footer]
-# enabled = false
-#
-# # Topic naming
-# # -------------
-# # By default, GitHub topics are named:
-# #     issue-{N}      for issue events
-# #     pr-{N}         for pull_request events
-# # When two patterns can match the same issue/PR (e.g. distinguished by labels),
-# # they MUST declare distinct `topic_prefix` values — otherwise both patterns
-# # route to the same workspace dir, and the second pattern's template /
-# # AGENTS.md is silently dropped (jyc will refuse and log a TemplateMismatch
-# # error if this happens). `topic_prefix` is combined with the GitHub number
-# # as `{prefix}-{N}`. Omit it to keep the default behavior.
-#
-# # Pattern: Issues with 'feature-plan' label → High-Level Planner (product manager perspective)
-# # Lives in workspace/plan-{N}/ in parallel with any later detail-planner topic,
-# # so the detail-planner can read this topic's output via the filesystem.
+# # Pattern: Issues with 'feature-plan' label → High-Level Planner
 # [[channels.my_repo.patterns]]
 # name = "high-level-planner"
 # enabled = true
 # role = "High-Level Planner"
-# template = "github-high-level-planner"
-# topic_prefix = "plan"               # → workspace/plan-42/
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["issue"]
 # labels = ["feature-plan"]
 #
-# # Pattern: Issues without 'feature-plan' label → Detail-Level Planner (technical architect)
-# # Uses the default `issue-{N}` topic name (no prefix needed).
-# # The exclude_labels rule ensures this pattern does NOT fire while High-Level Planner is active.
+# [channels.my_repo.patterns.pipe]
+# agent = "jyc_git"
+# topic = "plan-${msg.issue_number}"
+#
+# # Pattern: Issues without 'feature-plan' label → Detail-Level Planner
 # [[channels.my_repo.patterns]]
 # name = "detail-planner"
 # enabled = true
 # role = "Planner"
-# template = "github-planner"
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["issue"]
 # exclude_labels = ["feature-plan"]
 #
+# [channels.my_repo.patterns.pipe]
+# agent = "jyc_git"
+# topic = "plan-${msg.issue_number}"
+#
 # # Pattern: PRs with 'ready-for-dev' label → Developer agent (auto-trigger)
-# # Uses the default `pr-{N}` topic name.
 # [[channels.my_repo.patterns]]
 # name = "developer"
 # enabled = true
 # role = "Developer"
-# template = "github-developer"
-# live_injection = false
-# (repo_group was removed — skills handle repo initialization)
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]
 # labels = ["ready-for-dev"]
 #
-# # Idle cleanup and repo_group were removed — the init skill handles repo setup.
-#
-# # Pattern: PRs with 'ready-for-review' label → Reviewer agent (auto-trigger)
-# # MUST declare a distinct prefix because the `developer` pattern already
-# # owns `pr-{N}` for the same PR. Reviewer and developer can run in parallel.
-# [[channels.my_repo.patterns]]
-# name = "reviewer"
-# enabled = true
-# role = "Reviewer"
-# template = "github-reviewer"
-# topic_prefix = "review-pr"          # → workspace/review-pr-43/
-# (repo_group was removed — each topic clones its own repo via the init skill)
-#
-# [channels.my_repo.patterns.rules]
-# github_type = ["pull_request"]
-# labels = ["ready-for-review"]
+# [channels.my_repo.patterns.pipe]
+# agent = "jyc_git"
+# topic = "dev-${msg.pr_number}"
 #
 # # Pattern: PRs assigned to specific team members → Route to those assignees
 # # Assignee matching: OR logic (matches if ANY assignee is in the list)
 # [[channels.my_repo.patterns]]
 # name = "assignee_routing"
 # enabled = true
-# template = "github-developer"
+# role = "Developer"
 #
 # [channels.my_repo.patterns.rules]
 # github_type = ["pull_request"]
 # assignees = ["alice", "bob"]
 #
-# # Pattern: PRs with 'ready-for-review' label AND assigned to 'alice' → Senior reviewer
-# # This demonstrates AND logic: BOTH labels and assignees must match
-# [[channels.my_repo.patterns]]
-# name = "senior_reviewer"
-# enabled = true
-# role = "Reviewer"
-# template = "github-reviewer"
-#
-# [channels.my_repo.patterns.rules]
-# github_type = ["pull_request"]
-# labels = ["ready-for-review"]
-# assignees = ["alice"]
+# [channels.my_repo.patterns.pipe]
+# agent = "jyc_git"
+# topic = "dev-${msg.pr_number}"

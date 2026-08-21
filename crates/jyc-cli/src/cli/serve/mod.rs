@@ -285,6 +285,25 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             continue;
         }
 
+        // gitee is also a pipe-only adapter, same architecture as github:
+        // the poller plus reply forwarders. State (dedup/cursor) lives under
+        // <workdir>/channels/<channel>/.gitee/. Topic initialization is a
+        // skill on the agent side — no per-pattern template.
+        if channel_type == "gitee" {
+            crate::cli::serve::channels::spawn_gitee_adapter(
+                channel_config,
+                channel_name.clone(),
+                workdir,
+                inbound_attachment_config,
+                cancel.clone(),
+                &mut tasks,
+                config_for_spawn.clone(),
+                ws_broadcasts.clone(),
+                routers.clone(),
+            )?;
+            continue;
+        }
+
         // wecom_bot is also a pipe-only adapter (same architecture as
         // feishu): protocol-only, no TopicManager/agent/orchestrator.
         if channel_type == "wecom_bot" {
@@ -450,7 +469,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             channel_type,
             channel_config,
             channel_name: channel_name.clone(),
-            workdir,
             workspace_dir: workspace_dir.clone(),
             inbound_attachment_config,
             topic_manager: topic_manager.clone(),

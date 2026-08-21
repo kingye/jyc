@@ -1452,6 +1452,24 @@ mod agent_extends_tests {
     }
 
     #[test]
+    fn non_string_extends_is_error() {
+        let err = parse(
+            r#"
+            [ai]
+            model = "deepseek/deepseek-v4-pro"
+
+            [agents.child]
+            extends = ["not_a_string"]
+        "#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("extends must be a string"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn config_without_agents_is_untouched() {
         let cfg = parse(
             r#"

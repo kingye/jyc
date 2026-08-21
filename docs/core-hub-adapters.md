@@ -293,7 +293,7 @@ adapters: the map is rebuilt from inbound traffic after a restart.
 **Close events.** A closed issue/PR must close the topics in the *hub*
 workspace, which a pipe-only adapter cannot find by scanning its own
 (nonexistent) workspace. `InboundAdapterOptions` therefore carries an
-`on_close_event: Option<Fn(u64, &str)>` callback (item number + `issue` /
+`on_close_event: CloseEventCallback` (item number + `issue` /
 `pull_request`). The topic name is a pure function of `pipe.topic` and the
 number, so the adapter re-renders every enabled pattern's topic template for
 that number instead of trusting memory: the in-memory topic map is empty after

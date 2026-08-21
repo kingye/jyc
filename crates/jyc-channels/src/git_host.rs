@@ -204,23 +204,6 @@ pub(crate) fn rules_match(
 pub(crate) const GITHUB_COMMENT_ROLES: &[&str] =
     &["Planner", "Developer", "Reviewer", "High-Level Planner"];
 
-/// Build the comment body for a git-host reply: strip trailing separators,
-/// append the footer, and prefix `[Role]` (skipping the prefix when the AI
-/// already added it or when no role is set).
-pub(crate) fn build_comment_body(reply_text: &str, role: &str, footer: &str) -> String {
-    let clean_reply = jyc_core::email_parser::strip_trailing_separators(reply_text);
-    let with_footer = if footer.is_empty() {
-        clean_reply
-    } else {
-        format!("{clean_reply}\n\n{footer}")
-    };
-    if role.is_empty() || with_footer.trim_start().starts_with(&format!("[{role}]")) {
-        with_footer
-    } else {
-        format!("[{role}] {with_footer}")
-    }
-}
-
 /// Extract the `[Role]` prefix from a comment body for self-loop prevention.
 ///
 /// Loose `[Role]` match (no trailing-space requirement). When `allowed` is

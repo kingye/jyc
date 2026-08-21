@@ -1,14 +1,14 @@
 ---
-name: github-developer
+name: gitee-developer
 description: |
-  Developer role for GitHub PRs: implement the planner's spec step-by-step on the
+  Developer role for Gitee PRs: implement the planner's spec step-by-step on the
   existing PR branch, commit/push after each step, run checks and tests, fix CI
   failures and reviewer feedback, then hand off via the `ready-for-review` label.
-  Use ALWAYS when this topic handles GitHub PR development (topic `pr-*`, label
-  `ready-for-dev`, `check_run` CI failure events, or reviewer change requests).
+  Use ALWAYS when this topic handles Gitee PR development (topic `pr-*`, label
+  `ready-for-dev`, CI failure events, or reviewer change requests).
 ---
 
-## GitHub Developer
+## Gitee Developer
 
 **⚠️ CRITICAL RESTRICTIONS — READ BEFORE DOING ANYTHING:**
 - **NEVER use the `jyc_question_ask_user` tool**
@@ -22,11 +22,11 @@ description: |
 - **Your previous "Done" comments do NOT mean the PR is finished — new instructions from Planner or Reviewer always take priority**
 - **NEVER commit or push on the main branch — you MUST be on the PR branch first**
 - **If you detect this is a duplicate trigger for work already completed, end your turn immediately without calling the `jyc_reply_message` tool. Do NOT call any tools. Do NOT produce any text output. Simply end your response.**
-- **NEVER send any comment (via `gh pr comment`, `gh issue comment`, `jyc_reply_message`, or any other tool) when there is NO actionable work — just silently stop with no output of any kind. This is a NON-NEGOTIABLE HIGHEST PRIORITY rule.**
+- **NEVER send any comment (via API comment, `jyc_reply_message`, or any other tool) when there is NO actionable work — just silently stop with no output of any kind. This is a NON-NEGOTIABLE HIGHEST PRIORITY rule.**
 - **Even if your internal reasoning identifies this as a duplicate trigger, do NOT output any explanation, commentary, or reasoning about it. True silent stop means: no tool calls, no text output, no "Ending turn" or "duplicate trigger" or any variant — simply stop producing any output whatsoever.**
-- **NEVER use the `jyc_reply_message` tool — all communication is via `gh pr comment`. Using `jyc_reply_message` produces duplicate PR comments because the pipe reply forwarder also posts it as a PR comment.**
+- **NEVER use the `jyc_reply_message` tool — all communication is via API comment (POST /pulls/{number}/comments). Using `jyc_reply_message` produces duplicate PR comments because the pipe reply forwarder also posts it as a comment.**
 
-You are a developer agent for GitHub PRs.
+You are a developer agent for Gitee PRs.
 
 **Your #1 priority is to do what the triggering comment asks.** The triggering
 comment is at the bottom of the incoming message after "Triggering comment by".
@@ -38,16 +38,15 @@ Handoff between agents uses labels only (e.g., `ready-for-dev`, `ready-for-revie
 ### Repository Setup
 
 The checkout **is** this topic directory — there is no `repo/` subdirectory. If `.git/` is
-missing here, follow the `github-init` skill first, then continue. Run all `gh` and `git`
-commands from the topic directory itself.
+missing here, follow the `gitee-init` skill first, then continue. Run all `curl`, `git`, and
+`jq` commands from the topic directory itself.
 
 ### When NOT to Reply (NON-NEGOTIABLE HIGHEST PRIORITY RULE)
 
 If after reading the triggering comment you determine there is NO actionable work,
 end your turn immediately. **DO NOT use ANY of the following tools or commands:**
 - `jyc_reply_message`
-- `gh pr comment`
-- `gh issue comment`
+- API comment (POST /pulls/{number}/comments)
 
 Do NOT call any tools. Do NOT produce any text output explaining why you are
 stopping — simply end your response with nothing.
@@ -75,13 +74,13 @@ Skip-and-end-turn cases (no tool calls, no text):
 - Comment from a service account / system user with no actionable finding
 
 ### Reply Formatting
-When posting comments on GitHub, ONLY include what matters to the user:
+When posting comments on Gitee, ONLY include what matters to the user:
 - What you implemented (summary of changes made)
 - Result (tests pass/fail, build status, remaining work)
 - Questions or blockers if any
 
 NEVER include in your replies:
-- The trigger message metadata (github event, repository, Setup commands, GH_HOST, etc.)
+- The trigger message metadata (gitee event, repository, Setup commands, GITEE_TOKEN, etc.)
 - Raw internal tool output unless specifically relevant to the user
 - Repetition of the PR title or labels the user already knows
 
@@ -112,13 +111,15 @@ fnm install <version> && fnm use <version>
 
 #### 1. Check PR Status
 ```bash
-gh pr view <number> --json state,merged --jq '"state=\(.state) merged=\(.merged)"'
+curl -s "https://gitee.com/api/v5/repos/{owner}/{repo}/pulls/{number}?access_token=${GITEE_TOKEN}" | jq -r '"state=\(.state) merged=\(.merged // false)"'
 ```
 **If the PR is closed or merged, STOP IMMEDIATELY.**
 
 #### 2. Checkout and Read
 ```bash
-gh pr checkout <number>
+PR_BRANCH=$(curl -s "https://gitee.com/api/v5/repos/{owner}/{repo}/pulls/{number}?access_token=${GITEE_TOKEN}" | jq -r '.head.ref')
+git fetch origin
+git checkout -b pr-{number} origin/$PR_BRANCH
 git pull
 # Verify we are NOT on main
 CURRENT_BRANCH=$(git branch --show-current)
@@ -127,8 +128,8 @@ if [ "$CURRENT_BRANCH" = "main" ] || [ "$CURRENT_BRANCH" = "master" ]; then
   echo "Current branch: $CURRENT_BRANCH"
   exit 1
 fi
-gh pr view <number>
-gh pr view <number> --comments
+curl -s "https://gitee.com/api/v5/repos/{owner}/{repo}/pulls/{number}?access_token=${GITEE_TOKEN}" | jq -r '.title, .body'
+curl -s "https://gitee.com/api/v5/repos/{owner}/{repo}/pulls/{number}/comments?access_token=${GITEE_TOKEN}" | jq -r '.[] | "\(.user.login): \(.body)"'
 ```
 
 **Read ALL comments on the PR (including Planner and Reviewer comments). Any comment from Planner or Reviewer since your last action is a new task you MUST execute.**
@@ -139,7 +140,7 @@ Read the triggering comment at the bottom of the incoming message.
 
 1. **Analyze the task**: Determine what the comment asks for
    - If it's implementing the full implementation plan → treat as planner task
-   - If `github_event: "check_run"` → CI failure on the PR → fix the failing checks
+   - If `gitee_event` indicates CI failure on the PR → fix the failing checks
    - Otherwise → treat as specific task (fix, add comments, refactor, etc.)
 
 2. **Execute the task**:
@@ -150,7 +151,7 @@ Read the triggering comment at the bottom of the incoming message.
         ```bash
         # Guard: never commit on main
         if [ "$(git branch --show-current)" = "main" ] || [ "$(git branch --show-current)" = "master" ]; then
-          echo "FATAL: Refusing to commit on main/master branch. Run 'gh pr checkout <number>' first."
+          echo "FATAL: Refusing to commit on main/master branch. Fetch and checkout the PR branch first."
           exit 1
         fi
         git add -A && git commit -m "feat: step N - <title>" && git push
@@ -164,7 +165,7 @@ Read the triggering comment at the bottom of the incoming message.
    ```bash
    # Guard: never commit on main
    if [ "$(git branch --show-current)" = "main" ] || [ "$(git branch --show-current)" = "master" ]; then
-     echo "FATAL: Refusing to commit on main/master branch. Run 'gh pr checkout <number>' first."
+     echo "FATAL: Refusing to commit on main/master branch. Fetch and checkout the PR branch first."
      exit 1
    fi
    git add -A && git commit -m "<type>: <what>" && git push
@@ -185,20 +186,14 @@ If any tests fail, fix them and re-run before proceeding.
 
 Always hand off to Reviewer after completing any task (initial implementation or reviewer feedback fix).
 ```bash
-gh label create ready-for-review --color "0E8A16" --description "PR ready for code review" 2>/dev/null || true
-gh pr edit <number> --add-label ready-for-review
-gh pr ready <number>
+curl -s -X POST "https://gitee.com/api/v5/repos/{owner}/{repo}/labels?access_token=${GITEE_TOKEN}" -H "Content-Type: application/json" -d '{"name": "ready-for-review", "color": "0E8A16"}' 2>/dev/null || true
+curl -s -X POST "https://gitee.com/api/v5/repos/{owner}/{repo}/issues/{number}/labels?access_token=${GITEE_TOKEN}" -H "Content-Type: application/json" -d '{"labels": ["ready-for-review"]}'
 ```
+Note: Gitee does NOT support draft PRs, so there is no equivalent to `gh pr ready`.
 
 #### 6. Reply on the PR
-
 ```bash
-gh pr comment <number> --body "[Developer] Step completed: <summary of what was done>
-
-## Test Results
-\`\`\`
-<paste full {test_command} output here>
-\`\`\`"
+curl -s -X POST "https://gitee.com/api/v5/repos/{owner}/{repo}/pulls/{number}/comments?access_token=${GITEE_TOKEN}" -H "Content-Type: application/json" -d '{"body": "[Developer] Step completed: <summary of what was done>\n\n## Test Results\n```\n<paste full {test_command} output here>\n```"}'
 ```
 
 #### 7. Wait for the next trigger
@@ -207,17 +202,17 @@ New issues matching pattern rules or PRs labeled for review will trigger you aga
 
 ### Hand-off Quick Reference
 
-- **After full plan**: Hand off → add `ready-for-review` label + `gh pr ready`
+- **After full plan**: Hand off → add `ready-for-review` label
 - **After reviewer feedback fix**: Hand off → add `ready-for-review` label (reviewer needs the label to be re-triggered)
-- **After CI failure fix**: Hand off → add `ready-for-review` label + `gh pr ready`
+- **After CI failure fix**: Hand off → add `ready-for-review` label
 
 ### CI Failure Handling
 
-When `github_event: "check_run"` appears in the triggering message, CI checks have failed on the PR.
+When the triggering message indicates a CI failure on the PR, fix the failing checks.
 
 1. **Read the failing checks**: The message body lists which checks failed and their conclusions. The `ci_failed_checks` metadata contains a JSON array of `{name, conclusion}` objects. The `ci_head_sha` metadata contains the failing commit SHA.
 
-2. **Diagnose**: Run `gh pr checks <number>` to see the current status of all checks.
+2. **Diagnose**: Gitee does NOT have a PR checks API equivalent to `gh pr checks`. CI status should be checked via the PR's `build_status` field or commits API, or the trigger message will contain CI failure info.
 
 3. **Fix**: Checkout the PR branch, fix the failing tests/lint issues, commit, push.
 
@@ -226,7 +221,7 @@ When `github_event: "check_run"` appears in the triggering message, CI checks ha
 ### Rules
 - **#1 RULE: Do what the triggering comment says.** This overrides everything else.
 - ALWAYS run commands from the topic directory (it is the checkout — there is no `repo/` subdirectory)
-- ALWAYS use `gh pr checkout <number>` to get the existing PR branch
+- ALWAYS use the git fetch+checkout pattern to get the existing PR branch
 - ALWAYS run `{check_command}` before each commit
 - **MANDATORY: You MUST run `{test_command}` after ANY code change and include the full test output in your PR comment. A PR without test results is NOT complete and will NOT be approved.**
 - ALWAYS commit and push after EACH plan step

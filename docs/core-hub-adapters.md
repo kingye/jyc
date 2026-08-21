@@ -1,8 +1,8 @@
 # Core / Hub / Adapters — The Pipe Architecture
 
-**Status:** Target architecture. Feishu, wecom_bot, and email are migrated.
-The remaining channels will follow; the end state is that JYC supports *only* this
-architecture.
+**Status:** Target architecture. Feishu, wecom_bot, email, github, and gitee are
+migrated. The remaining channels will follow; the end state is that JYC
+supports *only* this architecture.
 
 ## Context
 
@@ -17,7 +17,8 @@ responsibilities:
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ Adapters (outer) — protocol only                            │
-│   feishu · wecom_bot · email · github · wecom · wechat      │
+│   feishu · wecom_bot · email · github · gitee · wecom ·     │
+│   wechat                                                     │
 │   platform events ⇄ InboundMessage; relay replies back      │
 └───────────────────────────┬────────────────────────────────┘
                             │ pipe = { channel, topic, pattern }
@@ -252,8 +253,9 @@ Removed: `GithubOutboundAdapter` (whole file), the `"github"` arms in
 at `<workdir>/channels/<channel_name>/.github/` (processed comments, seen
 issues, CI status, close-event notifications). A one-time rename migrates the
 old `<workdir>/<channel_name>/.github/` location on first start; if the rename
-fails, dedup starts fresh (the poller then only reports items newer than
-startup, so no comment flood).
+fails, dedup starts fresh — the comment cursor starts at startup so no comment
+flood, but already-open issues/PRs re-trigger once as "opened" events, as on a
+first deploy.
 
 **Placeholders.** GitHub messages populate `repo`, `github_number`,
 `github_type` (`pull_request` / `issue`), `github_action`, `github_labels`,
@@ -304,7 +306,7 @@ collects many items into one shared topic that must survive any single item
 closing — and `${msg.pr_number}` / `${msg.issue_number}` stay type-gated as at
 routing time, so an issue close never resolves a PR topic. The hub's
 `TopicManager` is reached through the shared hub registry, which carries
-`(MessageRouter, TopicManager)` per hub channel. Gitee/wechat/wecom keep using
+`(MessageRouter, TopicManager)` per hub channel. wechat/wecom keep using
 the name-based `on_topic_close` and are unaffected. Feishu reports
 `im.chat.disbanded_v1` over the same callback (carrying the upstream chat_id);
 the serve layer reverse-maps it via its topic→chat_id relay map and closes
@@ -315,14 +317,14 @@ custom `topic_path` (e.g. a real project checkout) are skipped with an info
 log, and canonicalization blocks symlink escapes. Manual `/close` (with
 `--confirm`) still uses the unguarded `close_topic`.
 
-**No templates — initialization is a skill.** GitHub patterns no longer inject
-a `template`; the agent initializes its own topic directory by following an init
-skill. Skills are discovered from the layered skill roots, so
+**No templates — initialization is a skill.** GitHub/Gitee patterns no longer
+inject a `template`; the agent initializes its own topic directory by following
+an init skill. Skills are discovered from the layered skill roots, so
 `{workdir}/skills/<name>/SKILL.md` is visible to every topic — that is where the
 init skill belongs. Note that per-pattern `skills`, `mode`, and `attachments`
-settings on GitHub patterns stop applying (the hub channel's patterns are matched
-at route time), same as the other pipe-only adapters. The `template` machinery
-itself stays for Gitee.
+settings on GitHub/Gitee patterns stop applying (the hub channel's patterns are
+matched at route time), same as the other pipe-only adapters. The `template`
+machinery itself stays for wechat/wecom.
 
 Two ready-made skills ship in `skills/`; copy them into `{workdir}/skills/`:
 
@@ -343,8 +345,54 @@ than a skill that must first be triggered. Repository-shipped skills under
 `.claude/skills/`, `.opencode/skills/`, and `.jyc/skills/` are likewise picked up
 by the existing topic-root scan.
 
+## Gitee
+
+Gitee (REST polling in, issue/PR comments out) follows the same pipe-only
+migration as GitHub: no initialization templates, no shared repo directories,
+topics live in the pipe target (hub) channel.
+
+Retained:
+
+- `jyc-channels/src/gitee/client.rs` — REST client (polling + comment posting).
+- `jyc-channels/src/gitee/inbound.rs` — the poller, dedup/cursor state, and
+  `GiteeMatcher` (pattern ordering, topic-name derivation).
+- The new `spawn_gitee_adapter` in `crates/jyc-cli/src/cli/serve/channels.rs`.
+
+Removed: `GiteeOutboundAdapter` (whole file, plus its inclusion in `mod.rs`),
+and the `"gitee"` arms in `build_outbound_adapter` / `InboundSpawner::spawn`.
+
+**Dedup/cursor state.** Like GitHub, the adapter keeps its own protocol state,
+at `<workdir>/channels/<channel>/.gitee/` (processed comments, seen issues,
+close-event notifications). A one-time rename migrates the old
+`<workdir>/<channel>/.gitee/` location on first start; if the rename fails,
+dedup starts fresh — the comment cursor starts at startup so no comment flood,
+but already-open issues/PRs re-trigger once as "opened" events, as on a first
+deploy.
+
+**Placeholders.** Gitee messages populate `repo`, `gitee_number`,
+`gitee_type` (`pull_request` / `issue`), `gitee_action`, `gitee_labels`,
+`gitee_assignees`, plus `pr_number` **or** `issue_number` — type-gated exactly
+as on GitHub (see `build_trigger_message`).
+
+**Reply relaying.** The forwarder keeps a `topic → (number, role, is_pr)` map
+recorded on inbound and posts replies as comments via the Gitee API. The
+`[Role]` prefix is preserved (self-loop prevention). There is **no**
+model/mode/token footer, and Gitee comments carry no attachments. Unlike
+GitHub, Gitee uses **separate number spaces for issues and PRs**, so the map
+records the item type; the close-event handler filters remembered topics by
+type as well as number, so closing issue #5 never touches a PR #5 topic.
+
+**Close events.** A closed issue/PR re-renders every enabled pattern's topic
+template for that number via `close_event_topics` (same restart-proof logic as
+GitHub) and unions the in-memory routed topics (type-filtered). The hub's
+`TopicManager` is reached through the shared hub registry.
+
+**No templates — initialization is a skill.** Same design as GitHub; the
+skills are `gitee-init` (plain `git clone` — Gitee has no `gh` CLI),
+`gitee-planner`, and `gitee-developer`, all in `skills/`.
+
 ## Migrating other channels
 
-To be documented per channel when migration starts (wecom, wechat, gitee).
-The feishu/wecom_bot/email/github cleanup serves as the checklist template:
-strip everything except protocol code + pipe wiring.
+To be documented per channel when migration starts (wecom, wechat).
+The feishu/wecom_bot/email/github/gitee cleanup serves as the checklist
+template: strip everything except protocol code + pipe wiring.

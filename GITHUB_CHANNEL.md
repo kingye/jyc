@@ -376,21 +376,6 @@ gh pr edit 43 --add-label "ready-for-dev"
    - Fix issues, commit, push
    - Hand over to reviewer again
 
-### Agent C: Reviewer (github-reviewer)
-
-**Topic**: `review-pr-{N}`
-**Role**: Review PR code quality, approve or request changes.
-**Trigger**: Auto-triggered when PR has `ready-for-review` label via pattern matching
-
-**Workflow**:
-1. Triggered automatically when PR has `ready-for-review` label
-2. Read PR: `gh pr view {N}`
-3. Read diff: `gh pr diff {N}`
-4. Review code
-5. Submit review: `gh pr review {N} --approve` or `--request-changes`
-6. Remove `ready-for-review` label: `gh pr edit {N} --remove-label ready-for-review`
-7. If changes requested: hand over to developer (auto-trigger via pattern)
-
 ## Close & Cleanup
 
 ### Close Behavior
@@ -703,7 +688,6 @@ with `[Planner]` prefix. Reply to a PR → verify comment appears.
 **Implement**:
 - `github-planner` skill
 - `github-developer` skill
-- `github-reviewer` skill
 - Agent templates (AGENTS.md for each role)
 
 **Test**: Full end-to-end workflow:

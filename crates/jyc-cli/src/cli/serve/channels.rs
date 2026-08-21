@@ -1151,13 +1151,13 @@ pub(crate) fn spawn_github_adapter(
                         };
                         for topic in &topics_to_close {
                             for (hub_name, tm) in &hubs {
-                                if let Err(e) = tm.close_topic(topic).await {
+                                if let Err(e) = tm.auto_close_topic(topic).await {
                                     tracing::debug!(
                                         hub = %hub_name,
                                         topic = %topic,
                                         number = number,
                                         error = %e,
-                                        "github pipe: close_topic ignored (no such topic in this hub)"
+                                        "github pipe: auto_close_topic ignored (no such topic in this hub)"
                                     );
                                 }
                             }
@@ -1338,6 +1338,9 @@ pub(crate) fn spawn_feishu_adapter(
                 });
             }
 
+            let topic_chat_for_close = topic_chat.clone();
+            let routers_for_close = routers.clone();
+
             let options = jyc_types::InboundAdapterOptions {
                 on_message: Box::new(move |message| {
                     let config_for_pipe = config_for_spawn.clone();
@@ -1420,7 +1423,47 @@ pub(crate) fn spawn_feishu_adapter(
                     });
                     Ok(())
                 }),
-                on_topic_close: None,
+                on_topic_close: Some(Box::new(move |chat_id: String| {
+                    let topic_chat = topic_chat_for_close.clone();
+                    let routers = routers_for_close.clone();
+                    tokio::spawn(async move {
+                        // Reverse-lookup: the disband event carries the
+                        // upstream chat_id; the map records topic → chat_id.
+                        let topics_to_close: Vec<String> = {
+                            let map = topic_chat.lock().unwrap();
+                            map.iter()
+                                .filter(|(_, v)| v.as_str() == chat_id)
+                                .map(|(t, _)| t.clone())
+                                .collect()
+                        };
+                        if topics_to_close.is_empty() {
+                            return;
+                        }
+                        // Collect out of both std mutexes before awaiting:
+                        // their guards are not Send.
+                        let hubs: Vec<(String, Arc<TopicManager>)> = {
+                            let reg = routers.lock().unwrap();
+                            reg.iter()
+                                .map(|(name, (_, tm))| (name.clone(), tm.clone()))
+                                .collect()
+                        };
+                        for topic in &topics_to_close {
+                            for (hub_name, tm) in &hubs {
+                                if let Err(e) = tm.auto_close_topic(topic).await {
+                                    tracing::debug!(
+                                        hub = %hub_name,
+                                        topic = %topic,
+                                        chat_id = %chat_id,
+                                        error = %e,
+                                        "feishu pipe: auto_close_topic ignored (no such topic in this hub)"
+                                    );
+                                }
+                            }
+                        }
+                        topic_chat.lock().unwrap().retain(|_, v| v != &chat_id);
+                    });
+                    Ok(())
+                })),
                 on_close_event: None,
                 on_error: Box::new(|error| {
                     tracing::error!(error = %error, "Feishu inbound error");
@@ -2078,7 +2121,7 @@ impl InboundSpawner<'_> {
                     on_topic_close: Some(Box::new(move |topic_name: String| {
                         let tm = topic_manager_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_topic(&topic_name).await {
+                            if let Err(e) = tm.auto_close_topic(&topic_name).await {
                                 tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
                             }
                         });
@@ -2154,7 +2197,7 @@ impl InboundSpawner<'_> {
                     on_topic_close: Some(Box::new(move |topic_name: String| {
                         let tm = topic_manager_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_topic(&topic_name).await {
+                            if let Err(e) = tm.auto_close_topic(&topic_name).await {
                                 tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
                             }
                         });
@@ -2235,7 +2278,7 @@ impl InboundSpawner<'_> {
                     on_topic_close: Some(Box::new(move |topic_name: String| {
                         let tm = topic_manager_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_topic(&topic_name).await {
+                            if let Err(e) = tm.auto_close_topic(&topic_name).await {
                                 tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
                             }
                         });
@@ -2330,7 +2373,7 @@ impl InboundSpawner<'_> {
                     on_topic_close: Some(Box::new(move |topic_name: String| {
                         let tm = topic_manager_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_topic(&topic_name).await {
+                            if let Err(e) = tm.auto_close_topic(&topic_name).await {
                                 tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
                             }
                         });
@@ -2398,7 +2441,7 @@ impl InboundSpawner<'_> {
                     on_topic_close: Some(Box::new(move |topic_name: String| {
                         let tm = topic_manager_clone.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = tm.close_topic(&topic_name).await {
+                            if let Err(e) = tm.auto_close_topic(&topic_name).await {
                                 tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
                             }
                         });

@@ -6,6 +6,15 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Upstream close events now close the piped agent topic.** When a
+  GitHub issue/PR is closed or a Feishu group chat is disbanded, the
+  piped agent topics (e.g. `plan-<N>`) are closed and their directories
+  deleted. Hard safety rule: only topics whose resolved path lies under
+  the agents workspace root (`<data_home>/agents/`) are deleted — topics
+  pinned to a custom `topic_path` (e.g. a real project checkout) are
+  skipped with an info log, and canonicalization blocks symlink escapes.
+  Manual `/close` (with `--confirm`) is unchanged. (#608)
+
 - **GitHub is now a pipe-only channel adapter.** The poller matches its
   own patterns, re-targets each event into a hub channel (or an agent
   topic), and a per-target reply forwarder posts agent replies back as

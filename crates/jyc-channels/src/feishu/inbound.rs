@@ -315,7 +315,15 @@ impl jyc_types::InboundAdapter for FeishuInboundAdapter {
         loop {
             tracing::info!("Starting Feishu WebSocket connection...");
 
-            match ws.run(&channel_name, &*options.on_message, &cancel).await {
+            match ws
+                .run(
+                    &channel_name,
+                    &*options.on_message,
+                    options.on_topic_close.as_deref(),
+                    &cancel,
+                )
+                .await
+            {
                 Ok(()) => {
                     // Clean exit (cancelled)
                     tracing::info!("Feishu WebSocket stopped cleanly");

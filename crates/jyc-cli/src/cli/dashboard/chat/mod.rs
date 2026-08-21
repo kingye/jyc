@@ -2263,7 +2263,7 @@ impl ChatState {
         if self.input_history.is_empty() {
             return;
         }
-        let pos = self.history_pos.map_or(self.input_history.len(), |p| p);
+        let pos = self.history_pos.unwrap_or(self.input_history.len());
         if pos == 0 {
             return; // Already at oldest
         }

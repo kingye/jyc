@@ -71,6 +71,7 @@ impl FeishuWebSocket {
         &mut self,
         channel_name: &str,
         on_message: &(dyn Fn(InboundMessage) -> Result<()> + Send + Sync),
+        on_topic_close: Option<&(dyn Fn(String) -> Result<()> + Send + Sync)>,
         cancel: &CancellationToken,
     ) -> Result<()> {
         // 1. Build openlark client Config from FeishuConfig
@@ -104,7 +105,7 @@ impl FeishuWebSocket {
                 payload = payload_rx.recv() => {
                     match payload {
                         Some(data) => {
-                            if let Err(e) = self.handle_payload(channel_name, &data, on_message).await {
+                            if let Err(e) = self.handle_payload(channel_name, &data, on_message, on_topic_close).await {
                                 tracing::warn!(error = %e, "Failed to process Feishu event");
                             }
                         }
@@ -143,6 +144,7 @@ impl FeishuWebSocket {
         channel_name: &str,
         data: &[u8],
         on_message: &(dyn Fn(InboundMessage) -> Result<()> + Send + Sync),
+        on_topic_close: Option<&(dyn Fn(String) -> Result<()> + Send + Sync)>,
     ) -> Result<()> {
         // First parse as generic JSON to check event type
         let json: serde_json::Value = match serde_json::from_slice(data) {
@@ -165,11 +167,25 @@ impl FeishuWebSocket {
 
         tracing::debug!(event_type = %event_type, "Received Feishu event");
 
-        // Chat disbanded event: nothing to close — feishu is a pipe-only
-        // adapter; piped topics live in the hub channel and are not
-        // auto-closed.
+        // Chat disbanded event: feishu is a pipe-only adapter and owns no
+        // topic workspace, so surface the upstream chat_id — the serve
+        // layer maps it to the piped topics and closes them (subject to
+        // the agents-workspace safety guard).
         if event_type == "im.chat.disbanded_v1" {
-            tracing::info!("Chat disbanded event received (no topic close in pipe-only mode)");
+            let chat_id = json
+                .pointer("/event/chat_disbanded/chat_id")
+                .and_then(|v| v.as_str());
+            match (chat_id, on_topic_close) {
+                (Some(chat_id), Some(callback)) => {
+                    tracing::info!(chat_id = %chat_id, "Chat disbanded event received");
+                    if let Err(e) = callback(chat_id.to_string()) {
+                        tracing::warn!(error = %e, chat_id = %chat_id, "on_topic_close callback failed");
+                    }
+                }
+                _ => tracing::info!(
+                    "Chat disbanded event received (no chat_id or no close callback)"
+                ),
+            }
             return Ok(());
         }
 

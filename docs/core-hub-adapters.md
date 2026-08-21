@@ -298,7 +298,15 @@ and the adapter closes every topic it routed for that number (so `review-5` and
 `dev-5` close together, matching the old `*-{N}` scan semantics). The hub's
 `TopicManager` is reached through the shared hub registry, which carries
 `(MessageRouter, TopicManager)` per hub channel. Gitee/wechat/wecom keep using
-the name-based `on_topic_close` and are unaffected.
+the name-based `on_topic_close` and are unaffected. Feishu reports
+`im.chat.disbanded_v1` over the same callback (carrying the upstream chat_id);
+the serve layer reverse-maps it via its topic→chat_id relay map and closes
+every piped topic for that chat. **All** auto-close paths funnel into
+`TopicManager::auto_close_topic`, which deletes only directories that resolve
+under the agents workspace root (`<data_home>/agents/`) — topics pinned to a
+custom `topic_path` (e.g. a real project checkout) are skipped with an info
+log, and canonicalization blocks symlink escapes. Manual `/close` (with
+`--confirm`) still uses the unguarded `close_topic`.
 
 **No templates — initialization is a skill.** GitHub patterns no longer inject
 a `template`; the agent initializes its own topic directory by following an init

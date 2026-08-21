@@ -447,6 +447,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             sse_read_timeout,
             &cancel,
             thinking_enabled,
+            SSE_RETRY_BACKOFF_MS,
         )
         .await
         {
@@ -1073,6 +1074,7 @@ async fn generate_summary_from_joined_history(
         sse_read_timeout,
         &dummy_cancel,
         false, // progress summaries don't publish thinking events
+        SSE_RETRY_BACKOFF_MS,
     )
     .await?;
 
@@ -1910,4 +1912,4 @@ mod retry;
 use context::{
     compact_history_heuristic, compact_raw_context_heuristic, render_raw_context_as_text,
 };
-use retry::complete_with_retry;
+use retry::{SSE_RETRY_BACKOFF_MS, complete_with_retry};

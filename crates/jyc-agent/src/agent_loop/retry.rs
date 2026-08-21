@@ -19,7 +19,12 @@ const SSE_MAX_ATTEMPTS: u32 = 3;
 /// Indexed by retry number (0-based: the wait BEFORE the 2nd attempt is
 /// `[0]`, before the 3rd is `[1]`, etc.). Length must be
 /// `SSE_MAX_ATTEMPTS - 1`.
-const SSE_RETRY_BACKOFF_MS: &[u64] = &[1000, 2000];
+///
+/// 10s/20s (was 1s/2s): a transient failure — e.g. an SSE idle timeout
+/// that already waited `sse_read_timeout` on a silent stream — should not
+/// be retried almost immediately; give the upstream a few seconds before
+/// re-issuing. (#617)
+pub(super) const SSE_RETRY_BACKOFF_MS: &[u64] = &[10000, 20000];
 
 /// Maximum attempts for throttled failures (HTTP 429/502/503/504, #391).
 /// Rate-limit windows are typically tens of seconds, so this schedule is
@@ -51,10 +56,19 @@ fn max_attempts_for(class: RetryClass) -> u32 {
 /// is clamped to the schedule length so a mid-loop class change (e.g. a
 /// transient failure followed by a throttled one) cannot index out of
 /// bounds.
-fn retry_wait_ms(class: RetryClass, attempt_idx: u32, retry_after_secs: Option<u64>) -> u64 {
+///
+/// `transient_backoff_ms` is the transient schedule — production passes
+/// [`SSE_RETRY_BACKOFF_MS`]; tests pass a tiny schedule to keep the
+/// retry-loop tests fast.
+fn retry_wait_ms(
+    class: RetryClass,
+    transient_backoff_ms: &[u64],
+    attempt_idx: u32,
+    retry_after_secs: Option<u64>,
+) -> u64 {
     let schedule = match class {
         RetryClass::Throttled => THROTTLED_RETRY_BACKOFF_MS,
-        _ => SSE_RETRY_BACKOFF_MS,
+        _ => transient_backoff_ms,
     };
     let idx = (attempt_idx as usize).min(schedule.len() - 1);
     let fixed = schedule[idx];
@@ -66,7 +80,7 @@ fn retry_wait_ms(class: RetryClass, attempt_idx: u32, retry_after_secs: Option<u
 /// transient SSE / network failures and throttling rejections (#391).
 ///
 /// On a failure classified by [`classify_retry`]:
-/// - `Transient` → fast schedule (3 attempts, 1s/2s backoff).
+/// - `Transient` → fixed schedule (3 attempts, 10s/20s backoff).
 /// - `Throttled` (429/502/503/504) → slow schedule (5 attempts,
 ///   5s/15s/30s/60s backoff), honoring the provider's `Retry-After`
 ///   header as a floor when captured.
@@ -91,6 +105,7 @@ pub(crate) async fn complete_with_retry(
     sse_read_timeout: std::time::Duration,
     cancel: &CancellationToken,
     thinking_enabled: bool,
+    transient_backoff_ms: &[u64],
 ) -> Result<CollectedResponse> {
     let mut last_err: anyhow::Error =
         anyhow::anyhow!("complete_with_retry exited without attempting any call");
@@ -140,7 +155,7 @@ pub(crate) async fn complete_with_retry(
         }
 
         let retry_after_secs = extract_retry_after(&err_display);
-        let wait_ms = retry_wait_ms(class, attempt_idx, retry_after_secs);
+        let wait_ms = retry_wait_ms(class, transient_backoff_ms, attempt_idx, retry_after_secs);
         let next_attempt = attempt_idx + 2; // 1-based attempt # we're about to make
         let next_at = Utc::now() + chrono::Duration::milliseconds(wait_ms as i64);
         let retry_after_note = retry_after_secs
@@ -298,10 +313,9 @@ mod retry_tests {
         let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
         let mut rx = bus.subscribe().await.unwrap();
 
-        // Override backoff via a test-fast version: we still pay the real
-        // backoff (1s + 2s = 3s). That's fine for a unit test but let's
-        // verify the path works regardless. (Fast timers would require
-        // tokio's pause/advance which complicates this minimal test.)
+        // Fast transient backoff so the retry loop doesn't sleep 10s+20s
+        // per retry in a unit test — the schedule VALUES themselves are
+        // pinned by the `retry_wait_ms` unit tests below.
         let result = complete_with_retry(
             &provider,
             &[],
@@ -312,6 +326,7 @@ mod retry_tests {
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
             true,
+            &[1, 2],
         )
         .await;
 
@@ -365,6 +380,7 @@ mod retry_tests {
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
             true,
+            &[1, 2],
         )
         .await;
 
@@ -410,6 +426,7 @@ mod retry_tests {
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
             true,
+            &[1, 2],
         )
         .await;
 
@@ -465,6 +482,7 @@ mod retry_tests {
             std::time::Duration::from_secs(120),
             &CancellationToken::new(),
             true,
+            &[1, 2],
         )
         .await;
 
@@ -499,31 +517,43 @@ mod retry_tests {
     }
 
     #[test]
-    fn retry_wait_transient_uses_fast_schedule() {
-        assert_eq!(retry_wait_ms(RetryClass::Transient, 0, None), 1000);
-        assert_eq!(retry_wait_ms(RetryClass::Transient, 1, None), 2000);
+    fn retry_wait_transient_uses_schedule() {
+        assert_eq!(
+            retry_wait_ms(RetryClass::Transient, SSE_RETRY_BACKOFF_MS, 0, None),
+            10000
+        );
+        assert_eq!(
+            retry_wait_ms(RetryClass::Transient, SSE_RETRY_BACKOFF_MS, 1, None),
+            20000
+        );
     }
 
     #[test]
     fn retry_wait_throttled_uses_slow_schedule() {
-        assert_eq!(retry_wait_ms(RetryClass::Throttled, 0, None), 5000);
-        assert_eq!(retry_wait_ms(RetryClass::Throttled, 1, None), 15000);
-        assert_eq!(retry_wait_ms(RetryClass::Throttled, 2, None), 30000);
-        assert_eq!(retry_wait_ms(RetryClass::Throttled, 3, None), 60000);
+        assert_eq!(retry_wait_ms(RetryClass::Throttled, &[1], 0, None), 5000);
+        assert_eq!(retry_wait_ms(RetryClass::Throttled, &[1], 1, None), 15000);
+        assert_eq!(retry_wait_ms(RetryClass::Throttled, &[1], 2, None), 30000);
+        assert_eq!(retry_wait_ms(RetryClass::Throttled, &[1], 3, None), 60000);
     }
 
     #[test]
     fn retry_wait_honors_retry_after_as_floor() {
         // Retry-After larger than the fixed schedule wins.
-        assert_eq!(retry_wait_ms(RetryClass::Throttled, 0, Some(30)), 30000);
+        assert_eq!(
+            retry_wait_ms(RetryClass::Throttled, &[1], 0, Some(30)),
+            30000
+        );
         // Retry-After smaller than the fixed schedule does not shrink it.
-        assert_eq!(retry_wait_ms(RetryClass::Throttled, 1, Some(5)), 15000);
+        assert_eq!(
+            retry_wait_ms(RetryClass::Throttled, &[1], 1, Some(5)),
+            15000
+        );
     }
 
     #[test]
     fn retry_wait_caps_at_max_backoff() {
         assert_eq!(
-            retry_wait_ms(RetryClass::Throttled, 3, Some(3600)),
+            retry_wait_ms(RetryClass::Throttled, &[1], 3, Some(3600)),
             MAX_BACKOFF_MS,
             "pathological Retry-After must be capped"
         );
@@ -533,7 +563,10 @@ mod retry_tests {
     fn retry_wait_clamps_attempt_idx_to_schedule() {
         // A mid-loop class change can push attempt_idx past the transient
         // schedule's end — clamp instead of panicking.
-        assert_eq!(retry_wait_ms(RetryClass::Transient, 5, None), 2000);
+        assert_eq!(
+            retry_wait_ms(RetryClass::Transient, SSE_RETRY_BACKOFF_MS, 5, None),
+            20000
+        );
     }
 
     #[test]

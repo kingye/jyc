@@ -386,7 +386,7 @@ pub fn create_provider(
 /// Used by `agent_loop` to pick a retry policy per failure:
 /// - [`RetryClass::Transient`] — transport-level blips (TCP RST mid-stream,
 ///   body decode glitch, idle timeout, stale-connection send failure).
-///   Fast retry schedule (few attempts, short backoff).
+///   Fixed schedule (3 attempts, 10s/20s backoff).
 /// - [`RetryClass::Throttled`] — rate-limited or overloaded upstream
 ///   (HTTP 429 / 502 / 503 / 504). Slow retry schedule (more attempts,
 ///   longer backoff), honoring `Retry-After` when captured.
@@ -394,7 +394,7 @@ pub fn create_provider(
 ///   model-not-supported). Propagate immediately; retrying won't help.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetryClass {
-    /// Transport-level blip — fast retry.
+    /// Transport-level blip — brief retry (10s/20s backoff).
     Transient,
     /// Rate-limited / overloaded (429/502/503/504) — slow retry.
     Throttled,

@@ -56,6 +56,33 @@ All notable changes to JYC will be documented in this file.
   **BREAKING: every enabled GitHub pattern must now declare a `pipe`
   target — matching messages are dropped otherwise (warned at startup).**
 
+- **Gitee is now a pipe-only channel adapter**, same architecture as
+  GitHub. The poller matches its own patterns, re-targets each event into
+  a hub channel (or an agent topic), and a per-target reply forwarder
+  posts agent replies back as issue/PR comments. The channel no longer
+  owns a TopicManager, agent service, outbound adapter, or orchestrator
+  registration. Dedup/cursor state moves to
+  `<workdir>/channels/<channel>/.gitee/` (one-time rename from the old
+  `<workdir>/<channel>/.gitee/`; if the rename fails, dedup starts fresh
+  and the poller only reports items newer than startup, so there is no
+  comment flood). Comments keep the `[Role]` prefix (self-loop
+  prevention) but no longer carry a model/mode/token footer. Gitee uses
+  **separate number spaces for issues and PRs**, so the reply-relay map
+  records the item type and a close event only closes topics of the same
+  type. `GiteeOutboundAdapter` was deleted.
+  **BREAKING: every enabled Gitee pattern must now declare a `pipe`
+  target — matching messages are dropped otherwise (warned at startup);
+  per-pattern `template` no longer applies.**
+
+- **`gitee-init`, `gitee-planner`, and `gitee-developer` skills** (`skills/`).
+  Ported from `templates/gitee-{planner,developer}/AGENTS.md` following the
+  github skill conversion pattern: the checkout is the topic directory
+  itself (no `repo/` subdirectory). `gitee-init` clones via plain `git
+  clone` (Gitee has no `gh` CLI) and excludes framework files via
+  `.git/info/exclude`; the curl+jq Gitee API v5 workflow in the templates
+  is kept verbatim. Copy them into `{workdir}/skills/` to replace the
+  templates.
+
 - **`${msg.pr_number}` / `${msg.issue_number}` / `${msg.repo}` pipe topic
   placeholders for GitHub.** The number aliases are type-gated: a PR event
   carries only `pr_number`, an issue event only `issue_number`, so a

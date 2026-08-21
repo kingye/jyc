@@ -617,6 +617,13 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 
 # --- Channel: Gitee Repository ---
 # Enables multi-agent workflow on Gitee issues and Pull Requests.
+# --- Channel: Gitee Repository ---
+# Enables multi-agent workflow on Gitee issues and PRs.
+# Pipe-only adapter: the poller matches patterns and re-targets each event
+# into a hub channel / agent topic; a reply forwarder posts agent replies
+# back as issue/PR comments. State (dedup/cursor) lives under
+# <workdir>/channels/<channel>/.gitee/. Topic initialization is a skill
+# (gitee-init), not a per-pattern template.
 # Uses Gitee API v5 for polling and comment posting.
 
 # [channels.my_gitee]
@@ -629,7 +636,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # poll_interval_secs = 60
 # # api_url = "https://gitee.com/api/v5"  # Default. For Gitee Enterprise, use custom URL
 #
-# # Disable footer for Gitee channel
+# # Disable footer for Gitee channel (comments don't need model info)
 # [channels.my_gitee.footer]
 # enabled = false
 #
@@ -638,35 +645,41 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # name = "planner"
 # enabled = true
 # role = "Planner"
-# template = "gitee-planner"
-# topic_prefix = "issue"
 #
 # [channels.my_gitee.patterns.rules]
 # github_type = ["issue"]
+#
+# [channels.my_gitee.patterns.pipe]
+# agent = "jyc_git"
+# topic = "plan-${msg.issue_number}"
 #
 # # Pattern: Pull Requests with 'ready-for-dev' label → Developer
 # [[channels.my_gitee.patterns]]
 # name = "developer"
 # enabled = true
 # role = "Developer"
-# template = "gitee-developer"
-# topic_prefix = "pr"
 #
 # [channels.my_gitee.patterns.rules]
 # github_type = ["pull_request"]
 # labels = ["ready-for-dev"]
+#
+# [channels.my_gitee.patterns.pipe]
+# agent = "jyc_git"
+# topic = "dev-${msg.pr_number}"
 #
 # # Pattern: Pull Requests with 'ready-for-review' label → Reviewer
 # [[channels.my_gitee.patterns]]
 # name = "reviewer"
 # enabled = true
 # role = "Reviewer"
-# template = "gitee-reviewer"
-# topic_prefix = "review-pr"
 #
 # [channels.my_gitee.patterns.rules]
 # github_type = ["pull_request"]
 # labels = ["ready-for-review"]
+#
+# [channels.my_gitee.patterns.pipe]
+# agent = "jyc_git"
+# topic = "review-${msg.pr_number}"
 
 # --- Channel: GitHub Repository ---
 # Enables multi-agent workflow on GitHub issues and PRs.

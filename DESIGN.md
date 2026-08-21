@@ -1924,10 +1924,11 @@ Topic files still provide recent conversation context
 
 `build_footer()` (`crates/jyc-core/src/email_parser.rs`) is the **single shared
 function** for the model/mode/tokens footer appended to replies. It is called by
-the outbound adapters (gitee, github, wechat, wecom, wecomkf, wecom_bot) when
-`[channels.<name>.footer]` is enabled. Email is a pipe-only adapter and sends
-plain agent text — no footer. The agent (AgentService/StaticAgentService) never
-calls this function — it's a channel-specific concern owned by the adapter.
+the outbound adapters (wechat, wecom, wecomkf, wecom_bot) when
+`[channels.<name>.footer]` is enabled. Email, github, and gitee are pipe-only
+adapters and send plain agent text — no footer. The agent
+(AgentService/StaticAgentService) never calls this function — it's a
+channel-specific concern owned by the adapter.
 
 **Reply format:**
 ```

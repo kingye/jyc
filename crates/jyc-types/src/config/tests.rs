@@ -1248,3 +1248,236 @@ mod base_url_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod agent_extends_tests {
+    use super::*;
+
+    fn parse(cfg: &str) -> Result<AppConfig> {
+        load_config_from_str(cfg)
+    }
+
+    #[test]
+    fn child_overrides_and_inherits_base() {
+        let cfg = parse(
+            r#"
+            [ai]
+            model = "deepseek/deepseek-v4-pro"
+
+            [agents.base]
+            role = "Planner"
+            model = "deepseek/deepseek-v4-pro"
+            skills = ["plan-solution", "coding-principles"]
+            live_injection = false
+
+            [agents.special]
+            extends = "base"
+            role = "Reviewer"
+            live_injection = true
+        "#,
+        )
+        .unwrap();
+        let base = cfg.agents.get("base").unwrap();
+        assert_eq!(base.role.as_deref(), Some("Planner"));
+        assert_eq!(base.model.as_deref(), Some("deepseek/deepseek-v4-pro"));
+        assert!(!base.live_injection);
+
+        let special = cfg.agents.get("special").unwrap();
+        // Child overrides its own fields...
+        assert_eq!(special.role.as_deref(), Some("Reviewer"));
+        assert!(special.live_injection);
+        // ...and inherits the rest from base.
+        assert_eq!(special.model.as_deref(), Some("deepseek/deepseek-v4-pro"));
+        assert_eq!(
+            special.skills.as_deref(),
+            Some(vec!["plan-solution".to_string(), "coding-principles".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn chain_inheritance_resolves_recursively() {
+        let cfg = parse(
+            r#"
+            [ai]
+            model = "deepseek/deepseek-v4-pro"
+
+            [agents.c]
+            model = "anthropic/claude-opus-4-6"
+            role = "Developer"
+
+            [agents.b]
+            extends = "c"
+            role = "Planner"
+
+            [agents.a]
+            extends = "b"
+            skills = ["plan-solution"]
+        "#,
+        )
+        .unwrap();
+        let a = cfg.agents.get("a").unwrap();
+        // A inherits from B which inherits from C.
+        assert_eq!(a.model.as_deref(), Some("anthropic/claude-opus-4-6"));
+        assert_eq!(a.role.as_deref(), Some("Planner"));
+        assert_eq!(
+            a.skills.as_deref(),
+            Some(vec!["plan-solution".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn list_fields_are_replaced_not_merged() {
+        let cfg = parse(
+            r#"
+            [ai]
+            model = "deepseek/deepseek-v4-pro"
+
+            [agents.base]
+            skills = ["a", "b"]
+            disabled_tools = ["bash"]
+
+            [agents.child]
+            extends = "base"
+            skills = ["c"]
+        "#,
+        )
+        .unwrap();
+        let child = cfg.agents.get("child").unwrap();
+        // Override semantics: the child's list replaces the base's list.
+        assert_eq!(
+            child.skills.as_deref(),
+            Some(vec!["c".to_string()].as_slice())
+        );
+        // Unset fields still inherit.
+        assert_eq!(
+            child.disabled_tools.as_deref(),
+            Some(vec!["bash".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn empty_string_clears_inherited_value() {
+        let cfg = parse(
+            r#"
+            [ai]
+            model = "deepseek/deepseek-v4-pro"
+
+            [agents.base]
+            topic_path = "~/projects/foo"
+            model = "deepseek/deepseek-v4-pro"
+
+            [agents.child]
+            extends = "base"
+            topic_path = ""
+        "#,
+        )
+        .unwrap();
+        let child = cfg.agents.get("child").unwrap();
+        // topic_path = "" clears the inherited path → falls back to None.
+        assert_eq!(child.topic_path, None);
+        // Other inherited fields are untouched.
+        assert_eq!(child.model.as_deref(), Some("deepseek/deepseek-v4-pro"));
+    }
+
+    #[test]
+    fn nested_table_merge_recurses() {
+        let cfg = parse(
+            r#"
+            [ai]
+            model = "deepseek/deepseek-v4-pro"
+
+            [agents.base]
+            access = { read = ["/a"], write = ["/b"] }
+
+            [agents.child]
+            extends = "base"
+            access = { read = ["/c"] }
+        "#,
+        )
+        .unwrap();
+        let child = cfg.agents.get("child").unwrap();
+        let access = child.access.as_ref().unwrap();
+        assert_eq!(access.read, vec!["/c".to_string()]);
+        assert_eq!(access.write, vec!["/b".to_string()]);
+    }
+
+    #[test]
+    fn unknown_base_agent_is_error() {
+        let err = parse(
+            r#"
+            [ai]
+            model = "deepseek/deepseek-v4-pro"
+
+            [agents.child]
+            extends = "no_such_agent"
+        "#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("no_such_agent"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn extends_cycle_is_error() {
+        let err = parse(
+            r#"
+            [ai]
+            model = "deepseek/deepseek-v4-pro"
+
+            [agents.a]
+            extends = "b"
+            [agents.b]
+            extends = "a"
+        "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("cycle"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn self_extends_is_error() {
+        let err = parse(
+            r#"
+            [ai]
+            model = "deepseek/deepseek-v4-pro"
+
+            [agents.a]
+            extends = "a"
+        "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("cycle"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn non_string_extends_is_error() {
+        let err = parse(
+            r#"
+            [ai]
+            model = "deepseek/deepseek-v4-pro"
+
+            [agents.child]
+            extends = ["not_a_string"]
+        "#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("extends must be a string"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn config_without_agents_is_untouched() {
+        let cfg = parse(
+            r#"
+            [ai]
+            model = "deepseek/deepseek-v4-pro"
+        "#,
+        )
+        .unwrap();
+        assert!(cfg.agents.is_empty());
+    }
+}

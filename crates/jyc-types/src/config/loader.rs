@@ -2,7 +2,7 @@
 //!
 //! Extracted from the monolithic `config.rs`.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::Deserialize;
 use std::path::Path;
@@ -159,6 +159,111 @@ pub(crate) fn merge_toml(base: toml::Value, overlay: toml::Value) -> toml::Value
             toml::Value::Table(base_table)
         }
         (_base, overlay) => overlay,
+    }
+}
+
+/// Resolve `extends = "<base>"` inheritance between `[agents.<name>]`
+/// entries, in place on the parsed TOML tree.
+///
+/// Semantics (single inheritance, override):
+/// - the child overrides the base field-by-field on `merge_toml` rules
+///   (tables merge recursively, arrays/scalars are fully replaced);
+/// - an empty-string value in the child (`topic_path = ""`) *clears* the
+///   inherited value: the key is dropped so the child gets the field's
+///   default (`None`) instead of the base's value;
+/// - chains resolve recursively (`A extends B extends C`);
+/// - a missing base or an extends cycle is a config error.
+///
+/// The `extends` key itself is consumed here (removed before
+/// deserialization), so `AgentConfig` needs no `extends` field.
+///
+/// Runs before `${VAR}` expansion ([`expand_env_vars`]) so env vars
+/// resolve uniformly whether they came from the base or the child.
+pub(crate) fn resolve_agent_extends(value: &mut toml::Value, ctx: &str) -> Result<()> {
+    let Some(toml::Value::Table(agents)) = value.get_mut("agents") else {
+        // No [agents] table in this config layer — nothing to inherit.
+        return Ok(());
+    };
+
+    // Resolve each agent against a snapshot, then swap the table in.
+    // Snapshotting avoids aliasing while we borrow the map recursively.
+    let names: Vec<String> = agents.keys().cloned().collect();
+    let snapshot = agents.clone();
+    let mut resolved = toml::map::Map::new();
+    for name in &names {
+        resolved.insert(
+            name.clone(),
+            resolve_agent_extends_one(name, &snapshot, &mut Vec::new(), ctx)?,
+        );
+    }
+    *agents = resolved;
+    Ok(())
+}
+
+/// Recursively resolve one agent's `extends` chain and merge its base
+/// table underneath. `stack` holds the chain for cycle detection.
+fn resolve_agent_extends_one(
+    name: &str,
+    agents: &toml::map::Map<String, toml::Value>,
+    stack: &mut Vec<String>,
+    ctx: &str,
+) -> Result<toml::Value> {
+    let raw = agents.get(name).with_context(|| {
+        format!("config {ctx}: agent '{name}' (referenced by extends) not found in [agents]")
+    })?;
+    let toml::Value::Table(agent_table) = raw else {
+        bail!("config {ctx}: agent '{name}' must be a TOML table");
+    };
+
+    let mut merged = match agent_table.get("extends") {
+        None => toml::Value::Table(toml::map::Map::new()),
+        Some(extends) => {
+            let parent = extends.as_str().with_context(|| {
+                format!("config {ctx}: agent '{name}'.extends must be a string")
+            })?;
+            if stack.iter().any(|s| s == name) {
+                bail!(
+                    "config {ctx}: agent extends cycle detected: {} -> {name}",
+                    stack.join(" -> ")
+                );
+            }
+            stack.push(name.to_string());
+            let parent_value = resolve_agent_extends_one(parent, agents, stack, ctx);
+            stack.pop();
+            parent_value?
+        }
+    };
+
+    // Child fields win. Drop `extends` (consumed). Empty-string values
+    // are kept *through* the merge so they override the base value, then
+    // cleared afterwards (post-merge) so the field deserializes to its
+    // default (`None`) instead of inheriting the base's value — that is
+    // the "clear the inherited value" marker (`topic_path = ""`).
+    let mut child = agent_table.clone();
+    child.remove("extends");
+    merged = merge_toml(merged, toml::Value::Table(child));
+    drop_empty_string_markers(&mut merged);
+    Ok(merged)
+}
+
+/// Recursively remove keys whose value is an empty string.
+///
+/// This runs *after* [`merge_toml`], so a child's `field = ""` has
+/// already overridden the base's value; dropping the key then makes the
+/// field deserialize as `None` — the documented "clear" semantics.
+fn drop_empty_string_markers(value: &mut toml::Value) {
+    match value {
+        toml::Value::Table(t) => {
+            t.retain(|_, v| {
+                if matches!(v, toml::Value::String(s) if s.is_empty()) {
+                    false // empty-string leaf = "clear" marker → drop
+                } else {
+                    drop_empty_string_markers(v);
+                    true
+                }
+            });
+        }
+        _ => {}
     }
 }
 

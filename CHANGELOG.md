@@ -13,7 +13,7 @@ All notable changes to JYC will be documented in this file.
   the agents workspace root (`<data_home>/agents/`) are deleted — topics
   pinned to a custom `topic_path` (e.g. a real project checkout) are
   skipped with an info log, and canonicalization blocks symlink escapes.
-  Manual `/close` (with `--confirm`) is unchanged.
+  Manual `/close` (with `--confirm`) is unchanged. (#608)
 
 - **GitHub is now a pipe-only channel adapter.** The poller matches its
   own patterns, re-targets each event into a hub channel (or an agent

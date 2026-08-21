@@ -138,6 +138,10 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- Fix dashboard topic list showing "build" mode and `/model` writing the
+  wrong mode-specific override file when a topic's mode comes from
+  pattern/agent config instead of a mode-override file (#615)
+
 - **GitHub close events now close piped agent topics after a restart.**
   The close handler resolved topic names from an in-memory map populated
   only by inbound traffic in the current process, so an issue/PR routed

@@ -132,7 +132,7 @@ All notable changes to JYC will be documented in this file.
   rejected with "at least one channel must be configured", even though
   the `agents` websocket channel is synthesized at startup
   (`install_agents_channel`) — which runs *after* validation. Validation
-  now requires at least one channel **or** agent. (#PR)
+  now requires at least one channel **or** agent. (#610)
 
 - **`${msg.issue_number}` / `${msg.pr_number}` pipe topic placeholders
   now actually resolve.** The GitHub adapter stores these (and

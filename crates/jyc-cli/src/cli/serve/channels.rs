@@ -3392,4 +3392,18 @@ mod tests {
             vec![("dev-609".to_string(), "local_dev".to_string())]
         );
     }
+
+    /// Gitee templates use `${msg.gitee_number}` (same semantics as
+    /// `${msg.github_number}`): a close event must resolve it.
+    #[test]
+    fn close_event_topics_resolves_gitee_number() {
+        let patterns = vec![pattern_with(agent_pipe_target(
+            "jyc_git",
+            Some("gitee-${msg.gitee_number}"),
+        ))];
+        assert_eq!(
+            close_event_topics(&patterns, 42, "issue", "jyc"),
+            vec![("gitee-42".to_string(), "agents".to_string())]
+        );
+    }
 }

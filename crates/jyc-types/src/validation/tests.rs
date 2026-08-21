@@ -176,6 +176,28 @@ mode = "agent"
     assert!(errors.iter().any(|e| e.path == "channels"));
 }
 
+/// An agents-only config is complete: `[agents.<name>]` synthesizes the
+/// "agents" websocket channel at startup, so requiring a `[channels.*]`
+/// block would reject a working config.
+#[test]
+fn test_agents_only_config_passes() {
+    let toml = r#"
+[general]
+[agent]
+enabled = true
+mode = "agent"
+
+[agents.jyc]
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    assert!(
+        config.channels.is_empty(),
+        "no channel should be configured"
+    );
+    let errors = validate_config(&config);
+    assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
+}
+
 #[test]
 fn test_invalid_monitor_mode() {
     let toml = r#"

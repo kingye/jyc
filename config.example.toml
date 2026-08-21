@@ -616,8 +616,6 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # Example — see the GitHub channel patterns section below for a complete example.
 
 # --- Channel: Gitee Repository ---
-# Enables multi-agent workflow on Gitee issues and Pull Requests.
-# --- Channel: Gitee Repository ---
 # Enables multi-agent workflow on Gitee issues and PRs.
 # Pipe-only adapter: the poller matches patterns and re-targets each event
 # into a hub channel / agent topic; a reply forwarder posts agent replies
@@ -635,10 +633,8 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # token = "${GITEE_TOKEN}"              # Personal Access Token
 # poll_interval_secs = 60
 # # api_url = "https://gitee.com/api/v5"  # Default. For Gitee Enterprise, use custom URL
-#
-# # Disable footer for Gitee channel (comments don't need model info)
-# [channels.my_gitee.footer]
-# enabled = false
+# # (Pipe-only: no footer — comments are plain agent text via the reply
+# # forwarder, so [channels.<name>.footer] does not apply.)
 #
 # # Pattern: Issues → Planner
 # [[channels.my_gitee.patterns]]
@@ -668,6 +664,9 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # topic = "dev-${msg.pr_number}"
 #
 # # Pattern: Pull Requests with 'ready-for-review' label → Reviewer
+# # NOTE: no `gitee-reviewer` skill ships yet (only gitee-init / gitee-planner /
+# # gitee-developer are ported); the topic is created but the agent has no
+# # reviewer instructions until it is ported from templates/gitee-reviewer.
 # [[channels.my_gitee.patterns]]
 # name = "reviewer"
 # enabled = true

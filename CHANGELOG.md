@@ -49,9 +49,10 @@ All notable changes to JYC will be documented in this file.
   service, outbound adapter, or orchestrator registration — all topics
   live in the pipe target. Dedup/cursor state moves to
   `<workdir>/channels/<channel>/.github/` (one-time rename from the old
-  `<workdir>/<channel>/.github/`; if the rename fails, dedup starts fresh
-  and the poller only reports items newer than startup, so there is no
-  comment flood). Comments keep the `[Role]` prefix (self-loop
+  `<workdir>/<channel>/.github/`; if the rename fails, dedup starts fresh —
+  the comment cursor starts at startup so no comment flood, but
+  already-open issues/PRs re-trigger once as "opened" events, as on a
+  first deploy). Comments keep the `[Role]` prefix (self-loop
   prevention) but no longer carry a model/mode/token footer.
   **BREAKING: every enabled GitHub pattern must now declare a `pipe`
   target — matching messages are dropped otherwise (warned at startup).**
@@ -63,9 +64,10 @@ All notable changes to JYC will be documented in this file.
   owns a TopicManager, agent service, outbound adapter, or orchestrator
   registration. Dedup/cursor state moves to
   `<workdir>/channels/<channel>/.gitee/` (one-time rename from the old
-  `<workdir>/<channel>/.gitee/`; if the rename fails, dedup starts fresh
-  and the poller only reports items newer than startup, so there is no
-  comment flood). Comments keep the `[Role]` prefix (self-loop
+  `<workdir>/<channel>/.gitee/`; if the rename fails, dedup starts fresh —
+  the comment cursor starts at startup so no comment flood, but
+  already-open issues/PRs re-trigger once as "opened" events, as on a
+  first deploy). Comments keep the `[Role]` prefix (self-loop
   prevention) but no longer carry a model/mode/token footer. Gitee uses
   **separate number spaces for issues and PRs**, so the reply-relay map
   records the item type and a close event only closes topics of the same

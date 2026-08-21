@@ -253,8 +253,9 @@ Removed: `GithubOutboundAdapter` (whole file), the `"github"` arms in
 at `<workdir>/channels/<channel_name>/.github/` (processed comments, seen
 issues, CI status, close-event notifications). A one-time rename migrates the
 old `<workdir>/<channel_name>/.github/` location on first start; if the rename
-fails, dedup starts fresh (the poller then only reports items newer than
-startup, so no comment flood).
+fails, dedup starts fresh — the comment cursor starts at startup so no comment
+flood, but already-open issues/PRs re-trigger once as "opened" events, as on a
+first deploy.
 
 **Placeholders.** GitHub messages populate `repo`, `github_number`,
 `github_type` (`pull_request` / `issue`), `github_action`, `github_labels`,
@@ -364,8 +365,9 @@ and the `"gitee"` arms in `build_outbound_adapter` / `InboundSpawner::spawn`.
 at `<workdir>/channels/<channel>/.gitee/` (processed comments, seen issues,
 close-event notifications). A one-time rename migrates the old
 `<workdir>/<channel>/.gitee/` location on first start; if the rename fails,
-dedup starts fresh (the poller then only reports items newer than startup, so
-no comment flood).
+dedup starts fresh — the comment cursor starts at startup so no comment flood,
+but already-open issues/PRs re-trigger once as "opened" events, as on a first
+deploy.
 
 **Placeholders.** Gitee messages populate `repo`, `gitee_number`,
 `gitee_type` (`pull_request` / `issue`), `gitee_action`, `gitee_labels`,

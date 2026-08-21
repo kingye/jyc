@@ -31,9 +31,6 @@ repo = "myproject"
 token = "${GITEE_TOKEN}"              # Personal Access Token
 poll_interval_secs = 60
 # api_url = "https://gitee.com/api/v5"  # Default
-
-[channels.mygitee.footer]
-enabled = false
 ```
 
 Every enabled Gitee pattern **must** declare a `pipe` target — matching
@@ -114,6 +111,11 @@ skills ship in `skills/`; copy them into `{workdir}/skills/`:
 | `gitee-init` | Clones the repository **into the topic directory itself** (plain `git clone`, no `repo/` subdirectory), and excludes framework files via `.git/info/exclude`. |
 | `gitee-planner` | The planner role, ported from `templates/gitee-planner/AGENTS.md`; delegates setup to `gitee-init`. |
 | `gitee-developer` | The developer role, ported from `templates/gitee-developer/AGENTS.md`; delegates setup to `gitee-init`. |
+
+> **Note:** no `gitee-reviewer` skill ships yet — only `gitee-init`, `gitee-planner`,
+> and `gitee-developer` are ported. A reviewer pattern still creates its topic, but
+> the agent has no reviewer instructions until it is ported from
+> `templates/gitee-reviewer/AGENTS.md` (same conversion as the github reviewer skill).
 
 ## Differences from GitHub Channel
 

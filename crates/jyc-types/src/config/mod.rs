@@ -981,6 +981,11 @@ fn parse_and_deserialize_from_value<T: serde::de::DeserializeOwned>(
              (legacy key still accepted)"
         );
     }
+    // Resolve `[agents.<name>] extends = "<base>"` inheritance before
+    // expansion (so `${VAR}` resolves uniformly in base and child) and
+    // before deserialization (so the `extends` key never reaches the
+    // `deny_unknown_fields` `AgentConfig` struct).
+    resolve_agent_extends(&mut value, ctx)?;
     expand_env_vars(&mut value);
     value
         .try_into()
@@ -997,4 +1002,4 @@ mod tests;
 
 pub use loader::*;
 
-use loader::expand_env_vars;
+use loader::{expand_env_vars, resolve_agent_extends};

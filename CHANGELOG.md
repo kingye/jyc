@@ -236,6 +236,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Transient retry backoff raised from 1s/2s to 10s/20s.** A transient
+  failure — e.g. an SSE idle timeout that already waited
+  `sse_read_timeout` (default 120s) on a silent stream — was retried after
+  only 1 second, effectively "immediately", so the retry usually hit the
+  same silent upstream again. The retry message (`next retry at …
+  (in Ns)`) now shows a meaningful wait. Attempt budget unchanged
+  (3 attempts, 2 retries). (#617)
+
 - **email channel is pipe-only** — `email` joins `feishu`/`wecom_bot` as a
   pipe-only adapter (see `docs/core-hub-adapters.md`). Every enabled
   pattern must declare a `pipe` target; the adapter keeps only the IMAP

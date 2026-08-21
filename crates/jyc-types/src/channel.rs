@@ -107,6 +107,10 @@ pub struct SendResult {
     pub message_id: String,
 }
 
+/// Close-event callback: upstream item number (GitHub issue/PR) plus its type
+/// (`issue` / `pull_request`).
+pub type CloseEventCallback = Box<dyn Fn(u64, &str) + Send + Sync>;
+
 /// Options passed to an inbound adapter's `start()` method.
 pub struct InboundAdapterOptions {
     /// Callback for each received message (fire-and-forget)
@@ -114,10 +118,11 @@ pub struct InboundAdapterOptions {
     /// Callback for topic close events (e.g., chat disbanded)
     pub on_topic_close: Option<Box<dyn Fn(String) -> Result<()> + Send + Sync>>,
     /// Callback for close events identified by an upstream item number
-    /// (GitHub issue/PR). Pipe-only adapters own no workspace, so they cannot
-    /// resolve topic names by scanning directories — they map the number to
-    /// the topics they routed and close those in the hub.
-    pub on_close_event: Option<Box<dyn Fn(u64) + Send + Sync>>,
+    /// (GitHub issue/PR) and its type (`issue` / `pull_request`). Pipe-only
+    /// adapters own no workspace, so they cannot resolve topic names by
+    /// scanning directories — they re-render the configured pipe topic
+    /// templates for that number and close those topics in the hub.
+    pub on_close_event: Option<CloseEventCallback>,
     /// Callback for errors
     #[allow(dead_code)]
     pub on_error: Box<dyn Fn(anyhow::Error) + Send + Sync>,

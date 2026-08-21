@@ -513,6 +513,11 @@ All notable changes to JYC will be documented in this file.
   saves piped attachments), feishu-side topic-close handling, and the
   non-pipe routing fallback.
 
+- **`skills/github-reviewer`.** The reviewer skill no longer ships — PR
+  review is handled by the `github-planner` deep-review flow; `pr-review`
+  remains available as a general skill for any topic that wants it. The
+  channel doc and config examples no longer reference a reviewer agent.
+
 ### Fixed
 
 - **`pipe = { agent, topic }` with dynamic topic lost the agent identity.**

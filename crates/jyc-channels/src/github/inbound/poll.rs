@@ -851,7 +851,7 @@ impl GithubInboundAdapter {
                         );
 
                         if let Some(ref on_close) = options.on_close_event {
-                            (on_close)(cached_number);
+                            (on_close)(cached_number, github_type);
                         }
 
                         processed_events.insert(event_uid);
@@ -900,9 +900,8 @@ impl GithubInboundAdapter {
 
             // Close every topic the pipe adapter routed for this number.
             if let Some(ref on_close) = options.on_close_event {
-                let _ = github_type; // event-type no longer drives the prefix list
                 let _ = is_merged; // merge state currently doesn't change cleanup
-                (on_close)(item.number);
+                (on_close)(item.number, github_type);
             }
 
             // Remove from issue cache

@@ -209,6 +209,50 @@ fn loopback_addr(bind: &str) -> String {
 /// If any placeholder is present but the value is missing/empty, the
 /// caller drops the message with a warning (avoids misrouting to a
 /// literal `"${msg.<key>}"` topic).
+/// Topics to close for a GitHub close event, derived from config alone.
+///
+/// The routed topic name is a pure function of `pipe.topic` and the item
+/// number, so re-rendering the template beats remembering what was routed:
+/// the in-memory topic map is empty after a restart, and a close event for an
+/// item routed before the restart would otherwise close nothing (#611).
+///
+/// Only number-dependent templates are considered. A static `pipe.topic`
+/// collects many items into one shared topic, which must survive any single
+/// item closing. `${msg.pr_number}` / `${msg.issue_number}` are type-gated
+/// exactly as at routing time, so an issue close never resolves a PR topic.
+///
+/// Returns `(topic, target_hub_channel)` pairs.
+fn close_event_topics(
+    patterns: &[jyc_types::ChannelPattern],
+    number: u64,
+    github_type: &str,
+    repo: &str,
+) -> Vec<(String, String)> {
+    patterns
+        .iter()
+        .filter(|p| p.enabled)
+        .filter_map(|p| {
+            let pipe = p.pipe.as_ref()?;
+            let template = pipe.topic.as_deref()?;
+            if !template.contains("${msg.") {
+                return None;
+            }
+            let topic = resolve_placeholders_with(template, |key| match key {
+                "github_number" => Some(number.to_string()),
+                "pr_number" if github_type == "pull_request" => Some(number.to_string()),
+                "issue_number" if github_type != "pull_request" => Some(number.to_string()),
+                "repo" => Some(repo.to_string()),
+                _ => None,
+            })?;
+            let hub = pipe
+                .channel
+                .clone()
+                .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))?;
+            Some((topic, hub))
+        })
+        .collect()
+}
+
 fn apply_pipe_retarget(
     mut msg: jyc_types::InboundMessage,
     pipe: &jyc_types::PipeTarget,
@@ -275,6 +319,16 @@ fn apply_pipe_retarget(
 /// missing/empty (caller drops with warning). When the template contains no
 /// `${msg.*}` placeholders, returns the template unchanged.
 fn resolve_msg_placeholders(template: &str, msg: &jyc_types::InboundMessage) -> Option<String> {
+    resolve_placeholders_with(template, |key| lookup_msg_placeholder(key, msg))
+}
+
+/// Core of `resolve_msg_placeholders` with the value source as a closure, so
+/// close events (which have a number but no message) can render the same
+/// `pipe.topic` templates.
+fn resolve_placeholders_with(
+    template: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
     static PLACEHOLDER_RE: OnceLock<regex::Regex> = OnceLock::new();
     let re =
         PLACEHOLDER_RE.get_or_init(|| regex::Regex::new(r"\$\{msg\.([A-Za-z0-9_]+)\}").unwrap());
@@ -287,7 +341,7 @@ fn resolve_msg_placeholders(template: &str, msg: &jyc_types::InboundMessage) -> 
     for caps in re.captures_iter(template) {
         let full = caps.get(0).unwrap().as_str();
         let key = caps.get(1).unwrap().as_str();
-        let raw = lookup_msg_placeholder(key, msg)?;
+        let raw = lookup(key)?;
         let sanitized = jyc_utils::helpers::sanitize_for_filesystem(&raw);
         if sanitized.is_empty() {
             tracing::warn!(
@@ -1029,6 +1083,9 @@ pub(crate) fn spawn_github_adapter(
             // The close handler needs its own handles (on_message takes ownership).
             let topic_state_for_close = topic_state.clone();
             let routers_for_close = routers.clone();
+            let config_for_close = config_for_spawn.clone();
+            let channel_name_for_close = channel_name_for_task.clone();
+            let repo_for_close = github_config.repo.clone();
             let options = jyc_types::InboundAdapterOptions {
                 on_message: Box::new(move |message| {
                     let config_for_pipe = config_for_spawn.clone();
@@ -1126,21 +1183,43 @@ pub(crate) fn spawn_github_adapter(
                     Ok(())
                 }),
                 on_topic_close: None,
-                on_close_event: Some(Box::new(move |number: u64| {
+                on_close_event: Some(Box::new(move |number: u64, github_type: &str| {
                     let topic_state = topic_state_for_close.clone();
                     let routers = routers_for_close.clone();
+                    // Derive the routed topics from config (restart-proof) and
+                    // union with whatever this process actually routed (covers
+                    // topics whose template changed since routing).
+                    let patterns = config_for_close
+                        .load()
+                        .channels
+                        .get(&channel_name_for_close)
+                        .and_then(|c| c.patterns.clone())
+                        .unwrap_or_default();
+                    let mut targets =
+                        close_event_topics(&patterns, number, github_type, &repo_for_close);
+                    let github_type = github_type.to_string();
                     tokio::spawn(async move {
-                        // Collect out of both std mutexes before awaiting:
+                        // Collect out of the std mutexes before awaiting:
                         // their guards are not Send.
-                        let topics_to_close: Vec<String> = {
+                        {
                             let state = topic_state.lock().unwrap();
-                            state
+                            for topic in state
                                 .iter()
                                 .filter(|(_, v)| v.0 == number)
                                 .map(|(t, _)| t.clone())
-                                .collect()
-                        };
-                        if topics_to_close.is_empty() {
+                            {
+                                if !targets.iter().any(|(t, _)| *t == topic) {
+                                    // Hub unknown for remembered topics: try every hub.
+                                    targets.push((topic, String::new()));
+                                }
+                            }
+                        }
+                        if targets.is_empty() {
+                            tracing::info!(
+                                number = number,
+                                github_type = %github_type,
+                                "github pipe: close event resolved no topics (no pipe pattern with a number-dependent topic template)"
+                            );
                             return;
                         }
                         let hubs: Vec<(String, Arc<TopicManager>)> = {
@@ -1149,8 +1228,11 @@ pub(crate) fn spawn_github_adapter(
                                 .map(|(name, (_, tm))| (name.clone(), tm.clone()))
                                 .collect()
                         };
-                        for topic in &topics_to_close {
+                        for (topic, target_hub) in &targets {
                             for (hub_name, tm) in &hubs {
+                                if !target_hub.is_empty() && hub_name != target_hub {
+                                    continue;
+                                }
                                 if let Err(e) = tm.auto_close_topic(topic).await {
                                     tracing::debug!(
                                         hub = %hub_name,
@@ -2958,5 +3040,65 @@ mod tests {
     fn email_pipe_with_topic_keeps_explicit_topic() {
         let pipe = email_pipe_with_topic(&agent_pipe_target("jin", Some("invoices")), "Invoice 42");
         assert_eq!(pipe.topic.as_deref(), Some("invoices"));
+    }
+
+    // ---- close_event_topics ----
+
+    /// Regression for #611: a close event must resolve its topics from config,
+    /// not from the in-memory routing map (empty after a restart). Type-gated
+    /// placeholders keep an issue close from touching PR topics.
+    #[test]
+    fn close_event_topics_renders_number_templates() {
+        let patterns = vec![
+            pattern_with(agent_pipe_target(
+                "jyc_git_planner",
+                Some("plan-${msg.issue_number}"),
+            )),
+            pattern_with(agent_pipe_target("jyc_git", Some("dev-${msg.pr_number}"))),
+        ];
+
+        // Issue close → only the issue_number template resolves.
+        assert_eq!(
+            close_event_topics(&patterns, 607, "issue", "jyc"),
+            vec![("plan-607".to_string(), "agents".to_string())]
+        );
+        // PR close → only the pr_number template resolves.
+        assert_eq!(
+            close_event_topics(&patterns, 609, "pull_request", "jyc"),
+            vec![("dev-609".to_string(), "agents".to_string())]
+        );
+    }
+
+    /// A static `pipe.topic` collects many items into one shared topic, so
+    /// closing one item must never delete it. Disabled patterns are ignored.
+    #[test]
+    fn close_event_topics_skips_static_and_disabled() {
+        let patterns = vec![
+            pattern_with(agent_pipe_target("jyc_git", Some("shared-inbox"))),
+            ChannelPattern {
+                name: "disabled".to_string(),
+                enabled: false,
+                pipe: Some(agent_pipe_target(
+                    "jyc_git",
+                    Some("plan-${msg.issue_number}"),
+                )),
+                ..Default::default()
+            },
+        ];
+        assert!(close_event_topics(&patterns, 607, "issue", "jyc").is_empty());
+    }
+
+    /// `${msg.repo}` disambiguates two channels piping into one agent, and the
+    /// legacy `pipe.channel` form resolves to that channel as the hub.
+    #[test]
+    fn close_event_topics_repo_placeholder_and_legacy_channel() {
+        let patterns = vec![pattern_with(pipe_target(
+            None,
+            Some("review-${msg.repo}-${msg.pr_number}"),
+        ))];
+        assert_eq!(
+            close_event_topics(&patterns, 42, "pull_request", "jyc"),
+            vec![("review-jyc-42".to_string(), "local_dev".to_string())]
+        );
     }
 }

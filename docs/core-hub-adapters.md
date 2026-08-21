@@ -293,9 +293,16 @@ adapters: the map is rebuilt from inbound traffic after a restart.
 **Close events.** A closed issue/PR must close the topics in the *hub*
 workspace, which a pipe-only adapter cannot find by scanning its own
 (nonexistent) workspace. `InboundAdapterOptions` therefore carries an
-`on_close_event: Option<Fn(u64)>` callback: the poller reports the item number,
-and the adapter closes every topic it routed for that number (so `review-5` and
-`dev-5` close together, matching the old `*-{N}` scan semantics). The hub's
+`on_close_event: Option<Fn(u64, &str)>` callback (item number + `issue` /
+`pull_request`). The topic name is a pure function of `pipe.topic` and the
+number, so the adapter re-renders every enabled pattern's topic template for
+that number instead of trusting memory: the in-memory topic map is empty after
+a restart, so a close event for an item routed before the restart used to close
+nothing (#611). Both sources are unioned, so `review-5` and `dev-5` still close
+together. Only number-dependent templates participate — a static `pipe.topic`
+collects many items into one shared topic that must survive any single item
+closing — and `${msg.pr_number}` / `${msg.issue_number}` stay type-gated as at
+routing time, so an issue close never resolves a PR topic. The hub's
 `TopicManager` is reached through the shared hub registry, which carries
 `(MessageRouter, TopicManager)` per hub channel. Gitee/wechat/wecom keep using
 the name-based `on_topic_close` and are unaffected. Feishu reports

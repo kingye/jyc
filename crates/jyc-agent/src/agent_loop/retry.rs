@@ -519,11 +519,11 @@ mod retry_tests {
     #[test]
     fn retry_wait_transient_uses_schedule() {
         assert_eq!(
-            retry_wait_ms(RetryClass::Transient, &SSE_RETRY_BACKOFF_MS, 0, None),
+            retry_wait_ms(RetryClass::Transient, SSE_RETRY_BACKOFF_MS, 0, None),
             10000
         );
         assert_eq!(
-            retry_wait_ms(RetryClass::Transient, &SSE_RETRY_BACKOFF_MS, 1, None),
+            retry_wait_ms(RetryClass::Transient, SSE_RETRY_BACKOFF_MS, 1, None),
             20000
         );
     }
@@ -564,7 +564,7 @@ mod retry_tests {
         // A mid-loop class change can push attempt_idx past the transient
         // schedule's end — clamp instead of panicking.
         assert_eq!(
-            retry_wait_ms(RetryClass::Transient, &SSE_RETRY_BACKOFF_MS, 5, None),
+            retry_wait_ms(RetryClass::Transient, SSE_RETRY_BACKOFF_MS, 5, None),
             20000
         );
     }

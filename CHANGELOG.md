@@ -12,7 +12,8 @@ All notable changes to JYC will be documented in this file.
   wholesale (not merged), `extends` chains resolve recursively
   (`A extends B extends C`), and an empty-string value in the child
   (`topic_path = ""`) clears the inherited value so the field falls back
-  to its default. A missing base agent or an extends cycle fails config
+  to its default (there is no "unset to None" for list fields — they can
+  only be replaced). A missing base agent or an extends cycle fails config
   loading with a clear error. The `extends` key is consumed at parse time;
   both agents remain routable independently.
 

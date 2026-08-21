@@ -1068,10 +1068,13 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # Inheritance: an agent can reuse another agent's config with
 #   extends = "<base_agent_name>"
 # Child fields override the base field-by-field; lists (skills, mcps,
-# disabled_tools, ...) are replaced wholesale, not merged; chains resolve
+# disabled_tools, ...) are replaced wholesale (not merged); chains resolve
 # recursively (A extends B extends C). Set a string field to "" to clear
 # an inherited value (e.g. topic_path = "" falls back to the default
-# workspace root). The base agent stays a usable agent itself.
+# workspace root); the "" marker applies recursively, so "" inside a
+# nested table (e.g. context_strategy = { mode = "" }) clears that field
+# too. Lists have no "unset" marker — skills = [] replaces the list with
+# an empty whitelist (load no skills). The base agent stays usable itself.
 #
 # [agents.base_planner]
 # role = "Planner"
@@ -1082,7 +1085,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # [agents.jyc]
 # extends = "base_planner"   # inherit role/skills/model from base_planner
 # # role = "Developer"       # override any inherited field
-# # skills = []              # clear the inherited list ([] replaces it)
+# # skills = []              # replace with an empty whitelist: load no skills
 # template = "jyc"
 # # topic_path = "~/projects/jyc"
 # access = { read = ["~/.cargo/registry/src"], write = ["/tmp/jyc-builds"] }

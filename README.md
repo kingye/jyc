@@ -340,8 +340,10 @@ Per-pattern options such as `topic_path` (custom topic directory), `model`
 (per-pattern MCP tools) are configured under `[[channels.<name>.patterns]]`.
 See `config.example.toml` for annotated examples.
 
-Agents (`[agents.<name>]`) are the websocket-based counterpart to patterns
-and accept the same per-pattern behaviors. They also support inheritance:
+Agents (`[agents.<name>]`) are the websocket-based counterpart to patterns:
+they mirror `ChannelPattern`'s behavior surface (minus `rules` and the
+pattern-identification fields `name`, `channel`, `enabled`, `pipe`,
+`topic_prefix`). They also support inheritance:
 `extends = "<base>"` reuses another agent's config and overrides only the
 fields that differ (empty string `""` clears an inherited value; lists are
 replaced, not merged). Both the base and the derived agent remain routable.

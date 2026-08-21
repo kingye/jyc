@@ -6,6 +6,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **`[agents.<name>]` inheritance via `extends = "<base>"`.** A new agent
+  can reuse most of another agent's config and override only the fields
+  that differ: child fields win over the base, arrays/lists are replaced
+  wholesale (not merged), `extends` chains resolve recursively
+  (`A extends B extends C`), and an empty-string value in the child
+  (`topic_path = ""`) clears the inherited value so the field falls back
+  to its default. A missing base agent or an extends cycle fails config
+  loading with a clear error. The `extends` key is consumed at parse time;
+  both agents remain routable independently.
+
 - **New skill: `github-developer`.** Developer role for GitHub PRs —
   implements the planner's spec step-by-step on the existing PR branch,
   commits/pushes after each step, runs checks and tests, fixes CI

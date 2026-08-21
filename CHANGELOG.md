@@ -6,6 +6,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **New skill: `github-developer`.** Developer role for GitHub PRs —
+  implements the planner's spec step-by-step on the existing PR branch,
+  commits/pushes after each step, runs checks and tests, fixes CI
+  failures and reviewer feedback, then hands off via the
+  `ready-for-review` label. Converted from
+  `templates/github-developer/AGENTS.md` following the `github-planner`
+  skill conversion pattern; the template itself is unchanged. (#607)
+
 - **Upstream close events now close the piped agent topic.** When a
   GitHub issue/PR is closed or a Feishu group chat is disbanded, the
   piped agent topics (e.g. `plan-<N>`) are closed and their directories

@@ -6,6 +6,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **Windowed context now shows tool results.** The sliding-window
+  annotation — `(incl. followed tool calls: bash(command="ls") → BRANCH
+  main…)` — appends each call's truncated result (`→ <text>`) so the agent
+  can see *what its tools returned* on prior turns, not just that they ran.
+  Results are matched to calls by id (OpenAI `tool_call_id` / Anthropic
+  `tool_use_id`) and capped at 500 bytes with `…`; a call with no known
+  result gets no arrow. The full result is one `context_browse` call away.
+  Prevents the agent re-exploring when prior tool output fell out of the
+  visible window. (#627)
+
 - **New built-in tool: `context_browse`.** Lets the agent page through the
   in-memory conversation transcript — user/assistant text pairs, including
   turns that fell out of the sliding context window. `offset` counts pairs

@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Fixed
+
+- **Reply-delivery guard enforcement.** The agent loop's reply reminders
+  are now backed by a tool-restricted recovery turn: after a reminder,
+  the next LLM call offers only `jyc_reply_message`, so the model cannot
+  re-emit narration instead of delivering. Failed `jyc_reply_message`
+  calls (missing/empty message, bad attachment) now trigger a
+  failure-aware reminder quoting the concrete tool error, and reply-tool
+  error messages state explicitly that the reply was not delivered (#637)
+
 ### Changed
 
 - **wecom and wecomkf are pipe-only adapters.** Both channel types were

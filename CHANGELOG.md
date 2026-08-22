@@ -274,6 +274,18 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **Sliding-window context now annotates assistant messages with their
+  bare tool calls.** The windowed part (recent user+assistant pairs) folds
+  the assistant's tool calls into the text as
+  `(incl. followed tool calls: name(arg=value, …))`, keeping **all**
+  parameters and truncating only a single argument value over 200 chars.
+  Tool calls were previously stripped entirely, so the model saw a gap
+  between an assistant text that ran tools and the following turns;
+  tool-call-only turns (no text of their own) are kept as the annotation
+  alone instead of being dropped. The
+  annotation is text-only, so no tool-call/tool-result pairing constraints
+  apply (those only matter for the verbatim `current` turn). (#623)
+
 - **Transient retry backoff raised from 1s/2s to 10s/20s.** A transient
   failure — e.g. an SSE idle timeout that already waited
   `sse_read_timeout` (default 120s) on a silent stream — was retried after

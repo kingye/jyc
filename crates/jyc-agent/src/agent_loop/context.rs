@@ -419,8 +419,13 @@ mod render_raw_context_tests {
         let sent = sent.into_owned();
 
         // 1. Windowed recent N pairs from prior (reformatted by provider).
+        // a2 issued a tool call, so its text carries the bare annotation.
         assert_eq!(sent[0], json!({"role": "user", "content": "u2"}));
-        assert_eq!(sent[1], json!({"role": "assistant", "content": "a2"}));
+        assert_eq!(
+            sent[1],
+            json!({"role": "assistant",
+                "content": "a2\n(incl. followed tool calls: bash())"})
+        );
         assert_eq!(sent[2], json!({"role": "user", "content": "u3"}));
         assert_eq!(sent[3], json!({"role": "assistant", "content": "a3"}));
 

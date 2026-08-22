@@ -6,6 +6,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Added
 
+- **New built-in tool: `context_browse`.** Lets the agent page through the
+  in-memory conversation transcript — user/assistant text pairs, including
+  turns that fell out of the sliding context window. `offset` counts pairs
+  skipped from the newest end (offset 0 = the most recent pairs),
+  `limit` caps the page size (default 10, max 50). The tool reads the
+  in-memory `raw_context` snapshot injected per tool batch, never the
+  persisted `agent-context.json` (which is stale mid-loop). (#624)
+
 - **Agent never stages JYC's private `.jyc/` runtime data.** The `bash`
   tool injects a global git excludes file (`$XDG_DATA_HOME/jyc/git-ignore-global`)
   via `GIT_CONFIG_*` env vars, so `git add .` / `git status` ignore `.jyc/`

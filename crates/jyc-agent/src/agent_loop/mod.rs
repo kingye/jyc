@@ -688,6 +688,18 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         ctx.current_channel = current_channel.clone();
         ctx.current_topic = Some(topic_name.to_string());
         ctx.outbounds = outbounds.clone();
+        // Snapshot for `context_browse` — only when the tool is actually in
+        // this batch. `raw_context` is mutated as tool results are appended
+        // below, so the snapshot must be taken before the loop; but cloning
+        // the full transcript on every batch that never browses would be
+        // wasted O(n) work per iteration.
+        if response
+            .tool_calls
+            .iter()
+            .any(|tc| tc.name == "context_browse")
+        {
+            ctx.raw_context = raw_context.clone();
+        }
 
         let mut cancelled_during_tools = false;
 

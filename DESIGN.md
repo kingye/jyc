@@ -382,7 +382,7 @@ Email arrives
 - **InboundAdapter** is the only place where data is cleaned (subject + body)
 - **MessageStorage** stores data as-is (with full frontmatter metadata) — the authoritative source of message data
 - **PromptBuilder** strips quoted history from body for the AI prompt; does NOT include conversation history (the agent session memory handles that)
-- **`build_footer()`** is the single shared function for the model/mode/tokens footer — called by outbound adapters, NOT by agents or TopicManager (email replies carry no footer)
+- **`build_footer()`** builds the model/mode/tokens footer — NOTE: it currently has no production caller, so `[channels.<name>.footer]` is inert (dead code; removal is a follow-up)
 - **SmtpClient** is a dumb transport: markdown→HTML + headers + attachments + send
 - **reply-context.json** is a minimal routing token (5 fields) — all message metadata comes from chat log frontmatter
 - **Chat log entries** = exactly what the recipient receives (minus HTML formatting)
@@ -1922,13 +1922,12 @@ Topic files still provide recent conversation context
 
 ### Reply Text Building Pipeline
 
-`build_footer()` (`crates/jyc-core/src/email_parser.rs`) is the **single shared
-function** for the model/mode/tokens footer appended to replies. It is called by
-the outbound adapters (wecom, wecomkf, wecom_bot) when
-`[channels.<name>.footer]` is enabled. Email, github, and gitee are pipe-only
-adapters and send plain agent text — no footer. The agent
-(AgentService/StaticAgentService) never calls this function — it's a
-channel-specific concern owned by the adapter.
+All non-websocket channels are pipe-only adapters: they relay the agent's
+reply text as-is from the hub broadcast (see docs/core-hub-adapters.md).
+`build_footer()` (`crates/jyc-core/src/email_parser.rs`) builds the
+model/mode/tokens footer but currently has **no production caller** —
+`[channels.<name>.footer]` is inert. The agent
+(AgentService/StaticAgentService) never calls it either.
 
 **Reply format:**
 ```

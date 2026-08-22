@@ -26,6 +26,13 @@ pub(crate) fn compact_raw_context_heuristic(
 
 /// Heuristic compaction of internal history: keep only the last N user+assistant
 /// text pairs. Synced with `compact_raw_context_heuristic`.
+///
+/// INTENTIONALLY divergent from the raw-context path: this view keeps plain
+/// text only (no folded tool-call annotations) and drops tool-call-only
+/// turns entirely, because internal history is used for reply detection and
+/// text extraction — not for model grounding. Do not "fix" the difference
+/// by porting annotations here; the raw path (`extract_pairs`) owns the
+/// rich view.
 pub(crate) fn compact_history_heuristic(history: &[Message], keep_pairs: usize) -> Vec<Message> {
     let mut pairs: Vec<(Message, Message)> = Vec::new();
     let mut last_user: Option<Message> = None;

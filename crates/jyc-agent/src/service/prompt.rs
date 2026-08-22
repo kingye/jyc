@@ -112,7 +112,10 @@ impl JycAgentService {
             "## Chat History\n\
              This topic maintains a chronological chat history in `.jyc/chat_history_YYYY-MM-DD.jsonl`.\n\
              Each line is a JSON object (one message or reply per line). You can read it with the\n\
-             `read` tool if you need context from prior conversations, or use `grep` to search.\n",
+             `read` tool if you need context from prior conversations, or use `grep` to search.\n\
+             When you need to recall earlier turns of THIS conversation that have fallen out of\n\
+             your context window, use the `context_browse` tool to page back through the live\n\
+             in-memory transcript instead (offset skips from the newest end, limit caps the page).\n",
         );
 
         // Version control hygiene: `.jyc/` is JYC's private runtime state

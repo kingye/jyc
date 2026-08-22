@@ -10,6 +10,7 @@
   warning. wecomkf keeps its sync cursor / msgid dedup as protocol state;
   KF replies remain text-only. The `user_name` topic.json fallback in
   chat logs is now channel-agnostic (no `wecomkf` special-case in core)
+  (#635)
 
 ### Removed
 

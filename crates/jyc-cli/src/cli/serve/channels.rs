@@ -23,13 +23,9 @@ use jyc_channels::github::inbound::GithubMatcher;
 use jyc_channels::websocket::inbound::{WebsocketInboundAdapter, WebsocketMatcher};
 use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
 
-use jyc_channels::wecom::inbound::WecomInboundAdapter;
 use jyc_channels::wecom::kf_client::KfApiClient;
 use jyc_channels::wecom::kf_cursor::KfCursorStore;
 use jyc_channels::wecom::kf_dedup::KfDedupStore;
-use jyc_channels::wecom::kf_inbound::{WecomKfInboundAdapter, WecomKfMatcher};
-use jyc_channels::wecom::kf_outbound::WecomKfOutboundAdapter;
-use jyc_channels::wecom::outbound::WecomOutboundAdapter;
 use jyc_channels::wecom::server::WecomWebhookServer;
 use jyc_channels::wecom::token_cache::AccessTokenCache;
 use jyc_channels::wecom_bot::inbound::{WecomBotInboundAdapter, WecomBotMatcher};
@@ -41,94 +37,49 @@ use jyc_core::topic_manager::TopicManager;
 use jyc_services::imap::monitor::ImapMonitor;
 use jyc_types::{
     ChannelConfig, ChannelInfo, ChannelMatcher, ChannelPattern, InboundAdapter,
-    InboundAttachmentConfig, MonitorConfig, OutboundAdapter, OutboundAttachmentConfig,
+    InboundAttachmentConfig, MonitorConfig, OutboundAdapter,
 };
 
 /// Build the outbound adapter for a channel.
 ///
 /// Returns `Ok(None)` for unsupported channel types (the caller skips them,
 /// matching the original inline `continue` behavior).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_outbound_adapter(
     channel_type: &str,
-    channel_config: &ChannelConfig,
     channel_name: &str,
     storage: Arc<MessageStorage>,
-    outbound_attachment_config: Option<OutboundAttachmentConfig>,
-    footer_enabled: bool,
     workspace_dir: &std::path::Path,
     inspect_broadcast: Arc<broadcast::Sender<String>>,
-    wecomkf_kf_client: &mut Option<Arc<KfApiClient>>,
     ws_handler_for_channel: &mut HashMap<String, Arc<WebsocketInboundAdapter>>,
     websocket_handlers: &mut Vec<Arc<WebsocketInboundAdapter>>,
     ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
 ) -> Result<Option<Arc<dyn OutboundAdapter>>> {
-    let outbound: Arc<dyn OutboundAdapter> = match channel_type {
-        "wecom" => {
-            let wecom_config = channel_config
-                .wecom
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("channel '{channel_name}': missing wecom config"))?
-                .clone();
-            Arc::new(WecomOutboundAdapter::new_with_attachments(
-                wecom_config.corp_id,
-                wecom_config.corp_secret,
-                storage.clone(),
-                outbound_attachment_config,
-                footer_enabled,
-            ))
-        }
-        "wecomkf" => {
-            let wecomkf_config = channel_config
-                .wecom_kf
-                .as_ref()
-                .ok_or_else(|| {
-                    anyhow::anyhow!("channel '{channel_name}': missing wecom_kf config")
-                })?
-                .clone();
-
-            let access_token_cache = Arc::new(AccessTokenCache::new(
-                wecomkf_config.corp_id.clone(),
-                wecomkf_config.corp_secret.clone(),
-            ));
-            let kf_client = Arc::new(KfApiClient::new(access_token_cache));
-            *wecomkf_kf_client = Some(kf_client.clone());
-
-            Arc::new(WecomKfOutboundAdapter::new(
-                kf_client,
-                storage.clone(),
-                outbound_attachment_config,
-                footer_enabled,
-            ))
-        }
-        "websocket" => {
-            let (broadcast_tx, _) = tokio::sync::broadcast::channel(64);
-            let adapter = WebsocketOutboundAdapter::new(broadcast_tx.clone(), storage.clone());
-            // Store the inbound adapter for later registration with the inspect server
-            let mut handler =
-                WebsocketInboundAdapter::new(channel_name.to_string(), broadcast_tx.clone());
-            handler.set_workspace_dir(workspace_dir.to_path_buf());
-            handler.set_inspect_broadcast(inspect_broadcast.clone());
-            let handler = Arc::new(handler);
-            ws_handler_for_channel.insert(channel_name.to_string(), handler.clone());
-            websocket_handlers.push(handler);
-            // Expose the broadcast so piped channels can subscribe to replies.
-            ws_broadcasts
-                .lock()
-                .unwrap()
-                .insert(channel_name.to_string(), broadcast_tx);
-            Arc::new(adapter)
-        }
-        other => {
-            tracing::warn!(
-                channel = %channel_name,
-                channel_type = %other,
-                "Unsupported channel type, skipping"
-            );
-            return Ok(None);
-        }
-    };
-    Ok(Some(outbound))
+    // Only hub (websocket) channels own an outbound adapter; every other
+    // channel type is a pipe-only adapter whose replies are relayed by a
+    // forwarder subscribed to the hub broadcast.
+    if channel_type != "websocket" {
+        tracing::warn!(
+            channel = %channel_name,
+            channel_type = %channel_type,
+            "Unsupported channel type, skipping"
+        );
+        return Ok(None);
+    }
+    let (broadcast_tx, _) = tokio::sync::broadcast::channel(64);
+    let adapter = WebsocketOutboundAdapter::new(broadcast_tx.clone(), storage.clone());
+    // Store the inbound adapter for later registration with the inspect server
+    let mut handler = WebsocketInboundAdapter::new(channel_name.to_string(), broadcast_tx.clone());
+    handler.set_workspace_dir(workspace_dir.to_path_buf());
+    handler.set_inspect_broadcast(inspect_broadcast.clone());
+    let handler = Arc::new(handler);
+    ws_handler_for_channel.insert(channel_name.to_string(), handler.clone());
+    websocket_handlers.push(handler);
+    // Expose the broadcast so piped channels can subscribe to replies.
+    ws_broadcasts
+        .lock()
+        .unwrap()
+        .insert(channel_name.to_string(), broadcast_tx);
+    Ok(Some(Arc::new(adapter)))
 }
 /// Re-target a piped inbound message into the target channel/topic, applying
 /// the target channel's pattern (template/role) for that topic.
@@ -2404,6 +2355,426 @@ pub(crate) fn spawn_wecom_bot_adapter(
     Ok(())
 }
 
+/// Validate that every enabled pattern names a pipe target; warn about
+/// deprecated pipe fields and missing pipes (messages matching a
+/// pipe-less pattern are dropped at runtime).
+fn warn_on_bad_pipe_patterns(
+    channel_type: &str,
+    channel_name: &str,
+    channel_config: &ChannelConfig,
+) {
+    for p in channel_config
+        .patterns
+        .iter()
+        .flatten()
+        .filter(|p| p.enabled)
+    {
+        match &p.pipe {
+            Some(pipe) => {
+                if pipe.channel.is_some() || pipe.pattern.is_some() {
+                    tracing::warn!(
+                        channel = %channel_name,
+                        pattern = %p.name,
+                        "{channel_type} pipe.channel/pipe.pattern is deprecated; use pipe = {{ agent = \"...\", topic = \"...\" }}"
+                    );
+                }
+            }
+            None => tracing::warn!(
+                channel = %channel_name,
+                pattern = %p.name,
+                "{channel_type} pattern has no pipe target; matching messages will be dropped"
+            ),
+        }
+    }
+}
+
+/// Match the message against this channel's patterns and retarget it into
+/// the pattern's pipe. Returns the retargeted message and the pipe.
+fn match_and_retarget(
+    channel_type: &str,
+    matcher: &dyn ChannelMatcher,
+    message: jyc_types::InboundMessage,
+    patterns: &[ChannelPattern],
+) -> Option<(jyc_types::InboundMessage, jyc_types::PipeTarget)> {
+    let Some(pm) = matcher.match_message(&message, patterns) else {
+        tracing::debug!(
+            channel_type,
+            topic = %message.topic,
+            "pipe: no pattern matched, dropping"
+        );
+        return None;
+    };
+    let matched = patterns.iter().find(|p| p.name == pm.pattern_name);
+    let Some(pipe) = matched.and_then(|p| p.pipe.as_ref()) else {
+        tracing::warn!(
+            channel_type,
+            pattern = %pm.pattern_name,
+            "pipe: matched pattern has no pipe target, dropping message"
+        );
+        return None;
+    };
+    let drop_debug = (message.id.clone(), message.channel_uid.clone());
+    let Some(message) = apply_pipe_retarget(message, pipe) else {
+        tracing::warn!(
+            channel_type,
+            topic = ?pipe.topic,
+            agent = ?pipe.agent,
+            message_id = %drop_debug.0,
+            channel_uid = %drop_debug.1,
+            "pipe: unresolvable target (no topic configured, or ${{msg.<key>}} unresolved), dropping"
+        );
+        return None;
+    };
+    Some((message, pipe.clone()))
+}
+
+/// Route a retargeted message into the pipe target channel's router.
+async fn route_into_pipe_target(
+    channel_type: &str,
+    routers: &HubRegistry,
+    pipe: &jyc_types::PipeTarget,
+    message: jyc_types::InboundMessage,
+) {
+    let target_channel = pipe
+        .channel
+        .clone()
+        .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
+        .expect("validated upstream: agent or channel required");
+    let Some(target_router) = routers
+        .lock()
+        .unwrap()
+        .get(&target_channel)
+        .map(|(r, _)| r.clone())
+    else {
+        tracing::warn!(
+            channel_type,
+            channel = %target_channel,
+            "pipe: target channel router not found, dropping"
+        );
+        return;
+    };
+    target_router
+        .route(&WebsocketMatcher::new(target_channel), message)
+        .await;
+}
+
+/// Spawn a wecom (group bot callback) pipe-only adapter.
+///
+/// Mirrors spawn_wecom_bot_adapter. Protocol only: webhook registration
+/// via the shared WecomWebhookServer, pattern match, pipe retarget, and a
+/// reply forwarder per pipe target channel. No TopicManager / agent /
+/// orchestrator — the hub owns all of that.
+pub(crate) fn spawn_wecom_adapter(
+    channel_config: &ChannelConfig,
+    channel_name: String,
+    inbound_attachment_config: Option<InboundAttachmentConfig>,
+    cancel: CancellationToken,
+    tasks: &mut Vec<JoinHandle<()>>,
+    config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
+    ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
+    routers: HubRegistry,
+    wecom_server: Option<Arc<WecomWebhookServer>>,
+) -> Result<()> {
+    use jyc_channels::wecom::inbound::{WecomInboundAdapter, WecomMatcher};
+    use jyc_channels::wecom::outbound::WecomSender;
+
+    let wecom_config = channel_config
+        .wecom
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("channel '{channel_name}': missing wecom config"))?
+        .clone();
+    let server =
+        wecom_server.ok_or_else(|| anyhow::anyhow!("WeCom webhook server not initialized"))?;
+
+    let pipe_channels =
+        collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
+    warn_on_bad_pipe_patterns("wecom", &channel_name, channel_config);
+
+    let channel_span = tracing::info_span!("in", ch = %channel_name);
+    let task = tokio::spawn(
+        async move {
+            let sender = Arc::new(WecomSender::new(
+                wecom_config.corp_id.clone(),
+                wecom_config.corp_secret.clone(),
+            ));
+
+            // Resolved topic → chat_id for the reply forwarder. In-memory
+            // only: a reply can only follow an inbound message, which
+            // repopulates the entry.
+            let topic_chats: std::sync::Arc<tokio::sync::Mutex<HashMap<String, String>>> =
+                std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
+            // One reply forwarder per distinct pipe target channel.
+            for channel in &pipe_channels {
+                let ws_broadcasts = ws_broadcasts.clone();
+                let topic_chats = topic_chats.clone();
+                let sender = sender.clone();
+                let channel = channel.clone();
+                tokio::spawn(async move {
+                    let Some(broadcast_tx) = wait_for_broadcast(&ws_broadcasts, &channel).await
+                    else {
+                        tracing::error!(
+                            channel = %channel,
+                            "wecom pipe: target channel broadcast never appeared (is it a websocket channel?), reply forwarder not started"
+                        );
+                        return;
+                    };
+                    let mut rx = broadcast_tx.subscribe();
+                    tracing::info!(channel = %channel, "wecom pipe reply forwarder subscribed");
+                    while let Ok(payload) = rx.recv().await {
+                        let v: serde_json::Value = match serde_json::from_str(&payload) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        if v.get("type").and_then(|t| t.as_str()) != Some("reply") {
+                            continue;
+                        }
+                        let (Some(topic), Some(text)) = (
+                            v.get("topic").and_then(|t| t.as_str()),
+                            v.get("text").and_then(|t| t.as_str()),
+                        ) else {
+                            continue;
+                        };
+                        let Some(chat_id) = topic_chats.lock().await.get(topic).cloned() else {
+                            tracing::debug!(
+                                topic = %topic,
+                                "wecom pipe: no chat_id for topic, skipping reply"
+                            );
+                            continue;
+                        };
+                        if let Err(e) = sender.send(&chat_id, text).await {
+                            tracing::error!(
+                                error = format!("{e:#}"),
+                                topic = %topic,
+                                "wecom pipe: failed to relay reply"
+                            );
+                        }
+                    }
+                });
+            }
+
+            let adapter = WecomInboundAdapter::new(&wecom_config, &channel_name, server);
+
+            let options = jyc_types::InboundAdapterOptions {
+                on_message: Box::new(move |message| {
+                    let config_for_pipe = config_for_spawn.clone();
+                    let topic_chats = topic_chats.clone();
+                    let channel_name_self = channel_name.clone();
+                    let routers = routers.clone();
+                    tokio::spawn(async move {
+                        let patterns = config_for_pipe
+                            .load()
+                            .channels
+                            .get(&channel_name_self)
+                            .and_then(|c| c.patterns.clone())
+                            .unwrap_or_default();
+                        let chat_id = message
+                            .metadata
+                            .get("chat_id")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string);
+                        let Some((message, pipe)) =
+                            match_and_retarget("wecom", &WecomMatcher, message, &patterns)
+                        else {
+                            return;
+                        };
+                        if let Some(chat_id) = chat_id {
+                            topic_chats
+                                .lock()
+                                .await
+                                .insert(message.topic.clone(), chat_id);
+                        }
+                        route_into_pipe_target("wecom", &routers, &pipe, message).await;
+                    });
+                    Ok(())
+                }),
+                on_topic_close: None,
+                on_close_event: None,
+                on_error: Box::new(|error| {
+                    tracing::error!(error = %error, "WeCom inbound error");
+                }),
+                attachment_config: inbound_attachment_config.clone(),
+            };
+
+            if let Err(e) = adapter.start(options, cancel).await {
+                tracing::error!(error = %e, "WeCom inbound adapter error");
+            }
+        }
+        .instrument(channel_span),
+    );
+    tasks.push(task);
+    Ok(())
+}
+
+/// Spawn a wecomkf (customer service) pipe-only adapter.
+///
+/// Mirrors spawn_wecom_adapter. Keeps the protocol state (sync cursor,
+/// msgid dedup) — same precedent as email's IMAP cursor and github's
+/// dedup store. Replies go out via `kf/send_msg` (text only; attachments
+/// are not relayed, same as the pre-migration behavior).
+pub(crate) fn spawn_wecomkf_adapter(
+    channel_config: &ChannelConfig,
+    channel_name: String,
+    inbound_attachment_config: Option<InboundAttachmentConfig>,
+    cancel: CancellationToken,
+    tasks: &mut Vec<JoinHandle<()>>,
+    config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
+    ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
+    routers: HubRegistry,
+    wecom_server: Option<Arc<WecomWebhookServer>>,
+) -> Result<()> {
+    use jyc_channels::wecom::kf_inbound::{WecomKfInboundAdapter, WecomKfMatcher};
+    use jyc_channels::wecom::kf_outbound::send_kf_text;
+
+    let kf_config = channel_config
+        .wecom_kf
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("channel '{channel_name}': missing wecom_kf config"))?
+        .clone();
+    let server =
+        wecom_server.ok_or_else(|| anyhow::anyhow!("WeCom webhook server not initialized"))?;
+
+    let pipe_channels =
+        collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
+    warn_on_bad_pipe_patterns("wecomkf", &channel_name, channel_config);
+
+    let channel_span = tracing::info_span!("in", ch = %channel_name);
+    let task = tokio::spawn(
+        async move {
+            let token_cache = Arc::new(AccessTokenCache::new(
+                kf_config.corp_id.clone(),
+                kf_config.corp_secret.clone(),
+            ));
+            let kf_client = Arc::new(KfApiClient::new(token_cache));
+            let cursor_store = Arc::new(KfCursorStore::new(
+                kf_config.cursor_store_path.as_ref().map(std::path::PathBuf::from),
+            ));
+            let dedup_store = Arc::new(KfDedupStore::new());
+
+            // Resolved topic → (open_kfid, external_userid) for the reply
+            // forwarder. In-memory only, repopulated by inbound messages.
+            let topic_addrs: std::sync::Arc<
+                tokio::sync::Mutex<HashMap<String, (String, String)>>,
+            > = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
+            // One reply forwarder per distinct pipe target channel.
+            for channel in &pipe_channels {
+                let ws_broadcasts = ws_broadcasts.clone();
+                let topic_addrs = topic_addrs.clone();
+                let kf_client = kf_client.clone();
+                let channel = channel.clone();
+                tokio::spawn(async move {
+                    let Some(broadcast_tx) = wait_for_broadcast(&ws_broadcasts, &channel).await
+                    else {
+                        tracing::error!(
+                            channel = %channel,
+                            "wecomkf pipe: target channel broadcast never appeared (is it a websocket channel?), reply forwarder not started"
+                        );
+                        return;
+                    };
+                    let mut rx = broadcast_tx.subscribe();
+                    tracing::info!(channel = %channel, "wecomkf pipe reply forwarder subscribed");
+                    while let Ok(payload) = rx.recv().await {
+                        let v: serde_json::Value = match serde_json::from_str(&payload) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        if v.get("type").and_then(|t| t.as_str()) != Some("reply") {
+                            continue;
+                        }
+                        let (Some(topic), Some(text)) = (
+                            v.get("topic").and_then(|t| t.as_str()),
+                            v.get("text").and_then(|t| t.as_str()),
+                        ) else {
+                            continue;
+                        };
+                        let Some((open_kfid, touser)) =
+                            topic_addrs.lock().await.get(topic).cloned()
+                        else {
+                            tracing::debug!(
+                                topic = %topic,
+                                "wecomkf pipe: no address for topic, skipping reply"
+                            );
+                            continue;
+                        };
+                        if let Err(e) =
+                            send_kf_text(&kf_client, &open_kfid, &touser, text).await
+                        {
+                            tracing::error!(
+                                error = format!("{e:#}"),
+                                topic = %topic,
+                                "wecomkf pipe: failed to relay reply"
+                            );
+                        }
+                    }
+                });
+            }
+
+            let adapter = WecomKfInboundAdapter::new(
+                &kf_config,
+                &channel_name,
+                server,
+                kf_client,
+                cursor_store,
+                dedup_store,
+            );
+
+            let options = jyc_types::InboundAdapterOptions {
+                on_message: Box::new(move |message| {
+                    let config_for_pipe = config_for_spawn.clone();
+                    let topic_addrs = topic_addrs.clone();
+                    let channel_name_self = channel_name.clone();
+                    let routers = routers.clone();
+                    tokio::spawn(async move {
+                        let patterns = config_for_pipe
+                            .load()
+                            .channels
+                            .get(&channel_name_self)
+                            .and_then(|c| c.patterns.clone())
+                            .unwrap_or_default();
+                        let addr = match (
+                            message.metadata.get("open_kfid").and_then(|v| v.as_str()),
+                            message
+                                .metadata
+                                .get("external_userid")
+                                .and_then(|v| v.as_str()),
+                        ) {
+                            (Some(k), Some(u)) => Some((k.to_string(), u.to_string())),
+                            _ => None,
+                        };
+                        let Some((message, pipe)) =
+                            match_and_retarget("wecomkf", &WecomKfMatcher, message, &patterns)
+                        else {
+                            return;
+                        };
+                        if let Some(addr) = addr {
+                            topic_addrs
+                                .lock()
+                                .await
+                                .insert(message.topic.clone(), addr);
+                        }
+                        route_into_pipe_target("wecomkf", &routers, &pipe, message).await;
+                    });
+                    Ok(())
+                }),
+                on_topic_close: None,
+                on_close_event: None,
+                on_error: Box::new(|error| {
+                    tracing::error!(error = %error, "WeCom KF inbound error");
+                }),
+                attachment_config: inbound_attachment_config.clone(),
+            };
+
+            if let Err(e) = adapter.start(options, cancel).await {
+                tracing::error!(error = %e, "WeCom KF inbound adapter error");
+            }
+        }
+        .instrument(channel_span),
+    );
+    tasks.push(task);
+    Ok(())
+}
+
 /// Download one reply attachment from the inspect server, upload it to
 /// the WeCom user via the shared WebSocket handle, and send the media
 /// message via `aibot_send_msg` (proactive) keyed by the recipient.
@@ -2482,7 +2853,6 @@ async fn send_wecom_proactive_text(
 /// Shared per-channel context for spawning the inbound monitor task(s).
 pub(crate) struct InboundSpawner<'a> {
     pub(crate) channel_type: &'a str,
-    pub(crate) channel_config: &'a ChannelConfig,
     pub(crate) channel_name: String,
     pub(crate) workspace_dir: PathBuf,
     pub(crate) inbound_attachment_config: Option<InboundAttachmentConfig>,
@@ -2491,10 +2861,8 @@ pub(crate) struct InboundSpawner<'a> {
     pub(crate) cancel: CancellationToken,
     pub(crate) cancel_child: CancellationToken,
     pub(crate) tasks: &'a mut Vec<JoinHandle<()>>,
-    pub(crate) wecomkf_kf_client: &'a mut Option<Arc<KfApiClient>>,
     pub(crate) orchestrator: Arc<ChannelOrchestrator>,
     pub(crate) channel_info: ChannelInfo,
-    pub(crate) wecom_server: Option<Arc<WecomWebhookServer>>,
     pub(crate) websocket_handlers: &'a mut [Arc<WebsocketInboundAdapter>],
 }
 
@@ -2506,7 +2874,6 @@ impl InboundSpawner<'_> {
     pub(crate) async fn spawn(self) -> Result<()> {
         let InboundSpawner {
             channel_type,
-            channel_config,
             channel_name,
             workspace_dir,
             inbound_attachment_config,
@@ -2515,192 +2882,14 @@ impl InboundSpawner<'_> {
             cancel,
             cancel_child,
             tasks,
-            wecomkf_kf_client,
             orchestrator,
             channel_info,
-            wecom_server,
             websocket_handlers,
         } = self;
         let channel_name_owned = channel_name.clone();
         let tm = topic_manager.clone();
         let channel_span = tracing::info_span!("in", ch = %channel_name);
         match channel_type {
-            "wecom" => {
-                let wecom_config = channel_config
-                    .wecom
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("channel '{channel_name}': missing wecom config")
-                    })?
-                    .clone();
-
-                let wecom_server = wecom_server
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("WeCom webhook server not initialized"))?;
-                let router_for_callback = router.clone();
-                let channel_name_owned = channel_name.clone();
-
-                let topic_manager_for_task = topic_manager.clone();
-
-                let task = tokio::spawn(async move {
-                use jyc_channels::wecom::inbound::WecomMatcher;
-
-                let adapter = WecomInboundAdapter::new(
-                    &wecom_config,
-                    &channel_name_owned,
-                    wecom_server,
-                );
-
-                let topic_manager_clone = topic_manager_for_task.clone();
-                let options = jyc_types::InboundAdapterOptions {
-                    on_message: Box::new(move |message| {
-                        let router = router_for_callback.clone();
-
-                        tokio::spawn(async move {
-                            router.route(&WecomMatcher, message).await;
-                        });
-
-                        Ok(())
-                    }),
-                    on_topic_close: Some(Box::new(move |topic_name: String| {
-                        let tm = topic_manager_clone.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = tm.auto_close_topic(&topic_name).await {
-                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
-                            }
-                        });
-                        Ok(())
-                    })),
-                    on_close_event: None,
-                on_error: Box::new(|error| {
-                        tracing::error!(error = %error, "WeCom inbound error");
-                    }),
-                    attachment_config: inbound_attachment_config.clone(),
-                };
-
-                if let Err(e) = adapter.start(options, cancel_child).await {
-                    tracing::error!(
-                        error = %e,
-                        "WeCom inbound adapter error"
-                    );
-                }
-
-                // Shutdown topic manager for this channel
-                tm.shutdown().await;
-            }.instrument(channel_span));
-
-                orchestrator
-                    .register_channel(
-                        channel_name.to_string(),
-                        jyc_core::channel_orchestrator::ChannelHandle {
-                            cancel: cancel.clone(),
-
-                            topic_manager: topic_manager.clone(),
-
-                            channel_info: channel_info.clone(),
-
-                            workspace_dir: workspace_dir.clone(),
-                        },
-                    )
-                    .await;
-
-                tasks.push(task);
-            }
-            "wecomkf" => {
-                let wecomkf_config = channel_config
-                    .wecom_kf
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("channel '{channel_name}': missing wecom_kf config")
-                    })?
-                    .clone();
-
-                let wecom_server = wecom_server
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("WeCom webhook server not initialized"))?;
-                let router_for_callback = router.clone();
-                let channel_name_owned = channel_name.clone();
-
-                let kf_client = wecomkf_kf_client.clone().ok_or_else(|| {
-                    anyhow::anyhow!("KfApiClient not initialized for wecomkf channel")
-                })?;
-
-                let cursor_store = Arc::new(KfCursorStore::new(
-                    wecomkf_config
-                        .cursor_store_path
-                        .as_ref()
-                        .map(std::path::PathBuf::from),
-                ));
-                let dedup_store = Arc::new(KfDedupStore::new());
-
-                let topic_manager_for_task = topic_manager.clone();
-
-                let task = tokio::spawn(async move {
-
-                let adapter = WecomKfInboundAdapter::new(
-                    &wecomkf_config,
-                    &channel_name_owned,
-                    wecom_server,
-                    kf_client,
-                    cursor_store,
-                    dedup_store,
-                );
-
-                let topic_manager_clone = topic_manager_for_task.clone();
-                let options = jyc_types::InboundAdapterOptions {
-                    on_message: Box::new(move |message| {
-                        let router = router_for_callback.clone();
-
-                        tokio::spawn(async move {
-                            router.route(&WecomKfMatcher, message).await;
-                        });
-
-                        Ok(())
-                    }),
-                    on_topic_close: Some(Box::new(move |topic_name: String| {
-                        let tm = topic_manager_clone.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = tm.auto_close_topic(&topic_name).await {
-                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
-                            }
-                        });
-                        Ok(())
-                    })),
-                    on_close_event: None,
-                on_error: Box::new(|error| {
-                        tracing::error!(error = %error, "WeCom KF inbound error");
-                    }),
-                    attachment_config: inbound_attachment_config.clone(),
-                };
-
-                if let Err(e) = adapter.start(options, cancel_child).await {
-                    tracing::error!(
-                        error = %e,
-                        "WeCom KF inbound adapter error"
-                    );
-                }
-
-                // Shutdown topic manager for this channel
-                tm.shutdown().await;
-            }.instrument(channel_span));
-
-                orchestrator
-                    .register_channel(
-                        channel_name.to_string(),
-                        jyc_core::channel_orchestrator::ChannelHandle {
-                            cancel: cancel.clone(),
-
-                            topic_manager: topic_manager.clone(),
-
-                            channel_info: channel_info.clone(),
-
-                            workspace_dir: workspace_dir.clone(),
-                        },
-                    )
-                    .await;
-
-                tasks.push(task);
-            }
             "websocket" => {
                 let router_for_callback = router.clone();
                 let channel_name_for_matcher = channel_name_owned.clone();

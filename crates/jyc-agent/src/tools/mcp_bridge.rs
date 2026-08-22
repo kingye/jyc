@@ -97,7 +97,12 @@ impl Tool for ReplyMessageTool {
         let message = input
             .get("message")
             .and_then(|m| m.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'message' parameter"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Missing 'message' parameter — reply NOT delivered; \
+                     fix the arguments and call jyc_reply_message again"
+                )
+            })?;
 
         let attachments: Option<Vec<String>> = input
             .get("attachments")
@@ -105,7 +110,8 @@ impl Tool for ReplyMessageTool {
 
         if message.trim().is_empty() {
             return Ok(ToolOutput::error(
-                "Message cannot be empty (or pass silent: true to close the turn without sending)",
+                "Message cannot be empty — reply NOT delivered \
+                 (or pass silent: true to close the turn without sending)",
             ));
         }
 
@@ -120,7 +126,7 @@ impl Tool for ReplyMessageTool {
                 let file_path = topic_path.join(filename);
                 if !file_path.exists() {
                     return Ok(ToolOutput::error(format!(
-                        "Attachment not found: '{}'",
+                        "Attachment not found: '{}' — reply NOT delivered",
                         filename
                     )));
                 }
@@ -131,7 +137,7 @@ impl Tool for ReplyMessageTool {
                         .unwrap_or_else(|_| topic_path.to_path_buf());
                     if !canonical.starts_with(&topic_canonical) {
                         return Ok(ToolOutput::error(format!(
-                            "Attachment '{}' is outside topic directory",
+                            "Attachment '{}' is outside topic directory — reply NOT delivered",
                             filename
                         )));
                     }

@@ -920,19 +920,33 @@ pub(crate) fn extract_message_text(msg: &serde_json::Value) -> String {
 /// the tail matters.
 const WINDOWED_TOOL_ARG_MAX: usize = 200;
 
-/// Collect bare tool calls from a raw wire-format assistant message.
+/// Max length of a tool result kept in the windowed annotation. Larger
+/// than the arg cap because the result carries the grounding the agent
+/// needs to pick its next step; still bounded to avoid blowing up the
+/// context on a multi-call turn. The full result is one `context_browse`
+/// call away.
+/// ponytail: fixed cap; raise if real results routinely need more.
+const WINDOWED_TOOL_RESULT_MAX: usize = 500;
+
+/// Collect bare tool calls from a raw wire-format assistant message as
+/// `(id, name, args)` triples.
 ///
-/// Handles both OpenAI (`tool_calls: [{function: {name, arguments}}]`,
+/// Handles both OpenAI (`tool_calls: [{id, function: {name, arguments}}]`,
 /// arguments a JSON string) and Anthropic (`content: [{type: "tool_use",
-/// name, input}]`) shapes. Returns `(name, args)` pairs, where `args` is
-/// the parsed JSON arguments (the raw string kept as a JSON string when
-/// it does not parse, e.g. broken or empty OpenAI `arguments`).
-fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
+/// id, name, input}]`) shapes. `args` is the parsed JSON arguments (the
+/// raw string kept as a JSON string when it does not parse, e.g. broken or
+/// empty OpenAI `arguments`). The `id` links a call to its result.
+fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, String, serde_json::Value)> {
     let mut calls = Vec::new();
 
     // OpenAI-compat: `tool_calls` array with string `function.arguments`.
     if let Some(tool_calls) = msg.get("tool_calls").and_then(|t| t.as_array()) {
         for tc in tool_calls {
+            let id = tc
+                .get("id")
+                .and_then(|i| i.as_str())
+                .unwrap_or("")
+                .to_string();
             let name = tc
                 .pointer("/function/name")
                 .and_then(|n| n.as_str())
@@ -944,7 +958,7 @@ fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, serde_json::Value
                 .unwrap_or("");
             let args = serde_json::from_str(raw)
                 .unwrap_or_else(|_| serde_json::Value::String(raw.to_string()));
-            calls.push((name, args));
+            calls.push((id, name, args));
         }
     }
 
@@ -952,6 +966,11 @@ fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, serde_json::Value
     if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
         for block in blocks {
             if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                let id = block
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let name = block
                     .get("name")
                     .and_then(|n| n.as_str())
@@ -961,7 +980,7 @@ fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, serde_json::Value
                     .get("input")
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
-                calls.push((name, args));
+                calls.push((id, name, args));
             }
         }
     }
@@ -985,29 +1004,122 @@ fn render_tool_call(name: &str, args: &serde_json::Value) -> String {
     }
 }
 
-/// Render a JSON value as text, truncating at `WINDOWED_TOOL_ARG_MAX`
-/// bytes (at a char boundary) with `…` when it is longer.
-fn truncate_json_value(value: &serde_json::Value) -> String {
-    let s = value.to_string();
-    if s.len() > WINDOWED_TOOL_ARG_MAX {
-        let cut = s.floor_char_boundary(WINDOWED_TOOL_ARG_MAX);
+/// Truncate `s` at `max` bytes (on a char boundary) with `…` when longer.
+fn truncate_text(s: &str, max: usize) -> String {
+    if s.len() > max {
+        let cut = s.floor_char_boundary(max);
         format!("{}…", &s[..cut])
     } else {
-        s
+        s.to_string()
     }
 }
 
+/// Render a JSON value as text, truncating at `WINDOWED_TOOL_ARG_MAX`
+/// bytes (on a char boundary) with `…` when it is longer.
+fn truncate_json_value(value: &serde_json::Value) -> String {
+    truncate_text(&value.to_string(), WINDOWED_TOOL_ARG_MAX)
+}
+
+/// Extract text from a tool result `content` value, which may be a string
+/// (OpenAI / simple Anthropic) or an array of blocks (Anthropic with text
+/// and image blocks). Non-text blocks are skipped.
+fn extract_result_text(content: &serde_json::Value) -> String {
+    if let Some(s) = content.as_str() {
+        return s.to_string();
+    }
+    if let Some(blocks) = content.as_array() {
+        let mut text = String::new();
+        for b in blocks {
+            if b.get("type").and_then(|t| t.as_str()) == Some("text")
+                && let Some(s) = b.get("text").and_then(|x| x.as_str())
+            {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(s);
+            }
+        }
+        return text;
+    }
+    String::new()
+}
+
+/// Collect tool results from raw context into a map of
+/// `tool_call_id → truncated result text`. Handles OpenAI (`role: "tool"`
+/// with `tool_call_id`) and Anthropic (`role: "user"` with `tool_result`
+/// blocks carrying `tool_use_id`) shapes. Lets the windowed annotation
+/// show *what each tool returned*, not just that it was called.
+fn collect_tool_results(
+    raw_context: &[serde_json::Value],
+) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for msg in raw_context {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        match role {
+            // OpenAI: {"role": "tool", "tool_call_id": "...", "content": "..."}
+            "tool" => {
+                if let Some(id) = msg.get("tool_call_id").and_then(|i| i.as_str()) {
+                    let text = msg
+                        .get("content")
+                        .map(extract_result_text)
+                        .unwrap_or_default();
+                    map.insert(
+                        id.to_string(),
+                        truncate_text(&text, WINDOWED_TOOL_RESULT_MAX),
+                    );
+                }
+            }
+            // Anthropic: {"role": "user", "content": [{type: "tool_result", tool_use_id, content}]}
+            "user" => {
+                if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
+                    for block in blocks {
+                        if block.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+                            && let Some(id) = block.get("tool_use_id").and_then(|i| i.as_str())
+                        {
+                            let text = block
+                                .get("content")
+                                .map(extract_result_text)
+                                .unwrap_or_default();
+                            map.insert(
+                                id.to_string(),
+                                truncate_text(&text, WINDOWED_TOOL_RESULT_MAX),
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    map
+}
+
 /// Build the bare tool-call annotation for an assistant message, e.g.
-/// `(incl. followed tool calls: bash(command="ls -la"))`. Returns `None`
-/// when the message carries no tool calls.
-fn tool_call_annotation(msg: &serde_json::Value) -> Option<String> {
+/// `(incl. followed tool calls: bash(command="ls -la") → BRANCH main…)`.
+/// When a tool result is known for a call's `id` (looked up in `results`),
+/// it is appended as `→ <truncated result>` so the agent can see *what the
+/// tool returned*, not just that it was called. Returns `None` when the
+/// message carries no tool calls.
+fn tool_call_annotation(
+    msg: &serde_json::Value,
+    results: &std::collections::HashMap<String, String>,
+) -> Option<String> {
     let calls = collect_tool_calls(msg);
     if calls.is_empty() {
         return None;
     }
     let rendered = calls
         .iter()
-        .map(|(name, args)| render_tool_call(name, args))
+        .map(|(id, name, args)| {
+            let mut s = render_tool_call(name, args);
+            if let Some(result) = results.get(id)
+                && !result.is_empty()
+            {
+                s.push_str(" → ");
+                s.push_str(result);
+            }
+            s
+        })
         .collect::<Vec<_>>();
     Some(format!(
         "(incl. followed tool calls: {})",
@@ -1030,6 +1142,9 @@ fn tool_call_annotation(msg: &serde_json::Value) -> Option<String> {
 pub(crate) fn extract_pairs(
     raw_context: &[serde_json::Value],
 ) -> Vec<(serde_json::Value, serde_json::Value)> {
+    // Map tool_call_id → truncated result text so the annotation can show
+    // *what* each tool returned, not just that it was called.
+    let results = collect_tool_results(raw_context);
     let mut pairs: Vec<(serde_json::Value, serde_json::Value)> = Vec::new();
     let mut last_user: Option<serde_json::Value> = None;
 
@@ -1049,10 +1164,10 @@ pub(crate) fn extract_pairs(
             "assistant" => {
                 let text = extract_message_text(msg);
                 // Keep only role + content, folding bare tool calls into
-                // the text so the windowed part shows which tools ran. A
-                // tool-call-only turn (empty text) is kept too, annotated
-                // alone, instead of being dropped.
-                let content = match tool_call_annotation(msg) {
+                // the text so the windowed part shows which tools ran and
+                // what they returned. A tool-call-only turn (empty text) is
+                // kept too, annotated alone, instead of being dropped.
+                let content = match tool_call_annotation(msg, &results) {
                     Some(annotation) if text.is_empty() => annotation,
                     Some(annotation) => format!("{text}\n{annotation}"),
                     None => text,
@@ -1277,7 +1392,8 @@ mod tests {
 
     /// Anthropic-shaped context (array content): assistant text pairs
     /// correctly; tool_result user-role wrappers are skipped; the
-    /// assistant's bare tool use is folded into a text annotation.
+    /// assistant's bare tool use is folded into a text annotation, now
+    /// including the truncated result (`→ ok`).
     #[test]
     fn extract_pairs_anthropic_shape() {
         let ctx = vec![
@@ -1297,7 +1413,7 @@ mod tests {
         assert_eq!(
             pairs[1],
             json!({"role": "assistant",
-                "content": "a1\n(incl. followed tool calls: bash(command=\"ls\"))"})
+                "content": "a1\n(incl. followed tool calls: bash(command=\"ls\") → ok)"})
         );
     }
 
@@ -1362,6 +1478,56 @@ mod tests {
         assert!(content.len() < 400, "annotation too big: {content:?}");
     }
 
+    /// Tool results are appended to the annotation as `→ <truncated text>`,
+    /// matched by the call's id; calls without a known result get no arrow.
+    #[test]
+    fn extract_pairs_includes_tool_results() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "running", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": r#"{"command": "ls"}"#}},
+                {"id": "2", "type": "function", "function": {"name": "read", "arguments": r#"{"path": "a.txt"}"#}}
+            ]}),
+            // Result for call 1 only; call 2 has no result.
+            json!({"role": "tool", "tool_call_id": "1", "content": "BRANCH main"}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        let content = pairs[1]["content"].as_str().unwrap();
+        // Call 1 gets its result appended after the arrow.
+        assert!(
+            content.contains(r#"bash(command="ls") → BRANCH main"#),
+            "result not appended: {content:?}"
+        );
+        // Call 2 has no result: no arrow, just the rendered call then the
+        // annotation's closing paren.
+        assert!(
+            content.contains(r#"read(path="a.txt"))"#),
+            "call without result should have no arrow: {content:?}"
+        );
+    }
+
+    /// Over-long tool results are truncated with `…` (500-char cap).
+    #[test]
+    fn extract_pairs_truncates_long_tool_results() {
+        let long = "y".repeat(2000);
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": long}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        let content = pairs[1]["content"].as_str().unwrap();
+        assert!(content.contains('→'), "no result arrow: {content:?}");
+        assert!(
+            content.contains('…'),
+            "long result not truncated: {content:?}"
+        );
+        // Result cap 500 + arrow + annotation wrapper stay well under 700.
+        assert!(content.len() < 700, "annotation too big: {content:?}");
+    }
+
     /// `extract_pairs` returns ALL completed pairs in oldest→newest order
     /// (no keep-pairs truncation), skipping tool/result messages and
     /// dropping an unpaired trailing user turn.
@@ -1387,7 +1553,7 @@ mod tests {
         assert_eq!(pairs[1].0["content"], "u2");
         assert_eq!(
             pairs[1].1["content"],
-            "a2\n(incl. followed tool calls: bash())"
+            "a2\n(incl. followed tool calls: bash() → out)"
         );
         assert_eq!(pairs[2].0["content"], "u3");
         assert_eq!(pairs[2].1["content"], "a3");

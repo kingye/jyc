@@ -688,6 +688,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         ctx.current_channel = current_channel.clone();
         ctx.current_topic = Some(topic_name.to_string());
         ctx.outbounds = outbounds.clone();
+        // Snapshot for `context_browse`: the transcript as of this batch,
+        // before tool results are appended below.
+        ctx.raw_context = raw_context.clone();
 
         let mut cancelled_during_tools = false;
 

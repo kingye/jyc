@@ -180,6 +180,16 @@ All notable changes to JYC will be documented in this file.
 
 ### Fixed
 
+- **Agent "thinking" text no longer delivered verbatim as the final reply.**
+  With `jyc_reply_message` registered, a text-only finish that never calls
+  the reply tool (the model's process narration, previously delivered
+  as-is and then the agent stopped) is now nudged once with a
+  system-reminder to recover via `jyc_reply_message`; if the model still
+  exits text-only, the text is delivered via the fallback path with a
+  visible English warning marker appended so a degraded delivery is never
+  mistaken for a normal reply. Behavior is unchanged when the reply tool
+  is absent. (#625)
+
 - Fix dashboard topic list showing "build" mode and `/model` writing the
   wrong mode-specific override file when a topic's mode comes from
   pattern/agent config instead of a mode-override file (#615)

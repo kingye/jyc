@@ -573,7 +573,9 @@ pub struct ContextStrategyConfig {
     /// history note; turns older than that are text-only. `None` (default)
     /// keeps notes on all windowed turns. Values above `window` clamp to
     /// `window`. Only meaningful when `mode = "sliding_window"`.
-    #[serde(default)]
+    /// Omitted from serialized override files when unset so existing
+    /// readers stay compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_window: Option<usize>,
 }
 

@@ -2,7 +2,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
-use serde::Serialize;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
@@ -25,16 +24,6 @@ pub struct ContextCommandHandler;
 /// tools) and risks unbounded memory growth when paired with very long
 /// histories, so we cap it here at the command boundary.
 const MAX_WINDOW: usize = 200;
-
-#[derive(Debug, Clone, Serialize)]
-struct ContextStrategyOverride {
-    mode: ContextStrategy,
-    window: usize,
-    /// Omitted from the JSON when unset so existing override files and
-    /// readers stay compatible.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    note_window: Option<usize>,
-}
 
 #[async_trait]
 impl CommandHandler for ContextCommandHandler {
@@ -199,12 +188,7 @@ async fn write_override(
     cfg: ContextStrategyConfig,
 ) -> Result<()> {
     tokio::fs::create_dir_all(jyc_dir).await?;
-    let payload = ContextStrategyOverride {
-        mode: cfg.mode,
-        window: cfg.window,
-        note_window: cfg.note_window,
-    };
-    let json = serde_json::to_string(&payload)?;
+    let json = serde_json::to_string(&cfg)?;
     tokio::fs::write(path, json).await?;
     Ok(())
 }

@@ -1648,16 +1648,19 @@ mod mcp_bridge {
         assert_eq!(recorded[0].3, vec!["data.csv"]);
     }
 
+    /// Recorded `send_reply` calls: (reply_text, attachment filenames).
+    type ReplyLog = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+
     /// Mock outbound adapter for reply-delivery tests: records `send_reply`
     /// calls and can be configured to fail (to exercise the file-relay
     /// fallback).
     struct ReplyMockOutbound {
-        replies: Arc<Mutex<Vec<(String, Vec<String>)>>>,
+        replies: ReplyLog,
         fail: bool,
     }
 
     impl ReplyMockOutbound {
-        fn new(fail: bool) -> (Self, Arc<Mutex<Vec<(String, Vec<String>)>>>) {
+        fn new(fail: bool) -> (Self, ReplyLog) {
             let replies = Arc::new(Mutex::new(Vec::new()));
             (
                 Self {

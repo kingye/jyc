@@ -21,7 +21,9 @@ pub(crate) fn compact_raw_context_heuristic(
     raw_context: &[serde_json::Value],
     keep_pairs: usize,
 ) -> Vec<serde_json::Value> {
-    crate::session::extract_user_assistant_pairs(raw_context, keep_pairs)
+    // Compaction keeps notes on every pair (`None`); `note_window` only
+    // shapes the sliding-window wire payload.
+    crate::session::extract_user_assistant_pairs(raw_context, keep_pairs, None)
 }
 
 /// Heuristic compaction of internal history: keep only the last N user+assistant
@@ -117,7 +119,11 @@ pub(crate) fn build_send_context<'a>(
             let current = &raw_context[boundary..];
 
             let mut out = Vec::new();
-            let windowed = crate::session::extract_user_assistant_pairs(prior, strategy.window);
+            let windowed = crate::session::extract_user_assistant_pairs(
+                prior,
+                strategy.window,
+                strategy.note_window,
+            );
             for msg in &windowed {
                 // Defensive: skip messages with no extractable text so the
                 // wire payload never contains empty text blocks (which
@@ -334,6 +340,7 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::Full,
             window: 10,
+            note_window: None,
         };
         let sent = build_send_context(&prov(), &ctx, prior_len, &cfg);
         assert!(matches!(sent, Cow::Borrowed(_)));
@@ -364,6 +371,7 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
+            note_window: None,
         };
         let sent = build_send_context(&prov(), &ctx, prior_len, &cfg);
         let sent = sent.into_owned();
@@ -398,6 +406,7 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 5,
+            note_window: None,
         };
         let sent = build_send_context(&prov(), &ctx, 99, &cfg).into_owned();
         // boundary clamps to raw_context.len(), so the whole ctx is
@@ -416,6 +425,7 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 10,
+            note_window: None,
         };
         let sent = build_send_context(&prov(), &ctx, 0, &cfg).into_owned();
         // No prior → no windowed. Just current turn verbatim.
@@ -452,6 +462,7 @@ mod render_raw_context_tests {
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 4,
+            note_window: None,
         };
         let sent = build_send_context(&anthropic(), &ctx, prior_len, &cfg).into_owned();
 

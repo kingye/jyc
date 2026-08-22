@@ -569,6 +569,12 @@ pub struct ContextStrategyConfig {
     /// Default: 10. Only meaningful when `mode = "sliding_window"`.
     #[serde(default = "default_context_window_size")]
     pub window: usize,
+    /// Number of most recent windowed turns that keep their tool-call
+    /// history note; turns older than that are text-only. `None` (default)
+    /// keeps notes on all windowed turns. Values above `window` clamp to
+    /// `window`. Only meaningful when `mode = "sliding_window"`.
+    #[serde(default)]
+    pub note_window: Option<usize>,
 }
 
 impl Default for ContextStrategyConfig {
@@ -576,6 +582,7 @@ impl Default for ContextStrategyConfig {
         Self {
             mode: ContextStrategy::default(),
             window: default_context_window_size(),
+            note_window: None,
         }
     }
 }

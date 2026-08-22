@@ -1287,25 +1287,41 @@ pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> 
 /// last `keep_pairs` of them, flattened into a single Vec. Pair extraction
 /// semantics are defined in [`extract_pairs`].
 ///
-/// Shared between session heuristic compaction and mid-loop compression.
+/// `note_window` limits tool-call history notes to the most recent M kept
+/// pairs (`None` = notes on every kept pair); older pairs are text-only.
+/// Values above `keep_pairs` clamp to `keep_pairs`.
+///
+/// Shared between session heuristic compaction, mid-loop compression
+/// (both pass `None`), and the sliding-window wire payload (passes the
+/// configured `note_window`).
 pub(crate) fn extract_user_assistant_pairs(
     raw_context: &[serde_json::Value],
     keep_pairs: usize,
+    note_window: Option<usize>,
 ) -> Vec<serde_json::Value> {
     // Keep only the last N pairs, flattened as user → assistant → note.
-    let summary: Vec<serde_json::Value> = extract_pairs(raw_context)
+    let pairs: Vec<_> = extract_pairs(raw_context)
         .into_iter()
         .rev()
         .take(keep_pairs)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
-        .flat_map(|pair| {
+        .collect();
+    // Only the last `notes_kept` pairs carry their history note.
+    let notes_kept = note_window.unwrap_or(usize::MAX).min(pairs.len());
+    let notes_skipped = pairs.len() - notes_kept;
+    let summary: Vec<serde_json::Value> = pairs
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, pair)| {
             let mut v = vec![pair.user];
             if let Some(assistant) = pair.assistant {
                 v.push(assistant);
             }
-            if let Some(note) = pair.note {
+            if i >= notes_skipped
+                && let Some(note) = pair.note
+            {
                 v.push(note);
             }
             v
@@ -1361,7 +1377,9 @@ async fn summarize_context_heuristic(topic_path: &Path, keep_pairs: usize) {
     };
 
     // Extract user+assistant text pairs using shared logic
-    let summary = extract_user_assistant_pairs(&raw_context, keep_pairs);
+    // Heuristic compaction keeps notes on every pair (`None`);
+    // `note_window` only shapes the sliding-window wire payload.
+    let summary = extract_user_assistant_pairs(&raw_context, keep_pairs, None);
 
     tracing::debug!(
         original_messages = raw_context.len(),
@@ -1518,7 +1536,7 @@ mod tests {
             ]}),
             json!({"role": "assistant", "content": [{"type": "text", "text": "done"}]}),
         ];
-        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10, None);
         assert_eq!(pairs.len(), 3);
         assert_eq!(pairs[0], ctx[0]);
         assert_eq!(
@@ -1544,7 +1562,7 @@ mod tests {
                 {"id": "2", "type": "function", "function": {"name": "read", "arguments": r#"{"path": "a.txt"}"#}},
             ]}),
         ];
-        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10, None);
         assert_eq!(pairs.len(), 3);
         assert_eq!(pairs[1], json!({"role": "assistant", "content": "running"}));
         assert_eq!(
@@ -1564,13 +1582,79 @@ mod tests {
                 {"id": "1", "type": "function", "function": {"name": "bash", "arguments": r#"{"command": "ls -la"}"#}}
             ]}),
         ];
-        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10, None);
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0], json!({"role": "user", "content": "u1"}));
         assert_eq!(
             pairs[1],
             json!({"role": "user", "content":
                 "[History note] assistant tool calls: bash(command=\"ls -la\")"})
+        );
+    }
+
+    /// `note_window = Some(1)`: only the most recent kept pair carries its
+    /// history note; older pairs in the window are text-only.
+    #[test]
+    fn extract_pairs_note_window_keeps_recent_notes_only() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": r#"{"command": "ls"}"#}}
+            ]}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2", "tool_calls": [
+                {"id": "2", "type": "function", "function": {"name": "read", "arguments": r#"{"path": "f"}"#}}
+            ]}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10, Some(1));
+        assert_eq!(
+            pairs,
+            vec![
+                json!({"role": "user", "content": "u1"}),
+                json!({"role": "assistant", "content": "a1"}),
+                json!({"role": "user", "content": "u2"}),
+                json!({"role": "assistant", "content": "a2"}),
+                json!({"role": "user", "content":
+                    "[History note] assistant tool calls: read(path=\"f\")"}),
+            ]
+        );
+    }
+
+    /// `note_window = Some(0)`: text-only window, no notes at all.
+    #[test]
+    fn extract_pairs_note_window_zero_drops_all_notes() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": r#"{"command": "ls"}"#}}
+            ]}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10, Some(0));
+        assert_eq!(
+            pairs,
+            vec![
+                json!({"role": "user", "content": "u1"}),
+                json!({"role": "assistant", "content": "a1"}),
+            ]
+        );
+    }
+
+    /// `note_window` above the number of kept pairs clamps: every pair
+    /// keeps its note (same as `None`).
+    #[test]
+    fn extract_pairs_note_window_clamps_to_kept_pairs() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": r#"{"command": "ls"}"#}}
+            ]}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10, Some(99));
+        assert_eq!(pairs.len(), 3);
+        assert_eq!(
+            pairs[2],
+            json!({"role": "user", "content":
+                "[History note] assistant tool calls: bash(command=\"ls\")"})
         );
     }
 
@@ -1585,7 +1669,7 @@ mod tests {
                 {"id": "1", "type": "function", "function": {"name": "bash", "arguments": json!({"command": long}).to_string()}}
             ]}),
         ];
-        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10, None);
         let content = pairs[2]["content"].as_str().unwrap();
         assert!(
             content.contains("[History note] assistant tool calls: bash(command="),
@@ -1609,7 +1693,7 @@ mod tests {
             // Result for call 1 only; call 2 has no result.
             json!({"role": "tool", "tool_call_id": "1", "content": "BRANCH main"}),
         ];
-        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10, None);
         let content = pairs[2]["content"].as_str().unwrap();
         // Call 1 gets its result appended after the arrow.
         assert!(
@@ -1638,7 +1722,7 @@ mod tests {
             ]}),
             json!({"role": "tool", "tool_call_id": "1", "content": long}),
         ];
-        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10, None);
         let content = pairs[1]["content"].as_str().unwrap();
         assert!(content.contains('→'), "no result arrow: {content:?}");
         assert!(
@@ -1807,7 +1891,7 @@ mod tests {
             json!({"role": "user", "content":
                 "[History note] assistant tool calls: bash() → ok"}),
         ];
-        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10, None);
         assert_eq!(pairs, vec![json!({"role": "user", "content": "latest"})]);
     }
 

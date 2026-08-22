@@ -1037,6 +1037,7 @@ mode = "agent"
         let slide = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 4,
+            note_window: None,
         };
         let app = config_with_strategies(vec![("a", None), ("b", Some(slide.clone()))], None);
         let resolved = resolve_context_strategy(&app, "c", Some("b"));
@@ -1049,6 +1050,7 @@ mode = "agent"
         let slide = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 6,
+            note_window: None,
         };
         let app = config_with_strategies(vec![("a", Some(slide.clone()))], None);
         let resolved = resolve_context_strategy(&app, "c", None);
@@ -1061,6 +1063,7 @@ mode = "agent"
         let slide = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 8,
+            note_window: None,
         };
         let app = config_with_strategies(vec![], Some(slide.clone()));
         let resolved = resolve_context_strategy(&app, "c", Some("a"));

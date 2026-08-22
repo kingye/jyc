@@ -1881,6 +1881,9 @@ JYC uses the following subset of the agent service API:
    own formatter, so Anthropic (`content: [...]`) and OpenAI-compat
    (`content: "..."`) wire formats both stay valid.
 
+   Full mechanism reference (turn pairing, history notes, token safety
+   nets, configuration): [docs/context-management.md](docs/context-management.md).
+
 **Context Limits:**
 pub const MAX_BODY_IN_PROMPT: usize = 2000;
 

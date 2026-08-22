@@ -526,6 +526,7 @@ This is useful for diagnosing reply delivery failures.
 | Document | Purpose |
 |----------|---------|
 | [DESIGN.md](DESIGN.md) | Architecture, data flow, component design, API reference |
+| [docs/context-management.md](docs/context-management.md) | Context strategies, sliding window, history notes, token safety nets |
 | [IMPLEMENTATION.md](IMPLEMENTATION.md) | Implementation phases and progress |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
 | [SYSTEMD.md](SYSTEMD.md) | systemd deployment and service management |

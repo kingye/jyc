@@ -529,6 +529,35 @@ mod no_reply_rendering_tests {
         assert_eq!(entry.severity, Severity::Warning);
         assert!(entry.text.starts_with("RETRY"), "got {:?}", entry.text);
     }
+
+    #[test]
+    fn reply_tool_missing_renders_as_warning() {
+        let event = TopicEvent::SessionStatus {
+            topic_name: "t1".to_string(),
+            status_type: "reply_tool_missing".to_string(),
+            attempt: None,
+            message: Some("reminded once to deliver via jyc_reply_message".to_string()),
+            timestamp: Utc::now(),
+        };
+        let entry = event_to_activity(&event);
+        assert_eq!(entry.severity, Severity::Warning);
+        assert!(
+            entry.text.starts_with("REPLY TOOL MISSING"),
+            "expected 'REPLY TOOL MISSING' label, got {:?}",
+            entry.text
+        );
+        assert!(
+            entry
+                .text
+                .contains("reminded once to deliver via jyc_reply_message"),
+            "expected message body in entry text, got {:?}",
+            entry.text
+        );
+        assert!(
+            !entry.is_internal,
+            "reply-tool-missing must be user-visible"
+        );
+    }
 }
 
 #[cfg(test)]

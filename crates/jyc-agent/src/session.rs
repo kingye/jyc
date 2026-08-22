@@ -1044,54 +1044,50 @@ fn extract_result_text(content: &serde_json::Value) -> String {
     String::new()
 }
 
-/// Collect tool results from raw context into a map of
-/// `tool_call_id → truncated result text`. Handles OpenAI (`role: "tool"`
+/// Collect tool results from one raw wire-format message into `results`
+/// (`tool_call_id → truncated result text`). Handles OpenAI (`role: "tool"`
 /// with `tool_call_id`) and Anthropic (`role: "user"` with `tool_result`
 /// blocks carrying `tool_use_id`) shapes. Lets the windowed annotation
 /// show *what each tool returned*, not just that it was called.
-fn collect_tool_results(
-    raw_context: &[serde_json::Value],
-) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    for msg in raw_context {
-        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        match role {
-            // OpenAI: {"role": "tool", "tool_call_id": "...", "content": "..."}
-            "tool" => {
-                if let Some(id) = msg.get("tool_call_id").and_then(|i| i.as_str()) {
-                    let text = msg
-                        .get("content")
-                        .map(extract_result_text)
-                        .unwrap_or_default();
-                    map.insert(
-                        id.to_string(),
-                        truncate_text(&text, WINDOWED_TOOL_RESULT_MAX),
-                    );
-                }
+fn collect_results_from(
+    msg: &serde_json::Value,
+    results: &mut std::collections::HashMap<String, String>,
+) {
+    match msg.get("role").and_then(|r| r.as_str()).unwrap_or("") {
+        // OpenAI: {"role": "tool", "tool_call_id": "...", "content": "..."}
+        "tool" => {
+            if let Some(id) = msg.get("tool_call_id").and_then(|i| i.as_str()) {
+                let text = msg
+                    .get("content")
+                    .map(extract_result_text)
+                    .unwrap_or_default();
+                results.insert(
+                    id.to_string(),
+                    truncate_text(&text, WINDOWED_TOOL_RESULT_MAX),
+                );
             }
-            // Anthropic: {"role": "user", "content": [{type: "tool_result", tool_use_id, content}]}
-            "user" => {
-                if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
-                    for block in blocks {
-                        if block.get("type").and_then(|t| t.as_str()) == Some("tool_result")
-                            && let Some(id) = block.get("tool_use_id").and_then(|i| i.as_str())
-                        {
-                            let text = block
-                                .get("content")
-                                .map(extract_result_text)
-                                .unwrap_or_default();
-                            map.insert(
-                                id.to_string(),
-                                truncate_text(&text, WINDOWED_TOOL_RESULT_MAX),
-                            );
-                        }
+        }
+        // Anthropic: {"role": "user", "content": [{type: "tool_result", tool_use_id, content}]}
+        "user" => {
+            if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
+                for block in blocks {
+                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+                        && let Some(id) = block.get("tool_use_id").and_then(|i| i.as_str())
+                    {
+                        let text = block
+                            .get("content")
+                            .map(extract_result_text)
+                            .unwrap_or_default();
+                        results.insert(
+                            id.to_string(),
+                            truncate_text(&text, WINDOWED_TOOL_RESULT_MAX),
+                        );
                     }
                 }
             }
-            _ => {}
         }
+        _ => {}
     }
-    map
 }
 
 /// Build the bare tool-call annotation for an assistant message, e.g.
@@ -1127,64 +1123,113 @@ fn tool_call_annotation(
     ))
 }
 
-/// Extract **all** user+assistant text pairs from raw context, cleaning
-/// assistant messages to only keep role + content (strip reasoning_content,
-/// tool_calls). Bare tool calls an assistant issued are folded into the
-/// text as a `(incl. followed tool calls: …)` annotation (parameters kept,
-/// over-long values truncated); a tool-call-only turn (empty text) is kept
-/// annotated alone. Returns pairs in oldest→newest order.
+/// Flush the accumulated turn into `pairs`: merge every assistant message
+/// of the turn (tool-call steps included) into a single assistant entry
+/// whose text carries each step's text plus its folded tool-call
+/// annotation, joined by newlines. Always clears the turn state.
 ///
-/// Unpaired trailing user messages (no following assistant reply yet) are
-/// dropped, mirroring the windowed-view semantics — a completed turn only.
+/// A turn with no assistant reply yet (interrupted between user message
+/// and first response) produces no pair; the fallback in
+/// `extract_user_assistant_pairs` keeps the last user message for that
+/// case. Assistant messages seen before any user message (no pairing
+/// anchor) are dropped.
+fn flush_turn(
+    pairs: &mut Vec<(serde_json::Value, serde_json::Value)>,
+    cur_user: &mut Option<serde_json::Value>,
+    cur_assistants: &mut Vec<serde_json::Value>,
+    results: &std::collections::HashMap<String, String>,
+) {
+    let user_msg = cur_user.take();
+    let assistants = std::mem::take(cur_assistants);
+    if assistants.is_empty() {
+        return;
+    }
+    let Some(user_msg) = user_msg else { return };
+
+    let mut segments: Vec<String> = Vec::with_capacity(assistants.len());
+    for msg in &assistants {
+        let text = extract_message_text(msg);
+        // Keep only role + content, folding bare tool calls into the text
+        // so the windowed part shows which tools ran and what they
+        // returned. A tool-call-only step (empty text) is kept too,
+        // annotated alone, instead of being dropped.
+        let content = match tool_call_annotation(msg, results) {
+            Some(annotation) if text.is_empty() => annotation,
+            Some(annotation) => format!("{text}\n{annotation}"),
+            None => text,
+        };
+        if !content.is_empty() {
+            segments.push(content);
+        }
+    }
+    if segments.is_empty() {
+        return;
+    }
+
+    let clean_assistant = serde_json::json!({
+        "role": "assistant",
+        "content": segments.join("\n"),
+    });
+    pairs.push((user_msg, clean_assistant));
+}
+
+/// Extract **all** user+assistant turn pairs from raw context.
+///
+/// Pairing unit is the **turn**, not the single message: a turn opens at
+/// a text-bearing user message and closes at the next one (or end of
+/// context). Every assistant message in between — intermediate tool-call
+/// steps and the final reply alike — is merged into one assistant entry
+/// (see [`flush_turn`]), so the windowed view never loses the turn's
+/// conclusion (including `jyc_reply_message` calls, which live in the
+/// turn's later assistant messages).
+///
+/// Assistant messages are cleaned to only role + content (strip
+/// reasoning_content, tool_calls); bare tool calls are folded into the
+/// text as a `(incl. followed tool calls: …)` annotation (parameters kept,
+/// over-long values truncated, tool results appended as `→ <result>`).
+/// Returns pairs in oldest→newest order.
+///
+/// A trailing turn whose user message has no assistant reply yet is
+/// dropped, mirroring the windowed-view semantics — a completed turn only
+/// (`extract_user_assistant_pairs` has a fallback for the no-pairs case).
+///
+/// Single pass: tool results are collected into a **turn-scoped** map as
+/// they stream by, so a tool_call_id reused in a later turn can never
+/// misattach to an earlier turn's call.
 ///
 /// Shared by session heuristic compaction, mid-loop compression, and the
 /// `context_browse` built-in tool.
 pub(crate) fn extract_pairs(
     raw_context: &[serde_json::Value],
 ) -> Vec<(serde_json::Value, serde_json::Value)> {
-    // Map tool_call_id → truncated result text so the annotation can show
-    // *what* each tool returned, not just that it was called.
-    let results = collect_tool_results(raw_context);
     let mut pairs: Vec<(serde_json::Value, serde_json::Value)> = Vec::new();
-    let mut last_user: Option<serde_json::Value> = None;
+    let mut cur_user: Option<serde_json::Value> = None;
+    let mut cur_assistants: Vec<serde_json::Value> = Vec::new();
+    let mut results: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     for msg in raw_context {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
         match role {
             "user" => {
-                // Skip user-role messages with no extractable text — for
-                // Anthropic-shaped contexts these are tool_result wrappers
-                // (role "user" with `tool_result` blocks), which must not be
-                // promoted to `last_user` and paired with the next assistant
-                // reply.
-                if !extract_message_text(msg).is_empty() {
-                    last_user = Some(msg.clone());
+                // Text-bearing user message opens a new turn; user-role
+                // messages with no extractable text are Anthropic
+                // tool_result wrappers, which stay in the current turn and
+                // only feed the results map.
+                if extract_message_text(msg).is_empty() {
+                    collect_results_from(msg, &mut results);
+                } else {
+                    flush_turn(&mut pairs, &mut cur_user, &mut cur_assistants, &results);
+                    results.clear();
+                    cur_user = Some(msg.clone());
                 }
             }
-            "assistant" => {
-                let text = extract_message_text(msg);
-                // Keep only role + content, folding bare tool calls into
-                // the text so the windowed part shows which tools ran and
-                // what they returned. A tool-call-only turn (empty text) is
-                // kept too, annotated alone, instead of being dropped.
-                let content = match tool_call_annotation(msg, &results) {
-                    Some(annotation) if text.is_empty() => annotation,
-                    Some(annotation) => format!("{text}\n{annotation}"),
-                    None => text,
-                };
-                if !content.is_empty()
-                    && let Some(user_msg) = last_user.take()
-                {
-                    let clean_assistant = serde_json::json!({
-                        "role": "assistant",
-                        "content": content,
-                    });
-                    pairs.push((user_msg, clean_assistant));
-                }
-            }
-            _ => {} // Skip tool messages
+            "assistant" => cur_assistants.push(msg.clone()),
+            // OpenAI tool results.
+            "tool" => collect_results_from(msg, &mut results),
+            _ => {}
         }
     }
+    flush_turn(&mut pairs, &mut cur_user, &mut cur_assistants, &results);
 
     pairs
 }
@@ -1559,5 +1604,82 @@ mod tests {
         assert_eq!(pairs[2].1["content"], "a3");
         // u4 must NOT be paired.
         assert!(pairs.iter().all(|(u, _)| u["content"] != "u4"));
+    }
+
+    /// A multi-step tool turn (user → assistant(call) → tool → assistant(call)
+    /// → tool → assistant(final reply)) merges into ONE pair: every step's
+    /// text + annotation is kept, ending with the turn's conclusion. Before
+    /// turn-based pairing, only the FIRST assistant message was paired and
+    /// the final reply was silently dropped.
+    #[test]
+    fn extract_pairs_merges_multi_step_tool_turn() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "step1", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "out1"}),
+            json!({"role": "assistant", "content": "step2", "tool_calls": [
+                {"id": "2", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "2", "content": "out2"}),
+            json!({"role": "assistant", "content": "final answer"}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 1);
+        let content = pairs[0].1["content"].as_str().unwrap();
+        assert!(content.contains("step1"), "step1 lost: {content:?}");
+        assert!(content.contains("bash() → out1"), "call1 lost: {content:?}");
+        assert!(content.contains("step2"), "step2 lost: {content:?}");
+        assert!(content.contains("read() → out2"), "call2 lost: {content:?}");
+        assert!(
+            content.ends_with("final answer"),
+            "turn conclusion must be kept: {content:?}"
+        );
+    }
+
+    /// Tool results are matched per turn: a tool_call_id reused in a later
+    /// turn must not misattach its result to the earlier turn's call.
+    #[test]
+    fn extract_pairs_scopes_results_per_turn() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "first"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "second"}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 2);
+        assert!(
+            pairs[0].1["content"].as_str().unwrap().contains("→ first"),
+            "turn 1 got wrong result: {:?}",
+            pairs[0].1["content"]
+        );
+        assert!(
+            pairs[1].1["content"].as_str().unwrap().contains("→ second"),
+            "turn 2 got wrong result: {:?}",
+            pairs[1].1["content"]
+        );
+    }
+
+    /// Consecutive text-bearing user messages (user sent again before any
+    /// reply): the unanswered message is dropped, the latest one pairs.
+    #[test]
+    fn extract_pairs_consecutive_users_keeps_latest() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0["content"], "u2");
+        assert_eq!(pairs[0].1["content"], "a2");
     }
 }

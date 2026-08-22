@@ -44,6 +44,7 @@ use jyc_types::{
 ///
 /// Returns `Ok(None)` for unsupported channel types (the caller skips them,
 /// matching the original inline `continue` behavior).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_outbound_adapter(
     channel_type: &str,
     channel_name: &str,
@@ -2464,6 +2465,7 @@ async fn route_into_pipe_target(
 /// via the shared WecomWebhookServer, pattern match, pipe retarget, and a
 /// reply forwarder per pipe target channel. No TopicManager / agent /
 /// orchestrator — the hub owns all of that.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_wecom_adapter(
     channel_config: &ChannelConfig,
     channel_name: String,
@@ -2612,6 +2614,7 @@ pub(crate) fn spawn_wecom_adapter(
 /// msgid dedup) — same precedent as email's IMAP cursor and github's
 /// dedup store. Replies go out via `kf/send_msg` (text only; attachments
 /// are not relayed, same as the pre-migration behavior).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_wecomkf_adapter(
     channel_config: &ChannelConfig,
     channel_name: String,
@@ -2889,84 +2892,81 @@ impl InboundSpawner<'_> {
         let channel_name_owned = channel_name.clone();
         let tm = topic_manager.clone();
         let channel_span = tracing::info_span!("in", ch = %channel_name);
-        match channel_type {
-            "websocket" => {
-                let router_for_callback = router.clone();
-                let channel_name_for_matcher = channel_name_owned.clone();
+        if channel_type == "websocket" {
+            let router_for_callback = router.clone();
+            let channel_name_for_matcher = channel_name_owned.clone();
 
-                // The websocket handler was already created when the outbound adapter was built.
-                // Find it in the list and start it (sets the on_message callback).
-                let handler = websocket_handlers.last().cloned().ok_or_else(|| {
-                    anyhow::anyhow!("channel '{channel_name}': websocket handler not found")
-                })?;
+            // The websocket handler was already created when the outbound adapter was built.
+            // Find it in the list and start it (sets the on_message callback).
+            let handler = websocket_handlers.last().cloned().ok_or_else(|| {
+                anyhow::anyhow!("channel '{channel_name}': websocket handler not found")
+            })?;
 
-                let topic_manager_clone = topic_manager.clone();
-                let options = jyc_types::InboundAdapterOptions {
-                    on_message: Box::new(move |message| {
-                        let router = router_for_callback.clone();
-                        let channel_name = channel_name_for_matcher.clone();
+            let topic_manager_clone = topic_manager.clone();
+            let options = jyc_types::InboundAdapterOptions {
+                on_message: Box::new(move |message| {
+                    let router = router_for_callback.clone();
+                    let channel_name = channel_name_for_matcher.clone();
 
-                        tokio::spawn(async move {
-                            router
-                                .route(&WebsocketMatcher::new(channel_name), message)
-                                .await;
-                        });
+                    tokio::spawn(async move {
+                        router
+                            .route(&WebsocketMatcher::new(channel_name), message)
+                            .await;
+                    });
 
-                        Ok(())
-                    }),
-                    on_topic_close: Some(Box::new(move |topic_name: String| {
-                        let tm = topic_manager_clone.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = tm.auto_close_topic(&topic_name).await {
-                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
-                            }
-                        });
-                        Ok(())
-                    })),
-                    on_close_event: None,
-                    on_error: Box::new(|error| {
-                        tracing::error!(error = %error, "WebSocket inbound error");
-                    }),
-                    attachment_config: inbound_attachment_config.clone(),
-                };
+                    Ok(())
+                }),
+                on_topic_close: Some(Box::new(move |topic_name: String| {
+                    let tm = topic_manager_clone.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = tm.auto_close_topic(&topic_name).await {
+                            tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
+                        }
+                    });
+                    Ok(())
+                })),
+                on_close_event: None,
+                on_error: Box::new(|error| {
+                    tracing::error!(error = %error, "WebSocket inbound error");
+                }),
+                attachment_config: inbound_attachment_config.clone(),
+            };
 
-                // Start the adapter (sets the on_message callback; no independent listener)
-                if let Err(e) = handler.start(options, cancel_child.clone()).await {
-                    tracing::error!(
-                        error = %e,
-                        "WebSocket inbound adapter error"
-                    );
-                }
-
-                // WebSocket channel does not need a background task (handler is registered on the inspect server)
-                // But we still need to keep the topic_manager alive, so we push a no-op task
-                let task = tokio::spawn(
-                    async move {
-                        // Wait for cancellation
-                        cancel_child.cancelled().await;
-                        tm.shutdown().await;
-                    }
-                    .instrument(channel_span),
+            // Start the adapter (sets the on_message callback; no independent listener)
+            if let Err(e) = handler.start(options, cancel_child.clone()).await {
+                tracing::error!(
+                    error = %e,
+                    "WebSocket inbound adapter error"
                 );
-
-                orchestrator
-                    .register_channel(
-                        channel_name.to_string(),
-                        jyc_core::channel_orchestrator::ChannelHandle {
-                            cancel: cancel.clone(),
-
-                            topic_manager: topic_manager.clone(),
-
-                            channel_info: channel_info.clone(),
-
-                            workspace_dir: workspace_dir.clone(),
-                        },
-                    )
-                    .await;
-
-                tasks.push(task);
             }
-            _ => {} // Gracefully skip unknown channel types
+
+            // WebSocket channel does not need a background task (handler is registered on the inspect server)
+            // But we still need to keep the topic_manager alive, so we push a no-op task
+            let task = tokio::spawn(
+                async move {
+                    // Wait for cancellation
+                    cancel_child.cancelled().await;
+                    tm.shutdown().await;
+                }
+                .instrument(channel_span),
+            );
+
+            orchestrator
+                .register_channel(
+                    channel_name.to_string(),
+                    jyc_core::channel_orchestrator::ChannelHandle {
+                        cancel: cancel.clone(),
+
+                        topic_manager: topic_manager.clone(),
+
+                        channel_info: channel_info.clone(),
+
+                        workspace_dir: workspace_dir.clone(),
+                    },
+                )
+                .await;
+
+            tasks.push(task);
         }
         Ok(())
     }

@@ -1255,12 +1255,15 @@ pub(crate) fn extract_user_assistant_pairs(
         .collect();
 
     if summary.is_empty() {
-        // Fallback: keep the first user message if no pairs found
-        if let Some(first_user) = raw_context
-            .iter()
-            .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-        {
-            vec![first_user.clone()]
+        // Fallback: keep the LAST text-bearing user message — the closest
+        // thing to an unfinished turn. (The first user message is usually
+        // ancient, unrelated history and would sit misleadingly in front
+        // of the current turn.)
+        if let Some(last_user) = raw_context.iter().rev().find(|m| {
+            m.get("role").and_then(|r| r.as_str()) == Some("user")
+                && !extract_message_text(m).is_empty()
+        }) {
+            vec![last_user.clone()]
         } else {
             Vec::new()
         }
@@ -1681,5 +1684,21 @@ mod tests {
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].0["content"], "u2");
         assert_eq!(pairs[0].1["content"], "a2");
+    }
+
+    /// No complete pairs: the fallback keeps the LAST text-bearing user
+    /// message (nearest to an unfinished turn), not the first — and skips
+    /// Anthropic tool_result wrappers, which carry no user text.
+    #[test]
+    fn fallback_keeps_last_text_user() {
+        let ctx = vec![
+            json!({"role": "user", "content": "ancient"}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
+            ]}),
+            json!({"role": "user", "content": "latest"}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        assert_eq!(pairs, vec![json!({"role": "user", "content": "latest"})]);
     }
 }

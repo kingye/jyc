@@ -77,6 +77,15 @@ const REMINDER_MIMICRY: &str = "[System reminder] Your last turn's text contains
     reply was already delivered or nothing needs sending, call `jyc_reply_message` \
     with `silent: true`.";
 
+/// Reminder injected when the model's `jyc_reply_message` call FAILED and the
+/// model then tries to finish text-only: the delivery is still owed and a
+/// plain-text finish would hit the degraded fallback path. The `{error}`
+/// slot is filled with the tool's error message so the model can correct
+/// its arguments instead of guessing.
+const REMINDER_REPLY_FAILED: &str = "[System reminder] Your `jyc_reply_message` \
+    call FAILED and the reply was NOT delivered: {error}. Fix the arguments and \
+    call `jyc_reply_message` again now — do not finish with plain text.";
+
 /// Warning appended to a text-only fallback reply when the reply tool was
 /// available but never called even after the reminder. Visible to the end
 /// user so a degraded delivery is never mistaken for a normal reply.
@@ -274,6 +283,21 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // single nudge to deliver via `jyc_reply_message`; if it still fails,
     // fall back to text delivery with a visible warning marker appended.
     let mut reply_tool_nudged = false;
+
+    // Tool-restricted recovery: when any reply reminder is injected, the
+    // NEXT LLM call offers only `jyc_reply_message` — with a single tool on
+    // the table the model cannot wander back into narration or other tools.
+    // Set at reminder injection, consumed at the LLM call site.
+    let mut restrict_to_reply_tool = false;
+
+    // Failure-aware recovery: a FAILED `jyc_reply_message` call means the
+    // delivery is still owed. If the model then finishes text-only, remind
+    // it with the concrete tool error. Capped so a deterministically
+    // failing tool (e.g. a persistent bad attachment name) cannot nudge
+    // forever — past the cap we fall through to the fallback path.
+    const MAX_REPLY_FAILURE_NUDGES: u32 = 2;
+    let mut last_reply_error: Option<String> = None;
+    let mut reply_failure_nudges: u32 = 0;
 
     // Cycle tracking: when iter_in_cycle reaches max_iter, send a progress reply,
     // reset the counter, and continue. No upper bound on cycles.
@@ -498,10 +522,25 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // `/cancel`, not an error: break so the post-loop
         // `ProcessingCompleted` event still fires (the dashboard clears its
         // "AI thinking" state only on that event).
+        // Reply-recovery turns run with a single tool on the table: after a
+        // reminder injection, only `jyc_reply_message` is offered, so the
+        // model's only available action is delivering the reply (or going
+        // silent). Text-only pleading alone proved insufficient — models
+        // often re-emit the text instead of calling the tool.
+        let tool_defs = if std::mem::take(&mut restrict_to_reply_tool) {
+            tools
+                .definitions()
+                .into_iter()
+                .filter(|d| d.name == "jyc_reply_message")
+                .collect::<Vec<_>>()
+        } else {
+            tools.definitions()
+        };
+
         let response = match complete_with_retry(
             provider,
             &send_context,
-            &tools.definitions(),
+            &tool_defs,
             system_prompt,
             topic_name,
             event_bus,
@@ -645,8 +684,36 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             // called or is not registered. Otherwise the text is likely
             // narration ("thinking out loud"), which the fallback path would
             // deliver verbatim as the final reply. Nudge the model once.
+            // Failure-aware recovery takes precedence over the generic
+            // nudge: a failed delivery attempt means the reply is still
+            // owed, and the concrete error tells the model what to fix.
+            // Capped (MAX_REPLY_FAILURE_NUDGES) so a deterministically
+            // failing tool cannot spin forever.
+            if !reply_sent_by_tool
+                && reply_tool_available
+                && last_reply_error.is_some()
+                && reply_failure_nudges < MAX_REPLY_FAILURE_NUDGES
+            {
+                let error = last_reply_error.take().unwrap_or_default();
+                reply_failure_nudges += 1;
+                reply_tool_nudged = true;
+                restrict_to_reply_tool = true;
+                tracing::warn!(
+                    total_iterations,
+                    error = %error,
+                    nudge = reply_failure_nudges,
+                    "Agent loop: reply tool failed and model finished text-only, \
+                     injecting failure-aware reminder"
+                );
+                raw_context.push(provider.format_user_message(&[ContentBlock::Text {
+                    text: REMINDER_REPLY_FAILED.replace("{error}", &error),
+                }]));
+                continue;
+            }
+
             if !reply_sent_by_tool && reply_tool_available && !reply_tool_nudged {
                 reply_tool_nudged = true;
+                restrict_to_reply_tool = true;
                 tracing::warn!(
                     total_iterations,
                     text_len,
@@ -936,6 +1003,14 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     )
                     .await;
                 }
+            } else if (tool_call.name.contains("reply_message")
+                || tool_call.name.contains("jyc_reply"))
+                && output.is_error
+            {
+                // Reply delivery FAILED — remember the error. If the model
+                // now tries to finish text-only, the failure-aware reminder
+                // quotes this so the model can correct its arguments.
+                last_reply_error = Some(output.content.clone());
             }
 
             // Add tool result to internal history AND raw context
@@ -1532,6 +1607,10 @@ mod reply_tool_tests {
         /// at stream-construction time).
         rounds: Vec<Vec<StreamEvent>>,
         calls: AtomicUsize,
+        /// Tool names offered on each `complete_raw` call, in call order —
+        /// lets tests assert the reply-recovery turn restricts the tool
+        /// list to `jyc_reply_message` alone.
+        seen_tools: std::sync::Mutex<Vec<Vec<String>>>,
     }
 
     #[async_trait]
@@ -1555,9 +1634,13 @@ mod reply_tool_tests {
         async fn complete_raw(
             &self,
             _raw_messages: &[serde_json::Value],
-            _tools: &[ToolDefinition],
+            tools: &[ToolDefinition],
             _system: &str,
         ) -> anyhow::Result<EventStream> {
+            self.seen_tools
+                .lock()
+                .unwrap()
+                .push(tools.iter().map(|t| t.name.clone()).collect());
             let i = self.calls.fetch_add(1, Ordering::SeqCst);
             let events: Vec<anyhow::Result<StreamEvent>> = match self.rounds.get(i) {
                 Some(round) => round.iter().cloned().map(Ok).collect(),
@@ -1633,6 +1716,7 @@ mod reply_tool_tests {
                 ],
             ],
             calls: AtomicUsize::new(0),
+            seen_tools: Default::default(),
         };
         let tmp = TempDir::new().unwrap();
         let working_dir = tmp.path().to_path_buf();
@@ -1685,6 +1769,23 @@ mod reply_tool_tests {
             !result.text.contains(FALLBACK_REPLY_WARNING),
             "no warning when the reply tool was used"
         );
+
+        // The recovery turn must run with a restricted tool list: only
+        // `jyc_reply_message` on the table. The first turn offered the full
+        // registry (many tools); the second offers exactly one.
+        let seen = provider.seen_tools.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(
+            seen[0].len() > 1,
+            "first turn should offer the full tool list, got: {:?}",
+            seen[0]
+        );
+        assert_eq!(
+            seen[1],
+            vec!["jyc_reply_message".to_string()],
+            "recovery turn must offer only the reply tool"
+        );
+        drop(seen);
 
         // The activity pane must have seen exactly one `reply_tool_missing`
         // nudge event and no plain no_reply event.
@@ -1745,6 +1846,7 @@ mod reply_tool_tests {
                 ],
             ],
             calls: AtomicUsize::new(0),
+            seen_tools: Default::default(),
         };
         let tmp = TempDir::new().unwrap();
         let working_dir = tmp.path().to_path_buf();
@@ -1821,6 +1923,7 @@ mod reply_tool_tests {
                 StreamEvent::Done,
             ]],
             calls: AtomicUsize::new(0),
+            seen_tools: Default::default(),
         };
         let tmp = TempDir::new().unwrap();
         let working_dir = tmp.path().to_path_buf();
@@ -1890,6 +1993,7 @@ mod reply_tool_tests {
                 ],
             ],
             calls: AtomicUsize::new(0),
+            seen_tools: Default::default(),
         };
         let tmp = TempDir::new().unwrap();
         let working_dir = tmp.path().to_path_buf();
@@ -1945,6 +2049,117 @@ mod reply_tool_tests {
             "fallback reply must carry the warning marker, got: {:?}",
             result.text
         );
+    }
+
+    /// A FAILED `jyc_reply_message` call (empty message) followed by a
+    /// text-only finish must trigger the failure-aware reminder quoting the
+    /// concrete tool error, and the recovery turn must again be restricted
+    /// to the reply tool alone.
+    #[tokio::test]
+    async fn failed_reply_then_text_only_gets_failure_reminder() {
+        let provider = ScriptedProvider {
+            rounds: vec![
+                // Round 0: broken reply call — empty message, tool errors.
+                vec![
+                    StreamEvent::ToolUseStart {
+                        id: "call_1".to_string(),
+                        name: "jyc_reply_message".to_string(),
+                    },
+                    StreamEvent::ToolInputDelta(r#"{"message":"","stop_after":true}"#.to_string()),
+                    StreamEvent::ToolUseEnd,
+                    StreamEvent::Done,
+                ],
+                // Round 1: model gives up and finishes text-only.
+                vec![
+                    StreamEvent::TextDelta("let me just say it in text".to_string()),
+                    StreamEvent::Done,
+                ],
+                // Round 2 (restricted): corrected reply call.
+                vec![
+                    StreamEvent::ToolUseStart {
+                        id: "call_2".to_string(),
+                        name: "jyc_reply_message".to_string(),
+                    },
+                    StreamEvent::ToolInputDelta(
+                        r#"{"message":"fixed answer","stop_after":true}"#.to_string(),
+                    ),
+                    StreamEvent::ToolUseEnd,
+                    StreamEvent::Done,
+                ],
+            ],
+            calls: AtomicUsize::new(0),
+            seen_tools: Default::default(),
+        };
+        let tmp = TempDir::new().unwrap();
+        let working_dir = tmp.path().to_path_buf();
+        let tools = registry_with_reply_tool();
+        let cancel = CancellationToken::new();
+
+        let result = run(super::AgentLoopConfig {
+            provider: &provider,
+            small_provider: None,
+            tools: &tools,
+            system_prompt: "test",
+            user_blocks: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+            }],
+            working_dir: &working_dir,
+            topic_path: &working_dir,
+            cancel: cancel.clone(),
+            topic_name: "reply-failure",
+            event_bus: None,
+            prior_history: vec![],
+            prior_raw_context: vec![],
+            max_iterations: Some(6),
+            sse_read_timeout: std::time::Duration::from_secs(60),
+            additional_read_roots: vec![],
+            additional_write_roots: vec![],
+            pattern_inject_images: false,
+            outbound: None,
+            topic_managers: None,
+            current_channel: None,
+            outbounds: None,
+            context_window: None,
+            auto_reset_threshold: 0.95,
+            thinking_enabled: false,
+            pricing: None,
+            model_label: "scripted-test-failure",
+            context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+            reply_target: None,
+        })
+        .await
+        .expect("agent loop should run to completion");
+
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+        assert!(result.reply_sent_by_tool, "corrected reply must win");
+        assert_eq!(result.reply_text_from_tool.as_deref(), Some("fixed answer"));
+
+        // The injected reminder must be the failure-aware variant, quoting
+        // the concrete tool error (empty message).
+        let reminders: Vec<_> = result
+            .raw_context
+            .iter()
+            .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+            .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+            .filter(|c| c.contains("[System reminder]"))
+            .collect();
+        assert_eq!(reminders.len(), 1, "exactly one reminder expected");
+        assert!(
+            reminders[0].contains("FAILED and the reply was NOT delivered"),
+            "expected REMINDER_REPLY_FAILED, got: {}",
+            reminders[0]
+        );
+        assert!(
+            reminders[0].contains("Message cannot be empty"),
+            "reminder must quote the tool error, got: {}",
+            reminders[0]
+        );
+
+        // The recovery turn after the failure reminder must also be
+        // tool-restricted (round index 2).
+        let seen = provider.seen_tools.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[2], vec!["jyc_reply_message".to_string()]);
     }
 }
 

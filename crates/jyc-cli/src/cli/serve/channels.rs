@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
+use tokio::sync::Mutex;
 use tokio::sync::broadcast;
-use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -23,8 +23,6 @@ use jyc_channels::github::inbound::GithubMatcher;
 use jyc_channels::websocket::inbound::{WebsocketInboundAdapter, WebsocketMatcher};
 use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
 
-use jyc_channels::wechat::inbound::WechatInboundAdapter;
-use jyc_channels::wechat::outbound::WechatOutboundAdapter;
 use jyc_channels::wecom::inbound::WecomInboundAdapter;
 use jyc_channels::wecom::kf_client::KfApiClient;
 use jyc_channels::wecom::kf_cursor::KfCursorStore;
@@ -60,25 +58,12 @@ pub(crate) fn build_outbound_adapter(
     footer_enabled: bool,
     workspace_dir: &std::path::Path,
     inspect_broadcast: Arc<broadcast::Sender<String>>,
-    wechat_sender_arc: &mut Option<Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>>,
     wecomkf_kf_client: &mut Option<Arc<KfApiClient>>,
     ws_handler_for_channel: &mut HashMap<String, Arc<WebsocketInboundAdapter>>,
     websocket_handlers: &mut Vec<Arc<WebsocketInboundAdapter>>,
     ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
 ) -> Result<Option<Arc<dyn OutboundAdapter>>> {
     let outbound: Arc<dyn OutboundAdapter> = match channel_type {
-        "wechat" => {
-            // WeChat config is validated and cloned in the inbound section.
-            // Outbound only needs sender, storage, and footer config.
-            let adapter = WechatOutboundAdapter::new_with_attachments(
-                storage.clone(),
-                outbound_attachment_config,
-                footer_enabled,
-            );
-            // Store the sender_arc for later use in the inbound section
-            *wechat_sender_arc = Some(adapter.sender_arc());
-            Arc::new(adapter)
-        }
         "wecom" => {
             let wecom_config = channel_config
                 .wecom
@@ -2506,7 +2491,6 @@ pub(crate) struct InboundSpawner<'a> {
     pub(crate) cancel: CancellationToken,
     pub(crate) cancel_child: CancellationToken,
     pub(crate) tasks: &'a mut Vec<JoinHandle<()>>,
-    pub(crate) wechat_sender_arc: &'a mut Option<Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>>,
     pub(crate) wecomkf_kf_client: &'a mut Option<Arc<KfApiClient>>,
     pub(crate) orchestrator: Arc<ChannelOrchestrator>,
     pub(crate) channel_info: ChannelInfo,
@@ -2531,7 +2515,6 @@ impl InboundSpawner<'_> {
             cancel,
             cancel_child,
             tasks,
-            wechat_sender_arc,
             wecomkf_kf_client,
             orchestrator,
             channel_info,
@@ -2542,86 +2525,6 @@ impl InboundSpawner<'_> {
         let tm = topic_manager.clone();
         let channel_span = tracing::info_span!("in", ch = %channel_name);
         match channel_type {
-            "wechat" => {
-                let wechat_config = channel_config
-                    .wechat
-                    .as_ref()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("channel '{channel_name}': missing wechat config")
-                    })?
-                    .clone();
-
-                let router_for_callback = router.clone();
-                let wechat_sender_arc_clone = wechat_sender_arc.clone().unwrap();
-
-                let topic_manager_for_task = topic_manager.clone();
-
-                let task = tokio::spawn(async move {
-                use jyc_channels::wechat::inbound::WechatMatcher;
-
-                // Create the adapter with the shared sender Arc so it can
-                // update the outbound sender on each reconnection.
-                let adapter = WechatInboundAdapter::with_shared_sender(
-                    &wechat_config,
-                    channel_name_owned.clone(),
-                    wechat_sender_arc_clone,
-                );
-
-                let topic_manager_clone = topic_manager_for_task.clone();
-                let options = jyc_types::InboundAdapterOptions {
-                    on_message: Box::new(move |message| {
-                        let router = router_for_callback.clone();
-
-                        tokio::spawn(async move {
-                            router.route(&WechatMatcher, message).await;
-                        });
-
-                        Ok(())
-                    }),
-                    on_topic_close: Some(Box::new(move |topic_name: String| {
-                        let tm = topic_manager_clone.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = tm.auto_close_topic(&topic_name).await {
-                                tracing::error!(error = %e, topic = %topic_name, "Failed to close topic");
-                            }
-                        });
-                        Ok(())
-                    })),
-                    on_close_event: None,
-                on_error: Box::new(|error| {
-                        tracing::error!(error = %error, "WeChat inbound error");
-                    }),
-                    attachment_config: inbound_attachment_config.clone(),
-                };
-
-                if let Err(e) = adapter.start(options, cancel_child).await {
-                    tracing::error!(
-                        error = %e,
-                        "WeChat inbound adapter error"
-                    );
-                }
-
-                // Shutdown topic manager for this channel
-                tm.shutdown().await;
-            }.instrument(channel_span));
-
-                orchestrator
-                    .register_channel(
-                        channel_name.to_string(),
-                        jyc_core::channel_orchestrator::ChannelHandle {
-                            cancel: cancel.clone(),
-
-                            topic_manager: topic_manager.clone(),
-
-                            channel_info: channel_info.clone(),
-
-                            workspace_dir: workspace_dir.clone(),
-                        },
-                    )
-                    .await;
-
-                tasks.push(task);
-            }
             "wecom" => {
                 let wecom_config = channel_config
                     .wecom

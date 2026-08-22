@@ -369,7 +369,6 @@ fn derive_agent_config_applies_channel_overrides() {
         feishu: None,
         gitee: None,
         github: None,
-        wechat: None,
         wecom: None,
         wecom_kf: None,
         wecom_bot: None,

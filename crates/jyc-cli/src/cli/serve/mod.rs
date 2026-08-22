@@ -342,10 +342,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         let footer_enabled = channel_config.footer.as_ref().is_none_or(|f| f.enabled);
 
         // Create the outbound adapter based on channel type
-        // For wechat, we need to share the WebSocket sender between inbound and outbound
-        let mut wechat_sender_arc: Option<
-            std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<String>>>>,
-        > = None;
         // For wecomkf, we share the KfApiClient between inbound and outbound
         let mut wecomkf_kf_client: Option<Arc<KfApiClient>> = None;
         let Some(outbound) = crate::cli::serve::channels::build_outbound_adapter(
@@ -357,7 +353,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             footer_enabled,
             &workspace_dir,
             inspect_broadcast.clone(),
-            &mut wechat_sender_arc,
             &mut wecomkf_kf_client,
             &mut ws_handler_for_channel,
             &mut websocket_handlers,
@@ -476,7 +471,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             cancel: cancel.clone(),
             cancel_child,
             tasks: &mut tasks,
-            wechat_sender_arc: &mut wechat_sender_arc,
             wecomkf_kf_client: &mut wecomkf_kf_client,
             orchestrator: orchestrator.clone(),
             channel_info,

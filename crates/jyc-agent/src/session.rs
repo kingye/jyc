@@ -820,76 +820,22 @@ async fn generate_context_summary(
 /// Render `raw_context` as a single plain-text transcript suitable for
 /// one-shot summarization. Lossy by design — used only by the summary call,
 /// never replayed to the main loop.
-fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
+///
+/// Built on [`extract_pairs`] so this view and the sliding-window view
+/// share ONE parsing/annotation implementation (previously two copies
+/// parsed the OpenAI/Anthropic wire formats independently and had already
+/// drifted apart). Each pair renders as `USER: …` / `ASSISTANT: …`; the
+/// assistant text already carries the folded tool-call annotations with
+/// truncated results.
+pub(crate) fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
     let mut out = String::with_capacity(raw_context.len() * 256);
     out.push_str("=== Conversation transcript ===\n\n");
-    for msg in raw_context {
-        let role = msg
-            .get("role")
-            .and_then(|r| r.as_str())
-            .unwrap_or("unknown");
-        match role {
-            "user" => {
-                let text = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                if !text.is_empty() {
-                    out.push_str("USER: ");
-                    out.push_str(text);
-                    out.push_str("\n\n");
-                }
-            }
-            "assistant" => {
-                out.push_str("ASSISTANT");
-                if let Some(text) = msg.get("content").and_then(|c| c.as_str())
-                    && !text.is_empty()
-                {
-                    out.push_str(": ");
-                    out.push_str(text);
-                }
-                if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
-                    for block in blocks {
-                        let t = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                        match t {
-                            "text" => {
-                                if let Some(s) = block.get("text").and_then(|x| x.as_str()) {
-                                    out.push_str(": ");
-                                    out.push_str(s);
-                                }
-                            }
-                            "tool_use" => {
-                                let name =
-                                    block.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-                                out.push_str(&format!("\n  [tool_use: {}]", name));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                if let Some(tcs) = msg.get("tool_calls").and_then(|t| t.as_array()) {
-                    for tc in tcs {
-                        let name = tc
-                            .get("function")
-                            .and_then(|f| f.get("name"))
-                            .and_then(|n| n.as_str())
-                            .unwrap_or("?");
-                        out.push_str(&format!("\n  [tool_call: {}]", name));
-                    }
-                }
-                out.push_str("\n\n");
-            }
-            "tool" => {
-                let text = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                let truncated = if text.len() > 500 {
-                    let cut = text.floor_char_boundary(500);
-                    format!("{}…", &text[..cut])
-                } else {
-                    text.to_string()
-                };
-                out.push_str("TOOL_RESULT: ");
-                out.push_str(&truncated);
-                out.push_str("\n\n");
-            }
-            _ => {}
-        }
+    for (user, assistant) in extract_pairs(raw_context) {
+        out.push_str("USER: ");
+        out.push_str(&extract_message_text(&user));
+        out.push_str("\n\nASSISTANT: ");
+        out.push_str(&extract_message_text(&assistant));
+        out.push_str("\n\n");
     }
     out
 }
@@ -927,6 +873,17 @@ const WINDOWED_TOOL_ARG_MAX: usize = 200;
 /// call away.
 /// ponytail: fixed cap; raise if real results routinely need more.
 const WINDOWED_TOOL_RESULT_MAX: usize = 500;
+
+/// Max length of `jyc_reply_message`'s `message` parameter in the
+/// windowed annotation — higher than the generic arg cap because it is
+/// the text the user actually saw, so losing it is what makes the agent
+/// repeat replies.
+const WINDOWED_REPLY_MESSAGE_MAX: usize = 1000;
+
+/// A tool result collected for the windowed annotation: truncated text
+/// plus the error flag, so failures render as `→ [error] …` and the agent
+/// can tell a failed call apart from a successful one.
+type WindowedResult = (String, bool);
 
 /// Collect bare tool calls from a raw wire-format assistant message as
 /// `(id, name, args)` triples.
@@ -989,18 +946,29 @@ fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, String, serde_jso
 }
 
 /// Render one tool call as `name(k=v, …)`, keeping **all** parameters and
-/// truncating only a single argument value that exceeds
-/// `WINDOWED_TOOL_ARG_MAX`.
+/// truncating only a single argument value that exceeds its cap
+/// (`WINDOWED_REPLY_MESSAGE_MAX` for `jyc_reply_message`'s `message`,
+/// `WINDOWED_TOOL_ARG_MAX` for everything else).
 fn render_tool_call(name: &str, args: &serde_json::Value) -> String {
     if let Some(map) = args.as_object() {
         // Empty maps join to `name()` naturally; no empty-args special case.
         let parts = map
             .iter()
-            .map(|(k, v)| format!("{k}={}", truncate_json_value(v)))
+            .map(|(k, v)| {
+                let max = if name == "jyc_reply_message" && k == "message" {
+                    WINDOWED_REPLY_MESSAGE_MAX
+                } else {
+                    WINDOWED_TOOL_ARG_MAX
+                };
+                format!("{k}={}", truncate_json_value(v, max))
+            })
             .collect::<Vec<_>>();
         format!("{name}({})", parts.join(", "))
     } else {
-        format!("{name}({})", truncate_json_value(args))
+        format!(
+            "{name}({})",
+            truncate_json_value(args, WINDOWED_TOOL_ARG_MAX)
+        )
     }
 }
 
@@ -1014,10 +982,10 @@ fn truncate_text(s: &str, max: usize) -> String {
     }
 }
 
-/// Render a JSON value as text, truncating at `WINDOWED_TOOL_ARG_MAX`
-/// bytes (on a char boundary) with `…` when it is longer.
-fn truncate_json_value(value: &serde_json::Value) -> String {
-    truncate_text(&value.to_string(), WINDOWED_TOOL_ARG_MAX)
+/// Render a JSON value as text, truncating at `max` bytes (on a char
+/// boundary) with `…` when it is longer.
+fn truncate_json_value(value: &serde_json::Value, max: usize) -> String {
+    truncate_text(&value.to_string(), max)
 }
 
 /// Extract text from a tool result `content` value, which may be a string
@@ -1044,147 +1012,220 @@ fn extract_result_text(content: &serde_json::Value) -> String {
     String::new()
 }
 
-/// Collect tool results from raw context into a map of
-/// `tool_call_id → truncated result text`. Handles OpenAI (`role: "tool"`
-/// with `tool_call_id`) and Anthropic (`role: "user"` with `tool_result`
-/// blocks carrying `tool_use_id`) shapes. Lets the windowed annotation
-/// show *what each tool returned*, not just that it was called.
-fn collect_tool_results(
-    raw_context: &[serde_json::Value],
-) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    for msg in raw_context {
-        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        match role {
-            // OpenAI: {"role": "tool", "tool_call_id": "...", "content": "..."}
-            "tool" => {
-                if let Some(id) = msg.get("tool_call_id").and_then(|i| i.as_str()) {
-                    let text = msg
-                        .get("content")
-                        .map(extract_result_text)
-                        .unwrap_or_default();
-                    map.insert(
-                        id.to_string(),
+/// Collect tool results from one raw wire-format message into `results`
+/// (`tool_call_id → (truncated result text, is_error)`). Handles OpenAI
+/// (`role: "tool"` with `tool_call_id`) and Anthropic (`role: "user"`
+/// with `tool_result` blocks carrying `tool_use_id`) shapes. Lets the
+/// windowed annotation show *what each tool returned* — and whether it
+/// failed — not just that it was called.
+fn collect_results_from(
+    msg: &serde_json::Value,
+    results: &mut std::collections::HashMap<String, WindowedResult>,
+) {
+    let is_error_of =
+        |v: &serde_json::Value| v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+    match msg.get("role").and_then(|r| r.as_str()).unwrap_or("") {
+        // OpenAI: {"role": "tool", "tool_call_id": "...", "content": "..."}
+        "tool" => {
+            if let Some(id) = msg.get("tool_call_id").and_then(|i| i.as_str()) {
+                let text = msg
+                    .get("content")
+                    .map(extract_result_text)
+                    .unwrap_or_default();
+                results.insert(
+                    id.to_string(),
+                    (
                         truncate_text(&text, WINDOWED_TOOL_RESULT_MAX),
-                    );
-                }
+                        is_error_of(msg),
+                    ),
+                );
             }
-            // Anthropic: {"role": "user", "content": [{type: "tool_result", tool_use_id, content}]}
-            "user" => {
-                if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
-                    for block in blocks {
-                        if block.get("type").and_then(|t| t.as_str()) == Some("tool_result")
-                            && let Some(id) = block.get("tool_use_id").and_then(|i| i.as_str())
-                        {
-                            let text = block
-                                .get("content")
-                                .map(extract_result_text)
-                                .unwrap_or_default();
-                            map.insert(
-                                id.to_string(),
+        }
+        // Anthropic: {"role": "user", "content": [{type: "tool_result", tool_use_id, content}]}
+        "user" => {
+            if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
+                for block in blocks {
+                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+                        && let Some(id) = block.get("tool_use_id").and_then(|i| i.as_str())
+                    {
+                        let text = block
+                            .get("content")
+                            .map(extract_result_text)
+                            .unwrap_or_default();
+                        results.insert(
+                            id.to_string(),
+                            (
                                 truncate_text(&text, WINDOWED_TOOL_RESULT_MAX),
-                            );
-                        }
+                                is_error_of(block),
+                            ),
+                        );
                     }
                 }
             }
-            _ => {}
         }
+        _ => {}
     }
-    map
 }
+
+/// Max total length of one message's tool-call annotation. Individual
+/// args/results are already capped, but the NUMBER of parallel calls is
+/// not — a 10-call turn would otherwise produce a ~7KB annotation. Calls
+/// past the budget are summarized as `…(N more calls)`.
+/// ponytail: fixed cap; raise if real turns routinely need more.
+const WINDOWED_ANNOTATION_MAX: usize = 2000;
 
 /// Build the bare tool-call annotation for an assistant message, e.g.
 /// `(incl. followed tool calls: bash(command="ls -la") → BRANCH main…)`.
 /// When a tool result is known for a call's `id` (looked up in `results`),
-/// it is appended as `→ <truncated result>` so the agent can see *what the
-/// tool returned*, not just that it was called. Returns `None` when the
-/// message carries no tool calls.
+/// it is appended as `→ <truncated result>` — prefixed with `[error] `
+/// when the call failed — so the agent can see *what the tool returned*,
+/// not just that it was called. Returns `None` when the message carries
+/// no tool calls.
 fn tool_call_annotation(
     msg: &serde_json::Value,
-    results: &std::collections::HashMap<String, String>,
+    results: &std::collections::HashMap<String, WindowedResult>,
 ) -> Option<String> {
     let calls = collect_tool_calls(msg);
     if calls.is_empty() {
         return None;
     }
-    let rendered = calls
-        .iter()
-        .map(|(id, name, args)| {
-            let mut s = render_tool_call(name, args);
-            if let Some(result) = results.get(id)
-                && !result.is_empty()
-            {
-                s.push_str(" → ");
-                s.push_str(result);
+    let mut parts: Vec<String> = Vec::with_capacity(calls.len());
+    let mut used = 0usize;
+    let mut omitted = 0usize;
+    for (id, name, args) in &calls {
+        let mut s = render_tool_call(name, args);
+        if let Some((result, is_error)) = results.get(id)
+            && !result.is_empty()
+        {
+            s.push_str(" → ");
+            if *is_error {
+                s.push_str("[error] ");
             }
-            s
-        })
-        .collect::<Vec<_>>();
-    Some(format!(
-        "(incl. followed tool calls: {})",
-        rendered.join(", ")
-    ))
+            s.push_str(result);
+        }
+        // +2 for the ", " separator. Always keep the first call so the
+        // annotation is never empty; cap the rest.
+        if !parts.is_empty() && used + s.len() + 2 > WINDOWED_ANNOTATION_MAX {
+            omitted += 1;
+            continue;
+        }
+        used += s.len() + 2;
+        parts.push(s);
+    }
+    if omitted > 0 {
+        parts.push(format!("…({omitted} more calls)"));
+    }
+    Some(format!("(incl. followed tool calls: {})", parts.join(", ")))
 }
 
-/// Extract **all** user+assistant text pairs from raw context, cleaning
-/// assistant messages to only keep role + content (strip reasoning_content,
-/// tool_calls). Bare tool calls an assistant issued are folded into the
-/// text as a `(incl. followed tool calls: …)` annotation (parameters kept,
-/// over-long values truncated); a tool-call-only turn (empty text) is kept
-/// annotated alone. Returns pairs in oldest→newest order.
+/// Flush the accumulated turn into `pairs`: merge every assistant message
+/// of the turn (tool-call steps included) into a single assistant entry
+/// whose text carries each step's text plus its folded tool-call
+/// annotation, joined by newlines. Always clears the turn state.
 ///
-/// Unpaired trailing user messages (no following assistant reply yet) are
-/// dropped, mirroring the windowed-view semantics — a completed turn only.
+/// A turn with no assistant reply yet (interrupted between user message
+/// and first response) produces no pair; the fallback in
+/// `extract_user_assistant_pairs` keeps the last user message for that
+/// case. Assistant messages seen before any user message (no pairing
+/// anchor) are dropped.
+fn flush_turn(
+    pairs: &mut Vec<(serde_json::Value, serde_json::Value)>,
+    cur_user: &mut Option<serde_json::Value>,
+    cur_assistants: &mut Vec<serde_json::Value>,
+    results: &std::collections::HashMap<String, WindowedResult>,
+) {
+    let user_msg = cur_user.take();
+    let assistants = std::mem::take(cur_assistants);
+    if assistants.is_empty() {
+        return;
+    }
+    let Some(user_msg) = user_msg else { return };
+
+    let mut segments: Vec<String> = Vec::with_capacity(assistants.len());
+    for msg in &assistants {
+        let text = extract_message_text(msg);
+        // Keep only role + content, folding bare tool calls into the text
+        // so the windowed part shows which tools ran and what they
+        // returned. A tool-call-only step (empty text) is kept too,
+        // annotated alone, instead of being dropped.
+        let content = match tool_call_annotation(msg, results) {
+            Some(annotation) if text.is_empty() => annotation,
+            Some(annotation) => format!("{text}\n{annotation}"),
+            None => text,
+        };
+        if !content.is_empty() {
+            segments.push(content);
+        }
+    }
+    if segments.is_empty() {
+        return;
+    }
+
+    let clean_assistant = serde_json::json!({
+        "role": "assistant",
+        "content": segments.join("\n"),
+    });
+    pairs.push((user_msg, clean_assistant));
+}
+
+/// Extract **all** user+assistant turn pairs from raw context.
+///
+/// Pairing unit is the **turn**, not the single message: a turn opens at
+/// a text-bearing user message and closes at the next one (or end of
+/// context). Every assistant message in between — intermediate tool-call
+/// steps and the final reply alike — is merged into one assistant entry
+/// (see [`flush_turn`]), so the windowed view never loses the turn's
+/// conclusion (including `jyc_reply_message` calls, which live in the
+/// turn's later assistant messages).
+///
+/// Assistant messages are cleaned to only role + content (strip
+/// reasoning_content, tool_calls); bare tool calls are folded into the
+/// text as a `(incl. followed tool calls: …)` annotation (parameters kept,
+/// over-long values truncated, tool results appended as `→ <result>`).
+/// Returns pairs in oldest→newest order.
+///
+/// A trailing turn whose user message has no assistant reply yet is
+/// dropped, mirroring the windowed-view semantics — a completed turn only
+/// (`extract_user_assistant_pairs` has a fallback for the no-pairs case).
+///
+/// Single pass: tool results are collected into a **turn-scoped** map as
+/// they stream by, so a tool_call_id reused in a later turn can never
+/// misattach to an earlier turn's call.
 ///
 /// Shared by session heuristic compaction, mid-loop compression, and the
 /// `context_browse` built-in tool.
 pub(crate) fn extract_pairs(
     raw_context: &[serde_json::Value],
 ) -> Vec<(serde_json::Value, serde_json::Value)> {
-    // Map tool_call_id → truncated result text so the annotation can show
-    // *what* each tool returned, not just that it was called.
-    let results = collect_tool_results(raw_context);
     let mut pairs: Vec<(serde_json::Value, serde_json::Value)> = Vec::new();
-    let mut last_user: Option<serde_json::Value> = None;
+    let mut cur_user: Option<serde_json::Value> = None;
+    let mut cur_assistants: Vec<serde_json::Value> = Vec::new();
+    let mut results: std::collections::HashMap<String, WindowedResult> =
+        std::collections::HashMap::new();
 
     for msg in raw_context {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
         match role {
             "user" => {
-                // Skip user-role messages with no extractable text — for
-                // Anthropic-shaped contexts these are tool_result wrappers
-                // (role "user" with `tool_result` blocks), which must not be
-                // promoted to `last_user` and paired with the next assistant
-                // reply.
-                if !extract_message_text(msg).is_empty() {
-                    last_user = Some(msg.clone());
+                // Text-bearing user message opens a new turn; user-role
+                // messages with no extractable text are Anthropic
+                // tool_result wrappers, which stay in the current turn and
+                // only feed the results map.
+                if extract_message_text(msg).is_empty() {
+                    collect_results_from(msg, &mut results);
+                } else {
+                    flush_turn(&mut pairs, &mut cur_user, &mut cur_assistants, &results);
+                    results.clear();
+                    cur_user = Some(msg.clone());
                 }
             }
-            "assistant" => {
-                let text = extract_message_text(msg);
-                // Keep only role + content, folding bare tool calls into
-                // the text so the windowed part shows which tools ran and
-                // what they returned. A tool-call-only turn (empty text) is
-                // kept too, annotated alone, instead of being dropped.
-                let content = match tool_call_annotation(msg, &results) {
-                    Some(annotation) if text.is_empty() => annotation,
-                    Some(annotation) => format!("{text}\n{annotation}"),
-                    None => text,
-                };
-                if !content.is_empty()
-                    && let Some(user_msg) = last_user.take()
-                {
-                    let clean_assistant = serde_json::json!({
-                        "role": "assistant",
-                        "content": content,
-                    });
-                    pairs.push((user_msg, clean_assistant));
-                }
-            }
-            _ => {} // Skip tool messages
+            "assistant" => cur_assistants.push(msg.clone()),
+            // OpenAI tool results.
+            "tool" => collect_results_from(msg, &mut results),
+            _ => {}
         }
     }
+    flush_turn(&mut pairs, &mut cur_user, &mut cur_assistants, &results);
 
     pairs
 }
@@ -1210,12 +1251,15 @@ pub(crate) fn extract_user_assistant_pairs(
         .collect();
 
     if summary.is_empty() {
-        // Fallback: keep the first user message if no pairs found
-        if let Some(first_user) = raw_context
-            .iter()
-            .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-        {
-            vec![first_user.clone()]
+        // Fallback: keep the LAST text-bearing user message — the closest
+        // thing to an unfinished turn. (The first user message is usually
+        // ancient, unrelated history and would sit misleadingly in front
+        // of the current turn.)
+        if let Some(last_user) = raw_context.iter().rev().find(|m| {
+            m.get("role").and_then(|r| r.as_str()) == Some("user")
+                && !extract_message_text(m).is_empty()
+        }) {
+            vec![last_user.clone()]
         } else {
             Vec::new()
         }
@@ -1391,9 +1435,9 @@ mod tests {
     use serde_json::json;
 
     /// Anthropic-shaped context (array content): assistant text pairs
-    /// correctly; tool_result user-role wrappers are skipped; the
-    /// assistant's bare tool use is folded into a text annotation, now
-    /// including the truncated result (`→ ok`).
+    /// correctly; tool_result user-role wrappers are skipped; the whole
+    /// turn's assistant steps merge into one entry — text, folded tool
+    /// use with the truncated result (`→ ok`), and the final reply.
     #[test]
     fn extract_pairs_anthropic_shape() {
         let ctx = vec![
@@ -1413,7 +1457,7 @@ mod tests {
         assert_eq!(
             pairs[1],
             json!({"role": "assistant",
-                "content": "a1\n(incl. followed tool calls: bash(command=\"ls\") → ok)"})
+                "content": "a1\n(incl. followed tool calls: bash(command=\"ls\") → ok)\ndone"})
         );
     }
 
@@ -1559,5 +1603,193 @@ mod tests {
         assert_eq!(pairs[2].1["content"], "a3");
         // u4 must NOT be paired.
         assert!(pairs.iter().all(|(u, _)| u["content"] != "u4"));
+    }
+
+    /// A multi-step tool turn (user → assistant(call) → tool → assistant(call)
+    /// → tool → assistant(final reply)) merges into ONE pair: every step's
+    /// text + annotation is kept, ending with the turn's conclusion. Before
+    /// turn-based pairing, only the FIRST assistant message was paired and
+    /// the final reply was silently dropped.
+    #[test]
+    fn extract_pairs_merges_multi_step_tool_turn() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "step1", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "out1"}),
+            json!({"role": "assistant", "content": "step2", "tool_calls": [
+                {"id": "2", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "2", "content": "out2"}),
+            json!({"role": "assistant", "content": "final answer"}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 1);
+        let content = pairs[0].1["content"].as_str().unwrap();
+        assert!(content.contains("step1"), "step1 lost: {content:?}");
+        assert!(content.contains("bash() → out1"), "call1 lost: {content:?}");
+        assert!(content.contains("step2"), "step2 lost: {content:?}");
+        assert!(content.contains("read() → out2"), "call2 lost: {content:?}");
+        assert!(
+            content.ends_with("final answer"),
+            "turn conclusion must be kept: {content:?}"
+        );
+    }
+
+    /// Tool results are matched per turn: a tool_call_id reused in a later
+    /// turn must not misattach its result to the earlier turn's call.
+    #[test]
+    fn extract_pairs_scopes_results_per_turn() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "first"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "second"}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 2);
+        assert!(
+            pairs[0].1["content"].as_str().unwrap().contains("→ first"),
+            "turn 1 got wrong result: {:?}",
+            pairs[0].1["content"]
+        );
+        assert!(
+            pairs[1].1["content"].as_str().unwrap().contains("→ second"),
+            "turn 2 got wrong result: {:?}",
+            pairs[1].1["content"]
+        );
+    }
+
+    /// Consecutive text-bearing user messages (user sent again before any
+    /// reply): the unanswered message is dropped, the latest one pairs.
+    #[test]
+    fn extract_pairs_consecutive_users_keeps_latest() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0["content"], "u2");
+        assert_eq!(pairs[0].1["content"], "a2");
+    }
+
+    /// No complete pairs: the fallback keeps the LAST text-bearing user
+    /// message (nearest to an unfinished turn), not the first — and skips
+    /// Anthropic tool_result wrappers, which carry no user text.
+    #[test]
+    fn fallback_keeps_last_text_user() {
+        let ctx = vec![
+            json!({"role": "user", "content": "ancient"}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
+            ]}),
+            json!({"role": "user", "content": "latest"}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        assert_eq!(pairs, vec![json!({"role": "user", "content": "latest"})]);
+    }
+
+    /// Failed tool results render as `→ [error] …` so the agent can tell a
+    /// failed call apart from a successful one. Covers both the OpenAI
+    /// (`is_error` on the tool message) and Anthropic (`is_error` on the
+    /// tool_result block) shapes.
+    #[test]
+    fn extract_pairs_marks_error_results() {
+        let ctx = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "u1"}]}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "boom", "is_error": true}),
+            json!({"role": "user", "content": [{"type": "text", "text": "u2"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t2", "name": "read", "input": {"path": "x"}}
+            ]}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t2", "content": "nope", "is_error": true}
+            ]}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 2);
+        assert!(
+            pairs[0].1["content"]
+                .as_str()
+                .unwrap()
+                .contains("bash() → [error] boom"),
+            "openai error not marked: {:?}",
+            pairs[0].1["content"]
+        );
+        assert!(
+            pairs[1].1["content"]
+                .as_str()
+                .unwrap()
+                .contains(r#"read(path="x") → [error] nope"#),
+            "anthropic error not marked: {:?}",
+            pairs[1].1["content"]
+        );
+    }
+
+    /// `jyc_reply_message`'s `message` parameter keeps up to 1000 chars —
+    /// it is the text the user actually saw — while other args stay at 200.
+    #[test]
+    fn extract_pairs_reply_message_arg_gets_higher_cap() {
+        let long = "r".repeat(500);
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "jyc_reply_message",
+                    "arguments": json!({"message": long}).to_string()}}
+            ]}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        let content = pairs[0].1["content"].as_str().unwrap();
+        assert!(
+            content.contains(&long),
+            "reply message under 1000 chars must not be truncated: {content:?}"
+        );
+        assert!(!content.contains('…'), "unexpected truncation: {content:?}");
+    }
+
+    /// The annotation as a whole is capped: calls past the budget are
+    /// dropped and summarized as `…(N more calls)`; the first call is
+    /// always kept.
+    #[test]
+    fn extract_pairs_caps_total_annotation_length() {
+        let arg = "x".repeat(super::WINDOWED_TOOL_ARG_MAX);
+        let calls: Vec<serde_json::Value> = (0..10)
+            .map(|i| {
+                json!({"id": i.to_string(), "type": "function",
+                    "function": {"name": "bash",
+                        "arguments": json!({"command": arg}).to_string()}})
+            })
+            .collect();
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "", "tool_calls": calls}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        let content = pairs[0].1["content"].as_str().unwrap();
+        assert!(
+            content.len() < super::WINDOWED_ANNOTATION_MAX + 100,
+            "annotation not capped: {} bytes",
+            content.len()
+        );
+        assert!(
+            content.contains("more calls"),
+            "omitted calls not summarized: {content:?}"
+        );
+        assert!(
+            content.contains("bash("),
+            "first call must be kept: {content:?}"
+        );
     }
 }

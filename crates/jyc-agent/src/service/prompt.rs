@@ -99,6 +99,9 @@ impl JycAgentService {
              - `message`: Your reply text\n\
              - `attachments`: Optional filenames to attach from the working directory\n\
              - `stop_after` (boolean, default true): Whether to stop working after this reply\n\
+             - `silent` (boolean, default false): Close the turn WITHOUT sending anything —\n\
+             use when nothing needs to reach the user (e.g. your reply was already delivered,\n\
+             or a system reminder fired but you have nothing to say)\n\
              CRITICAL: Always use the jyc_reply_message tool to send your reply.\n\n\
              **Final reply**: Set `stop_after: true` (or omit it). After a successful reply with\n\
              stop_after=true, STOP immediately. Do NOT call any other tools.\n\
@@ -107,18 +110,19 @@ impl JycAgentService {
              afterward. Use this when you have substantive progress to report.\n\n",
         );
 
-        // History format guardrail: the sliding window renders past tool
-        // calls as text annotations. Models have been observed MIMICKING
-        // this format in their reply text ("(incl. followed tool calls:
-        // jyc_reply_message(...) → Reply sent)") and believing they replied
-        // — while no tool call actually happened and the narration was
-        // delivered as the fallback reply. State the contract explicitly.
+        // History format guardrail: the sliding window summarizes each past
+        // turn's tool calls as a separate user-role "[History note]" message.
+        // Models have been observed MIMICKING such machine formats in their
+        // reply text and believing they replied — while no tool call actually
+        // happened and the narration was delivered as the fallback reply.
+        // State the contract explicitly.
         prompt.push_str(
             "## History Format\n\
-             Past turns in your context may show tool calls rendered as text: \
-             `(incl. followed tool calls: name(args) → result)`. These are READ-ONLY \
-             summaries of what already happened. Writing this format as your message \
-             text does NOT invoke any tool — only real tool calls do.\n\n",
+             Past turns in your context may include user-role history notes: \
+             `[History note] assistant tool calls: name(args) → result`. These are \
+             READ-ONLY summaries of what already happened — not messages from the user \
+             and not your own output. Writing similar text as your message does NOT \
+             invoke any tool — only real tool calls do.\n\n",
         );
 
         // Chat history access instructions

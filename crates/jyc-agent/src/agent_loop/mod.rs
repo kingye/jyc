@@ -40,8 +40,10 @@ const LOOP_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1
 /// tool call** (`text_len == 0`). Mirrors the pre-existing `no_reply` guard
 /// wording; the model is asked to recover via `jyc_reply_message`.
 const REMINDER_NO_TEXT: &str = "[System reminder] Your last turn produced no \
-    text and no tool call, so the user will see no reply. Call \
-    `jyc_reply_message` with your final response now.";
+    text and no tool call, so the user will see no reply. If you have a final \
+    response, call `jyc_reply_message` with it now; if nothing needs to be \
+    sent (e.g. your reply was already delivered), call `jyc_reply_message` \
+    with `silent: true`.";
 
 /// System-reminder injected when the model ends a turn with **non-empty text
 /// but no reply tool call**. Without this nudge, the text-only finish would
@@ -49,23 +51,31 @@ const REMINDER_NO_TEXT: &str = "[System reminder] Your last turn produced no \
 /// narration (the "thinking shown as reply" symptom).
 const REMINDER_WITH_TEXT: &str = "[System reminder] You produced final text but \
     did not call `jyc_reply_message` to deliver it. If that text was your final \
-    answer, call `jyc_reply_message` now to send it properly; if it was \
-    step-by-step narration, call `jyc_reply_message` with your actual final \
-    answer.";
+    answer, call `jyc_reply_message` with your actual final answer; if it was \
+    only narration (or your reply was already delivered), call \
+    `jyc_reply_message` with `silent: true` to close the turn WITHOUT sending \
+    anything — never let narration reach the user as a reply.";
 
-/// Marker of the sliding-window tool-call annotation format (see
-/// `session.rs::tool_call_annotation`). Models sometimes MIMIC this format
-/// in their reply text and believe they called a tool when they did not.
-const ANNOTATION_MARKER: &str = "(incl. followed tool calls:";
+/// Markers of the windowed-history tool-call summary formats — the retired
+/// in-text annotation (see `session.rs`, pre-#630) and the current
+/// user-role history note. Models sometimes MIMIC these formats in their
+/// reply text and believe they called a tool when they did not.
+const ANNOTATION_MARKERS: &[&str] = &[
+    "(incl. followed tool calls:",
+    "[History note] assistant tool calls:",
+];
 
 /// Stronger variant of `REMINDER_WITH_TEXT` used when the final text itself
-/// contains the windowed tool-call annotation format — the tell-tale sign
-/// that the model mimicked a tool call as text instead of invoking it.
+/// contains a windowed tool-call summary format — the tell-tale sign that
+/// the model mimicked a tool call as text instead of invoking it. Does NOT
+/// assert the reply was lost: if the model already delivered via the tool,
+/// the `silent: true` escape is the right response.
 const REMINDER_MIMICRY: &str = "[System reminder] Your last turn's text contains \
-    what looks like a tool-call summary ('(incl. followed tool calls: ...)'). That \
-    format is how HISTORY shows past tool calls — writing it as text does NOT call \
-    any tool, and your reply was NOT sent. Call `jyc_reply_message` now with your \
-    actual final answer.";
+    what looks like a history tool-call summary. That format is how HISTORY shows \
+    past tool calls — writing it as your message text does NOT call any tool. If \
+    you have a reply to deliver, call `jyc_reply_message` with it now; if your \
+    reply was already delivered or nothing needs sending, call `jyc_reply_message` \
+    with `silent: true`.";
 
 /// Warning appended to a text-only fallback reply when the reply tool was
 /// available but never called even after the reminder. Visible to the end
@@ -666,7 +676,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
                 let reminder = if text_len == 0 {
                     REMINDER_NO_TEXT
-                } else if response.text.contains(ANNOTATION_MARKER) {
+                } else if ANNOTATION_MARKERS.iter().any(|m| response.text.contains(m)) {
                     REMINDER_MIMICRY
                 } else {
                     REMINDER_WITH_TEXT
@@ -1793,6 +1803,75 @@ mod reply_tool_tests {
             "expected REMINDER_MIMICRY, got: {}",
             reminders[0]
         );
+    }
+
+    /// A `silent: true` reply call closes the turn cleanly: counts as
+    /// reply-handled (no fallback warning, no reply text), delivers
+    /// nothing, and stops the loop.
+    #[tokio::test]
+    async fn silent_reply_closes_turn_without_delivery() {
+        let provider = ScriptedProvider {
+            rounds: vec![vec![
+                StreamEvent::ToolUseStart {
+                    id: "call_1".to_string(),
+                    name: "jyc_reply_message".to_string(),
+                },
+                StreamEvent::ToolInputDelta(r#"{"silent":true}"#.to_string()),
+                StreamEvent::ToolUseEnd,
+                StreamEvent::Done,
+            ]],
+            calls: AtomicUsize::new(0),
+        };
+        let tmp = TempDir::new().unwrap();
+        let working_dir = tmp.path().to_path_buf();
+        let tools = registry_with_reply_tool();
+        let cancel = CancellationToken::new();
+
+        let result = run(super::AgentLoopConfig {
+            provider: &provider,
+            small_provider: None,
+            tools: &tools,
+            system_prompt: "test",
+            user_blocks: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+            }],
+            working_dir: &working_dir,
+            topic_path: &working_dir,
+            cancel: cancel.clone(),
+            topic_name: "silent-reply",
+            event_bus: None,
+            prior_history: vec![],
+            prior_raw_context: vec![],
+            max_iterations: Some(5),
+            sse_read_timeout: std::time::Duration::from_secs(60),
+            additional_read_roots: vec![],
+            additional_write_roots: vec![],
+            pattern_inject_images: false,
+            outbound: None,
+            topic_managers: None,
+            current_channel: None,
+            outbounds: None,
+            context_window: None,
+            auto_reset_threshold: 0.95,
+            thinking_enabled: false,
+            pricing: None,
+            model_label: "scripted-test-silent",
+            context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+            reply_target: None,
+        })
+        .await
+        .expect("agent loop should run to completion");
+
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert!(result.reply_sent_by_tool, "silent reply counts as handled");
+        assert!(
+            result.reply_text_from_tool.is_none(),
+            "silent reply carries no text"
+        );
+        assert!(result.text.is_empty(), "no fallback text expected");
+        // No signal files: the worker must skip post-loop delivery entirely.
+        assert!(!working_dir.join(".jyc/reply.md").exists());
+        assert!(!working_dir.join(".jyc/reply-sent.flag").exists());
     }
 
     /// A text-only finish that persists after the nudge must be delivered via

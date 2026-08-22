@@ -825,16 +825,22 @@ async fn generate_context_summary(
 /// share ONE parsing/annotation implementation (previously two copies
 /// parsed the OpenAI/Anthropic wire formats independently and had already
 /// drifted apart). Each pair renders as `USER: …` / `ASSISTANT: …`; the
-/// assistant text already carries the folded tool-call annotations with
-/// truncated results.
+/// pair's tool-call history note (with truncated results) is appended on
+/// its own line.
 pub(crate) fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
     let mut out = String::with_capacity(raw_context.len() * 256);
     out.push_str("=== Conversation transcript ===\n\n");
-    for (user, assistant) in extract_pairs(raw_context) {
+    for pair in extract_pairs(raw_context) {
         out.push_str("USER: ");
-        out.push_str(&extract_message_text(&user));
+        out.push_str(&extract_message_text(&pair.user));
         out.push_str("\n\nASSISTANT: ");
-        out.push_str(&extract_message_text(&assistant));
+        if let Some(assistant) = &pair.assistant {
+            out.push_str(&extract_message_text(assistant));
+        }
+        if let Some(note) = &pair.note {
+            out.push('\n');
+            out.push_str(&extract_message_text(note));
+        }
         out.push_str("\n\n");
     }
     out
@@ -1074,14 +1080,38 @@ fn collect_results_from(
 /// ponytail: fixed cap; raise if real turns routinely need more.
 const WINDOWED_ANNOTATION_MAX: usize = 2000;
 
-/// Build the bare tool-call annotation for an assistant message, e.g.
-/// `(incl. followed tool calls: bash(command="ls -la") → BRANCH main…)`.
+/// Prefix marking a user-role **history note** — the windowed view's
+/// tool-call summary, emitted as its own message AFTER the assistant text
+/// so the model never sees the annotation in its own voice (models were
+/// observed mimicking the previous in-text `(incl. followed tool calls:
+/// …)` format and emitting fake tool-call text as their reply).
+/// `extract_pairs` skips these notes so a compacted-then-reparsed context
+/// does not treat them as turn-opening user messages.
+pub(crate) const HISTORY_NOTE_PREFIX: &str = "[History note] assistant tool calls:";
+
+/// One user→assistant turn extracted from raw context for the windowed
+/// view. The assistant entry holds ONLY the assistant's own text; the
+/// turn's tool calls are summarized in `note` — a separate user-role
+/// history note (see [`HISTORY_NOTE_PREFIX`]).
+pub(crate) struct TurnPair {
+    /// The turn-opening user message (original wire format).
+    pub user: serde_json::Value,
+    /// Pure assistant text (multi-step turns merged); `None` for
+    /// text-less (tool-call-only) turns.
+    pub assistant: Option<serde_json::Value>,
+    /// Tool-call summary as a user-role history note; `None` when the
+    /// turn made no tool calls.
+    pub note: Option<serde_json::Value>,
+}
+
+/// Build a compact summary of an assistant message's bare tool calls, e.g.
+/// `bash(command="ls -la") → BRANCH main…`.
 /// When a tool result is known for a call's `id` (looked up in `results`),
 /// it is appended as `→ <truncated result>` — prefixed with `[error] `
 /// when the call failed — so the agent can see *what the tool returned*,
 /// not just that it was called. Returns `None` when the message carries
 /// no tool calls.
-fn tool_call_annotation(
+fn tool_call_summary(
     msg: &serde_json::Value,
     results: &std::collections::HashMap<String, WindowedResult>,
 ) -> Option<String> {
@@ -1115,13 +1145,13 @@ fn tool_call_annotation(
     if omitted > 0 {
         parts.push(format!("…({omitted} more calls)"));
     }
-    Some(format!("(incl. followed tool calls: {})", parts.join(", ")))
+    Some(parts.join(", "))
 }
 
 /// Flush the accumulated turn into `pairs`: merge every assistant message
 /// of the turn (tool-call steps included) into a single assistant entry
-/// whose text carries each step's text plus its folded tool-call
-/// annotation, joined by newlines. Always clears the turn state.
+/// holding ONLY the steps' text, and collect each step's tool-call summary
+/// into the pair's separate history note. Always clears the turn state.
 ///
 /// A turn with no assistant reply yet (interrupted between user message
 /// and first response) produces no pair; the fallback in
@@ -1129,7 +1159,7 @@ fn tool_call_annotation(
 /// case. Assistant messages seen before any user message (no pairing
 /// anchor) are dropped.
 fn flush_turn(
-    pairs: &mut Vec<(serde_json::Value, serde_json::Value)>,
+    pairs: &mut Vec<TurnPair>,
     cur_user: &mut Option<serde_json::Value>,
     cur_assistants: &mut Vec<serde_json::Value>,
     results: &std::collections::HashMap<String, WindowedResult>,
@@ -1141,31 +1171,46 @@ fn flush_turn(
     }
     let Some(user_msg) = user_msg else { return };
 
-    let mut segments: Vec<String> = Vec::with_capacity(assistants.len());
+    let mut texts: Vec<String> = Vec::with_capacity(assistants.len());
+    let mut summaries: Vec<String> = Vec::new();
     for msg in &assistants {
+        // Keep only role + content for the text; bare tool calls go into
+        // the history note so the windowed view shows which tools ran and
+        // what they returned. A tool-call-only step (empty text)
+        // contributes to the note instead of being dropped.
         let text = extract_message_text(msg);
-        // Keep only role + content, folding bare tool calls into the text
-        // so the windowed part shows which tools ran and what they
-        // returned. A tool-call-only step (empty text) is kept too,
-        // annotated alone, instead of being dropped.
-        let content = match tool_call_annotation(msg, results) {
-            Some(annotation) if text.is_empty() => annotation,
-            Some(annotation) => format!("{text}\n{annotation}"),
-            None => text,
-        };
-        if !content.is_empty() {
-            segments.push(content);
+        if !text.is_empty() {
+            texts.push(text);
+        }
+        if let Some(summary) = tool_call_summary(msg, results) {
+            summaries.push(summary);
         }
     }
-    if segments.is_empty() {
+    if texts.is_empty() && summaries.is_empty() {
         return;
     }
 
-    let clean_assistant = serde_json::json!({
-        "role": "assistant",
-        "content": segments.join("\n"),
+    let assistant = if texts.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({
+            "role": "assistant",
+            "content": texts.join("\n"),
+        }))
+    };
+    let note = if summaries.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({
+            "role": "user",
+            "content": format!("{HISTORY_NOTE_PREFIX} {}", summaries.join("; ")),
+        }))
+    };
+    pairs.push(TurnPair {
+        user: user_msg,
+        assistant,
+        note,
     });
-    pairs.push((user_msg, clean_assistant));
 }
 
 /// Extract **all** user+assistant turn pairs from raw context.
@@ -1179,10 +1224,14 @@ fn flush_turn(
 /// turn's later assistant messages).
 ///
 /// Assistant messages are cleaned to only role + content (strip
-/// reasoning_content, tool_calls); bare tool calls are folded into the
-/// text as a `(incl. followed tool calls: …)` annotation (parameters kept,
-/// over-long values truncated, tool results appended as `→ <result>`).
-/// Returns pairs in oldest→newest order.
+/// reasoning_content, tool_calls); bare tool calls are summarized into the
+/// pair's separate user-role **history note** (parameters kept, over-long
+/// values truncated, tool results appended as `→ <result>`), never into
+/// the assistant's own text. Returns pairs in oldest→newest order.
+///
+/// History notes already present in the input (round-tripped through
+/// heuristic compaction) are skipped — they are metadata, not turn
+/// boundaries.
 ///
 /// A trailing turn whose user message has no assistant reply yet is
 /// dropped, mirroring the windowed-view semantics — a completed turn only
@@ -1194,10 +1243,8 @@ fn flush_turn(
 ///
 /// Shared by session heuristic compaction, mid-loop compression, and the
 /// `context_browse` built-in tool.
-pub(crate) fn extract_pairs(
-    raw_context: &[serde_json::Value],
-) -> Vec<(serde_json::Value, serde_json::Value)> {
-    let mut pairs: Vec<(serde_json::Value, serde_json::Value)> = Vec::new();
+pub(crate) fn extract_pairs(raw_context: &[serde_json::Value]) -> Vec<TurnPair> {
+    let mut pairs: Vec<TurnPair> = Vec::new();
     let mut cur_user: Option<serde_json::Value> = None;
     let mut cur_assistants: Vec<serde_json::Value> = Vec::new();
     let mut results: std::collections::HashMap<String, WindowedResult> =
@@ -1207,11 +1254,17 @@ pub(crate) fn extract_pairs(
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
         match role {
             "user" => {
+                let text = extract_message_text(msg);
+                if text.starts_with(HISTORY_NOTE_PREFIX) {
+                    // Round-tripped history note: metadata, not a turn
+                    // boundary.
+                    continue;
+                }
                 // Text-bearing user message opens a new turn; user-role
                 // messages with no extractable text are Anthropic
                 // tool_result wrappers, which stay in the current turn and
                 // only feed the results map.
-                if extract_message_text(msg).is_empty() {
+                if text.is_empty() {
                     collect_results_from(msg, &mut results);
                 } else {
                     flush_turn(&mut pairs, &mut cur_user, &mut cur_assistants, &results);
@@ -1239,7 +1292,7 @@ pub(crate) fn extract_user_assistant_pairs(
     raw_context: &[serde_json::Value],
     keep_pairs: usize,
 ) -> Vec<serde_json::Value> {
-    // Keep only the last N pairs
+    // Keep only the last N pairs, flattened as user → assistant → note.
     let summary: Vec<serde_json::Value> = extract_pairs(raw_context)
         .into_iter()
         .rev()
@@ -1247,17 +1300,30 @@ pub(crate) fn extract_user_assistant_pairs(
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
-        .flat_map(|(user, assistant)| vec![user, assistant])
+        .flat_map(|pair| {
+            let mut v = vec![pair.user];
+            if let Some(assistant) = pair.assistant {
+                v.push(assistant);
+            }
+            if let Some(note) = pair.note {
+                v.push(note);
+            }
+            v
+        })
         .collect();
 
     if summary.is_empty() {
         // Fallback: keep the LAST text-bearing user message — the closest
         // thing to an unfinished turn. (The first user message is usually
         // ancient, unrelated history and would sit misleadingly in front
-        // of the current turn.)
+        // of the current turn.) History notes are metadata, never the
+        // anchor.
         if let Some(last_user) = raw_context.iter().rev().find(|m| {
-            m.get("role").and_then(|r| r.as_str()) == Some("user")
-                && !extract_message_text(m).is_empty()
+            if m.get("role").and_then(|r| r.as_str()) != Some("user") {
+                return false;
+            }
+            let text = extract_message_text(m);
+            !text.is_empty() && !text.starts_with(HISTORY_NOTE_PREFIX)
         }) {
             vec![last_user.clone()]
         } else {
@@ -1436,8 +1502,9 @@ mod tests {
 
     /// Anthropic-shaped context (array content): assistant text pairs
     /// correctly; tool_result user-role wrappers are skipped; the whole
-    /// turn's assistant steps merge into one entry — text, folded tool
-    /// use with the truncated result (`→ ok`), and the final reply.
+    /// turn's assistant steps merge into one pure-text entry, and the tool
+    /// call (with its truncated result, `→ ok`) goes into a separate
+    /// user-role history note following the assistant message.
     #[test]
     fn extract_pairs_anthropic_shape() {
         let ctx = vec![
@@ -1452,17 +1519,22 @@ mod tests {
             json!({"role": "assistant", "content": [{"type": "text", "text": "done"}]}),
         ];
         let pairs = super::extract_user_assistant_pairs(&ctx, 10);
-        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs.len(), 3);
         assert_eq!(pairs[0], ctx[0]);
         assert_eq!(
             pairs[1],
-            json!({"role": "assistant",
-                "content": "a1\n(incl. followed tool calls: bash(command=\"ls\") → ok)\ndone"})
+            json!({"role": "assistant", "content": "a1\ndone"})
+        );
+        assert_eq!(
+            pairs[2],
+            json!({"role": "user", "content":
+                "[History note] assistant tool calls: bash(command=\"ls\") → ok"})
         );
     }
 
     /// OpenAI-shaped context: tool calls render with all parameters,
-    /// multiple calls comma-separated.
+    /// multiple calls comma-separated, in the note — NOT in the assistant
+    /// text (the model must never see the annotation in its own voice).
     #[test]
     fn extract_pairs_annotates_tool_call_args() {
         let ctx = vec![
@@ -1473,16 +1545,17 @@ mod tests {
             ]}),
         ];
         let pairs = super::extract_user_assistant_pairs(&ctx, 10);
-        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs.len(), 3);
+        assert_eq!(pairs[1], json!({"role": "assistant", "content": "running"}));
         assert_eq!(
-            pairs[1],
-            json!({"role": "assistant",
-                "content": "running\n(incl. followed tool calls: bash(command=\"ls -la\", timeout=30), read(path=\"a.txt\"))"})
+            pairs[2],
+            json!({"role": "user", "content":
+                "[History note] assistant tool calls: bash(command=\"ls -la\", timeout=30), read(path=\"a.txt\")"})
         );
     }
 
-    /// Tool-call-only assistant turns (no text) are kept, annotated alone,
-    /// rather than dropped.
+    /// Tool-call-only assistant turns (no text) are kept via the note —
+    /// no empty assistant message is emitted.
     #[test]
     fn extract_pairs_keeps_tool_call_only_assistant() {
         let ctx = vec![
@@ -1493,10 +1566,11 @@ mod tests {
         ];
         let pairs = super::extract_user_assistant_pairs(&ctx, 10);
         assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], json!({"role": "user", "content": "u1"}));
         assert_eq!(
             pairs[1],
-            json!({"role": "assistant",
-                "content": "(incl. followed tool calls: bash(command=\"ls -la\"))"})
+            json!({"role": "user", "content":
+                "[History note] assistant tool calls: bash(command=\"ls -la\")"})
         );
     }
 
@@ -1512,17 +1586,17 @@ mod tests {
             ]}),
         ];
         let pairs = super::extract_user_assistant_pairs(&ctx, 10);
-        let content = pairs[1]["content"].as_str().unwrap();
+        let content = pairs[2]["content"].as_str().unwrap();
         assert!(
-            content.contains("(incl. followed tool calls: bash(command="),
-            "no annotation"
+            content.contains("[History note] assistant tool calls: bash(command="),
+            "no note"
         );
         assert!(content.contains('…'), "long arg not truncated");
-        // 200-char cap + ellipsis + `command=` prefix + quotes + annotation wrapper.
-        assert!(content.len() < 400, "annotation too big: {content:?}");
+        // 200-char cap + ellipsis + `command=` prefix + quotes + note prefix.
+        assert!(content.len() < 400, "note too big: {content:?}");
     }
 
-    /// Tool results are appended to the annotation as `→ <truncated text>`,
+    /// Tool results are appended to the note as `→ <truncated text>`,
     /// matched by the call's id; calls without a known result get no arrow.
     #[test]
     fn extract_pairs_includes_tool_results() {
@@ -1536,16 +1610,19 @@ mod tests {
             json!({"role": "tool", "tool_call_id": "1", "content": "BRANCH main"}),
         ];
         let pairs = super::extract_user_assistant_pairs(&ctx, 10);
-        let content = pairs[1]["content"].as_str().unwrap();
+        let content = pairs[2]["content"].as_str().unwrap();
         // Call 1 gets its result appended after the arrow.
         assert!(
             content.contains(r#"bash(command="ls") → BRANCH main"#),
             "result not appended: {content:?}"
         );
-        // Call 2 has no result: no arrow, just the rendered call then the
-        // annotation's closing paren.
+        // Call 2 has no result: no arrow, just the rendered call.
         assert!(
-            content.contains(r#"read(path="a.txt"))"#),
+            content.contains(r#"read(path="a.txt")"#),
+            "call missing from note: {content:?}"
+        );
+        assert!(
+            !content.contains(r#"read(path="a.txt") →"#),
             "call without result should have no arrow: {content:?}"
         );
     }
@@ -1568,8 +1645,8 @@ mod tests {
             content.contains('…'),
             "long result not truncated: {content:?}"
         );
-        // Result cap 500 + arrow + annotation wrapper stay well under 700.
-        assert!(content.len() < 700, "annotation too big: {content:?}");
+        // Result cap 500 + arrow + note prefix stay well under 700.
+        assert!(content.len() < 700, "note too big: {content:?}");
     }
 
     /// `extract_pairs` returns ALL completed pairs in oldest→newest order
@@ -1592,22 +1669,25 @@ mod tests {
         ];
         let pairs = super::extract_pairs(&ctx);
         assert_eq!(pairs.len(), 3);
-        assert_eq!(pairs[0].0["content"], "u1");
-        assert_eq!(pairs[0].1["content"], "a1");
-        assert_eq!(pairs[1].0["content"], "u2");
+        assert_eq!(pairs[0].user["content"], "u1");
+        assert_eq!(pairs[0].assistant.as_ref().unwrap()["content"], "a1");
+        assert!(pairs[0].note.is_none());
+        assert_eq!(pairs[1].user["content"], "u2");
+        assert_eq!(pairs[1].assistant.as_ref().unwrap()["content"], "a2");
         assert_eq!(
-            pairs[1].1["content"],
-            "a2\n(incl. followed tool calls: bash() → out)"
+            pairs[1].note.as_ref().unwrap()["content"],
+            "[History note] assistant tool calls: bash() → out"
         );
-        assert_eq!(pairs[2].0["content"], "u3");
-        assert_eq!(pairs[2].1["content"], "a3");
+        assert_eq!(pairs[2].user["content"], "u3");
+        assert_eq!(pairs[2].assistant.as_ref().unwrap()["content"], "a3");
         // u4 must NOT be paired.
-        assert!(pairs.iter().all(|(u, _)| u["content"] != "u4"));
+        assert!(pairs.iter().all(|p| p.user["content"] != "u4"));
     }
 
     /// A multi-step tool turn (user → assistant(call) → tool → assistant(call)
     /// → tool → assistant(final reply)) merges into ONE pair: every step's
-    /// text + annotation is kept, ending with the turn's conclusion. Before
+    /// text is kept in the assistant entry, ending with the turn's
+    /// conclusion, and both steps' tool calls land in the note. Before
     /// turn-based pairing, only the FIRST assistant message was paired and
     /// the final reply was silently dropped.
     #[test]
@@ -1626,15 +1706,18 @@ mod tests {
         ];
         let pairs = super::extract_pairs(&ctx);
         assert_eq!(pairs.len(), 1);
-        let content = pairs[0].1["content"].as_str().unwrap();
-        assert!(content.contains("step1"), "step1 lost: {content:?}");
-        assert!(content.contains("bash() → out1"), "call1 lost: {content:?}");
-        assert!(content.contains("step2"), "step2 lost: {content:?}");
-        assert!(content.contains("read() → out2"), "call2 lost: {content:?}");
+        let text = pairs[0].assistant.as_ref().unwrap()["content"]
+            .as_str()
+            .unwrap();
+        assert!(text.contains("step1"), "step1 lost: {text:?}");
+        assert!(text.contains("step2"), "step2 lost: {text:?}");
         assert!(
-            content.ends_with("final answer"),
-            "turn conclusion must be kept: {content:?}"
+            text.ends_with("final answer"),
+            "turn conclusion must be kept: {text:?}"
         );
+        let note = pairs[0].note.as_ref().unwrap()["content"].as_str().unwrap();
+        assert!(note.contains("bash() → out1"), "call1 lost: {note:?}");
+        assert!(note.contains("read() → out2"), "call2 lost: {note:?}");
     }
 
     /// Tool results are matched per turn: a tool_call_id reused in a later
@@ -1656,14 +1739,20 @@ mod tests {
         let pairs = super::extract_pairs(&ctx);
         assert_eq!(pairs.len(), 2);
         assert!(
-            pairs[0].1["content"].as_str().unwrap().contains("→ first"),
+            pairs[0].note.as_ref().unwrap()["content"]
+                .as_str()
+                .unwrap()
+                .contains("→ first"),
             "turn 1 got wrong result: {:?}",
-            pairs[0].1["content"]
+            pairs[0].note
         );
         assert!(
-            pairs[1].1["content"].as_str().unwrap().contains("→ second"),
+            pairs[1].note.as_ref().unwrap()["content"]
+                .as_str()
+                .unwrap()
+                .contains("→ second"),
             "turn 2 got wrong result: {:?}",
-            pairs[1].1["content"]
+            pairs[1].note
         );
     }
 
@@ -1678,13 +1767,35 @@ mod tests {
         ];
         let pairs = super::extract_pairs(&ctx);
         assert_eq!(pairs.len(), 1);
-        assert_eq!(pairs[0].0["content"], "u2");
-        assert_eq!(pairs[0].1["content"], "a2");
+        assert_eq!(pairs[0].user["content"], "u2");
+        assert_eq!(pairs[0].assistant.as_ref().unwrap()["content"], "a2");
+        assert!(pairs[0].note.is_none());
+    }
+
+    /// A history note round-tripped through compaction is metadata, not a
+    /// turn boundary: it must not open a new turn nor pair with the next
+    /// assistant message.
+    #[test]
+    fn extract_pairs_skips_round_tripped_notes() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content":
+                "[History note] assistant tool calls: bash(command=\"ls\") → ok"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0].user["content"], "u1");
+        assert_eq!(pairs[1].user["content"], "u2");
+        assert_eq!(pairs[1].assistant.as_ref().unwrap()["content"], "a2");
     }
 
     /// No complete pairs: the fallback keeps the LAST text-bearing user
     /// message (nearest to an unfinished turn), not the first — and skips
-    /// Anthropic tool_result wrappers, which carry no user text.
+    /// Anthropic tool_result wrappers and history notes, which carry no
+    /// real user text.
     #[test]
     fn fallback_keeps_last_text_user() {
         let ctx = vec![
@@ -1693,6 +1804,8 @@ mod tests {
                 {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
             ]}),
             json!({"role": "user", "content": "latest"}),
+            json!({"role": "user", "content":
+                "[History note] assistant tool calls: bash() → ok"}),
         ];
         let pairs = super::extract_user_assistant_pairs(&ctx, 10);
         assert_eq!(pairs, vec![json!({"role": "user", "content": "latest"})]);
@@ -1721,20 +1834,20 @@ mod tests {
         let pairs = super::extract_pairs(&ctx);
         assert_eq!(pairs.len(), 2);
         assert!(
-            pairs[0].1["content"]
+            pairs[0].note.as_ref().unwrap()["content"]
                 .as_str()
                 .unwrap()
                 .contains("bash() → [error] boom"),
             "openai error not marked: {:?}",
-            pairs[0].1["content"]
+            pairs[0].note
         );
         assert!(
-            pairs[1].1["content"]
+            pairs[1].note.as_ref().unwrap()["content"]
                 .as_str()
                 .unwrap()
                 .contains(r#"read(path="x") → [error] nope"#),
             "anthropic error not marked: {:?}",
-            pairs[1].1["content"]
+            pairs[1].note
         );
     }
 
@@ -1751,7 +1864,7 @@ mod tests {
             ]}),
         ];
         let pairs = super::extract_pairs(&ctx);
-        let content = pairs[0].1["content"].as_str().unwrap();
+        let content = pairs[0].note.as_ref().unwrap()["content"].as_str().unwrap();
         assert!(
             content.contains(&long),
             "reply message under 1000 chars must not be truncated: {content:?}"
@@ -1759,7 +1872,7 @@ mod tests {
         assert!(!content.contains('…'), "unexpected truncation: {content:?}");
     }
 
-    /// The annotation as a whole is capped: calls past the budget are
+    /// The note as a whole is capped: calls past the budget are
     /// dropped and summarized as `…(N more calls)`; the first call is
     /// always kept.
     #[test]
@@ -1777,10 +1890,10 @@ mod tests {
             json!({"role": "assistant", "content": "", "tool_calls": calls}),
         ];
         let pairs = super::extract_pairs(&ctx);
-        let content = pairs[0].1["content"].as_str().unwrap();
+        let content = pairs[0].note.as_ref().unwrap()["content"].as_str().unwrap();
         assert!(
             content.len() < super::WINDOWED_ANNOTATION_MAX + 100,
-            "annotation not capped: {} bytes",
+            "note not capped: {} bytes",
             content.len()
         );
         assert!(

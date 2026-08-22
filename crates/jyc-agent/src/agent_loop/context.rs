@@ -369,21 +369,23 @@ mod render_raw_context_tests {
         let sent = sent.into_owned();
 
         // 1. Windowed recent N pairs from prior (reformatted by provider).
-        // a2 issued a tool call, so its text carries the bare annotation;
-        // the matching tool result ("out") is appended after the arrow.
+        // a2 issued a tool call: its text stays pure, and the call summary
+        // (with the matching result "out" after the arrow) follows as a
+        // separate user-role history note.
         assert_eq!(sent[0], json!({"role": "user", "content": "u2"}));
+        assert_eq!(sent[1], json!({"role": "assistant", "content": "a2"}));
         assert_eq!(
-            sent[1],
-            json!({"role": "assistant",
-                "content": "a2\n(incl. followed tool calls: bash() → out)"})
+            sent[2],
+            json!({"role": "user",
+                "content": "[History note] assistant tool calls: bash() → out"})
         );
-        assert_eq!(sent[2], json!({"role": "user", "content": "u3"}));
-        assert_eq!(sent[3], json!({"role": "assistant", "content": "a3"}));
+        assert_eq!(sent[3], json!({"role": "user", "content": "u3"}));
+        assert_eq!(sent[4], json!({"role": "assistant", "content": "a3"}));
 
         // 2. Current turn verbatim.
-        assert_eq!(sent[4], current[0]);
-        assert_eq!(sent[5], current[1]);
-        assert_eq!(sent[6], current[2]);
+        assert_eq!(sent[5], current[0]);
+        assert_eq!(sent[6], current[1]);
+        assert_eq!(sent[7], current[2]);
     }
 
     #[test]
@@ -471,15 +473,18 @@ mod render_raw_context_tests {
 
         // The windowed pairs should be present; the tool_result user-role
         // wrapper must be excluded. Turn-based pairing merges u1's two
-        // assistant steps ("a1" and "calling bash" + tool_use) into one
-        // entry; (u2, a2) stays a plain pair.
+        // assistant steps ("a1" and "calling bash") into one pure-text
+        // entry, with the tool_use summarized in a following history note;
+        // (u2, a2) stays a plain pair.
         assert!(
             sent.iter()
                 .any(|m| m["role"] == "user" && m["content"][0]["text"].as_str() == Some("u1"))
         );
         assert!(sent.iter().any(|m| m["role"] == "assistant"
+            && m["content"][0]["text"].as_str() == Some("a1\ncalling bash")));
+        assert!(sent.iter().any(|m| m["role"] == "user"
             && m["content"][0]["text"].as_str()
-                == Some("a1\ncalling bash\n(incl. followed tool calls: bash() → ok)")));
+                == Some("[History note] assistant tool calls: bash() → ok")));
         assert!(
             sent.iter()
                 .any(|m| m["role"] == "user" && m["content"][0]["text"].as_str() == Some("u2"))

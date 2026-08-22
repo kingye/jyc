@@ -1841,6 +1841,54 @@ mod mcp_bridge {
         );
         assert!(jyc_dir.join("reply-sent.flag").exists());
     }
+
+    /// `silent: true` closes the turn without delivering anything: no
+    /// adapter call, no signal files — so the worker's post-loop fallback
+    /// stays silent too. This is the deterministic "nothing to send"
+    /// escape (e.g. replying to a system reminder that fired in error).
+    #[tokio::test]
+    async fn reply_tool_silent_delivers_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let (mock, replies) = ReplyMockOutbound::new(false);
+        let mut ctx = ToolContext::new(tmp.path());
+        ctx.outbound = Some(Arc::new(mock));
+        ctx.reply_target = Some(jyc_agent::tools::ReplyTarget {
+            original: reply_test_message(),
+            message_dir: "2026-08-22_00-00-00".to_string(),
+        });
+
+        let result = ReplyMessageTool
+            .execute(json!({"silent": true}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        assert!(!result.delivered);
+        assert!(result.stop_after, "silent defaults to stop_after=true");
+        assert!(result.content.contains("silently"));
+        assert!(replies.lock().unwrap().is_empty(), "no adapter call");
+        let jyc_dir = tmp.path().join(".jyc");
+        assert!(!jyc_dir.join("reply.md").exists(), "no file relay");
+        assert!(!jyc_dir.join("reply-sent.flag").exists());
+    }
+
+    /// `silent: true` with `stop_after: false` records the close but lets
+    /// the agent continue working.
+    #[tokio::test]
+    async fn reply_tool_silent_continue() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(tmp.path());
+
+        let result = ReplyMessageTool
+            .execute(json!({"silent": true, "stop_after": false}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        assert!(!result.stop_after);
+        assert!(result.content.contains("Continue working"));
+    }
 }
 
 mod skills {

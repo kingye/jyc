@@ -1,61 +1,12 @@
-# Changelog
-
-All notable changes to JYC will be documented in this file.
-
 ## [Unreleased]
 
-### Changed
-
-- **`jyc_reply_message` now delivers synchronously.** The reply bridge tool
-  delivers through the channel's outbound adapter immediately and returns
-  the REAL delivery result (with `message_id`) to the model — previously it
-  wrote `reply.md` and reported "Reply sent" before anything was delivered,
-  leaving the model with a fake success receipt when the websocket
-  broadcast or the 2s-polling watcher lost the message. On direct-delivery
-  failure the tool falls back to the file relay and says "queued" instead
-  of claiming success (#629)
-
-- **Sliding-window pairing is now turn-based.** `extract_pairs` used to
-  pair a user message with only the FIRST following assistant message,
-  silently dropping every later assistant message of a multi-step tool
-  turn — including the turn's final reply and the `jyc_reply_message`
-  call the user actually saw. All assistant messages between two user
-  messages now merge into one pair entry, each step keeping its text
-  plus folded tool-call annotation. Tool results are collected in a
-  single pass into a turn-scoped map, so a `tool_call_id` reused across
-  turns can no longer misattach its result. The whole annotation is
-  capped at 2000 bytes (calls past the budget fold into `…(N more
-  calls)`), and `jyc_reply_message`'s `message` parameter keeps up to
-  1000 chars (vs. the generic 200) since it is the text the user
-  actually saw. Failed tool results render as `→ [error] …`. (#628)
-- **Transcript rendering unified.** `render_raw_context_as_text` existed
-  in two drifted copies; there is now one implementation built on
-  `extract_pairs`, shared by the sliding-window view, session
-  compression, and cycle-boundary progress summaries. (#628)
-
-### Fixed
-
-- **Annotation mimicry guard.** The sliding window's
-  `(incl. followed tool calls: … → …)` history annotations were sometimes
-  mimicked by the model as reply text, making it believe it had replied
-  when no tool call happened; the narration was then delivered via the
-  fallback path. The system prompt now states the format is a read-only
-  history summary, and the reply-tool guard injects a mimicry-specific
-  reminder ("your reply was NOT sent") when the final text contains the
-  annotation marker (#629)
-- **Lost tool replies are now user-visible.** When the reply tool signaled
-  a reply but its content was lost before delivery, the user saw nothing
-  (only a log warning); a distinct warning message is now delivered instead
-  of being conflated with the "finished without calling jyc_reply_message"
-  fallback case (#629)
-
-- **Window fallback keeps the LAST user message, not the first.** When
-  no complete pair exists, the fallback used to resurrect the oldest
-  user message (usually ancient, unrelated history) in front of the
-  current turn; it now keeps the latest text-bearing user message and
-  skips Anthropic `tool_result` wrappers. (#628)
-
 ### Added
+
+- **`jyc_reply_message` `silent: true` parameter.** Closes the turn
+  WITHOUT delivering anything (no adapter call, no signal files, no
+  fallback text) while still counting as reply-handled — the deterministic
+  "nothing to send" escape, e.g. when a system reminder fired but the
+  reply was already delivered (#630)
 
 - **Windowed context now shows tool results.** The sliding-window
   annotation — `(incl. followed tool calls: bash(command="ls") → BRANCH
@@ -239,7 +190,250 @@ All notable changes to JYC will be documented in this file.
   `Provider`, so Anthropic and OpenAI-compatible wire formats both
   stay valid.
 
+- **Channels / agents / AI migration design doc** (`docs/agents-migration.md`):
+  locked decisions, target three-layer model, and phased PR plan.
+- **Config template regression test**: `config.example.toml` must parse and
+  pass `validate_config` in CI.
+- **Core / hub / adapters architecture document.** `docs/core-hub-adapters.md`
+  describes the target three-layer architecture (core: per-topic queues +
+  workers; hub: the websocket channel, the only layer owning topics and
+  agents; adapters: protocol-only channels that pipe into the hub). Feishu is
+  the first migrated channel; other channels will follow.
+
+- **Topic file download endpoint.** `GET /api/topics/{channel}/{topic}/files/{file...}`
+  serves topic-local files in place under the bearer middleware — unlike
+  `/exchange/...`, which stays reserved for agent-published files
+  (`jyc_publish_file`). Paths under `.jyc/` are rejected, including via
+  symlink escapes.
+
+- **Websocket replies broadcast attachments.** `reply` payloads gain an
+  optional `attachments` array (`filename`, `content_type`, `path`) whose
+  entries point at the new files endpoint.
+
+- **Feishu pipe relays reply attachments.** The pipe reply forwarder
+  downloads each broadcast attachment from the files endpoint, applies
+  `[attachments.outbound]` policy, and re-uploads it to the feishu chat
+  (image vs. file by content type).
+
+- **Dynamic pipe topics via `${msg.chat_name}`.** A pattern's `pipe.topic`
+  may embed the runtime placeholder `${msg.chat_name}`, resolved per message
+  from the chat-name metadata (sanitized for filesystem use), so one feishu
+  `mentions` pattern can route each group chat to its own topic. Messages
+  without a chat name are dropped with a warning when the placeholder is
+  used. (#568)
+
+- **Pipe targets decouple pattern config from topic name.** `pipe` gains an
+  optional `pattern` field naming the target channel pattern whose config
+  applies, and `topic` is now optional (defaulting to `pattern`):
+  `pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }`
+  gives each dynamically-derived topic the `group_chat` pattern's
+  `topic_path`/template/skills. Legacy `topic`-only form is unchanged.
+  (#570)
+
+### Changed
+
+- **Windowed tool-call summaries moved out of the assistant's own text.**
+  The sliding window used to fold bare tool calls into the assistant
+  message as an in-text annotation (`(incl. followed tool calls: …)`);
+  models learned to mimic that format and emit fake tool-call summaries as
+  plain reply text, believing they had replied when no tool call happened.
+  `extract_pairs` now returns turns whose assistant entry holds ONLY the
+  assistant's text, with the tool-call summary (args kept, results
+  appended as `→ <result>`) emitted as a separate user-role `[History
+  note] assistant tool calls: …` message. Round-tripped notes are skipped
+  on re-parse so heuristic compaction stays stable; `context_browse` shows
+  the note as a `[N] TOOLS:` line (#630)
+- **Reply reminders offer an explicit silent escape.** The no-text /
+  text-only / mimicry system reminders no longer assert "your reply was
+  NOT sent" (wrong whenever the reply HAD been delivered) and now instruct
+  the model to call `jyc_reply_message` with `silent: true` when nothing
+  needs sending — instead of producing narration that the fallback path
+  would deliver to the user (#630)
+
+- **`jyc_reply_message` now delivers synchronously.** The reply bridge tool
+  delivers through the channel's outbound adapter immediately and returns
+  the REAL delivery result (with `message_id`) to the model — previously it
+  wrote `reply.md` and reported "Reply sent" before anything was delivered,
+  leaving the model with a fake success receipt when the websocket
+  broadcast or the 2s-polling watcher lost the message. On direct-delivery
+  failure the tool falls back to the file relay and says "queued" instead
+  of claiming success (#629)
+
+- **Sliding-window pairing is now turn-based.** `extract_pairs` used to
+  pair a user message with only the FIRST following assistant message,
+  silently dropping every later assistant message of a multi-step tool
+  turn — including the turn's final reply and the `jyc_reply_message`
+  call the user actually saw. All assistant messages between two user
+  messages now merge into one pair entry, each step keeping its text
+  plus folded tool-call annotation. Tool results are collected in a
+  single pass into a turn-scoped map, so a `tool_call_id` reused across
+  turns can no longer misattach its result. The whole annotation is
+  capped at 2000 bytes (calls past the budget fold into `…(N more
+  calls)`), and `jyc_reply_message`'s `message` parameter keeps up to
+  1000 chars (vs. the generic 200) since it is the text the user
+  actually saw. Failed tool results render as `→ [error] …`. (#628)
+- **Transcript rendering unified.** `render_raw_context_as_text` existed
+  in two drifted copies; there is now one implementation built on
+  `extract_pairs`, shared by the sliding-window view, session
+  compression, and cycle-boundary progress summaries. (#628)
+
+- **System prompt tells the agent when to use `context_browse`.** The Chat
+  History prompt section now points the agent at the `context_browse` tool
+  for recalling earlier turns of the current conversation that have fallen
+  out of its context window (offset pages toward older pairs, limit caps the
+  page), instead of only steering it to `read`/`grep` the per-day
+  chat-history JSONL. The tool was previously registered and documented but
+  never mentioned in the prompt, so agents rarely called it. (#626)
+
+- **Sliding-window context now annotates assistant messages with their
+  bare tool calls.** The windowed part (recent user+assistant pairs) folds
+  the assistant's tool calls into the text as
+  `(incl. followed tool calls: name(arg=value, …))`, keeping **all**
+  parameters and truncating only a single argument value over 200 chars.
+  Tool calls were previously stripped entirely, so the model saw a gap
+  between an assistant text that ran tools and the following turns;
+  tool-call-only turns (no text of their own) are kept as the annotation
+  alone instead of being dropped. The
+  annotation is text-only, so no tool-call/tool-result pairing constraints
+  apply (those only matter for the verbatim `current` turn). (#623)
+
+- **Transient retry backoff raised from 1s/2s to 10s/20s.** A transient
+  failure — e.g. an SSE idle timeout that already waited
+  `sse_read_timeout` (default 120s) on a silent stream — was retried after
+  only 1 second, effectively "immediately", so the retry usually hit the
+  same silent upstream again. The retry message (`next retry at …
+  (in Ns)`) now shows a meaningful wait. Attempt budget unchanged
+  (3 attempts, 2 retries). (#617)
+
+- **email channel is pipe-only** — `email` joins `feishu`/`wecom_bot` as a
+  pipe-only adapter (see `docs/core-hub-adapters.md`). Every enabled
+  pattern must declare a `pipe` target; the adapter keeps only the IMAP
+  monitor and SMTP reply forwarders (one per pipe target channel), which
+  reply into the original mail thread (`In-Reply-To`/`References`).
+  A pattern without `pipe.topic` uses the subject-derived topic name.
+  Email replies are now plain agent text — no model/mode/tokens footer,
+  so `[channels.<name>.footer]` no longer applies to email channels; nor
+  does per-pattern `[channels.<name>.patterns.attachments]` (the global
+  `[attachments.inbound]` policy still applies). The email channel no
+  longer appears in the orchestrator / dashboard channel list, and
+  `jyc_send_message` addressed to an email channel name is no longer
+  supported (send to the hub topic instead).
+
+- **IMAP mailbox cursor state moved to `<workdir>/channels/<channel>/.imap/`**
+  (was `<workdir>/<channel>/.imap/`). Existing state is not migrated: after
+  upgrading, the monitor starts from the newest message in the mailbox (no
+  re-processing flood). The generic per-channel `StateManager` in
+  `serve` is gone — email was its only consumer.
+
+- **Dashboard overview Details panel panes are now framed** — the topic
+  info pane is fully enclosed (`Borders::ALL`) and the activity log uses
+  `Borders::TOP | Borders::LEFT | Borders::RIGHT`, giving the panel a
+  continuous left/right edge with no open gap above or below the info
+  pane. The chat-screen info and activity panes are unaffected.
+
+- **`[agent]` config table renamed to `[ai]`** at all levels (top-level,
+  `[channels.<x>]`, topic `.jyc/config.toml`). The legacy key `agent` is
+  still accepted with a deprecation warning. Code: `AgentConfig` →
+  `AiConfig`. See `docs/agents-migration.md` for the full migration plan.
+
+- **wecom_bot channel is pipe-only** — `wecom_bot` (WeCom Smart Robot)
+  joins `feishu` as a pipe-only adapter (see `docs/core-hub-adapters.md`).
+  Every enabled pattern must declare a `pipe` target; the adapter owns
+  the WebSocket long connection and the streaming-reply lifecycle
+  (`finish=false` indicator on receipt, a self-terminating keep-alive
+  task that re-sends `finish=false` with a spinning-elapsed indicator
+  every 3s to keep the WeCom passive-reply window open during long
+  agent runs, `finish=true` on reply, and proactive-`aibot_send_msg`
+  fallback for both the text and attachments when the streaming
+  window has already closed). Inbound attachments continue to flow
+  through `media::process_bot_attachments` unchanged. The
+  TopicManager/agent/orchestrator registration for `wecom_bot` is
+  removed; the `channel_type() == "wecom_bot"` progress-spinner path
+  in the worker is dropped (the pipe adapter owns the streaming
+  lifecycle).
+
+- **Pipe topic templates support `${msg.<key>}` for any metadata key**
+  (previously hardcoded to `chat_name`). Convenience: `channel_uid`
+  resolves to the channel's conversation identity (group chatid /
+  single chat userid), so `topic = "bot-${msg.channel_uid}"` unifies
+  group and single chats in one template. Compatible with the
+  existing `${msg.chat_name}` form.
+
+- **Reverted the `[hub]`/`[adapters]` config tables and `pipe.hub` rename
+  (#573)** — never deployed; `[channels]` is again the single channel table.
+- **Aligned HTTP `User-Agent` defaults.** The Anthropic native provider
+  (`type = "anthropic"`) now honors `ai_providers.<name>.user_agent`
+  instead of silently dropping it; behavior matches the OpenAI-compat
+  provider. When no `user_agent` is configured, all provider requests
+  fall back to reqwest's default `reqwest/<version>` UA — no jyc
+  fingerprint leaks unless the operator opts in. The `webfetch` tool
+  switched from a hardcoded `jyc-agent/0.1` to a modern Chrome UA
+  (`Mozilla/5.0 ... Chrome/131.0.0.0 ...`) for compatibility with
+  common anti-bot sites.
+
+- **Feishu is now a pipe-only adapter.** Following the core / hub / adapters
+  architecture, the feishu channel no longer creates its own outbound
+  adapter, agent service, TopicManager, StateManager, or orchestrator
+  registration — it only receives events, pipes matching messages into a
+  websocket hub channel, and relays the hub's replies back. Consequences:
+  - A matched pattern **without** `pipe` now drops the message with a
+    warning (previously it was routed through feishu's own TopicManager);
+    startup logs a warning for each such pattern.
+  - Chat-disbanded events no longer close topics (already a no-op for piped
+    topics).
+  - Feishu no longer appears in the orchestrator / dashboard channel list.
+  - Proactive messages to a feishu chat now go through the hub channel:
+    `jyc_send_message(channel = "<hub>", recipient = "<piped topic>")` is
+    relayed by the pipe forwarder (mapping is in-memory, rebuilt on inbound
+    traffic).
+
+- **Terminology: "thread" → "topic".** The conversation-workspace concept
+  (formerly "thread") is now "topic" everywhere — `TopicManager`,
+  `topic_name`/`topic_path`/`topic_prefix`, the WebSocket `topic` field,
+  the `pipe = { channel, topic }` mapping, `.jyc/topic-name`, and all docs —
+  to avoid confusion with OS threads. The email `topic_refs` field became
+  `references` (it maps to the `References` header). A one-time migration
+  renames existing `.jyc/thread-name` files to `.jyc/topic-name`.
+
+- **Config now rejects unknown keys.** `[general]` and channel patterns use
+  `#[serde(deny_unknown_fields)]`, so a typo or a legacy `thread_*` key
+  (`max_concurrent_threads`, `max_queue_size_per_thread`, `thread_name`,
+  `thread_path`) fails at startup with an error naming the key and the
+  correct `topic_*` field — instead of being silently ignored and falling
+  back to defaults.
+
+- **Channel pattern `pipe` now takes an explicit mapping**
+  (`pipe = { channel = "local_dev", topic = "jyc" }` instead of a bare
+  target channel). Matching messages are re-targeted to the target
+  channel/topic and routed through the target's own `MessageRouter` —
+  the exact same path as a chat-pane message — so the target pattern's
+  `topic_path`, template, skills and model apply identically; replies
+  are relayed back to this channel's users. The former
+  `pipe = "<channel>"` string form is replaced by this mapping.
+  For feishu, `pipe` later became mandatory — see "Feishu is now a
+  pipe-only adapter" above.
+
 ### Fixed
+
+- **Annotation mimicry guard.** The sliding window's
+  `(incl. followed tool calls: … → …)` history annotations were sometimes
+  mimicked by the model as reply text, making it believe it had replied
+  when no tool call happened; the narration was then delivered via the
+  fallback path. The system prompt now states the format is a read-only
+  history summary, and the reply-tool guard injects a mimicry-specific
+  reminder ("your reply was NOT sent") when the final text contains the
+  annotation marker (#629)
+- **Lost tool replies are now user-visible.** When the reply tool signaled
+  a reply but its content was lost before delivery, the user saw nothing
+  (only a log warning); a distinct warning message is now delivered instead
+  of being conflated with the "finished without calling jyc_reply_message"
+  fallback case (#629)
+
+- **Window fallback keeps the LAST user message, not the first.** When
+  no complete pair exists, the fallback used to resurrect the oldest
+  user message (usually ancient, unrelated history) in front of the
+  current turn; it now keeps the latest text-bearing user message and
+  skips Anthropic `tool_result` wrappers. (#628)
 
 - **Agent "thinking" text no longer delivered verbatim as the final reply.**
   With `jyc_reply_message` registered, a text-only finish that never calls
@@ -352,190 +546,6 @@ All notable changes to JYC will be documented in this file.
   reset) shared the same code path and was equally broken for
   Anthropic contexts — fixed by the same change.
 
-### Changed
-
-- **System prompt tells the agent when to use `context_browse`.** The Chat
-  History prompt section now points the agent at the `context_browse` tool
-  for recalling earlier turns of the current conversation that have fallen
-  out of its context window (offset pages toward older pairs, limit caps the
-  page), instead of only steering it to `read`/`grep` the per-day
-  chat-history JSONL. The tool was previously registered and documented but
-  never mentioned in the prompt, so agents rarely called it. (#626)
-
-- **Sliding-window context now annotates assistant messages with their
-  bare tool calls.** The windowed part (recent user+assistant pairs) folds
-  the assistant's tool calls into the text as
-  `(incl. followed tool calls: name(arg=value, …))`, keeping **all**
-  parameters and truncating only a single argument value over 200 chars.
-  Tool calls were previously stripped entirely, so the model saw a gap
-  between an assistant text that ran tools and the following turns;
-  tool-call-only turns (no text of their own) are kept as the annotation
-  alone instead of being dropped. The
-  annotation is text-only, so no tool-call/tool-result pairing constraints
-  apply (those only matter for the verbatim `current` turn). (#623)
-
-- **Transient retry backoff raised from 1s/2s to 10s/20s.** A transient
-  failure — e.g. an SSE idle timeout that already waited
-  `sse_read_timeout` (default 120s) on a silent stream — was retried after
-  only 1 second, effectively "immediately", so the retry usually hit the
-  same silent upstream again. The retry message (`next retry at …
-  (in Ns)`) now shows a meaningful wait. Attempt budget unchanged
-  (3 attempts, 2 retries). (#617)
-
-- **email channel is pipe-only** — `email` joins `feishu`/`wecom_bot` as a
-  pipe-only adapter (see `docs/core-hub-adapters.md`). Every enabled
-  pattern must declare a `pipe` target; the adapter keeps only the IMAP
-  monitor and SMTP reply forwarders (one per pipe target channel), which
-  reply into the original mail thread (`In-Reply-To`/`References`).
-  A pattern without `pipe.topic` uses the subject-derived topic name.
-  Email replies are now plain agent text — no model/mode/tokens footer,
-  so `[channels.<name>.footer]` no longer applies to email channels; nor
-  does per-pattern `[channels.<name>.patterns.attachments]` (the global
-  `[attachments.inbound]` policy still applies). The email channel no
-  longer appears in the orchestrator / dashboard channel list, and
-  `jyc_send_message` addressed to an email channel name is no longer
-  supported (send to the hub topic instead).
-
-- **IMAP mailbox cursor state moved to `<workdir>/channels/<channel>/.imap/`**
-  (was `<workdir>/<channel>/.imap/`). Existing state is not migrated: after
-  upgrading, the monitor starts from the newest message in the mailbox (no
-  re-processing flood). The generic per-channel `StateManager` in
-  `serve` is gone — email was its only consumer.
-
-- **Dashboard overview Details panel panes are now framed** — the topic
-  info pane is fully enclosed (`Borders::ALL`) and the activity log uses
-  `Borders::TOP | Borders::LEFT | Borders::RIGHT`, giving the panel a
-  continuous left/right edge with no open gap above or below the info
-  pane. The chat-screen info and activity panes are unaffected.
-
-- **`[agent]` config table renamed to `[ai]`** at all levels (top-level,
-  `[channels.<x>]`, topic `.jyc/config.toml`). The legacy key `agent` is
-  still accepted with a deprecation warning. Code: `AgentConfig` →
-  `AiConfig`. See `docs/agents-migration.md` for the full migration plan.
-
-- **wecom_bot channel is pipe-only** — `wecom_bot` (WeCom Smart Robot)
-  joins `feishu` as a pipe-only adapter (see `docs/core-hub-adapters.md`).
-  Every enabled pattern must declare a `pipe` target; the adapter owns
-  the WebSocket long connection and the streaming-reply lifecycle
-  (`finish=false` indicator on receipt, a self-terminating keep-alive
-  task that re-sends `finish=false` with a spinning-elapsed indicator
-  every 3s to keep the WeCom passive-reply window open during long
-  agent runs, `finish=true` on reply, and proactive-`aibot_send_msg`
-  fallback for both the text and attachments when the streaming
-  window has already closed). Inbound attachments continue to flow
-  through `media::process_bot_attachments` unchanged. The
-  TopicManager/agent/orchestrator registration for `wecom_bot` is
-  removed; the `channel_type() == "wecom_bot"` progress-spinner path
-  in the worker is dropped (the pipe adapter owns the streaming
-  lifecycle).
-
-- **Pipe topic templates support `${msg.<key>}` for any metadata key**
-  (previously hardcoded to `chat_name`). Convenience: `channel_uid`
-  resolves to the channel's conversation identity (group chatid /
-  single chat userid), so `topic = "bot-${msg.channel_uid}"` unifies
-  group and single chats in one template. Compatible with the
-  existing `${msg.chat_name}` form.
-
-- **Reverted the `[hub]`/`[adapters]` config tables and `pipe.hub` rename
-  (#573)** — never deployed; `[channels]` is again the single channel table.
-- **Aligned HTTP `User-Agent` defaults.** The Anthropic native provider
-  (`type = "anthropic"`) now honors `ai_providers.<name>.user_agent`
-  instead of silently dropping it; behavior matches the OpenAI-compat
-  provider. When no `user_agent` is configured, all provider requests
-  fall back to reqwest's default `reqwest/<version>` UA — no jyc
-  fingerprint leaks unless the operator opts in. The `webfetch` tool
-  switched from a hardcoded `jyc-agent/0.1` to a modern Chrome UA
-  (`Mozilla/5.0 ... Chrome/131.0.0.0 ...`) for compatibility with
-  common anti-bot sites.
-
-### Added
-
-- **Channels / agents / AI migration design doc** (`docs/agents-migration.md`):
-  locked decisions, target three-layer model, and phased PR plan.
-- **Config template regression test**: `config.example.toml` must parse and
-  pass `validate_config` in CI.
-- **Core / hub / adapters architecture document.** `docs/core-hub-adapters.md`
-  describes the target three-layer architecture (core: per-topic queues +
-  workers; hub: the websocket channel, the only layer owning topics and
-  agents; adapters: protocol-only channels that pipe into the hub). Feishu is
-  the first migrated channel; other channels will follow.
-
-- **Topic file download endpoint.** `GET /api/topics/{channel}/{topic}/files/{file...}`
-  serves topic-local files in place under the bearer middleware — unlike
-  `/exchange/...`, which stays reserved for agent-published files
-  (`jyc_publish_file`). Paths under `.jyc/` are rejected, including via
-  symlink escapes.
-
-- **Websocket replies broadcast attachments.** `reply` payloads gain an
-  optional `attachments` array (`filename`, `content_type`, `path`) whose
-  entries point at the new files endpoint.
-
-- **Feishu pipe relays reply attachments.** The pipe reply forwarder
-  downloads each broadcast attachment from the files endpoint, applies
-  `[attachments.outbound]` policy, and re-uploads it to the feishu chat
-  (image vs. file by content type).
-
-- **Dynamic pipe topics via `${msg.chat_name}`.** A pattern's `pipe.topic`
-  may embed the runtime placeholder `${msg.chat_name}`, resolved per message
-  from the chat-name metadata (sanitized for filesystem use), so one feishu
-  `mentions` pattern can route each group chat to its own topic. Messages
-  without a chat name are dropped with a warning when the placeholder is
-  used. (#568)
-
-- **Pipe targets decouple pattern config from topic name.** `pipe` gains an
-  optional `pattern` field naming the target channel pattern whose config
-  applies, and `topic` is now optional (defaulting to `pattern`):
-  `pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }`
-  gives each dynamically-derived topic the `group_chat` pattern's
-  `topic_path`/template/skills. Legacy `topic`-only form is unchanged.
-  (#570)
-
-### Changed
-
-- **Feishu is now a pipe-only adapter.** Following the core / hub / adapters
-  architecture, the feishu channel no longer creates its own outbound
-  adapter, agent service, TopicManager, StateManager, or orchestrator
-  registration — it only receives events, pipes matching messages into a
-  websocket hub channel, and relays the hub's replies back. Consequences:
-  - A matched pattern **without** `pipe` now drops the message with a
-    warning (previously it was routed through feishu's own TopicManager);
-    startup logs a warning for each such pattern.
-  - Chat-disbanded events no longer close topics (already a no-op for piped
-    topics).
-  - Feishu no longer appears in the orchestrator / dashboard channel list.
-  - Proactive messages to a feishu chat now go through the hub channel:
-    `jyc_send_message(channel = "<hub>", recipient = "<piped topic>")` is
-    relayed by the pipe forwarder (mapping is in-memory, rebuilt on inbound
-    traffic).
-
-- **Terminology: "thread" → "topic".** The conversation-workspace concept
-  (formerly "thread") is now "topic" everywhere — `TopicManager`,
-  `topic_name`/`topic_path`/`topic_prefix`, the WebSocket `topic` field,
-  the `pipe = { channel, topic }` mapping, `.jyc/topic-name`, and all docs —
-  to avoid confusion with OS threads. The email `topic_refs` field became
-  `references` (it maps to the `References` header). A one-time migration
-  renames existing `.jyc/thread-name` files to `.jyc/topic-name`.
-
-- **Config now rejects unknown keys.** `[general]` and channel patterns use
-  `#[serde(deny_unknown_fields)]`, so a typo or a legacy `thread_*` key
-  (`max_concurrent_threads`, `max_queue_size_per_thread`, `thread_name`,
-  `thread_path`) fails at startup with an error naming the key and the
-  correct `topic_*` field — instead of being silently ignored and falling
-  back to defaults.
-
-- **Channel pattern `pipe` now takes an explicit mapping**
-  (`pipe = { channel = "local_dev", topic = "jyc" }` instead of a bare
-  target channel). Matching messages are re-targeted to the target
-  channel/topic and routed through the target's own `MessageRouter` —
-  the exact same path as a chat-pane message — so the target pattern's
-  `topic_path`, template, skills and model apply identically; replies
-  are relayed back to this channel's users. The former
-  `pipe = "<channel>"` string form is replaced by this mapping.
-  For feishu, `pipe` later became mandatory — see "Feishu is now a
-  pipe-only adapter" above.
-
-### Fixed
-
 - **Feishu pipe attachment relay failed with 401 after every restart.** The
   inspect auth token was regenerated and written to `auth.token` *after* the
   channel spawn loop, but the feishu pipe reply forwarder reads that file at
@@ -564,6 +574,26 @@ All notable changes to JYC will be documented in this file.
   from another channel (e.g. feishu via `pipe`) carries the remote user's
   display name and was mislabeled "AI:". Anything that is not the agent's
   reply (`sender != "ai"`) now renders on the human side.
+
+- **`pipe = { agent, topic }` with dynamic topic lost the agent identity.**
+  The agent form only set `channel`/`topic` without recording the agent
+  name, so when `pipe.topic` used `${msg.<key>}` placeholders the
+  WebsocketMatcher treated the resolved topic as an ad-hoc pattern name
+  and the agent's `mcps` / `skills` / `template` / `model` never applied
+  (the LLM saw only builtin tools and the global model). The agent name
+  is now written as the `pipe_pattern` hint, so the matcher selects the
+  right `[agents.<name>]` pattern by name regardless of the (dynamic)
+  topic. (#589)
+
+- **WeCom Bot `enter_chat` event parsing failed with `missing field chatid`.**
+  The real WeCom `aibot_event_callback` body for events like
+  `enter_chat` (captured from a live single-chat event) does not include
+  a top-level `chatid` — the conversation identity is `chattype` +
+  `from.userid`. `BotEvent.chatid` was declared as a required `String`,
+  so the parser returned `missing field "chatid"` and the event was
+  dropped with a non-fatal WARN. `chatid` now defaults to empty so
+  `enter_chat` and other events without a top-level `chatid` parse
+  cleanly. (#588)
 
 ### Removed
 
@@ -614,28 +644,6 @@ All notable changes to JYC will be documented in this file.
   review is handled by the `github-planner` deep-review flow; `pr-review`
   remains available as a general skill for any topic that wants it. The
   channel doc and config examples no longer reference a reviewer agent.
-
-### Fixed
-
-- **`pipe = { agent, topic }` with dynamic topic lost the agent identity.**
-  The agent form only set `channel`/`topic` without recording the agent
-  name, so when `pipe.topic` used `${msg.<key>}` placeholders the
-  WebsocketMatcher treated the resolved topic as an ad-hoc pattern name
-  and the agent's `mcps` / `skills` / `template` / `model` never applied
-  (the LLM saw only builtin tools and the global model). The agent name
-  is now written as the `pipe_pattern` hint, so the matcher selects the
-  right `[agents.<name>]` pattern by name regardless of the (dynamic)
-  topic. (#589)
-
-- **WeCom Bot `enter_chat` event parsing failed with `missing field chatid`.**
-  The real WeCom `aibot_event_callback` body for events like
-  `enter_chat` (captured from a live single-chat event) does not include
-  a top-level `chatid` — the conversation identity is `chattype` +
-  `from.userid`. `BotEvent.chatid` was declared as a required `String`,
-  so the parser returned `missing field "chatid"` and the event was
-  dropped with a non-fatal WARN. `chatid` now defaults to empty so
-  `enter_chat` and other events without a top-level `chatid` parse
-  cleanly. (#588)
 
 ## [0.3.15] - 2026-08-14
 

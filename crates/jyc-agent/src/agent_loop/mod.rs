@@ -1773,7 +1773,7 @@ mod reply_tool_tests {
         // The recovery turn must run with a restricted tool list: only
         // `jyc_reply_message` on the table. The first turn offered the full
         // registry (many tools); the second offers exactly one.
-        let seen = provider.seen_tools.lock().unwrap();
+        let seen = provider.seen_tools.lock().unwrap().clone();
         assert_eq!(seen.len(), 2);
         assert!(
             seen[0].len() > 1,
@@ -1785,7 +1785,6 @@ mod reply_tool_tests {
             vec!["jyc_reply_message".to_string()],
             "recovery turn must offer only the reply tool"
         );
-        drop(seen);
 
         // The activity pane must have seen exactly one `reply_tool_missing`
         // nudge event and no plain no_reply event.
@@ -2157,7 +2156,7 @@ mod reply_tool_tests {
 
         // The recovery turn after the failure reminder must also be
         // tool-restricted (round index 2).
-        let seen = provider.seen_tools.lock().unwrap();
+        let seen = provider.seen_tools.lock().unwrap().clone();
         assert_eq!(seen.len(), 3);
         assert_eq!(seen[2], vec!["jyc_reply_message".to_string()]);
     }

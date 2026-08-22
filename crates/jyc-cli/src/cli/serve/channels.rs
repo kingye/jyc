@@ -2500,6 +2500,23 @@ pub(crate) fn spawn_wecom_adapter(
                 wecom_config.corp_secret.clone(),
             ));
 
+            // Startup connectivity check (replaces the pre-migration
+            // fail-fast `connect()`): surface bad credentials immediately
+            // instead of on first reply.
+            {
+                let sender = sender.clone();
+                let ch = channel_name.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = sender.verify_connectivity().await {
+                        tracing::error!(
+                            channel = %ch,
+                            error = format!("{e:#}"),
+                            "wecom: credential check failed, replies will fail until fixed"
+                        );
+                    }
+                });
+            }
+
             // Resolved topic → chat_id for the reply forwarder. In-memory
             // only: a reply can only follow an inbound message, which
             // repopulates the entry.
@@ -2649,6 +2666,23 @@ pub(crate) fn spawn_wecomkf_adapter(
                 kf_config.corp_secret.clone(),
             ));
             let kf_client = Arc::new(KfApiClient::new(token_cache));
+
+            // Startup connectivity check (replaces the pre-migration
+            // fail-fast `connect()`): surface bad credentials immediately
+            // instead of on first reply.
+            {
+                let kf_client = kf_client.clone();
+                let ch = channel_name.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = kf_client.verify_connectivity().await {
+                        tracing::error!(
+                            channel = %ch,
+                            error = format!("{e:#}"),
+                            "wecomkf: credential check failed, replies will fail until fixed"
+                        );
+                    }
+                });
+            }
             let cursor_store = Arc::new(KfCursorStore::new(
                 kf_config.cursor_store_path.as_ref().map(std::path::PathBuf::from),
             ));

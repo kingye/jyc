@@ -436,6 +436,18 @@ applies to every channel.
 Replies stay text-only: attachments were already ignored by the
 pre-migration outbound adapter, and the migration keeps that behavior.
 
+Known limitation (same as every other pipe adapter): the relay maps are
+in-memory, so after a daemon restart a reply to a topic whose last
+inbound message predates the restart is skipped until the user speaks
+again. The pre-migration KF adapter had a topic.json fallback for this;
+post-migration it is dropped deliberately — the hub topic still records
+`open_kfid`/`external_userid` in topic.json (written by the core
+worker), so a future fallback can be built without protocol changes.
+
+Startup credential checks (`verify_connectivity`) run as background
+tasks at spawn time and log errors, replacing the pre-migration
+fail-fast `connect()`.
+
 ## Migrating other channels
 
 None left — all channel types are pipe-only adapters now. New channel

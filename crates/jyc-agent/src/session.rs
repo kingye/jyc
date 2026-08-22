@@ -1435,9 +1435,9 @@ mod tests {
     use serde_json::json;
 
     /// Anthropic-shaped context (array content): assistant text pairs
-    /// correctly; tool_result user-role wrappers are skipped; the
-    /// assistant's bare tool use is folded into a text annotation, now
-    /// including the truncated result (`→ ok`).
+    /// correctly; tool_result user-role wrappers are skipped; the whole
+    /// turn's assistant steps merge into one entry — text, folded tool
+    /// use with the truncated result (`→ ok`), and the final reply.
     #[test]
     fn extract_pairs_anthropic_shape() {
         let ctx = vec![
@@ -1457,7 +1457,7 @@ mod tests {
         assert_eq!(
             pairs[1],
             json!({"role": "assistant",
-                "content": "a1\n(incl. followed tool calls: bash(command=\"ls\") → ok)"})
+                "content": "a1\n(incl. followed tool calls: bash(command=\"ls\") → ok)\ndone"})
         );
     }
 

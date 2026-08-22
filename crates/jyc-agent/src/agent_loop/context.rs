@@ -469,14 +469,17 @@ mod render_raw_context_tests {
             }
         }
 
-        // The windowed pairs (u1,a1)(u2,a2) should be present; the
-        // tool_result user-role wrapper must be excluded.
+        // The windowed pairs should be present; the tool_result user-role
+        // wrapper must be excluded. Turn-based pairing merges u1's two
+        // assistant steps ("a1" and "calling bash" + tool_use) into one
+        // entry; (u2, a2) stays a plain pair.
         assert!(
             sent.iter()
                 .any(|m| m["role"] == "user" && m["content"][0]["text"].as_str() == Some("u1"))
         );
         assert!(sent.iter().any(|m| m["role"] == "assistant"
-            && m["content"][0]["text"].as_str() == Some("a1")));
+            && m["content"][0]["text"].as_str()
+                == Some("a1\ncalling bash\n(incl. followed tool calls: bash() → ok)")));
         assert!(
             sent.iter()
                 .any(|m| m["role"] == "user" && m["content"][0]["text"].as_str() == Some("u2"))

@@ -142,6 +142,11 @@ pub struct AgentLoopConfig<'a> {
     /// `.jyc/agent-context.json` is always the full raw context; this
     /// field only affects the wire payload.
     pub context_strategy: ContextStrategyConfig,
+    /// Synchronous delivery target for `jyc_reply_message`. Passed through
+    /// to `ToolContext`; `None` in contexts without a live inbound message
+    /// (tests, sub-agents), where the reply tool falls back to the
+    /// `reply.md`/`reply-sent.flag` file relay.
+    pub reply_target: Option<crate::tools::ReplyTarget>,
 }
 
 /// Run the agent loop to completion.
@@ -176,6 +181,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         pricing,
         model_label,
         context_strategy,
+        reply_target,
     } = config;
 
     // Provider used for the cycle-boundary progress summary. Falls back to
@@ -366,6 +372,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             ctx.current_channel = current_channel.clone();
             ctx.current_topic = Some(topic_name.to_string());
             ctx.outbounds = outbounds.clone();
+            ctx.reply_target = reply_target.clone();
             let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
                 .unwrap_or(serde_json::Value::Object(Default::default()));
             let synthetic_output = match tools
@@ -774,6 +781,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         ctx.current_channel = current_channel.clone();
         ctx.current_topic = Some(topic_name.to_string());
         ctx.outbounds = outbounds.clone();
+        ctx.reply_target = reply_target.clone();
         // Snapshot for `context_browse` — only when the tool is actually in
         // this batch. `raw_context` is mutated as tool results are appended
         // below, so the snapshot must be taken before the loop; but cloning
@@ -884,6 +892,23 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                         tool = %tool_call.name,
                         "Progress reply sent by tool (stop_after=false), continuing loop"
                     );
+                }
+
+                // Synchronous delivery bypasses the file relay, so neither
+                // the watcher nor the post-loop worker publishes ReplySent —
+                // do it here (exactly once per delivery).
+                if output.delivered
+                    && let Some(msg) = input.get("message").and_then(|m| m.as_str())
+                {
+                    publish_event(
+                        event_bus,
+                        TopicEvent::ReplySent {
+                            topic_name: topic_name.to_string(),
+                            text: msg.to_string(),
+                            timestamp: Utc::now(),
+                        },
+                    )
+                    .await;
                 }
             }
 
@@ -1417,6 +1442,7 @@ mod no_reply_tests {
             pricing: None,
             model_label: "empty-test-1",
             context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+            reply_target: None,
         })
         .await
         .expect("agent loop should run to completion");
@@ -1619,6 +1645,7 @@ mod reply_tool_tests {
             pricing: None,
             model_label: "scripted-test-1",
             context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+            reply_target: None,
         })
         .await
         .expect("agent loop should run to completion");
@@ -1717,6 +1744,7 @@ mod reply_tool_tests {
             pricing: None,
             model_label: "scripted-test-1",
             context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+            reply_target: None,
         })
         .await
         .expect("agent loop should run to completion");
@@ -2024,6 +2052,7 @@ mod cancel_during_tool_tests {
                 pricing: None,
                 model_label: "",
                 context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+                reply_target: None,
             }),
         )
         .await;
@@ -2115,6 +2144,7 @@ mod cancel_during_tool_tests {
                 pricing: None,
                 model_label: "",
                 context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+                reply_target: None,
             }),
         )
         .await;

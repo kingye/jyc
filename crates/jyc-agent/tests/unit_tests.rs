@@ -1647,6 +1647,197 @@ mod mcp_bridge {
         assert_eq!(recorded[0].0, "external@example.com");
         assert_eq!(recorded[0].3, vec!["data.csv"]);
     }
+
+    /// Mock outbound adapter for reply-delivery tests: records `send_reply`
+    /// calls and can be configured to fail (to exercise the file-relay
+    /// fallback).
+    struct ReplyMockOutbound {
+        replies: Arc<Mutex<Vec<(String, Vec<String>)>>>,
+        fail: bool,
+    }
+
+    impl ReplyMockOutbound {
+        fn new(fail: bool) -> (Self, Arc<Mutex<Vec<(String, Vec<String>)>>>) {
+            let replies = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    replies: replies.clone(),
+                    fail,
+                },
+                replies,
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl OutboundAdapter for ReplyMockOutbound {
+        fn channel_type(&self) -> &str {
+            "mock"
+        }
+
+        async fn connect(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn clean_body(&self, body: &str) -> String {
+            body.to_string()
+        }
+
+        async fn send_reply(
+            &self,
+            _original: &InboundMessage,
+            reply_text: &str,
+            _topic_path: &Path,
+            _message_dir: &str,
+            attachments: Option<&[OutboundAttachment]>,
+        ) -> anyhow::Result<SendResult> {
+            if self.fail {
+                anyhow::bail!("simulated delivery failure");
+            }
+            self.replies.lock().unwrap().push((
+                reply_text.to_string(),
+                attachments
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|a| a.filename.clone())
+                    .collect(),
+            ));
+            Ok(SendResult {
+                message_id: "direct-1".to_string(),
+            })
+        }
+
+        async fn send_message(
+            &self,
+            _recipient: &str,
+            _subject: &str,
+            _body: &str,
+        ) -> anyhow::Result<SendResult> {
+            Ok(SendResult {
+                message_id: "mock-msg".to_string(),
+            })
+        }
+    }
+
+    fn reply_test_message() -> InboundMessage {
+        InboundMessage {
+            id: "test".to_string(),
+            channel: "test".to_string(),
+            channel_uid: "1".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user@test".to_string(),
+            recipients: vec![],
+            topic: "Test".to_string(),
+            content: Default::default(),
+            timestamp: chrono::Utc::now(),
+            references: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: Default::default(),
+            matched_pattern: None,
+        }
+    }
+
+    /// With an outbound adapter and reply target injected, the reply is
+    /// delivered synchronously and NO signal files are written (nothing left
+    /// for the watcher/worker to deliver).
+    #[tokio::test]
+    async fn reply_tool_delivers_directly_when_target_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("report.md"), "report").unwrap();
+
+        let (mock, replies) = ReplyMockOutbound::new(false);
+        let mut ctx = ToolContext::new(tmp.path());
+        ctx.outbound = Some(Arc::new(mock));
+        ctx.reply_target = Some(jyc_agent::tools::ReplyTarget {
+            original: reply_test_message(),
+            message_dir: "2026-08-22_00-00-00".to_string(),
+        });
+
+        let result = ReplyMessageTool
+            .execute(
+                json!({"message": "done!", "attachments": ["report.md"]}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        assert!(result.delivered, "delivered marker must be set");
+        assert!(result.content.contains("delivered"));
+        assert!(result.content.contains("direct-1"));
+        let recorded = replies.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, "done!");
+        assert_eq!(recorded[0].1, vec!["report.md"]);
+        // No file relay leftovers.
+        let jyc_dir = tmp.path().join(".jyc");
+        assert!(!jyc_dir.join("reply.md").exists());
+        assert!(!jyc_dir.join("reply-sent.flag").exists());
+    }
+
+    /// stop_after=false progress replies also deliver directly and keep the
+    /// loop running.
+    #[tokio::test]
+    async fn reply_tool_progress_delivers_directly_and_continues() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let (mock, replies) = ReplyMockOutbound::new(false);
+        let mut ctx = ToolContext::new(tmp.path());
+        ctx.outbound = Some(Arc::new(mock));
+        ctx.reply_target = Some(jyc_agent::tools::ReplyTarget {
+            original: reply_test_message(),
+            message_dir: "2026-08-22_00-00-00".to_string(),
+        });
+
+        let result = ReplyMessageTool
+            .execute(json!({"message": "working…", "stop_after": false}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        assert!(!result.stop_after, "progress reply must not stop the loop");
+        assert!(result.delivered);
+        assert_eq!(replies.lock().unwrap().len(), 1);
+    }
+
+    /// When direct delivery fails, the tool falls back to the file relay so
+    /// the worker can retry post-loop, and the result says "queued" rather
+    /// than claiming success.
+    #[tokio::test]
+    async fn reply_tool_falls_back_to_file_relay_on_direct_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let (mock, replies) = ReplyMockOutbound::new(true);
+        let mut ctx = ToolContext::new(tmp.path());
+        ctx.outbound = Some(Arc::new(mock));
+        ctx.reply_target = Some(jyc_agent::tools::ReplyTarget {
+            original: reply_test_message(),
+            message_dir: "2026-08-22_00-00-00".to_string(),
+        });
+
+        let result = ReplyMessageTool
+            .execute(json!({"message": "done!"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(!result.is_error);
+        assert!(!result.delivered, "failed direct delivery is not delivered");
+        assert!(result.content.contains("queued"));
+        assert!(replies.lock().unwrap().is_empty());
+        // File relay engaged: worker will deliver from these.
+        let jyc_dir = tmp.path().join(".jyc");
+        assert_eq!(
+            std::fs::read_to_string(jyc_dir.join("reply.md")).unwrap(),
+            "done!"
+        );
+        assert!(jyc_dir.join("reply-sent.flag").exists());
+    }
 }
 
 mod skills {

@@ -1121,6 +1121,13 @@ fn collect_results_from(
     }
 }
 
+/// Max total length of one message's tool-call annotation. Individual
+/// args/results are already capped, but the NUMBER of parallel calls is
+/// not — a 10-call turn would otherwise produce a ~7KB annotation. Calls
+/// past the budget are summarized as `…(N more calls)`.
+/// ponytail: fixed cap; raise if real turns routinely need more.
+const WINDOWED_ANNOTATION_MAX: usize = 2000;
+
 /// Build the bare tool-call annotation for an assistant message, e.g.
 /// `(incl. followed tool calls: bash(command="ls -la") → BRANCH main…)`.
 /// When a tool result is known for a call's `id` (looked up in `results`),
@@ -1136,26 +1143,33 @@ fn tool_call_annotation(
     if calls.is_empty() {
         return None;
     }
-    let rendered = calls
-        .iter()
-        .map(|(id, name, args)| {
-            let mut s = render_tool_call(name, args);
-            if let Some((result, is_error)) = results.get(id)
-                && !result.is_empty()
-            {
-                s.push_str(" → ");
-                if *is_error {
-                    s.push_str("[error] ");
-                }
-                s.push_str(result);
+    let mut parts: Vec<String> = Vec::with_capacity(calls.len());
+    let mut used = 0usize;
+    let mut omitted = 0usize;
+    for (id, name, args) in &calls {
+        let mut s = render_tool_call(name, args);
+        if let Some((result, is_error)) = results.get(id)
+            && !result.is_empty()
+        {
+            s.push_str(" → ");
+            if *is_error {
+                s.push_str("[error] ");
             }
-            s
-        })
-        .collect::<Vec<_>>();
-    Some(format!(
-        "(incl. followed tool calls: {})",
-        rendered.join(", ")
-    ))
+            s.push_str(result);
+        }
+        // +2 for the ", " separator. Always keep the first call so the
+        // annotation is never empty; cap the rest.
+        if !parts.is_empty() && used + s.len() + 2 > WINDOWED_ANNOTATION_MAX {
+            omitted += 1;
+            continue;
+        }
+        used += s.len() + 2;
+        parts.push(s);
+    }
+    if omitted > 0 {
+        parts.push(format!("…({omitted} more calls)"));
+    }
+    Some(format!("(incl. followed tool calls: {})", parts.join(", ")))
 }
 
 /// Flush the accumulated turn into `pairs`: merge every assistant message
@@ -1797,5 +1811,39 @@ mod tests {
             "reply message under 1000 chars must not be truncated: {content:?}"
         );
         assert!(!content.contains('…'), "unexpected truncation: {content:?}");
+    }
+
+    /// The annotation as a whole is capped: calls past the budget are
+    /// dropped and summarized as `…(N more calls)`; the first call is
+    /// always kept.
+    #[test]
+    fn extract_pairs_caps_total_annotation_length() {
+        let arg = "x".repeat(super::WINDOWED_TOOL_ARG_MAX);
+        let calls: Vec<serde_json::Value> = (0..10)
+            .map(|i| {
+                json!({"id": i.to_string(), "type": "function",
+                    "function": {"name": "bash",
+                        "arguments": json!({"command": arg}).to_string()}})
+            })
+            .collect();
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "", "tool_calls": calls}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        let content = pairs[0].1["content"].as_str().unwrap();
+        assert!(
+            content.len() < super::WINDOWED_ANNOTATION_MAX + 100,
+            "annotation not capped: {} bytes",
+            content.len()
+        );
+        assert!(
+            content.contains("more calls"),
+            "omitted calls not summarized: {content:?}"
+        );
+        assert!(
+            content.contains("bash("),
+            "first call must be kept: {content:?}"
+        );
     }
 }

@@ -187,8 +187,9 @@ All notable changes to JYC will be documented in this file.
   system-reminder to recover via `jyc_reply_message`; if the model still
   exits text-only, the text is delivered via the fallback path with a
   visible English warning marker appended so a degraded delivery is never
-  mistaken for a normal reply. Behavior is unchanged when the reply tool
-  is absent. (#625)
+  mistaken for a normal reply. The nudge also surfaces as a Warning entry
+  ("REPLY TOOL MISSING") in the activity pane. Behavior is unchanged when
+  the reply tool is absent. (#625)
 
 - Fix dashboard topic list showing "build" mode and `/model` writing the
   wrong mode-specific override file when a topic's mode comes from

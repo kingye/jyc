@@ -604,16 +604,16 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
         // 5. If no tool calls, we're done
         if response.tool_calls.is_empty() {
-            let text_len = response.text.len();
+            // Trimmed, so whitespace-only narration counts as empty: it gets
+            // the no-text reminder, and no fallback warning (nothing to deliver).
+            let text_len = response.text.trim().len();
             let reply_tool_available = tools.has_tool("jyc_reply_message");
 
             // Reply-tool guard (unified with the no-reply guard below): a
             // text-only finish is only acceptable when the reply tool was
-            // called (`reply_sent_by_tool`) or is not part of this registry.
-            // Otherwise the text is likely the model's own narration
-            // ("thinking out loud"), which the worker's fallback path would
-            // deliver verbatim as the final reply. Nudge the model once to
-            // recover via `jyc_reply_message` before accepting the turn.
+            // called or is not registered. Otherwise the text is likely
+            // narration ("thinking out loud"), which the fallback path would
+            // deliver verbatim as the final reply. Nudge the model once.
             if !reply_sent_by_tool && reply_tool_available && !reply_tool_nudged {
                 reply_tool_nudged = true;
                 tracing::warn!(
@@ -700,11 +700,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 );
             }
 
-            // Fallback delivery with visible warning: the reply tool is
-            // available but was never called, even after the nudge. The
-            // text being delivered is degraded (likely narration), so mark
-            // it so the user is never left wondering whether this was the
-            // intended final reply.
+            // Fallback delivery with visible warning: the reply tool exists
+            // but was never called, even after the nudge. Mark the text so a
+            // degraded delivery is never mistaken for a normal reply.
             let mut final_text = response.text;
             if !reply_sent_by_tool && reply_tool_nudged && !final_text.trim().is_empty() {
                 final_text.push_str(FALLBACK_REPLY_WARNING);
@@ -1509,11 +1507,10 @@ mod reply_tool_tests {
             _system: &str,
         ) -> anyhow::Result<EventStream> {
             let i = self.calls.fetch_add(1, Ordering::SeqCst);
-            let events: Vec<anyhow::Result<StreamEvent>> =
-                match self.rounds.get(i) {
-                    Some(round) => round.iter().cloned().map(Ok).collect(),
-                    None => vec![Ok(StreamEvent::Done)],
-                };
+            let events: Vec<anyhow::Result<StreamEvent>> = match self.rounds.get(i) {
+                Some(round) => round.iter().cloned().map(Ok).collect(),
+                None => vec![Ok(StreamEvent::Done)],
+            };
             Ok(Box::pin(stream::iter(events)))
         }
 

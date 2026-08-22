@@ -914,9 +914,114 @@ pub(crate) fn extract_message_text(msg: &serde_json::Value) -> String {
     text
 }
 
+/// Max length of a single rendered tool-call argument value kept in the
+/// windowed annotation; longer values are truncated with `…`.
+/// ponytail: fixed cap; raise if real arguments routinely exceed it and
+/// the tail matters.
+const WINDOWED_TOOL_ARG_MAX: usize = 200;
+
+/// Collect bare tool calls from a raw wire-format assistant message.
+///
+/// Handles both OpenAI (`tool_calls: [{function: {name, arguments}}]`,
+/// arguments a JSON string) and Anthropic (`content: [{type: "tool_use",
+/// name, input}]`) shapes. Returns `(name, args)` pairs, where `args` is
+/// the parsed JSON arguments (the raw string kept as a JSON string when
+/// it does not parse, e.g. broken or empty OpenAI `arguments`).
+fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, serde_json::Value)> {
+    let mut calls = Vec::new();
+
+    // OpenAI-compat: `tool_calls` array with string `function.arguments`.
+    if let Some(tool_calls) = msg.get("tool_calls").and_then(|t| t.as_array()) {
+        for tc in tool_calls {
+            let name = tc
+                .pointer("/function/name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("?")
+                .to_string();
+            let raw = tc
+                .pointer("/function/arguments")
+                .and_then(|a| a.as_str())
+                .unwrap_or("");
+            let args = serde_json::from_str(raw)
+                .unwrap_or_else(|_| serde_json::Value::String(raw.to_string()));
+            calls.push((name, args));
+        }
+    }
+
+    // Anthropic: `content` array with `tool_use` blocks.
+    if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
+        for block in blocks {
+            if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                let name = block
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("?")
+                    .to_string();
+                let args = block
+                    .get("input")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                calls.push((name, args));
+            }
+        }
+    }
+
+    calls
+}
+
+/// Render one tool call as `name(k=v, …)`, keeping **all** parameters and
+/// truncating only a single argument value that exceeds
+/// `WINDOWED_TOOL_ARG_MAX`.
+fn render_tool_call(name: &str, args: &serde_json::Value) -> String {
+    if let Some(map) = args.as_object() {
+        // Empty maps join to `name()` naturally; no empty-args special case.
+        let parts = map
+            .iter()
+            .map(|(k, v)| format!("{k}={}", truncate_json_value(v)))
+            .collect::<Vec<_>>();
+        format!("{name}({})", parts.join(", "))
+    } else {
+        format!("{name}({})", truncate_json_value(args))
+    }
+}
+
+/// Render a JSON value as text, truncating at `WINDOWED_TOOL_ARG_MAX`
+/// bytes (at a char boundary) with `…` when it is longer.
+fn truncate_json_value(value: &serde_json::Value) -> String {
+    let s = value.to_string();
+    if s.len() > WINDOWED_TOOL_ARG_MAX {
+        let cut = s.floor_char_boundary(WINDOWED_TOOL_ARG_MAX);
+        format!("{}…", &s[..cut])
+    } else {
+        s
+    }
+}
+
+/// Build the bare tool-call annotation for an assistant message, e.g.
+/// `(incl. followed tool calls: bash(command="ls -la"))`. Returns `None`
+/// when the message carries no tool calls.
+fn tool_call_annotation(msg: &serde_json::Value) -> Option<String> {
+    let calls = collect_tool_calls(msg);
+    if calls.is_empty() {
+        return None;
+    }
+    let rendered = calls
+        .iter()
+        .map(|(name, args)| render_tool_call(name, args))
+        .collect::<Vec<_>>();
+    Some(format!(
+        "(incl. followed tool calls: {})",
+        rendered.join(", ")
+    ))
+}
+
 /// Extract user+assistant text pairs from raw context, cleaning assistant
-/// messages to only keep role + content (strip reasoning_content, tool_calls).
-/// Returns the last `keep_pairs` pairs flattened into a single Vec.
+/// messages to only keep role + content (strip reasoning_content,
+/// tool_calls). Bare tool calls an assistant issued are folded into the
+/// text as a `(incl. followed tool calls: …)` annotation (parameters kept,
+/// over-long values truncated); a tool-call-only turn (empty text) is kept
+/// annotated alone. Returns the last `keep_pairs` pairs flattened into a
+/// single Vec.
 ///
 /// Shared between session heuristic compaction and mid-loop compression.
 pub(crate) fn extract_user_assistant_pairs(
@@ -940,11 +1045,19 @@ pub(crate) fn extract_user_assistant_pairs(
                 }
             }
             "assistant" => {
-                let content = extract_message_text(msg);
+                let text = extract_message_text(msg);
+                // Keep only role + content, folding bare tool calls into
+                // the text so the windowed part shows which tools ran. A
+                // tool-call-only turn (empty text) is kept too, annotated
+                // alone, instead of being dropped.
+                let content = match tool_call_annotation(msg) {
+                    Some(annotation) if text.is_empty() => annotation,
+                    Some(annotation) => format!("{text}\n{annotation}"),
+                    None => text,
+                };
                 if !content.is_empty()
                     && let Some(user_msg) = last_user.take()
                 {
-                    // Keep only role + content (strip reasoning_content, tool_calls)
                     let clean_assistant = serde_json::json!({
                         "role": "assistant",
                         "content": content,
@@ -1149,14 +1262,15 @@ mod tests {
     use serde_json::json;
 
     /// Anthropic-shaped context (array content): assistant text pairs
-    /// correctly; tool_result user-role wrappers are skipped.
+    /// correctly; tool_result user-role wrappers are skipped; the
+    /// assistant's bare tool use is folded into a text annotation.
     #[test]
     fn extract_pairs_anthropic_shape() {
         let ctx = vec![
             json!({"role": "user", "content": [{"type": "text", "text": "u1"}]}),
             json!({"role": "assistant", "content": [
                 {"type": "text", "text": "a1"},
-                {"type": "tool_use", "id": "t1", "name": "bash", "input": {}}
+                {"type": "tool_use", "id": "t1", "name": "bash", "input": {"command": "ls"}}
             ]}),
             json!({"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
@@ -1166,6 +1280,71 @@ mod tests {
         let pairs = super::extract_user_assistant_pairs(&ctx, 10);
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0], ctx[0]);
-        assert_eq!(pairs[1], json!({"role": "assistant", "content": "a1"}));
+        assert_eq!(
+            pairs[1],
+            json!({"role": "assistant",
+                "content": "a1\n(incl. followed tool calls: bash(command=\"ls\"))"})
+        );
+    }
+
+    /// OpenAI-shaped context: tool calls render with all parameters,
+    /// multiple calls comma-separated.
+    #[test]
+    fn extract_pairs_annotates_tool_call_args() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "running", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": r#"{"command": "ls -la", "timeout": 30}"#}},
+                {"id": "2", "type": "function", "function": {"name": "read", "arguments": r#"{"path": "a.txt"}"#}},
+            ]}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(
+            pairs[1],
+            json!({"role": "assistant",
+                "content": "running\n(incl. followed tool calls: bash(command=\"ls -la\", timeout=30), read(path=\"a.txt\"))"})
+        );
+    }
+
+    /// Tool-call-only assistant turns (no text) are kept, annotated alone,
+    /// rather than dropped.
+    #[test]
+    fn extract_pairs_keeps_tool_call_only_assistant() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": r#"{"command": "ls -la"}"#}}
+            ]}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(
+            pairs[1],
+            json!({"role": "assistant",
+                "content": "(incl. followed tool calls: bash(command=\"ls -la\"))"})
+        );
+    }
+
+    /// Over-long single argument values are truncated with `…`; the tool
+    /// call list itself is never capped.
+    #[test]
+    fn extract_pairs_truncates_long_tool_args() {
+        let long = "x".repeat(500);
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "running", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": json!({"command": long}).to_string()}}
+            ]}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        let content = pairs[1]["content"].as_str().unwrap();
+        assert!(
+            content.contains("(incl. followed tool calls: bash(command="),
+            "no annotation"
+        );
+        assert!(content.contains('…'), "long arg not truncated");
+        // 200-char cap + ellipsis + `command=` prefix + quotes + annotation wrapper.
+        assert!(content.len() < 400, "annotation too big: {content:?}");
     }
 }

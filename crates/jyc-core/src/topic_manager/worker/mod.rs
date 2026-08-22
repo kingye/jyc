@@ -479,7 +479,8 @@ pub(crate) async fn process_message(
         let signal_path = store_result.topic_path.join(".jyc").join("reply-sent.flag");
         if !signal_path.exists() {
             tracing::info!(
-                "Reply already delivered by background watcher, skipping post-SSE delivery"
+                "Reply already delivered (direct adapter delivery or background watcher), \
+                 skipping post-loop delivery"
             );
         } else {
             // Reply text comes from the SSE tool input (extracted by service layer).
@@ -535,7 +536,27 @@ pub(crate) async fn process_message(
                 tokio::fs::remove_file(&reply_md_path).await.ok();
                 topic_manager.metrics.reply_by_tool(topic_name);
             } else {
+                // The reply tool ran (reply_sent_by_tool=true) but its text
+                // was lost before delivery. Distinct from the text-only
+                // fallback below: the agent DID call the tool, so the generic
+                // "finished without calling jyc_reply_message" warning would
+                // mislead debugging. Tell the user what actually happened.
                 tracing::warn!("MCP tool signaled reply but no reply text available");
+                let warning = "⚠️ [The agent called the reply tool, but its reply \
+                    content was lost before delivery. Please ask again if you are \
+                    waiting for an answer.]";
+                if let Err(e) = outbound
+                    .send_reply(
+                        &message,
+                        warning,
+                        &store_result.topic_path,
+                        &store_result.message_dir,
+                        None,
+                    )
+                    .await
+                {
+                    tracing::warn!(error = %e, "Failed to deliver lost-reply warning");
+                }
             }
         }
     } else if let Some(ref text) = result.reply_text {

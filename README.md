@@ -136,12 +136,6 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 - **API:** REST API with openlark SDK + WebSocket for real-time updates
 - **Authentication:** App credentials with automatic token refresh
 
-### ✅ WeChat
-- **Status:** Implemented in v0.3.9
-- **Features:** Single-bot, single-topic messaging via OpenILink Bridge WebSocket
-- **Protocols:** WebSocket for inbound and outbound
-- **Attachments:** Images, files, voice, and video
-
 ### ✅ WeCom (企业微信)
 - **Status:** Implemented in v0.3.10
 - **Features:** Bot webhook inbound, external-contact API outbound with `corp_id` + `corp_secret` authentication

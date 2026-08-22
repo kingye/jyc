@@ -26,7 +26,7 @@ use jyc_types::WecomConfig;
 ///
 /// Supports:
 /// - `keywords`: match messages containing specific words (case-insensitive)
-/// - `sender`: match sender by exact address (shared with email/feishu/wechat)
+/// - `sender`: match sender by exact address (shared with email/feishu)
 ///
 /// All present rules use AND logic. Empty rules match all messages.
 /// Topic name is derived from `metadata["chat_id"]`: `{channel_name}_{sanitized_chat_id}`.

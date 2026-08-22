@@ -107,7 +107,6 @@ fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {
             feishu: None,
             gitee: None,
             github: None,
-            wechat: None,
             wecom: None,
             wecom_kf: None,
             wecom_bot: None,

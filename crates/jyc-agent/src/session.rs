@@ -974,9 +974,7 @@ fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, serde_json::Value
 /// `WINDOWED_TOOL_ARG_MAX`.
 fn render_tool_call(name: &str, args: &serde_json::Value) -> String {
     if let Some(map) = args.as_object() {
-        if map.is_empty() {
-            return format!("{name}()");
-        }
+        // Empty maps join to `name()` naturally; no empty-args special case.
         let parts = map
             .iter()
             .map(|(k, v)| format!("{k}={}", truncate_json_value(v)))

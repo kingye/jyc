@@ -820,76 +820,22 @@ async fn generate_context_summary(
 /// Render `raw_context` as a single plain-text transcript suitable for
 /// one-shot summarization. Lossy by design — used only by the summary call,
 /// never replayed to the main loop.
-fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
+///
+/// Built on [`extract_pairs`] so this view and the sliding-window view
+/// share ONE parsing/annotation implementation (previously two copies
+/// parsed the OpenAI/Anthropic wire formats independently and had already
+/// drifted apart). Each pair renders as `USER: …` / `ASSISTANT: …`; the
+/// assistant text already carries the folded tool-call annotations with
+/// truncated results.
+pub(crate) fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
     let mut out = String::with_capacity(raw_context.len() * 256);
     out.push_str("=== Conversation transcript ===\n\n");
-    for msg in raw_context {
-        let role = msg
-            .get("role")
-            .and_then(|r| r.as_str())
-            .unwrap_or("unknown");
-        match role {
-            "user" => {
-                let text = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                if !text.is_empty() {
-                    out.push_str("USER: ");
-                    out.push_str(text);
-                    out.push_str("\n\n");
-                }
-            }
-            "assistant" => {
-                out.push_str("ASSISTANT");
-                if let Some(text) = msg.get("content").and_then(|c| c.as_str())
-                    && !text.is_empty()
-                {
-                    out.push_str(": ");
-                    out.push_str(text);
-                }
-                if let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) {
-                    for block in blocks {
-                        let t = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                        match t {
-                            "text" => {
-                                if let Some(s) = block.get("text").and_then(|x| x.as_str()) {
-                                    out.push_str(": ");
-                                    out.push_str(s);
-                                }
-                            }
-                            "tool_use" => {
-                                let name =
-                                    block.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-                                out.push_str(&format!("\n  [tool_use: {}]", name));
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                if let Some(tcs) = msg.get("tool_calls").and_then(|t| t.as_array()) {
-                    for tc in tcs {
-                        let name = tc
-                            .get("function")
-                            .and_then(|f| f.get("name"))
-                            .and_then(|n| n.as_str())
-                            .unwrap_or("?");
-                        out.push_str(&format!("\n  [tool_call: {}]", name));
-                    }
-                }
-                out.push_str("\n\n");
-            }
-            "tool" => {
-                let text = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                let truncated = if text.len() > 500 {
-                    let cut = text.floor_char_boundary(500);
-                    format!("{}…", &text[..cut])
-                } else {
-                    text.to_string()
-                };
-                out.push_str("TOOL_RESULT: ");
-                out.push_str(&truncated);
-                out.push_str("\n\n");
-            }
-            _ => {}
-        }
+    for (user, assistant) in extract_pairs(raw_context) {
+        out.push_str("USER: ");
+        out.push_str(&extract_message_text(&user));
+        out.push_str("\n\nASSISTANT: ");
+        out.push_str(&extract_message_text(&assistant));
+        out.push_str("\n\n");
     }
     out
 }

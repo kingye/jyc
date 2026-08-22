@@ -14,7 +14,6 @@ use jyc_services::job_scheduler::JobScheduler;
 use std::collections::HashMap;
 
 use jyc_channels::websocket::inbound::WebsocketInboundAdapter;
-use jyc_channels::wecom::kf_client::KfApiClient;
 use jyc_channels::wecom::server::WecomWebhookServer;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
@@ -321,6 +320,42 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             continue;
         }
 
+        // wecom (group bot callback) is a pipe-only adapter: webhook
+        // registration on the shared WeCom server, pattern match, pipe
+        // retarget, reply forwarders. No TopicManager/agent/orchestrator.
+        if channel_type == "wecom" {
+            crate::cli::serve::channels::spawn_wecom_adapter(
+                channel_config,
+                channel_name.clone(),
+                inbound_attachment_config,
+                cancel.clone(),
+                &mut tasks,
+                config_for_spawn.clone(),
+                ws_broadcasts.clone(),
+                routers.clone(),
+                wecom_server.clone(),
+            )?;
+            continue;
+        }
+
+        // wecomkf (customer service) is a pipe-only adapter, same
+        // architecture as wecom. The sync cursor and msgid dedup stores
+        // are protocol state and stay (precedent: email IMAP cursor).
+        if channel_type == "wecomkf" {
+            crate::cli::serve::channels::spawn_wecomkf_adapter(
+                channel_config,
+                channel_name.clone(),
+                inbound_attachment_config,
+                cancel.clone(),
+                &mut tasks,
+                config_for_spawn.clone(),
+                ws_broadcasts.clone(),
+                routers.clone(),
+                wecom_server.clone(),
+            )?;
+            continue;
+        }
+
         // Workspace directory:
         //   - regular channels: <workdir>/<channel>/workspace/
         //   - synthesized "agents" channel: <data_home>/agents/
@@ -334,26 +369,13 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
 
         let patterns = channel_config.patterns.clone().unwrap_or_default();
 
-        let outbound_attachment_config = config_snapshot
-            .attachments
-            .as_ref()
-            .and_then(|att| att.outbound.clone());
-
-        let footer_enabled = channel_config.footer.as_ref().is_none_or(|f| f.enabled);
-
         // Create the outbound adapter based on channel type
-        // For wecomkf, we share the KfApiClient between inbound and outbound
-        let mut wecomkf_kf_client: Option<Arc<KfApiClient>> = None;
         let Some(outbound) = crate::cli::serve::channels::build_outbound_adapter(
             channel_type,
-            channel_config,
             channel_name,
             storage.clone(),
-            outbound_attachment_config,
-            footer_enabled,
             &workspace_dir,
             inspect_broadcast.clone(),
-            &mut wecomkf_kf_client,
             &mut ws_handler_for_channel,
             &mut websocket_handlers,
             ws_broadcasts.clone(),
@@ -462,7 +484,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         // the loop body so the skip is equivalent.
         let spawner = crate::cli::serve::channels::InboundSpawner {
             channel_type,
-            channel_config,
             channel_name: channel_name.clone(),
             workspace_dir: workspace_dir.clone(),
             inbound_attachment_config,
@@ -471,10 +492,8 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             cancel: cancel.clone(),
             cancel_child,
             tasks: &mut tasks,
-            wecomkf_kf_client: &mut wecomkf_kf_client,
             orchestrator: orchestrator.clone(),
             channel_info,
-            wecom_server: wecom_server.clone(),
             websocket_handlers: &mut websocket_handlers,
         };
         spawner.spawn().await?;

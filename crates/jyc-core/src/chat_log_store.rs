@@ -177,11 +177,10 @@ impl ChatLogStore {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
-        // Fallback: read from topic.json if metadata lacks user_name
+        // Fallback: read from topic.json if metadata lacks user_name.
+        // Channel-agnostic — any channel may persist a display name there.
         let user_name = user_name.or_else(|| {
-            if message.channel == "wecomkf"
-                && let Ok(Some(topic_json)) =
-                    crate::topic_json::TopicJson::read_sync(&self.topic_path)
+            if let Ok(Some(topic_json)) = crate::topic_json::TopicJson::read_sync(&self.topic_path)
                 && let Some(data) = topic_json.data
                 && let Some(name) = data.get("user_name").and_then(|v| v.as_str())
             {

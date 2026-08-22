@@ -4,6 +4,34 @@ All notable changes to JYC will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Sliding-window pairing is now turn-based.** `extract_pairs` used to
+  pair a user message with only the FIRST following assistant message,
+  silently dropping every later assistant message of a multi-step tool
+  turn — including the turn's final reply and the `jyc_reply_message`
+  call the user actually saw. All assistant messages between two user
+  messages now merge into one pair entry, each step keeping its text
+  plus folded tool-call annotation. Tool results are collected in a
+  single pass into a turn-scoped map, so a `tool_call_id` reused across
+  turns can no longer misattach its result. The whole annotation is
+  capped at 2000 bytes (calls past the budget fold into `…(N more
+  calls)`), and `jyc_reply_message`'s `message` parameter keeps up to
+  1000 chars (vs. the generic 200) since it is the text the user
+  actually saw. Failed tool results render as `→ [error] …`. (#628)
+- **Transcript rendering unified.** `render_raw_context_as_text` existed
+  in two drifted copies; there is now one implementation built on
+  `extract_pairs`, shared by the sliding-window view, session
+  compression, and cycle-boundary progress summaries. (#628)
+
+### Fixed
+
+- **Window fallback keeps the LAST user message, not the first.** When
+  no complete pair exists, the fallback used to resurrect the oldest
+  user message (usually ancient, unrelated history) in front of the
+  current turn; it now keeps the latest text-bearing user message and
+  skips Anthropic `tool_result` wrappers. (#628)
+
 ### Added
 
 - **Windowed context now shows tool results.** The sliding-window

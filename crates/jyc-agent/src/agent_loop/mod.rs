@@ -53,6 +53,20 @@ const REMINDER_WITH_TEXT: &str = "[System reminder] You produced final text but 
     step-by-step narration, call `jyc_reply_message` with your actual final \
     answer.";
 
+/// Marker of the sliding-window tool-call annotation format (see
+/// `session.rs::tool_call_annotation`). Models sometimes MIMIC this format
+/// in their reply text and believe they called a tool when they did not.
+const ANNOTATION_MARKER: &str = "(incl. followed tool calls:";
+
+/// Stronger variant of `REMINDER_WITH_TEXT` used when the final text itself
+/// contains the windowed tool-call annotation format — the tell-tale sign
+/// that the model mimicked a tool call as text instead of invoking it.
+const REMINDER_MIMICRY: &str = "[System reminder] Your last turn's text contains \
+    what looks like a tool-call summary ('(incl. followed tool calls: ...)'). That \
+    format is how HISTORY shows past tool calls — writing it as text does NOT call \
+    any tool, and your reply was NOT sent. Call `jyc_reply_message` now with your \
+    actual final answer.";
+
 /// Warning appended to a text-only fallback reply when the reply tool was
 /// available but never called even after the reminder. Visible to the end
 /// user so a degraded delivery is never mistaken for a normal reply.
@@ -652,6 +666,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
                 let reminder = if text_len == 0 {
                     REMINDER_NO_TEXT
+                } else if response.text.contains(ANNOTATION_MARKER) {
+                    REMINDER_MIMICRY
                 } else {
                     REMINDER_WITH_TEXT
                 };
@@ -1689,6 +1705,94 @@ mod reply_tool_tests {
             })
             .collect();
         assert!(no_reply.is_empty(), "no_reply is for empty text only");
+    }
+
+    /// A final text that mimics the windowed tool-call annotation format
+    /// must get the mimicry-specific reminder (not the generic one): the
+    /// model likely believes it already called the reply tool.
+    #[tokio::test]
+    async fn annotation_mimicry_gets_mimicry_reminder() {
+        let provider = ScriptedProvider {
+            rounds: vec![
+                vec![
+                    StreamEvent::TextDelta(
+                        "(incl. followed tool calls: jyc_reply_message(message=\"hi\") → \
+                         [SUCCESS] Reply sent (2 chars). STOP NOW)"
+                            .to_string(),
+                    ),
+                    StreamEvent::Done,
+                ],
+                vec![
+                    StreamEvent::ToolUseStart {
+                        id: "call_1".to_string(),
+                        name: "jyc_reply_message".to_string(),
+                    },
+                    StreamEvent::ToolInputDelta(
+                        r#"{"message":"real answer","stop_after":true}"#.to_string(),
+                    ),
+                    StreamEvent::ToolUseEnd,
+                    StreamEvent::Done,
+                ],
+            ],
+            calls: AtomicUsize::new(0),
+        };
+        let tmp = TempDir::new().unwrap();
+        let working_dir = tmp.path().to_path_buf();
+        let tools = registry_with_reply_tool();
+        let cancel = CancellationToken::new();
+
+        let result = run(super::AgentLoopConfig {
+            provider: &provider,
+            small_provider: None,
+            tools: &tools,
+            system_prompt: "test",
+            user_blocks: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+            }],
+            working_dir: &working_dir,
+            topic_path: &working_dir,
+            cancel: cancel.clone(),
+            topic_name: "mimicry",
+            event_bus: None,
+            prior_history: vec![],
+            prior_raw_context: vec![],
+            max_iterations: Some(5),
+            sse_read_timeout: std::time::Duration::from_secs(60),
+            additional_read_roots: vec![],
+            additional_write_roots: vec![],
+            pattern_inject_images: false,
+            outbound: None,
+            topic_managers: None,
+            current_channel: None,
+            outbounds: None,
+            context_window: None,
+            auto_reset_threshold: 0.95,
+            thinking_enabled: false,
+            pricing: None,
+            model_label: "scripted-test-mimicry",
+            context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+            reply_target: None,
+        })
+        .await
+        .expect("agent loop should run to completion");
+
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        assert!(result.reply_sent_by_tool);
+        // The injected reminder must be the mimicry variant, not the generic
+        // text-only one.
+        let reminders: Vec<_> = result
+            .raw_context
+            .iter()
+            .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+            .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+            .filter(|c| c.contains("[System reminder]"))
+            .collect();
+        assert_eq!(reminders.len(), 1);
+        assert!(
+            reminders[0].contains("does NOT call any tool"),
+            "expected REMINDER_MIMICRY, got: {}",
+            reminders[0]
+        );
     }
 
     /// A text-only finish that persists after the nudge must be delivered via

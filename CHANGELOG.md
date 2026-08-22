@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+### Changed
+
+- **wecom and wecomkf are pipe-only adapters.** Both channel types were
+  migrated to the pipe architecture (docs/core-hub-adapters.md): pattern
+  match → `pipe = { agent, topic }` retarget → hub routing, with reply
+  forwarders subscribed to the hub broadcast. Patterns must now set
+  `pipe`; matched messages without a pipe target are dropped with a
+  warning. wecomkf keeps its sync cursor / msgid dedup as protocol state;
+  KF replies remain text-only. The `user_name` topic.json fallback in
+  chat logs is now channel-agnostic (no `wecomkf` special-case in core)
+  (#635)
+
 ### Removed
 
 - **WeChat (OpenILink bridge) channel.** Removed entirely — it was the

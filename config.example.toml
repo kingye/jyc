@@ -904,9 +904,13 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # corp_id = "ww1234567890abcdef"
 # corp_secret = "${WECOM_CORP_SECRET}"
 #
-# # Define a catch-all pattern
+# # wecom is a pipe-only adapter: every pattern must name a pipe target.
+# # Messages are routed into the hub channel; replies are relayed back to
+# # the chat group. Useful ${msg.<key>} placeholders for pipe.topic:
+# #   ${msg.chat_id} — group chat id; ${msg.from_user} — sender user id
 # [[channels.my_wecom_bot.patterns]]
 # name = "wecom_bot"
+# pipe = { agent = "assistant", topic = "wecom_${msg.chat_id}" }
 #
 # [channels.my_wecom_bot.patterns.rules]
 # # keywords = ["help", "问题"]
@@ -951,9 +955,15 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # # Default: 300 (5 minutes). Set to 0 to disable age filtering.
 # # # max_message_age_seconds = 300
 # #
-# # # Define a catch-all pattern
+# # # wecomkf is a pipe-only adapter: every pattern must name a pipe
+# # # target. One topic per customer per KF account via placeholders:
+# # #   ${msg.open_kfid} — KF account; ${msg.external_userid} — customer;
+# # #   ${msg.user_name} — customer display name (when available)
+# # # Replies are relayed via kf/send_msg (text only; attachments are
+# # # not relayed).
 # # [[channels.my_wecomkf_bot.patterns]]
 # # name = "kf_bot"
+# # pipe = { agent = "assistant", topic = "${msg.open_kfid}_${msg.external_userid}" }
 # #
 # # [channels.my_wecomkf_bot.patterns.rules]
 # # # keywords = ["help", "support", "问题"]

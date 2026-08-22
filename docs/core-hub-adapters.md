@@ -1,8 +1,9 @@
 # Core / Hub / Adapters — The Pipe Architecture
 
-**Status:** Target architecture. Feishu, wecom_bot, email, github, and gitee are
-migrated. The remaining channels will follow; the end state is that JYC
-supports *only* this architecture.
+**Status:** Reached. Feishu, wecom_bot, email, github, gitee, wecom, and
+wecomkf are all migrated — the websocket channel is the only full channel
+(hub); every other channel type is a pipe-only adapter. WeChat was removed
+instead of migrated (no production use, no migration path).
 
 ## Context
 
@@ -17,7 +18,8 @@ responsibilities:
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ Adapters (outer) — protocol only                            │
-│   feishu · wecom_bot · email · github · gitee · wecom       │
+│   feishu · wecom_bot · email · github · gitee · wecom ·     │
+│   wecomkf                                                    │
 │   platform events ⇄ InboundMessage; relay replies back      │
 └───────────────────────────┬────────────────────────────────┘
                             │ pipe = { channel, topic, pattern }
@@ -390,8 +392,64 @@ GitHub) and unions the in-memory routed topics (type-filtered). The hub's
 skills are `gitee-init` (plain `git clone` — Gitee has no `gh` CLI),
 `gitee-planner`, and `gitee-developer`, all in `skills/`.
 
+## WeCom (group bot callback) — migration
+
+Retained:
+
+- `server.rs` / `crypto.rs` — the shared webhook server and AES helpers,
+  still shared with wecomkf.
+- `inbound.rs` — webhook XML → `InboundMessage` translation and the
+  `WecomMatcher` (pattern match only; no routing ownership).
+- `outbound.rs` — reduced to `WecomSender`, a stateless external-contact
+  API sender (text/markdown auto-detect).
+- The new `spawn_wecom_adapter` in `crates/jyc-cli/src/cli/serve/channels.rs`:
+  pipe retarget, an in-memory `topic → chat_id` relay map, and one reply
+  forwarder per pipe target channel.
+
+Removed: `WecomOutboundAdapter` (full-channel OutboundAdapter impl), the
+`wecom` arms in `build_outbound_adapter` / `InboundSpawner`.
+
+## WeCom KF (customer service) — migration
+
+Retained:
+
+- `server.rs` / `crypto.rs` — shared with wecom (above).
+- `kf_client.rs`, `kf_cursor.rs`, `kf_dedup.rs`, `token_cache.rs` — the
+  `sync_msg` pull protocol plus cursor/dedup state (protocol state, same
+  precedent as email's IMAP cursor and github's dedup store).
+- `kf_inbound.rs` — `kf_msg_or_event` notification → `sync_msg` pull →
+  `InboundMessage`, plus the `WecomKfMatcher`. Metadata keys available for
+  `pipe.topic` placeholders: `${msg.open_kfid}`, `${msg.external_userid}`,
+  `${msg.user_name}`.
+- `kf_outbound.rs` — reduced to `send_kf_text` (`kf/send_msg` with the
+  95001 rate-limit retry).
+- The new `spawn_wecomkf_adapter`: pipe retarget, an in-memory
+  `topic → (open_kfid, external_userid)` relay map, reply forwarders.
+
+Removed: `WecomKfOutboundAdapter`, the `wecomkf` arms in
+`build_outbound_adapter` / `InboundSpawner`, and the shared
+`wecomkf_kf_client` plumbing in `serve` (the adapter builds its own
+`KfApiClient`). The `channel == "wecomkf"` special-case in
+`chat_log_store` was generalized — topic.json `user_name` fallback now
+applies to every channel.
+
+Replies stay text-only: attachments were already ignored by the
+pre-migration outbound adapter, and the migration keeps that behavior.
+
+Known limitation (same as every other pipe adapter): the relay maps are
+in-memory, so after a daemon restart a reply to a topic whose last
+inbound message predates the restart is skipped until the user speaks
+again. The pre-migration KF adapter had a topic.json fallback for this;
+post-migration it is dropped deliberately — the hub topic still records
+`open_kfid`/`external_userid` in topic.json (written by the core
+worker), so a future fallback can be built without protocol changes.
+
+Startup credential checks (`verify_connectivity`) run as background
+tasks at spawn time and log errors, replacing the pre-migration
+fail-fast `connect()`.
+
 ## Migrating other channels
 
-To be documented per channel when migration starts (wecom).
-The feishu/wecom_bot/email/github/gitee cleanup serves as the checklist
-template: strip everything except protocol code + pipe wiring.
+None left — all channel types are pipe-only adapters now. New channel
+types must be born pipe-only: protocol code + matcher + pipe wiring, no
+TopicManager/agent/outbound-adapter registration.

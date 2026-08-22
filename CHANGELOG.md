@@ -2,6 +2,14 @@
 
 ### Added
 
+- **`note_window` option for the `sliding_window` context strategy.**
+  Within the window of N turns, only the most recent M turns carry
+  tool-call history notes; older turns become text-only. Unset (default)
+  keeps notes on all windowed turns — behavior unchanged. Settable via
+  `context_strategy = { mode = "sliding_window", window = 10,
+  note_window = 3 }` (pattern / `[agents]` / `[ai]`) or
+  `/context sliding [N] [M]` (#632, #633)
+
 - **New topical doc: `docs/context-management.md`.** Consolidates how
   the wire payload is shaped (context strategies, turn pairing, history
   notes with truncation budgets, `context_browse` for dropped turns,

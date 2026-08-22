@@ -129,7 +129,10 @@ pipe = { agent = "jin" }
 # Note: window counts TURNS, not tokens — a turn's folded tool-call
 # annotations make tool-heavy turns larger than chatty ones, so the
 # windowed part's token size is bounded per annotation but not per turn.
-# context_strategy = { mode = "sliding_window", window = 10 }
+# note_window: in sliding_window mode, only the most recent M windowed
+# turns carry tool-call history notes; older turns are text-only.
+# Default: unset = notes on all windowed turns. 0 = no notes at all.
+# context_strategy = { mode = "sliding_window", window = 10, note_window = 3 }
 
 # Custom filesystem path for the topic directory.
 # When set, the topic's working directory is this path instead of the
@@ -462,7 +465,10 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # file written by `/context`.
 # mode: "full" (default) | "sliding_window" (alias "sliding")
 # window: user+assistant turns to keep in sliding_window mode (default: 10)
-# context_strategy = { mode = "sliding_window", window = 10 }
+# note_window: in sliding_window mode, only the most recent M windowed
+# turns carry tool-call history notes; older turns are text-only.
+# Default: unset = notes on all windowed turns. 0 = no notes at all.
+# context_strategy = { mode = "sliding_window", window = 10, note_window = 3 }
 
 
 [ai.attachments]
@@ -1086,7 +1092,10 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # mode = "build"
 # reset_compression = { mode = "llm", keep_pairs = 3 }
 # auto_reset_threshold = 0.95
-# context_strategy = { mode = "sliding_window", window = 10 }
+# note_window: in sliding_window mode, only the most recent M windowed
+# turns carry tool-call history notes; older turns are text-only.
+# Default: unset = notes on all windowed turns. 0 = no notes at all.
+# context_strategy = { mode = "sliding_window", window = 10, note_window = 3 }
 # attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
 
 # --- Channel: WebSocket (LEGACY — deprecated) ---

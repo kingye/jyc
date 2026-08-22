@@ -202,7 +202,7 @@ Send commands at the top of an email body. These commands work across all channe
 | `/template update` | Re-apply template, overwrite existing files |
 | `/context` | Show the context management strategy (`full` / `sliding_window`) |
 | `/context full` | Send the full conversation context to the LLM (default) |
-| `/context sliding [N]` | Send the last N user/assistant turns from prior history plus the current turn verbatim (tool calls/results intact) to the LLM (default N=10); `.jyc/agent-context.json` keeps the full history |
+| `/context sliding [N] [M]` | Send the last N user/assistant turns from prior history plus the current turn verbatim (tool calls/results intact) to the LLM (default N=10); optional M limits tool-call history notes to the most recent M windowed turns (default: all N); `.jyc/agent-context.json` keeps the full history |
 | `/context reset` | Remove the runtime override and revert to the configured default |
 
 ### Custom Commands

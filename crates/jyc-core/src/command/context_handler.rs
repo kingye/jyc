@@ -11,10 +11,13 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 /// full raw context; this command only changes what is sent to the LLM.
 ///
 /// Usage:
-///   /context            Show current strategy
-///   /context full       Switch to full context (send everything)
-///   /context sliding [N]  Switch to sliding window (default N = 10 turns)
-///   /context reset      Remove runtime override (revert to configured default)
+///   /context              Show current strategy
+///   /context full         Switch to full context (send everything)
+///   /context sliding [N] [M]
+///     Switch to sliding window (default N = 10 turns). M is the optional
+///     note window: only the most recent M windowed turns carry tool-call
+///     history notes (default: all N).
+///   /context reset        Remove runtime override (revert to configured default)
 pub struct ContextCommandHandler;
 
 /// Upper bound on the `window` accepted from the user via `/context`. A
@@ -27,6 +30,10 @@ const MAX_WINDOW: usize = 200;
 struct ContextStrategyOverride {
     mode: ContextStrategy,
     window: usize,
+    /// Omitted from the JSON when unset so existing override files and
+    /// readers stay compatible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note_window: Option<usize>,
 }
 
 #[async_trait]
@@ -84,8 +91,14 @@ impl CommandHandler for ContextCommandHandler {
                 write_override(
                     &jyc_dir,
                     &override_path,
-                    ContextStrategy::Full,
-                    configured.window,
+                    ContextStrategyConfig {
+                        mode: ContextStrategy::Full,
+                        // Preserve the configured window/note_window so
+                        // toggling full → sliding later still has sensible
+                        // defaults.
+                        window: configured.window,
+                        note_window: configured.note_window,
+                    },
                 )
                 .await?;
                 Ok(CommandResult {
@@ -124,16 +137,46 @@ impl CommandHandler for ContextCommandHandler {
                     None
                 };
                 let window = window.unwrap_or(configured.window);
-                write_override(
-                    &jyc_dir,
-                    &override_path,
-                    ContextStrategy::SlidingWindow,
+                // Optional note window M (args[2]): only the most recent M
+                // windowed turns carry tool-call history notes. 0 is valid
+                // (text-only window); absent = keep configured default.
+                let note_window = if let Some(arg) = context.args.get(2) {
+                    match arg.parse::<usize>() {
+                        Ok(m) if m <= MAX_WINDOW => Some(Some(m)),
+                        Ok(_) => {
+                            return Ok(CommandResult {
+                                success: false,
+                                message: format!(
+                                    "/context: note window must be between 0 and {MAX_WINDOW}"
+                                ),
+                                error: None,
+                                append_body: None,
+                            });
+                        }
+                        Err(_) => {
+                            return Ok(CommandResult {
+                                success: false,
+                                message: format!(
+                                    "/context: invalid note window '{arg}', expected a non-negative integer"
+                                ),
+                                error: None,
+                                append_body: None,
+                            });
+                        }
+                    }
+                } else {
+                    None
+                };
+                let note_window = note_window.unwrap_or(configured.note_window);
+                let cfg = ContextStrategyConfig {
+                    mode: ContextStrategy::SlidingWindow,
                     window,
-                )
-                .await?;
+                    note_window,
+                };
+                write_override(&jyc_dir, &override_path, cfg.clone()).await?;
                 Ok(CommandResult {
                     success: true,
-                    message: format!("/context: switched to sliding_window (window={window})"),
+                    message: format!("/context: switched to {}", describe_strategy(&cfg)),
                     error: None,
                     append_body: None,
                 })
@@ -141,7 +184,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context full | sliding [N] | reset"
+                    "/context: unknown argument '{other}'. Use: /context full | sliding [N] [M] | reset"
                 ),
                 error: None,
                 append_body: None,
@@ -153,11 +196,14 @@ impl CommandHandler for ContextCommandHandler {
 async fn write_override(
     jyc_dir: &std::path::Path,
     path: &std::path::Path,
-    mode: ContextStrategy,
-    window: usize,
+    cfg: ContextStrategyConfig,
 ) -> Result<()> {
     tokio::fs::create_dir_all(jyc_dir).await?;
-    let payload = ContextStrategyOverride { mode, window };
+    let payload = ContextStrategyOverride {
+        mode: cfg.mode,
+        window: cfg.window,
+        note_window: cfg.note_window,
+    };
     let json = serde_json::to_string(&payload)?;
     tokio::fs::write(path, json).await?;
     Ok(())
@@ -166,7 +212,10 @@ async fn write_override(
 fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
     match cfg.mode {
         ContextStrategy::Full => "full".to_string(),
-        ContextStrategy::SlidingWindow => format!("sliding_window (window={})", cfg.window),
+        ContextStrategy::SlidingWindow => match cfg.note_window {
+            Some(m) => format!("sliding_window (window={}, note_window={m})", cfg.window),
+            None => format!("sliding_window (window={})", cfg.window),
+        },
     }
 }
 
@@ -256,6 +305,66 @@ mode = "agent"
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["mode"], "sliding_window");
         assert_eq!(v["window"], 7);
+    }
+
+    #[tokio::test]
+    async fn test_sliding_with_note_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["sliding".into(), "10".into(), "3".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(result.message.contains("window=10"));
+        assert!(result.message.contains("note_window=3"));
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["window"], 10);
+        assert_eq!(v["note_window"], 3);
+    }
+
+    #[tokio::test]
+    async fn test_sliding_note_window_zero_allowed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["sliding".into(), "10".into(), "0".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["note_window"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_sliding_note_window_invalid_arg() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["sliding".into(), "10".into(), "abc".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(!result.success);
+        assert!(result.message.contains("invalid note window"));
+    }
+
+    #[tokio::test]
+    async fn test_sliding_without_note_window_omits_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["sliding".into(), "7".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        // Backward-compatible JSON: note_window absent when unset.
+        assert!(v.get("note_window").is_none());
     }
 
     #[tokio::test]

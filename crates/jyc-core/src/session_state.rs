@@ -1037,6 +1037,7 @@ mode = "agent"
         let slide = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 4,
+            note_window: None,
         };
         let app = config_with_strategies(vec![("a", None), ("b", Some(slide.clone()))], None);
         let resolved = resolve_context_strategy(&app, "c", Some("b"));
@@ -1049,6 +1050,7 @@ mode = "agent"
         let slide = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 6,
+            note_window: None,
         };
         let app = config_with_strategies(vec![("a", Some(slide.clone()))], None);
         let resolved = resolve_context_strategy(&app, "c", None);
@@ -1061,6 +1063,7 @@ mode = "agent"
         let slide = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 8,
+            note_window: None,
         };
         let app = config_with_strategies(vec![], Some(slide.clone()));
         let resolved = resolve_context_strategy(&app, "c", Some("a"));
@@ -1090,6 +1093,24 @@ mode = "agent"
         let cfg = read_context_strategy_override(tmp.path()).await.unwrap();
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 3);
+        // Old override files without note_window still parse.
+        assert_eq!(cfg.note_window, None);
+    }
+
+    #[tokio::test]
+    async fn read_context_strategy_override_with_note_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join(CONTEXT_STRATEGY_FILE),
+            r#"{"mode":"sliding_window","window":5,"note_window":2}"#,
+        )
+        .await
+        .unwrap();
+        let cfg = read_context_strategy_override(tmp.path()).await.unwrap();
+        assert_eq!(cfg.window, 5);
+        assert_eq!(cfg.note_window, Some(2));
     }
 
     #[tokio::test]

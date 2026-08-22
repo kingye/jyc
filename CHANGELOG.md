@@ -2,6 +2,12 @@
 
 ### Added
 
+- **New topical doc: `docs/context-management.md`.** Consolidates how
+  the wire payload is shaped (context strategies, turn pairing, history
+  notes with truncation budgets, `context_browse` for dropped turns,
+  token safety nets, configuration resolution chain) into one reference;
+  DESIGN.md keeps the design decision and links to it. (#631)
+
 - **`jyc_reply_message` `silent: true` parameter.** Closes the turn
   WITHOUT delivering anything (no adapter call, no signal files, no
   fallback text) while still counting as reply-handled — the deterministic

@@ -98,6 +98,7 @@ impl Tool for ContextBrowseTool {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::Path;
 
     /// Build a transcript of `n` user+assistant pairs (u1/a1 … un/an).
     fn pairs(n: usize) -> Vec<Value> {
@@ -109,21 +110,24 @@ mod tests {
         v
     }
 
-    /// A ToolContext with the given raw_context snapshot. The working dir
-    /// is leaked for a 'static Path (test-only; tool never uses it here).
-    fn tool_ctx(raw: Vec<Value>) -> ToolContext<'static> {
-        let dir = tempfile::tempdir().expect("create working dir");
-        let path: &'static std::path::Path = Box::leak(dir.path().to_path_buf().into_boxed_path());
-        let mut ctx = ToolContext::new(path);
+    /// A ToolContext with the given raw_context snapshot, borrowing the
+    /// test's tempdir as the working dir (dropped when the test ends, so
+    /// nothing leaks). `context_browse` never touches the working dir.
+    fn tool_ctx(working_dir: &Path, raw: Vec<Value>) -> ToolContext<'_> {
+        let mut ctx = ToolContext::new(working_dir);
         ctx.raw_context = raw;
         ctx
     }
 
     #[tokio::test]
     async fn offset_zero_shows_newest_page() {
+        let dir = tempfile::tempdir().expect("create working dir");
         let tool = ContextBrowseTool;
         let out = tool
-            .execute(json!({"offset": 0, "limit": 10}), &tool_ctx(pairs(25)))
+            .execute(
+                json!({"offset": 0, "limit": 10}),
+                &tool_ctx(dir.path(), pairs(25)),
+            )
             .await
             .unwrap();
         let text = out.content;
@@ -137,9 +141,10 @@ mod tests {
     #[tokio::test]
     async fn offset_steps_toward_older_pairs() {
         // 25 pairs, offset 10 → skip newest 10 (16–25) → show 6–15.
+        let dir = tempfile::tempdir().expect("create working dir");
         let tool = ContextBrowseTool;
         let out = tool
-            .execute(json!({"offset": 10}), &tool_ctx(pairs(25)))
+            .execute(json!({"offset": 10}), &tool_ctx(dir.path(), pairs(25)))
             .await
             .unwrap();
         let text = out.content;
@@ -150,9 +155,10 @@ mod tests {
 
     #[tokio::test]
     async fn offset_beyond_total_returns_empty_page() {
+        let dir = tempfile::tempdir().expect("create working dir");
         let tool = ContextBrowseTool;
         let out = tool
-            .execute(json!({"offset": 30}), &tool_ctx(pairs(25)))
+            .execute(json!({"offset": 30}), &tool_ctx(dir.path(), pairs(25)))
             .await
             .unwrap();
         assert!(
@@ -166,9 +172,10 @@ mod tests {
 
     #[tokio::test]
     async fn empty_transcript_returns_empty_page() {
+        let dir = tempfile::tempdir().expect("create working dir");
         let tool = ContextBrowseTool;
         let out = tool
-            .execute(json!({}), &tool_ctx(Vec::new()))
+            .execute(json!({}), &tool_ctx(dir.path(), Vec::new()))
             .await
             .unwrap();
         assert!(out.content.contains("0 pairs"), "{}", out.content);
@@ -178,13 +185,20 @@ mod tests {
     /// echoing an unbounded page back into the transcript.
     #[tokio::test]
     async fn limit_defaults_and_clamps() {
+        let dir = tempfile::tempdir().expect("create working dir");
         let tool = ContextBrowseTool;
         // Defaults: limit 10 → newest 10 of 25 = pairs 16–25.
-        let out = tool.execute(json!({}), &tool_ctx(pairs(25))).await.unwrap();
+        let out = tool
+            .execute(json!({}), &tool_ctx(dir.path(), pairs(25)))
+            .await
+            .unwrap();
         assert!(out.content.contains("pairs 16-25 of 25"), "{}", out.content);
         // Huge limit is capped at 50, which covers all 25.
         let out = tool
-            .execute(json!({"offset": 0, "limit": 999}), &tool_ctx(pairs(25)))
+            .execute(
+                json!({"offset": 0, "limit": 999}),
+                &tool_ctx(dir.path(), pairs(25)),
+            )
             .await
             .unwrap();
         assert!(out.content.contains("pairs 1-25 of 25"), "{}", out.content);
@@ -200,8 +214,12 @@ mod tests {
                 {"id": "1", "type": "function", "function": {"name": "bash", "arguments": r#"{"command": "ls"}"#}}
             ]}),
         ];
+        let dir = tempfile::tempdir().expect("create working dir");
         let tool = ContextBrowseTool;
-        let out = tool.execute(json!({}), &tool_ctx(raw)).await.unwrap();
+        let out = tool
+            .execute(json!({}), &tool_ctx(dir.path(), raw))
+            .await
+            .unwrap();
         assert!(
             out.content.contains(
                 r#"running

@@ -1021,9 +1021,9 @@ fn tool_call_annotation(msg: &serde_json::Value) -> Option<String> {
 /// messages to only keep role + content (strip reasoning_content,
 /// tool_calls). Bare tool calls an assistant issued are folded into the
 /// text as a `(incl. followed tool calls: …)` annotation (parameters kept,
-/// over-long values truncated) so sliding-window output retains which
-/// tools ran. Returns the last `keep_pairs` pairs flattened into a single
-/// Vec.
+/// over-long values truncated); a tool-call-only turn (empty text) is kept
+/// annotated alone. Returns the last `keep_pairs` pairs flattened into a
+/// single Vec.
 ///
 /// Shared between session heuristic compaction and mid-loop compression.
 pub(crate) fn extract_user_assistant_pairs(
@@ -1048,16 +1048,18 @@ pub(crate) fn extract_user_assistant_pairs(
             }
             "assistant" => {
                 let text = extract_message_text(msg);
-                if !text.is_empty()
+                // Keep only role + content, folding bare tool calls into
+                // the text so the windowed part shows which tools ran. A
+                // tool-call-only turn (empty text) is kept too, annotated
+                // alone, instead of being dropped.
+                let content = match tool_call_annotation(msg) {
+                    Some(annotation) if text.is_empty() => annotation,
+                    Some(annotation) => format!("{text}\n{annotation}"),
+                    None => text,
+                };
+                if !content.is_empty()
                     && let Some(user_msg) = last_user.take()
                 {
-                    // Keep only role + content (strip reasoning_content,
-                    // tool_calls), but fold bare tool calls into the text
-                    // so the windowed part still shows which tools ran.
-                    let content = match tool_call_annotation(msg) {
-                        Some(annotation) => format!("{text}\n{annotation}"),
-                        None => text,
-                    };
                     let clean_assistant = serde_json::json!({
                         "role": "assistant",
                         "content": content,
@@ -1304,6 +1306,25 @@ mod tests {
             pairs[1],
             json!({"role": "assistant",
                 "content": "running\n(incl. followed tool calls: bash(command=\"ls -la\", timeout=30), read(path=\"a.txt\"))"})
+        );
+    }
+
+    /// Tool-call-only assistant turns (no text) are kept, annotated alone,
+    /// rather than dropped.
+    #[test]
+    fn extract_pairs_keeps_tool_call_only_assistant() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": r#"{"command": "ls -la"}"#}}
+            ]}),
+        ];
+        let pairs = super::extract_user_assistant_pairs(&ctx, 10);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(
+            pairs[1],
+            json!({"role": "assistant",
+                "content": "(incl. followed tool calls: bash(command=\"ls -la\"))"})
         );
     }
 

@@ -110,7 +110,71 @@ impl Tool for ReplyMessageTool {
             vec![]
         };
 
-        // Write reply.md for background delivery watcher
+        // Direct delivery: when the runtime injected an outbound adapter and
+        // a reply target, deliver synchronously so the tool result reflects
+        // the REAL delivery outcome (the file relay reports success before
+        // anything is sent). On failure, fall through to the file relay so
+        // the worker retries post-loop — no double delivery, since a failed
+        // direct attempt sent nothing.
+        let mut direct_error: Option<String> = None;
+        if let (Some(outbound), Some(target)) = (&ctx.outbound, &ctx.reply_target) {
+            let atts: Vec<OutboundAttachment> = validated_attachments
+                .iter()
+                .map(|f| OutboundAttachment {
+                    filename: f.clone(),
+                    path: topic_path.join(f),
+                    content_type: detect_content_type(f),
+                })
+                .collect();
+            let atts_ref = if atts.is_empty() {
+                None
+            } else {
+                Some(atts.as_slice())
+            };
+            match outbound
+                .send_reply(
+                    &target.original,
+                    message,
+                    topic_path,
+                    &target.message_dir,
+                    atts_ref,
+                )
+                .await
+            {
+                Ok(result) => {
+                    tracing::info!(
+                        message_len = message.len(),
+                        message_id = %result.message_id,
+                        attachments = validated_attachments.len(),
+                        "Reply delivered synchronously via outbound adapter"
+                    );
+                    let output = if stop_after {
+                        ToolOutput::success(format!(
+                            "Reply delivered ({} chars, message_id: {}). STOP NOW — do not call any more tools.",
+                            message.len(),
+                            result.message_id
+                        ))
+                    } else {
+                        ToolOutput::success_continue(format!(
+                            "Progress update delivered ({} chars). Continue working.",
+                            message.len()
+                        ))
+                    };
+                    return Ok(output.mark_delivered());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Direct reply delivery failed, falling back to file relay"
+                    );
+                    direct_error = Some(e.to_string());
+                }
+            }
+        }
+
+        // File relay: write reply.md for the background delivery watcher /
+        // post-loop worker delivery. Used when no outbound adapter/target is
+        // available (tests, sub-agents) or direct delivery just failed.
         tokio::fs::write(jyc_dir.join("reply.md"), message)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to write reply.md: {e}"))?;
@@ -135,15 +199,24 @@ impl Tool for ReplyMessageTool {
             "Reply signal written"
         );
 
+        // Report the truth: when direct delivery just failed, the reply is
+        // QUEUED for the worker, not yet sent — and the model must not retry
+        // (the worker delivers exactly once from the files above).
+        let queued_note = match &direct_error {
+            Some(e) => format!(" (direct delivery failed: {e}; queued for monitor delivery)"),
+            None => String::new(),
+        };
         if stop_after {
             Ok(ToolOutput::success(format!(
-                "Reply sent ({} chars). STOP NOW — do not call any more tools.",
-                message.len()
+                "Reply sent ({} chars){}. STOP NOW — do not call any more tools.",
+                message.len(),
+                queued_note
             )))
         } else {
             Ok(ToolOutput::success_continue(format!(
-                "Progress update sent ({} chars). Continue working.",
-                message.len()
+                "Progress update sent ({} chars){}. Continue working.",
+                message.len(),
+                queued_note
             )))
         }
     }

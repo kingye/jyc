@@ -146,7 +146,8 @@ User sends message (any channel) → Pattern Match → Topic Queue → Worker (A
 │     b. Collect response (text + tool_calls)                              │
 │     c. If tool_calls → execute tools → loop back                         │
 │     d. If text only → done                                               │
-│     e. If reply_message tool called → signal file written → done         │
+│     e. If reply_message tool called → reply delivered synchronously      │
+│        via the channel's outbound adapter (file relay as fallback) → done│
 │  7. Return AgentResult                                                   │
 │                                                                          │
 │  Advantages over the external-server agent mode:                                          │
@@ -178,7 +179,7 @@ User sends message (any channel) → Pattern Match → Topic Queue → Worker (A
 5. **Topic Event Bus** — Topic-isolated event bus for publishing and subscribing to processing events (SSE → TopicEvent conversion)
 6. **Topic Event System** — Per-topic isolated event bus for progress events (ProcessingStarted/Progress/Completed, ToolStarted/Completed, Thinking, SessionStatus). Used by the inspect dashboard for realtime monitoring.
 7. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage; supports multimodal first turns with ContentBlock::Image
-8. **MCP Reply Tool** — `reply_message` tool via `rmcp`, appends reply to chat log and writes signal file. Monitor reads from chat log and sends via pre-warmed outbound adapter
+8. **MCP Reply Tool** — `reply_message` in-process bridge. Delivers synchronously via the channel's pre-warmed outbound adapter (real delivery result returned to the model); on failure or when no adapter/target is injected, falls back to writing `reply.md` + signal file for the watcher/monitor to deliver
 9. **MCP SendMessage Tool** — `jyc_send_message` tool via `rmcp`, sends proactive out-of-topic messages to any recipient via the pre-warmed outbound adapter. Used for alerts and notifications only, not for in-topic replies
 10. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[[mcps]]` in `config.toml`
 11. **MCP Question Tool** — `ask_user` tool via `rmcp`, sends question to user and waits for reply (up to 5 minutes)

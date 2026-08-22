@@ -126,6 +126,7 @@ mod integration_tests {
             pricing: None,
             model_label: "",
             context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+            reply_target: None,
         })
         .await
         .unwrap();

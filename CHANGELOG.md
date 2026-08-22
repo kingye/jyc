@@ -6,6 +6,15 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **`jyc_reply_message` now delivers synchronously.** The reply bridge tool
+  delivers through the channel's outbound adapter immediately and returns
+  the REAL delivery result (with `message_id`) to the model — previously it
+  wrote `reply.md` and reported "Reply sent" before anything was delivered,
+  leaving the model with a fake success receipt when the websocket
+  broadcast or the 2s-polling watcher lost the message. On direct-delivery
+  failure the tool falls back to the file relay and says "queued" instead
+  of claiming success (#629)
+
 - **Sliding-window pairing is now turn-based.** `extract_pairs` used to
   pair a user message with only the FIRST following assistant message,
   silently dropping every later assistant message of a multi-step tool
@@ -25,6 +34,20 @@ All notable changes to JYC will be documented in this file.
   compression, and cycle-boundary progress summaries. (#628)
 
 ### Fixed
+
+- **Annotation mimicry guard.** The sliding window's
+  `(incl. followed tool calls: … → …)` history annotations were sometimes
+  mimicked by the model as reply text, making it believe it had replied
+  when no tool call happened; the narration was then delivered via the
+  fallback path. The system prompt now states the format is a read-only
+  history summary, and the reply-tool guard injects a mimicry-specific
+  reminder ("your reply was NOT sent") when the final text contains the
+  annotation marker (#629)
+- **Lost tool replies are now user-visible.** When the reply tool signaled
+  a reply but its content was lost before delivery, the user saw nothing
+  (only a log warning); a distinct warning message is now delivered instead
+  of being conflated with the "finished without calling jyc_reply_message"
+  fallback case (#629)
 
 - **Window fallback keeps the LAST user message, not the first.** When
   no complete pair exists, the fallback used to resurrect the oldest

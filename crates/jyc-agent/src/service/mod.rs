@@ -504,6 +504,10 @@ impl AgentService for JycAgentService {
             pricing,
             model_label: model_str,
             context_strategy,
+            reply_target: Some(crate::tools::ReplyTarget {
+                original: message.clone(),
+                message_dir: message_dir.to_string(),
+            }),
         })
         .await?;
 

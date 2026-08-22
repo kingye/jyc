@@ -16,7 +16,23 @@ use std::sync::{Arc, Mutex};
 
 use crate::types::{ImageSource, ToolDefinition};
 use jyc_core::topic_manager::TopicManager;
+use jyc_types::InboundMessage;
 use jyc_types::channel::OutboundAdapter;
+
+/// Everything `jyc_reply_message` needs to deliver a reply synchronously
+/// through the channel's outbound adapter, bypassing the
+/// `reply.md`/`reply-sent.flag` file relay. Injected by the agent loop from
+/// the message currently being processed; `None` in contexts without a live
+/// inbound message (unit tests, sub-agents), where the tool falls back to
+/// the file relay.
+#[derive(Debug, Clone)]
+pub struct ReplyTarget {
+    /// The inbound message being replied to.
+    pub original: InboundMessage,
+    /// Message directory name, used by the outbound adapter for chat-log
+    /// storage.
+    pub message_dir: String,
+}
 
 /// Shared topic managers map keyed by channel name.
 pub type TopicManagersMap = Arc<tokio::sync::Mutex<HashMap<String, Arc<TopicManager>>>>;
@@ -84,6 +100,10 @@ pub struct ToolContext<'a> {
     /// the persisted `agent-context.json` goes stale mid-loop. Empty when
     /// not injected (unit tests, synthetic progress replies).
     pub raw_context: Vec<serde_json::Value>,
+    /// Synchronous delivery target for `jyc_reply_message`. When present
+    /// together with `outbound`, the reply tool delivers through the channel
+    /// adapter immediately and its result reflects the real delivery outcome.
+    pub reply_target: Option<ReplyTarget>,
 }
 
 /// Whether `canonical` lies inside the system temp dir `tmp`.
@@ -120,6 +140,7 @@ impl<'a> ToolContext<'a> {
             current_topic: None,
             outbounds: None,
             raw_context: Vec::new(),
+            reply_target: None,
         }
     }
 
@@ -137,6 +158,7 @@ impl<'a> ToolContext<'a> {
             current_topic: None,
             outbounds: None,
             raw_context: Vec::new(),
+            reply_target: None,
         }
     }
     /// Drain and return any pending image sources accumulated during the
@@ -285,6 +307,12 @@ pub struct ToolOutput {
     /// agent to continue (e.g. progress-update replies with `stop_after:
     /// false`) set this to `false` via [`ToolOutput::success_continue`].
     pub stop_after: bool,
+    /// Set by `jyc_reply_message` when the reply was delivered synchronously
+    /// through the channel's outbound adapter (no file relay involved). The
+    /// agent loop uses this to publish the `ReplySent` dashboard event
+    /// exactly once — the watcher/worker only publish it for file-relay
+    /// deliveries.
+    pub delivered: bool,
 }
 
 impl ToolOutput {
@@ -295,6 +323,7 @@ impl ToolOutput {
             content: content.into(),
             is_error: false,
             stop_after: true,
+            delivered: false,
         }
     }
 
@@ -306,6 +335,7 @@ impl ToolOutput {
             content: content.into(),
             is_error: false,
             stop_after: false,
+            delivered: false,
         }
     }
 
@@ -315,7 +345,14 @@ impl ToolOutput {
             content: content.into(),
             is_error: true,
             stop_after: true,
+            delivered: false,
         }
+    }
+
+    /// Mark this output as synchronously delivered (see [`ToolOutput::delivered`]).
+    pub fn mark_delivered(mut self) -> Self {
+        self.delivered = true;
+        self
     }
 }
 

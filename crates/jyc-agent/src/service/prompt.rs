@@ -107,6 +107,20 @@ impl JycAgentService {
              afterward. Use this when you have substantive progress to report.\n\n",
         );
 
+        // History format guardrail: the sliding window renders past tool
+        // calls as text annotations. Models have been observed MIMICKING
+        // this format in their reply text ("(incl. followed tool calls:
+        // jyc_reply_message(...) → Reply sent)") and believing they replied
+        // — while no tool call actually happened and the narration was
+        // delivered as the fallback reply. State the contract explicitly.
+        prompt.push_str(
+            "## History Format\n\
+             Past turns in your context may show tool calls rendered as text: \
+             `(incl. followed tool calls: name(args) → result)`. These are READ-ONLY \
+             summaries of what already happened. Writing this format as your message \
+             text does NOT invoke any tool — only real tool calls do.\n\n",
+        );
+
         // Chat history access instructions
         prompt.push_str(
             "## Chat History\n\

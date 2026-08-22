@@ -30,7 +30,10 @@ impl Tool for ReplyMessageTool {
          The reply will be delivered by the monitor process. \
          Use `stop_after: false` for progress/status updates where you intend to \
          continue working. Use `stop_after: true` (or omit it) for the final reply \
-         — after a successful reply with stop_after=true, STOP immediately."
+         — after a successful reply with stop_after=true, STOP immediately. \
+         Use `silent: true` to close the turn WITHOUT sending anything — e.g. when \
+         a system reminder asks you to deliver but your reply was already sent, or \
+         the turn only produced internal narration that must not reach the user."
     }
 
     fn input_schema(&self) -> Value {
@@ -39,7 +42,7 @@ impl Tool for ReplyMessageTool {
             "properties": {
                 "message": {
                     "type": "string",
-                    "description": "The reply text to send"
+                    "description": "The reply text to send (omit or leave empty when silent)"
                 },
                 "attachments": {
                     "type": "array",
@@ -51,29 +54,59 @@ impl Tool for ReplyMessageTool {
                     "description": "Whether to stop working after this reply. Set to false for \
                      progress/status updates where you will continue working. \
                      Default: true (final reply, stop immediately)."
+                },
+                "silent": {
+                    "type": "boolean",
+                    "description": "Close the turn WITHOUT delivering anything (no reply, no \
+                     fallback text). Use when nothing needs to reach the user — e.g. your \
+                     reply was already delivered, or a reminder fired but there is nothing \
+                     to say. Default: false."
                 }
-            },
-            "required": ["message"]
+            }
         })
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
-        let message = input
-            .get("message")
-            .and_then(|m| m.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'message' parameter"))?;
+        let silent = input
+            .get("silent")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let stop_after = input
             .get("stop_after")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
+        // Silent close: mark the reply as handled without delivering or
+        // writing signal files. The agent loop treats a successful reply
+        // tool call as reply-handled, so no fallback text is delivered —
+        // this is the deterministic "nothing to send" escape.
+        if silent {
+            let text = if stop_after {
+                "Turn closed silently (no reply sent). STOP NOW — do not call any more tools."
+            } else {
+                "Silent reply recorded (nothing sent). Continue working."
+            };
+            return Ok(if stop_after {
+                ToolOutput::success(text)
+            } else {
+                ToolOutput::success_continue(text)
+            });
+        }
+
+        let message = input
+            .get("message")
+            .and_then(|m| m.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'message' parameter"))?;
+
         let attachments: Option<Vec<String>> = input
             .get("attachments")
             .and_then(|a| serde_json::from_value(a.clone()).ok());
 
         if message.trim().is_empty() {
-            return Ok(ToolOutput::error("Message cannot be empty"));
+            return Ok(ToolOutput::error(
+                "Message cannot be empty (or pass silent: true to close the turn without sending)",
+            ));
         }
 
         let topic_path = ctx.working_dir;

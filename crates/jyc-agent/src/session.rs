@@ -1015,19 +1015,21 @@ fn tool_call_annotation(msg: &serde_json::Value) -> Option<String> {
     ))
 }
 
-/// Extract user+assistant text pairs from raw context, cleaning assistant
-/// messages to only keep role + content (strip reasoning_content,
+/// Extract **all** user+assistant text pairs from raw context, cleaning
+/// assistant messages to only keep role + content (strip reasoning_content,
 /// tool_calls). Bare tool calls an assistant issued are folded into the
 /// text as a `(incl. followed tool calls: …)` annotation (parameters kept,
 /// over-long values truncated); a tool-call-only turn (empty text) is kept
-/// annotated alone. Returns the last `keep_pairs` pairs flattened into a
-/// single Vec.
+/// annotated alone. Returns pairs in oldest→newest order.
 ///
-/// Shared between session heuristic compaction and mid-loop compression.
-pub(crate) fn extract_user_assistant_pairs(
+/// Unpaired trailing user messages (no following assistant reply yet) are
+/// dropped, mirroring the windowed-view semantics — a completed turn only.
+///
+/// Shared by session heuristic compaction, mid-loop compression, and the
+/// `context_browse` built-in tool.
+pub(crate) fn extract_pairs(
     raw_context: &[serde_json::Value],
-    keep_pairs: usize,
-) -> Vec<serde_json::Value> {
+) -> Vec<(serde_json::Value, serde_json::Value)> {
     let mut pairs: Vec<(serde_json::Value, serde_json::Value)> = Vec::new();
     let mut last_user: Option<serde_json::Value> = None;
 
@@ -1069,8 +1071,20 @@ pub(crate) fn extract_user_assistant_pairs(
         }
     }
 
+    pairs
+}
+
+/// Extract user+assistant text pairs from raw context and keep only the
+/// last `keep_pairs` of them, flattened into a single Vec. Pair extraction
+/// semantics are defined in [`extract_pairs`].
+///
+/// Shared between session heuristic compaction and mid-loop compression.
+pub(crate) fn extract_user_assistant_pairs(
+    raw_context: &[serde_json::Value],
+    keep_pairs: usize,
+) -> Vec<serde_json::Value> {
     // Keep only the last N pairs
-    let summary: Vec<serde_json::Value> = pairs
+    let summary: Vec<serde_json::Value> = extract_pairs(raw_context)
         .into_iter()
         .rev()
         .take(keep_pairs)
@@ -1346,5 +1360,38 @@ mod tests {
         assert!(content.contains('…'), "long arg not truncated");
         // 200-char cap + ellipsis + `command=` prefix + quotes + annotation wrapper.
         assert!(content.len() < 400, "annotation too big: {content:?}");
+    }
+
+    /// `extract_pairs` returns ALL completed pairs in oldest→newest order
+    /// (no keep-pairs truncation), skipping tool/result messages and
+    /// dropping an unpaired trailing user turn.
+    #[test]
+    fn extract_pairs_returns_all_pairs_in_order() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "out"}),
+            json!({"role": "user", "content": "u3"}),
+            json!({"role": "assistant", "content": "a3"}),
+            // Unpaired trailing user: no assistant reply follows.
+            json!({"role": "user", "content": "u4"}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 3);
+        assert_eq!(pairs[0].0["content"], "u1");
+        assert_eq!(pairs[0].1["content"], "a1");
+        assert_eq!(pairs[1].0["content"], "u2");
+        assert_eq!(
+            pairs[1].1["content"],
+            "a2\n(incl. followed tool calls: bash())"
+        );
+        assert_eq!(pairs[2].0["content"], "u3");
+        assert_eq!(pairs[2].1["content"], "a3");
+        // u4 must NOT be paired.
+        assert!(pairs.iter().all(|(u, _)| u["content"] != "u4"));
     }
 }

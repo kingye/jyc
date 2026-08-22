@@ -171,6 +171,28 @@ Load an image for analysis. Dual-mode operation:
 
 ---
 
+### `context_browse`
+
+Page through the agent's in-memory conversation transcript (user/assistant text pairs), including turns that fell out of the model's sliding context window.
+
+**Parameters:**
+- `offset` (integer, optional, default 0): Pairs to skip from the newest end. 0 = most recent pairs; larger values page toward older pairs.
+- `limit` (integer, optional, default 10): Max pairs to return (capped at 50).
+
+**Behavior:**
+- Pair numbers count from the oldest pair (1 = first); the returned page is always oldest→newest.
+- The transcript snapshot is taken once per tool batch, before tool results are appended — a browse never sees results from tools called in the same batch.
+- Returns a header (`=== Transcript pairs X-Y of N ===`) followed by numbered `USER:` / `ASSISTANT:` lines.
+
+**Security:** Read-only, in-memory. No filesystem access; no boundary check needed.
+
+**Example:**
+```json
+{"offset": 20, "limit": 10}
+```
+
+---
+
 ## MCP Bridge Tools
 
 These are JYC-specific tools implemented as in-process bridges (not external MCP subprocesses). They are always registered unless excluded via `disabled_tools`.
@@ -394,6 +416,7 @@ disabled_mcp_servers = ["*"]  # Disables all external MCP servers
 | `grep` | `check_path_boundary()` only when explicit `path` provided | Default working_dir is trusted |
 | `webfetch` | None (network tool) | HTTPS only; 30s default timeout |
 | `read_image` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | URL mode requires http(s) |
+| `context_browse` | None (in-memory transcript only) | Read-only; never touches the filesystem |
 | `jyc_reply_message` | Attachment path validation | Must be within topic directory |
 | `jyc_send_message` | Recipient format validation | Channel-specific format check |
 | `jyc_send_to_topic` | Attachment path validation | Must be within topic directory; target channel must exist |
@@ -477,7 +500,7 @@ HTTP link served by the inspect server.
 
 ```
 build_tool_registry()
-  ├─ Register built-in tools: bash, read, write, edit, glob, grep, webfetch
+  ├─ Register built-in tools: bash, read, write, edit, glob, grep, webfetch, context_browse
   ├─ Register read_image (when model supports images OR vision_client configured)
   ├─ Register jyc_publish_file (base URL from [inspect] base_url)
   ├─ Register MCP bridge tools: jyc_reply_message, jyc_send_message

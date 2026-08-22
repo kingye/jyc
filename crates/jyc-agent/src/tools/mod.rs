@@ -77,6 +77,13 @@ pub struct ToolContext<'a> {
     /// `None` when running in contexts without cross-channel support
     /// (e.g. unit tests).
     pub outbounds: Option<OutboundsMap>,
+    /// Snapshot of the in-memory conversation transcript (`raw_context`)
+    /// at the start of the current tool batch. Injected by the agent loop;
+    /// lets tools read back turns that are outside the model's sliding
+    /// window (e.g. `context_browse`). Read from memory, never from disk —
+    /// the persisted `agent-context.json` goes stale mid-loop. Empty when
+    /// not injected (unit tests, synthetic progress replies).
+    pub raw_context: Vec<serde_json::Value>,
 }
 
 /// Whether `canonical` lies inside the system temp dir `tmp`.
@@ -112,6 +119,7 @@ impl<'a> ToolContext<'a> {
             current_channel: None,
             current_topic: None,
             outbounds: None,
+            raw_context: Vec::new(),
         }
     }
 
@@ -128,6 +136,7 @@ impl<'a> ToolContext<'a> {
             current_channel: None,
             current_topic: None,
             outbounds: None,
+            raw_context: Vec::new(),
         }
     }
     /// Drain and return any pending image sources accumulated during the

@@ -82,13 +82,24 @@ impl Tool for ContextBrowseTool {
             end,
             total
         );
-        for (i, (user, assistant)) in pairs[start..end].iter().enumerate() {
+        for (i, pair) in pairs[start..end].iter().enumerate() {
             let n = start + i + 1;
             out.push_str(&format!(
-                "\n[{n}] USER: {}\n[{n}] ASSISTANT: {}\n",
-                crate::session::extract_message_text(user),
-                crate::session::extract_message_text(assistant),
+                "\n[{n}] USER: {}\n",
+                crate::session::extract_message_text(&pair.user),
             ));
+            if let Some(assistant) = &pair.assistant {
+                out.push_str(&format!(
+                    "[{n}] ASSISTANT: {}\n",
+                    crate::session::extract_message_text(assistant),
+                ));
+            }
+            if let Some(note) = &pair.note {
+                out.push_str(&format!(
+                    "[{n}] TOOLS: {}\n",
+                    crate::session::extract_message_text(note),
+                ));
+            }
         }
         Ok(ToolOutput::success(out))
     }
@@ -204,8 +215,8 @@ mod tests {
         assert!(out.content.contains("pairs 1-25 of 25"), "{}", out.content);
     }
 
-    /// Bare tool calls an assistant issued are folded into the rendered
-    /// pair text, matching the windowed-view annotation.
+    /// Bare tool calls an assistant issued are summarized in the pair's
+    /// history note, matching the windowed-view rendering.
     #[tokio::test]
     async fn renders_tool_call_annotation() {
         let raw = vec![
@@ -221,10 +232,13 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            out.content.contains(
-                r#"running
-(incl. followed tool calls: bash(command="ls"))"#
-            ),
+            out.content.contains("[1] ASSISTANT: running\n"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content
+                .contains(r#"[1] TOOLS: [History note] assistant tool calls: bash(command="ls")"#),
             "{}",
             out.content
         );

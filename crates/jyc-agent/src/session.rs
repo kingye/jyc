@@ -928,6 +928,17 @@ const WINDOWED_TOOL_ARG_MAX: usize = 200;
 /// ponytail: fixed cap; raise if real results routinely need more.
 const WINDOWED_TOOL_RESULT_MAX: usize = 500;
 
+/// Max length of `jyc_reply_message`'s `message` parameter in the
+/// windowed annotation — higher than the generic arg cap because it is
+/// the text the user actually saw, so losing it is what makes the agent
+/// repeat replies.
+const WINDOWED_REPLY_MESSAGE_MAX: usize = 1000;
+
+/// A tool result collected for the windowed annotation: truncated text
+/// plus the error flag, so failures render as `→ [error] …` and the agent
+/// can tell a failed call apart from a successful one.
+type WindowedResult = (String, bool);
+
 /// Collect bare tool calls from a raw wire-format assistant message as
 /// `(id, name, args)` triples.
 ///
@@ -989,18 +1000,29 @@ fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, String, serde_jso
 }
 
 /// Render one tool call as `name(k=v, …)`, keeping **all** parameters and
-/// truncating only a single argument value that exceeds
-/// `WINDOWED_TOOL_ARG_MAX`.
+/// truncating only a single argument value that exceeds its cap
+/// (`WINDOWED_REPLY_MESSAGE_MAX` for `jyc_reply_message`'s `message`,
+/// `WINDOWED_TOOL_ARG_MAX` for everything else).
 fn render_tool_call(name: &str, args: &serde_json::Value) -> String {
     if let Some(map) = args.as_object() {
         // Empty maps join to `name()` naturally; no empty-args special case.
         let parts = map
             .iter()
-            .map(|(k, v)| format!("{k}={}", truncate_json_value(v)))
+            .map(|(k, v)| {
+                let max = if name == "jyc_reply_message" && k == "message" {
+                    WINDOWED_REPLY_MESSAGE_MAX
+                } else {
+                    WINDOWED_TOOL_ARG_MAX
+                };
+                format!("{k}={}", truncate_json_value(v, max))
+            })
             .collect::<Vec<_>>();
         format!("{name}({})", parts.join(", "))
     } else {
-        format!("{name}({})", truncate_json_value(args))
+        format!(
+            "{name}({})",
+            truncate_json_value(args, WINDOWED_TOOL_ARG_MAX)
+        )
     }
 }
 
@@ -1014,10 +1036,10 @@ fn truncate_text(s: &str, max: usize) -> String {
     }
 }
 
-/// Render a JSON value as text, truncating at `WINDOWED_TOOL_ARG_MAX`
-/// bytes (on a char boundary) with `…` when it is longer.
-fn truncate_json_value(value: &serde_json::Value) -> String {
-    truncate_text(&value.to_string(), WINDOWED_TOOL_ARG_MAX)
+/// Render a JSON value as text, truncating at `max` bytes (on a char
+/// boundary) with `…` when it is longer.
+fn truncate_json_value(value: &serde_json::Value, max: usize) -> String {
+    truncate_text(&value.to_string(), max)
 }
 
 /// Extract text from a tool result `content` value, which may be a string
@@ -1045,14 +1067,17 @@ fn extract_result_text(content: &serde_json::Value) -> String {
 }
 
 /// Collect tool results from one raw wire-format message into `results`
-/// (`tool_call_id → truncated result text`). Handles OpenAI (`role: "tool"`
-/// with `tool_call_id`) and Anthropic (`role: "user"` with `tool_result`
-/// blocks carrying `tool_use_id`) shapes. Lets the windowed annotation
-/// show *what each tool returned*, not just that it was called.
+/// (`tool_call_id → (truncated result text, is_error)`). Handles OpenAI
+/// (`role: "tool"` with `tool_call_id`) and Anthropic (`role: "user"`
+/// with `tool_result` blocks carrying `tool_use_id`) shapes. Lets the
+/// windowed annotation show *what each tool returned* — and whether it
+/// failed — not just that it was called.
 fn collect_results_from(
     msg: &serde_json::Value,
-    results: &mut std::collections::HashMap<String, String>,
+    results: &mut std::collections::HashMap<String, WindowedResult>,
 ) {
+    let is_error_of =
+        |v: &serde_json::Value| v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
     match msg.get("role").and_then(|r| r.as_str()).unwrap_or("") {
         // OpenAI: {"role": "tool", "tool_call_id": "...", "content": "..."}
         "tool" => {
@@ -1063,7 +1088,10 @@ fn collect_results_from(
                     .unwrap_or_default();
                 results.insert(
                     id.to_string(),
-                    truncate_text(&text, WINDOWED_TOOL_RESULT_MAX),
+                    (
+                        truncate_text(&text, WINDOWED_TOOL_RESULT_MAX),
+                        is_error_of(msg),
+                    ),
                 );
             }
         }
@@ -1080,7 +1108,10 @@ fn collect_results_from(
                             .unwrap_or_default();
                         results.insert(
                             id.to_string(),
-                            truncate_text(&text, WINDOWED_TOOL_RESULT_MAX),
+                            (
+                                truncate_text(&text, WINDOWED_TOOL_RESULT_MAX),
+                                is_error_of(block),
+                            ),
                         );
                     }
                 }
@@ -1093,12 +1124,13 @@ fn collect_results_from(
 /// Build the bare tool-call annotation for an assistant message, e.g.
 /// `(incl. followed tool calls: bash(command="ls -la") → BRANCH main…)`.
 /// When a tool result is known for a call's `id` (looked up in `results`),
-/// it is appended as `→ <truncated result>` so the agent can see *what the
-/// tool returned*, not just that it was called. Returns `None` when the
-/// message carries no tool calls.
+/// it is appended as `→ <truncated result>` — prefixed with `[error] `
+/// when the call failed — so the agent can see *what the tool returned*,
+/// not just that it was called. Returns `None` when the message carries
+/// no tool calls.
 fn tool_call_annotation(
     msg: &serde_json::Value,
-    results: &std::collections::HashMap<String, String>,
+    results: &std::collections::HashMap<String, WindowedResult>,
 ) -> Option<String> {
     let calls = collect_tool_calls(msg);
     if calls.is_empty() {
@@ -1108,10 +1140,13 @@ fn tool_call_annotation(
         .iter()
         .map(|(id, name, args)| {
             let mut s = render_tool_call(name, args);
-            if let Some(result) = results.get(id)
+            if let Some((result, is_error)) = results.get(id)
                 && !result.is_empty()
             {
                 s.push_str(" → ");
+                if *is_error {
+                    s.push_str("[error] ");
+                }
                 s.push_str(result);
             }
             s
@@ -1137,7 +1172,7 @@ fn flush_turn(
     pairs: &mut Vec<(serde_json::Value, serde_json::Value)>,
     cur_user: &mut Option<serde_json::Value>,
     cur_assistants: &mut Vec<serde_json::Value>,
-    results: &std::collections::HashMap<String, String>,
+    results: &std::collections::HashMap<String, WindowedResult>,
 ) {
     let user_msg = cur_user.take();
     let assistants = std::mem::take(cur_assistants);
@@ -1205,7 +1240,8 @@ pub(crate) fn extract_pairs(
     let mut pairs: Vec<(serde_json::Value, serde_json::Value)> = Vec::new();
     let mut cur_user: Option<serde_json::Value> = None;
     let mut cur_assistants: Vec<serde_json::Value> = Vec::new();
-    let mut results: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut results: std::collections::HashMap<String, WindowedResult> =
+        std::collections::HashMap::new();
 
     for msg in raw_context {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
@@ -1700,5 +1736,66 @@ mod tests {
         ];
         let pairs = super::extract_user_assistant_pairs(&ctx, 10);
         assert_eq!(pairs, vec![json!({"role": "user", "content": "latest"})]);
+    }
+
+    /// Failed tool results render as `→ [error] …` so the agent can tell a
+    /// failed call apart from a successful one. Covers both the OpenAI
+    /// (`is_error` on the tool message) and Anthropic (`is_error` on the
+    /// tool_result block) shapes.
+    #[test]
+    fn extract_pairs_marks_error_results() {
+        let ctx = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "u1"}]}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "boom", "is_error": true}),
+            json!({"role": "user", "content": [{"type": "text", "text": "u2"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t2", "name": "read", "input": {"path": "x"}}
+            ]}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t2", "content": "nope", "is_error": true}
+            ]}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert_eq!(pairs.len(), 2);
+        assert!(
+            pairs[0].1["content"]
+                .as_str()
+                .unwrap()
+                .contains("bash() → [error] boom"),
+            "openai error not marked: {:?}",
+            pairs[0].1["content"]
+        );
+        assert!(
+            pairs[1].1["content"]
+                .as_str()
+                .unwrap()
+                .contains(r#"read(path="x") → [error] nope"#),
+            "anthropic error not marked: {:?}",
+            pairs[1].1["content"]
+        );
+    }
+
+    /// `jyc_reply_message`'s `message` parameter keeps up to 1000 chars —
+    /// it is the text the user actually saw — while other args stay at 200.
+    #[test]
+    fn extract_pairs_reply_message_arg_gets_higher_cap() {
+        let long = "r".repeat(500);
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "jyc_reply_message",
+                    "arguments": json!({"message": long}).to_string()}}
+            ]}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        let content = pairs[0].1["content"].as_str().unwrap();
+        assert!(
+            content.contains(&long),
+            "reply message under 1000 chars must not be truncated: {content:?}"
+        );
+        assert!(!content.contains('…'), "unexpected truncation: {content:?}");
     }
 }

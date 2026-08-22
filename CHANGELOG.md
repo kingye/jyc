@@ -293,6 +293,14 @@ All notable changes to JYC will be documented in this file.
 
 ### Changed
 
+- **System prompt tells the agent when to use `context_browse`.** The Chat
+  History prompt section now points the agent at the `context_browse` tool
+  for recalling earlier turns of the current conversation that have fallen
+  out of its context window (offset pages toward older pairs, limit caps the
+  page), instead of only steering it to `read`/`grep` the per-day
+  chat-history JSONL. The tool was previously registered and documented but
+  never mentioned in the prompt, so agents rarely called it. (#626)
+
 - **Sliding-window context now annotates assistant messages with their
   bare tool calls.** The windowed part (recent user+assistant pairs) folds
   the assistant's tool calls into the text as

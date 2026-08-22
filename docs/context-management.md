@@ -142,6 +142,18 @@ With the default `window = 10`, all notes together cost at most ~20 KB of
 characters. The dominant factor in window size is the untruncated
 user/assistant text itself, not the notes.
 
+**`note_window` (optional):** when set to `M`, only the **most recent M**
+windowed turns carry a history note; older turns in the window are
+text-only. Unset (default) = notes on all windowed turns. `M = 0` yields
+a pure text window; `M > window` clamps to `window`. Rationale: notes on
+stale turns are low-value noise, while the newest notes preserve "what
+just happened / what just failed". Trade-off: a turn without a note loses
+tool-error visibility — the model may re-run a command that failed there;
+`context_browse` remains the fallback for recovering the original calls.
+Heuristic session compaction and mid-loop compression always keep notes
+on every pair — `note_window` only shapes the sliding-window wire
+payload.
+
 #### Anthropic compatibility defenses
 
 - Synthetic user/assistant messages are built via the active provider's
@@ -218,7 +230,7 @@ Manual `/reset` uses the same `reset_compression` config as auto-reset.
 ```toml
 # Global default for all channels/topics
 [ai]
-context_strategy = { mode = "sliding_window", window = 10 }
+context_strategy = { mode = "sliding_window", window = 10, note_window = 3 }
 max_input_tokens = 122880        # optional; default = 95% of detected model context
 auto_reset_threshold = 0.95      # fraction of context window that triggers reset
 reset_compression = { mode = "heuristic", keep_pairs = 3 }
@@ -229,7 +241,8 @@ context_strategy = { mode = "full" }
 ```
 
 `mode` accepts `full` (default) or `sliding_window` (alias `sliding`).
-`window` counts **turns**, not messages or tokens.
+`window` counts **turns**, not messages or tokens. `note_window` is
+optional (unset = notes on all windowed turns; `0` = none).
 
 **Resolution chain** (highest wins):
 
@@ -245,7 +258,7 @@ context_strategy = { mode = "full" }
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
 | `/context full` | Send the full context |
-| `/context sliding [N]` | Sliding window, N turns (default 10, max 200) |
+| `/context sliding [N] [M]` | Sliding window, N turns (default 10, max 200); optional M = note window |
 | `/context reset` | Remove the runtime override, revert to configured default |
 
 ## Code map
@@ -266,6 +279,8 @@ context_strategy = { mode = "full" }
 
 Key changes, newest first (see CHANGELOG.md for full entries):
 
+- **#632** — `note_window`: history notes limited to the most recent M
+  windowed turns; `/context sliding [N] [M]`.
 - **#630** — history notes moved to separate user-role messages (fixes
   transcript annotation mimicry); silent-reply escape.
 - **#629** — synchronous reply delivery, mimicry guard, lost-content

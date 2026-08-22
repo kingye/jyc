@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+### Removed
+
+- **WeChat (OpenILink bridge) channel.** Removed entirely — it was the
+  last full channel without a pipe-migration path and saw no production
+  use. `[[channels]]` entries with `type = "wechat"` no longer start
+  (#634)
+
 ### Added
 
 - **`note_window` option for the `sliding_window` context strategy.**

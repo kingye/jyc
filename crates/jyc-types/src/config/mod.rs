@@ -8,7 +8,6 @@ use crate::channel::{ContextStrategyConfig, ResetCompressionConfig};
 use crate::feishu_config::FeishuConfig;
 use crate::gitee_config::GiteeConfig;
 use crate::github_config::GithubConfig;
-use crate::wechat_config::WechatConfig;
 use crate::wecom_bot_config::WecomBotConfig;
 use crate::wecom_config::WecomConfig;
 use crate::wecom_kf_config::WecomKfConfig;
@@ -241,9 +240,6 @@ pub struct ChannelConfig {
 
     /// GitHub configuration (for github channels)
     pub github: Option<GithubConfig>,
-
-    /// WeChat configuration (for wechat channels)
-    pub wechat: Option<WechatConfig>,
 
     /// WeCom configuration (for wecom channels)
     pub wecom: Option<WecomConfig>,

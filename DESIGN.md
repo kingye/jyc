@@ -172,8 +172,8 @@ User sends message (any channel) → Pattern Match → Topic Queue → Worker (A
 
 ### Components
 
-1. **Inbound Adapters** — Channel-specific message receivers (Email/IMAP, FeiShu/WebSocket, GitHub/REST polling, WeChat/WebSocket)
-2. **Outbound Adapters** — Channel-specific reply senders (Email/SMTP, FeiShu/API, GitHub/REST, WeChat/WebSocket)
+1. **Inbound Adapters** — Channel-specific message receivers (Email/IMAP, FeiShu/WebSocket, GitHub/REST polling)
+2. **Outbound Adapters** — Channel-specific reply senders (Email/SMTP, FeiShu/API, GitHub/REST)
 3. **Message Router** — Receives messages from all channels, delegates matching to adapters, routes to TopicManager
 4. **Topic Manager** — Per-topic queues with semaphore concurrency control, worker spawn/manage
 5. **Topic Event Bus** — Topic-isolated event bus for publishing and subscribing to processing events (SSE → TopicEvent conversion)
@@ -423,8 +423,8 @@ When the active model does NOT have `supports_images = true`, `read_image` falls
 ### Configuration
 
 ```toml
-[[channels.wechat.patterns]]
-name = "wechat_bot"
+[[channels.my_bot.patterns]]
+name = "my_bot"
 inject_inbound_images = true
 
 [agent.providers.deepseek]
@@ -1924,7 +1924,7 @@ Topic files still provide recent conversation context
 
 `build_footer()` (`crates/jyc-core/src/email_parser.rs`) is the **single shared
 function** for the model/mode/tokens footer appended to replies. It is called by
-the outbound adapters (wechat, wecom, wecomkf, wecom_bot) when
+the outbound adapters (wecom, wecomkf, wecom_bot) when
 `[channels.<name>.footer]` is enabled. Email, github, and gitee are pipe-only
 adapters and send plain agent text — no footer. The agent
 (AgentService/StaticAgentService) never calls this function — it's a
@@ -3697,138 +3697,6 @@ skills of the same name.
 2. Add the skill mapping to `deploy-templates.sh` (`get_skills` function)
 3. Run `./deploy-templates.sh <target>` to deploy
 
-## WeChat Channel Implementation
-
-The WeChat (微信) channel implementation provides messaging capabilities through the OpenILink WebSocket Bridge. Unlike Feishu which uses separate WebSocket (inbound) and HTTP API (outbound) paths, WeChat uses a **single shared WebSocket connection** for both receiving and sending messages. One bot corresponds to one fixed topic.
-
-### Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   OpenILink Bridge (Server)                  │
-│                                                             │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │          WebSocket (wss://host/bot/v1/ws)            │  │
-│  │  ┌─────────────┐     ┌──────────────┐               │  │
-│  │  │   Inbound   │     │   Outbound  │               │  │
-│  │  │   Messages  │     │   Messages  │               │  │
-│  │  │  (Receive)  │     │   (Send)    │               │  │
-│  │  └──────┬──────┘     └──────▲───────┘               │  │
-│  └─────────┼──────────────────┼──────────────────────────┘  │
-└────────────┼──────────────────┼─────────────────────────────┘
-             │                  │
-             │         mpsc::UnboundedSender<String>
-             │                  │
-             │                  ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    JYC WeChat Channel                        │
-│                                                             │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │             WechatWebSocket                          │  │
-│  │  • Single WebSocket for both send and receive       │  │
-│  │  • tokio-tungstenite connection management          │  │
-│  │  • JSON parsing: extract 'content' field            │  │
-│  │  • Auto-reconnect with exponential backoff          │  │
-│  │  • CancellationToken support                        │  │
-│  │  • Exposes mpsc::UnboundedSender for outbound       │  │
-│  └────────────────────────┬────────────────────────────┘  │
-│                           │                                │
-│            ┌──────────────┴──────────────┐                │
-│            ▼                             ▼                │
-│  ┌──────────────────┐    ┌─────────────────────────┐     │
-│  │WechatInboundAdapter│   │ WechatOutboundAdapter  │     │
-│  │ • WechatMatcher    │   │ • JSON format sending  │     │
-│  │ • Pattern matching │   │ • Footer concatenation │     │
-│  │ • Topic name =    │   │ • Reply storage        │     │
-│  │   channel name     │   │ • v1: text-only        │     │
-│  └──────────────────┘    └─────────────────────────┘     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Key Features Implemented
-
-1. **Single WebSocket Connection for Inbound + Outbound**
-   - `WechatWebSocket` manages a single `tokio-tungstenite` connection
-   - Incoming messages parsed as JSON, `content` field extracted to `InboundMessage`
-   - Outbound messages sent via shared `mpsc::UnboundedSender<String>` in `{"type":"send","content":"..."}` format
-   - Both read and write handled in a single tokio::select! event loop
-
-2. **Auto-Reconnection with Exponential Backoff**
-   - Reconnect delay: `2^attempt` seconds (capped at 60s)
-   - Configurable max reconnect attempts
-   - `CancellationToken` for graceful shutdown
-
-3. **One Bot = One Fixed Topic**
-   - `derive_topic_name()` returns the channel name directly (e.g., `"wechat_bot"`)
-   - Unlike Feishu which supports multiple chats, WeChat v1 uses a single-topic model
-   - Simplifies implementation and matches typical WeChat bot usage patterns
-
-4. **Pattern Matching**
-   - `keywords`: match by message content (case-insensitive, OR logic)
-   - `sender`: match by sender address (exact or regex)
-   - Empty rules match all messages (AND logic across present rules)
-
-### Architecture Differences from Feishu
-
-| Aspect | Feishu | WeChat |
-|--------|--------|--------|
-| Inbound transport | LarkWsClient (SDK) WebSocket | Raw tokio-tungstenite WebSocket |
-| Outbound transport | REST API (HTTP) | Same WebSocket as inbound |
-| Topic model | One topic per chat | One fixed topic per bot |
-| Message format | Rich (text, image, file, card) | Text + attachments (images, files, voice, video) |
-| Name resolution | API-based with caching | Not needed (fixed topic) |
-| SDK dependency | openlark SDK | None (direct WS protocol) |
-
-### Message Formats
-
-**Incoming** (from OpenILink Bridge):
-```json
-{
-  "id": "msg_001",
-  "type": "text",
-  "content": "用户消息内容",
-  "sender": "wx_user_123",
-  "sender_name": "用户名称",
-  "timestamp": 1234567890
-}
-```
-
-**Outgoing** (sent by JYC):
-```json
-{
-  "type": "send",
-  "content": "AI回复内容"
-}
-```
-
-### Attachments
-
-WeChat inbound attachments (images, files, voice, video) are received via the OpenILink Bridge as nested envelope fields:
-
-```json
-{
-  "id": "msg_001",
-  "type": "image",
-  "content": "[image]",
-  "sender": "wx_user_123",
-  "attachment": {
-    "url": "https://...",
-    "filename": "photo.jpg",
-    "content_type": "image/jpeg",
-    "size": 12345
-  }
-}
-```
-
-The WeChat inbound adapter:
-1. Downloads the attachment from the provided URL
-2. Saves it to the topic directory via `attachment_storage`
-3. Populates `MessageAttachment.saved_path` so downstream agent tools can access it
-4. Strips placeholder bodies (`[image]`, `[file]`, etc.) so the agent processes attachment-only messages correctly
-
-### Limitations (v1)
-- Single topic per bot — no multi-chat routing
-- JSON format is OpenILink-specific — no protocol abstraction layer
 
 ## Scheduled Job System
 

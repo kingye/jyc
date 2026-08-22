@@ -17,8 +17,7 @@ responsibilities:
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ Adapters (outer) — protocol only                            │
-│   feishu · wecom_bot · email · github · gitee · wecom ·     │
-│   wechat                                                     │
+│   feishu · wecom_bot · email · github · gitee · wecom       │
 │   platform events ⇄ InboundMessage; relay replies back      │
 └───────────────────────────┬────────────────────────────────┘
                             │ pipe = { channel, topic, pattern }
@@ -306,8 +305,8 @@ collects many items into one shared topic that must survive any single item
 closing — and `${msg.pr_number}` / `${msg.issue_number}` stay type-gated as at
 routing time, so an issue close never resolves a PR topic. The hub's
 `TopicManager` is reached through the shared hub registry, which carries
-`(MessageRouter, TopicManager)` per hub channel. wechat/wecom keep using
-the name-based `on_topic_close` and are unaffected. Feishu reports
+`(MessageRouter, TopicManager)` per hub channel. wecom keeps using
+the name-based `on_topic_close` and is unaffected. Feishu reports
 `im.chat.disbanded_v1` over the same callback (carrying the upstream chat_id);
 the serve layer reverse-maps it via its topic→chat_id relay map and closes
 every piped topic for that chat. **All** auto-close paths funnel into
@@ -324,7 +323,7 @@ an init skill. Skills are discovered from the layered skill roots, so
 init skill belongs. Note that per-pattern `skills`, `mode`, and `attachments`
 settings on GitHub/Gitee patterns stop applying (the hub channel's patterns are
 matched at route time), same as the other pipe-only adapters. The `template`
-machinery itself stays for wechat/wecom.
+machinery itself stays for wecom.
 
 Two ready-made skills ship in `skills/`; copy them into `{workdir}/skills/`:
 
@@ -393,6 +392,6 @@ skills are `gitee-init` (plain `git clone` — Gitee has no `gh` CLI),
 
 ## Migrating other channels
 
-To be documented per channel when migration starts (wecom, wechat).
+To be documented per channel when migration starts (wecom).
 The feishu/wecom_bot/email/github/gitee cleanup serves as the checklist
 template: strip everything except protocol code + pipe wiring.

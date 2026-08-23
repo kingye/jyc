@@ -36,45 +36,13 @@ const DEFAULT_MAX_ITERATIONS: usize = 100;
 /// `run_ticker`), so a short sub-second loop still produces one event.
 const LOOP_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// System-reminder injected when the model ends a turn with **no text and no
-/// tool call** (`text_len == 0`). Mirrors the pre-existing `no_reply` guard
-/// wording; the model is asked to recover via `jyc_reply_message`.
+/// Legacy system-reminder injected when the model ends a turn with **no text
+/// and no tool call** (`text_len == 0`) and the reply tool is NOT available.
+/// Mirrors the pre-existing `no_reply` guard wording.
 const REMINDER_NO_TEXT: &str = "[System reminder] Your last turn produced no \
     text and no tool call, so the user will see no reply. If you have a final \
     response, call `jyc_reply_message` with it now; if nothing needs to be \
     sent (e.g. your reply was already delivered), call `jyc_reply_message` \
-    with `silent: true`.";
-
-/// System-reminder injected when the model ends a turn with **non-empty text
-/// but no reply tool call**. Without this nudge, the text-only finish would
-/// be delivered verbatim as the final reply even when it is just process
-/// narration (the "thinking shown as reply" symptom).
-const REMINDER_WITH_TEXT: &str = "[System reminder] You produced final text but \
-    did not call `jyc_reply_message` to deliver it. If that text was your final \
-    answer, call `jyc_reply_message` with your actual final answer; if it was \
-    only narration (or your reply was already delivered), call \
-    `jyc_reply_message` with `silent: true` to close the turn WITHOUT sending \
-    anything — never let narration reach the user as a reply.";
-
-/// Markers of the windowed-history tool-call summary formats — the retired
-/// in-text annotation (see `session.rs`, pre-#630) and the current
-/// user-role history note. Models sometimes MIMIC these formats in their
-/// reply text and believe they called a tool when they did not.
-const ANNOTATION_MARKERS: &[&str] = &[
-    "(incl. followed tool calls:",
-    "[History note] assistant tool calls:",
-];
-
-/// Stronger variant of `REMINDER_WITH_TEXT` used when the final text itself
-/// contains a windowed tool-call summary format — the tell-tale sign that
-/// the model mimicked a tool call as text instead of invoking it. Does NOT
-/// assert the reply was lost: if the model already delivered via the tool,
-/// the `silent: true` escape is the right response.
-const REMINDER_MIMICRY: &str = "[System reminder] Your last turn's text contains \
-    what looks like a history tool-call summary. That format is how HISTORY shows \
-    past tool calls — writing it as your message text does NOT call any tool. If \
-    you have a reply to deliver, call `jyc_reply_message` with it now; if your \
-    reply was already delivered or nothing needs sending, call `jyc_reply_message` \
     with `silent: true`.";
 
 /// Reminder injected when the model's `jyc_reply_message` call FAILED and the
@@ -87,11 +55,11 @@ const REMINDER_REPLY_FAILED: &str = "[System reminder] Your `jyc_reply_message` 
     call `jyc_reply_message` again now — do not finish with plain text.";
 
 /// Subtle trace appended to an auto-delivered fallback reply: the reply
-/// tool was available but never called even after the nudge, so the text
-/// was delivered IN THE AGENT'S NAME via a synthetic `jyc_reply_message`
-/// execution (see the post-loop fallback). Kept unobtrusive so the
-/// delivery is not mistaken for an error, but present so it is never
-/// mistaken for a reply the model consciously authored.
+/// tool was available but never called, so the text was delivered IN THE
+/// AGENT'S NAME via a synthetic `jyc_reply_message` execution (see the
+/// post-loop fallback). Kept unobtrusive so the delivery is not mistaken
+/// for an error, but present so it is never mistaken for a reply the model
+/// consciously authored.
 const AUTO_REPLY_TRACE: &str = "\n\n— auto-delivered";
 
 /// Configuration for the agent loop.
@@ -394,13 +362,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // nudge to recover via `jyc_reply_message`; if it still fails, we exit
     // and surface a SessionStatus event so the activity pane can flag it.
     let mut no_reply_reminded = false;
-
-    // Reply-tool guard: when the reply tool exists, a text-only finish
-    // without calling it means the model's final text is likely narration
-    // ("thinking out loud"), not an intended answer. Give the model a
-    // single nudge to deliver via `jyc_reply_message`; if it still fails,
-    // fall back to text delivery with a visible warning marker appended.
-    let mut reply_tool_nudged = false;
 
     // Tool-restricted recovery: when any reply reminder is injected, the
     // NEXT LLM call offers only `jyc_reply_message` — with a single tool on
@@ -738,16 +699,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let text_len = response.text.trim().len();
             let reply_tool_available = tools.has_tool("jyc_reply_message");
 
-            // Reply-tool guard (unified with the no-reply guard below): a
-            // text-only finish is only acceptable when the reply tool was
-            // called or is not registered. Otherwise the text is likely
-            // narration ("thinking out loud"), which the fallback path would
-            // deliver verbatim as the final reply. Nudge the model once.
-            // Failure-aware recovery takes precedence over the generic
-            // nudge: a failed delivery attempt means the reply is still
-            // owed, and the concrete error tells the model what to fix.
-            // Capped (MAX_REPLY_FAILURE_NUDGES) so a deterministically
-            // failing tool cannot spin forever.
+            // Failure-aware recovery: a failed `jyc_reply_message` attempt
+            // means the reply is still owed, and the concrete error tells
+            // the model what to fix. Capped (MAX_REPLY_FAILURE_NUDGES) so a
+            // deterministically failing tool cannot spin forever.
             if !reply_sent_by_tool
                 && reply_tool_available
                 && last_reply_error.is_some()
@@ -755,7 +710,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             {
                 let error = last_reply_error.take().unwrap_or_default();
                 reply_failure_nudges += 1;
-                reply_tool_nudged = true;
                 restrict_to_reply_tool = true;
                 tracing::warn!(
                     total_iterations,
@@ -766,49 +720,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 );
                 raw_context.push(provider.format_user_message(&[ContentBlock::Text {
                     text: REMINDER_REPLY_FAILED.replace("{error}", &error),
-                }]));
-                continue;
-            }
-
-            if !reply_sent_by_tool && reply_tool_available && !reply_tool_nudged {
-                reply_tool_nudged = true;
-                restrict_to_reply_tool = true;
-                tracing::warn!(
-                    total_iterations,
-                    text_len,
-                    "Agent loop: reply tool not called on text-only finish, injecting reminder once"
-                );
-
-                publish_event(
-                    event_bus,
-                    TopicEvent::SessionStatus {
-                        topic_name: topic_name.to_string(),
-                        status_type: if text_len == 0 {
-                            "no_reply".to_string()
-                        } else {
-                            "reply_tool_missing".to_string()
-                        },
-                        attempt: None,
-                        message: Some(format!(
-                            "AI produced {} text and no tool call in final iteration \
-                             (total_iterations={total_iterations}) — reminded once to \
-                             deliver via jyc_reply_message",
-                            if text_len == 0 { "no" } else { "non-empty" }
-                        )),
-                        timestamp: Utc::now(),
-                    },
-                )
-                .await;
-
-                let reminder = if text_len == 0 {
-                    REMINDER_NO_TEXT
-                } else if ANNOTATION_MARKERS.iter().any(|m| response.text.contains(m)) {
-                    REMINDER_MIMICRY
-                } else {
-                    REMINDER_WITH_TEXT
-                };
-                raw_context.push(provider.format_user_message(&[ContentBlock::Text {
-                    text: reminder.to_string(),
                 }]));
                 continue;
             }
@@ -832,8 +743,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 .await;
 
                 // Legacy reminder: only when the reply tool is unavailable.
-                // When the tool exists, the reply-tool guard above already
-                // owns the single reminder.
+                // When the tool exists, text-only finishes are handled by the
+                // fallback auto-delivery below instead.
                 if !reply_tool_available && !no_reply_reminded {
                     no_reply_reminded = true;
                     tracing::warn!(
@@ -846,10 +757,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     continue;
                 }
 
-                tracing::warn!(
-                    total_iterations,
-                    "Agent loop: no-reply persists after reminder, exiting"
-                );
+                tracing::warn!(total_iterations, "Agent loop: no-reply, exiting");
             } else {
                 tracing::info!(
                     total_iterations,
@@ -859,16 +767,16 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 );
             }
 
-            // Fallback delivery: the reply tool exists but was never called,
-            // even after the nudge. Instead of returning the raw text for the
-            // worker's degraded-fallback path, deliver it IN THE AGENT'S NAME
-            // by executing `jyc_reply_message` synthetically — the same
+            // Fallback delivery: the reply tool exists but was never called.
+            // Instead of returning the raw text for the worker's
+            // degraded-fallback path, deliver it IN THE AGENT'S NAME by
+            // executing `jyc_reply_message` synthetically — the same
             // mechanism as the cycle-boundary progress reply — so delivery,
             // chat-log entry and metrics are identical to a real tool call.
             // A subtle trace is appended so an auto-delivered reply is never
             // mistaken for one the model consciously authored.
             let mut final_text = response.text;
-            if !reply_sent_by_tool && reply_tool_nudged && !final_text.trim().is_empty() {
+            if !reply_sent_by_tool && reply_tool_available && !final_text.trim().is_empty() {
                 final_text.push_str(AUTO_REPLY_TRACE);
                 let synthetic_call_id = format!("auto-reply-{}", total_iterations);
                 let synthetic_output = execute_reply_tool_synthetic(
@@ -1782,29 +1690,17 @@ mod reply_tool_tests {
         registry
     }
 
-    /// A text-only first turn followed by a correct `jyc_reply_message` call
-    /// must recover after exactly one reminder: the reply tool path wins and
-    /// no warning is appended.
+    /// A text-only finish with the reply tool registered must be
+    /// auto-delivered immediately — no injected reminder, no nudge turn:
+    /// the loop executes `jyc_reply_message` synthetically with the text
+    /// plus the subtle trace, and the result counts as sent by the tool.
     #[tokio::test]
-    async fn text_only_then_reply_tool_recovers_with_single_nudge() {
+    async fn text_only_finish_auto_delivers_without_reminder() {
         let provider = ScriptedProvider {
-            rounds: vec![
-                vec![
-                    StreamEvent::TextDelta("I'll check the docs".to_string()),
-                    StreamEvent::Done,
-                ],
-                vec![
-                    StreamEvent::ToolUseStart {
-                        id: "call_1".to_string(),
-                        name: "jyc_reply_message".to_string(),
-                    },
-                    StreamEvent::ToolInputDelta(
-                        r#"{"message":"final answer","stop_after":true}"#.to_string(),
-                    ),
-                    StreamEvent::ToolUseEnd,
-                    StreamEvent::Done,
-                ],
-            ],
+            rounds: vec![vec![
+                StreamEvent::TextDelta("I'll check the docs".to_string()),
+                StreamEvent::Done,
+            ]],
             calls: AtomicUsize::new(0),
             seen_tools: Default::default(),
         };
@@ -1826,7 +1722,7 @@ mod reply_tool_tests {
             working_dir: &working_dir,
             topic_path: &working_dir,
             cancel: cancel.clone(),
-            topic_name: "reply-tool-recover",
+            topic_name: "reply-tool-auto",
             event_bus: Some(&bus),
             prior_history: vec![],
             prior_raw_context: vec![],
@@ -1843,148 +1739,32 @@ mod reply_tool_tests {
             auto_reset_threshold: 0.95,
             thinking_enabled: false,
             pricing: None,
-            model_label: "scripted-test-1",
+            model_label: "scripted-test-auto",
             context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
             reply_target: None,
         })
         .await
         .expect("agent loop should run to completion");
 
-        // One nudge + one recovery = exactly 2 LLM calls.
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
-        assert!(result.reply_sent_by_tool, "reply tool must win");
+        // Single LLM call: text-only finish → immediate synthetic delivery.
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
         assert!(
-            !result.reply_auto_delivered,
-            "a model-authored tool reply is not auto-delivered"
+            result.reply_sent_by_tool,
+            "auto-delivered reply must count as sent by the tool"
         );
-        assert_eq!(result.reply_text_from_tool.as_deref(), Some("final answer"));
-        assert!(result.text.is_empty(), "no fallback text expected");
         assert!(
-            !result.text.contains(AUTO_REPLY_TRACE),
-            "no auto-delivery trace when the reply tool was used"
-        );
-
-        // The recovery turn must run with a restricted tool list: only
-        // `jyc_reply_message` on the table. The first turn offered the full
-        // registry (many tools); the second offers exactly one.
-        let seen = provider.seen_tools.lock().unwrap().clone();
-        assert_eq!(seen.len(), 2);
-        assert!(
-            seen[0].len() > 1,
-            "first turn should offer the full tool list, got: {:?}",
-            seen[0]
+            result.reply_auto_delivered,
+            "auto-delivered reply must be flagged for metrics"
         );
         assert_eq!(
-            seen[1],
-            vec!["jyc_reply_message".to_string()],
-            "recovery turn must offer only the reply tool"
+            result.reply_text_from_tool.as_deref(),
+            Some("I'll check the docs\n\n— auto-delivered"),
+            "auto-delivered text must be the model text plus the subtle trace, got: {:?}",
+            result.reply_text_from_tool
         );
 
-        // The activity pane must have seen exactly one `reply_tool_missing`
-        // nudge event and no plain no_reply event.
-        let events = drain_events(&mut rx).await;
-        let nudges: Vec<_> = events
-            .iter()
-            .filter_map(|e| match e {
-                TopicEvent::SessionStatus { status_type, .. }
-                    if status_type == "reply_tool_missing" =>
-                {
-                    Some(())
-                }
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            nudges.len(),
-            1,
-            "expected exactly 1 reply_tool_missing nudge event"
-        );
-        let no_reply: Vec<_> = events
-            .iter()
-            .filter_map(|e| match e {
-                TopicEvent::SessionStatus { status_type, .. } if status_type == "no_reply" => {
-                    Some(())
-                }
-                _ => None,
-            })
-            .collect();
-        assert!(no_reply.is_empty(), "no_reply is for empty text only");
-    }
-
-    /// A final text that mimics the windowed tool-call annotation format
-    /// must get the mimicry-specific reminder (not the generic one): the
-    /// model likely believes it already called the reply tool.
-    #[tokio::test]
-    async fn annotation_mimicry_gets_mimicry_reminder() {
-        let provider = ScriptedProvider {
-            rounds: vec![
-                vec![
-                    StreamEvent::TextDelta(
-                        "(incl. followed tool calls: jyc_reply_message(message=\"hi\") → \
-                         [SUCCESS] Reply sent (2 chars). STOP NOW)"
-                            .to_string(),
-                    ),
-                    StreamEvent::Done,
-                ],
-                vec![
-                    StreamEvent::ToolUseStart {
-                        id: "call_1".to_string(),
-                        name: "jyc_reply_message".to_string(),
-                    },
-                    StreamEvent::ToolInputDelta(
-                        r#"{"message":"real answer","stop_after":true}"#.to_string(),
-                    ),
-                    StreamEvent::ToolUseEnd,
-                    StreamEvent::Done,
-                ],
-            ],
-            calls: AtomicUsize::new(0),
-            seen_tools: Default::default(),
-        };
-        let tmp = TempDir::new().unwrap();
-        let working_dir = tmp.path().to_path_buf();
-        let tools = registry_with_reply_tool();
-        let cancel = CancellationToken::new();
-
-        let result = run(super::AgentLoopConfig {
-            provider: &provider,
-            small_provider: None,
-            tools: &tools,
-            system_prompt: "test",
-            user_blocks: vec![ContentBlock::Text {
-                text: "hello".to_string(),
-            }],
-            working_dir: &working_dir,
-            topic_path: &working_dir,
-            cancel: cancel.clone(),
-            topic_name: "mimicry",
-            event_bus: None,
-            prior_history: vec![],
-            prior_raw_context: vec![],
-            max_iterations: Some(5),
-            sse_read_timeout: std::time::Duration::from_secs(60),
-            additional_read_roots: vec![],
-            additional_write_roots: vec![],
-            pattern_inject_images: false,
-            outbound: None,
-            topic_managers: None,
-            current_channel: None,
-            outbounds: None,
-            context_window: None,
-            auto_reset_threshold: 0.95,
-            thinking_enabled: false,
-            pricing: None,
-            model_label: "scripted-test-mimicry",
-            context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
-            reply_target: None,
-        })
-        .await
-        .expect("agent loop should run to completion");
-
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
-        assert!(result.reply_sent_by_tool);
-        // The injected reminder must be the mimicry variant, not the generic
-        // text-only one.
+        // No system reminder may be injected: that is the confusion source
+        // this change removes.
         let reminders: Vec<_> = result
             .raw_context
             .iter()
@@ -1992,11 +1772,29 @@ mod reply_tool_tests {
             .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
             .filter(|c| c.contains("[System reminder]"))
             .collect();
-        assert_eq!(reminders.len(), 1);
         assert!(
-            reminders[0].contains("does NOT call any tool"),
-            "expected REMINDER_MIMICRY, got: {}",
-            reminders[0]
+            reminders.is_empty(),
+            "no reminder may be injected on a text-only finish, got: {:?}",
+            reminders
+        );
+
+        // No nudge/no_reply status events: the reply was delivered, not flagged.
+        let events = drain_events(&mut rx).await;
+        let nudges: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                TopicEvent::SessionStatus { status_type, .. }
+                    if status_type == "reply_tool_missing" || status_type == "no_reply" =>
+                {
+                    Some(status_type.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            nudges.is_empty(),
+            "no nudge/no_reply status events expected, got: {:?}",
+            nudges
         );
     }
 
@@ -2070,23 +1868,17 @@ mod reply_tool_tests {
         assert!(!working_dir.join(".jyc/reply-sent.flag").exists());
     }
 
-    /// A text-only finish that persists after the nudge must be auto-delivered
-    /// in the agent's name: the loop executes `jyc_reply_message` synthetically
-    /// (writing the signal files) and the result counts as sent by the tool,
-    /// with a subtle auto-delivery trace appended.
+    /// A text-only finish must be auto-delivered in the agent's name: the
+    /// loop executes `jyc_reply_message` synthetically (writing the signal
+    /// files) and the result counts as sent by the tool, with a subtle
+    /// auto-delivery trace appended.
     #[tokio::test]
     async fn persistent_text_only_is_auto_delivered_via_reply_tool() {
         let provider = ScriptedProvider {
-            rounds: vec![
-                vec![
-                    StreamEvent::TextDelta("thinking out loud".to_string()),
-                    StreamEvent::Done,
-                ],
-                vec![
-                    StreamEvent::TextDelta("still no tool call".to_string()),
-                    StreamEvent::Done,
-                ],
-            ],
+            rounds: vec![vec![
+                StreamEvent::TextDelta("thinking out loud".to_string()),
+                StreamEvent::Done,
+            ]],
             calls: AtomicUsize::new(0),
             seen_tools: Default::default(),
         };
@@ -2131,9 +1923,9 @@ mod reply_tool_tests {
         .await
         .expect("agent loop should run to completion");
 
-        // Initial + one nudge = exactly 2 LLM calls, then the text is
-        // auto-delivered via a synthetic `jyc_reply_message` execution.
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        // Single LLM call: the text-only finish is auto-delivered via a
+        // synthetic `jyc_reply_message` execution.
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
         assert!(
             result.reply_sent_by_tool,
             "auto-delivered reply must count as sent by the tool"
@@ -2144,7 +1936,7 @@ mod reply_tool_tests {
         );
         assert_eq!(
             result.reply_text_from_tool.as_deref(),
-            Some("still no tool call\n\n— auto-delivered"),
+            Some("thinking out loud\n\n— auto-delivered"),
             "auto-delivered text must be the last model text plus the subtle trace, got: {:?}",
             result.reply_text_from_tool
         );
@@ -2214,16 +2006,10 @@ mod reply_tool_tests {
     #[tokio::test]
     async fn synthetic_auto_delivery_publishes_reply_sent() {
         let provider = ScriptedProvider {
-            rounds: vec![
-                vec![
-                    StreamEvent::TextDelta("thinking out loud".to_string()),
-                    StreamEvent::Done,
-                ],
-                vec![
-                    StreamEvent::TextDelta("still no tool call".to_string()),
-                    StreamEvent::Done,
-                ],
-            ],
+            rounds: vec![vec![
+                StreamEvent::TextDelta("thinking out loud".to_string()),
+                StreamEvent::Done,
+            ]],
             calls: AtomicUsize::new(0),
             seen_tools: Default::default(),
         };
@@ -2304,7 +2090,7 @@ mod reply_tool_tests {
             .collect();
         assert_eq!(
             reply_sent,
-            vec!["still no tool call\n\n— auto-delivered"],
+            vec!["thinking out loud\n\n— auto-delivered"],
             "synchronous synthetic delivery must publish ReplySent with the delivered text"
         );
     }

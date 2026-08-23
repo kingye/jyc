@@ -18,15 +18,8 @@
 ### Fixed
 
 - **Feishu progress indicator used chat_id instead of message_id.** The
-  Typing reaction added by the inbound pipe was being attached to
-  `message.channel_uid`, which the feishu adapter populates with the
-  chat_id rather than the message_id. Feishu's reaction API requires
-  the message_id, so every Typing drop and DONE swap failed with a
-  "message not found" error and the user never saw any progress
-  indicator. The call now reads `message.external_id` (the actual
-  message_id) via a small `feishu_message_id` helper, and falls back to
-  a warn log + skip if `external_id` is ever unset instead of panicking
-  in the inbound spawn task.
+  Typing/DONE reactions now read `message.external_id` (the message_id)
+  instead of `message.channel_uid` (the chat_id). (#642)
 
 - **Forced reply tool on recovery turns.** The reply-recovery turn now
   also forces `jyc_reply_message` at the API level (`tool_choice`):

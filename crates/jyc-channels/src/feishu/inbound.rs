@@ -350,16 +350,6 @@ impl jyc_types::InboundAdapter for FeishuInboundAdapter {
     }
 }
 
-/// Extract the feishu message_id for the reaction API (`POST .../reactions`).
-///
-/// Returns `None` if the inbound adapter did not populate `external_id` —
-/// callers must handle that case (warn + skip), not panic, since the
-/// reaction API call is best-effort and a future code path could
-/// conceivably forget to set `external_id`.
-pub fn feishu_message_id(message: &InboundMessage) -> Option<&str> {
-    message.external_id.as_deref()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,21 +734,5 @@ mod tests {
         let name = matcher.derive_topic_name(&msg, &[], None);
         // sanitize_for_filesystem replaces / with _
         assert_eq!(name, "项目_测试群");
-    }
-
-    #[test]
-    fn test_feishu_message_id_returns_external_id_when_set() {
-        let mut msg = make_feishu_message("user1", "Hello", vec![], Some("oc_chat"));
-        msg.external_id = Some("om_msg_abc123".to_string());
-        assert_eq!(feishu_message_id(&msg), Some("om_msg_abc123"));
-    }
-
-    #[test]
-    fn test_feishu_message_id_returns_none_when_unset() {
-        // make_feishu_message leaves external_id as None (mirrors legacy code
-        // paths that did not populate it).
-        let msg = make_feishu_message("user1", "Hello", vec![], Some("oc_chat"));
-        assert_eq!(msg.external_id, None);
-        assert_eq!(feishu_message_id(&msg), None);
     }
 }

@@ -195,6 +195,7 @@ pub struct AgentLoopConfig<'a> {
 /// contract on the next request.
 ///
 /// Returns the tool output so the caller can react to success/failure.
+#[allow(clippy::too_many_arguments)]
 async fn execute_reply_tool_synthetic(
     tools: &ToolRegistry,
     ctx: &ToolContext<'_>,

@@ -867,7 +867,8 @@ pub(crate) fn extract_message_text(msg: &serde_json::Value) -> String {
 }
 
 /// Max length of a single rendered tool-call argument value kept in the
-/// windowed annotation; longer values are truncated with `…`.
+/// windowed annotation; longer values are truncated with an explicit
+/// `… [truncated N bytes]` marker.
 /// ponytail: fixed cap; raise if real arguments routinely exceed it and
 /// the tail matters.
 const WINDOWED_TOOL_ARG_MAX: usize = 200;
@@ -965,11 +966,15 @@ fn render_tool_call(name: &str, args: &serde_json::Value) -> String {
     }
 }
 
-/// Truncate `s` at `max` bytes (on a char boundary) with `…` when longer.
+/// Truncate `s` at `max` bytes (on a char boundary) with an explicit
+/// `… [truncated N bytes]` marker when longer. The marker distinguishes a
+/// real cut from content that genuinely ends in `…` and tells the model how
+/// much was dropped.
 fn truncate_text(s: &str, max: usize) -> String {
     if s.len() > max {
         let cut = s.floor_char_boundary(max);
-        format!("{}…", &s[..cut])
+        let dropped = s.len() - cut;
+        format!("{}… [truncated {dropped} bytes]", &s[..cut])
     } else {
         s.to_string()
     }
@@ -1716,7 +1721,8 @@ mod tests {
         );
     }
 
-    /// Over-long tool results are truncated with `…` (500-char cap).
+    /// Over-long tool results are truncated with `… [truncated N bytes]`
+    /// (500-char cap).
     #[test]
     fn extract_pairs_truncates_long_tool_results() {
         let long = "y".repeat(2000);
@@ -1734,7 +1740,11 @@ mod tests {
             content.contains('…'),
             "long result not truncated: {content:?}"
         );
-        // Result cap 500 + arrow + note prefix stay well under 700.
+        assert!(
+            content.contains("truncated"),
+            "truncation must be explicit, not a bare ellipsis: {content:?}"
+        );
+        // Result cap 500 + marker + arrow + note prefix stay well under 700.
         assert!(content.len() < 700, "note too big: {content:?}");
     }
 

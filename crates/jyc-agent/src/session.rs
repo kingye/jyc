@@ -880,12 +880,6 @@ const WINDOWED_TOOL_ARG_MAX: usize = 200;
 /// ponytail: fixed cap; raise if real results routinely need more.
 const WINDOWED_TOOL_RESULT_MAX: usize = 500;
 
-/// Max length of `jyc_reply_message`'s `message` parameter in the
-/// windowed annotation — higher than the generic arg cap because it is
-/// the text the user actually saw, so losing it is what makes the agent
-/// repeat replies.
-const WINDOWED_REPLY_MESSAGE_MAX: usize = 1000;
-
 /// A tool result collected for the windowed annotation: truncated text
 /// plus the error flag, so failures render as `→ [error] …` and the agent
 /// can tell a failed call apart from a successful one.
@@ -952,22 +946,15 @@ fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, String, serde_jso
 }
 
 /// Render one tool call as `name(k=v, …)`, keeping **all** parameters and
-/// truncating only a single argument value that exceeds its cap
-/// (`WINDOWED_REPLY_MESSAGE_MAX` for `jyc_reply_message`'s `message`,
-/// `WINDOWED_TOOL_ARG_MAX` for everything else).
+/// truncating only a single argument value that exceeds
+/// `WINDOWED_TOOL_ARG_MAX`. (`jyc_reply_message` is filtered out at the
+/// caller before reaching here.)
 fn render_tool_call(name: &str, args: &serde_json::Value) -> String {
     if let Some(map) = args.as_object() {
         // Empty maps join to `name()` naturally; no empty-args special case.
         let parts = map
             .iter()
-            .map(|(k, v)| {
-                let max = if name == "jyc_reply_message" && k == "message" {
-                    WINDOWED_REPLY_MESSAGE_MAX
-                } else {
-                    WINDOWED_TOOL_ARG_MAX
-                };
-                format!("{k}={}", truncate_json_value(v, max))
-            })
+            .map(|(k, v)| format!("{k}={}", truncate_json_value(v, WINDOWED_TOOL_ARG_MAX)))
             .collect::<Vec<_>>();
         format!("{name}({})", parts.join(", "))
     } else {
@@ -1123,6 +1110,13 @@ fn tool_call_summary(
     let mut used = 0usize;
     let mut omitted = 0usize;
     for (id, name, args) in &calls {
+        // jyc_reply_message is excluded from the annotation: its `message`
+        // is the text the user already saw, and exposing the call invites
+        // the model to mimic the `[History note] assistant tool calls: …`
+        // format as narration instead of invoking the tool.
+        if name == "jyc_reply_message" {
+            continue;
+        }
         let mut s = render_tool_call(name, args);
         if let Some((result, is_error)) = results.get(id)
             && !result.is_empty()
@@ -1145,7 +1139,9 @@ fn tool_call_summary(
     if omitted > 0 {
         parts.push(format!("…({omitted} more calls)"));
     }
-    Some(parts.join(", "))
+    // All calls filtered → empty annotation. Skip the note rather than
+    // emit `[History note] assistant tool calls: ` with no payload.
+    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
 /// Flush the accumulated turn into `pairs`: merge every assistant message
@@ -1173,6 +1169,7 @@ fn flush_turn(
 
     let mut texts: Vec<String> = Vec::with_capacity(assistants.len());
     let mut summaries: Vec<String> = Vec::new();
+    let mut had_tool_calls = false;
     for msg in &assistants {
         // Keep only role + content for the text; bare tool calls go into
         // the history note so the windowed view shows which tools ran and
@@ -1182,11 +1179,18 @@ fn flush_turn(
         if !text.is_empty() {
             texts.push(text);
         }
+        if !collect_tool_calls(msg).is_empty() {
+            had_tool_calls = true;
+        }
         if let Some(summary) = tool_call_summary(msg, results) {
             summaries.push(summary);
         }
     }
-    if texts.is_empty() && summaries.is_empty() {
+    // Drop only when the assistant truly had nothing — no text AND no
+    // tool calls. `summaries` can be empty while `had_tool_calls` is true
+    // when every call was the filtered `jyc_reply_message`; the trigger
+    // user message still matters to the prior context, so keep the pair.
+    if texts.is_empty() && summaries.is_empty() && !had_tool_calls {
         return;
     }
 
@@ -1220,8 +1224,9 @@ fn flush_turn(
 /// context). Every assistant message in between — intermediate tool-call
 /// steps and the final reply alike — is merged into one assistant entry
 /// (see [`flush_turn`]), so the windowed view never loses the turn's
-/// conclusion (including `jyc_reply_message` calls, which live in the
-/// turn's later assistant messages).
+/// conclusion. `jyc_reply_message` calls are merged into the assistant
+/// text but intentionally excluded from the history-note annotation
+/// (see [`tool_call_summary`]).
 ///
 /// Assistant messages are cleaned to only role + content (strip
 /// reasoning_content, tool_calls); bare tool calls are summarized into the
@@ -1935,25 +1940,50 @@ mod tests {
         );
     }
 
-    /// `jyc_reply_message`'s `message` parameter keeps up to 1000 chars —
-    /// it is the text the user actually saw — while other args stay at 200.
+    /// `jyc_reply_message` is filtered out of the annotation: a turn that
+    /// called only the reply tool produces no note at all (the message the
+    /// user saw is already in the assistant's own text).
     #[test]
-    fn extract_pairs_reply_message_arg_gets_higher_cap() {
-        let long = "r".repeat(500);
+    fn extract_pairs_no_note_when_only_reply_was_called() {
         let ctx = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "", "tool_calls": [
                 {"id": "1", "type": "function", "function": {"name": "jyc_reply_message",
-                    "arguments": json!({"message": long}).to_string()}}
+                    "arguments": r#"{"message": "hi"}"#}}
+            ]}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert!(
+            pairs[0].note.is_none(),
+            "reply-only turn must not emit a history note: {:?}",
+            pairs[0].note
+        );
+    }
+
+    /// A mixed turn (real work + a reply call) keeps the real work in the
+    /// note and drops the reply call — the reply's message is already in
+    /// the assistant text, so the annotation must not duplicate it.
+    #[test]
+    fn extract_pairs_drops_reply_call_but_keeps_real_work() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "looking", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash",
+                    "arguments": r#"{"command": "ls"}"#}},
+                {"id": "2", "type": "function", "function": {"name": "jyc_reply_message",
+                    "arguments": r#"{"message": "done"}"#}}
             ]}),
         ];
         let pairs = super::extract_pairs(&ctx);
         let content = pairs[0].note.as_ref().unwrap()["content"].as_str().unwrap();
         assert!(
-            content.contains(&long),
-            "reply message under 1000 chars must not be truncated: {content:?}"
+            content.contains(r#"bash(command="ls")"#),
+            "real call missing from note: {content:?}"
         );
-        assert!(!content.contains('…'), "unexpected truncation: {content:?}");
+        assert!(
+            !content.contains("jyc_reply_message"),
+            "reply call must not appear in note: {content:?}"
+        );
     }
 
     /// The note as a whole is capped: calls past the budget are

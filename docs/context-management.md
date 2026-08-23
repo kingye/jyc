@@ -124,6 +124,11 @@ the assistant text:
   `tool_use_id`) within a **turn-scoped map**, so an id reused in a later
   turn can never misattach to an earlier call.
 - Failed calls are prefixed `[error] `.
+- `jyc_reply_message` calls are excluded. The reply's `message` is the
+  text the user already saw and is preserved in the assistant's own
+  text; exposing the call here would give the model a pattern to mimic
+  as narration instead of actually invoking the tool. A turn that called
+  only the reply tool emits no note at all.
 - The assistant's own text stays pure — models were observed mimicking
   the older in-text annotation format and emitting fake tool-call text as
   their reply; the system prompt's "History Format" section states the
@@ -134,7 +139,6 @@ Size caps (constants in `session.rs`):
 | Limit | Value | Notes |
 |-------|-------|-------|
 | Single argument value | 200 chars | truncated with `…` |
-| `jyc_reply_message` `message` param | 1000 chars | the text the user actually saw |
 | Single tool result | 500 chars | full result is one `context_browse` away |
 | **Whole note** | **2000 chars** | overflow folds to `…(N more calls)` |
 

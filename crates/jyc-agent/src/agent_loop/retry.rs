@@ -277,9 +277,7 @@ async fn issue_call(
             )
             .await
         } => r,
-        _ = cancel.cancelled() => {
-            return Err(anyhow::anyhow!("cancelled during LLM call"));
-        }
+        _ = cancel.cancelled() => Err(anyhow::anyhow!("cancelled during LLM call")),
     }
 }
 

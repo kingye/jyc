@@ -28,21 +28,18 @@
   Typing/DONE reactions now read `message.external_id` (the message_id)
   instead of `message.channel_uid` (the chat_id). (#642)
 
-- **Forced reply tool on recovery turns.** The reply-recovery turn now
-  also forces `jyc_reply_message` at the API level (`tool_choice`):
-  offering a single tool proved insufficient for weak models, which
-  re-emit narration text that then leaked as a fallback reply. Anthropic
-  and OpenAI-compatible providers implement the forcing; providers
-  without `tool_choice` support degrade to the previous reminder-only
-  behavior.
-- **DeepSeek thinking mode rejected the forced reply tool.** DeepSeek v4
-  (and other thinking-mode OpenAI-compatible models) reject any request
-  carrying `tool_choice` with HTTP 400 "Thinking mode does not support
-  this tool_choice", which killed the whole agent round with no reply
-  delivered. The provider now skips `tool_choice` when the configured
-  params enable thinking (`params.thinking.type != "disabled"`), and the
-  retry layer additionally re-issues a rejected forced call once without
-  forcing as a safety net for models that default to thinking.
+- **DeepSeek thinking mode rejected the forced reply tool.** The
+  reply-recovery turn used to force `jyc_reply_message` at the API level
+  (`tool_choice`); thinking-mode OpenAI-compatible models (DeepSeek v4,
+  Kimi k3, MiniMax M3) reject any request carrying `tool_choice` with
+  HTTP 400, which killed the whole agent round with no reply delivered.
+  The API-level forcing is removed entirely: the recovery turn simply
+  restricts the tool list to `jyc_reply_message`, and a text-only finish
+  that persists after the nudge is now auto-delivered in the agent's name
+  via a synthetic `jyc_reply_message` execution — delivery, chat-log
+  entry and metrics are identical to a real tool call, with a subtle
+  "— auto-delivered" trace — instead of the degraded fallback path.
+  (#640, #644)
 - **Reply-delivery guard enforcement.** The agent loop's reply reminders
   are now backed by a tool-restricted recovery turn: after a reminder,
   the next LLM call offers only `jyc_reply_message`, so the model cannot
@@ -60,8 +57,7 @@
   modelable pattern was the root cause of the model mimicking the
   `[History note] assistant tool calls: …` format as narration instead
   of invoking the tool. A turn that called only the reply tool now
-  emits no note at all. The forced-reply-tool recovery turn (#640)
-  remains as a belt-and-suspenders safety net (#641).
+  emits no note at all (#641).
 
 - **Post-pipe-migration cleanup.** The five older pipe adapters
   (email/github/gitee/feishu/wecom_bot) now share the match/retarget/route

@@ -34,6 +34,16 @@
 
 ### Changed
 
+- **History notes filter out `jyc_reply_message`.** Windowed-view
+  annotations no longer list the reply tool call alongside real tool
+  calls; the reply's `message` is the text the user already saw and is
+  preserved in the assistant's own text. Exposing the call as a
+  modelable pattern was the root cause of the model mimicking the
+  `[History note] assistant tool calls: …` format as narration instead
+  of invoking the tool. A turn that called only the reply tool now
+  emits no note at all. The forced-reply-tool recovery turn (#640)
+  remains as a belt-and-suspenders safety net.
+
 - **Post-pipe-migration cleanup.** The five older pipe adapters
   (email/github/gitee/feishu/wecom_bot) now share the match/retarget/route
   helpers extracted in #635 (`match_pipe`, `retarget_or_drop`,

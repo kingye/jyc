@@ -880,11 +880,7 @@ const WINDOWED_TOOL_ARG_MAX: usize = 200;
 /// ponytail: fixed cap; raise if real results routinely need more.
 const WINDOWED_TOOL_RESULT_MAX: usize = 500;
 
-/// Max length of `jyc_reply_message`'s `message` parameter in the
-/// windowed annotation — higher than the generic arg cap because it is
-/// the text the user actually saw, so losing it is what makes the agent
-/// repeat replies.
-const WINDOWED_REPLY_MESSAGE_MAX: usize = 1000;
+
 
 /// A tool result collected for the windowed annotation: truncated text
 /// plus the error flag, so failures render as `→ [error] …` and the agent
@@ -952,22 +948,15 @@ fn collect_tool_calls(msg: &serde_json::Value) -> Vec<(String, String, serde_jso
 }
 
 /// Render one tool call as `name(k=v, …)`, keeping **all** parameters and
-/// truncating only a single argument value that exceeds its cap
-/// (`WINDOWED_REPLY_MESSAGE_MAX` for `jyc_reply_message`'s `message`,
-/// `WINDOWED_TOOL_ARG_MAX` for everything else).
+/// truncating only a single argument value that exceeds
+/// `WINDOWED_TOOL_ARG_MAX`. (`jyc_reply_message` is filtered out at the
+/// caller before reaching here.)
 fn render_tool_call(name: &str, args: &serde_json::Value) -> String {
     if let Some(map) = args.as_object() {
         // Empty maps join to `name()` naturally; no empty-args special case.
         let parts = map
             .iter()
-            .map(|(k, v)| {
-                let max = if name == "jyc_reply_message" && k == "message" {
-                    WINDOWED_REPLY_MESSAGE_MAX
-                } else {
-                    WINDOWED_TOOL_ARG_MAX
-                };
-                format!("{k}={}", truncate_json_value(v, max))
-            })
+            .map(|(k, v)| format!("{k}={}", truncate_json_value(v, WINDOWED_TOOL_ARG_MAX)))
             .collect::<Vec<_>>();
         format!("{name}({})", parts.join(", "))
     } else {
@@ -1123,6 +1112,14 @@ fn tool_call_summary(
     let mut used = 0usize;
     let mut omitted = 0usize;
     for (id, name, args) in &calls {
+        // jyc_reply_message is excluded from the annotation: its `message`
+        // is the text the user already saw (it's in the assistant's own
+        // text), and exposing the call invites the model to mimic the
+        // `[History note] assistant tool calls: …` format as narration
+        // instead of invoking the tool.
+        if name == "jyc_reply_message" {
+            continue;
+        }
         let mut s = render_tool_call(name, args);
         if let Some((result, is_error)) = results.get(id)
             && !result.is_empty()
@@ -1141,6 +1138,9 @@ fn tool_call_summary(
         }
         used += s.len() + 2;
         parts.push(s);
+    }
+    if parts.is_empty() {
+        return None;
     }
     if omitted > 0 {
         parts.push(format!("…({omitted} more calls)"));

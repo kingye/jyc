@@ -378,15 +378,15 @@ mod render_raw_context_tests {
 
         // 1. Windowed recent N pairs from prior (reformatted by provider).
         // a2 issued a tool call: its text stays pure, and the call summary
-        // (with the matching result "out" after the arrow) follows as a
+        // (with the matching result "out" after the arrow) precedes as a
         // separate user-role history note.
         assert_eq!(sent[0], json!({"role": "user", "content": "u2"}));
-        assert_eq!(sent[1], json!({"role": "assistant", "content": "a2"}));
         assert_eq!(
-            sent[2],
+            sent[1],
             json!({"role": "user",
                 "content": "[History note] assistant tool calls: bash() → out"})
         );
+        assert_eq!(sent[2], json!({"role": "assistant", "content": "a2"}));
         assert_eq!(sent[3], json!({"role": "user", "content": "u3"}));
         assert_eq!(sent[4], json!({"role": "assistant", "content": "a3"}));
 
@@ -485,7 +485,7 @@ mod render_raw_context_tests {
         // The windowed pairs should be present; the tool_result user-role
         // wrapper must be excluded. Turn-based pairing merges u1's two
         // assistant steps ("a1" and "calling bash") into one pure-text
-        // entry, with the tool_use summarized in a following history note;
+        // entry, with the tool_use summarized in a preceding history note;
         // (u2, a2) stays a plain pair.
         assert!(
             sent.iter()

@@ -867,7 +867,8 @@ pub(crate) fn extract_message_text(msg: &serde_json::Value) -> String {
 }
 
 /// Max length of a single rendered tool-call argument value kept in the
-/// windowed annotation; longer values are truncated with `…`.
+/// windowed annotation; longer values are truncated with an explicit
+/// `… [truncated N bytes]` marker.
 /// ponytail: fixed cap; raise if real arguments routinely exceed it and
 /// the tail matters.
 const WINDOWED_TOOL_ARG_MAX: usize = 200;
@@ -965,11 +966,15 @@ fn render_tool_call(name: &str, args: &serde_json::Value) -> String {
     }
 }
 
-/// Truncate `s` at `max` bytes (on a char boundary) with `…` when longer.
+/// Truncate `s` at `max` bytes (on a char boundary) with an explicit
+/// `… [truncated N bytes]` marker when longer. The marker distinguishes a
+/// real cut from content that genuinely ends in `…` and tells the model how
+/// much was dropped.
 fn truncate_text(s: &str, max: usize) -> String {
     if s.len() > max {
         let cut = s.floor_char_boundary(max);
-        format!("{}…", &s[..cut])
+        let dropped = s.len() - cut;
+        format!("{}… [truncated {dropped} bytes]", &s[..cut])
     } else {
         s.to_string()
     }
@@ -1005,6 +1010,22 @@ fn extract_result_text(content: &serde_json::Value) -> String {
     String::new()
 }
 
+/// Strip the `[SUCCESS] `/`[ERROR] ` prefix that `format_tool_result`
+/// (openai_compat) bakes into OpenAI tool-result content for the main
+/// loop. The windowed annotation renders its own `[error] ` marker, so the
+/// provider plumbing is redundant noise here — and `[ERROR] ` is the only
+/// error signal an OpenAI `role: "tool"` message carries (no `is_error`
+/// field). Returns the cleaned text and whether it was an error.
+fn strip_tool_result_prefix(text: &str) -> (&str, bool) {
+    if let Some(rest) = text.strip_prefix("[ERROR] ") {
+        (rest, true)
+    } else if let Some(rest) = text.strip_prefix("[SUCCESS] ") {
+        (rest, false)
+    } else {
+        (text, false)
+    }
+}
+
 /// Collect tool results from one raw wire-format message into `results`
 /// (`tool_call_id → (truncated result text, is_error)`). Handles OpenAI
 /// (`role: "tool"` with `tool_call_id`) and Anthropic (`role: "user"`
@@ -1021,15 +1042,16 @@ fn collect_results_from(
         // OpenAI: {"role": "tool", "tool_call_id": "...", "content": "..."}
         "tool" => {
             if let Some(id) = msg.get("tool_call_id").and_then(|i| i.as_str()) {
-                let text = msg
+                let raw = msg
                     .get("content")
                     .map(extract_result_text)
                     .unwrap_or_default();
+                let (text, error_from_prefix) = strip_tool_result_prefix(&raw);
                 results.insert(
                     id.to_string(),
                     (
-                        truncate_text(&text, WINDOWED_TOOL_RESULT_MAX),
-                        is_error_of(msg),
+                        truncate_text(text, WINDOWED_TOOL_RESULT_MAX),
+                        is_error_of(msg) || error_from_prefix,
                     ),
                 );
             }
@@ -1068,10 +1090,13 @@ fn collect_results_from(
 const WINDOWED_ANNOTATION_MAX: usize = 2000;
 
 /// Prefix marking a user-role **history note** — the windowed view's
-/// tool-call summary, emitted as its own message AFTER the assistant text
+/// tool-call summary, emitted as its own message BEFORE the assistant text
 /// so the model never sees the annotation in its own voice (models were
 /// observed mimicking the previous in-text `(incl. followed tool calls:
-/// …)` format and emitting fake tool-call text as their reply).
+/// …)` format and emitting fake tool-call text as their reply). The note
+/// precedes the assistant text (matching the chronological order: tool
+/// calls happen before the final reply) and so an `assistant → user(note)`
+/// adjacency never sits right before the next real user message.
 /// `extract_pairs` skips these notes so a compacted-then-reparsed context
 /// does not treat them as turn-opening user messages.
 pub(crate) const HISTORY_NOTE_PREFIX: &str = "[History note] assistant tool calls:";
@@ -1304,7 +1329,9 @@ pub(crate) fn extract_user_assistant_pairs(
     keep_pairs: usize,
     note_window: Option<usize>,
 ) -> Vec<serde_json::Value> {
-    // Keep only the last N pairs, flattened as user → assistant → note.
+    // Keep only the last N pairs, flattened as user → note → assistant
+    // (the note summarizes the tool calls, which happened before the
+    // assistant's final text).
     let pairs: Vec<_> = extract_pairs(raw_context)
         .into_iter()
         .rev()
@@ -1321,13 +1348,13 @@ pub(crate) fn extract_user_assistant_pairs(
         .enumerate()
         .flat_map(|(i, pair)| {
             let mut v = vec![pair.user];
-            if let Some(assistant) = pair.assistant {
-                v.push(assistant);
-            }
             if i >= notes_skipped
                 && let Some(note) = pair.note
             {
                 v.push(note);
+            }
+            if let Some(assistant) = pair.assistant {
+                v.push(assistant);
             }
             v
         })
@@ -1527,7 +1554,7 @@ mod tests {
     /// correctly; tool_result user-role wrappers are skipped; the whole
     /// turn's assistant steps merge into one pure-text entry, and the tool
     /// call (with its truncated result, `→ ok`) goes into a separate
-    /// user-role history note following the assistant message.
+    /// user-role history note preceding the assistant message.
     #[test]
     fn extract_pairs_anthropic_shape() {
         let ctx = vec![
@@ -1546,12 +1573,12 @@ mod tests {
         assert_eq!(pairs[0], ctx[0]);
         assert_eq!(
             pairs[1],
-            json!({"role": "assistant", "content": "a1\ndone"})
+            json!({"role": "user", "content":
+                "[History note] assistant tool calls: bash(command=\"ls\") → ok"})
         );
         assert_eq!(
             pairs[2],
-            json!({"role": "user", "content":
-                "[History note] assistant tool calls: bash(command=\"ls\") → ok"})
+            json!({"role": "assistant", "content": "a1\ndone"})
         );
     }
 
@@ -1569,12 +1596,12 @@ mod tests {
         ];
         let pairs = super::extract_user_assistant_pairs(&ctx, 10, None);
         assert_eq!(pairs.len(), 3);
-        assert_eq!(pairs[1], json!({"role": "assistant", "content": "running"}));
         assert_eq!(
-            pairs[2],
+            pairs[1],
             json!({"role": "user", "content":
                 "[History note] assistant tool calls: bash(command=\"ls -la\", timeout=30), read(path=\"a.txt\")"})
         );
+        assert_eq!(pairs[2], json!({"role": "assistant", "content": "running"}));
     }
 
     /// Tool-call-only assistant turns (no text) are kept via the note —
@@ -1618,9 +1645,9 @@ mod tests {
                 json!({"role": "user", "content": "u1"}),
                 json!({"role": "assistant", "content": "a1"}),
                 json!({"role": "user", "content": "u2"}),
-                json!({"role": "assistant", "content": "a2"}),
                 json!({"role": "user", "content":
                     "[History note] assistant tool calls: read(path=\"f\")"}),
+                json!({"role": "assistant", "content": "a2"}),
             ]
         );
     }
@@ -1657,7 +1684,7 @@ mod tests {
         let pairs = super::extract_user_assistant_pairs(&ctx, 10, Some(99));
         assert_eq!(pairs.len(), 3);
         assert_eq!(
-            pairs[2],
+            pairs[1],
             json!({"role": "user", "content":
                 "[History note] assistant tool calls: bash(command=\"ls\")"})
         );
@@ -1675,7 +1702,7 @@ mod tests {
             ]}),
         ];
         let pairs = super::extract_user_assistant_pairs(&ctx, 10, None);
-        let content = pairs[2]["content"].as_str().unwrap();
+        let content = pairs[1]["content"].as_str().unwrap();
         assert!(
             content.contains("[History note] assistant tool calls: bash(command="),
             "no note"
@@ -1699,7 +1726,7 @@ mod tests {
             json!({"role": "tool", "tool_call_id": "1", "content": "BRANCH main"}),
         ];
         let pairs = super::extract_user_assistant_pairs(&ctx, 10, None);
-        let content = pairs[2]["content"].as_str().unwrap();
+        let content = pairs[1]["content"].as_str().unwrap();
         // Call 1 gets its result appended after the arrow.
         assert!(
             content.contains(r#"bash(command="ls") → BRANCH main"#),
@@ -1716,7 +1743,8 @@ mod tests {
         );
     }
 
-    /// Over-long tool results are truncated with `…` (500-char cap).
+    /// Over-long tool results are truncated with `… [truncated N bytes]`
+    /// (500-char cap).
     #[test]
     fn extract_pairs_truncates_long_tool_results() {
         let long = "y".repeat(2000);
@@ -1734,7 +1762,11 @@ mod tests {
             content.contains('…'),
             "long result not truncated: {content:?}"
         );
-        // Result cap 500 + arrow + note prefix stay well under 700.
+        assert!(
+            content.contains("truncated"),
+            "truncation must be explicit, not a bare ellipsis: {content:?}"
+        );
+        // Result cap 500 + marker + arrow + note prefix stay well under 700.
         assert!(content.len() < 700, "note too big: {content:?}");
     }
 
@@ -1937,6 +1969,37 @@ mod tests {
                 .contains(r#"read(path="x") → [error] nope"#),
             "anthropic error not marked: {:?}",
             pairs[1].note
+        );
+    }
+
+    /// The `[SUCCESS] `/`[ERROR] ` prefix that `format_tool_result`
+    /// bakes into OpenAI tool-result content is stripped from the note
+    /// (provider plumbing, not user-facing) — and `[ERROR] ` is honored as
+    /// the error signal, so both providers render failures as `→ [error] …`.
+    #[test]
+    fn extract_pairs_strips_provider_result_prefix() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+                {"id": "2", "type": "function", "function": {"name": "read", "arguments": r#"{"path": "x"}"#}}
+            ]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "[SUCCESS] ok"}),
+            json!({"role": "tool", "tool_call_id": "2", "content": "[ERROR] boom"}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        let note = pairs[0].note.as_ref().unwrap()["content"].as_str().unwrap();
+        assert!(
+            note.contains(r#"bash() → ok"#),
+            "success prefix not stripped: {note:?}"
+        );
+        assert!(
+            note.contains(r#"read(path="x") → [error] boom"#),
+            "error not detected from [ERROR] prefix: {note:?}"
+        );
+        assert!(
+            !note.contains("[SUCCESS]") && !note.contains("[ERROR]"),
+            "provider plumbing leaked into the note: {note:?}"
         );
     }
 

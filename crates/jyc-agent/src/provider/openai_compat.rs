@@ -331,6 +331,33 @@ impl Provider for OpenAiCompatProvider {
         tools: &[ToolDefinition],
         system: &str,
     ) -> Result<EventStream> {
+        self.complete_raw_inner(raw_messages, tools, system, None)
+            .await
+    }
+
+    async fn complete_raw_forcing_tool(
+        &self,
+        raw_messages: &[serde_json::Value],
+        tools: &[ToolDefinition],
+        system: &str,
+        tool_name: &str,
+    ) -> Result<EventStream> {
+        self.complete_raw_inner(raw_messages, tools, system, Some(tool_name))
+            .await
+    }
+}
+
+impl OpenAiCompatProvider {
+    /// Shared request logic for `complete_raw` and its tool-forcing variant.
+    /// `forced_tool` injects OpenAI `tool_choice` so the API requires the
+    /// named function call (used by the reply-recovery turn).
+    async fn complete_raw_inner(
+        &self,
+        raw_messages: &[serde_json::Value],
+        tools: &[ToolDefinition],
+        system: &str,
+        forced_tool: Option<&str>,
+    ) -> Result<EventStream> {
         let url = format!("{}/chat/completions", self.base_url);
 
         // Build messages array: system + raw messages (filtered)
@@ -370,6 +397,15 @@ impl Provider for OpenAiCompatProvider {
 
         // Merge extra params
         crate::provider::merge_params(&mut body, &self.params);
+
+        // Forced tool_choice goes after the params merge so configured
+        // params cannot silently disable the recovery-turn forcing.
+        if let Some(name) = forced_tool {
+            body["tool_choice"] = serde_json::json!({
+                "type": "function",
+                "function": { "name": name },
+            });
+        }
 
         // Build and send request
         let req = self
@@ -909,6 +945,41 @@ mod tests {
         assert_eq!(
             requests[0].headers.get("user-agent").unwrap(),
             "opencode/1.15.13"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_raw_forcing_tool_sends_tool_choice_on_the_wire() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("data: [DONE]\n\n"))
+            .mount(&server)
+            .await;
+
+        let provider =
+            OpenAiCompatProvider::new(&server.uri(), "test-model", Some("k"), None, false, None)
+                .expect("provider construction");
+        let raw = vec![serde_json::json!({"role": "user", "content": "hi"})];
+        let tools = vec![ToolDefinition {
+            name: "jyc_reply_message".to_string(),
+            description: "reply".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let stream = provider
+            .complete_raw_forcing_tool(&raw, &tools, "", "jyc_reply_message")
+            .await
+            .expect("stream");
+        tokio::pin!(stream);
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        assert_eq!(
+            sent["tool_choice"],
+            serde_json::json!({"type": "function", "function": {"name": "jyc_reply_message"}}),
+            "wire body must force the reply tool, got: {sent:#}"
         );
     }
 

@@ -205,6 +205,7 @@ pub(crate) async fn complete_with_retry(
 
 /// Issue one LLM call and collect its streaming response, honouring the
 /// cancellation token (a cancelled token aborts immediately).
+#[allow(clippy::too_many_arguments)]
 async fn issue_call(
     provider: &dyn Provider,
     raw_context: &[serde_json::Value],

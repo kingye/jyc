@@ -21,7 +21,6 @@ use jyc_channels::feishu::client::FeishuClient;
 use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
 use jyc_channels::github::inbound::GithubMatcher;
 use jyc_channels::websocket::inbound::{WebsocketInboundAdapter, WebsocketMatcher};
-use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
 
 use jyc_channels::wecom::kf_client::KfApiClient;
 use jyc_channels::wecom::kf_cursor::KfCursorStore;
@@ -31,57 +30,14 @@ use jyc_channels::wecom::token_cache::AccessTokenCache;
 use jyc_channels::wecom_bot::inbound::{WecomBotInboundAdapter, WecomBotMatcher};
 use jyc_core::channel_orchestrator::ChannelOrchestrator;
 use jyc_core::message_router::MessageRouter;
-use jyc_core::message_storage::MessageStorage;
 use jyc_core::state_manager::StateManager;
 use jyc_core::topic_manager::TopicManager;
 use jyc_services::imap::monitor::ImapMonitor;
 use jyc_types::{
     ChannelConfig, ChannelInfo, ChannelMatcher, ChannelPattern, InboundAdapter,
-    InboundAttachmentConfig, MonitorConfig, OutboundAdapter,
+    InboundAttachmentConfig, MonitorConfig,
 };
 
-/// Build the outbound adapter for a channel.
-///
-/// Returns `Ok(None)` for unsupported channel types (the caller skips them,
-/// matching the original inline `continue` behavior).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_outbound_adapter(
-    channel_type: &str,
-    channel_name: &str,
-    storage: Arc<MessageStorage>,
-    workspace_dir: &std::path::Path,
-    inspect_broadcast: Arc<broadcast::Sender<String>>,
-    ws_handler_for_channel: &mut HashMap<String, Arc<WebsocketInboundAdapter>>,
-    websocket_handlers: &mut Vec<Arc<WebsocketInboundAdapter>>,
-    ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
-) -> Result<Option<Arc<dyn OutboundAdapter>>> {
-    // Only hub (websocket) channels own an outbound adapter; every other
-    // channel type is a pipe-only adapter whose replies are relayed by a
-    // forwarder subscribed to the hub broadcast.
-    if channel_type != "websocket" {
-        tracing::warn!(
-            channel = %channel_name,
-            channel_type = %channel_type,
-            "Unsupported channel type, skipping"
-        );
-        return Ok(None);
-    }
-    let (broadcast_tx, _) = tokio::sync::broadcast::channel(64);
-    let adapter = WebsocketOutboundAdapter::new(broadcast_tx.clone(), storage.clone());
-    // Store the inbound adapter for later registration with the inspect server
-    let mut handler = WebsocketInboundAdapter::new(channel_name.to_string(), broadcast_tx.clone());
-    handler.set_workspace_dir(workspace_dir.to_path_buf());
-    handler.set_inspect_broadcast(inspect_broadcast.clone());
-    let handler = Arc::new(handler);
-    ws_handler_for_channel.insert(channel_name.to_string(), handler.clone());
-    websocket_handlers.push(handler);
-    // Expose the broadcast so piped channels can subscribe to replies.
-    ws_broadcasts
-        .lock()
-        .unwrap()
-        .insert(channel_name.to_string(), broadcast_tx);
-    Ok(Some(Arc::new(adapter)))
-}
 /// Re-target a piped inbound message into the target channel/topic, applying
 /// the target channel's pattern (template/role) for that topic.
 ///

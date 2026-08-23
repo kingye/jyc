@@ -10,6 +10,7 @@ pub enum MetricEvent {
     MessageReceived { topic: String },
     MessageMatched { topic: String },
     ReplyByTool { topic: String },
+    ReplyByAuto { topic: String },
     ReplyByFallback { topic: String },
     ProcessingError { topic: String, error: String },
     QueueDropped { topic: String },
@@ -30,6 +31,9 @@ pub struct HealthStats {
     pub messages_matched: u64,
     pub messages_processed: u64,
     pub replies_by_tool: u64,
+    /// Replies delivered via synthetic `jyc_reply_message` execution (the
+    /// model finished text-only even after the nudge).
+    pub replies_by_auto: u64,
     pub replies_by_fallback: u64,
     pub errors: u64,
     pub dropped: u64,
@@ -66,6 +70,14 @@ impl MetricsHandle {
     /// Report a reply sent by MCP tool.
     pub fn reply_by_tool(&self, topic: &str) {
         let _ = self.sender.try_send(MetricEvent::ReplyByTool {
+            topic: topic.to_string(),
+        });
+    }
+
+    /// Report a reply auto-delivered in the agent's name (synthetic
+    /// `jyc_reply_message` execution after a nudged text-only finish).
+    pub fn reply_by_auto(&self, topic: &str) {
+        let _ = self.sender.try_send(MetricEvent::ReplyByAuto {
             topic: topic.to_string(),
         });
     }
@@ -168,6 +180,11 @@ impl MetricsCollector {
                 stats.replies_by_tool += 1;
                 stats.per_topic.entry(topic.clone()).or_default().processed += 1;
             }
+            MetricEvent::ReplyByAuto { ref topic } => {
+                stats.messages_processed += 1;
+                stats.replies_by_auto += 1;
+                stats.per_topic.entry(topic.clone()).or_default().processed += 1;
+            }
             MetricEvent::ReplyByFallback { ref topic } => {
                 stats.messages_processed += 1;
                 stats.replies_by_fallback += 1;
@@ -262,6 +279,25 @@ mod tests {
         let s = stats.lock().await;
         assert_eq!(s.messages_processed, 1);
         assert_eq!(s.replies_by_fallback, 1);
+        assert_eq!(s.per_topic["topic-1"].processed, 1);
+        drop(s);
+
+        cancel.cancel();
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_metrics_reply_by_auto() {
+        let cancel = CancellationToken::new();
+        let collector = MetricsCollector::new(cancel.clone());
+        let (handle, stats, task) = collector.start();
+
+        handle.reply_by_auto("topic-1");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let s = stats.lock().await;
+        assert_eq!(s.messages_processed, 1);
+        assert_eq!(s.replies_by_auto, 1);
         assert_eq!(s.per_topic["topic-1"].processed, 1);
         drop(s);
 

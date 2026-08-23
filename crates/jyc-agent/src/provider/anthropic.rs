@@ -262,33 +262,6 @@ impl Provider for AnthropicProvider {
         tools: &[ToolDefinition],
         system: &str,
     ) -> Result<EventStream> {
-        self.complete_raw_inner(raw_messages, tools, system, None)
-            .await
-    }
-
-    async fn complete_raw_forcing_tool(
-        &self,
-        raw_messages: &[serde_json::Value],
-        tools: &[ToolDefinition],
-        system: &str,
-        tool_name: &str,
-    ) -> Result<EventStream> {
-        self.complete_raw_inner(raw_messages, tools, system, Some(tool_name))
-            .await
-    }
-}
-
-impl AnthropicProvider {
-    /// Shared request logic for `complete_raw` and its tool-forcing variant.
-    /// `forced_tool` injects Anthropic `tool_choice` so the API requires the
-    /// named tool call (used by the reply-recovery turn).
-    async fn complete_raw_inner(
-        &self,
-        raw_messages: &[serde_json::Value],
-        tools: &[ToolDefinition],
-        system: &str,
-        forced_tool: Option<&str>,
-    ) -> Result<EventStream> {
         let url = format!("{}/messages", self.base_url);
 
         let api_tools: Vec<AnthropicTool> = tools
@@ -319,15 +292,6 @@ impl AnthropicProvider {
 
         // Merge extra params
         crate::provider::merge_params(&mut body, &self.params);
-
-        // Forced tool_choice goes after the params merge so configured
-        // params cannot silently disable the recovery-turn forcing.
-        if let Some(name) = forced_tool {
-            body["tool_choice"] = serde_json::json!({
-                "type": "tool",
-                "name": name,
-            });
-        }
 
         // Prompt-cache breakpoints. Applied last so a `system` or `tools`
         // override coming from `params` is marked too, and cannot clobber
@@ -1180,46 +1144,6 @@ mod tests {
 
         assert_eq!(body, before, "caller's tool marker wins");
         assert_eq!(count_breakpoints(&body), 1);
-    }
-
-    /// End-to-end: the forced `tool_choice` must land in the actual HTTP
-    /// body sent to Anthropic.
-    #[tokio::test]
-    async fn complete_raw_forcing_tool_sends_tool_choice_on_the_wire() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/messages"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
-            )
-            .mount(&server)
-            .await;
-
-        let provider =
-            AnthropicProvider::new(&server.uri(), "claude-test", Some("k"), None, false, None)
-                .unwrap();
-        let raw = vec![json!({"role": "user", "content": [{"type": "text", "text": "hi"}]})];
-        let tools = vec![ToolDefinition {
-            name: "jyc_reply_message".to_string(),
-            description: "reply".to_string(),
-            input_schema: json!({"type": "object"}),
-        }];
-        let stream = provider
-            .complete_raw_forcing_tool(&raw, &tools, "", "jyc_reply_message")
-            .await
-            .expect("stream");
-        tokio::pin!(stream);
-        while stream.next().await.is_some() {}
-
-        let requests = server.received_requests().await.expect("requests recorded");
-        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
-        assert_eq!(
-            sent["tool_choice"],
-            json!({"type": "tool", "name": "jyc_reply_message"}),
-            "wire body must force the reply tool, got: {sent:#}"
-        );
     }
 
     /// End-to-end: the breakpoints must survive into the actual HTTP body

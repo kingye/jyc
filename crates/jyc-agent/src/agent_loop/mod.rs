@@ -86,11 +86,13 @@ const REMINDER_REPLY_FAILED: &str = "[System reminder] Your `jyc_reply_message` 
     call FAILED and the reply was NOT delivered: {error}. Fix the arguments and \
     call `jyc_reply_message` again now — do not finish with plain text.";
 
-/// Warning appended to a text-only fallback reply when the reply tool was
-/// available but never called even after the reminder. Visible to the end
-/// user so a degraded delivery is never mistaken for a normal reply.
-const FALLBACK_REPLY_WARNING: &str = "\n\n⚠️ [Fallback reply — the agent finished \
-    without calling jyc_reply_message; this text was delivered automatically]";
+/// Subtle trace appended to an auto-delivered fallback reply: the reply
+/// tool was available but never called even after the nudge, so the text
+/// was delivered IN THE AGENT'S NAME via a synthetic `jyc_reply_message`
+/// execution (see the post-loop fallback). Kept unobtrusive so the
+/// delivery is not mistaken for an error, but present so it is never
+/// mistaken for a reply the model consciously authored.
+const AUTO_REPLY_TRACE: &str = "\n\n— auto-delivered";
 
 /// Configuration for the agent loop.
 pub struct AgentLoopConfig<'a> {
@@ -801,12 +803,101 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 );
             }
 
-            // Fallback delivery with visible warning: the reply tool exists
-            // but was never called, even after the nudge. Mark the text so a
-            // degraded delivery is never mistaken for a normal reply.
+            // Fallback delivery: the reply tool exists but was never called,
+            // even after the nudge. Instead of returning the raw text for the
+            // worker's degraded-fallback path, deliver it IN THE AGENT'S NAME
+            // by executing `jyc_reply_message` synthetically — the same
+            // mechanism as the cycle-boundary progress reply — so delivery,
+            // chat-log entry and metrics are identical to a real tool call.
+            // A subtle trace is appended so an auto-delivered reply is never
+            // mistaken for one the model consciously authored.
             let mut final_text = response.text;
             if !reply_sent_by_tool && reply_tool_nudged && !final_text.trim().is_empty() {
-                final_text.push_str(FALLBACK_REPLY_WARNING);
+                final_text.push_str(AUTO_REPLY_TRACE);
+                let synthetic_call_id = format!("auto-reply-{}", total_iterations);
+                let synthetic_args =
+                    serde_json::json!({"message": &final_text, "stop_after": true}).to_string();
+
+                publish_event(
+                    event_bus,
+                    TopicEvent::ToolStarted {
+                        topic_name: topic_name.to_string(),
+                        tool_name: "jyc_reply_message".to_string(),
+                        input: Some(synthetic_args.clone()),
+                        timestamp: Utc::now(),
+                    },
+                )
+                .await;
+
+                let tool_start = Instant::now();
+                let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
+                ctx.additional_write_roots = additional_write_roots.clone();
+                ctx.pattern_inject_images = pattern_inject_images;
+                ctx.outbound = outbound.clone();
+                ctx.topic_managers = topic_managers.clone();
+                ctx.current_channel = current_channel.clone();
+                ctx.current_topic = Some(topic_name.to_string());
+                ctx.outbounds = outbounds.clone();
+                ctx.reply_target = reply_target.clone();
+                let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
+                    .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
+                let synthetic_output = match tools
+                    .execute("jyc_reply_message", synthetic_input, &ctx)
+                    .await
+                {
+                    Ok(output) => output,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Synthetic auto-reply execution failed");
+                        ToolOutput::error(format!("Tool error: {e}"))
+                    }
+                };
+
+                publish_event(
+                    event_bus,
+                    TopicEvent::ToolCompleted {
+                        topic_name: topic_name.to_string(),
+                        tool_name: "jyc_reply_message".to_string(),
+                        success: !synthetic_output.is_error,
+                        duration_secs: tool_start.elapsed().as_secs(),
+                        output: if synthetic_output.is_error {
+                            Some(synthetic_output.content.clone())
+                        } else {
+                            None
+                        },
+                        input: Some(synthetic_args),
+                        timestamp: Utc::now(),
+                    },
+                )
+                .await;
+
+                if !synthetic_output.is_error {
+                    reply_sent_by_tool = true;
+                    reply_text_from_tool = Some(final_text.clone());
+                    // Record the synthetic call in internal history for
+                    // chat-log rendering only — never replayed to the LLM
+                    // (same rule as the cycle-boundary progress reply).
+                    history.push(Message {
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::ToolUse {
+                            id: synthetic_call_id.clone(),
+                            name: "jyc_reply_message".to_string(),
+                            input: serde_json::json!({
+                                "message": &final_text,
+                                "stop_after": true
+                            }),
+                        }],
+                    });
+                    history.push(Message::tool_result(
+                        &synthetic_call_id,
+                        &synthetic_output.content,
+                        false,
+                    ));
+                } else {
+                    tracing::warn!(
+                        error = %synthetic_output.content,
+                        "Synthetic auto-reply failed; falling back to plain text return"
+                    );
+                }
             }
 
             let duration = start_time.elapsed();
@@ -1774,8 +1865,8 @@ mod reply_tool_tests {
         assert_eq!(result.reply_text_from_tool.as_deref(), Some("final answer"));
         assert!(result.text.is_empty(), "no fallback text expected");
         assert!(
-            !result.text.contains(FALLBACK_REPLY_WARNING),
-            "no warning when the reply tool was used"
+            !result.text.contains(AUTO_REPLY_TRACE),
+            "no auto-delivery trace when the reply tool was used"
         );
 
         // The recovery turn must run with a restricted tool list: only
@@ -1984,10 +2075,12 @@ mod reply_tool_tests {
         assert!(!working_dir.join(".jyc/reply-sent.flag").exists());
     }
 
-    /// A text-only finish that persists after the nudge must be delivered via
-    /// the fallback path with a visible warning marker appended.
+    /// A text-only finish that persists after the nudge must be auto-delivered
+    /// in the agent's name: the loop executes `jyc_reply_message` synthetically
+    /// (writing the signal files) and the result counts as sent by the tool,
+    /// with a subtle auto-delivery trace appended.
     #[tokio::test]
-    async fn persistent_text_only_appends_fallback_warning() {
+    async fn persistent_text_only_is_auto_delivered_via_reply_tool() {
         let provider = ScriptedProvider {
             rounds: vec![
                 vec![
@@ -2043,18 +2136,28 @@ mod reply_tool_tests {
         .await
         .expect("agent loop should run to completion");
 
-        // Initial + one nudge = exactly 2 LLM calls, then fallback with text.
+        // Initial + one nudge = exactly 2 LLM calls, then the text is
+        // auto-delivered via a synthetic `jyc_reply_message` execution.
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
-        assert!(!result.reply_sent_by_tool);
         assert!(
-            result.text.contains("still no tool call"),
-            "final text must be the last model text, got: {:?}",
-            result.text
+            result.reply_sent_by_tool,
+            "auto-delivered reply must count as sent by the tool"
+        );
+        assert_eq!(
+            result.reply_text_from_tool.as_deref(),
+            Some("still no tool call\n\n— auto-delivered"),
+            "auto-delivered text must be the last model text plus the subtle trace, got: {:?}",
+            result.reply_text_from_tool
+        );
+        // The synthetic execution wrote the signal files (file-relay path,
+        // since the test provides no outbound adapter / reply target).
+        assert!(
+            working_dir.join(".jyc/reply.md").exists(),
+            "reply.md must be written by the synthetic auto-delivery"
         );
         assert!(
-            result.text.contains(FALLBACK_REPLY_WARNING),
-            "fallback reply must carry the warning marker, got: {:?}",
-            result.text
+            working_dir.join(".jyc/reply-sent.flag").exists(),
+            "reply-sent.flag must be written by the synthetic auto-delivery"
         );
     }
 

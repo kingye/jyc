@@ -184,6 +184,88 @@ pub struct AgentLoopConfig<'a> {
     pub reply_target: Option<crate::tools::ReplyTarget>,
 }
 
+/// Execute `jyc_reply_message` "in the agent's name" — synthetically, on
+/// behalf of the model — publishing the same `ToolStarted`/`ToolCompleted`
+/// events and `history` entries as a real tool call. Shared by the
+/// cycle-boundary progress reply and the final text-only auto-delivery.
+///
+/// Deliberately does NOT inject a synthetic assistant turn into
+/// `raw_context`: that would replay a turn the model never produced (and
+/// which has no `reasoning_content`), violating DeepSeek's thinking-mode
+/// contract on the next request.
+///
+/// Returns the tool output so the caller can react to success/failure.
+async fn execute_reply_tool_synthetic(
+    tools: &ToolRegistry,
+    ctx: &ToolContext<'_>,
+    event_bus: Option<&TopicEventBusRef>,
+    topic_name: &str,
+    call_id: &str,
+    message: &str,
+    stop_after: bool,
+    history: &mut Vec<Message>,
+) -> ToolOutput {
+    let input = serde_json::json!({"message": message, "stop_after": stop_after});
+    let input_str = input.to_string();
+
+    publish_event(
+        event_bus,
+        TopicEvent::ToolStarted {
+            topic_name: topic_name.to_string(),
+            tool_name: "jyc_reply_message".to_string(),
+            input: Some(input_str.clone()),
+            timestamp: Utc::now(),
+        },
+    )
+    .await;
+
+    let tool_start = Instant::now();
+    let output = match tools.execute("jyc_reply_message", input, ctx).await {
+        Ok(output) => output,
+        Err(e) => {
+            tracing::warn!(error = %e, "Synthetic jyc_reply_message execution failed");
+            ToolOutput::error(format!("Tool error: {e}"))
+        }
+    };
+
+    publish_event(
+        event_bus,
+        TopicEvent::ToolCompleted {
+            topic_name: topic_name.to_string(),
+            tool_name: "jyc_reply_message".to_string(),
+            success: !output.is_error,
+            duration_secs: tool_start.elapsed().as_secs(),
+            output: if output.is_error {
+                Some(output.content.clone())
+            } else {
+                None
+            },
+            input: Some(input_str),
+            timestamp: Utc::now(),
+        },
+    )
+    .await;
+
+    // Record the synthetic call in internal `history` for chat-log rendering
+    // only — never replayed to the LLM (same rule as the progress reply).
+    // Failures are recorded too, so a failed auto-delivery is not lost.
+    history.push(Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::ToolUse {
+            id: call_id.to_string(),
+            name: "jyc_reply_message".to_string(),
+            input: serde_json::json!({"message": message, "stop_after": stop_after}),
+        }],
+    });
+    history.push(Message::tool_result(
+        call_id,
+        &output.content,
+        output.is_error,
+    ));
+
+    output
+}
+
 /// Run the agent loop to completion.
 ///
 /// Returns the final text response and metadata about tool usage.
@@ -253,6 +335,20 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let mut total_cache_creation_tokens: u64 = 0;
     let mut reply_sent_by_tool = false;
     let mut reply_text_from_tool: Option<String> = None;
+
+    // Shared ToolContext for tool execution and synthetic `jyc_reply_message`
+    // deliveries (cycle-boundary progress reply + final auto-delivery). Built
+    // once: every field is static for the duration of the loop. The
+    // `context_browse` snapshot below mutates `ctx.raw_context` per batch.
+    let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
+    ctx.additional_write_roots = additional_write_roots.clone();
+    ctx.pattern_inject_images = pattern_inject_images;
+    ctx.outbound = outbound.clone();
+    ctx.topic_managers = topic_managers.clone();
+    ctx.current_channel = current_channel.clone();
+    ctx.current_topic = Some(topic_name.to_string());
+    ctx.outbounds = outbounds.clone();
+    ctx.reply_target = reply_target.clone();
     let start_time = Instant::now();
 
     // RAII guard: the spawned ticker task is terminated on every return
@@ -399,77 +495,17 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             //    (and thus has no reasoning_content), violating DeepSeek's
             //    thinking-mode contract on the next request.
             let synthetic_call_id = format!("progress-cycle-{}", cycle_count);
-            let synthetic_args =
-                serde_json::json!({"message": &progress_text, "stop_after": false}).to_string();
-
-            publish_event(
+            execute_reply_tool_synthetic(
+                tools,
+                &ctx,
                 event_bus,
-                TopicEvent::ToolStarted {
-                    topic_name: topic_name.to_string(),
-                    tool_name: "jyc_reply_message".to_string(),
-                    input: Some(synthetic_args.clone()),
-                    timestamp: Utc::now(),
-                },
-            )
-            .await;
-
-            let tool_start = Instant::now();
-            let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
-            ctx.additional_write_roots = additional_write_roots.clone();
-            ctx.pattern_inject_images = pattern_inject_images;
-            ctx.outbound = outbound.clone();
-            ctx.topic_managers = topic_managers.clone();
-            ctx.current_channel = current_channel.clone();
-            ctx.current_topic = Some(topic_name.to_string());
-            ctx.outbounds = outbounds.clone();
-            ctx.reply_target = reply_target.clone();
-            let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
-                .unwrap_or(serde_json::Value::Object(Default::default()));
-            let synthetic_output = match tools
-                .execute("jyc_reply_message", synthetic_input, &ctx)
-                .await
-            {
-                Ok(output) => output,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Synthetic reply tool execution failed");
-                    ToolOutput::error(format!("Tool error: {e}"))
-                }
-            };
-
-            publish_event(
-                event_bus,
-                TopicEvent::ToolCompleted {
-                    topic_name: topic_name.to_string(),
-                    tool_name: "jyc_reply_message".to_string(),
-                    success: !synthetic_output.is_error,
-                    duration_secs: tool_start.elapsed().as_secs(),
-                    output: if synthetic_output.is_error {
-                        Some(synthetic_output.content.clone())
-                    } else {
-                        None
-                    },
-                    input: Some(synthetic_args),
-                    timestamp: Utc::now(),
-                },
-            )
-            .await;
-
-            // 3. Append the synthetic event to internal `history` for
-            //    diagnostics only. `history` is used for chat-log rendering
-            //    and is NEVER replayed to the LLM.
-            history.push(Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::ToolUse {
-                    id: synthetic_call_id.clone(),
-                    name: "jyc_reply_message".to_string(),
-                    input: serde_json::json!({"message": &progress_text, "stop_after": false}),
-                }],
-            });
-            history.push(Message::tool_result(
+                topic_name,
                 &synthetic_call_id,
-                &synthetic_output.content,
-                synthetic_output.is_error,
-            ));
+                &progress_text,
+                false,
+                &mut history,
+            )
+            .await;
 
             // 4. Reset iteration counter for next cycle. raw_context is
             //    intentionally left unchanged so the next API call replays
@@ -815,83 +851,21 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             if !reply_sent_by_tool && reply_tool_nudged && !final_text.trim().is_empty() {
                 final_text.push_str(AUTO_REPLY_TRACE);
                 let synthetic_call_id = format!("auto-reply-{}", total_iterations);
-                let synthetic_args =
-                    serde_json::json!({"message": &final_text, "stop_after": true}).to_string();
-
-                publish_event(
+                let synthetic_output = execute_reply_tool_synthetic(
+                    tools,
+                    &ctx,
                     event_bus,
-                    TopicEvent::ToolStarted {
-                        topic_name: topic_name.to_string(),
-                        tool_name: "jyc_reply_message".to_string(),
-                        input: Some(synthetic_args.clone()),
-                        timestamp: Utc::now(),
-                    },
-                )
-                .await;
-
-                let tool_start = Instant::now();
-                let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
-                ctx.additional_write_roots = additional_write_roots.clone();
-                ctx.pattern_inject_images = pattern_inject_images;
-                ctx.outbound = outbound.clone();
-                ctx.topic_managers = topic_managers.clone();
-                ctx.current_channel = current_channel.clone();
-                ctx.current_topic = Some(topic_name.to_string());
-                ctx.outbounds = outbounds.clone();
-                ctx.reply_target = reply_target.clone();
-                let synthetic_input: serde_json::Value = serde_json::from_str(&synthetic_args)
-                    .unwrap_or_else(|_| serde_json::Value::Object(Default::default()));
-                let synthetic_output = match tools
-                    .execute("jyc_reply_message", synthetic_input, &ctx)
-                    .await
-                {
-                    Ok(output) => output,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Synthetic auto-reply execution failed");
-                        ToolOutput::error(format!("Tool error: {e}"))
-                    }
-                };
-
-                publish_event(
-                    event_bus,
-                    TopicEvent::ToolCompleted {
-                        topic_name: topic_name.to_string(),
-                        tool_name: "jyc_reply_message".to_string(),
-                        success: !synthetic_output.is_error,
-                        duration_secs: tool_start.elapsed().as_secs(),
-                        output: if synthetic_output.is_error {
-                            Some(synthetic_output.content.clone())
-                        } else {
-                            None
-                        },
-                        input: Some(synthetic_args),
-                        timestamp: Utc::now(),
-                    },
+                    topic_name,
+                    &synthetic_call_id,
+                    &final_text,
+                    true,
+                    &mut history,
                 )
                 .await;
 
                 if !synthetic_output.is_error {
                     reply_sent_by_tool = true;
                     reply_text_from_tool = Some(final_text.clone());
-                    // Record the synthetic call in internal history for
-                    // chat-log rendering only — never replayed to the LLM
-                    // (same rule as the cycle-boundary progress reply).
-                    history.push(Message {
-                        role: Role::Assistant,
-                        content: vec![ContentBlock::ToolUse {
-                            id: synthetic_call_id.clone(),
-                            name: "jyc_reply_message".to_string(),
-                            input: serde_json::json!({
-                                "message": &final_text,
-                                "stop_after": true
-                            }),
-                        }],
-                    });
-                    history.push(Message::tool_result(
-                        &synthetic_call_id,
-                        &synthetic_output.content,
-                        false,
-                    ));
                 } else {
                     tracing::warn!(
                         error = %synthetic_output.content,
@@ -958,20 +932,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             "Executing tool calls"
         );
 
-        let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
-        ctx.additional_write_roots = additional_write_roots.clone();
-        ctx.pattern_inject_images = pattern_inject_images;
-        ctx.outbound = outbound.clone();
-        ctx.topic_managers = topic_managers.clone();
-        ctx.current_channel = current_channel.clone();
-        ctx.current_topic = Some(topic_name.to_string());
-        ctx.outbounds = outbounds.clone();
-        ctx.reply_target = reply_target.clone();
         // Snapshot for `context_browse` — only when the tool is actually in
         // this batch. `raw_context` is mutated as tool results are appended
         // below, so the snapshot must be taken before the loop; but cloning
         // the full transcript on every batch that never browses would be
-        // wasted O(n) work per iteration.
+        // wasted O(n) work per iteration. (The shared `ctx` built at the top
+        // of `run()` is reused.)
         if response
             .tool_calls
             .iter()

@@ -1,9 +1,9 @@
 # Channels / Agents / AI — Migration Design
 
-**Status:** Target architecture and migration plan. Not yet implemented.
-This document is the single source of truth for the rename/refactor
-program decided on 2026-08-16. It supersedes `core-hub-adapters.md`
-once the migration lands (that document is rewritten in the final phase).
+**Status:** Landed. The rename/refactor program decided on 2026-08-16 is
+complete: every channel type is a pipe-only adapter and the websocket
+channel is the sole hub. This document is kept as the design record;
+[core-hub-adapters.md](core-hub-adapters.md) describes the reached state.
 
 ## Target model
 

@@ -36,7 +36,7 @@
   synchronous delivery, mirroring the real tool-call path (exactly once
   per delivery; file-relay deliveries still leave the event to the
   worker). This also fixes cycle-boundary progress replies, which went
-  through the same path.
+  through the same path. (#646)
 - **Feishu progress indicator used chat_id instead of message_id.** The
   Typing/DONE reactions now read `message.external_id` (the message_id)
   instead of `message.channel_uid` (the chat_id). (#642)

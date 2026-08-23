@@ -462,29 +462,7 @@ pub(crate) async fn spawn_email_adapter(
     // error — warn at startup, drop matching messages at runtime.
     let pipe_channels =
         collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
-    for p in channel_config
-        .patterns
-        .iter()
-        .flatten()
-        .filter(|p| p.enabled)
-    {
-        match &p.pipe {
-            Some(pipe) => {
-                if pipe.channel.is_some() || pipe.pattern.is_some() {
-                    tracing::warn!(
-                        channel = %channel_name,
-                        pattern = %p.name,
-                        "email pipe.channel/pipe.pattern is deprecated; use pipe = {{ agent = \"...\", topic = \"...\" }}"
-                    );
-                }
-            }
-            None => tracing::warn!(
-                channel = %channel_name,
-                pattern = %p.name,
-                "email pattern has no pipe target; matching messages will be dropped"
-            ),
-        }
-    }
+    warn_on_bad_pipe_patterns("email", &channel_name, channel_config);
 
     // Mailbox cursor state lives under <workdir>/channels/<channel>/.imap/.
     let mut state_manager = StateManager::for_channel(&workdir.join("channels"), &channel_name);
@@ -654,32 +632,24 @@ pub(crate) async fn spawn_email_adapter(
                     let routers = routers.clone();
                     tokio::spawn(async move {
                         let mut message = message;
-                        // 1. Match this channel's patterns (rules).
                         let patterns = config_for_pipe
                             .load()
                             .channels
                             .get(&channel_name_self)
                             .and_then(|c| c.patterns.clone())
                             .unwrap_or_default();
-                        let Some(pm) = EmailMatcher.match_message(&message, &patterns) else {
-                            tracing::debug!(
-                                subject = %message.topic,
-                                "email: no pattern matched, dropping"
-                            );
+                        let Some((pm, pattern)) =
+                            match_pipe("email", &EmailMatcher, &message, &patterns)
+                        else {
                             return;
                         };
-                        // 2. Per-pattern `pipe`: the matched pattern decides.
-                        let matched = patterns.iter().find(|p| p.name == pm.pattern_name);
-                        let Some(pipe) = matched.and_then(|p| p.pipe.as_ref()) else {
-                            tracing::warn!(
-                                pattern = %pm.pattern_name,
-                                "email: matched pattern has no pipe target, dropping message"
-                            );
-                            return;
-                        };
+                        let pipe = pattern
+                            .pipe
+                            .as_ref()
+                            .expect("match_pipe guarantees a pipe target");
 
-                        // 3. Reply state, captured before re-targeting
-                        //    rewrites channel/topic.
+                        // Reply state, captured before re-targeting
+                        // rewrites channel/topic.
                         let mut references = message.references.clone().unwrap_or_default();
                         if let Some(ext_id) = &message.external_id {
                             references.push(ext_id.clone());
@@ -691,66 +661,36 @@ pub(crate) async fn spawn_email_adapter(
                             references,
                         };
 
-                        // 4. Re-target into the target channel/topic. Without
-                        //    an explicit `pipe.topic`, the pattern's
-                        //    `topic_name` override wins, else the
-                        //    subject-derived topic name (same precedence the
-                        //    MessageRouter applied before the migration).
-                        //    The derived name also replaces `message.topic`
-                        //    (the parse-time subject, already `Re:`/`Fw:`
-                        //    stripped but not pattern-prefix stripped or
-                        //    sanitized) so `${msg.topic}` in a template
-                        //    resolves to the same name the no-template path
-                        //    would use. `apply_pipe_retarget` overwrites
-                        //    `message.topic` with the resolved template anyway.
-                        let derived_topic = matched
-                            .and_then(|p| p.topic_name.clone())
-                            .unwrap_or_else(|| {
-                                EmailMatcher.derive_topic_name(&message, &patterns, Some(&pm))
-                            });
+                        // Re-target into the target channel/topic. Without
+                        // an explicit `pipe.topic`, the pattern's
+                        // `topic_name` override wins, else the
+                        // subject-derived topic name (same precedence the
+                        // MessageRouter applied before the migration).
+                        // The derived name also replaces `message.topic`
+                        // (the parse-time subject, already `Re:`/`Fw:`
+                        // stripped but not pattern-prefix stripped or
+                        // sanitized) so `${msg.topic}` in a template
+                        // resolves to the same name the no-template path
+                        // would use. `apply_pipe_retarget` overwrites
+                        // `message.topic` with the resolved template anyway.
+                        let derived_topic = pattern.topic_name.clone().unwrap_or_else(|| {
+                            EmailMatcher.derive_topic_name(&message, &patterns, Some(&pm))
+                        });
                         let pipe = email_pipe_with_topic(pipe, &derived_topic);
                         message.topic = derived_topic;
-                        let drop_debug = message.id.clone();
-                        let Some(message) = apply_pipe_retarget(message, &pipe) else {
-                            tracing::warn!(
-                                topic = ?pipe.topic,
-                                pattern = ?pipe.pattern,
-                                agent = ?pipe.agent,
-                                message_id = %drop_debug,
-                                "email pipe: unresolvable target, dropping"
-                            );
+                        let Some(message) = retarget_or_drop("email", message, &pipe) else {
                             return;
                         };
 
-                        // 5. Record resolved topic -> reply state.
+                        // Record resolved topic -> reply state.
                         topic_state
                             .lock()
                             .unwrap()
                             .insert(message.topic.clone(), reply_state);
 
-                        // 6. Route through the target's own MessageRouter —
-                        //    the same path as a chat-pane message.
-                        let target_channel = pipe
-                            .channel
-                            .clone()
-                            .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
-                            .expect("validated upstream: agent or channel required");
-                        let Some(target_router) =
-                            routers
-                                .lock()
-                                .unwrap()
-                                .get(&target_channel)
-                                .map(|(r, _)| r.clone())
-                        else {
-                            tracing::warn!(
-                                channel = %target_channel,
-                                "email pipe: target channel router not found, dropping"
-                            );
-                            return;
-                        };
-                        target_router
-                            .route(&WebsocketMatcher::new(target_channel), message)
-                            .await;
+                        // Route through the target's own MessageRouter —
+                        // the same path as a chat-pane message.
+                        route_into_pipe_target("email", &routers, &pipe, message).await;
                     });
                     Ok(())
                 }),
@@ -835,29 +775,7 @@ pub(crate) fn spawn_github_adapter(
     // Pipe-only validation: every enabled pattern must have a pipe target.
     let pipe_channels =
         collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
-    for p in channel_config
-        .patterns
-        .iter()
-        .flatten()
-        .filter(|p| p.enabled)
-    {
-        match &p.pipe {
-            Some(pipe) => {
-                if pipe.channel.is_some() || pipe.pattern.is_some() {
-                    tracing::warn!(
-                        channel = %channel_name,
-                        pattern = %p.name,
-                        "github pipe.channel/pipe.pattern is deprecated; use pipe = {{ agent = \"...\", topic = \"...\" }}"
-                    );
-                }
-            }
-            None => tracing::warn!(
-                channel = %channel_name,
-                pattern = %p.name,
-                "github pattern has no pipe target; matching messages will be dropped"
-            ),
-        }
-    }
+    warn_on_bad_pipe_patterns("github", &channel_name, channel_config);
 
     // State (dedup, cursor) lives under <workdir>/channels/<channel>/.github/.
     // One-time rename migration from the old location.
@@ -979,34 +897,25 @@ pub(crate) fn spawn_github_adapter(
                     let channel_name_self = channel_name_for_task.clone();
                     let routers = routers.clone();
                     tokio::spawn(async move {
-                        // 1. Match this channel's patterns (GithubMatcher,
-                        //    reviewer-priority ordering).
                         let patterns = config_for_pipe
                             .load()
                             .channels
                             .get(&channel_name_self)
                             .and_then(|c| c.patterns.clone())
                             .unwrap_or_default();
-                        let Some(pm) = GithubMatcher.match_message(&message, &patterns) else {
-                            tracing::debug!(
-                                number = ?message.metadata.get("github_number"),
-                                "github: no pattern matched, dropping"
-                            );
+                        let Some((_pm, pattern)) =
+                            match_pipe("github", &GithubMatcher, &message, &patterns)
+                        else {
                             return;
                         };
-                        // 2. Per-pattern pipe.
-                        let matched = patterns.iter().find(|p| p.name == pm.pattern_name);
-                        let Some(pipe) = matched.and_then(|p| p.pipe.as_ref()) else {
-                            tracing::warn!(
-                                pattern = %pm.pattern_name,
-                                "github: matched pattern has no pipe target, dropping message"
-                            );
-                            return;
-                        };
+                        let pipe = pattern
+                            .pipe
+                            .as_ref()
+                            .expect("match_pipe guarantees a pipe target");
 
-                        // 3. Capture number and role for reply routing. Without a
-                        //    number a reply could not be addressed, so drop loudly
-                        //    rather than commenting on issue #0.
+                        // Capture number and role for reply routing. Without a
+                        // number a reply could not be addressed, so drop loudly
+                        // rather than commenting on issue #0.
                         let Some(number) = message
                             .metadata
                             .get("github_number")
@@ -1018,53 +927,21 @@ pub(crate) fn spawn_github_adapter(
                             );
                             return;
                         };
-                        let role = matched
-                            .and_then(|p| p.role.as_deref())
-                            .unwrap_or("")
-                            .to_string();
+                        let role = pattern.role.as_deref().unwrap_or("").to_string();
 
-                        // 4. Re-target into the target channel/topic.
-                        //    No template metadata injection.
-                        let drop_debug = message.id.clone();
-                        let Some(message) = apply_pipe_retarget(message, pipe) else {
-                            tracing::warn!(
-                                topic = ?pipe.topic,
-                                pattern = ?pipe.pattern,
-                                agent = ?pipe.agent,
-                                message_id = %drop_debug,
-                                "github pipe: unresolvable target, dropping"
-                            );
+                        // Re-target into the target channel/topic.
+                        let Some(message) = retarget_or_drop("github", message, pipe) else {
                             return;
                         };
 
-                        // 5. Record resolved topic -> (number, role).
-                        topic_state.lock().unwrap().insert(
-                            message.topic.clone(),
-                            (number, role),
-                        );
+                        // Record resolved topic -> (number, role).
+                        topic_state
+                            .lock()
+                            .unwrap()
+                            .insert(message.topic.clone(), (number, role));
 
-                        // 6. Route through the target's own MessageRouter.
-                        let target_channel = pipe
-                            .channel
-                            .clone()
-                            .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
-                            .expect("validated upstream: agent or channel required");
-                        let Some(target_router) =
-                            routers
-                                .lock()
-                                .unwrap()
-                                .get(&target_channel)
-                                .map(|(r, _)| r.clone())
-                        else {
-                            tracing::warn!(
-                                channel = %target_channel,
-                                "github pipe: target channel router not found, dropping"
-                            );
-                            return;
-                        };
-                        target_router
-                            .route(&WebsocketMatcher::new(target_channel), message)
-                            .await;
+                        // Route through the target's own MessageRouter.
+                        route_into_pipe_target("github", &routers, pipe, message).await;
                     });
                     Ok(())
                 }),
@@ -1196,29 +1073,7 @@ pub(crate) fn spawn_gitee_adapter(
     // Pipe-only validation: every enabled pattern must have a pipe target.
     let pipe_channels =
         collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
-    for p in channel_config
-        .patterns
-        .iter()
-        .flatten()
-        .filter(|p| p.enabled)
-    {
-        match &p.pipe {
-            Some(pipe) => {
-                if pipe.channel.is_some() || pipe.pattern.is_some() {
-                    tracing::warn!(
-                        channel = %channel_name,
-                        pattern = %p.name,
-                        "gitee pipe.channel/pipe.pattern is deprecated; use pipe = {{ agent = \"...\", topic = \"...\" }}"
-                    );
-                }
-            }
-            None => tracing::warn!(
-                channel = %channel_name,
-                pattern = %p.name,
-                "gitee pattern has no pipe target; matching messages will be dropped"
-            ),
-        }
-    }
+    warn_on_bad_pipe_patterns("gitee", &channel_name, channel_config);
 
     // State (dedup, cursor) lives under <workdir>/channels/<channel>/.gitee/.
     // One-time rename migration from the old location.
@@ -1344,32 +1199,23 @@ pub(crate) fn spawn_gitee_adapter(
                     let channel_name_self = channel_name_for_task.clone();
                     let routers = routers.clone();
                     tokio::spawn(async move {
-                        // 1. Match this channel's patterns (GiteeMatcher,
-                        //    reviewer-priority ordering).
                         let patterns = config_for_pipe
                             .load()
                             .channels
                             .get(&channel_name_self)
                             .and_then(|c| c.patterns.clone())
                             .unwrap_or_default();
-                        let Some(pm) = GiteeMatcher.match_message(&message, &patterns) else {
-                            tracing::debug!(
-                                number = ?message.metadata.get("gitee_number"),
-                                "gitee: no pattern matched, dropping"
-                            );
+                        let Some((_pm, pattern)) =
+                            match_pipe("gitee", &GiteeMatcher, &message, &patterns)
+                        else {
                             return;
                         };
-                        // 2. Per-pattern pipe.
-                        let matched = patterns.iter().find(|p| p.name == pm.pattern_name);
-                        let Some(pipe) = matched.and_then(|p| p.pipe.as_ref()) else {
-                            tracing::warn!(
-                                pattern = %pm.pattern_name,
-                                "gitee: matched pattern has no pipe target, dropping message"
-                            );
-                            return;
-                        };
+                        let pipe = pattern
+                            .pipe
+                            .as_ref()
+                            .expect("match_pipe guarantees a pipe target");
 
-                        // 3. Capture number/type and role for reply routing.
+                        // Capture number/type and role for reply routing.
                         let Some(number) = message
                             .metadata
                             .get("gitee_number")
@@ -1387,26 +1233,14 @@ pub(crate) fn spawn_gitee_adapter(
                             .get("gitee_type")
                             .and_then(|v| v.as_str())
                             == Some("pull_request");
-                        let role = matched
-                            .and_then(|p| p.role.as_deref())
-                            .unwrap_or("")
-                            .to_string();
+                        let role = pattern.role.as_deref().unwrap_or("").to_string();
 
-                        // 4. Re-target into the target channel/topic.
-                        //    No template metadata injection.
-                        let drop_debug = message.id.clone();
-                        let Some(message) = apply_pipe_retarget(message, pipe) else {
-                            tracing::warn!(
-                                topic = ?pipe.topic,
-                                pattern = ?pipe.pattern,
-                                agent = ?pipe.agent,
-                                message_id = %drop_debug,
-                                "gitee pipe: unresolvable target, dropping"
-                            );
+                        // Re-target into the target channel/topic.
+                        let Some(message) = retarget_or_drop("gitee", message, pipe) else {
                             return;
                         };
 
-                        // 5. Record resolved topic -> (number, role, is_pr).
+                        // Record resolved topic -> (number, role, is_pr).
                         topic_state.lock().unwrap().insert(
                             message.topic.clone(),
                             GiteeReplyState {
@@ -1416,28 +1250,8 @@ pub(crate) fn spawn_gitee_adapter(
                             },
                         );
 
-                        // 6. Route through the target's own MessageRouter.
-                        let target_channel = pipe
-                            .channel
-                            .clone()
-                            .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
-                            .expect("validated upstream: agent or channel required");
-                        let Some(target_router) =
-                            routers
-                                .lock()
-                                .unwrap()
-                                .get(&target_channel)
-                                .map(|(r, _)| r.clone())
-                        else {
-                            tracing::warn!(
-                                channel = %target_channel,
-                                "gitee pipe: target channel router not found, dropping"
-                            );
-                            return;
-                        };
-                        target_router
-                            .route(&WebsocketMatcher::new(target_channel), message)
-                            .await;
+                        // Route through the target's own MessageRouter.
+                        route_into_pipe_target("gitee", &routers, pipe, message).await;
                     });
                     Ok(())
                 }),
@@ -1560,32 +1374,7 @@ pub(crate) fn spawn_feishu_adapter(
     // startup, drop matching messages at runtime.
     let pipe_channels =
         collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
-    for p in channel_config
-        .patterns
-        .iter()
-        .flatten()
-        .filter(|p| p.enabled)
-    {
-        match &p.pipe {
-            Some(pipe) => {
-                // One-shot deprecation at startup: don't repeat per
-                // message. Per-pattern (not per-message) so a feishu
-                // adapter with 5 legacy pipes still emits 5 warns.
-                if pipe.channel.is_some() || pipe.pattern.is_some() {
-                    tracing::warn!(
-                        channel = %channel_name,
-                        pattern = %p.name,
-                        "pipe.channel/pipe.pattern is deprecated; use pipe = {{ agent = \"...\", topic = \"...\" }}"
-                    );
-                }
-            }
-            None => tracing::warn!(
-                channel = %channel_name,
-                pattern = %p.name,
-                "feishu pattern has no pipe target; matching messages will be dropped"
-            ),
-        }
-    }
+    warn_on_bad_pipe_patterns("feishu", &channel_name, channel_config);
 
     let channel_span = tracing::info_span!("in", ch = %channel_name);
     // Owned copy for the task: `workdir` borrows from the caller.
@@ -1697,47 +1486,31 @@ pub(crate) fn spawn_feishu_adapter(
                     let channel_name_self = channel_name.clone();
                     let routers = routers.clone();
                     tokio::spawn(async move {
-                        // 1. Match this channel's patterns (rules).
                         let patterns = config_for_pipe
                             .load()
                             .channels
                             .get(&channel_name_self)
                             .and_then(|c| c.patterns.clone())
                             .unwrap_or_default();
-                        let Some(pm) = FeishuMatcher.match_message(&message, &patterns) else {
-                            tracing::debug!(chat = %message.topic, "feishu: no pattern matched, dropping");
+                        let Some((_pm, pattern)) =
+                            match_pipe("feishu", &FeishuMatcher, &message, &patterns)
+                        else {
                             return;
                         };
-                        // 2. Per-pattern `pipe`: the matched pattern decides.
-                        let matched = patterns.iter().find(|p| p.name == pm.pattern_name);
-                        let Some(pipe) = matched.and_then(|p| p.pipe.as_ref()) else {
-                            // Pipe-only adapter: a matched pattern without a
-                            // pipe target is a configuration error.
-                            tracing::warn!(
-                                pattern = %pm.pattern_name,
-                                "feishu: matched pattern has no pipe target, dropping message"
-                            );
-                            return;
-                        };
-                        // 3. Re-target into the target channel/topic —
+                        let pipe = pattern
+                            .pipe
+                            .as_ref()
+                            .expect("match_pipe guarantees a pipe target");
+
+                        // Re-target into the target channel/topic —
                         //    resolves the effective topic (`topic ?? pattern`)
                         //    and `${msg.chat_name}` placeholders against
-                        //    message metadata. Identifiers captured before
-                        //    the move, for the drop warning below.
-                        let drop_debug =
-                            (message.id.clone(), message.metadata.get("chat_id").cloned());
-                        let Some(message) = apply_pipe_retarget(message, pipe) else {
-                            tracing::warn!(
-                                topic = ?pipe.topic,
-                                pattern = ?pipe.pattern,
-                                agent = ?pipe.agent,
-                                message_id = %drop_debug.0,
-                                chat_id = ?drop_debug.1,
-                                "feishu pipe: unresolvable target (no topic/pattern configured, or ${{msg.chat_name}} without chat_name metadata), dropping"
-                            );
+                        //    message metadata.
+                        let Some(message) = retarget_or_drop("feishu", message, pipe) else {
                             return;
                         };
-                        // 4. Record resolved topic -> chat_id for reply relay.
+
+                        // Record resolved topic -> chat_id for reply relay.
                         if let Some(chat_id) =
                             message.metadata.get("chat_id").and_then(|v| v.as_str())
                         {
@@ -1746,29 +1519,11 @@ pub(crate) fn spawn_feishu_adapter(
                                 .unwrap()
                                 .insert(message.topic.clone(), chat_id.to_string());
                         }
-                        // 5. Route through the target's own MessageRouter —
-                        //    the exact same path as a chat-pane message, so
-                        //    topic_path/template/skills apply identically.
-                        //    New form: pipe.agent routes into the synthesized
-                        //    "agents" channel; legacy form: pipe.channel.
-                        let target_channel = pipe
-                            .channel
-                            .clone()
-                            .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
-                            .expect("validated upstream: agent or channel required");
-                        let Some(target_router) =
-                            routers
-                                .lock()
-                                .unwrap()
-                                .get(&target_channel)
-                                .map(|(r, _)| r.clone())
-                        else {
-                            tracing::warn!(channel = %target_channel, "feishu pipe: target channel router not found, dropping");
-                            return;
-                        };
-                        target_router
-                            .route(&WebsocketMatcher::new(target_channel), message)
-                            .await;
+
+                        // Route through the target's own MessageRouter — the
+                        // exact same path as a chat-pane message, so
+                        // topic_path/template/skills apply identically.
+                        route_into_pipe_target("feishu", &routers, pipe, message).await;
                     });
                     Ok(())
                 }),
@@ -1908,29 +1663,7 @@ pub(crate) fn spawn_wecom_bot_adapter(
     // error — warn at startup, drop matching messages at runtime.
     let pipe_channels =
         collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
-    for p in channel_config
-        .patterns
-        .iter()
-        .flatten()
-        .filter(|p| p.enabled)
-    {
-        match &p.pipe {
-            Some(pipe) => {
-                if pipe.channel.is_some() || pipe.pattern.is_some() {
-                    tracing::warn!(
-                        channel = %channel_name,
-                        pattern = %p.name,
-                        "wecom_bot pipe.channel/pipe.pattern is deprecated; use pipe = {{ agent = \"...\", topic = \"...\" }}"
-                    );
-                }
-            }
-            None => tracing::warn!(
-                channel = %channel_name,
-                pattern = %p.name,
-                "wecom_bot pattern has no pipe target; matching messages will be dropped"
-            ),
-        }
-    }
+    warn_on_bad_pipe_patterns("wecom_bot", &channel_name, channel_config);
 
     let channel_span = tracing::info_span!("in", ch = %channel_name);
     let workdir_for_task = workdir.to_path_buf();
@@ -2110,41 +1843,24 @@ pub(crate) fn spawn_wecom_bot_adapter(
                     let channel_name_self = channel_name.clone();
                     let routers = routers.clone();
                     tokio::spawn(async move {
-                        // 1. Match this channel's patterns (rules).
                         let patterns = config_for_pipe
                             .load()
                             .channels
                             .get(&channel_name_self)
                             .and_then(|c| c.patterns.clone())
                             .unwrap_or_default();
-                        let Some(pm) = WecomBotMatcher.match_message(&message, &patterns) else {
-                            tracing::debug!(
-                                chat = %message.topic,
-                                "wecom_bot: no pattern matched, dropping"
-                            );
+                        let Some((_pm, pattern)) =
+                            match_pipe("wecom_bot", &WecomBotMatcher, &message, &patterns)
+                        else {
                             return;
                         };
-                        // 2. Per-pattern `pipe`: the matched pattern decides.
-                        let matched = patterns.iter().find(|p| p.name == pm.pattern_name);
-                        let Some(pipe) = matched.and_then(|p| p.pipe.as_ref()) else {
-                            tracing::warn!(
-                                pattern = %pm.pattern_name,
-                                "wecom_bot: matched pattern has no pipe target, dropping message"
-                            );
-                            return;
-                        };
+                        let pipe = pattern
+                            .pipe
+                            .as_ref()
+                            .expect("match_pipe guarantees a pipe target");
 
-                        // 3. Re-target into the target channel/topic.
-                        let drop_debug = (message.id.clone(), message.channel_uid.clone());
-                        let Some(message) = apply_pipe_retarget(message, pipe) else {
-                            tracing::warn!(
-                                topic = ?pipe.topic,
-                                pattern = ?pipe.pattern,
-                                agent = ?pipe.agent,
-                                message_id = %drop_debug.0,
-                                channel_uid = %drop_debug.1,
-                                "wecom_bot pipe: unresolvable target (no topic/pattern configured, or ${{msg.<key>}} unresolved), dropping"
-                            );
+                        // Re-target into the target channel/topic.
+                        let Some(message) = retarget_or_drop("wecom_bot", message, pipe) else {
                             return;
                         };
 
@@ -2270,27 +1986,7 @@ pub(crate) fn spawn_wecom_bot_adapter(
                         // 6. Route through the target channel's own
                         //    MessageRouter (identical to a chat-pane
                         //    message — topic_path/template/skills apply).
-                        let target_channel = pipe
-                            .channel
-                            .clone()
-                            .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
-                            .expect("validated upstream: agent or channel required");
-                        let Some(target_router) =
-                            routers
-                                .lock()
-                                .unwrap()
-                                .get(&target_channel)
-                                .map(|(r, _)| r.clone())
-                        else {
-                            tracing::warn!(
-                                channel = %target_channel,
-                                "wecom_bot pipe: target channel router not found, dropping"
-                            );
-                            return;
-                        };
-                        target_router
-                            .route(&WebsocketMatcher::new(target_channel), message)
-                            .await;
+                        route_into_pipe_target("wecom_bot", &routers, pipe, message).await;
                     });
                     Ok(())
                 }),
@@ -2345,15 +2041,17 @@ fn warn_on_bad_pipe_patterns(
     }
 }
 
-/// Match the message against this channel's patterns and retarget it into
-/// the pattern's pipe. Returns the retargeted message and the pipe.
-fn match_and_retarget(
+/// Pipe-adapter step 1 (shared): match the message against this channel's
+/// patterns and return the matched pattern plus the match details. The
+/// pattern is guaranteed to carry a `pipe` target; mismatches and
+/// pipe-less patterns are logged here and dropped.
+fn match_pipe<'a>(
     channel_type: &str,
     matcher: &dyn ChannelMatcher,
-    message: jyc_types::InboundMessage,
-    patterns: &[ChannelPattern],
-) -> Option<(jyc_types::InboundMessage, jyc_types::PipeTarget)> {
-    let Some(pm) = matcher.match_message(&message, patterns) else {
+    message: &jyc_types::InboundMessage,
+    patterns: &'a [ChannelPattern],
+) -> Option<(jyc_types::PatternMatch, &'a ChannelPattern)> {
+    let Some(pm) = matcher.match_message(message, patterns) else {
         tracing::debug!(
             channel_type,
             topic = %message.topic,
@@ -2361,8 +2059,11 @@ fn match_and_retarget(
         );
         return None;
     };
-    let matched = patterns.iter().find(|p| p.name == pm.pattern_name);
-    let Some(pipe) = matched.and_then(|p| p.pipe.as_ref()) else {
+    let matched = patterns
+        .iter()
+        .find(|p| p.name == pm.pattern_name)
+        .filter(|p| p.pipe.is_some());
+    let Some(pattern) = matched else {
         tracing::warn!(
             channel_type,
             pattern = %pm.pattern_name,
@@ -2370,6 +2071,18 @@ fn match_and_retarget(
         );
         return None;
     };
+    Some((pm, pattern))
+}
+
+/// Pipe-adapter step 2 (shared): retarget the message into the pipe's
+/// target channel/topic, with standard drop logging on unresolvable
+/// targets. Adapters with a custom middle step (reply-state capture,
+/// topic defaulting) call this directly instead of `match_and_retarget`.
+fn retarget_or_drop(
+    channel_type: &str,
+    message: jyc_types::InboundMessage,
+    pipe: &jyc_types::PipeTarget,
+) -> Option<jyc_types::InboundMessage> {
     let drop_debug = (message.id.clone(), message.channel_uid.clone());
     let Some(message) = apply_pipe_retarget(message, pipe) else {
         tracing::warn!(
@@ -2382,6 +2095,25 @@ fn match_and_retarget(
         );
         return None;
     };
+    Some(message)
+}
+
+/// Match the message against this channel's patterns and retarget it into
+/// the pattern's pipe. Returns the retargeted message and the pipe.
+/// Composition of `match_pipe` + `retarget_or_drop` for adapters without a
+/// custom middle step.
+fn match_and_retarget(
+    channel_type: &str,
+    matcher: &dyn ChannelMatcher,
+    message: jyc_types::InboundMessage,
+    patterns: &[ChannelPattern],
+) -> Option<(jyc_types::InboundMessage, jyc_types::PipeTarget)> {
+    let (_pm, pattern) = match_pipe(channel_type, matcher, &message, patterns)?;
+    let pipe = pattern
+        .pipe
+        .as_ref()
+        .expect("match_pipe guarantees a pipe target");
+    let message = retarget_or_drop(channel_type, message, pipe)?;
     Some((message, pipe.clone()))
 }
 

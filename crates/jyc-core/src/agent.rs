@@ -16,6 +16,11 @@ use jyc_types::QueueItem;
 pub struct AgentResult {
     /// Whether reply was already sent by MCP tool
     pub reply_sent_by_tool: bool,
+    /// Whether the reply was auto-delivered in the agent's name (synthetic
+    /// `jyc_reply_message` execution after a nudged text-only finish).
+    /// Surfaces to metrics so this degradation is distinguishable from
+    /// real tool calls.
+    pub reply_auto_delivered: bool,
     /// Raw AI response text (for outbound adapter to format + send + store)
     pub reply_text: Option<String>,
 }

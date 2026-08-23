@@ -523,7 +523,11 @@ pub(crate) async fn process_message(
                 tokio::fs::remove_file(&signal_path).await.ok();
                 let reply_md_path = store_result.topic_path.join(".jyc").join("reply.md");
                 tokio::fs::remove_file(&reply_md_path).await.ok();
-                topic_manager.metrics.reply_by_tool(topic_name);
+                if result.reply_auto_delivered {
+                    topic_manager.metrics.reply_by_auto(topic_name);
+                } else {
+                    topic_manager.metrics.reply_by_tool(topic_name);
+                }
             } else {
                 // The reply tool ran (reply_sent_by_tool=true) but its text
                 // was lost before delivery. Distinct from the text-only

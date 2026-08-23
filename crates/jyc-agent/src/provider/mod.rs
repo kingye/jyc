@@ -247,24 +247,6 @@ pub trait Provider: Send + Sync {
         tools: &[ToolDefinition],
         system: &str,
     ) -> Result<EventStream>;
-
-    /// Like `complete_raw`, but forces the model to call `tool_name` via the
-    /// provider's tool_choice mechanism (used by the agent loop's
-    /// reply-recovery turn, where weak models otherwise re-emit narration
-    /// text instead of calling `jyc_reply_message`).
-    ///
-    /// Default: degrades to `complete_raw` for providers without tool_choice
-    /// support.
-    async fn complete_raw_forcing_tool(
-        &self,
-        raw_messages: &[serde_json::Value],
-        tools: &[ToolDefinition],
-        system: &str,
-        tool_name: &str,
-    ) -> Result<EventStream> {
-        let _ = tool_name;
-        self.complete_raw(raw_messages, tools, system).await
-    }
 }
 
 /// Create a provider from configuration.

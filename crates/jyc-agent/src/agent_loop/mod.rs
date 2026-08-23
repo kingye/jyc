@@ -247,6 +247,24 @@ async fn execute_reply_tool_synthetic(
     )
     .await;
 
+    // Synchronous delivery bypasses the file relay, so neither the watcher
+    // nor the post-loop worker publishes `ReplySent` — do it here, mirroring
+    // the real tool-call path (exactly once per delivery). Without it, the
+    // dashboard chat pane never renders the reply (it ignores the raw
+    // per-channel `reply` broadcast and only renders `chat_message` events
+    // fanned out from `ReplySent`).
+    if !output.is_error && output.delivered {
+        publish_event(
+            event_bus,
+            TopicEvent::ReplySent {
+                topic_name: topic_name.to_string(),
+                text: message.to_string(),
+                timestamp: Utc::now(),
+            },
+        )
+        .await;
+    }
+
     // Record the synthetic call in internal `history` for chat-log rendering
     // only — never replayed to the LLM (same rule as the progress reply).
     // Failures are recorded too, so a failed auto-delivery is not lost.
@@ -1658,6 +1676,7 @@ mod reply_tool_tests {
     use async_trait::async_trait;
     use futures::stream;
     use jyc_core::topic_event_bus::{SimpleThreadEventBus, TopicEventBusRef};
+    use jyc_types::channel::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
@@ -2138,6 +2157,155 @@ mod reply_tool_tests {
         assert!(
             working_dir.join(".jyc/reply-sent.flag").exists(),
             "reply-sent.flag must be written by the synthetic auto-delivery"
+        );
+    }
+
+    /// Minimal outbound adapter that reports successful direct deliveries.
+    struct MockOutbound;
+
+    #[async_trait::async_trait]
+    impl OutboundAdapter for MockOutbound {
+        fn channel_type(&self) -> &str {
+            "mock"
+        }
+
+        async fn connect(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn clean_body(&self, body: &str) -> String {
+            body.to_string()
+        }
+
+        async fn send_reply(
+            &self,
+            _original: &InboundMessage,
+            _reply_text: &str,
+            _topic_path: &Path,
+            _message_dir: &str,
+            _attachments: Option<&[OutboundAttachment]>,
+        ) -> anyhow::Result<SendResult> {
+            Ok(SendResult {
+                message_id: "mock-reply".to_string(),
+            })
+        }
+
+        async fn send_message(
+            &self,
+            _recipient: &str,
+            _subject: &str,
+            _body: &str,
+        ) -> anyhow::Result<SendResult> {
+            Ok(SendResult {
+                message_id: "mock-msg".to_string(),
+            })
+        }
+    }
+
+    /// A synthetic auto-delivery that reaches a live outbound adapter must
+    /// publish `ReplySent`: the dashboard chat pane renders live replies only
+    /// from `chat_message` events fanned out of `ReplySent` (the raw
+    /// per-channel `reply` broadcast is ignored), so a delivered-but-eventless
+    /// reply shows in the logs but never in the chat pane.
+    #[tokio::test]
+    async fn synthetic_auto_delivery_publishes_reply_sent() {
+        let provider = ScriptedProvider {
+            rounds: vec![
+                vec![
+                    StreamEvent::TextDelta("thinking out loud".to_string()),
+                    StreamEvent::Done,
+                ],
+                vec![
+                    StreamEvent::TextDelta("still no tool call".to_string()),
+                    StreamEvent::Done,
+                ],
+            ],
+            calls: AtomicUsize::new(0),
+            seen_tools: Default::default(),
+        };
+        let tmp = TempDir::new().unwrap();
+        let working_dir = tmp.path().to_path_buf();
+        let tools = registry_with_reply_tool();
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
+        let mut rx = bus.subscribe().await.unwrap();
+        let cancel = CancellationToken::new();
+        let mock: Arc<dyn OutboundAdapter> = Arc::new(MockOutbound);
+        let original = InboundMessage {
+            id: "test".to_string(),
+            channel: "test".to_string(),
+            channel_uid: "1".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user@test".to_string(),
+            recipients: vec![],
+            topic: "Test".to_string(),
+            content: Default::default(),
+            timestamp: chrono::Utc::now(),
+            references: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: Default::default(),
+            matched_pattern: None,
+        };
+
+        let result = run(super::AgentLoopConfig {
+            provider: &provider,
+            small_provider: None,
+            tools: &tools,
+            system_prompt: "test",
+            user_blocks: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+            }],
+            working_dir: &working_dir,
+            topic_path: &working_dir,
+            cancel: cancel.clone(),
+            topic_name: "reply-sent-direct",
+            event_bus: Some(&bus),
+            prior_history: vec![],
+            prior_raw_context: vec![],
+            max_iterations: Some(5),
+            sse_read_timeout: std::time::Duration::from_secs(60),
+            additional_read_roots: vec![],
+            additional_write_roots: vec![],
+            pattern_inject_images: false,
+            outbound: Some(mock),
+            topic_managers: None,
+            current_channel: None,
+            outbounds: None,
+            context_window: None,
+            auto_reset_threshold: 0.95,
+            thinking_enabled: false,
+            pricing: None,
+            model_label: "scripted-test-2",
+            context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+            reply_target: Some(crate::tools::ReplyTarget {
+                original,
+                message_dir: "2026-08-23_00-00-00".to_string(),
+            }),
+        })
+        .await
+        .expect("agent loop should run to completion");
+
+        assert!(
+            result.reply_auto_delivered,
+            "auto-delivered reply must be flagged for metrics"
+        );
+        let events = drain_events(&mut rx).await;
+        let reply_sent: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                TopicEvent::ReplySent { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reply_sent,
+            vec!["still no tool call\n\n— auto-delivered"],
+            "synchronous synthetic delivery must publish ReplySent with the delivered text"
         );
     }
 

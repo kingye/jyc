@@ -24,6 +24,19 @@
 
 ### Fixed
 
+- **Synthetic auto-delivery never published `ReplySent`.** When a
+  text-only finish was auto-delivered in the agent's name via the
+  synthetic `jyc_reply_message` execution, the reply was sent through the
+  channel's outbound adapter and broadcast on the per-channel WebSocket
+  bus, but no `ReplySent` event was published on the topic event bus.
+  The dashboard chat pane ignores the raw `reply` broadcast (a de-dup
+  refactor) and renders live replies only from `chat_message` events
+  fanned out of `ReplySent` — so the reply appeared in the logs but never
+  in the chat pane. The synthetic path now publishes `ReplySent` on
+  synchronous delivery, mirroring the real tool-call path (exactly once
+  per delivery; file-relay deliveries still leave the event to the
+  worker). This also fixes cycle-boundary progress replies, which went
+  through the same path.
 - **Feishu progress indicator used chat_id instead of message_id.** The
   Typing/DONE reactions now read `message.external_id` (the message_id)
   instead of `message.channel_uid` (the chat_id). (#642)

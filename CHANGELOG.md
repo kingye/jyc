@@ -17,6 +17,10 @@
 
 ### Fixed
 
+- **Feishu progress indicator used chat_id instead of message_id.** The
+  Typing/DONE reactions now read `message.external_id` (the message_id)
+  instead of `message.channel_uid` (the chat_id). (#642)
+
 - **Forced reply tool on recovery turns.** The reply-recovery turn now
   also forces `jyc_reply_message` at the API level (`tool_choice`):
   offering a single tool proved insufficient for weak models, which

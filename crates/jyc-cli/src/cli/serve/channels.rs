@@ -1561,29 +1561,34 @@ pub(crate) fn spawn_feishu_adapter(
                                 .insert(message.topic.clone(), chat_id.to_string());
                         }
 
-                        // Drop the Typing indicator onto the user's original
-                        // message. Best-effort: a failure here never blocks
-                        // routing, and the orphan-less state (no entry in
-                        // topic_reactions) means the reply forwarder simply
-                        // won't try to swap it.
-                        let user_message_id = message.channel_uid.clone();
-                        match feishu_client
-                            .add_reaction(&user_message_id, "Typing")
-                            .await
-                        {
-                            Ok(reaction_id) => {
-                                topic_reactions
-                                    .lock()
-                                    .unwrap()
-                                    .insert(message.topic.clone(), (user_message_id, reaction_id));
+                        // Best-effort Typing drop. The reaction API needs the
+                        // message_id — `external_id` carries it, `channel_uid`
+                        // is the chat_id. Skip (warn) if external_id is unset.
+                        if let Some(user_message_id) = message.external_id.as_deref() {
+                            match feishu_client
+                                .add_reaction(user_message_id, "Typing")
+                                .await
+                            {
+                                Ok(reaction_id) => {
+                                    topic_reactions.lock().unwrap().insert(
+                                        message.topic.clone(),
+                                        (user_message_id.to_string(), reaction_id),
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        topic = %message.topic,
+                                        "feishu pipe: failed to add Typing reaction"
+                                    );
+                                }
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    topic = %message.topic,
-                                    "feishu pipe: failed to add Typing reaction"
-                                );
-                            }
+                        } else {
+                            tracing::warn!(
+                                topic = %message.topic,
+                                "feishu pipe: inbound message missing external_id; \
+                                 skipping Typing reaction"
+                            );
                         }
 
                         // Route through the target's own MessageRouter — the

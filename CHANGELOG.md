@@ -37,6 +37,18 @@
   per delivery; file-relay deliveries still leave the event to the
   worker). This also fixes cycle-boundary progress replies, which went
   through the same path. (#646)
+- **Windowed history-note format confusion.** Three clarifications to the
+  `[History note] assistant tool calls: …` summary injected into the
+  sliding-window context: (1) the note is now emitted *before* the
+  assistant text it describes instead of after, so an `assistant →
+  user(note)` adjacency never sits right before the next real user
+  message; (2) the `[SUCCESS] `/`[ERROR] ` prefix that
+  `format_tool_result` bakes into OpenAI tool-result content is stripped
+  from the note, with `[ERROR] ` honored as the error signal, so both
+  OpenAI and Anthropic failures render uniformly as `→ [error] …`; (3)
+  truncation is now marked explicitly as `… [truncated N bytes]` instead
+  of a bare ellipsis, so the model can tell a real cut from content that
+  genuinely ends in `…` and sees how much was dropped.
 - **Feishu progress indicator used chat_id instead of message_id.** The
   Typing/DONE reactions now read `message.external_id` (the message_id)
   instead of `message.channel_uid` (the chat_id). (#642)

@@ -1136,13 +1136,12 @@ fn tool_call_summary(
         used += s.len() + 2;
         parts.push(s);
     }
-    if parts.is_empty() {
-        return None;
-    }
     if omitted > 0 {
         parts.push(format!("…({omitted} more calls)"));
     }
-    Some(parts.join(", "))
+    // All calls filtered → empty annotation. Skip the note rather than
+    // emit `[History note] assistant tool calls: ` with no payload.
+    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
 /// Flush the accumulated turn into `pairs`: merge every assistant message

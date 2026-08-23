@@ -42,7 +42,7 @@
   `[History note] assistant tool calls: …` format as narration instead
   of invoking the tool. A turn that called only the reply tool now
   emits no note at all. The forced-reply-tool recovery turn (#640)
-  remains as a belt-and-suspenders safety net.
+  remains as a belt-and-suspenders safety net (#641).
 
 - **Post-pipe-migration cleanup.** The five older pipe adapters
   (email/github/gitee/feishu/wecom_bot) now share the match/retarget/route

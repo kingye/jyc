@@ -12,6 +12,15 @@
 
 ### Changed
 
+- **Post-pipe-migration cleanup.** The five older pipe adapters
+  (email/github/gitee/feishu/wecom_bot) now share the match/retarget/route
+  helpers extracted in #635 (`match_pipe`, `retarget_or_drop`,
+  `route_into_pipe_target`, `warn_on_bad_pipe_patterns`) instead of inline
+  copies. `build_outbound_adapter` was inlined into its single call site
+  (the websocket hub setup). config.example.toml's agent-runtime examples
+  (channel-level MCPs, tool exclusion) now target the hub channel and note
+  that pipe-only channels ignore `mcps`/`disabled_tools`/`skills` (#638)
+
 - **wecom and wecomkf are pipe-only adapters.** Both channel types were
   migrated to the pipe architecture (docs/core-hub-adapters.md): pattern
   match → `pipe = { agent, topic }` retarget → hub routing, with reply
@@ -23,6 +32,13 @@
   (#635)
 
 ### Removed
+
+- **Dead pipe-migration leftovers.** `ChannelRegistry` (zero call sites)
+  and the `topic.json` write/read chain: `apply_pipe_retarget` rewrites
+  `message.channel` to the pipe target, so the hub worker's
+  `channel == "wecomkf"` gate could never fire — the writer, the
+  `topic_json` module, and chat-log's `user_name` fallback reader were all
+  unreachable (#638)
 
 - **WeChat (OpenILink bridge) channel.** Removed entirely — it was the
   last full channel without a pipe-migration path and saw no production

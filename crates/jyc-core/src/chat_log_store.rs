@@ -177,19 +177,6 @@ impl ChatLogStore {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
 
-        // Fallback: read from topic.json if metadata lacks user_name.
-        // Channel-agnostic — any channel may persist a display name there.
-        let user_name = user_name.or_else(|| {
-            if let Ok(Some(topic_json)) = crate::topic_json::TopicJson::read_sync(&self.topic_path)
-                && let Some(data) = topic_json.data
-                && let Some(name) = data.get("user_name").and_then(|v| v.as_str())
-            {
-                Some(name.to_string())
-            } else {
-                None
-            }
-        });
-
         // Compute sender_name (display name)
         let sender_name = user_name.as_deref().or_else(|| {
             if message.sender != message.sender_address && !message.sender.is_empty() {
@@ -450,39 +437,6 @@ mod tests {
             })
             .collect();
         assert_eq!(matched, vec![true, true, false, true]);
-    }
-
-    #[test]
-    fn test_append_message_with_topic_json_fallback() {
-        let temp_dir = tempdir().unwrap();
-        let mut store = ChatLogStore::new(temp_dir.path());
-
-        // Write topic.json with user_name
-        let topic_json = crate::topic_json::TopicJson {
-            channel_type: "wecomkf".to_string(),
-            version: 1,
-            data: Some(serde_json::json!({
-                "external_userid": "wm123",
-                "user_name": "张三",
-            })),
-        };
-        topic_json.write_sync(temp_dir.path()).unwrap();
-
-        // Create message WITHOUT user_name in metadata
-        let mut message = create_test_message();
-        message.channel = "wecomkf".to_string();
-        message.sender_address = "wecomkf:wm123".to_string();
-        message.metadata = HashMap::new();
-
-        let result = store.append_message(&message, true);
-        assert!(result.is_ok());
-
-        let file_path = store.get_today_file_path();
-        let content = std::fs::read_to_string(&file_path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
-        // Should use user_name from topic.json
-        assert_eq!(parsed["sender_name"], "张三");
-        assert_eq!(parsed["from"], "张三 (wecomkf:wm123)");
     }
 
     #[test]

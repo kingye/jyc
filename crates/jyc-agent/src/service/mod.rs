@@ -550,11 +550,13 @@ impl AgentService for JycAgentService {
         if result.reply_sent_by_tool {
             Ok(AgentResult {
                 reply_sent_by_tool: true,
+                reply_auto_delivered: result.reply_auto_delivered,
                 reply_text: result.reply_text_from_tool,
             })
         } else {
             Ok(AgentResult {
                 reply_sent_by_tool: false,
+                reply_auto_delivered: false,
                 reply_text: if result.text.is_empty() {
                     None
                 } else {

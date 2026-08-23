@@ -334,6 +334,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // `total_cache_creation_tokens`.
     let mut total_cache_creation_tokens: u64 = 0;
     let mut reply_sent_by_tool = false;
+    let mut reply_auto_delivered = false;
     let mut reply_text_from_tool: Option<String> = None;
 
     // Shared ToolContext for tool execution and synthetic `jyc_reply_message`
@@ -865,6 +866,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
                 if !synthetic_output.is_error {
                     reply_sent_by_tool = true;
+                    reply_auto_delivered = true;
                     reply_text_from_tool = Some(final_text.clone());
                 } else {
                     tracing::warn!(
@@ -890,6 +892,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             return Ok(AgentLoopResult {
                 text: final_text,
                 reply_sent_by_tool,
+                reply_auto_delivered,
                 reply_text_from_tool,
                 input_tokens: context_input_tokens,
                 total_input_tokens,
@@ -1160,6 +1163,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             return Ok(AgentLoopResult {
                 text: String::new(),
                 reply_sent_by_tool: true,
+                reply_auto_delivered,
                 reply_text_from_tool,
                 input_tokens: context_input_tokens,
                 total_input_tokens,
@@ -1214,6 +1218,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     Ok(AgentLoopResult {
         text: String::new(),
         reply_sent_by_tool,
+        reply_auto_delivered,
         reply_text_from_tool,
         input_tokens: context_input_tokens,
         total_input_tokens,
@@ -1828,6 +1833,10 @@ mod reply_tool_tests {
         // One nudge + one recovery = exactly 2 LLM calls.
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
         assert!(result.reply_sent_by_tool, "reply tool must win");
+        assert!(
+            !result.reply_auto_delivered,
+            "a model-authored tool reply is not auto-delivered"
+        );
         assert_eq!(result.reply_text_from_tool.as_deref(), Some("final answer"));
         assert!(result.text.is_empty(), "no fallback text expected");
         assert!(
@@ -2108,6 +2117,10 @@ mod reply_tool_tests {
         assert!(
             result.reply_sent_by_tool,
             "auto-delivered reply must count as sent by the tool"
+        );
+        assert!(
+            result.reply_auto_delivered,
+            "auto-delivered reply must be flagged for metrics"
         );
         assert_eq!(
             result.reply_text_from_tool.as_deref(),

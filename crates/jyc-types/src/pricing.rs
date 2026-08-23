@@ -795,6 +795,75 @@ mod tests {
             );
             assert_eq!(parse_time("nope"), None);
         }
+
+        /// A window with `days` set only applies on those weekdays — on
+        /// other days the flat rates apply even when the clock is inside
+        /// the window's hours.
+        #[test]
+        fn days_restricts_window_to_matching_weekdays() {
+            let mut p = deepseek_pricing();
+            p.time_windows = vec![TimeWindowPricing {
+                start: "00:30".to_string(),
+                end: "08:30".to_string(),
+                days: vec!["sat".to_string(), "sun".to_string()],
+                input_per_million: 1.0,
+                output_per_million: 4.0,
+                cache_hit_per_million: None,
+                cache_creation_per_million: None,
+            }];
+            // 2026-08-17 is a Monday: inside the hours but not a listed
+            // day → flat rates.
+            assert_eq!(effective_rates(&p, utc(3, 0)).0.input, 2.0);
+            // 2026-08-22 (Sat) and 2026-08-23 (Sun) → window rates.
+            let sat = Utc.with_ymd_and_hms(2026, 8, 22, 3, 0, 0).unwrap();
+            let sun = Utc.with_ymd_and_hms(2026, 8, 23, 3, 0, 0).unwrap();
+            assert_eq!(effective_rates(&p, sat).0.input, 1.0);
+            assert_eq!(effective_rates(&p, sun).0.input, 1.0);
+        }
+
+        /// `start == end` spans the whole day — the lazy way to express
+        /// "all-day special on certain weekdays" without a 00:00–23:59
+        /// window.
+        #[test]
+        fn start_equals_end_spans_whole_day() {
+            let mut p = deepseek_pricing();
+            p.time_windows = vec![TimeWindowPricing {
+                start: "00:00".to_string(),
+                end: "00:00".to_string(),
+                days: vec!["sat".to_string()],
+                input_per_million: 1.0,
+                output_per_million: 4.0,
+                cache_hit_per_million: None,
+                cache_creation_per_million: None,
+            }];
+            // Saturday 23:59 is inside the all-day window.
+            let sat = Utc.with_ymd_and_hms(2026, 8, 22, 23, 59, 0).unwrap();
+            assert_eq!(effective_rates(&p, sat).0.input, 1.0);
+            // Monday 23:59 is not a listed day → flat.
+            assert_eq!(effective_rates(&p, utc(23, 59)).0.input, 2.0);
+        }
+
+        /// Empty `days` (the default, also what configs predating the
+        /// field deserialize to) matches every day — existing behavior
+        /// is unchanged.
+        #[test]
+        fn empty_days_matches_every_day() {
+            let p = deepseek_pricing(); // window() sets days: Vec::new()
+            // Monday and Saturday both land in the off-peak window.
+            assert_eq!(effective_rates(&p, utc(3, 0)).0.input, 1.0);
+            let sat = Utc.with_ymd_and_hms(2026, 8, 22, 3, 0, 0).unwrap();
+            assert_eq!(effective_rates(&p, sat).0.input, 1.0);
+        }
+
+        /// Weekday names are `"mon"`..`"sun"`, case-insensitive;
+        /// anything else (full names, typos) never matches.
+        #[test]
+        fn parse_weekday_accepts_abbreviations_case_insensitively() {
+            assert_eq!(parse_weekday("mon"), Some(Weekday::Mon));
+            assert_eq!(parse_weekday("SAT"), Some(Weekday::Sat));
+            assert_eq!(parse_weekday("Monday"), None);
+            assert_eq!(parse_weekday("bogus"), None);
+        }
     }
 
     mod applied_rates {

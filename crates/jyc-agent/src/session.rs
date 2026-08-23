@@ -1111,10 +1111,9 @@ fn tool_call_summary(
     let mut omitted = 0usize;
     for (id, name, args) in &calls {
         // jyc_reply_message is excluded from the annotation: its `message`
-        // is the text the user already saw (it's in the assistant's own
-        // text), and exposing the call invites the model to mimic the
-        // `[History note] assistant tool calls: …` format as narration
-        // instead of invoking the tool.
+        // is the text the user already saw, and exposing the call invites
+        // the model to mimic the `[History note] assistant tool calls: …`
+        // format as narration instead of invoking the tool.
         if name == "jyc_reply_message" {
             continue;
         }
@@ -1218,8 +1217,9 @@ fn flush_turn(
 /// context). Every assistant message in between — intermediate tool-call
 /// steps and the final reply alike — is merged into one assistant entry
 /// (see [`flush_turn`]), so the windowed view never loses the turn's
-/// conclusion (including `jyc_reply_message` calls, which live in the
-/// turn's later assistant messages).
+/// conclusion. `jyc_reply_message` calls are merged into the assistant
+/// text but intentionally excluded from the history-note annotation
+/// (see [`tool_call_summary`]).
 ///
 /// Assistant messages are cleaned to only role + content (strip
 /// reasoning_content, tool_calls); bare tool calls are summarized into the

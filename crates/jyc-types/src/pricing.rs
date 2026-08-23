@@ -12,7 +12,7 @@
 //!    payload**, so the math is exactly that call's breakdown rather
 //!    than an approximation across calls.
 
-use chrono::{DateTime, FixedOffset, NaiveTime, Utc};
+use chrono::{DateTime, Datelike, FixedOffset, NaiveTime, Utc, Weekday};
 
 use crate::config::{AppConfig, ModelPricing};
 
@@ -72,13 +72,29 @@ fn parse_time(s: &str) -> Option<NaiveTime> {
         .ok()
 }
 
+/// Parse a weekday name like `"mon"` or `"MON"` (case-insensitive).
+fn parse_weekday(s: &str) -> Option<Weekday> {
+    Some(match s.to_ascii_lowercase().as_str() {
+        "mon" => Weekday::Mon,
+        "tue" => Weekday::Tue,
+        "wed" => Weekday::Wed,
+        "thu" => Weekday::Thu,
+        "fri" => Weekday::Fri,
+        "sat" => Weekday::Sat,
+        "sun" => Weekday::Sun,
+        _ => return None,
+    })
+}
+
 /// Resolve the rates in effect at `now`: the first `time_windows` entry
 /// whose `[start, end)` contains the local time at `now` (interpreted in
 /// `pricing.utc_offset`, a fixed UTC offset defaulting to UTC) wins;
 /// otherwise the flat rates on `pricing` apply. A window with
-/// `start > end` wraps past midnight. A window with an unparseable
-/// start/end is skipped. Cache rates omitted on a window inherit the
-/// flat [`ModelPricing`] cache rates.
+/// `start > end` wraps past midnight; `start == end` spans the whole
+/// day. A window with `days` set only applies on those weekdays (empty
+/// means every day). A window with an unparseable start/end is skipped.
+/// Cache rates omitted on a window inherit the flat [`ModelPricing`]
+/// cache rates.
 ///
 /// Emits a `tracing::debug!` line on each resolution so operators can
 /// see which rates applied to each call. The call site (billing ledger)
@@ -92,14 +108,23 @@ fn effective_rates(pricing: &ModelPricing, now: DateTime<Utc>) -> (Rates, RateSo
             FixedOffset::east_opt(0).expect("zero offset is always valid")
         }
     };
-    let local = now.with_timezone(&offset).time();
+    let local_dt = now.with_timezone(&offset);
+    let local = local_dt.time();
+    let weekday = local_dt.weekday();
 
     for w in &pricing.time_windows {
+        // A window restricted to certain weekdays only applies on those.
+        if !w.days.is_empty() && !w.days.iter().any(|d| parse_weekday(d) == Some(weekday)) {
+            continue;
+        }
         let (Some(start), Some(end)) = (parse_time(&w.start), parse_time(&w.end)) else {
             continue;
         };
-        // start-inclusive / end-exclusive; start > end wraps past midnight.
-        let in_window = if start <= end {
+        // start-inclusive / end-exclusive; start > end wraps past
+        // midnight; start == end spans the whole day.
+        let in_window = if start == end {
+            true
+        } else if start <= end {
             local >= start && local < end
         } else {
             local >= start || local < end

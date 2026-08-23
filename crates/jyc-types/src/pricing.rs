@@ -592,6 +592,7 @@ mod tests {
             TimeWindowPricing {
                 start: start.to_string(),
                 end: end.to_string(),
+                days: Vec::new(),
                 input_per_million: input,
                 output_per_million: output,
                 cache_hit_per_million: None,
@@ -697,6 +698,7 @@ mod tests {
                 TimeWindowPricing {
                     start: "bogus".to_string(),
                     end: "08:30".to_string(),
+                    days: Vec::new(),
                     input_per_million: 1.0,
                     output_per_million: 4.0,
                     cache_hit_per_million: None,
@@ -723,6 +725,7 @@ mod tests {
                 time_windows: vec![TimeWindowPricing {
                     start: "00:00".to_string(),
                     end: "12:00".to_string(),
+                    days: Vec::new(),
                     input_per_million: 2.0,
                     output_per_million: 8.0,
                     cache_hit_per_million: Some(0.25),
@@ -786,6 +789,7 @@ mod tests {
                 time_windows: vec![TimeWindowPricing {
                     start: "00:00".to_string(),
                     end: "08:00".to_string(),
+                    days: Vec::new(),
                     input_per_million: 1.0,
                     output_per_million: 4.0,
                     cache_hit_per_million: Some(0.25),

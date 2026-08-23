@@ -814,4 +814,37 @@ mod tests {
         ws.reset_reconnection_count();
         assert_eq!(ws.reconnect_count, 0);
     }
+
+    #[tokio::test]
+    async fn test_convert_to_inbound_message_id_vs_chat_id() {
+        // Regression guard for #642: the reaction API needs the message_id,
+        // which the adapter puts in `external_id` — NOT in `channel_uid`
+        // (which holds the chat_id). open_id "unknown" + p2p keeps this test
+        // offline (name lookups are skipped).
+        let config = FeishuConfig::default();
+        let client = Arc::new(super::super::client::FeishuClient::new(config.clone()));
+        let ws = FeishuWebSocket::new(&config, client);
+
+        let json = r#"{
+            "header": {"event_type": "im.message.receive_v1", "event_id": "ev_xxx"},
+            "event": {
+                "sender": {"sender_id": {"open_id": "unknown"}},
+                "message": {
+                    "message_id": "om_msg_123",
+                    "message_type": "text",
+                    "content": "{\"text\":\"hello\"}",
+                    "chat_type": "p2p",
+                    "create_time": "1704067200000"
+                }
+            }
+        }"#;
+        let envelope: super::EventEnvelope = serde_json::from_str(json).unwrap();
+        let inbound = ws.convert_to_inbound("feishu", &envelope).await.unwrap();
+
+        assert_eq!(inbound.external_id.as_deref(), Some("om_msg_123"));
+        assert_ne!(
+            inbound.external_id.as_deref(),
+            Some(inbound.channel_uid.as_str())
+        );
+    }
 }

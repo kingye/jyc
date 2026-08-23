@@ -36,10 +36,11 @@
   The API-level forcing is removed entirely: the recovery turn simply
   restricts the tool list to `jyc_reply_message`, and a text-only finish
   that persists after the nudge is now auto-delivered in the agent's name
-  via a synthetic `jyc_reply_message` execution — delivery, chat-log
-  entry and metrics are identical to a real tool call, with a subtle
-  "— auto-delivered" trace — instead of the degraded fallback path.
-  (#640, #644)
+  via a synthetic `jyc_reply_message` execution — delivery and chat-log
+  entry are identical to a real tool call, with a subtle
+  "— auto-delivered" trace, and the delivery is flagged in metrics as
+  `reply_by_auto` so this degradation rate stays measurable — instead of
+  the degraded fallback path. (#640, #644)
 - **Reply-delivery guard enforcement.** The agent loop's reply reminders
   are now backed by a tool-restricted recovery turn: after a reminder,
   the next LLM call offers only `jyc_reply_message`, so the model cannot

@@ -1169,6 +1169,7 @@ fn flush_turn(
 
     let mut texts: Vec<String> = Vec::with_capacity(assistants.len());
     let mut summaries: Vec<String> = Vec::new();
+    let mut had_tool_calls = false;
     for msg in &assistants {
         // Keep only role + content for the text; bare tool calls go into
         // the history note so the windowed view shows which tools ran and
@@ -1178,11 +1179,18 @@ fn flush_turn(
         if !text.is_empty() {
             texts.push(text);
         }
+        if !collect_tool_calls(msg).is_empty() {
+            had_tool_calls = true;
+        }
         if let Some(summary) = tool_call_summary(msg, results) {
             summaries.push(summary);
         }
     }
-    if texts.is_empty() && summaries.is_empty() {
+    // Drop only when the assistant truly had nothing — no text AND no
+    // tool calls. `summaries` can be empty while `had_tool_calls` is true
+    // when every call was the filtered `jyc_reply_message`; the trigger
+    // user message still matters to the prior context, so keep the pair.
+    if texts.is_empty() && summaries.is_empty() && !had_tool_calls {
         return;
     }
 

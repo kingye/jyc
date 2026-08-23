@@ -121,37 +121,57 @@ pub(crate) async fn complete_with_retry(
             ));
         }
 
-        let result: Result<CollectedResponse> = tokio::select! {
-            r = async {
-                let stream = match forced_tool {
-                    Some(name) => {
-                        provider
-                            .complete_raw_forcing_tool(raw_context, tools, system_prompt, name)
-                            .await?
-                    }
-                    None => {
-                        provider
-                            .complete_raw(raw_context, tools, system_prompt)
-                            .await?
-                    }
-                };
-                collect_response(
-                    stream,
-                    sse_read_timeout,
-                    event_bus,
-                    topic_name,
-                    thinking_enabled,
-                )
-                .await
-            } => r,
-            _ = cancel.cancelled() => {
-                return Err(anyhow::anyhow!("cancelled during LLM call"));
-            }
-        };
+        let result = issue_call(
+            provider,
+            raw_context,
+            tools,
+            system_prompt,
+            topic_name,
+            event_bus,
+            sse_read_timeout,
+            cancel,
+            thinking_enabled,
+            forced_tool,
+        )
+        .await;
 
         match result {
             Ok(r) => return Ok(r),
-            Err(e) => last_err = e,
+            Err(e) => {
+                // DeepSeek thinking mode rejects `tool_choice` with HTTP 400
+                // even when the params-based detection (openai_compat) missed
+                // it — e.g. a model that defaults to thinking with no params.
+                // The forcing itself is the problem, so re-issue once
+                // immediately WITHOUT forcing: deterministic rejection, so no
+                // backoff and no retry budget consumed. The recovery turn
+                // still restricts the tool list, so the un-forced call is
+                // still nudged. (#640 regression, DeepSeek)
+                if forced_tool.is_some() && is_tool_choice_rejection(&e) {
+                    tracing::warn!(
+                        error = %e,
+                        "tool_choice rejected by provider (thinking mode); retrying without forcing"
+                    );
+                    match issue_call(
+                        provider,
+                        raw_context,
+                        tools,
+                        system_prompt,
+                        topic_name,
+                        event_bus,
+                        sse_read_timeout,
+                        cancel,
+                        thinking_enabled,
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(r) => return Ok(r),
+                        Err(e2) => last_err = e2,
+                    }
+                } else {
+                    last_err = e;
+                }
+            }
         }
 
         // Retry decision: classify the failure, then apply the class's
@@ -217,6 +237,59 @@ pub(crate) async fn complete_with_retry(
     }
 
     Err(last_err)
+}
+
+/// Issue one LLM call and collect its streaming response, honouring the
+/// cancellation token (a cancelled token aborts immediately).
+#[allow(clippy::too_many_arguments)]
+async fn issue_call(
+    provider: &dyn Provider,
+    raw_context: &[serde_json::Value],
+    tools: &[ToolDefinition],
+    system_prompt: &str,
+    topic_name: &str,
+    event_bus: Option<&TopicEventBusRef>,
+    sse_read_timeout: std::time::Duration,
+    cancel: &CancellationToken,
+    thinking_enabled: bool,
+    forced_tool: Option<&str>,
+) -> Result<CollectedResponse> {
+    tokio::select! {
+        r = async {
+            let stream = match forced_tool {
+                Some(name) => {
+                    provider
+                        .complete_raw_forcing_tool(raw_context, tools, system_prompt, name)
+                        .await?
+                }
+                None => {
+                    provider
+                        .complete_raw(raw_context, tools, system_prompt)
+                        .await?
+                }
+            };
+            collect_response(
+                stream,
+                sse_read_timeout,
+                event_bus,
+                topic_name,
+                thinking_enabled,
+            )
+            .await
+        } => r,
+        _ = cancel.cancelled() => {
+            return Err(anyhow::anyhow!("cancelled during LLM call"));
+        }
+    }
+}
+
+/// Whether the error is the provider rejecting `tool_choice` — HTTP 400,
+/// e.g. DeepSeek's "Thinking mode does not support this tool_choice".
+/// The forcing itself is the problem, so retrying without it is the fix
+/// (handled before the normal retry classification).
+fn is_tool_choice_rejection(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}").to_lowercase();
+    msg.contains("invalid status code: 400") && msg.contains("tool_choice")
 }
 
 #[cfg(test)]
@@ -311,6 +384,138 @@ mod retry_tests {
 
     use super::super::event_test_helpers::drain_events;
     use crate::types::ContentBlock;
+
+    /// Provider whose forced-call path always fails with DeepSeek's
+    /// thinking-mode `tool_choice` rejection (HTTP 400), while the plain
+    /// path succeeds.
+    struct ToolChoiceRejectingProvider {
+        forced_calls: AtomicUsize,
+        plain_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for ToolChoiceRejectingProvider {
+        fn name(&self) -> &str {
+            "tool-choice-rejecting"
+        }
+        fn model(&self) -> &str {
+            "tc-1"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            unimplemented!("complete() unused in retry tests")
+        }
+
+        async fn complete_raw(
+            &self,
+            _raw_messages: &[serde_json::Value],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            self.plain_calls.fetch_add(1, Ordering::SeqCst);
+            let events: Vec<anyhow::Result<StreamEvent>> = vec![
+                Ok(StreamEvent::TextDelta("ok".to_string())),
+                Ok(StreamEvent::Done),
+            ];
+            Ok(Box::pin(stream::iter(events)))
+        }
+
+        async fn complete_raw_forcing_tool(
+            &self,
+            _raw_messages: &[serde_json::Value],
+            _tools: &[ToolDefinition],
+            _system: &str,
+            _tool_name: &str,
+        ) -> anyhow::Result<EventStream> {
+            self.forced_calls.fetch_add(1, Ordering::SeqCst);
+            Err(anyhow::anyhow!(
+                "SSE stream error: Invalid status code: 400 Bad Request body: \
+                 thinking mode does not support this tool_choice"
+            ))
+        }
+
+        fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
+            let text: String = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            serde_json::json!({"role": "user", "content": text})
+        }
+
+        fn format_tool_result(
+            &self,
+            tool_call_id: &str,
+            content: &str,
+            _is_error: bool,
+        ) -> serde_json::Value {
+            serde_json::json!({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": content,
+            })
+        }
+
+        fn build_raw_assistant_message(
+            &self,
+            text: &str,
+            _reasoning: &str,
+            _tool_calls: &[(String, String, String)],
+        ) -> serde_json::Value {
+            serde_json::json!({"role": "assistant", "content": text})
+        }
+    }
+
+    /// DeepSeek thinking-mode tool_choice rejection → the call is re-issued
+    /// once without forcing and succeeds; no retry budget consumed.
+    #[tokio::test]
+    async fn tool_choice_rejection_retries_without_forcing() {
+        let provider = ToolChoiceRejectingProvider {
+            forced_calls: AtomicUsize::new(0),
+            plain_calls: AtomicUsize::new(0),
+        };
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "topic-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+            &CancellationToken::new(),
+            true,
+            &[1, 2],
+            Some("jyc_reply_message"),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "expected Ok after un-forced re-issue, got {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap().text, "ok");
+        assert_eq!(
+            provider.forced_calls.load(Ordering::SeqCst),
+            1,
+            "forced path should run exactly once (rejected, then retried un-forced)"
+        );
+        assert_eq!(
+            provider.plain_calls.load(Ordering::SeqCst),
+            1,
+            "un-forced path should run once and succeed"
+        );
+    }
 
     /// Two transient failures then success → returns Ok, publishes 2 retry events.
     #[tokio::test]

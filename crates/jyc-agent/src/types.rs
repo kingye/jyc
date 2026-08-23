@@ -179,10 +179,10 @@ pub struct AgentLoopResult {
     /// Whether the reply_message tool was called successfully.
     pub reply_sent_by_tool: bool,
     /// Whether the reply was auto-delivered in the agent's name: the model
-    /// finished text-only even after the nudge, so the loop executed
-    /// `jyc_reply_message` synthetically with the final text. Surfaces to
-    /// metrics so this degradation rate stays measurable separately from
-    /// real tool calls.
+    /// finished text-only without calling `jyc_reply_message`, so the loop
+    /// executed it synthetically with the final text. Surfaces to metrics
+    /// so this degradation rate stays measurable separately from real tool
+    /// calls.
     pub reply_auto_delivered: bool,
     /// Reply text extracted from the reply_message tool call (if used).
     pub reply_text_from_tool: Option<String>,

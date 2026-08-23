@@ -24,6 +24,20 @@
 
 ### Fixed
 
+- **Injected reply-tool reminder confused the model.** When a text-only
+  finish skipped `jyc_reply_message`, the loop injected a
+  `[System reminder] … call jyc_reply_message` user message and ran one
+  more LLM turn restricted to the reply tool. The reminder's
+  `silent: true` escape hatch led models to close the turn without
+  delivering anything (the user saw no reply), and the extra turn could
+  re-summarize the answer differently. The injection is removed: any
+  non-empty text-only finish with the reply tool registered is now
+  auto-delivered immediately via the synthetic `jyc_reply_message`
+  execution (with the `— auto-delivered` trace), guaranteeing delivery,
+  saving one LLM call, and keeping the delivered text identical to what
+  the model wrote. The failure-aware reminder (concrete tool error) and
+  the legacy no-reply reminder (reply tool unavailable) are unchanged.
+  (#648)
 - **Synthetic auto-delivery never published `ReplySent`.** When a
   text-only finish was auto-delivered in the agent's name via the
   synthetic `jyc_reply_message` execution, the reply was sent through the

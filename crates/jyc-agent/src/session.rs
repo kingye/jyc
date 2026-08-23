@@ -1090,10 +1090,13 @@ fn collect_results_from(
 const WINDOWED_ANNOTATION_MAX: usize = 2000;
 
 /// Prefix marking a user-role **history note** — the windowed view's
-/// tool-call summary, emitted as its own message AFTER the assistant text
+/// tool-call summary, emitted as its own message BEFORE the assistant text
 /// so the model never sees the annotation in its own voice (models were
 /// observed mimicking the previous in-text `(incl. followed tool calls:
-/// …)` format and emitting fake tool-call text as their reply).
+/// …)` format and emitting fake tool-call text as their reply). The note
+/// precedes the assistant text (matching the chronological order: tool
+/// calls happen before the final reply) and so an `assistant → user(note)`
+/// adjacency never sits right before the next real user message.
 /// `extract_pairs` skips these notes so a compacted-then-reparsed context
 /// does not treat them as turn-opening user messages.
 pub(crate) const HISTORY_NOTE_PREFIX: &str = "[History note] assistant tool calls:";
@@ -1326,7 +1329,9 @@ pub(crate) fn extract_user_assistant_pairs(
     keep_pairs: usize,
     note_window: Option<usize>,
 ) -> Vec<serde_json::Value> {
-    // Keep only the last N pairs, flattened as user → assistant → note.
+    // Keep only the last N pairs, flattened as user → note → assistant
+    // (the note summarizes the tool calls, which happened before the
+    // assistant's final text).
     let pairs: Vec<_> = extract_pairs(raw_context)
         .into_iter()
         .rev()
@@ -1343,13 +1348,13 @@ pub(crate) fn extract_user_assistant_pairs(
         .enumerate()
         .flat_map(|(i, pair)| {
             let mut v = vec![pair.user];
-            if let Some(assistant) = pair.assistant {
-                v.push(assistant);
-            }
             if i >= notes_skipped
                 && let Some(note) = pair.note
             {
                 v.push(note);
+            }
+            if let Some(assistant) = pair.assistant {
+                v.push(assistant);
             }
             v
         })
@@ -1549,7 +1554,7 @@ mod tests {
     /// correctly; tool_result user-role wrappers are skipped; the whole
     /// turn's assistant steps merge into one pure-text entry, and the tool
     /// call (with its truncated result, `→ ok`) goes into a separate
-    /// user-role history note following the assistant message.
+    /// user-role history note preceding the assistant message.
     #[test]
     fn extract_pairs_anthropic_shape() {
         let ctx = vec![
@@ -1568,12 +1573,12 @@ mod tests {
         assert_eq!(pairs[0], ctx[0]);
         assert_eq!(
             pairs[1],
-            json!({"role": "assistant", "content": "a1\ndone"})
+            json!({"role": "user", "content":
+                "[History note] assistant tool calls: bash(command=\"ls\") → ok"})
         );
         assert_eq!(
             pairs[2],
-            json!({"role": "user", "content":
-                "[History note] assistant tool calls: bash(command=\"ls\") → ok"})
+            json!({"role": "assistant", "content": "a1\ndone"})
         );
     }
 
@@ -1591,12 +1596,12 @@ mod tests {
         ];
         let pairs = super::extract_user_assistant_pairs(&ctx, 10, None);
         assert_eq!(pairs.len(), 3);
-        assert_eq!(pairs[1], json!({"role": "assistant", "content": "running"}));
         assert_eq!(
-            pairs[2],
+            pairs[1],
             json!({"role": "user", "content":
                 "[History note] assistant tool calls: bash(command=\"ls -la\", timeout=30), read(path=\"a.txt\")"})
         );
+        assert_eq!(pairs[2], json!({"role": "assistant", "content": "running"}));
     }
 
     /// Tool-call-only assistant turns (no text) are kept via the note —
@@ -1640,9 +1645,9 @@ mod tests {
                 json!({"role": "user", "content": "u1"}),
                 json!({"role": "assistant", "content": "a1"}),
                 json!({"role": "user", "content": "u2"}),
-                json!({"role": "assistant", "content": "a2"}),
                 json!({"role": "user", "content":
                     "[History note] assistant tool calls: read(path=\"f\")"}),
+                json!({"role": "assistant", "content": "a2"}),
             ]
         );
     }
@@ -1679,7 +1684,7 @@ mod tests {
         let pairs = super::extract_user_assistant_pairs(&ctx, 10, Some(99));
         assert_eq!(pairs.len(), 3);
         assert_eq!(
-            pairs[2],
+            pairs[1],
             json!({"role": "user", "content":
                 "[History note] assistant tool calls: bash(command=\"ls\")"})
         );
@@ -1697,7 +1702,7 @@ mod tests {
             ]}),
         ];
         let pairs = super::extract_user_assistant_pairs(&ctx, 10, None);
-        let content = pairs[2]["content"].as_str().unwrap();
+        let content = pairs[1]["content"].as_str().unwrap();
         assert!(
             content.contains("[History note] assistant tool calls: bash(command="),
             "no note"
@@ -1721,7 +1726,7 @@ mod tests {
             json!({"role": "tool", "tool_call_id": "1", "content": "BRANCH main"}),
         ];
         let pairs = super::extract_user_assistant_pairs(&ctx, 10, None);
-        let content = pairs[2]["content"].as_str().unwrap();
+        let content = pairs[1]["content"].as_str().unwrap();
         // Call 1 gets its result appended after the arrow.
         assert!(
             content.contains(r#"bash(command="ls") → BRANCH main"#),
@@ -1983,9 +1988,7 @@ mod tests {
             json!({"role": "tool", "tool_call_id": "2", "content": "[ERROR] boom"}),
         ];
         let pairs = super::extract_pairs(&ctx);
-        let note = pairs[0].note.as_ref().unwrap()["content"]
-            .as_str()
-            .unwrap();
+        let note = pairs[0].note.as_ref().unwrap()["content"].as_str().unwrap();
         assert!(
             note.contains(r#"bash() → ok"#),
             "success prefix not stripped: {note:?}"

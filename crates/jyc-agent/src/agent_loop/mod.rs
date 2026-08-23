@@ -527,7 +527,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // model's only available action is delivering the reply (or going
         // silent). Text-only pleading alone proved insufficient — models
         // often re-emit the text instead of calling the tool.
-        let tool_defs = if std::mem::take(&mut restrict_to_reply_tool) {
+        let recovery_turn = std::mem::take(&mut restrict_to_reply_tool);
+        let tool_defs = if recovery_turn {
             tools
                 .definitions()
                 .into_iter()
@@ -536,6 +537,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         } else {
             tools.definitions()
         };
+        // Recovery turns also force `jyc_reply_message` at the API level
+        // (tool_choice): weak models otherwise ignore the single-tool offer
+        // and re-emit narration text, which then leaks via the fallback
+        // reply path.
+        let forced_tool = recovery_turn.then_some("jyc_reply_message");
 
         let response = match complete_with_retry(
             provider,
@@ -548,6 +554,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             &cancel,
             thinking_enabled,
             SSE_RETRY_BACKOFF_MS,
+            forced_tool,
         )
         .await
         {
@@ -1299,6 +1306,7 @@ async fn generate_summary_from_joined_history(
         &dummy_cancel,
         false, // progress summaries don't publish thinking events
         SSE_RETRY_BACKOFF_MS,
+        None, // progress summaries never force a tool
     )
     .await?;
 
@@ -1611,6 +1619,26 @@ mod reply_tool_tests {
         /// lets tests assert the reply-recovery turn restricts the tool
         /// list to `jyc_reply_message` alone.
         seen_tools: std::sync::Mutex<Vec<Vec<String>>>,
+        /// Forced tool names from `complete_raw_forcing_tool` calls, in call
+        /// order — lets tests assert the reply-recovery turn also forces the
+        /// tool at the API level (tool_choice).
+        forced_tools: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ScriptedProvider {
+        /// Record the offered tool names and replay the next scripted round.
+        fn next_stream(&self, tools: &[ToolDefinition]) -> EventStream {
+            self.seen_tools
+                .lock()
+                .unwrap()
+                .push(tools.iter().map(|t| t.name.clone()).collect());
+            let i = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events: Vec<anyhow::Result<StreamEvent>> = match self.rounds.get(i) {
+                Some(round) => round.iter().cloned().map(Ok).collect(),
+                None => vec![Ok(StreamEvent::Done)],
+            };
+            Box::pin(stream::iter(events))
+        }
     }
 
     #[async_trait]
@@ -1637,16 +1665,21 @@ mod reply_tool_tests {
             tools: &[ToolDefinition],
             _system: &str,
         ) -> anyhow::Result<EventStream> {
-            self.seen_tools
+            Ok(self.next_stream(tools))
+        }
+
+        async fn complete_raw_forcing_tool(
+            &self,
+            _raw_messages: &[serde_json::Value],
+            tools: &[ToolDefinition],
+            _system: &str,
+            tool_name: &str,
+        ) -> anyhow::Result<EventStream> {
+            self.forced_tools
                 .lock()
                 .unwrap()
-                .push(tools.iter().map(|t| t.name.clone()).collect());
-            let i = self.calls.fetch_add(1, Ordering::SeqCst);
-            let events: Vec<anyhow::Result<StreamEvent>> = match self.rounds.get(i) {
-                Some(round) => round.iter().cloned().map(Ok).collect(),
-                None => vec![Ok(StreamEvent::Done)],
-            };
-            Ok(Box::pin(stream::iter(events)))
+                .push(tool_name.to_string());
+            Ok(self.next_stream(tools))
         }
 
         fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
@@ -1717,6 +1750,7 @@ mod reply_tool_tests {
             ],
             calls: AtomicUsize::new(0),
             seen_tools: Default::default(),
+            forced_tools: Default::default(),
         };
         let tmp = TempDir::new().unwrap();
         let working_dir = tmp.path().to_path_buf();
@@ -1786,6 +1820,16 @@ mod reply_tool_tests {
             "recovery turn must offer only the reply tool"
         );
 
+        // The recovery turn must also force the reply tool at the API level
+        // (tool_choice) — weak models ignore a single-tool offer and re-emit
+        // narration text otherwise. The first turn forces nothing.
+        let forced = provider.forced_tools.lock().unwrap().clone();
+        assert_eq!(
+            forced,
+            vec!["jyc_reply_message".to_string()],
+            "exactly the recovery turn must force jyc_reply_message"
+        );
+
         // The activity pane must have seen exactly one `reply_tool_missing`
         // nudge event and no plain no_reply event.
         let events = drain_events(&mut rx).await;
@@ -1846,6 +1890,7 @@ mod reply_tool_tests {
             ],
             calls: AtomicUsize::new(0),
             seen_tools: Default::default(),
+            forced_tools: Default::default(),
         };
         let tmp = TempDir::new().unwrap();
         let working_dir = tmp.path().to_path_buf();
@@ -1923,6 +1968,7 @@ mod reply_tool_tests {
             ]],
             calls: AtomicUsize::new(0),
             seen_tools: Default::default(),
+            forced_tools: Default::default(),
         };
         let tmp = TempDir::new().unwrap();
         let working_dir = tmp.path().to_path_buf();
@@ -1993,6 +2039,7 @@ mod reply_tool_tests {
             ],
             calls: AtomicUsize::new(0),
             seen_tools: Default::default(),
+            forced_tools: Default::default(),
         };
         let tmp = TempDir::new().unwrap();
         let working_dir = tmp.path().to_path_buf();
@@ -2088,6 +2135,7 @@ mod reply_tool_tests {
             ],
             calls: AtomicUsize::new(0),
             seen_tools: Default::default(),
+            forced_tools: Default::default(),
         };
         let tmp = TempDir::new().unwrap();
         let working_dir = tmp.path().to_path_buf();

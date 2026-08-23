@@ -17,6 +17,13 @@
 
 ### Fixed
 
+- **Forced reply tool on recovery turns.** The reply-recovery turn now
+  also forces `jyc_reply_message` at the API level (`tool_choice`):
+  offering a single tool proved insufficient for weak models, which
+  re-emit narration text that then leaked as a fallback reply. Anthropic
+  and OpenAI-compatible providers implement the forcing; providers
+  without `tool_choice` support degrade to the previous reminder-only
+  behavior.
 - **Reply-delivery guard enforcement.** The agent loop's reply reminders
   are now backed by a tool-restricted recovery turn: after a reminder,
   the next LLM call offers only `jyc_reply_message`, so the model cannot

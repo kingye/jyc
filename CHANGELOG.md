@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+### Added
+
+- **Feishu progress indicator.** Feishu is now a pipe-only adapter (no
+  chat pane); the long silence while the agent is working used to leave
+  users wondering whether the bot had crashed. When the inbound adapter
+  receives a message it now drops a `Typing` reaction (⌨️) onto the
+  user's original message, and the reply forwarder swaps it for `DONE`
+  (✅) on the first reply for that topic. No new app permissions are
+  required — the bot's existing `im:message` scope covers both
+  `POST .../reactions` and `DELETE .../reactions/{id}`. State is
+  in-memory; a daemon restart mid-task leaves the `Typing` reaction
+  stuck until cleared manually. Multiple inbound messages on the same
+  topic before a reply: only the latest `Typing` is swapped on reply;
+  older ones remain until cleared manually.
+
 ### Fixed
 
 - **Reply-delivery guard enforcement.** The agent loop's reply reminders

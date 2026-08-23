@@ -1388,6 +1388,13 @@ pub(crate) fn spawn_feishu_adapter(
             let feishu_client = std::sync::Arc::new(FeishuClient::new(feishu_config.clone()));
             let topic_chat: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>> =
                 std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+            // Per-topic progress indicator state: maps topic -> (user_message_id,
+            // typing_reaction_id) so the reply forwarder can replace the Typing
+            // reaction with DONE once a reply lands. In-memory only; lost on
+            // restart (orphan Typing reactions stay until cleared manually).
+            let topic_reactions: std::sync::Arc<
+                std::sync::Mutex<HashMap<String, (String, String)>>,
+            > = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
 
             // One reply forwarder per distinct pipe target channel:
             // subscribe to the target channel's broadcast and relay
@@ -1413,6 +1420,7 @@ pub(crate) fn spawn_feishu_adapter(
             for channel in &pipe_channels {
                 let ws_broadcasts = ws_broadcasts.clone();
                 let topic_chat = topic_chat.clone();
+                let topic_reactions = topic_reactions.clone();
                 let feishu_client = feishu_client.clone();
                 let channel = channel.clone();
                 let inspect_client = inspect_client.clone();
@@ -1446,8 +1454,39 @@ pub(crate) fn spawn_feishu_adapter(
                             tracing::debug!(topic = %topic, "feishu pipe: no chat mapping for reply, skipping");
                             continue;
                         };
-                        if let Err(e) = feishu_client.send_text_message(&chat_id, text).await {
+                        let send_result = feishu_client.send_text_message(&chat_id, text).await;
+                        if let Err(e) = &send_result {
                             tracing::error!(error = %e, "failed to relay reply to feishu");
+                        }
+                        // Swap the Typing reaction (added on inbound) for DONE
+                        // on the user's original message — only when the reply
+                        // was actually delivered. Best-effort: skipped silently
+                        // when the tracking entry is missing (e.g. daemon
+                        // restart), leaving an orphan Typing reaction.
+                        if send_result.is_ok() {
+                            let reaction_track = topic_reactions.lock().unwrap().remove(topic);
+                            if let Some((user_message_id, typing_reaction_id)) = reaction_track {
+                            if let Err(e) = feishu_client
+                                .delete_reaction(&user_message_id, &typing_reaction_id)
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    topic = %topic,
+                                    "feishu pipe: failed to remove Typing reaction"
+                                );
+                            }
+                            if let Err(e) = feishu_client
+                                .add_reaction(&user_message_id, "DONE")
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    topic = %topic,
+                                    "feishu pipe: failed to add DONE reaction"
+                                );
+                            }
+                            }
                         }
                         // Relay reply attachments: download from the inspect
                         // server's files endpoint, re-upload to feishu.
@@ -1483,6 +1522,8 @@ pub(crate) fn spawn_feishu_adapter(
                 on_message: Box::new(move |message| {
                     let config_for_pipe = config_for_spawn.clone();
                     let topic_chat = topic_chat.clone();
+                    let topic_reactions = topic_reactions.clone();
+                    let feishu_client = feishu_client.clone();
                     let channel_name_self = channel_name.clone();
                     let routers = routers.clone();
                     tokio::spawn(async move {
@@ -1518,6 +1559,31 @@ pub(crate) fn spawn_feishu_adapter(
                                 .lock()
                                 .unwrap()
                                 .insert(message.topic.clone(), chat_id.to_string());
+                        }
+
+                        // Drop the Typing indicator onto the user's original
+                        // message. Best-effort: a failure here never blocks
+                        // routing, and the orphan-less state (no entry in
+                        // topic_reactions) means the reply forwarder simply
+                        // won't try to swap it.
+                        let user_message_id = message.channel_uid.clone();
+                        match feishu_client
+                            .add_reaction(&user_message_id, "Typing")
+                            .await
+                        {
+                            Ok(reaction_id) => {
+                                topic_reactions
+                                    .lock()
+                                    .unwrap()
+                                    .insert(message.topic.clone(), (user_message_id, reaction_id));
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    topic = %message.topic,
+                                    "feishu pipe: failed to add Typing reaction"
+                                );
+                            }
                         }
 
                         // Route through the target's own MessageRouter — the

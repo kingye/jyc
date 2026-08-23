@@ -1935,25 +1935,50 @@ mod tests {
         );
     }
 
-    /// `jyc_reply_message`'s `message` parameter keeps up to 1000 chars —
-    /// it is the text the user actually saw — while other args stay at 200.
+    /// `jyc_reply_message` is filtered out of the annotation: a turn that
+    /// called only the reply tool produces no note at all (the message the
+    /// user saw is already in the assistant's own text).
     #[test]
-    fn extract_pairs_reply_message_arg_gets_higher_cap() {
-        let long = "r".repeat(500);
+    fn extract_pairs_no_note_when_only_reply_was_called() {
         let ctx = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "", "tool_calls": [
                 {"id": "1", "type": "function", "function": {"name": "jyc_reply_message",
-                    "arguments": json!({"message": long}).to_string()}}
+                    "arguments": r#"{"message": "hi"}"#}}
+            ]}),
+        ];
+        let pairs = super::extract_pairs(&ctx);
+        assert!(
+            pairs[0].note.is_none(),
+            "reply-only turn must not emit a history note: {:?}",
+            pairs[0].note
+        );
+    }
+
+    /// A mixed turn (real work + a reply call) keeps the real work in the
+    /// note and drops the reply call — the reply's message is already in
+    /// the assistant text, so the annotation must not duplicate it.
+    #[test]
+    fn extract_pairs_drops_reply_call_but_keeps_real_work() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "looking", "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "bash",
+                    "arguments": r#"{"command": "ls"}"#}},
+                {"id": "2", "type": "function", "function": {"name": "jyc_reply_message",
+                    "arguments": r#"{"message": "done"}"#}}
             ]}),
         ];
         let pairs = super::extract_pairs(&ctx);
         let content = pairs[0].note.as_ref().unwrap()["content"].as_str().unwrap();
         assert!(
-            content.contains(&long),
-            "reply message under 1000 chars must not be truncated: {content:?}"
+            content.contains(r#"bash(command="ls")"#),
+            "real call missing from note: {content:?}"
         );
-        assert!(!content.contains('…'), "unexpected truncation: {content:?}");
+        assert!(
+            !content.contains("jyc_reply_message"),
+            "reply call must not appear in note: {content:?}"
+        );
     }
 
     /// The note as a whole is capped: calls past the budget are

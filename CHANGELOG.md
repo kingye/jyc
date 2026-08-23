@@ -19,7 +19,7 @@
   copies. `build_outbound_adapter` was inlined into its single call site
   (the websocket hub setup). config.example.toml's agent-runtime examples
   (channel-level MCPs, tool exclusion) now target the hub channel and note
-  that pipe-only channels ignore `mcps`/`disabled_tools`/`skills` (#PR)
+  that pipe-only channels ignore `mcps`/`disabled_tools`/`skills` (#638)
 
 - **wecom and wecomkf are pipe-only adapters.** Both channel types were
   migrated to the pipe architecture (docs/core-hub-adapters.md): pattern
@@ -38,7 +38,7 @@
   `message.channel` to the pipe target, so the hub worker's
   `channel == "wecomkf"` gate could never fire — the writer, the
   `topic_json` module, and chat-log's `user_name` fallback reader were all
-  unreachable (#PR)
+  unreachable (#638)
 
 - **WeChat (OpenILink bridge) channel.** Removed entirely — it was the
   last full channel without a pipe-migration path and saw no production

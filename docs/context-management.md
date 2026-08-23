@@ -70,9 +70,9 @@ Sends two parts, in order:
  │ ① Windowed history (last N turns, re-paired + annotated)   │
  │                                                            │
  │  user      │ "u2"                                          │
- │  assistant │ "a2"                    ← pure text, no tools  │
  │  user      │ "[History note] assistant tool calls:         │
  │            │   bash(command="ls") → ok"  ← folded summary  │
+ │  assistant │ "a2"                    ← pure text, no tools  │
  │  user      │ "u3"                                          │
  │  assistant │ "a3"                                          │
  ├────────────────────────────────────────────────────────────┤
@@ -113,8 +113,10 @@ The pairing unit is the **turn**, not the single message:
 
 #### History notes
 
-Each turn with tool calls gets one user-role message emitted **after**
-the assistant text:
+Each turn with tool calls gets one user-role message emitted **before**
+the assistant text (so no `assistant → user(note)` adjacency sits
+right before the next real user turn — which would prime the model
+to treat the note as a fresh instruction):
 
 ```
 [History note] assistant tool calls: bash(command="ls -la") → ok, read(file_path="a.txt") → [error] No such file
@@ -138,12 +140,12 @@ Size caps (constants in `session.rs`):
 
 | Limit | Value | Notes |
 |-------|-------|-------|
-| Single argument value | 200 chars | truncated with `…` |
-| Single tool result | 500 chars | full result is one `context_browse` away |
-| **Whole note** | **2000 chars** | overflow folds to `…(N more calls)` |
+| Single argument value | 200 bytes | truncated with `… [truncated N bytes]` |
+| Single tool result | 500 bytes | full result is one `context_browse` away |
+| **Whole note** | **2000 bytes** | overflow folds to `…(N more calls)` |
 
 With the default `window = 10`, all notes together cost at most ~20 KB of
-characters. The dominant factor in window size is the untruncated
+bytes. The dominant factor in window size is the untruncated
 user/assistant text itself, not the notes.
 
 **`note_window` (optional):** when set to `M`, only the **most recent M**
@@ -283,6 +285,12 @@ optional (unset = notes on all windowed turns; `0` = none).
 
 Key changes, newest first (see CHANGELOG.md for full entries):
 
+- **#647** — windowed history-note format clarity: `[History note]`
+  is emitted before the assistant text (was after); truncated args
+  and results carry an explicit `… [truncated N bytes]` marker (was
+  bare `…`); the OpenAI provider's `[SUCCESS] `/`[ERROR] ` prefix is
+  stripped from history-note results so failures render as `[error] `
+  for both providers.
 - **#632** — `note_window`: history notes limited to the most recent M
   windowed turns; `/context sliding [N] [M]`.
 - **#630** — history notes moved to separate user-role messages (fixes

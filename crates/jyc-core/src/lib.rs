@@ -19,7 +19,6 @@ pub mod template_dirs;
 pub mod template_utils;
 pub mod topic_event;
 pub mod topic_event_bus;
-pub mod topic_json;
 pub mod topic_manager;
 pub mod topic_path;
 

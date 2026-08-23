@@ -35,6 +35,14 @@
   and OpenAI-compatible providers implement the forcing; providers
   without `tool_choice` support degrade to the previous reminder-only
   behavior.
+- **DeepSeek thinking mode rejected the forced reply tool.** DeepSeek v4
+  (and other thinking-mode OpenAI-compatible models) reject any request
+  carrying `tool_choice` with HTTP 400 "Thinking mode does not support
+  this tool_choice", which killed the whole agent round with no reply
+  delivered. The provider now skips `tool_choice` when the configured
+  params enable thinking (`params.thinking.type != "disabled"`), and the
+  retry layer additionally re-issues a rejected forced call once without
+  forcing as a safety net for models that default to thinking.
 - **Reply-delivery guard enforcement.** The agent loop's reply reminders
   are now backed by a tool-restricted recovery turn: after a reminder,
   the next LLM call offers only `jyc_reply_message`, so the model cannot

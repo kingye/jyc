@@ -880,8 +880,6 @@ const WINDOWED_TOOL_ARG_MAX: usize = 200;
 /// ponytail: fixed cap; raise if real results routinely need more.
 const WINDOWED_TOOL_RESULT_MAX: usize = 500;
 
-
-
 /// A tool result collected for the windowed annotation: truncated text
 /// plus the error flag, so failures render as `→ [error] …` and the agent
 /// can tell a failed call apart from a successful one.

@@ -1454,21 +1454,18 @@ pub(crate) fn spawn_feishu_adapter(
                             tracing::debug!(topic = %topic, "feishu pipe: no chat mapping for reply, skipping");
                             continue;
                         };
-                        if let Err(e) = feishu_client.send_text_message(&chat_id, text).await {
+                        let send_result = feishu_client.send_text_message(&chat_id, text).await;
+                        if let Err(e) = &send_result {
                             tracing::error!(error = %e, "failed to relay reply to feishu");
                         }
-                        // Swap the Typing reaction (added on inbound) for
-                        // DONE on the user's original message. Best-effort:
-                        // if the Typing reaction id was lost (e.g. daemon
-                        // restart) we still try to add DONE so the user gets
-                        // the completion signal; the orphan Typing reaction
-                        // remains until cleared manually.
-                        let reaction_track = topic_reactions
-                            .lock()
-                            .unwrap()
-                            .remove(topic)
-                            .map(|(msg_id, rc_id)| (msg_id, rc_id));
-                        if let Some((user_message_id, typing_reaction_id)) = reaction_track {
+                        // Swap the Typing reaction (added on inbound) for DONE
+                        // on the user's original message — only when the reply
+                        // was actually delivered. Best-effort: skipped silently
+                        // when the tracking entry is missing (e.g. daemon
+                        // restart), leaving an orphan Typing reaction.
+                        if send_result.is_ok() {
+                            let reaction_track = topic_reactions.lock().unwrap().remove(topic);
+                            if let Some((user_message_id, typing_reaction_id)) = reaction_track {
                             if let Err(e) = feishu_client
                                 .delete_reaction(&user_message_id, &typing_reaction_id)
                                 .await
@@ -1488,6 +1485,7 @@ pub(crate) fn spawn_feishu_adapter(
                                     topic = %topic,
                                     "feishu pipe: failed to add DONE reaction"
                                 );
+                            }
                             }
                         }
                         // Relay reply attachments: download from the inspect

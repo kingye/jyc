@@ -627,7 +627,7 @@ impl FeishuClient {
     /// messages) or `im:message.reactions:write_only`.
     pub async fn add_reaction(&self, message_id: &str, emoji_type: &str) -> Result<String> {
         let token = self.get_token().await?;
-        let url = add_reaction_url(self.config.base_url.trim_end_matches('/'), message_id);
+        let url = add_reaction_url(&self.config.base_url, message_id);
         let body = serde_json::json!({ "reaction_type": { "emoji_type": emoji_type } });
 
         let resp = self
@@ -666,11 +666,7 @@ impl FeishuClient {
     /// `DELETE /open-apis/im/v1/messages/{id}/reactions/{reaction_id}`.
     pub async fn delete_reaction(&self, message_id: &str, reaction_id: &str) -> Result<()> {
         let token = self.get_token().await?;
-        let url = delete_reaction_url(
-            self.config.base_url.trim_end_matches('/'),
-            message_id,
-            reaction_id,
-        );
+        let url = delete_reaction_url(&self.config.base_url, message_id, reaction_id);
 
         let resp = self
             .http
@@ -707,6 +703,7 @@ pub struct FeishuMessageResult {
 ///
 /// `POST /open-apis/im/v1/messages/{message_id}/reactions`
 fn add_reaction_url(base_url: &str, message_id: &str) -> String {
+    let base_url = base_url.trim_end_matches('/');
     format!("{base_url}/open-apis/im/v1/messages/{message_id}/reactions")
 }
 
@@ -714,6 +711,7 @@ fn add_reaction_url(base_url: &str, message_id: &str) -> String {
 ///
 /// `DELETE /open-apis/im/v1/messages/{message_id}/reactions/{reaction_id}`
 fn delete_reaction_url(base_url: &str, message_id: &str, reaction_id: &str) -> String {
+    let base_url = base_url.trim_end_matches('/');
     format!("{base_url}/open-apis/im/v1/messages/{message_id}/reactions/{reaction_id}")
 }
 

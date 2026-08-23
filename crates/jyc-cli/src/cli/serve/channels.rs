@@ -18,7 +18,7 @@ use anyhow::Result;
 
 use jyc_channels::email::inbound::EmailMatcher;
 use jyc_channels::feishu::client::FeishuClient;
-use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
+use jyc_channels::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher, feishu_message_id};
 use jyc_channels::github::inbound::GithubMatcher;
 use jyc_channels::websocket::inbound::{WebsocketInboundAdapter, WebsocketMatcher};
 
@@ -1566,16 +1566,32 @@ pub(crate) fn spawn_feishu_adapter(
                         // routing, and the orphan-less state (no entry in
                         // topic_reactions) means the reply forwarder simply
                         // won't try to swap it.
-                        let user_message_id = message.channel_uid.clone();
+                        //
+                        // The feishu reaction API requires the message_id,
+                        // NOT the chat_id — `channel_uid` is set to chat_id
+                        // by the inbound adapter; `external_id` carries the
+                        // actual message_id. Skipping on None rather than
+                        // panicking keeps the inbound spawn task safe even
+                        // if a future code path forgets to populate
+                        // external_id.
+                        let Some(user_message_id) = feishu_message_id(&message) else {
+                            tracing::warn!(
+                                topic = %message.topic,
+                                "feishu pipe: inbound message missing external_id; \
+                                 skipping Typing reaction"
+                            );
+                            route_into_pipe_target("feishu", &routers, pipe, message).await;
+                            return;
+                        };
                         match feishu_client
-                            .add_reaction(&user_message_id, "Typing")
+                            .add_reaction(user_message_id, "Typing")
                             .await
                         {
                             Ok(reaction_id) => {
-                                topic_reactions
-                                    .lock()
-                                    .unwrap()
-                                    .insert(message.topic.clone(), (user_message_id, reaction_id));
+                                topic_reactions.lock().unwrap().insert(
+                                    message.topic.clone(),
+                                    (user_message_id.to_string(), reaction_id),
+                                );
                             }
                             Err(e) => {
                                 tracing::warn!(

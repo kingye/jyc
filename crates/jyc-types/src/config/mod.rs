@@ -567,11 +567,16 @@ pub struct ModelPricing {
 /// input/output keeps the flat cache rates.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct TimeWindowPricing {
-    /// Window start, `"HH:MM"` or `"HH:MM:SS"` (inclusive).
+    /// Window start, `"HH:MM"` or `"HH:MM:SS"` (inclusive). A window
+    /// with `start == end` spans the whole day.
     pub start: String,
     /// Window end, `"HH:MM"` or `"HH:MM:SS"` (exclusive; `<= start`
-    /// wraps past midnight).
+    /// wraps past midnight, `== start` spans the whole day).
     pub end: String,
+    /// Weekdays the window applies on, each `"mon"`..`"sun"`
+    /// (case-insensitive). Empty (default) = every day.
+    #[serde(default)]
+    pub days: Vec<String>,
     /// Price per 1M uncached input tokens during this window.
     pub input_per_million: f64,
     /// Price per 1M output tokens during this window.

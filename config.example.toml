@@ -408,9 +408,12 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # # the flat values). Times are `HH:MM` (or `HH:MM:SS`)
 # # in the fixed UTC offset named by `utc_offset` (default UTC; DeepSeek's
 # # discount schedule is Beijing time → "+08:00"). A window whose
-# # `start > end` wraps past midnight. First matching window wins;
-# # outside every window the flat rates above apply. Example: standard
-# # ¥2/M in, ¥8/M out; 50% off 00:30–08:30 and 25% off 16:30–00:30:
+# # `start > end` wraps past midnight; `start == end` spans the whole day.
+# # A window may restrict itself to weekdays via `days` (`"mon"`..`"sun"`,
+# # case-insensitive; omitted/empty = every day). First matching window
+# # wins; outside every window the flat rates above apply. Example:
+# # standard ¥2/M in, ¥8/M out; 50% off 00:30–08:30, 25% off 16:30–00:30,
+# # and weekend-only all-day pricing at ¥1/M in:
 # #
 # # [ai.providers.deepseek]
 # # type = "openai-compatible"
@@ -419,6 +422,7 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # # pricing = { input_per_million = 2.0, output_per_million = 8.0, currency = "CNY", utc_offset = "+08:00", time_windows = [
 # #   { start = "00:30", end = "08:30", input_per_million = 1.0, output_per_million = 4.0 },
 # #   { start = "16:30", end = "00:30", input_per_million = 1.5, output_per_million = 6.0 },
+# #   { start = "00:00", end = "00:00", days = ["sat", "sun"], input_per_million = 1.0, output_per_million = 4.0 },
 # # ] }
 # #
 # Two figures are tracked per topic:

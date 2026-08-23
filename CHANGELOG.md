@@ -2,6 +2,13 @@
 
 ### Added
 
+- **Weekday-restricted pricing windows.** `time_windows` entries now
+  accept an optional `days = ["mon", "sat", ...]` filter
+  (case-insensitive `"mon"`..`"sun"`; omitted/empty = every day), so a
+  provider can price differently on specific days of the week — e.g.
+  weekend-only all-day discounts via `start = "00:00"`, `end = "00:00"`
+  (a `start == end` window now spans the whole day).
+
 - **Feishu progress indicator.** Feishu is now a pipe-only adapter (no
   chat pane); the long silence while the agent is working used to leave
   users wondering whether the bot had crashed. When the inbound adapter

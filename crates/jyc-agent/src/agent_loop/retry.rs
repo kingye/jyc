@@ -106,6 +106,7 @@ pub(crate) async fn complete_with_retry(
     cancel: &CancellationToken,
     thinking_enabled: bool,
     transient_backoff_ms: &[u64],
+    forced_tool: Option<&str>,
 ) -> Result<CollectedResponse> {
     let mut last_err: anyhow::Error =
         anyhow::anyhow!("complete_with_retry exited without attempting any call");
@@ -122,9 +123,18 @@ pub(crate) async fn complete_with_retry(
 
         let result: Result<CollectedResponse> = tokio::select! {
             r = async {
-                let stream = provider
-                    .complete_raw(raw_context, tools, system_prompt)
-                    .await?;
+                let stream = match forced_tool {
+                    Some(name) => {
+                        provider
+                            .complete_raw_forcing_tool(raw_context, tools, system_prompt, name)
+                            .await?
+                    }
+                    None => {
+                        provider
+                            .complete_raw(raw_context, tools, system_prompt)
+                            .await?
+                    }
+                };
                 collect_response(
                     stream,
                     sse_read_timeout,
@@ -327,6 +337,7 @@ mod retry_tests {
             &CancellationToken::new(),
             true,
             &[1, 2],
+            None,
         )
         .await;
 
@@ -381,6 +392,7 @@ mod retry_tests {
             &CancellationToken::new(),
             true,
             &[1, 2],
+            None,
         )
         .await;
 
@@ -427,6 +439,7 @@ mod retry_tests {
             &CancellationToken::new(),
             true,
             &[1, 2],
+            None,
         )
         .await;
 
@@ -483,6 +496,7 @@ mod retry_tests {
             &CancellationToken::new(),
             true,
             &[1, 2],
+            None,
         )
         .await;
 

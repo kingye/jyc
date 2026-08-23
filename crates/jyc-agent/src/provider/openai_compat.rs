@@ -24,26 +24,8 @@ pub struct OpenAiCompatProvider {
     params: Option<serde_json::Value>,
     /// Whether the active model accepts image content blocks.
     supports_images: bool,
-    /// Whether the provider accepts OpenAI `tool_choice` in the request
-    /// body. Disabled when the configured params enable a "thinking" mode
-    /// (e.g. DeepSeek v4, Kimi k3, MiniMax M3) — those APIs reject any
-    /// request carrying `tool_choice` with HTTP 400.
-    tool_choice_supported: bool,
     /// Optional User-Agent header override.
     user_agent: Option<String>,
-}
-
-/// Whether the configured extra params enable a thinking mode that forbids
-/// `tool_choice`. Providers expose thinking via a `thinking` object with a
-/// `type` other than `"disabled"` (e.g. `enabled`, `auto`, `adaptive`).
-fn thinking_mode_enabled(params: &Option<serde_json::Value>) -> bool {
-    params
-        .as_ref()
-        .and_then(|p| p.get("thinking"))
-        .and_then(|t| t.get("type"))
-        .and_then(|ty| ty.as_str())
-        .map(|ty| ty != "disabled")
-        .unwrap_or(false)
 }
 
 impl OpenAiCompatProvider {
@@ -83,7 +65,6 @@ impl OpenAiCompatProvider {
             base_url: base_url.trim_end_matches('/').to_string(),
             model: model.to_string(),
             api_key: api_key.map(|s| s.to_string()),
-            tool_choice_supported: !thinking_mode_enabled(&params),
             params,
             supports_images,
             user_agent: user_agent.map(|s| s.to_string()),
@@ -350,47 +331,6 @@ impl Provider for OpenAiCompatProvider {
         tools: &[ToolDefinition],
         system: &str,
     ) -> Result<EventStream> {
-        self.complete_raw_inner(raw_messages, tools, system, None)
-            .await
-    }
-
-    async fn complete_raw_forcing_tool(
-        &self,
-        raw_messages: &[serde_json::Value],
-        tools: &[ToolDefinition],
-        system: &str,
-        tool_name: &str,
-    ) -> Result<EventStream> {
-        // Thinking mode (DeepSeek v4, Kimi k3, ...) rejects `tool_choice`
-        // with HTTP 400 "Thinking mode does not support this tool_choice".
-        // Degrade to a plain completion — the recovery turn still restricts
-        // the tool list to `jyc_reply_message`, so the model is nudged
-        // without the API-level forcing. (#640 regression, DeepSeek)
-        if !self.tool_choice_supported {
-            tracing::debug!(
-                model = %self.model,
-                "skipping tool_choice: provider thinking mode does not support it"
-            );
-            return self
-                .complete_raw_inner(raw_messages, tools, system, None)
-                .await;
-        }
-        self.complete_raw_inner(raw_messages, tools, system, Some(tool_name))
-            .await
-    }
-}
-
-impl OpenAiCompatProvider {
-    /// Shared request logic for `complete_raw` and its tool-forcing variant.
-    /// `forced_tool` injects OpenAI `tool_choice` so the API requires the
-    /// named function call (used by the reply-recovery turn).
-    async fn complete_raw_inner(
-        &self,
-        raw_messages: &[serde_json::Value],
-        tools: &[ToolDefinition],
-        system: &str,
-        forced_tool: Option<&str>,
-    ) -> Result<EventStream> {
         let url = format!("{}/chat/completions", self.base_url);
 
         // Build messages array: system + raw messages (filtered)
@@ -430,15 +370,6 @@ impl OpenAiCompatProvider {
 
         // Merge extra params
         crate::provider::merge_params(&mut body, &self.params);
-
-        // Forced tool_choice goes after the params merge so configured
-        // params cannot silently disable the recovery-turn forcing.
-        if let Some(name) = forced_tool {
-            body["tool_choice"] = serde_json::json!({
-                "type": "function",
-                "function": { "name": name },
-            });
-        }
 
         // Build and send request
         let req = self
@@ -979,97 +910,6 @@ mod tests {
             requests[0].headers.get("user-agent").unwrap(),
             "opencode/1.15.13"
         );
-    }
-
-    #[tokio::test]
-    async fn complete_raw_forcing_tool_sends_tool_choice_on_the_wire() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("data: [DONE]\n\n"))
-            .mount(&server)
-            .await;
-
-        let provider =
-            OpenAiCompatProvider::new(&server.uri(), "test-model", Some("k"), None, false, None)
-                .expect("provider construction");
-        let raw = vec![serde_json::json!({"role": "user", "content": "hi"})];
-        let tools = vec![ToolDefinition {
-            name: "jyc_reply_message".to_string(),
-            description: "reply".to_string(),
-            input_schema: serde_json::json!({"type": "object"}),
-        }];
-        let stream = provider
-            .complete_raw_forcing_tool(&raw, &tools, "", "jyc_reply_message")
-            .await
-            .expect("stream");
-        tokio::pin!(stream);
-        while stream.next().await.is_some() {}
-
-        let requests = server.received_requests().await.expect("requests recorded");
-        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
-        assert_eq!(
-            sent["tool_choice"],
-            serde_json::json!({"type": "function", "function": {"name": "jyc_reply_message"}}),
-            "wire body must force the reply tool, got: {sent:#}"
-        );
-    }
-
-    #[tokio::test]
-    async fn thinking_mode_skips_tool_choice_on_the_wire() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/chat/completions"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("data: [DONE]\n\n"))
-            .mount(&server)
-            .await;
-
-        let provider = OpenAiCompatProvider::new(
-            &server.uri(),
-            "test-model",
-            Some("k"),
-            Some(serde_json::json!({"thinking": {"type": "enabled"}})),
-            false,
-            None,
-        )
-        .expect("provider construction");
-        let raw = vec![serde_json::json!({"role": "user", "content": "hi"})];
-        let tools = vec![ToolDefinition {
-            name: "jyc_reply_message".to_string(),
-            description: "reply".to_string(),
-            input_schema: serde_json::json!({"type": "object"}),
-        }];
-        let stream = provider
-            .complete_raw_forcing_tool(&raw, &tools, "", "jyc_reply_message")
-            .await
-            .expect("stream");
-        tokio::pin!(stream);
-        while stream.next().await.is_some() {}
-
-        let requests = server.received_requests().await.expect("requests recorded");
-        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
-        assert!(
-            sent.get("tool_choice").is_none(),
-            "thinking mode must not send tool_choice, got: {sent:#}"
-        );
-    }
-
-    #[test]
-    fn thinking_mode_enabled_detects_params() {
-        // No params → no thinking mode → tool_choice allowed.
-        assert!(!thinking_mode_enabled(&None));
-        // Explicitly disabled → allowed.
-        assert!(!thinking_mode_enabled(&Some(serde_json::json!({
-            "thinking": {"type": "disabled"}
-        }))));
-        // enabled / auto / adaptive → thinking mode → tool_choice forbidden.
-        for ty in ["enabled", "auto", "adaptive"] {
-            assert!(thinking_mode_enabled(&Some(serde_json::json!({
-                "thinking": {"type": ty}
-            }))));
-        }
     }
 
     #[tokio::test]

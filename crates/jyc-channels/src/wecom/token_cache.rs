@@ -2,7 +2,7 @@
 //!
 //! Stores the token and its expiry [`std::time::Instant`]. Refreshes automatically
 //! when the token is missing or will expire within 5 minutes.
-//! Used by both `WecomOutboundAdapter` and `WecomKfOutboundAdapter`.
+//! Used by `WecomSender` (bot messaging) and `KfApiClient` (customer service).
 
 use std::sync::Arc;
 use std::time::Instant;

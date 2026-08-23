@@ -820,35 +820,41 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # "X-Organization" = "my-org"
 #
 # # --- Channel-Level MCP Example ---
+# # NOTE: agent-runtime fields (mcps, disabled_tools, skills, template,
+# # role, topic_name) take effect on the HUB side only — the websocket /
+# # [agents.<name>] channel that owns the topic. Pipe-only channels
+# # (wecomkf, wecom, wecom_bot, feishu, email, github, gitee) ignore them;
+# # their patterns only use `rules` (matching) and `pipe` (target).
+# #
 # # Channel-level MCPs are loaded for all topics in the channel.
 # # Pattern-level mcps overrides channel-level.
 # #
-# [channels.my_wecomkf]
-# type = "wecomkf"
+# [channels.my_hub]
+# type = "websocket"
 # #
 # # Channel-level MCP: all topics in this channel share these tools
-# # [[channels.my_wecomkf.mcps]]
+# # [[channels.my_hub.mcps]]
 # # name = "kf_helper"
 # # type = "local"
 # # command = ["kf-helper", "mcp"]
 # #
-# # [[channels.my_wecomkf.patterns]]
+# # [[channels.my_hub.patterns]]
 # # name = "kf_bot"
 # # enabled = true
 # # # Pattern-level MCP overrides channel-level for this pattern
-# # # [[channels.my_wecomkf.patterns.mcps]]
+# # # [[channels.my_hub.patterns.mcps]]
 # # # name = "special_tool"
 # # # type = "local"
 # # # command = ["special", "mcp"]
 # #
-# # [channels.my_wecomkf.patterns.rules]
+# # [channels.my_hub.patterns.rules]
 # # keywords = ["help", "support", "问题"]
 
 # # --- Tool Exclusion Examples ---
 # # Disable specific tools or entire MCP servers at channel or pattern level.
 # #
-# # [channels.my_wecomkf]
-# # type = "wecomkf"
+# # [channels.my_hub]
+# # type = "websocket"
 # #
 # # # Channel-level: disable proactive messaging for all patterns in this channel
 # # disabled_tools = ["jyc_send_message"]
@@ -856,7 +862,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # # Channel-level: disable entire MCP servers
 # # disabled_mcp_servers = ["invoice"]
 # #
-# # [[channels.my_wecomkf.patterns]]
+# # [[channels.my_hub.patterns]]
 # # name = "safe_mode"
 # # enabled = true
 # #
@@ -867,7 +873,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # # Backward-compatible alias (merged with disabled_tools)
 # # disabled_builtin_tools = ["bash"]
 # #
-# # [channels.my_wecomkf.patterns.rules]
+# # [channels.my_hub.patterns.rules]
 # # keywords = ["help"]
 
 # # Pattern: No MCP tools at all (empty mcps list)

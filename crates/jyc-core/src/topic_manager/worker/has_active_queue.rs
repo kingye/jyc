@@ -2,7 +2,7 @@ use super::*;
 use crate::message_storage::MessageStorage;
 use crate::metrics::MetricsCollector;
 use crate::static_agent::StaticAgentService;
-use jyc_types::{ChangeKind, ChangedFileEntry, PatternMatch};
+use jyc_types::{ChangeKind, ChangedFileEntry, InboundMessage, PatternMatch};
 use std::collections::HashMap;
 use tempfile::tempdir;
 

@@ -369,20 +369,36 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
 
         let patterns = channel_config.patterns.clone().unwrap_or_default();
 
-        // Create the outbound adapter based on channel type
-        let Some(outbound) = crate::cli::serve::channels::build_outbound_adapter(
-            channel_type,
-            channel_name,
-            storage.clone(),
-            &workspace_dir,
-            inspect_broadcast.clone(),
-            &mut ws_handler_for_channel,
-            &mut websocket_handlers,
-            ws_broadcasts.clone(),
-        )?
-        else {
+        // Only hub (websocket) channels reach this point; every other channel
+        // type is a pipe-only adapter handled above. Anything else is unknown.
+        if channel_type != "websocket" {
+            tracing::warn!(
+                channel = %channel_name,
+                channel_type = %channel_type,
+                "Unsupported channel type, skipping"
+            );
             continue;
-        };
+        }
+        let (broadcast_tx, _) = tokio::sync::broadcast::channel(64);
+        let outbound: Arc<dyn OutboundAdapter> = Arc::new(
+            jyc_channels::websocket::outbound::WebsocketOutboundAdapter::new(
+                broadcast_tx.clone(),
+                storage.clone(),
+            ),
+        );
+        // Store the inbound adapter for later registration with the inspect server.
+        let mut handler =
+            WebsocketInboundAdapter::new(channel_name.to_string(), broadcast_tx.clone());
+        handler.set_workspace_dir(workspace_dir.clone());
+        handler.set_inspect_broadcast(inspect_broadcast.clone());
+        let handler = Arc::new(handler);
+        ws_handler_for_channel.insert(channel_name.to_string(), handler.clone());
+        websocket_handlers.push(handler);
+        // Expose the broadcast so piped channels can subscribe to replies.
+        ws_broadcasts
+            .lock()
+            .unwrap()
+            .insert(channel_name.to_string(), broadcast_tx);
 
         // Connect the outbound adapter
         outbound

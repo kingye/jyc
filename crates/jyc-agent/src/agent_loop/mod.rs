@@ -776,6 +776,37 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             // A subtle trace is appended so an auto-delivered reply is never
             // mistaken for one the model consciously authored.
             let mut final_text = response.text;
+
+            // Tool-call-shaped text is NOT a reply: some models (MiniMax)
+            // echo `<tool_call><invoke name=…>` in the text channel instead
+            // of the structured `tool_calls` channel. Suppress it entirely —
+            // neither the synthetic auto-delivery below nor the worker's
+            // degraded fallback may deliver machine-format garbage to the
+            // user.
+            if !final_text.trim().is_empty() && looks_like_tool_call(&final_text) {
+                tracing::warn!(
+                    total_iterations,
+                    text_len = final_text.len(),
+                    "Agent loop: final text looks like a tool call, suppressing delivery"
+                );
+                publish_event(
+                    event_bus,
+                    TopicEvent::SessionStatus {
+                        topic_name: topic_name.to_string(),
+                        status_type: "tool_call_as_text".to_string(),
+                        attempt: None,
+                        message: Some(format!(
+                            "AI text contained a tool-call block but the structured \
+                             tool_calls channel was empty (total_iterations={total_iterations}); \
+                             reply suppressed"
+                        )),
+                        timestamp: Utc::now(),
+                    },
+                )
+                .await;
+                final_text.clear();
+            }
+
             if !reply_sent_by_tool && reply_tool_available && !final_text.trim().is_empty() {
                 final_text.push_str(AUTO_REPLY_TRACE);
                 let synthetic_call_id = format!("auto-reply-{}", total_iterations);
@@ -1408,6 +1439,16 @@ fn all_tool_calls_empty(tool_calls: &[ToolCall]) -> bool {
             .all(|tc| tc.arguments.trim().is_empty() || tc.arguments.trim() == "{}")
 }
 
+/// True when the text looks like a tool call written out as text (e.g.
+/// `<tool_call><invoke name="bash">…`). Some providers (MiniMax) echo tool
+/// calls in the text channel instead of the structured `tool_calls` channel;
+/// such text is never a real reply, so it must not be delivered.
+fn looks_like_tool_call(text: &str) -> bool {
+    ["<tool_call", "<invoke name=", "<parameter name="]
+        .iter()
+        .any(|m| text.contains(m))
+}
+
 #[cfg(test)]
 mod no_reply_tests {
     use super::event_test_helpers::drain_events;
@@ -1796,6 +1837,100 @@ mod reply_tool_tests {
             "no nudge/no_reply status events expected, got: {:?}",
             nudges
         );
+    }
+
+    /// A text-only finish whose text is a tool call written out as text
+    /// (MiniMax habit) must NOT be delivered: no synthetic auto-delivery, no
+    /// degraded fallback, empty result text, and a `tool_call_as_text`
+    /// status event. The MiniMax leak marker must also be scrubbed from the
+    /// stored raw context.
+    #[tokio::test]
+    async fn text_only_tool_call_shape_is_suppressed_not_delivered() {
+        let provider = ScriptedProvider {
+            rounds: vec![vec![
+                StreamEvent::TextDelta(
+                    "<tool_call>\n]<]minimax[>[<invoke name=\"bash\">\
+                     <parameter name=\"command\">ls</parameter>\
+                     </invoke>\n</tool_call>"
+                        .to_string(),
+                ),
+                StreamEvent::Done,
+            ]],
+            calls: AtomicUsize::new(0),
+            seen_tools: Default::default(),
+        };
+        let tmp = TempDir::new().unwrap();
+        let working_dir = tmp.path().to_path_buf();
+        let tools = registry_with_reply_tool();
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
+        let mut rx = bus.subscribe().await.unwrap();
+        let cancel = CancellationToken::new();
+
+        let result = run(super::AgentLoopConfig {
+            provider: &provider,
+            small_provider: None,
+            tools: &tools,
+            system_prompt: "test",
+            user_blocks: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+            }],
+            working_dir: &working_dir,
+            topic_path: &working_dir,
+            cancel: cancel.clone(),
+            topic_name: "tool-call-as-text",
+            event_bus: Some(&bus),
+            prior_history: vec![],
+            prior_raw_context: vec![],
+            max_iterations: Some(5),
+            sse_read_timeout: std::time::Duration::from_secs(60),
+            additional_read_roots: vec![],
+            additional_write_roots: vec![],
+            pattern_inject_images: false,
+            outbound: None,
+            topic_managers: None,
+            current_channel: None,
+            outbounds: None,
+            context_window: None,
+            auto_reset_threshold: 0.95,
+            thinking_enabled: false,
+            pricing: None,
+            model_label: "scripted-test-tool-call",
+            context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+            reply_target: None,
+        })
+        .await
+        .expect("agent loop should run to completion");
+
+        // Not delivered by any path.
+        assert!(!result.reply_sent_by_tool, "no delivery may happen");
+        assert!(!result.reply_auto_delivered, "no auto-delivery may happen");
+        assert!(
+            result.text.is_empty(),
+            "suppressed text must not be returned for degraded delivery, got: {:?}",
+            result.text
+        );
+
+        // MiniMax leak marker scrubbed from the stored raw context.
+        let raw = serde_json::to_string(&result.raw_context).unwrap();
+        assert!(
+            !raw.contains("]<]minimax[>["),
+            "leak marker must be scrubbed from raw context, got: {raw}"
+        );
+
+        // Status event tells the dashboard what happened.
+        let events = drain_events(&mut rx).await;
+        let suppressed: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                TopicEvent::SessionStatus { status_type, .. }
+                    if status_type == "tool_call_as_text" =>
+                {
+                    Some(status_type.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(suppressed.len(), 1, "one tool_call_as_text event expected");
     }
 
     /// A `silent: true` reply call closes the turn cleanly: counts as

@@ -2203,6 +2203,10 @@ impl ChatState {
         if self.input_history.len() > 100 {
             self.input_history.remove(0);
         }
+        // Reset history cursor so the next Up arrow recalls the message we
+        // just sent, instead of decrementing a stale cursor into the now-larger
+        // history (which would skip past the most recent entry — see PR #655).
+        self.history_pos = None;
 
         // WebSocket-only flow: echo user message locally, send via WebSocket.
         let _ = self.topic.as_ref(); // topic must be set before send

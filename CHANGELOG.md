@@ -54,6 +54,15 @@
 
 ### Fixed
 
+- **Up-arrow in chat input field recalled second-to-last entry after a
+  submission made while browsing history.** `send_message_inner` pushed the
+  new text into `input_history` but left `history_pos` pointing at its
+  previous slot, so the next `Up` decremented from the stale cursor into
+  the now-larger history — surfacing the wrong entry and making the
+  just-sent message unreachable until the user Down-arrowed out. Reset
+  `history_pos = None` after the push (and before any future push, the
+  empty-text early return still preserves the cursor). PR #655.
+
 - **No-reply nudge skipped when reply tool registered (MiniMax).** The
   no-reply gate required `!reply_tool_available`, so when `jyc_reply_message`
   was registered the loop never injected the

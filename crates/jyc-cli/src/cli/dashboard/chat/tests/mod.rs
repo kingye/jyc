@@ -432,6 +432,59 @@ fn recall_older_recalls_and_recall_newer_clears() {
 }
 
 #[test]
+fn submit_while_browsing_resets_history_pos_and_recall_returns_most_recent() {
+    // Regression test for PR #655: after a user navigates into history and
+    // then submits the recalled text, the next Up arrow must show the message
+    // just sent, not jump to a stale cursor position in the now-larger
+    // history (which previously surfaced the second-to-last entry).
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+
+    app.chat.input_history = vec![
+        "first".to_string(),
+        "second".to_string(),
+        "third".to_string(),
+    ];
+
+    // Navigate into history: Up → "third" (newest), Up → "second".
+    app.chat.recall_older();
+    assert_eq!(app.chat.text(), "third");
+    app.chat.recall_older();
+    assert_eq!(app.chat.text(), "second");
+    assert_eq!(app.chat.history_pos, Some(1));
+
+    // User submits the recalled "second" entry.
+    app.chat.send_message();
+
+    // history_pos must be reset so the next Up starts fresh from len.
+    assert_eq!(app.chat.history_pos, None);
+
+    // Next Up must show the just-pushed entry ("second"), not "first".
+    app.chat.recall_older();
+    assert_eq!(app.chat.text(), "second");
+}
+
+#[test]
+fn submit_empty_text_does_not_touch_history_pos() {
+    // Regression guard: the empty-text early return in send_message_inner
+    // must not invalidate the browsing cursor. (Useful for slash command
+    // flows where the editor clears without a real submission.)
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+
+    // Editor is empty (App::new). Pretend the user is mid-browse.
+    app.chat.input_history = vec!["a".to_string(), "b".to_string()];
+    app.chat.history_pos = Some(1);
+
+    // Enter on empty editor → send_message_inner("") → early return.
+    app.chat.send_message();
+
+    // history_pos must NOT be reset (we returned before the reset).
+    assert_eq!(app.chat.history_pos, Some(1));
+    assert_eq!(app.chat.input_history, vec!["a", "b"]);
+}
+
+#[test]
 fn select_pattern_clears_input_history() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);

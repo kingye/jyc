@@ -998,6 +998,10 @@ auto_reset_threshold = 0.95
         patterns: Vec<(&str, Option<ContextStrategyConfig>)>,
         global: Option<ContextStrategyConfig>,
     ) -> AppConfig {
+        // Base ends with `[agent]` (alias for `[ai]` via
+        // `#[serde(rename = "ai", alias = "agent")]`). Global context_strategy
+        // is added right after `[agent]` so it lands at `[ai]` level — the
+        // global fallback `resolve_context_strategy` reads from.
         let mut toml = String::from(
             r#"
 [general]
@@ -1018,6 +1022,23 @@ enabled = true
 mode = "agent"
 "#,
         );
+        if let Some(g) = &global {
+            let mode = match g.mode {
+                ContextStrategy::Full => "full",
+                ContextStrategy::SlidingWindow => "sliding_window",
+            };
+            let mut parts = format!("mode = \"{mode}\", window = {}", g.window);
+            if let Some(n) = g.note_window {
+                parts.push_str(&format!(", note_window = {n}"));
+            }
+            if let Some(cap) = g.tool_result_cap {
+                parts.push_str(&format!(", tool_result_cap = {cap}"));
+            }
+            toml.push_str(&format!("context_strategy = {{ {parts} }}\n"));
+        }
+        // Patterns loop — opens [[channels.c.patterns]] which leaves the
+        // current scope at the latest pattern element. Keep global BEFORE
+        // this loop so it always lands at [agent]/[ai] level.
         for (name, s) in &patterns {
             toml.push_str(&format!("\n[[channels.c.patterns]]\nname = \"{name}\"\n"));
             if let Some(c) = s {
@@ -1025,21 +1046,15 @@ mode = "agent"
                     ContextStrategy::Full => "full",
                     ContextStrategy::SlidingWindow => "sliding_window",
                 };
-                toml.push_str(&format!(
-                    "context_strategy = {{ mode = \"{mode}\", window = {} }}\n",
-                    c.window
-                ));
+                let mut parts = format!("mode = \"{mode}\", window = {}", c.window);
+                if let Some(n) = c.note_window {
+                    parts.push_str(&format!(", note_window = {n}"));
+                }
+                if let Some(cap) = c.tool_result_cap {
+                    parts.push_str(&format!(", tool_result_cap = {cap}"));
+                }
+                toml.push_str(&format!("context_strategy = {{ {parts} }}\n"));
             }
-        }
-        if let Some(g) = &global {
-            let mode = match g.mode {
-                ContextStrategy::Full => "full",
-                ContextStrategy::SlidingWindow => "sliding_window",
-            };
-            toml.push_str(&format!(
-                "context_strategy = {{ mode = \"{mode}\", window = {} }}\n",
-                g.window
-            ));
         }
         jyc_types::load_config_from_str(&toml).expect("config should parse")
     }
@@ -1050,6 +1065,7 @@ mode = "agent"
             mode: ContextStrategy::SlidingWindow,
             window: 4,
             note_window: None,
+            tool_result_cap: None,
         };
         let app = config_with_strategies(vec![("a", None), ("b", Some(slide.clone()))], None);
         let resolved = resolve_context_strategy(&app, "c", Some("b"));
@@ -1063,6 +1079,7 @@ mode = "agent"
             mode: ContextStrategy::SlidingWindow,
             window: 6,
             note_window: None,
+            tool_result_cap: None,
         };
         let app = config_with_strategies(vec![("a", Some(slide.clone()))], None);
         let resolved = resolve_context_strategy(&app, "c", None);
@@ -1076,6 +1093,7 @@ mode = "agent"
             mode: ContextStrategy::SlidingWindow,
             window: 8,
             note_window: None,
+            tool_result_cap: None,
         };
         let app = config_with_strategies(vec![], Some(slide.clone()));
         let resolved = resolve_context_strategy(&app, "c", Some("a"));
@@ -1143,5 +1161,72 @@ mode = "agent"
         .await
         .unwrap();
         assert!(read_context_strategy_override(tmp.path()).await.is_none());
+    }
+
+    // ── tool_result_cap resolution ─────────────────────────────────────
+
+    #[test]
+    fn resolve_context_strategy_tool_result_cap_from_global() {
+        let slide = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 10,
+            note_window: None,
+            tool_result_cap: Some(8192),
+        };
+        let app = config_with_strategies(vec![], Some(slide));
+        let resolved = resolve_context_strategy(&app, "c", Some("a"));
+        assert_eq!(resolved.tool_result_cap, Some(8192));
+    }
+
+    #[test]
+    fn resolve_context_strategy_tool_result_cap_pattern_wins_over_global() {
+        let pattern = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 10,
+            note_window: None,
+            tool_result_cap: Some(2048),
+        };
+        let global = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 20,
+            note_window: None,
+            tool_result_cap: Some(8192),
+        };
+        let app = config_with_strategies(vec![("a", Some(pattern))], Some(global));
+        let resolved = resolve_context_strategy(&app, "c", Some("a"));
+        assert_eq!(resolved.window, 10, "pattern window wins");
+        assert_eq!(resolved.tool_result_cap, Some(2048), "pattern cap wins");
+    }
+
+    #[tokio::test]
+    async fn read_context_strategy_override_with_tool_result_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join(CONTEXT_STRATEGY_FILE),
+            r#"{"mode":"sliding_window","window":10,"tool_result_cap":5000}"#,
+        )
+        .await
+        .unwrap();
+        let cfg = read_context_strategy_override(tmp.path()).await.unwrap();
+        assert_eq!(cfg.tool_result_cap, Some(5000));
+    }
+
+    #[tokio::test]
+    async fn read_context_strategy_override_tool_result_cap_missing_is_none() {
+        // Legacy override file without the field — must still parse and
+        // yield tool_result_cap = None.
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join(CONTEXT_STRATEGY_FILE),
+            r#"{"mode":"sliding_window","window":10,"note_window":3}"#,
+        )
+        .await
+        .unwrap();
+        let cfg = read_context_strategy_override(tmp.path()).await.unwrap();
+        assert_eq!(cfg.tool_result_cap, None);
     }
 }

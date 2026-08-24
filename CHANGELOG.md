@@ -38,35 +38,6 @@
   the model wrote. The failure-aware reminder (concrete tool error) and
   the legacy no-reply reminder (reply tool unavailable) are unchanged.
   (#648)
-
-- **MiniMax leak marker and tool-call-shaped text delivered verbatim.**
-  MiniMax (and similar agentic providers) echo tool calls in the text
-  channel instead of the structured `tool_calls` channel, contaminating
-  them with an internal leak marker (`]<]minimax[>[`). When the
-  structured channel came back empty, that garbled text was auto-delivered
-  to the user as a "reply", and the marker was stored in the raw context,
-  where the model mimicked it back into later generations (contamination
-  loop). The marker is now scrubbed at the single response-collection
-  choke point, and a text-only finish whose text looks like a tool call
-  (`<tool_call`, `<invoke name=`, `<parameter name=`) is suppressed
-  entirely — no synthetic auto-delivery, no degraded fallback — with a
-  `tool_call_as_text` status event for the dashboard instead of garbage
-  reaching the user.
-
-- **Process narration delivered as a reply (MiniMax).** Even with
-  `reasoning_split` enabled, MiniMax writes short action announcements —
-  "Now let me read the exact code…", "Let me check…" — as real `content`
-  (not thinking) before an intended tool call. When the structured
-  `tool_calls` channel came back empty, that narration was auto-delivered
-  verbatim and the loop stopped, so the intended work never happened.
-  A text-only finish whose text looks like process narration (ends with
-  `:`, or is a short sentence starting with "Now let me", "Let me",
-  "I'll", "I will", "I need to", "Let's", "I'm going to") is now never
-  delivered: the loop silently continues (bounded, 2 retries) so the
-  model can actually make the intended call, and past the retry cap the
-  narration is suppressed entirely with a `narration_as_text` status
-  event. `reasoning_split` cannot cover this case because the text is
-  content, not thinking.
 - **Synthetic auto-delivery never published `ReplySent`.** When a
   text-only finish was auto-delivered in the agent's name via the
   synthetic `jyc_reply_message` execution, the reply was sent through the

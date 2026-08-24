@@ -108,21 +108,9 @@ fn format_cleaned_message(
 ///   3. The full current turn (`raw_context[prior_len..]`) verbatim, so
 ///      tool calls / results stay coherent mid-loop.
 ///
-/// Thin wrapper kept for the existing test surface; production callers
-/// use [`build_send_context_with_regions`] directly.
-#[allow(dead_code)]
-pub(crate) fn build_send_context<'a>(
-    provider: &dyn Provider,
-    raw_context: &'a [serde_json::Value],
-    prior_len: usize,
-    strategy: &ContextStrategyConfig,
-) -> Cow<'a, [serde_json::Value]> {
-    build_send_context_with_regions(provider, raw_context, prior_len, strategy).0
-}
-
-/// Same as [`build_send_context`] but also returns a per-message region
-/// label (parallel to the wire payload), for callers that need to
-/// distinguish regions (debug dump, tests).
+/// Also returns a per-message region label (parallel to the wire payload)
+/// so callers that need to distinguish regions — the wire-payload debug
+/// dump and tests — can do so without re-running the strategy logic.
 ///
 /// Region labels:
 /// - `1` = first region — compacted history (`SlidingWindow`) or the
@@ -369,7 +357,7 @@ mod render_raw_context_tests {
 
     /// Mirrors `AnthropicProvider` wire format: `content` is an array of
     /// blocks for both user and assistant. Used to assert that
-    /// `build_send_context` never emits empty text blocks — which Anthropic
+    /// `build_send_context_with_regions` never emits empty text blocks — which Anthropic
     /// rejects with 400 `cache_control cannot be set for empty text blocks`
     /// when `apply_cache_breakpoints` lands on a `n-3`/`n-2` message.
     struct AnthropicProvider;
@@ -508,7 +496,7 @@ mod render_raw_context_tests {
             window: 10,
             note_window: None,
         };
-        let sent = build_send_context(&prov(), &ctx, prior_len, &cfg);
+        let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         assert!(matches!(sent, Cow::Borrowed(_)));
         assert_eq!(sent.len(), ctx.len());
     }
@@ -543,7 +531,7 @@ mod render_raw_context_tests {
             window: 2,
             note_window: Some(1),
         };
-        let sent = build_send_context(&prov(), &ctx, prior_len, &cfg);
+        let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         let sent = sent.into_owned();
 
         // 1. Older pair compacted to pure text (no note, tool_calls dropped).
@@ -572,7 +560,9 @@ mod render_raw_context_tests {
             window: 5,
             note_window: None,
         };
-        let sent = build_send_context(&prov(), &ctx, 99, &cfg).into_owned();
+        let sent = build_send_context_with_regions(&prov(), &ctx, 99, &cfg)
+            .0
+            .into_owned();
         // boundary clamps to raw_context.len(), so the whole ctx is
         // treated as prior. Expected: 1 complete pair (u1, a1) = 2 messages.
         assert_eq!(sent.len(), 2);
@@ -591,7 +581,9 @@ mod render_raw_context_tests {
             window: 10,
             note_window: None,
         };
-        let sent = build_send_context(&prov(), &ctx, 0, &cfg).into_owned();
+        let sent = build_send_context_with_regions(&prov(), &ctx, 0, &cfg)
+            .0
+            .into_owned();
         // No prior → no windowed. Just current turn verbatim.
         assert_eq!(sent, ctx);
     }
@@ -630,7 +622,9 @@ mod render_raw_context_tests {
             window: 4,
             note_window: Some(1),
         };
-        let sent = build_send_context(&anthropic(), &ctx, prior_len, &cfg).into_owned();
+        let sent = build_send_context_with_regions(&anthropic(), &ctx, prior_len, &cfg)
+            .0
+            .into_owned();
 
         // Walk every emitted message: assert no text block has empty text.
         for (i, msg) in sent.iter().enumerate() {
@@ -701,7 +695,9 @@ mod render_raw_context_tests {
             window: 5,
             note_window: Some(1),
         };
-        let sent = build_send_context(&prov(), &ctx, prior_len, &cfg).into_owned();
+        let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg)
+            .0
+            .into_owned();
 
         // Older turn compacted text-only.
         assert_eq!(sent[0], json!({"role": "user", "content": "u1"}));
@@ -739,7 +735,9 @@ mod render_raw_context_tests {
             window: 10,
             note_window: Some(5),
         };
-        let sent = build_send_context(&prov(), &ctx, prior_len, &cfg).into_owned();
+        let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg)
+            .0
+            .into_owned();
 
         // The round-tripped note is filtered out of the verbatim pass-through.
         let texts: Vec<&str> = sent.iter().filter_map(|m| m["content"].as_str()).collect();

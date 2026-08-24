@@ -109,7 +109,6 @@ pub async fn save_raw_context(topic_path: &Path, raw_context: &[serde_json::Valu
 /// JSON line to `<topic>/.jyc/wire-payload.jsonl`. The file is capped at
 /// [`jyc_core::session_state::WIRE_PAYLOAD_DUMP_MAX_LINES`] lines (oldest
 /// dropped) to keep a single topic's debug footprint bounded.
-
 /// Read the on/off flag for wire-payload dumping. Returns false when the
 /// flag file is absent or malformed — the absence of the file is the
 /// default "off" state.

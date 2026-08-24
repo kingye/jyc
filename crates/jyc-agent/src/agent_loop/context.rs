@@ -182,14 +182,13 @@ pub(crate) fn build_send_context_with_regions<'a>(
     }
 }
 
-/// Debug dump of what `build_send_context` would send to the LLM — a
-/// human-readable, region-labeled view of the wire payload. Caller
-/// chooses what to do with the returned string (`println!`, write to
-/// file, log via `tracing::debug!`, etc.). Currently used by the test
-/// suite — kept as a public(crate) API for future in-process debug
-/// tooling (e.g., a `/dump` rendering path).
-#[allow(dead_code)]
-pub(crate) fn dump_send_context(
+/// Test-only debug dump — human-readable, region-labeled view of the
+/// wire payload. Used by the test suite to verify the region partition
+/// (`with_regions_labels_*` tests). Production debug dumps go through
+/// `session::append_wire_payload_dump` instead, which writes
+/// structured JSONL — see `docs/context-management.md` / Debug dump.
+#[cfg(test)]
+fn dump_send_context(
     provider: &dyn Provider,
     raw_context: &[serde_json::Value],
     prior_len: usize,
@@ -227,6 +226,7 @@ pub(crate) fn dump_send_context(
     s
 }
 
+#[cfg(test)]
 fn append_region_summary(
     s: &mut String,
     sent: &[serde_json::Value],
@@ -276,6 +276,7 @@ fn append_region_summary(
     }
 }
 
+#[cfg(test)]
 fn msg_one_line(msg: &serde_json::Value) -> String {
     let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("?");
     let mut out = role.to_string();

@@ -225,6 +225,57 @@ round-tripped notes are filtered out before the payload is sent.
   text are skipped, because Anthropic rejects empty blocks, especially
   under `cache_control`.
 
+## Debug dump: `/context dump on|off`
+
+For inspecting what the model actually sees — useful when a model
+"hallucinated a tool call I never made" or when a windowing decision
+seems off — every LLM call in a topic can be appended as one JSON line
+to:
+
+```
+<topic_path>/.jyc/wire-payload.jsonl
+```
+
+Toggle with the `/context` command:
+
+| Command | Effect |
+|---------|--------|
+| `/context dump on` | Write `.jyc/wire-payload-dump.json` flag; dump starts on next LLM call |
+| `/context dump off` | Remove the flag; no further dumps |
+| `/context dump` | Show current state + dump file path |
+
+Each line of `wire-payload.jsonl` is one JSON object:
+
+```json
+{
+  "ts": "2026-08-24T12:34:56.789Z",
+  "iter": 3,
+  "strategy": { "mode": "sliding_window", "window": 10, "note_window": 3 },
+  "regions": [1, 1, 2, 2, 3],
+  "wire_payload": [ ... ]
+}
+```
+
+`regions` is a parallel `Vec<u8>` to `wire_payload`: `1` = compacted
+history, `2` = verbatim prior, `3` = current turn. `1` for `Full` mode
+means "single region, no windowing". Use it to partition the payload
+when reconstructing what each LLM call looked like.
+
+**Bounded footprint.** The file is capped at the **last 50 lines**
+(oldest dropped). For a 12-message payload at ~10 KB per call this
+stays under ~500 KB even across many iterations — small enough to
+diff between iterations with `git diff` or pipe through `jq`.
+
+The flag file (`wire-payload-dump.json`) survives `/reset`, `/new`, and
+`/close` — disable it explicitly when you're done. Best-effort IO:
+write errors are logged at `warn` and never propagated (a broken dump
+must not break the agent loop).
+
+For an in-process, human-readable view of a single wire payload (with
+ASCII boxes per region), call `dump_send_context` from a test or via
+the `crates/jyc-agent/src/agent_loop/context.rs` API. It uses the same
+`build_send_context_with_regions` so the labels are identical.
+
 ## Recovering dropped turns: `context_browse`
 
 Turns that fall out of the window are not gone — they remain in the
@@ -328,13 +379,15 @@ the full boundary table.
 
 | Component | Location |
 |-----------|----------|
-| Wire payload shaping (`build_send_context`) | `crates/jyc-agent/src/agent_loop/context.rs` |
+| Wire payload shaping (`build_send_context`, `build_send_context_with_regions`, `dump_send_context`) | `crates/jyc-agent/src/agent_loop/context.rs` |
 | Turn pairing, history notes, truncation caps (`extract_pairs`, `flush_turn`) | `crates/jyc-agent/src/session.rs` |
+| Wire-payload dump persistence (`read_wire_payload_dump_enabled`, `append_wire_payload_dump`) | `crates/jyc-agent/src/session.rs` |
+| Agent loop iteration (calls `build_send_context_with_regions`, triggers dump) | `crates/jyc-agent/src/agent_loop/mod.rs` |
 | Mid-loop compression | `crates/jyc-agent/src/agent_loop/mod.rs` |
 | Strategy resolution, pre-loop pre-check | `crates/jyc-agent/src/service/mod.rs` |
 | System-prompt guidance (History Format, Chat History sections) | `crates/jyc-agent/src/service/prompt.rs` |
 | `context_browse` tool | `crates/jyc-agent/src/tools/builtin/context_browse.rs` |
-| `/context` command | `crates/jyc-core/src/command/context_handler.rs` |
+| `/context` command (incl. `dump on\|off` subcommand) | `crates/jyc-core/src/command/context_handler.rs` |
 | Override persistence (`context-strategy.json`) | `crates/jyc-core/src/session_state.rs` |
 | `ContextStrategy(Config)`, `ResetCompressionConfig` types | `crates/jyc-types/src/channel.rs` |
 

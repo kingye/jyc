@@ -377,6 +377,18 @@ fn context_window_for_model(model_str: &str, config: &AppConfig) -> Option<u64> 
 /// `/context` command. Persisted as JSON (mode + optional window).
 pub const CONTEXT_STRATEGY_FILE: &str = "context-strategy.json";
 
+/// File names for the wire-payload debug dump toggled by
+/// `/context dump on|off`. The flag is a tiny JSON object
+/// (`{"enabled":true}`); the dump itself is a JSONL file capped at
+/// `WIRE_PAYLOAD_DUMP_MAX_LINES` lines (oldest dropped).
+///
+/// Shared between `jyc-core` (the command handler) and `jyc-agent`
+/// (the dump appender) — keeping them in one place prevents silent
+/// drift between the writer and the reader.
+pub const WIRE_PAYLOAD_DUMP_FLAG_FILE: &str = "wire-payload-dump.json";
+pub const WIRE_PAYLOAD_DUMP_FILE: &str = "wire-payload.jsonl";
+pub const WIRE_PAYLOAD_DUMP_MAX_LINES: usize = 50;
+
 /// Read the runtime context-strategy override if it exists.
 ///
 /// Returns `None` when the file is missing, malformed, or `window == 0`.

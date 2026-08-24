@@ -17,6 +17,10 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     note window: only the most recent M windowed turns carry tool-call
 ///     history notes (default: all N).
 ///   /context reset        Remove runtime override (revert to configured default)
+///   /context dump [on|off]
+///     Toggle wire-payload debug dump. When on, every LLM call appends
+///     one JSON line to `<topic>/.jyc/wire-payload.jsonl` (capped at 50).
+///     No args shows current state.
 pub struct ContextCommandHandler;
 
 /// Upper bound on the `window` accepted from the user via `/context`. A
@@ -32,7 +36,7 @@ impl CommandHandler for ContextCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "View or change the context management strategy for this topic"
+        "View or change the context strategy / debug-dump wire payload"
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
@@ -170,15 +174,67 @@ impl CommandHandler for ContextCommandHandler {
                     append_body: None,
                 })
             }
+            "dump" => handle_dump(&jyc_dir, context.args.get(1).map(|s| s.as_str())).await,
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context full | sliding [N] [M] | reset"
+                    "/context: unknown argument '{other}'. Use: /context full | sliding [N] [M] | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
             }),
         }
+    }
+}
+
+/// Handle `/context dump [on|off]` — toggle the wire-payload debug dump.
+///
+/// When enabled, every LLM call in this topic appends one JSON line to
+/// `<topic>/.jyc/wire-payload.jsonl` (capped at 50 lines, oldest dropped).
+/// No args shows the current state and the dump file path.
+async fn handle_dump(jyc_dir: &std::path::Path, arg: Option<&str>) -> Result<CommandResult> {
+    let flag_path = jyc_dir.join(crate::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE);
+    let dump_path = jyc_dir.join(crate::session_state::WIRE_PAYLOAD_DUMP_FILE);
+    let enabled = tokio::fs::read(&flag_path)
+        .await
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
+        .unwrap_or(false);
+
+    match arg.map(|s| s.to_lowercase()).as_deref() {
+        Some("on") => {
+            tokio::fs::create_dir_all(jyc_dir).await?;
+            tokio::fs::write(&flag_path, r#"{"enabled":true}"#).await?;
+            Ok(CommandResult {
+                success: true,
+                message: format!(
+                    "/context: wire-payload dump enabled — writing to {}",
+                    dump_path.display()
+                ),
+                error: None,
+                append_body: None,
+            })
+        }
+        Some("off") => {
+            tokio::fs::remove_file(&flag_path).await.ok();
+            Ok(CommandResult {
+                success: true,
+                message: "/context: wire-payload dump disabled".into(),
+                error: None,
+                append_body: None,
+            })
+        }
+        _ => Ok(CommandResult {
+            success: true,
+            message: format!(
+                "/context: wire-payload dump is {} (file: {})",
+                if enabled { "on" } else { "off" },
+                dump_path.display()
+            ),
+            error: None,
+            append_body: None,
+        }),
     }
 }
 
@@ -451,5 +507,58 @@ mode = "agent"
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.message.contains("unknown argument"));
+    }
+
+    #[tokio::test]
+    async fn test_dump_off_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["dump".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(result.message.contains("off"));
+        assert!(result.message.contains("wire-payload.jsonl"));
+    }
+
+    #[tokio::test]
+    async fn test_dump_on_off_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = ContextCommandHandler;
+        let flag = tmp.path().join(".jyc").join("wire-payload-dump.json");
+
+        // /context dump on → flag file written, message mentions enabled
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["dump".into(), "on".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(result.message.contains("enabled"));
+        assert!(flag.exists());
+        assert_eq!(
+            tokio::fs::read_to_string(&flag).await.unwrap(),
+            r#"{"enabled":true}"#
+        );
+
+        // /context dump (no args) → reports on
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["dump".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(result.message.contains("on"));
+
+        // /context dump off → flag file removed
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["dump".into(), "off".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(result.message.contains("disabled"));
+        assert!(!flag.exists());
+
+        // /context dump (no args) → reports off
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["dump".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(result.message.contains("off"));
     }
 }

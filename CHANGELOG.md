@@ -52,6 +52,21 @@
   entirely — no synthetic auto-delivery, no degraded fallback — with a
   `tool_call_as_text` status event for the dashboard instead of garbage
   reaching the user.
+
+- **Process narration delivered as a reply (MiniMax).** Even with
+  `reasoning_split` enabled, MiniMax writes short action announcements —
+  "Now let me read the exact code…", "Let me check…" — as real `content`
+  (not thinking) before an intended tool call. When the structured
+  `tool_calls` channel came back empty, that narration was auto-delivered
+  verbatim and the loop stopped, so the intended work never happened.
+  A text-only finish whose text looks like process narration (ends with
+  `:`, or is a short sentence starting with "Now let me", "Let me",
+  "I'll", "I will", "I need to", "Let's", "I'm going to") is now never
+  delivered: the loop silently continues (bounded, 2 retries) so the
+  model can actually make the intended call, and past the retry cap the
+  narration is suppressed entirely with a `narration_as_text` status
+  event. `reasoning_split` cannot cover this case because the text is
+  content, not thinking.
 - **Synthetic auto-delivery never published `ReplySent`.** When a
   text-only finish was auto-delivered in the agent's name via the
   synthetic `jyc_reply_message` execution, the reply was sent through the

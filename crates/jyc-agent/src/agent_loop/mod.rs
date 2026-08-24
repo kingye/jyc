@@ -378,6 +378,13 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let mut last_reply_error: Option<String> = None;
     let mut reply_failure_nudges: u32 = 0;
 
+    // Narration-continue guard: how many times a text-only finish whose text
+    // looks like process narration ("Now let me read…") may silently continue
+    // the loop before being suppressed. Bounded so a model that keeps
+    // narrating cannot spin forever.
+    const MAX_NARRATION_CONTINUES: usize = 2;
+    let mut narration_retries: usize = 0;
+
     // Cycle tracking: when iter_in_cycle reaches max_iter, send a progress reply,
     // reset the counter, and continue. No upper bound on cycles.
     let mut iter_in_cycle: usize = 0;
@@ -799,6 +806,67 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                             "AI text contained a tool-call block but the structured \
                              tool_calls channel was empty (total_iterations={total_iterations}); \
                              reply suppressed"
+                        )),
+                        timestamp: Utc::now(),
+                    },
+                )
+                .await;
+                final_text.clear();
+            }
+
+            // Narration-shaped text is NOT a reply either: some models
+            // (MiniMax) announce their next step as real `content` ("Now let
+            // me read…") before an intended tool call. When the structured
+            // `tool_calls` channel comes back empty, the announcement is all
+            // that remains — and `reasoning_split` cannot help because this
+            // is content, not thinking. Don't deliver it: continue the loop
+            // (bounded) so the model can actually make the intended call.
+            if !reply_sent_by_tool
+                && !final_text.trim().is_empty()
+                && looks_like_narration(&final_text)
+            {
+                if narration_retries < MAX_NARRATION_CONTINUES {
+                    narration_retries += 1;
+                    tracing::warn!(
+                        total_iterations,
+                        text_len = final_text.len(),
+                        retries = narration_retries,
+                        "Agent loop: final text looks like process narration, continuing (not delivering)"
+                    );
+                    publish_event(
+                        event_bus,
+                        TopicEvent::SessionStatus {
+                            topic_name: topic_name.to_string(),
+                            status_type: "narration_as_text".to_string(),
+                            attempt: None,
+                            message: Some(format!(
+                                "AI text was process narration and the structured tool_calls \
+                                 channel was empty (total_iterations={total_iterations}); \
+                                 continuing the loop, reply suppressed"
+                            )),
+                            timestamp: Utc::now(),
+                        },
+                    )
+                    .await;
+                    continue;
+                }
+
+                // Retry cap reached: suppress entirely — no delivery by any
+                // path, so the narration never reaches the user.
+                tracing::warn!(
+                    total_iterations,
+                    text_len = final_text.len(),
+                    "Agent loop: persistent narration past retry cap, suppressing delivery"
+                );
+                publish_event(
+                    event_bus,
+                    TopicEvent::SessionStatus {
+                        topic_name: topic_name.to_string(),
+                        status_type: "narration_as_text".to_string(),
+                        attempt: None,
+                        message: Some(format!(
+                            "AI produced narration-only text {MAX_NARRATION_CONTINUES}+ times \
+                             (total_iterations={total_iterations}); reply suppressed"
                         )),
                         timestamp: Utc::now(),
                     },
@@ -1449,6 +1517,40 @@ fn looks_like_tool_call(text: &str) -> bool {
         .any(|m| text.contains(m))
 }
 
+/// Phrases that announce an intended action as content ("Now let me read…",
+/// "I'll check…"). MiniMax writes such announcements as real `content`
+/// before an intended tool call; combined with a trailing colon — the
+/// observed signature ("Now let me check the test module structure, then
+/// implement:") — they are strong signals the text is process narration,
+/// not a reply.
+const NARRATION_PREFIXES: &[&str] = &[
+    "Now let me",
+    "Let me",
+    "Let's",
+    "Let’s",
+    "I'll",
+    "I’ll",
+    "I will",
+    "I need to",
+    "I'm going to",
+    "I’m going to",
+];
+
+/// True when the text looks like process narration rather than a real reply:
+/// either it ends with a colon (the model announced then stopped) or it is a
+/// short (<200 chars) sentence starting with an action phrase ("Now let
+/// me…"). Real replies are typically longer and do not announce an action.
+fn looks_like_narration(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.ends_with(':') {
+        return true;
+    }
+    trimmed.len() < 200 && NARRATION_PREFIXES.iter().any(|p| trimmed.starts_with(p))
+}
+
 #[cfg(test)]
 mod no_reply_tests {
     use super::event_test_helpers::drain_events;
@@ -1739,7 +1841,7 @@ mod reply_tool_tests {
     async fn text_only_finish_auto_delivers_without_reminder() {
         let provider = ScriptedProvider {
             rounds: vec![vec![
-                StreamEvent::TextDelta("I'll check the docs".to_string()),
+                StreamEvent::TextDelta("The docs are ready to review.".to_string()),
                 StreamEvent::Done,
             ]],
             calls: AtomicUsize::new(0),
@@ -1799,7 +1901,7 @@ mod reply_tool_tests {
         );
         assert_eq!(
             result.reply_text_from_tool.as_deref(),
-            Some("I'll check the docs\n\n— auto-delivered"),
+            Some("The docs are ready to review.\n\n— auto-delivered"),
             "auto-delivered text must be the model text plus the subtle trace, got: {:?}",
             result.reply_text_from_tool
         );
@@ -1931,6 +2033,214 @@ mod reply_tool_tests {
             })
             .collect();
         assert_eq!(suppressed.len(), 1, "one tool_call_as_text event expected");
+    }
+
+    #[test]
+    fn looks_like_narration_detects_announcements() {
+        // Observed MiniMax signature: process announcement ending with ":".
+        assert!(looks_like_narration(
+            "Now let me read the exact code to finalize the design:"
+        ));
+        assert!(looks_like_narration(
+            "Now let me check the test module structure, then implement:"
+        ));
+        // Short action announcements without a colon.
+        assert!(looks_like_narration("I'll check the docs"));
+        assert!(looks_like_narration("Let me read the file"));
+        // Real replies are not narration.
+        assert!(!looks_like_narration("The docs are ready to review."));
+        assert!(!looks_like_narration(
+            "Done. PR #649 is open: https://example.com/649"
+        ));
+        assert!(!looks_like_narration(
+            "The root cause is that MiniMax emits commentary as content."
+        ));
+        assert!(!looks_like_narration(""));
+    }
+
+    /// A text-only finish whose text is process narration ("Now let me…") is
+    /// NOT delivered and the loop continues: the model gets a chance to make
+    /// the intended tool call. When it then produces a real reply, that reply
+    /// is auto-delivered.
+    #[tokio::test]
+    async fn narration_finish_continues_loop_then_delivers_real_reply() {
+        let provider = ScriptedProvider {
+            rounds: vec![
+                vec![
+                    StreamEvent::TextDelta("Now let me read the exact code:".to_string()),
+                    StreamEvent::Done,
+                ],
+                vec![
+                    StreamEvent::TextDelta("The docs are ready to review.".to_string()),
+                    StreamEvent::Done,
+                ],
+            ],
+            calls: AtomicUsize::new(0),
+            seen_tools: Default::default(),
+        };
+        let tmp = TempDir::new().unwrap();
+        let working_dir = tmp.path().to_path_buf();
+        let tools = registry_with_reply_tool();
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
+        let mut rx = bus.subscribe().await.unwrap();
+        let cancel = CancellationToken::new();
+
+        let result = run(super::AgentLoopConfig {
+            provider: &provider,
+            small_provider: None,
+            tools: &tools,
+            system_prompt: "test",
+            user_blocks: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+            }],
+            working_dir: &working_dir,
+            topic_path: &working_dir,
+            cancel: cancel.clone(),
+            topic_name: "narration-continue",
+            event_bus: Some(&bus),
+            prior_history: vec![],
+            prior_raw_context: vec![],
+            max_iterations: Some(5),
+            sse_read_timeout: std::time::Duration::from_secs(60),
+            additional_read_roots: vec![],
+            additional_write_roots: vec![],
+            pattern_inject_images: false,
+            outbound: None,
+            topic_managers: None,
+            current_channel: None,
+            outbounds: None,
+            context_window: None,
+            auto_reset_threshold: 0.95,
+            thinking_enabled: false,
+            pricing: None,
+            model_label: "scripted-test-narration",
+            context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+            reply_target: None,
+        })
+        .await
+        .expect("agent loop should run to completion");
+
+        // Two LLM calls: narration round 1 continues, round 2 delivers.
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        assert!(result.reply_sent_by_tool, "real reply must be delivered");
+        assert_eq!(
+            result.reply_text_from_tool.as_deref(),
+            Some("The docs are ready to review.\n\n— auto-delivered"),
+            "round-2 reply must be delivered (not the narration), got: {:?}",
+            result.reply_text_from_tool
+        );
+
+        // One narration_as_text status event, no delivery of the narration.
+        let events = drain_events(&mut rx).await;
+        let narrations: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                TopicEvent::SessionStatus { status_type, .. }
+                    if status_type == "narration_as_text" =>
+                {
+                    Some(status_type.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(narrations.len(), 1, "one narration_as_text event expected");
+    }
+
+    /// Persistent narration (beyond the retry cap) is suppressed entirely:
+    /// no delivery by any path, empty result text.
+    #[tokio::test]
+    async fn persistent_narration_is_suppressed_after_cap() {
+        let provider = ScriptedProvider {
+            rounds: vec![
+                vec![
+                    StreamEvent::TextDelta("Now let me read the exact code:".to_string()),
+                    StreamEvent::Done,
+                ],
+                vec![
+                    StreamEvent::TextDelta("Now let me check the config:".to_string()),
+                    StreamEvent::Done,
+                ],
+                vec![
+                    StreamEvent::TextDelta("Now let me look at the tests:".to_string()),
+                    StreamEvent::Done,
+                ],
+            ],
+            calls: AtomicUsize::new(0),
+            seen_tools: Default::default(),
+        };
+        let tmp = TempDir::new().unwrap();
+        let working_dir = tmp.path().to_path_buf();
+        let tools = registry_with_reply_tool();
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
+        let mut rx = bus.subscribe().await.unwrap();
+        let cancel = CancellationToken::new();
+
+        let result = run(super::AgentLoopConfig {
+            provider: &provider,
+            small_provider: None,
+            tools: &tools,
+            system_prompt: "test",
+            user_blocks: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+            }],
+            working_dir: &working_dir,
+            topic_path: &working_dir,
+            cancel: cancel.clone(),
+            topic_name: "narration-cap",
+            event_bus: Some(&bus),
+            prior_history: vec![],
+            prior_raw_context: vec![],
+            max_iterations: Some(5),
+            sse_read_timeout: std::time::Duration::from_secs(60),
+            additional_read_roots: vec![],
+            additional_write_roots: vec![],
+            pattern_inject_images: false,
+            outbound: None,
+            topic_managers: None,
+            current_channel: None,
+            outbounds: None,
+            context_window: None,
+            auto_reset_threshold: 0.95,
+            thinking_enabled: false,
+            pricing: None,
+            model_label: "scripted-test-narration-cap",
+            context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+            reply_target: None,
+        })
+        .await
+        .expect("agent loop should run to completion");
+
+        // 3 LLM calls = 1 + MAX_NARRATION_CONTINUES(2) retries, then suppressed.
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+        assert!(
+            !result.reply_sent_by_tool,
+            "persistent narration must not be delivered"
+        );
+        assert!(!result.reply_auto_delivered);
+        assert!(
+            result.text.is_empty(),
+            "narration must not be returned for degraded delivery, got: {:?}",
+            result.text
+        );
+
+        // One narration_as_text event per retry + one for the final suppress.
+        let events = drain_events(&mut rx).await;
+        let narrations: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                TopicEvent::SessionStatus { status_type, .. }
+                    if status_type == "narration_as_text" =>
+                {
+                    Some(status_type.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            narrations.len(),
+            3,
+            "three narration_as_text events expected (2 continues + 1 suppress)"
+        );
     }
 
     /// A `silent: true` reply call closes the turn cleanly: counts as

@@ -1382,6 +1382,46 @@ pub(crate) fn extract_user_assistant_pairs(
     }
 }
 
+/// Index in `raw_context` where the last `note_window` completed turns
+/// begin (0 when `raw_context` holds fewer turns than `note_window`, and
+/// `raw_context.len()` when `note_window` is 0).
+///
+/// The sliding-window wire payload sends those turns VERBATIM — structured
+/// `tool_calls` and tool results intact — rather than folded into user-role
+/// text notes, so the model keeps seeing tool calls in the wire format it
+/// is supposed to emit (text notes taught thinking models to write their
+/// process as content instead). Turn boundaries use the same semantics as
+/// [`extract_pairs`]: a turn opens at a text-bearing user message, and
+/// round-tripped history notes are metadata, never openers.
+pub(crate) fn verbatim_start_index(raw_context: &[serde_json::Value], note_window: usize) -> usize {
+    if note_window == 0 {
+        return raw_context.len();
+    }
+    let mut turns = 0usize;
+    for (idx, msg) in raw_context.iter().enumerate().rev() {
+        if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
+            let text = extract_message_text(msg);
+            if !text.is_empty() && !text.starts_with(HISTORY_NOTE_PREFIX) {
+                turns += 1;
+                if turns == note_window {
+                    return idx;
+                }
+            }
+        }
+    }
+    0
+}
+
+/// Whether a raw wire-format message is a round-tripped history note
+/// (user-role metadata summarizing assistant tool calls). Such messages are
+/// skipped when re-sending the verbatim region — they are not conversation,
+/// and re-injecting them as user text is the exact pattern that triggered
+/// the thinking-content leak.
+pub(crate) fn is_history_note(msg: &serde_json::Value) -> bool {
+    msg.get("role").and_then(|r| r.as_str()) == Some("user")
+        && extract_message_text(msg).starts_with(HISTORY_NOTE_PREFIX)
+}
+
 /// Heuristic context compaction: keep only the last N user+assistant text
 /// pairs.
 ///

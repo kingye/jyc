@@ -193,8 +193,8 @@ impl CommandHandler for ContextCommandHandler {
 /// `<topic>/.jyc/wire-payload.jsonl` (capped at 50 lines, oldest dropped).
 /// No args shows the current state and the dump file path.
 async fn handle_dump(jyc_dir: &std::path::Path, arg: Option<&str>) -> Result<CommandResult> {
-    let flag_path = jyc_dir.join("wire-payload-dump.json");
-    let dump_path = jyc_dir.join("wire-payload.jsonl");
+    let flag_path = jyc_dir.join(crate::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE);
+    let dump_path = jyc_dir.join(crate::session_state::WIRE_PAYLOAD_DUMP_FILE);
     let enabled = tokio::fs::read(&flag_path)
         .await
         .ok()

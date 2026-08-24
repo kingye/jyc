@@ -107,17 +107,16 @@ pub async fn save_raw_context(topic_path: &Path, raw_context: &[serde_json::Valu
 /// Wire-payload debug dump — toggled by the user via `/context dump on|off`.
 /// When enabled, every wire payload sent to the LLM is appended as one
 /// JSON line to `<topic>/.jyc/wire-payload.jsonl`. The file is capped at
-/// [`WIRE_PAYLOAD_DUMP_MAX_LINES`] lines (oldest dropped) to keep a single
-/// topic's debug footprint bounded.
-pub const WIRE_PAYLOAD_DUMP_FLAG_FILE: &str = "wire-payload-dump.json";
-pub const WIRE_PAYLOAD_DUMP_FILE: &str = "wire-payload.jsonl";
-pub const WIRE_PAYLOAD_DUMP_MAX_LINES: usize = 50;
+/// [`jyc_core::session_state::WIRE_PAYLOAD_DUMP_MAX_LINES`] lines (oldest
+/// dropped) to keep a single topic's debug footprint bounded.
 
 /// Read the on/off flag for wire-payload dumping. Returns false when the
 /// flag file is absent or malformed — the absence of the file is the
 /// default "off" state.
 pub async fn read_wire_payload_dump_enabled(topic_path: &Path) -> bool {
-    let path = topic_path.join(".jyc").join(WIRE_PAYLOAD_DUMP_FLAG_FILE);
+    let path = topic_path
+        .join(".jyc")
+        .join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE);
     let Ok(bytes) = tokio::fs::read(&path).await else {
         return false;
     };
@@ -141,7 +140,7 @@ pub async fn append_wire_payload_dump(
     if tokio::fs::create_dir_all(&jyc_dir).await.is_err() {
         return;
     }
-    let path = jyc_dir.join(WIRE_PAYLOAD_DUMP_FILE);
+    let path = jyc_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FILE);
 
     let entry = serde_json::json!({
         "ts": chrono::Utc::now().to_rfc3339(),
@@ -157,8 +156,8 @@ pub async fn append_wire_payload_dump(
 
     let existing = tokio::fs::read_to_string(&path).await.unwrap_or_default();
     let mut lines: Vec<String> = existing.lines().map(str::to_owned).collect();
-    if lines.len() >= WIRE_PAYLOAD_DUMP_MAX_LINES {
-        let drop_n = lines.len() + 1 - WIRE_PAYLOAD_DUMP_MAX_LINES;
+    if lines.len() >= jyc_core::session_state::WIRE_PAYLOAD_DUMP_MAX_LINES {
+        let drop_n = lines.len() + 1 - jyc_core::session_state::WIRE_PAYLOAD_DUMP_MAX_LINES;
         lines.drain(..drop_n);
     }
     lines.push(new_line);
@@ -2207,7 +2206,7 @@ mod tests {
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
-            jyc_dir.join(super::WIRE_PAYLOAD_DUMP_FLAG_FILE),
+            jyc_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE),
             r#"{"enabled":true}"#,
         )
         .await
@@ -2215,7 +2214,7 @@ mod tests {
         assert!(super::read_wire_payload_dump_enabled(tmp.path()).await);
 
         tokio::fs::write(
-            jyc_dir.join(super::WIRE_PAYLOAD_DUMP_FLAG_FILE),
+            jyc_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE),
             r#"{"enabled":false}"#,
         )
         .await
@@ -2223,9 +2222,12 @@ mod tests {
         assert!(!super::read_wire_payload_dump_enabled(tmp.path()).await);
 
         // Malformed JSON must be tolerated as "off", not panic.
-        tokio::fs::write(jyc_dir.join(super::WIRE_PAYLOAD_DUMP_FLAG_FILE), "not json")
-            .await
-            .unwrap();
+        tokio::fs::write(
+            jyc_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE),
+            "not json",
+        )
+        .await
+        .unwrap();
         assert!(!super::read_wire_payload_dump_enabled(tmp.path()).await);
     }
 
@@ -2243,19 +2245,22 @@ mod tests {
         let regions = vec![3u8];
 
         // Write WIRE_PAYLOAD_DUMP_MAX_LINES + 5 entries.
-        let total = super::WIRE_PAYLOAD_DUMP_MAX_LINES + 5;
+        let total = jyc_core::session_state::WIRE_PAYLOAD_DUMP_MAX_LINES + 5;
         for i in 0..total {
             super::append_wire_payload_dump(tmp.path(), i, &cfg, &regions, &wire).await;
         }
 
-        let body =
-            tokio::fs::read_to_string(tmp.path().join(".jyc").join(super::WIRE_PAYLOAD_DUMP_FILE))
-                .await
-                .unwrap();
+        let body = tokio::fs::read_to_string(
+            tmp.path()
+                .join(".jyc")
+                .join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FILE),
+        )
+        .await
+        .unwrap();
         let lines: Vec<&str> = body.lines().collect();
         assert_eq!(
             lines.len(),
-            super::WIRE_PAYLOAD_DUMP_MAX_LINES,
+            jyc_core::session_state::WIRE_PAYLOAD_DUMP_MAX_LINES,
             "should be capped at MAX_LINES"
         );
         // The oldest entries are dropped; the newest `iter` is preserved.
@@ -2264,7 +2269,7 @@ mod tests {
         let first: serde_json::Value = serde_json::from_str(lines.first().unwrap()).unwrap();
         assert_eq!(
             first["iter"],
-            total - super::WIRE_PAYLOAD_DUMP_MAX_LINES,
+            total - jyc_core::session_state::WIRE_PAYLOAD_DUMP_MAX_LINES,
             "first must be the (total - MAX) entry"
         );
         // Round-trip the regions array.

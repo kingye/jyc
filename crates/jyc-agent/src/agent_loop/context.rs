@@ -944,7 +944,10 @@ mod render_raw_context_tests {
 
         let msg = json!({"role": "user", "content": "x".repeat(2000)});
         let capped = cap_tool_result_content(&msg, 100);
-        assert_eq!(capped, msg, "user with string content (no tool_result blocks) should pass through");
+        assert_eq!(
+            capped, msg,
+            "user with string content (no tool_result blocks) should pass through"
+        );
     }
 
     #[test]
@@ -974,9 +977,17 @@ mod render_raw_context_tests {
         let blocks = capped["content"].as_array().unwrap();
         assert_eq!(blocks.len(), 4, "block count preserved");
         assert_eq!(blocks[0]["text"], "framing text");
-        assert!(blocks[1]["content"].as_str().unwrap().contains("[truncated"));
+        assert!(
+            blocks[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("[truncated")
+        );
         assert_eq!(blocks[2]["content"].as_str().unwrap(), "short");
-        assert_eq!(blocks[3], json!({"type": "image", "source": {"type": "base64", "data": "..."}}));
+        assert_eq!(
+            blocks[3],
+            json!({"type": "image", "source": {"type": "base64", "data": "..."}})
+        );
     }
 
     /// Integration: a real-shaped sliding window with a 50-byte cap must
@@ -1012,8 +1023,7 @@ mod render_raw_context_tests {
             tool_result_cap: Some(50),
             ..uncapped_cfg.clone()
         };
-        let (capped, _) =
-            build_send_context_with_regions(&prov(), &ctx, prior_len, &capped_cfg);
+        let (capped, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &capped_cfg);
         let capped_bytes = serde_json::to_string(capped.as_ref()).unwrap().len();
 
         assert!(

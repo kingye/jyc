@@ -202,8 +202,7 @@ impl CommandHandler for ContextCommandHandler {
                 } else {
                     None
                 };
-                let tool_result_cap =
-                    tool_result_cap.unwrap_or(configured.tool_result_cap);
+                let tool_result_cap = tool_result_cap.unwrap_or(configured.tool_result_cap);
                 let cfg = ContextStrategyConfig {
                     mode: ContextStrategy::SlidingWindow,
                     window,

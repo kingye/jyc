@@ -577,6 +577,15 @@ pub struct ContextStrategyConfig {
     /// readers stay compatible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_window: Option<usize>,
+    /// Byte cap on each tool result kept in the verbatim region
+    /// (`sliding_window` mode). When a tool result exceeds `cap` bytes,
+    /// its content is truncated and suffixed with a marker noting the
+    /// dropped length. `Some(0)` (or `None`) disables capping — every
+    /// tool result is sent in full. Only meaningful when
+    /// `mode = "sliding_window"`. Omitted from serialized override files
+    /// when unset so existing readers stay compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result_cap: Option<usize>,
 }
 
 impl Default for ContextStrategyConfig {
@@ -585,6 +594,7 @@ impl Default for ContextStrategyConfig {
             mode: ContextStrategy::default(),
             window: default_context_window_size(),
             note_window: None,
+            tool_result_cap: None,
         }
     }
 }
@@ -785,5 +795,62 @@ topic_path = "~/projects/jyc"
         // Default for an empty table is Full / window 10.
         let cfg: ContextStrategyConfig = toml::from_str("").unwrap();
         assert_eq!(cfg, ContextStrategyConfig::default());
+    }
+
+    #[test]
+    fn test_context_strategy_tool_result_cap_default_is_none() {
+        let cfg = ContextStrategyConfig::default();
+        assert_eq!(cfg.tool_result_cap, None);
+    }
+
+    #[test]
+    fn test_context_strategy_tool_result_cap_missing_field_is_none() {
+        // Legacy JSON without the field — pre-existing override files must
+        // keep deserializing.
+        let toml_str = r#"
+            mode = "sliding_window"
+            window = 15
+            note_window = 5
+        "#;
+        let cfg: ContextStrategyConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.tool_result_cap, None);
+    }
+
+    #[test]
+    fn test_context_strategy_tool_result_cap_roundtrip() {
+        // TOML round-trip.
+        let cfg = ContextStrategyConfig {
+            tool_result_cap: Some(4096),
+            ..ContextStrategyConfig::default()
+        };
+        let serialized = toml::to_string(&cfg).unwrap();
+        assert!(
+            serialized.contains("tool_result_cap = 4096"),
+            "tool_result_cap should serialize in TOML, got: {serialized}"
+        );
+        let deserialized: ContextStrategyConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized, cfg);
+
+        // JSON round-trip — the field must round-trip with snake_case.
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(
+            json.contains("\"tool_result_cap\":4096"),
+            "tool_result_cap should serialize in JSON as snake_case, got: {json}"
+        );
+        let cfg2: ContextStrategyConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg2, cfg);
+    }
+
+    #[test]
+    fn test_context_strategy_tool_result_cap_zero_is_some_none_distinct() {
+        // Some(0) is the explicit "off" sentinel and must survive a round-trip.
+        let cfg = ContextStrategyConfig {
+            tool_result_cap: Some(0),
+            ..ContextStrategyConfig::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let cfg2: ContextStrategyConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(cfg2.tool_result_cap, Some(0));
+        assert_ne!(cfg2.tool_result_cap, None);
     }
 }

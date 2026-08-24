@@ -117,6 +117,11 @@ fn format_cleaned_message(
 ///   whole context (`Full` mode, no region split).
 /// - `2` = second region — verbatim prior turns (`SlidingWindow` only).
 /// - `3` = third region — current turn verbatim (`SlidingWindow` only).
+///
+/// When `strategy.tool_result_cap` is `Some(cap > 0)`, every tool result
+/// in regions ② and ③ is truncated to at most `cap` bytes with the
+/// standard `… [truncated N bytes]` marker. `Some(0)` or `None` is a
+/// pass-through.
 pub(crate) fn build_send_context_with_regions<'a>(
     provider: &dyn Provider,
     raw_context: &'a [serde_json::Value],
@@ -131,6 +136,9 @@ pub(crate) fn build_send_context_with_regions<'a>(
             let boundary = prior_len.min(raw_context.len());
             let prior = &raw_context[..boundary];
             let current = &raw_context[boundary..];
+            // `tool_result_cap`: Some(0) and None both mean "off" — let the
+            // helper short-circuit on cap == 0.
+            let cap = strategy.tool_result_cap.unwrap_or(0);
 
             let mut out = Vec::new();
             let mut regions = Vec::new();
@@ -166,20 +174,86 @@ pub(crate) fn build_send_context_with_regions<'a>(
 
             // Recent turns verbatim — skip round-tripped history notes
             // (metadata, not conversation; re-sending them as user text is
-            // the pattern that triggered the leak).
+            // the pattern that triggered the leak). Apply the
+            // tool-result byte cap to each message (non-tool messages are
+            // pass-through, so the cap is cheap).
             for msg in verbatim_prior {
                 if crate::session::is_history_note(msg) {
                     continue;
                 }
-                out.push(msg.clone());
+                out.push(cap_tool_result_content(msg, cap));
                 regions.push(2);
             }
 
-            out.extend_from_slice(current);
-            regions.extend(std::iter::repeat_n(3, current.len()));
+            // Current turn verbatim — same cap applies so a 1000-line
+            // `read` result mid-loop doesn't blow the budget either.
+            for msg in current {
+                out.push(cap_tool_result_content(msg, cap));
+                regions.push(3);
+            }
             (Cow::Owned(out), regions)
         }
     }
+}
+
+/// Truncate oversized tool-result `content` to `cap` bytes. Returns the
+/// input unchanged for non-tool messages and for `cap == 0` (the
+/// explicit-off sentinel). Handles both wire formats:
+///
+/// - OpenAI / simple: `{"role":"tool","content":"<string>"}` — the string
+///   is truncated in place.
+/// - Anthropic: `{"role":"user","content":[{"type":"tool_result",
+///   "content":"<string>"}, …]}` — each `tool_result` block's string
+///   `content` is truncated. Non-`tool_result` blocks (text/image) and
+///   block-level array `content` are left untouched (rare for tool
+///   results, and the truncate_text marker is string-specific).
+fn cap_tool_result_content(msg: &serde_json::Value, cap: usize) -> serde_json::Value {
+    if cap == 0 {
+        return msg.clone();
+    }
+    let mut new_msg = msg.clone();
+    let role = new_msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+
+    match role {
+        "tool" => {
+            let Some(content) = new_msg.get("content").and_then(|c| c.as_str()) else {
+                return new_msg;
+            };
+            let capped = crate::session::truncate_text(content, cap);
+            if capped == content {
+                return new_msg;
+            }
+            if let Some(obj) = new_msg.as_object_mut()
+                && let Some(v) = obj.get_mut("content")
+            {
+                *v = serde_json::Value::String(capped);
+            }
+        }
+        "user" => {
+            let Some(blocks) = new_msg.get_mut("content").and_then(|c| c.as_array_mut()) else {
+                return new_msg;
+            };
+            for block in blocks {
+                if block.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+                    continue;
+                }
+                let Some(content) = block.get("content").and_then(|c| c.as_str()) else {
+                    continue;
+                };
+                let capped = crate::session::truncate_text(content, cap);
+                if capped == content {
+                    continue;
+                }
+                if let Some(obj) = block.as_object_mut()
+                    && let Some(v) = obj.get_mut("content")
+                {
+                    *v = serde_json::Value::String(capped);
+                }
+            }
+        }
+        _ => {}
+    }
+    new_msg
 }
 
 /// Test-only debug dump — human-readable, region-labeled view of the
@@ -496,6 +570,7 @@ mod render_raw_context_tests {
             mode: ContextStrategy::Full,
             window: 10,
             note_window: None,
+            tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         assert!(matches!(sent, Cow::Borrowed(_)));
@@ -531,6 +606,7 @@ mod render_raw_context_tests {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
             note_window: Some(1),
+            tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         let sent = sent.into_owned();
@@ -560,6 +636,7 @@ mod render_raw_context_tests {
             mode: ContextStrategy::SlidingWindow,
             window: 5,
             note_window: None,
+            tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, 99, &cfg)
             .0
@@ -581,6 +658,7 @@ mod render_raw_context_tests {
             mode: ContextStrategy::SlidingWindow,
             window: 10,
             note_window: None,
+            tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, 0, &cfg)
             .0
@@ -622,6 +700,7 @@ mod render_raw_context_tests {
             mode: ContextStrategy::SlidingWindow,
             window: 4,
             note_window: Some(1),
+            tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&anthropic(), &ctx, prior_len, &cfg)
             .0
@@ -695,6 +774,7 @@ mod render_raw_context_tests {
             mode: ContextStrategy::SlidingWindow,
             window: 5,
             note_window: Some(1),
+            tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg)
             .0
@@ -735,6 +815,7 @@ mod render_raw_context_tests {
             mode: ContextStrategy::SlidingWindow,
             window: 10,
             note_window: Some(5),
+            tool_result_cap: None,
         };
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg)
             .0
@@ -771,6 +852,7 @@ mod render_raw_context_tests {
             mode: ContextStrategy::Full,
             window: 10,
             note_window: None,
+            tool_result_cap: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
         assert_eq!(sent.len(), 3);
@@ -803,6 +885,7 @@ mod render_raw_context_tests {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
             note_window: Some(1),
+            tool_result_cap: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
         assert_eq!(sent.len(), 5);
@@ -818,6 +901,177 @@ mod render_raw_context_tests {
         assert!(
             dump.contains("--- wire payload ---"),
             "missing payload section: {dump}"
+        );
+    }
+
+    /// `cap_tool_result_content` — unit tests for the byte cap helper.
+    /// Integration via `build_send_context_with_regions` is covered by
+    /// `build_send_context_applies_cap_to_verbatim_region` below.
+    #[test]
+    fn cap_tool_result_truncates_openai_shape() {
+        let big = "x".repeat(2000);
+        let msg = json!({"role": "tool", "tool_call_id": "1", "content": big.clone()});
+        let capped = cap_tool_result_content(&msg, 100);
+        let content = capped["content"].as_str().unwrap();
+        assert!(content.len() < 200, "should be much smaller than 2000");
+        assert!(content.starts_with('x'), "preserves leading content");
+        assert!(content.contains("[truncated"), "appends truncation marker");
+        assert!(content.contains("bytes]"), "marker mentions bytes");
+        // The marker must report the exact number of dropped bytes —
+        // 1900 for a 100-byte cap on a 2000-byte input.
+        assert!(
+            content.contains("[truncated 1900 bytes]"),
+            "marker should report exact dropped bytes, got: {content}"
+        );
+    }
+
+    #[test]
+    fn cap_tool_result_passthrough_when_under_cap() {
+        let msg = json!({"role": "tool", "tool_call_id": "1", "content": "short"});
+        let capped = cap_tool_result_content(&msg, 100);
+        // Identity check (no clone-modify churn) — should be the same content.
+        assert_eq!(capped["content"].as_str().unwrap(), "short");
+        assert!(!capped["content"].as_str().unwrap().contains("truncated"));
+    }
+
+    #[test]
+    fn cap_tool_result_passthrough_for_user_or_assistant() {
+        // Only `role=tool` (OpenAI) and `role=user` with tool_result
+        // blocks (Anthropic) get capped — every other role is a no-op.
+        let msg = json!({"role": "assistant", "content": "x".repeat(2000)});
+        let capped = cap_tool_result_content(&msg, 100);
+        assert_eq!(capped, msg, "assistant should pass through unchanged");
+
+        let msg = json!({"role": "user", "content": "x".repeat(2000)});
+        let capped = cap_tool_result_content(&msg, 100);
+        assert_eq!(
+            capped, msg,
+            "user with string content (no tool_result blocks) should pass through"
+        );
+    }
+
+    #[test]
+    fn cap_tool_result_zero_is_passthrough() {
+        // Some(0) is the explicit-off sentinel.
+        let msg = json!({"role": "tool", "tool_call_id": "1", "content": "x".repeat(2000)});
+        let capped = cap_tool_result_content(&msg, 0);
+        assert_eq!(capped, msg);
+    }
+
+    #[test]
+    fn cap_tool_result_truncates_anthropic_shape() {
+        let big = "x".repeat(2000);
+        let msg = json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "framing text"},
+                {"type": "tool_result", "tool_use_id": "t1", "content": big},
+                // A second tool_result in the same user message — both
+                // should be capped.
+                {"type": "tool_result", "tool_use_id": "t2", "content": "short"},
+                // A non-tool_result block — should pass through.
+                {"type": "image", "source": {"type": "base64", "data": "..."}},
+            ]
+        });
+        let capped = cap_tool_result_content(&msg, 100);
+        let blocks = capped["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 4, "block count preserved");
+        assert_eq!(blocks[0]["text"], "framing text");
+        assert!(
+            blocks[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("[truncated")
+        );
+        assert_eq!(blocks[2]["content"].as_str().unwrap(), "short");
+        assert_eq!(
+            blocks[3],
+            json!({"type": "image", "source": {"type": "base64", "data": "..."}})
+        );
+    }
+
+    /// Integration: a real-shaped sliding window with a 50-byte cap must
+    /// reduce the serialized payload size vs. uncapped, and every capped
+    /// tool result must carry the standard marker.
+    #[test]
+    fn build_send_context_applies_cap_to_verbatim_region() {
+        let big = "y".repeat(2000);
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "calling bash", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": big.clone()}),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        let current = vec![json!({"role": "tool", "tool_call_id": "2", "content": big.clone()})];
+        let mut ctx = prior.clone();
+        ctx.extend(current.clone());
+        let prior_len = prior.len();
+
+        let uncapped_cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 5,
+            note_window: Some(5),
+            tool_result_cap: None,
+        };
+        let (uncapped, _) =
+            build_send_context_with_regions(&prov(), &ctx, prior_len, &uncapped_cfg);
+        let uncapped_bytes = serde_json::to_string(uncapped.as_ref()).unwrap().len();
+
+        let capped_cfg = ContextStrategyConfig {
+            tool_result_cap: Some(50),
+            ..uncapped_cfg.clone()
+        };
+        let (capped, _) = build_send_context_with_regions(&prov(), &ctx, prior_len, &capped_cfg);
+        let capped_bytes = serde_json::to_string(capped.as_ref()).unwrap().len();
+
+        assert!(
+            capped_bytes < uncapped_bytes,
+            "capping should reduce payload size: uncapped={uncapped_bytes} capped={capped_bytes}"
+        );
+        // The cap should remove most of the 2000-byte bodies.
+        assert!(
+            uncapped_bytes - capped_bytes > 3000,
+            "cap should drop at least 3KB across two tool results: uncapped={uncapped_bytes} capped={capped_bytes}"
+        );
+
+        // The standard truncation marker must appear in the capped payload.
+        let capped_str = serde_json::to_string(capped.as_ref()).unwrap();
+        assert!(
+            capped_str.contains("[truncated ") && capped_str.contains("bytes]"),
+            "missing truncation marker: {capped_str}"
+        );
+    }
+
+    #[test]
+    fn build_send_context_cap_zero_is_passthrough() {
+        // Some(0) is the explicit-off sentinel — must match None behavior.
+        let big = "y".repeat(2000);
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "calling", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": big}),
+        ];
+        let prior_len = prior.len();
+        let cfg_none = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 5,
+            note_window: Some(5),
+            tool_result_cap: None,
+        };
+        let cfg_zero = ContextStrategyConfig {
+            tool_result_cap: Some(0),
+            ..cfg_none.clone()
+        };
+        let (a, _) = build_send_context_with_regions(&prov(), &prior, prior_len, &cfg_none);
+        let (b, _) = build_send_context_with_regions(&prov(), &prior, prior_len, &cfg_zero);
+        assert_eq!(
+            serde_json::to_string(a.as_ref()).unwrap(),
+            serde_json::to_string(b.as_ref()).unwrap(),
+            "Some(0) must behave identically to None"
         );
     }
 }

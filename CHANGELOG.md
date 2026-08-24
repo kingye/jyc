@@ -22,6 +22,20 @@
   topic before a reply: only the latest `Typing` is swapped on reply;
   older ones remain until cleared manually.
 
+- **Verbatim tool-result cap (`tool_result_cap`).** New optional field on
+  `ContextStrategyConfig` (sliding_window only) that caps each tool
+  result in the verbatim region ② + ③ at N bytes. Truncated results
+  are suffixed with the standard `… [truncated N bytes]` marker — same
+  format as the existing compaction truncation, so the model sees
+  consistent truncation across all boundaries. Handles both OpenAI
+  (`role: "tool"`, string `content`) and Anthropic (`role: "user"`
+  with `[tool_result]` blocks) wire formats; non-tool messages and
+  the compacted region ① pass through untouched. `Some(0)` or absent
+  = off (every tool result sent in full). Set via `config.toml`
+  (`[ai].context_strategy.tool_result_cap` or per-pattern), the
+  runtime override file `.jyc/context-strategy.json`, or the new CLI
+  arg `/context sliding [N] [M] [CAP]` (CAP in `0..1 MiB`).
+
 - **Wire-payload debug dump (`/context dump on|off`).** Inspect what the
   model actually sees, one JSON line per LLM call, at
   `<topic>/.jyc/wire-payload.jsonl`. Toggle with

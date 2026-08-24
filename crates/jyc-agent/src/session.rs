@@ -1042,7 +1042,7 @@ fn render_tool_call(name: &str, args: &serde_json::Value) -> String {
 /// `… [truncated N bytes]` marker when longer. The marker distinguishes a
 /// real cut from content that genuinely ends in `…` and tells the model how
 /// much was dropped.
-fn truncate_text(s: &str, max: usize) -> String {
+pub(crate) fn truncate_text(s: &str, max: usize) -> String {
     if s.len() > max {
         let cut = s.floor_char_boundary(max);
         let dropped = s.len() - cut;
@@ -2244,6 +2244,7 @@ mod tests {
             mode: ContextStrategy::SlidingWindow,
             window: 5,
             note_window: Some(2),
+            tool_result_cap: None,
         };
         let wire = vec![serde_json::json!({"role":"user","content":"hi"})];
         let regions = vec![3u8];
@@ -2296,6 +2297,7 @@ mod tests {
             mode: ContextStrategy::Full,
             window: 10,
             note_window: None,
+            tool_result_cap: None,
         };
         let empty_wire: Vec<serde_json::Value> = vec![];
         let empty_regions: Vec<u8> = vec![];

@@ -12,10 +12,12 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 /// Usage:
 ///   /context              Show current strategy
 ///   /context full         Switch to full context (send everything)
-///   /context sliding [N] [M]
+///   /context sliding [N] [M] [CAP]
 ///     Switch to sliding window (default N = 10 turns). M is the optional
 ///     note window: only the most recent M windowed turns carry tool-call
-///     history notes (default: all N).
+///     history notes (default: all N). CAP is the optional per-tool-result
+///     byte cap on the verbatim region (default: off). 0 in any slot keeps
+///     the configured value.
 ///   /context reset        Remove runtime override (revert to configured default)
 ///   /context dump [on|off]
 ///     Toggle wire-payload debug dump. When on, every LLM call appends
@@ -28,6 +30,13 @@ pub struct ContextCommandHandler;
 /// tools) and risks unbounded memory growth when paired with very long
 /// histories, so we cap it here at the command boundary.
 const MAX_WINDOW: usize = 200;
+
+/// Upper bound on the per-tool-result byte cap accepted from the user via
+/// `/context sliding N M CAP`. Larger caps defeat the purpose of capping
+/// and exceed the size of typical LLM context windows, so we cap at 1 MB
+/// here. Users needing larger caps can edit `.jyc/context-strategy.json`
+/// directly.
+const MAX_TOOL_RESULT_CAP: usize = 1024 * 1024;
 
 #[async_trait]
 impl CommandHandler for ContextCommandHandler {
@@ -86,11 +95,12 @@ impl CommandHandler for ContextCommandHandler {
                     &override_path,
                     ContextStrategyConfig {
                         mode: ContextStrategy::Full,
-                        // Preserve the configured window/note_window so
-                        // toggling full → sliding later still has sensible
+                        // Preserve the configured window/note_window/tool_result_cap
+                        // so toggling full → sliding later still has sensible
                         // defaults.
                         window: configured.window,
                         note_window: configured.note_window,
+                        tool_result_cap: configured.tool_result_cap,
                     },
                 )
                 .await?;
@@ -161,10 +171,43 @@ impl CommandHandler for ContextCommandHandler {
                     None
                 };
                 let note_window = note_window.unwrap_or(configured.note_window);
+                // Optional per-tool-result byte cap CAP (args[3]): truncates
+                // each tool result in the verbatim region to at most CAP
+                // bytes. 0 is the explicit "off" sentinel; absent = keep
+                // configured default.
+                let tool_result_cap = if let Some(arg) = context.args.get(3) {
+                    match arg.parse::<usize>() {
+                        Ok(c) if c <= MAX_TOOL_RESULT_CAP => Some(Some(c)),
+                        Ok(_) => {
+                            return Ok(CommandResult {
+                                success: false,
+                                message: format!(
+                                    "/context: tool_result_cap must be between 0 and {MAX_TOOL_RESULT_CAP} bytes"
+                                ),
+                                error: None,
+                                append_body: None,
+                            });
+                        }
+                        Err(_) => {
+                            return Ok(CommandResult {
+                                success: false,
+                                message: format!(
+                                    "/context: invalid tool_result_cap '{arg}', expected a non-negative integer"
+                                ),
+                                error: None,
+                                append_body: None,
+                            });
+                        }
+                    }
+                } else {
+                    None
+                };
+                let tool_result_cap = tool_result_cap.unwrap_or(configured.tool_result_cap);
                 let cfg = ContextStrategyConfig {
                     mode: ContextStrategy::SlidingWindow,
                     window,
                     note_window,
+                    tool_result_cap,
                 };
                 write_override(&jyc_dir, &override_path, cfg.clone()).await?;
                 Ok(CommandResult {
@@ -178,7 +221,7 @@ impl CommandHandler for ContextCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/context: unknown argument '{other}'. Use: /context full | sliding [N] [M] | reset | dump [on|off]"
+                    "/context: unknown argument '{other}'. Use: /context full | sliding [N] [M] [CAP] | reset | dump [on|off]"
                 ),
                 error: None,
                 append_body: None,
@@ -252,10 +295,17 @@ async fn write_override(
 fn describe_strategy(cfg: &ContextStrategyConfig) -> String {
     match cfg.mode {
         ContextStrategy::Full => "full".to_string(),
-        ContextStrategy::SlidingWindow => match cfg.note_window {
-            Some(m) => format!("sliding_window (window={}, note_window={m})", cfg.window),
-            None => format!("sliding_window (window={})", cfg.window),
-        },
+        ContextStrategy::SlidingWindow => {
+            let mut s = format!("sliding_window (window={}", cfg.window);
+            if let Some(m) = cfg.note_window {
+                s.push_str(&format!(", note_window={m}"));
+            }
+            if let Some(c) = cfg.tool_result_cap {
+                s.push_str(&format!(", tool_result_cap={c}"));
+            }
+            s.push(')');
+            s
+        }
     }
 }
 
@@ -560,5 +610,130 @@ mode = "agent"
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(result.message.contains("off"));
+    }
+
+    #[tokio::test]
+    async fn test_sliding_with_tool_result_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["sliding".into(), "10".into(), "3".into(), "5000".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(result.message.contains("tool_result_cap=5000"));
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["window"], 10);
+        assert_eq!(v["note_window"], 3);
+        assert_eq!(v["tool_result_cap"], 5000);
+    }
+
+    #[tokio::test]
+    async fn test_sliding_cap_zero_is_explicit_off() {
+        // Some(0) is the "explicit off" sentinel — must round-trip as 0,
+        // not be confused with the configured default (None).
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["sliding".into(), "10".into(), "3".into(), "0".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["tool_result_cap"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_sliding_cap_above_max_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec![
+            "sliding".into(),
+            "10".into(),
+            "3".into(),
+            (MAX_TOOL_RESULT_CAP + 1).to_string(),
+        ];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(!result.success);
+        assert!(result.message.contains("tool_result_cap must be between"));
+    }
+
+    #[tokio::test]
+    async fn test_sliding_cap_invalid_arg() {
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["sliding".into(), "10".into(), "3".into(), "abc".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(!result.success);
+        assert!(result.message.contains("invalid tool_result_cap"));
+    }
+
+    #[tokio::test]
+    async fn test_sliding_without_tool_result_cap_omits_field() {
+        // No CAP arg and config.toml doesn't set one → field omitted from
+        // override JSON (mirrors `test_sliding_without_note_window_omits_field`).
+        let tmp = tempfile::tempdir().unwrap();
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["sliding".into(), "15".into(), "5".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        let content = tokio::fs::read_to_string(tmp.path().join(".jyc/context-strategy.json"))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["window"], 15);
+        assert_eq!(v["note_window"], 5);
+        assert!(v.get("tool_result_cap").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_full_uses_configured_tool_result_cap_not_prior_override() {
+        // The `full` arm reads tool_result_cap from the configured (config.toml)
+        // source, NOT from the prior override. So pre-setting an override with
+        // a cap does not "leak" into the new full-mode override.
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::write(
+            jyc_dir.join("context-strategy.json"),
+            r#"{"mode":"sliding_window","window":10,"tool_result_cap":8192}"#,
+        )
+        .await
+        .unwrap();
+
+        let handler = ContextCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["full".into()];
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        let content = tokio::fs::read_to_string(&jyc_dir.join("context-strategy.json"))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v["mode"], "full");
+        assert!(v.get("tool_result_cap").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_describe_strategy_includes_tool_result_cap() {
+        // describe_strategy is also used by /context (no args) — make sure
+        // it renders the cap when set.
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 10,
+            note_window: Some(3),
+            tool_result_cap: Some(5000),
+        };
+        let s = describe_strategy(&cfg);
+        assert!(s.contains("window=10"));
+        assert!(s.contains("note_window=3"));
+        assert!(s.contains("tool_result_cap=5000"));
     }
 }

@@ -97,11 +97,15 @@ fn format_cleaned_message(
 /// untouched; this function only shapes what is sent to the LLM.
 ///
 /// * `Full` — borrow the full context (no copy).
-/// * `SlidingWindow` — two parts, in order:
-///   1. The last `strategy.window` user+assistant text pairs from the prior
-///      context, reformatted in provider wire format (string content →
+/// * `SlidingWindow` — three parts, in order:
+///   1. The last `window - recent` user+assistant text pairs from the
+///      older prior, reformatted in provider wire format (string content →
 ///      provider-correct content shape).
-///   2. The full current turn (`raw_context[prior_len..]`) verbatim, so
+///   2. The most recent `note_window` prior turns **verbatim** (structured
+///      `tool_calls` + tool results intact, like the current turn), so the
+///      model keeps seeing tool calls in the wire format it is supposed to
+///      emit instead of user-role text notes.
+///   3. The full current turn (`raw_context[prior_len..]`) verbatim, so
 ///      tool calls / results stay coherent mid-loop.
 pub(crate) fn build_send_context<'a>(
     provider: &dyn Provider,
@@ -119,18 +123,43 @@ pub(crate) fn build_send_context<'a>(
             let current = &raw_context[boundary..];
 
             let mut out = Vec::new();
-            let windowed = crate::session::extract_user_assistant_pairs(
-                prior,
-                strategy.window,
-                strategy.note_window,
-            );
-            for msg in &windowed {
+
+            // The most recent `note_window` prior turns are sent VERBATIM
+            // (structured tool_calls + results) instead of being folded into
+            // user-role text notes. Text notes taught thinking models
+            // (MiniMax, DeepSeek) to write their process — tool calls and
+            // action announcements — as content instead of using the
+            // structured channel, which leaked "thinking" into delivered
+            // replies. Keeping the structured wire format in the recent
+            // window restores the format the model should mimic.
+            let note_window = strategy.note_window.unwrap_or(usize::MAX);
+            let verbatim_start = crate::session::verbatim_start_index(prior, note_window);
+            let (compact_prior, verbatim_prior) = prior.split_at(verbatim_start);
+
+            // Older pairs compact to text-only user/assistant. No history
+            // notes here — the recent pairs are already verbatim, so notes
+            // would be redundant (and are the leak trigger).
+            let verbatim_pairs = crate::session::extract_pairs(verbatim_prior).len();
+            let compact_keep = strategy.window.saturating_sub(verbatim_pairs);
+            let compacted =
+                crate::session::extract_user_assistant_pairs(compact_prior, compact_keep, Some(0));
+            for msg in &compacted {
                 // Defensive: skip messages with no extractable text so the
                 // wire payload never contains empty text blocks (which
                 // Anthropic rejects, especially under cache_control).
                 if let Some(formatted) = format_cleaned_message(provider, msg) {
                     out.push(formatted);
                 }
+            }
+
+            // Recent turns verbatim — skip round-tripped history notes
+            // (metadata, not conversation; re-sending them as user text is
+            // the pattern that triggered the leak).
+            for msg in verbatim_prior {
+                if crate::session::is_history_note(msg) {
+                    continue;
+                }
+                out.push(msg.clone());
             }
 
             out.extend_from_slice(current);
@@ -348,7 +377,7 @@ mod render_raw_context_tests {
     }
 
     #[test]
-    fn sliding_window_emits_windowed_and_current() {
+    fn sliding_window_emits_recent_verbatim_and_older_compacted() {
         // Prior: 3 user+assistant turns, plus a tool turn in the middle.
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
@@ -368,32 +397,30 @@ mod render_raw_context_tests {
         let mut ctx = prior.clone();
         ctx.extend(current.clone());
 
+        // window=2, note_window=1: the last prior turn (u3, a3) is verbatim,
+        // the older turn (u2 with its tool call) compacts to text-only. No
+        // history note anywhere — notes taught the model to write tool calls
+        // as text (the thinking-leak trigger).
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 2,
-            note_window: None,
+            note_window: Some(1),
         };
         let sent = build_send_context(&prov(), &ctx, prior_len, &cfg);
         let sent = sent.into_owned();
 
-        // 1. Windowed recent N pairs from prior (reformatted by provider).
-        // a2 issued a tool call: its text stays pure, and the call summary
-        // (with the matching result "out" after the arrow) precedes as a
-        // separate user-role history note.
+        // 1. Older pair compacted to pure text (no note, tool_calls dropped).
         assert_eq!(sent[0], json!({"role": "user", "content": "u2"}));
-        assert_eq!(
-            sent[1],
-            json!({"role": "user",
-                "content": "[History note] assistant tool calls: bash() → out"})
-        );
-        assert_eq!(sent[2], json!({"role": "assistant", "content": "a2"}));
-        assert_eq!(sent[3], json!({"role": "user", "content": "u3"}));
-        assert_eq!(sent[4], json!({"role": "assistant", "content": "a3"}));
+        assert_eq!(sent[1], json!({"role": "assistant", "content": "a2"}));
 
-        // 2. Current turn verbatim.
-        assert_eq!(sent[5], current[0]);
-        assert_eq!(sent[6], current[1]);
-        assert_eq!(sent[7], current[2]);
+        // 2. Recent pair verbatim.
+        assert_eq!(sent[2], json!({"role": "user", "content": "u3"}));
+        assert_eq!(sent[3], json!({"role": "assistant", "content": "a3"}));
+
+        // 3. Current turn verbatim (tool_calls preserved).
+        assert_eq!(sent[4], current[0]);
+        assert_eq!(sent[5], current[1]);
+        assert_eq!(sent[6], current[2]);
     }
 
     #[test]
@@ -434,9 +461,9 @@ mod render_raw_context_tests {
 
     /// Regression: with Anthropic-shaped prior context, sliding-window must
     /// not produce empty text blocks (Anthropic rejects them, especially
-    /// under cache_control on `messages[n-3]`/`[n-2]`). Also verifies that
-    /// assistant text in array form is recognized by pairing, and tool_result
-    /// user-role wrappers are excluded from the windowed pairs.
+    /// under cache_control on `messages[n-3]`/`[n-2]`). The compacted part
+    /// goes through provider reformatting; the recent verbatim part is
+    /// passed through untouched (with tool_use/tool_result kept paired).
     #[test]
     fn sliding_window_anthropic_shaped_prior_emits_no_empty_blocks() {
         let prior = vec![
@@ -459,10 +486,12 @@ mod render_raw_context_tests {
         let mut ctx = prior.clone();
         ctx.extend(current.clone());
 
+        // note_window=1: only the last prior turn (u2, a2) is verbatim; the
+        // older u1 turn (with its tool_use + tool_result) compacts to text.
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 4,
-            note_window: None,
+            note_window: Some(1),
         };
         let sent = build_send_context(&anthropic(), &ctx, prior_len, &cfg).into_owned();
 
@@ -482,36 +511,114 @@ mod render_raw_context_tests {
             }
         }
 
-        // The windowed pairs should be present; the tool_result user-role
-        // wrapper must be excluded. Turn-based pairing merges u1's two
-        // assistant steps ("a1" and "calling bash") into one pure-text
-        // entry, with the tool_use summarized in a preceding history note;
-        // (u2, a2) stays a plain pair.
+        // Older u1 turn compacted: text merged ("a1\ncalling bash"), no
+        // history note (notes are the thinking-leak trigger), no tool blocks.
         assert!(
             sent.iter()
                 .any(|m| m["role"] == "user" && m["content"][0]["text"].as_str() == Some("u1"))
         );
         assert!(sent.iter().any(|m| m["role"] == "assistant"
             && m["content"][0]["text"].as_str() == Some("a1\ncalling bash")));
-        assert!(sent.iter().any(|m| m["role"] == "user"
-            && m["content"][0]["text"].as_str()
-                == Some("[History note] assistant tool calls: bash() → ok")));
+        assert!(
+            !sent.iter().any(|m| m["content"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("[History note]"))),
+            "no history note may reach the wire"
+        );
+
+        // Recent u2 turn verbatim (passed through untouched).
         assert!(
             sent.iter()
                 .any(|m| m["role"] == "user" && m["content"][0]["text"].as_str() == Some("u2"))
         );
         assert!(sent.iter().any(|m| m["role"] == "assistant"
             && m["content"][0]["text"].as_str() == Some("a2")));
-        // No standalone tool_result user message (its text would be empty).
-        assert!(
-            !sent
-                .iter()
-                .any(|m| m["content"][0]["type"].as_str() == Some("tool_result")),
-            "tool_result wrapper leaked into windowed output"
-        );
 
         // Current turn preserved verbatim at the tail.
         let tail_start = sent.len() - current.len();
         assert_eq!(&sent[tail_start..], current.as_slice());
+    }
+
+    /// The most recent `note_window` prior turns are sent VERBATIM: their
+    /// structured tool_calls and tool results are preserved (not stripped
+    /// into text notes), so the model keeps seeing the wire format it is
+    /// supposed to emit.
+    #[test]
+    fn sliding_window_recent_turn_keeps_structured_tool_calls() {
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "calling bash", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": "file.txt"}),
+            json!({"role": "assistant", "content": "done"}),
+        ];
+        let current = vec![json!({"role": "user", "content": "u3"})];
+        let prior_len = prior.len();
+        let mut ctx = prior.clone();
+        ctx.extend(current.clone());
+
+        // note_window=1: the last prior turn (u2 → bash → done) is verbatim.
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 5,
+            note_window: Some(1),
+        };
+        let sent = build_send_context(&prov(), &ctx, prior_len, &cfg).into_owned();
+
+        // Older turn compacted text-only.
+        assert_eq!(sent[0], json!({"role": "user", "content": "u1"}));
+        assert_eq!(sent[1], json!({"role": "assistant", "content": "a1"}));
+        // Recent turn VERBATIM: user, structured tool-call assistant, result.
+        assert_eq!(sent[2], json!({"role": "user", "content": "u2"}));
+        assert_eq!(sent[3], prior[3]);
+        assert_eq!(sent[4], prior[4]);
+        assert_eq!(sent[5], json!({"role": "assistant", "content": "done"}));
+        // Current turn verbatim.
+        assert_eq!(sent[6], current[0]);
+    }
+
+    /// Round-tripped history notes in the prior (from heuristic compaction)
+    /// must NOT be re-sent in the verbatim region — they are metadata, and
+    /// re-injecting them as user text is the pattern that triggered the
+    /// thinking-content leak.
+    #[test]
+    fn sliding_window_filters_round_tripped_notes_from_verbatim_region() {
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "user", "content": "[History note] assistant tool calls: bash(command=\"ls\") → ok"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        let current = vec![json!({"role": "user", "content": "u3"})];
+        let prior_len = prior.len();
+        let mut ctx = prior.clone();
+        ctx.extend(current.clone());
+
+        // note_window=5: every prior turn is in the verbatim region.
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 10,
+            note_window: Some(5),
+        };
+        let sent = build_send_context(&prov(), &ctx, prior_len, &cfg).into_owned();
+
+        // The round-tripped note is filtered out of the verbatim pass-through.
+        let texts: Vec<&str> = sent.iter().filter_map(|m| m["content"].as_str()).collect();
+        assert!(
+            !texts.iter().any(|t| t.starts_with("[History note]")),
+            "history note must not reach the wire, got: {texts:?}"
+        );
+        assert_eq!(
+            sent,
+            vec![
+                json!({"role": "user", "content": "u1"}),
+                json!({"role": "assistant", "content": "a1"}),
+                json!({"role": "user", "content": "u2"}),
+                json!({"role": "assistant", "content": "a2"}),
+                json!({"role": "user", "content": "u3"}),
+            ]
+        );
     }
 }

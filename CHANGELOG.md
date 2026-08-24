@@ -24,6 +24,27 @@
 
 ### Fixed
 
+- **Thinking content leaked into delivered replies (MiniMax & DeepSeek).**
+  The sliding-window prior folded each turn's tool calls into a user-role
+  **text history note** (`[History note] assistant tool calls: …`).
+  Thinking models learned from that text form to write their own process —
+  tool calls and action announcements ("Now let me read…") — as content
+  instead of using the structured tool-calling channel; when that channel
+  came back empty, the narration was auto-delivered as the reply. The most
+  recent `note_window` prior turns are now sent **verbatim** (structured
+  `tool_calls` + tool results intact, like the current turn), older turns
+  compact to text-only, and no history notes reach the wire. (Trigger
+  isolated by `note_window = 0`; structured verbatim keeps the tool
+  context that `0` loses.) `note_window` semantics change from "recent
+  turns carry a note" to "recent turns are sent verbatim". (#651)
+- **Reply text truncated after a backtick.** `split_think_tags` treated a
+  literal `<think>` written mid-reply (e.g. inline code "`<think>`" while
+  discussing the format) as a thinking-block start; with no closing
+  `</think>` in the stream, everything after it was swallowed into
+  `reasoning_content` and the delivered reply was cut off at the backtick.
+  A `<think>` is now treated as a block start only when it is the first in
+  the stream or is followed by a closing `</think>`; literal occurrences
+  stay in the reply text. (#651)
 - **Injected reply-tool reminder confused the model.** When a text-only
   finish skipped `jyc_reply_message`, the loop injected a
   `[System reminder] … call jyc_reply_message` user message and ran one

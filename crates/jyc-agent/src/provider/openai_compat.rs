@@ -457,6 +457,12 @@ struct OpenAiStreamState {
     /// field wrapped in `<think>...</think>` tags rather than in a separate
     /// `reasoning_content` field.
     in_think_block: bool,
+    /// Whether a `<think>` block has already been entered. Thinking models
+    /// emit their reasoning FIRST, at the very start of the content stream,
+    /// so the first `<think>` is always real; later `<think>` occurrences
+    /// may be the model writing "<think>" as literal text (e.g. inline code
+    /// "`<think>`") and must not be treated as block starts.
+    saw_think_block: bool,
     /// Unparsed tail of the `content` stream. Holds the substring from the last
     /// `<` onwards when no complete tag is present, so we can detect tags that
     /// arrive split across chunks.
@@ -512,6 +518,17 @@ fn split_think_tags(content: &str, state: &mut OpenAiStreamState) -> Vec<StreamE
 
         match text.find(tag) {
             Some(pos) => {
+                // A `<think>` that is not a real thinking-block start (the
+                // model writing "<think>" as literal text, e.g. inline code
+                // "`<think>`" while discussing the format, with no closing
+                // tag) must stay in the text stream. Treating it as a block
+                // start swallows the rest of the reply into
+                // `reasoning_content`, truncating the delivered text.
+                if !state.in_think_block && !is_real_think_tag(state, &text, pos) {
+                    events.push(StreamEvent::TextDelta(text[..pos + tag.len()].to_string()));
+                    text = text[pos + tag.len()..].to_string();
+                    continue;
+                }
                 let segment = &text[..pos];
                 if !segment.is_empty() {
                     events.push(if state.in_think_block {
@@ -522,6 +539,9 @@ fn split_think_tags(content: &str, state: &mut OpenAiStreamState) -> Vec<StreamE
                 }
                 text = text[pos + tag.len()..].to_string();
                 state.in_think_block = !state.in_think_block;
+                if state.in_think_block {
+                    state.saw_think_block = true;
+                }
                 if !state.in_think_block {
                     // Strip the "\n\n" separator that MiniMax M3 emits between
                     // the think block and the actual response. If it isn't in
@@ -563,6 +583,22 @@ fn split_think_tags(content: &str, state: &mut OpenAiStreamState) -> Vec<StreamE
     }
 
     events
+}
+
+/// Whether a `<think>` at `pos` in `text` starts a REAL thinking block.
+///
+/// Thinking models (MiniMax M3, DeepSeek) emit their reasoning FIRST, at the
+/// very start of the content stream — so the first `<think>` is always the
+/// model's real thinking. Later `<think>` occurrences are real only when a
+/// closing `</think>` follows in the same text; otherwise they are literal
+/// text (the model discussing "<think>" as inline code, e.g. in `` `...` ``)
+/// and must stay in the text stream rather than swallowing the rest of the
+/// reply into `reasoning_content`.
+fn is_real_think_tag(state: &OpenAiStreamState, text: &str, pos: usize) -> bool {
+    if !state.saw_think_block {
+        return true;
+    }
+    text[pos + "<think>".len()..].contains("</think>")
 }
 
 /// Flush any remaining buffered content from `split_think_tags`. Called when
@@ -1475,6 +1511,33 @@ mod tests {
         assert_eq!(r, vec!["a", "b"], "two separate reasoning segments");
         let t = texts(&events);
         assert_eq!(t, vec!["middle", "end"], "two separate text segments");
+        assert!(!state.in_think_block);
+        assert!(state.tag_buffer.is_empty());
+    }
+
+    /// Regression: the model writing "<think>" as literal text mid-reply
+    /// (e.g. inline code "`<think>`" while discussing the format, with no
+    /// closing tag) must NOT be treated as a thinking-block start — the old
+    /// parser swallowed the rest of the reply into reasoning_content,
+    /// truncating the delivered text right after the backtick.
+    #[test]
+    fn split_think_tags_literal_think_mid_text_is_not_swallowed() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content":
+                "<think>real reasoning</think>\n\nThe `extract_message_text` helper does not strip `<think>` blocks."
+            }}]
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).unwrap_or_default();
+
+        assert_eq!(reasonings(&events), vec!["real reasoning"]);
+        assert_eq!(
+            texts(&events).concat(),
+            "The `extract_message_text` helper does not strip `<think>` blocks.",
+            "literal <think> must stay in the reply text, got: {:?}",
+            texts(&events)
+        );
         assert!(!state.in_think_block);
         assert!(state.tag_buffer.is_empty());
     }

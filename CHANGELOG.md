@@ -22,6 +22,22 @@
   topic before a reply: only the latest `Typing` is swapped on reply;
   older ones remain until cleared manually.
 
+- **Wire-payload debug dump (`/context dump on|off`).** Inspect what the
+  model actually sees, one JSON line per LLM call, at
+  `<topic>/.jyc/wire-payload.jsonl`. Toggle with
+  `/context dump on|off` (no args shows current state + file path).
+  Each line carries the wire payload, its parallel `regions` array
+  (`1`=compacted history / `Full`-mode, `2`=verbatim, `3`=current turn),
+  the active strategy, iteration number, and ISO-8601 timestamp. The
+  file is capped at 50 lines (oldest dropped) — bounded footprint,
+  small enough to diff between iterations with `git diff` or pipe
+  through `jq`. The dump flag survives `/reset`, `/new`, `/close`;
+  disable explicitly when done. Best-effort IO: file errors are logged
+  at `warn` and never propagated, so a broken dump cannot break the
+  agent loop. For a single in-process human-readable view (ASCII boxes
+  per region), call `dump_send_context` from
+  `crates/jyc-agent/src/agent_loop/context.rs`.
+
 ### Fixed
 
 - **No-reply nudge skipped when reply tool registered (MiniMax).** The

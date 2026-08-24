@@ -81,7 +81,7 @@ pub fn all_commands() -> Vec<CommandInfo> {
         },
         CommandInfo {
             name: "/context".into(),
-            description: "View or change the context management strategy for this topic".into(),
+            description: "View or change the context strategy / debug-dump wire payload".into(),
         },
     ]
 }

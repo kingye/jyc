@@ -525,12 +525,30 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // for the wire payload. The full `raw_context` continues to
         // accumulate current-turn messages and is what we persist at the
         // end of the loop — the strategy only changes what the LLM sees.
-        let send_context = crate::agent_loop::context::build_send_context(
-            provider,
-            &raw_context,
-            prior_len,
-            &context_strategy,
-        );
+        //
+        // `send_regions` is the parallel Vec<u8> of per-message region
+        // labels (1=compacted history / Full-mode, 2=verbatim, 3=current
+        // turn) — used only by the wire-payload debug dump.
+        let (send_context, send_regions) =
+            crate::agent_loop::context::build_send_context_with_regions(
+                provider,
+                &raw_context,
+                prior_len,
+                &context_strategy,
+            );
+        // Optional debug dump: when the user runs `/context dump on`, append
+        // one JSON line per LLM call to `<topic>/.jyc/wire-payload.jsonl`
+        // (capped at 50 lines). Best-effort — failures are not fatal.
+        if crate::session::read_wire_payload_dump_enabled(topic_path).await {
+            crate::session::append_wire_payload_dump(
+                topic_path,
+                total_iterations,
+                &context_strategy,
+                &send_regions,
+                send_context.as_ref(),
+            )
+            .await;
+        }
         //
         // Wrapped in a bounded retry loop: transient SSE failures (TCP RST
         // mid-stream, body decode glitch, idle timeout) get a few automatic

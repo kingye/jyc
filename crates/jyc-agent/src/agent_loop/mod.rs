@@ -742,10 +742,16 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 )
                 .await;
 
-                // Legacy reminder: only when the reply tool is unavailable.
-                // When the tool exists, text-only finishes are handled by the
-                // fallback auto-delivery below instead.
-                if !reply_tool_available && !no_reply_reminded {
+                // Inject the no-reply reminder once regardless of whether
+                // `jyc_reply_message` is registered. The fallback auto-delivery
+                // below only fires when the model wrote non-empty text; when the
+                // model makes tool calls across several iterations and then
+                // returns an empty response on the final one (common with
+                // thinking models — MiniMax, DeepSeek), the loop would
+                // otherwise exit silently with no reply delivered. The
+                // `no_reply_reminded` flag keeps the nudge single-shot so a
+                // deterministically silent model cannot loop forever.
+                if !no_reply_reminded {
                     no_reply_reminded = true;
                     tracing::warn!(
                         total_iterations,
@@ -1544,6 +1550,93 @@ mod no_reply_tests {
             provider.calls.load(Ordering::SeqCst),
             2,
             "expected exactly one reminder (initial turn + reminder)"
+        );
+
+        assert_eq!(result.text, "", "no text should be produced");
+        assert!(
+            !result.reply_sent_by_tool,
+            "reply_sent_by_tool must be false"
+        );
+
+        let events = drain_events(&mut rx).await;
+        let no_reply_events: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                TopicEvent::SessionStatus { status_type, .. } if status_type == "no_reply" => {
+                    Some(())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            no_reply_events.len(),
+            2,
+            "expected exactly 2 no_reply events (initial + after reminder), got {}",
+            no_reply_events.len()
+        );
+    }
+
+    /// Mirror of `no_reply_emits_event_and_reminds_once_then_exits` with
+    /// `jyc_reply_message` registered. Pre-fix the no-reply gate required
+    /// `!reply_tool_available`, so a registered reply tool let the loop
+    /// exit silently on the first empty response — common with thinking
+    /// models that issue tool calls and then return nothing. Post-fix the
+    /// reminder is injected once regardless of reply-tool availability.
+    #[tokio::test]
+    async fn no_reply_reminds_once_when_reply_tool_available() {
+        let provider = EmptyResponseProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let tmp = TempDir::new().unwrap();
+        let working_dir = tmp.path().to_path_buf();
+        let mut tools = crate::tools::builtin::create_builtin_registry();
+        crate::tools::mcp_bridge::register_mcp_tools(&mut tools);
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
+        let mut rx = bus.subscribe().await.unwrap();
+        let cancel = CancellationToken::new();
+
+        let result = run(super::AgentLoopConfig {
+            provider: &provider,
+            small_provider: None,
+            tools: &tools,
+            system_prompt: "test",
+            user_blocks: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+            }],
+            working_dir: &working_dir,
+            topic_path: &working_dir,
+            cancel: cancel.clone(),
+            topic_name: "no-reply-with-tool-test",
+            event_bus: Some(&bus),
+            prior_history: vec![],
+            prior_raw_context: vec![],
+            max_iterations: Some(5),
+            sse_read_timeout: std::time::Duration::from_secs(60),
+            additional_read_roots: vec![],
+            additional_write_roots: vec![],
+            pattern_inject_images: false,
+            outbound: None,
+            topic_managers: None,
+            current_channel: None,
+            outbounds: None,
+            context_window: None,
+            auto_reset_threshold: 0.95,
+            thinking_enabled: false,
+            pricing: None,
+            model_label: "empty-with-tool-test-1",
+            context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+            reply_target: None,
+        })
+        .await
+        .expect("agent loop should run to completion");
+
+        // Same shape as the unavailable-tool case: one reminder nudge,
+        // then exit. Without the fix the loop would have made only 1 call.
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            2,
+            "expected exactly one reminder (initial turn + reminder), got {}",
+            provider.calls.load(Ordering::SeqCst)
         );
 
         assert_eq!(result.text, "", "no text should be produced");

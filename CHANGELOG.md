@@ -24,6 +24,20 @@
 
 ### Fixed
 
+- **No-reply nudge skipped when reply tool registered (MiniMax).** The
+  no-reply gate required `!reply_tool_available`, so when `jyc_reply_message`
+  was registered the loop never injected the
+  `[System reminder] Your last turn produced no text and no tool call…`
+  prompt — a model that issued tool calls across several iterations and
+  then returned an empty response on the final one (observed with
+  MiniMax M3: `grep` then two `read`s then nothing) exited with
+  `text_len=0, reply_sent_by_tool=false` and the user saw no reply. The
+  `no_reply_reminded` flag already keeps the nudge single-shot, so
+  dropping the `!reply_tool_available` clause costs nothing. The
+  fallback auto-delivery path below only fires for non-empty text and
+  was therefore unreachable in this case. The failure-aware reminder
+  (concrete tool error) is unchanged. (#652)
+
 - **Thinking content leaked into delivered replies (MiniMax & DeepSeek).**
   The sliding-window prior folded each turn's tool calls into a user-role
   **text history note** (`[History note] assistant tool calls: …`).

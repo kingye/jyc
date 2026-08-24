@@ -113,8 +113,26 @@ pub(crate) fn build_send_context<'a>(
     prior_len: usize,
     strategy: &ContextStrategyConfig,
 ) -> Cow<'a, [serde_json::Value]> {
+    build_send_context_with_regions(provider, raw_context, prior_len, strategy).0
+}
+
+/// Same as [`build_send_context`] but also returns a per-message region
+/// label (parallel to the wire payload), for callers that need to
+/// distinguish regions (debug dump, tests).
+///
+/// Region labels:
+/// - `1` = first region — compacted history (`SlidingWindow`) or the
+///   whole context (`Full` mode, no region split).
+/// - `2` = second region — verbatim prior turns (`SlidingWindow` only).
+/// - `3` = third region — current turn verbatim (`SlidingWindow` only).
+pub(crate) fn build_send_context_with_regions<'a>(
+    provider: &dyn Provider,
+    raw_context: &'a [serde_json::Value],
+    prior_len: usize,
+    strategy: &ContextStrategyConfig,
+) -> (Cow<'a, [serde_json::Value]>, Vec<u8>) {
     match strategy.mode {
-        ContextStrategy::Full => Cow::Borrowed(raw_context),
+        ContextStrategy::Full => (Cow::Borrowed(raw_context), vec![1; raw_context.len()]),
         ContextStrategy::SlidingWindow => {
             // Mid-loop compression can shorten `raw_context` below `prior_len`;
             // clamp so the slice math never underflows.
@@ -123,6 +141,7 @@ pub(crate) fn build_send_context<'a>(
             let current = &raw_context[boundary..];
 
             let mut out = Vec::new();
+            let mut regions = Vec::new();
 
             // The most recent `note_window` prior turns are sent VERBATIM
             // (structured tool_calls + results) instead of being folded into
@@ -149,6 +168,7 @@ pub(crate) fn build_send_context<'a>(
                 // Anthropic rejects, especially under cache_control).
                 if let Some(formatted) = format_cleaned_message(provider, msg) {
                     out.push(formatted);
+                    regions.push(1);
                 }
             }
 
@@ -160,12 +180,122 @@ pub(crate) fn build_send_context<'a>(
                     continue;
                 }
                 out.push(msg.clone());
+                regions.push(2);
             }
 
             out.extend_from_slice(current);
-            Cow::Owned(out)
+            regions.extend(std::iter::repeat(3).take(current.len()));
+            (Cow::Owned(out), regions)
         }
     }
+}
+
+/// Debug dump of what `build_send_context` would send to the LLM — a
+/// human-readable, region-labeled view of the wire payload. Caller
+/// chooses what to do with the returned string (`println!`, write to
+/// file, log via `tracing::debug!`, etc.).
+pub(crate) fn dump_send_context(
+    provider: &dyn Provider,
+    raw_context: &[serde_json::Value],
+    prior_len: usize,
+    strategy: &ContextStrategyConfig,
+) -> String {
+    let (sent, regions) =
+        build_send_context_with_regions(provider, raw_context, prior_len, strategy);
+    let mut s = format!(
+        "=== context sent to LLM (strategy={:?} window={} note_window={:?}) ===\n\
+         {} msgs, ~{} bytes\n\n",
+        strategy.mode,
+        strategy.window,
+        strategy.note_window,
+        sent.len(),
+        serde_json::to_string(sent.as_ref())
+            .map(|s| s.len())
+            .unwrap_or(0),
+    );
+    append_region_summary(
+        &mut s,
+        sent.as_ref(),
+        &regions,
+        matches!(strategy.mode, ContextStrategy::Full),
+    );
+    s.push_str("\n--- wire payload ---\n");
+    match serde_json::to_string_pretty(sent.as_ref()) {
+        Ok(p) => {
+            s.push_str(&p);
+            s.push('\n');
+        }
+        Err(e) => {
+            s.push_str(&format!("<serialize failed: {e}>"));
+        }
+    }
+    s
+}
+
+fn append_region_summary(
+    s: &mut String,
+    sent: &[serde_json::Value],
+    regions: &[u8],
+    is_full: bool,
+) {
+    if is_full {
+        s.push_str("(Full mode — single region, no windowing)\n");
+        for (i, msg) in sent.iter().enumerate() {
+            s.push_str(&format!("  [{i}] {}\n", msg_one_line(msg)));
+        }
+        return;
+    }
+
+    // SlidingWindow: walk through msgs, group by region, emit ASCII box per region.
+    let region_headers = [
+        (1u8, "① Compacted history (text-only)"),
+        (2u8, "② Verbatim (structured tool calls kept)"),
+        (3u8, "③ Current turn (verbatim)"),
+    ];
+
+    let mut first = true;
+    for (region, header) in region_headers {
+        let msgs_in_region: Vec<(usize, &serde_json::Value)> = sent
+            .iter()
+            .zip(regions.iter())
+            .enumerate()
+            .filter(|(_, (_, r))| **r == region)
+            .map(|(i, (m, _))| (i, m))
+            .collect();
+        if msgs_in_region.is_empty() {
+            continue;
+        }
+        if !first {
+            s.push_str("├─\n");
+        }
+        s.push_str(&format!("┌─ {}\n", header));
+        for (i, m) in &msgs_in_region {
+            s.push_str(&format!("│  [{i}] {}\n", msg_one_line(m)));
+        }
+        first = false;
+    }
+    if sent.is_empty() {
+        s.push_str("(empty wire payload)\n");
+    } else {
+        s.push_str("└─\n");
+    }
+}
+
+fn msg_one_line(msg: &serde_json::Value) -> String {
+    let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("?");
+    let mut out = format!("{role}");
+    let text = crate::session::extract_message_text(msg);
+    if !text.is_empty() {
+        let trimmed = text.replace('\n', " ");
+        let preview: String = trimmed.chars().take(60).collect();
+        out.push_str(&format!(" \"{preview}\""));
+    }
+    if let Some(calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
+        if !calls.is_empty() {
+            out.push_str(&format!(" ({} tool_calls)", calls.len()));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -619,6 +749,69 @@ mod render_raw_context_tests {
                 json!({"role": "assistant", "content": "a2"}),
                 json!({"role": "user", "content": "u3"}),
             ]
+        );
+    }
+
+    /// `with_regions` and `dump_send_context` — verify region partition is
+    /// stable across `Full` and `SlidingWindow` strategies.
+    #[test]
+    fn with_regions_labels_full_mode_as_single_region() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+        ];
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::Full,
+            window: 10,
+            note_window: None,
+        };
+        let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
+        assert_eq!(sent.len(), 3);
+        assert_eq!(regions, vec![1, 1, 1]);
+        let dump = dump_send_context(&prov(), &ctx, 0, &cfg);
+        assert!(
+            dump.contains("strategy=Full"),
+            "missing strategy summary: {dump}"
+        );
+        assert!(
+            dump.contains("single region"),
+            "Full dump should say single region: {dump}"
+        );
+        assert!(dump.contains("\"u1\""), "missing msg preview: {dump}");
+    }
+
+    #[test]
+    fn with_regions_labels_sliding_window_three_regions() {
+        // ① compacted = (u1, a1), ② verbatim = (u2, a2), ③ current = (u3).
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        let current = vec![json!({"role": "user", "content": "u3"})];
+        let mut ctx = prior.clone();
+        ctx.extend(current.clone());
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 2,
+            note_window: Some(1),
+        };
+        let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
+        assert_eq!(sent.len(), 5);
+        assert_eq!(regions, vec![1, 1, 2, 2, 3]);
+
+        let dump = dump_send_context(&prov(), &ctx, prior.len(), &cfg);
+        assert!(
+            dump.contains("① Compacted history"),
+            "missing region ①: {dump}"
+        );
+        assert!(dump.contains("② Verbatim"), "missing region ②: {dump}");
+        assert!(dump.contains("③ Current turn"), "missing region ③: {dump}");
+        assert!(
+            dump.contains("--- wire payload ---"),
+            "missing payload section: {dump}"
         );
     }
 }

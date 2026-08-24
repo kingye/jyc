@@ -195,12 +195,5 @@ pub(crate) async fn collect_response(
         });
     }
 
-    // MiniMax (and similar agentic providers) leak an internal tool-call
-    // marker (`]<]minimax[>[`) into the text channel at tag boundaries.
-    // Scrub it at the single choke point so it never reaches history,
-    // raw_context, or the delivered reply — and can't be mimicked back
-    // into the next generation.
-    response.text = response.text.replace("]<]minimax[>[", "");
-
     Ok(response)
 }

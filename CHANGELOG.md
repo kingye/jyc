@@ -24,16 +24,6 @@
 
 ### Fixed
 
-- **MiniMax leak marker in the text channel.** MiniMax's agentic
-  providers occasionally leak an internal tool-call marker
-  (`]<]minimax[>[`) into the `content` stream at XML tag boundaries. The
-  marker was stored verbatim in the raw context and could be mimicked
-  back into subsequent generations (the agent's own corrupted output
-  reappearing in later replies). The text channel is now scrubbed of the
-  marker at response collection — the single choke point — so it never
-  reaches history, the raw context, or the delivered reply. No-op for
-  every other model, since the marker never appears in their output.
-  (#650)
 - **Injected reply-tool reminder confused the model.** When a text-only
   finish skipped `jyc_reply_message`, the loop injected a
   `[System reminder] … call jyc_reply_message` user message and ran one

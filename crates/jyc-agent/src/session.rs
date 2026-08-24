@@ -128,6 +128,11 @@ pub async fn read_wire_payload_dump_enabled(topic_path: &Path) -> bool {
 /// Append one JSON line to the wire-payload dump. Best-effort — file IO
 /// errors are logged at `warn` level and never propagated, since dumping
 /// is a debug-only side effect.
+///
+/// **Single-writer assumption**: the read-modify-write on
+/// `wire-payload.jsonl` is safe because the agent loop is serial per
+/// topic — one iteration runs to completion before the next starts, so
+/// two appenders never race. If that ever changes, this needs a lock.
 pub async fn append_wire_payload_dump(
     topic_path: &Path,
     iter: usize,
@@ -2277,5 +2282,37 @@ mod tests {
             serde_json::json!(regions),
             "regions preserved"
         );
+    }
+
+    /// Empty `wire_payload` / `regions` should serialize as `[]` and be
+    /// readable back; nothing in the dump pipeline assumes non-empty
+    /// input.
+    #[tokio::test]
+    async fn wire_payload_dump_handles_empty_payload() {
+        use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::Full,
+            window: 10,
+            note_window: None,
+        };
+        let empty_wire: Vec<serde_json::Value> = vec![];
+        let empty_regions: Vec<u8> = vec![];
+        super::append_wire_payload_dump(tmp.path(), 0, &cfg, &empty_regions, &empty_wire).await;
+
+        let body = tokio::fs::read_to_string(
+            tmp.path()
+                .join(".jyc")
+                .join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FILE),
+        )
+        .await
+        .unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 1);
+        let entry: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(entry["wire_payload"], serde_json::json!([]));
+        assert_eq!(entry["regions"], serde_json::json!([]));
+        assert_eq!(entry["iter"], 0);
     }
 }

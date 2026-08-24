@@ -58,13 +58,17 @@ linearly with conversation length until a token safety net fires.
 
 ### `sliding_window`
 
-Sends three parts, in order:
+Sends three parts, in order. Let `recent` = the count of completed
+prior turns placed in the verbatim region ② — `recent =
+min(note_window, pairs_in_prior)` when `note_window` is set, `recent =
+pairs_in_prior` when unset (the implementation in `build_send_context`
+computes this via `verbatim_start_index` + `extract_pairs(...).len()`):
 
-1. **Compacted history** — the last `window − recent` user/assistant
-   **turns** from the older prior context, reduced to pure text and
-   reformatted in the active provider's wire format.
-2. **Recent turns, verbatim** — the most recent `note_window` prior turns
-   with their **structured `tool_calls` / `tool_use` and tool results
+1. **Compacted history** — the last `max(0, window − recent)` older
+   prior turns, reduced to pure text and reformatted in the active
+   provider's wire format.
+2. **Recent turns, verbatim** — the last `recent` prior turns with
+   their **structured `tool_calls` / `tool_use` and tool results
    intact**, passed through untouched.
 3. **Current turn, verbatim** — `raw_context[prior_len..]`, untouched.
 
@@ -84,12 +88,16 @@ Sends three parts, in order:
  ├────────────────────────────────────────────────────────────┤
  │ ③ Current turn — verbatim                                  │
  │                                                            │
- │  user      │ "u4"                                          │
+ │  user      │ "u3"                                          │
  │  assistant │ tool_use / tool_calls blocks  ← as recorded   │
  │  tool/user │ tool_result / tool messages   ← as recorded   │
  │  ...       │ further steps appended as the loop continues  │
  └────────────────────────────────────────────────────────────┘
 ```
+
+② shows a single turn for brevity; in practice it holds up to
+`note_window` completed prior turns (default `3`), and ① absorbs the
+remaining `max(0, window − recent)` pairs as text-only.
 
 Why the split: the recent turns and the current turn are mid-flight tool
 activity, so their `tool_use` ↔ `tool_result` structure must stay legally
@@ -167,12 +175,31 @@ With the default `window = 10`, all notes together cost at most ~20 KB of
 bytes. The dominant factor in window size is the untruncated
 user/assistant text itself, not the notes.
 
-**`note_window` (optional):** when set to `M`, the **most recent M**
-windowed turns are sent **verbatim** — structured `tool_calls` / `tool_use`
-and tool results intact, exactly like the current turn; older turns in the
-window compact to text-only. Unset (default) = all windowed turns verbatim.
-`M = 0` yields a pure text window (no verbatim region, no notes);
-`M > window` clamps to `window`.
+**`note_window` (optional)** sizes the verbatim region ②: when set to
+`M`, the last `min(M, pairs_in_prior)` prior turns keep their structured
+`tool_calls` / `tool_use` and tool results intact; older turns in the
+window compact to text-only. Boundary cases (matching
+`verbatim_start_index` + `build_send_context`):
+
+- **Unset (default)** — the entire prior becomes verbatim and `window`
+  is effectively ignored. The implementation substitutes
+  `usize::MAX`, so `verbatim_start_index` finds no `M`-th turn and
+  returns 0. To get a `window`-bounded prior, set `note_window`
+  explicitly.
+- **`M = 0`** — pure text window; the entire prior is compacted, last
+  `window` pairs kept as text-only.
+- **`0 < M ≤ window`, prior ≥ `M`** — last `M` prior turns verbatim;
+  older turns compacted to last `window − M` pairs as text-only.
+- **`M > window`, prior ≥ `M`** — verbatim region exceeds `window` and
+  ① shrinks to 0. **There is no clamp** — `compact_keep =
+  window.saturating_sub(verbatim_pairs)` only prevents the compact
+  region from going negative, never the verbatim region from growing.
+  To bound the prior to `window` either set `M ≤ window`, or pair the
+  strategy with `auto_reset_threshold` / mid-loop compression.
+- **`0 < M`, prior < `M`** — `recent = pairs_in_prior`; the entire
+  prior becomes verbatim (`compact_prior` is empty because
+  `verbatim_start_index` returns 0) and ① is empty regardless of
+  `window`.
 
 Rationale: the recent turns are "what just happened / what just failed",
 and showing them in the structured wire format keeps the model anchored to
@@ -276,7 +303,9 @@ context_strategy = { mode = "full" }
 
 `mode` accepts `full` (default) or `sliding_window` (alias `sliding`).
 `window` counts **turns**, not messages or tokens. `note_window` is
-optional (unset = notes on all windowed turns; `0` = none).
+optional (unset = entire prior verbatim, `window` ignored; `0` = pure
+text window of the last `window` pairs) — see `note_window` above for
+the full boundary table.
 
 **Resolution chain** (highest wins):
 

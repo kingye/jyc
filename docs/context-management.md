@@ -58,25 +58,31 @@ linearly with conversation length until a token safety net fires.
 
 ### `sliding_window`
 
-Sends two parts, in order:
+Sends three parts, in order:
 
-1. **Windowed history** — the last `window` (default 10) user/assistant
-   **turns** extracted from the prior context, reformatted in the active
-   provider's wire format.
-2. **Current turn, verbatim** — `raw_context[prior_len..]`, untouched.
+1. **Compacted history** — the last `window − recent` user/assistant
+   **turns** from the older prior context, reduced to pure text and
+   reformatted in the active provider's wire format.
+2. **Recent turns, verbatim** — the most recent `note_window` prior turns
+   with their **structured `tool_calls` / `tool_use` and tool results
+   intact**, passed through untouched.
+3. **Current turn, verbatim** — `raw_context[prior_len..]`, untouched.
 
 ```
  ┌────────────────────────────────────────────────────────────┐
- │ ① Windowed history (last N turns, re-paired + annotated)   │
+ │ ① Compacted history (older turns, text-only)               │
+ │                                                            │
+ │  user      │ "u1"                                          │
+ │  assistant │ "a1"                    ← pure text, no tools  │
+ ├────────────────────────────────────────────────────────────┤
+ │ ② Recent turns — verbatim (structured tool calls kept)     │
  │                                                            │
  │  user      │ "u2"                                          │
- │  user      │ "[History note] assistant tool calls:         │
- │            │   bash(command="ls") → ok"  ← folded summary  │
- │  assistant │ "a2"                    ← pure text, no tools  │
- │  user      │ "u3"                                          │
- │  assistant │ "a3"                                          │
+ │  assistant │ tool_use / tool_calls blocks  ← as recorded   │
+ │  tool/user │ tool_result / tool messages   ← as recorded   │
+ │  assistant │ "a2"                                          │
  ├────────────────────────────────────────────────────────────┤
- │ ② Current turn — verbatim                                  │
+ │ ③ Current turn — verbatim                                  │
  │                                                            │
  │  user      │ "u4"                                          │
  │  assistant │ tool_use / tool_calls blocks  ← as recorded   │
@@ -85,10 +91,16 @@ Sends two parts, in order:
  └────────────────────────────────────────────────────────────┘
 ```
 
-Why the split: the history part is compressed to pure text plus summaries
-(cheap, and prevents the model from mimicking machine formats); the
-current turn is mid-flight, so its tool_use ↔ tool_result structure must
-stay legally paired or the provider API rejects the request outright.
+Why the split: the recent turns and the current turn are mid-flight tool
+activity, so their `tool_use` ↔ `tool_result` structure must stay legally
+paired or the provider API rejects the request outright. **Keeping the
+recent turns' structured tool calls in the wire format the model is
+supposed to emit also stops the thinking-content leak**: folding tool
+calls into user-role *text* notes taught thinking models (MiniMax,
+DeepSeek) to write their process — tool calls and action announcements —
+as content instead of using the structured channel, which then leaked
+"thinking" into delivered replies. Older turns are compacted to text-only
+to bound the window size.
 
 #### Turn pairing (`extract_pairs`, `crates/jyc-agent/src/session.rs`)
 
@@ -112,6 +124,13 @@ The pairing unit is the **turn**, not the single message:
   last user message when no pairs exist at all).
 
 #### History notes
+
+History notes are the **storage** representation of a turn's tool calls
+(used by heuristic session compaction and mid-loop compression, written to
+the stored context). The sliding-window **wire payload no longer emits
+them** — the most recent `note_window` turns are sent verbatim with their
+structured tool calls, and older turns compact to text-only; round-tripped
+notes are filtered out before sending.
 
 Each turn with tool calls gets one user-role message emitted **before**
 the assistant text (so no `assistant → user(note)` adjacency sits
@@ -148,17 +167,26 @@ With the default `window = 10`, all notes together cost at most ~20 KB of
 bytes. The dominant factor in window size is the untruncated
 user/assistant text itself, not the notes.
 
-**`note_window` (optional):** when set to `M`, only the **most recent M**
-windowed turns carry a history note; older turns in the window are
-text-only. Unset (default) = notes on all windowed turns. `M = 0` yields
-a pure text window; `M > window` clamps to `window`. Rationale: notes on
-stale turns are low-value noise, while the newest notes preserve "what
-just happened / what just failed". Trade-off: a turn without a note loses
-tool-error visibility — the model may re-run a command that failed there;
-`context_browse` remains the fallback for recovering the original calls.
-Heuristic session compaction and mid-loop compression always keep notes
-on every pair — `note_window` only shapes the sliding-window wire
-payload.
+**`note_window` (optional):** when set to `M`, the **most recent M**
+windowed turns are sent **verbatim** — structured `tool_calls` / `tool_use`
+and tool results intact, exactly like the current turn; older turns in the
+window compact to text-only. Unset (default) = all windowed turns verbatim.
+`M = 0` yields a pure text window (no verbatim region, no notes);
+`M > window` clamps to `window`.
+
+Rationale: the recent turns are "what just happened / what just failed",
+and showing them in the structured wire format keeps the model anchored to
+the tool-calling channel it is supposed to use. (This replaces the earlier
+behavior where recent turns carried a **user-role text history note**
+summarizing their tool calls — text notes taught thinking models to write
+their process as content instead, leaking thinking into replies.)
+
+Trade-off: an older compacted turn loses tool-error visibility — the model
+may re-run a command that failed there; `context_browse` remains the
+fallback for recovering the original calls. Heuristic session compaction
+and mid-loop compression still write history notes to the stored context —
+`note_window` only shapes the sliding-window wire payload, and
+round-tripped notes are filtered out before the payload is sent.
 
 #### Anthropic compatibility defenses
 
@@ -285,6 +313,10 @@ optional (unset = notes on all windowed turns; `0` = none).
 
 Key changes, newest first (see CHANGELOG.md for full entries):
 
+- **#651** — recent `note_window` turns are sent **verbatim** (structured
+  `tool_calls` + results) instead of user-role text history notes — text
+  notes taught thinking models to write their process as content (the
+  thinking-content leak). Older turns still compact to text-only.
 - **#647** — windowed history-note format clarity: `[History note]`
   is emitted before the assistant text (was after); truncated args
   and results carry an explicit `… [truncated N bytes]` marker (was

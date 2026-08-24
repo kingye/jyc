@@ -1798,6 +1798,80 @@ mod reply_tool_tests {
         );
     }
 
+    /// The MiniMax leak marker (`]<]minimax[>[`) injected into the text
+    /// channel at tool-call tag boundaries is scrubbed at response
+    /// collection: it never reaches the auto-delivered reply nor the
+    /// stored raw context (and therefore cannot be mimicked back into the
+    /// next generation).
+    #[tokio::test]
+    async fn minimax_leak_marker_is_scrubbed_from_text() {
+        let provider = ScriptedProvider {
+            rounds: vec![vec![
+                StreamEvent::TextDelta(
+                    "Now let me check the config:]<]minimax[>[ the answer".to_string(),
+                ),
+                StreamEvent::Done,
+            ]],
+            calls: AtomicUsize::new(0),
+            seen_tools: Default::default(),
+        };
+        let tmp = TempDir::new().unwrap();
+        let working_dir = tmp.path().to_path_buf();
+        let tools = registry_with_reply_tool();
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
+        let cancel = CancellationToken::new();
+
+        let result = run(super::AgentLoopConfig {
+            provider: &provider,
+            small_provider: None,
+            tools: &tools,
+            system_prompt: "test",
+            user_blocks: vec![ContentBlock::Text {
+                text: "hello".to_string(),
+            }],
+            working_dir: &working_dir,
+            topic_path: &working_dir,
+            cancel: cancel.clone(),
+            topic_name: "minimax-marker-scrub",
+            event_bus: Some(&bus),
+            prior_history: vec![],
+            prior_raw_context: vec![],
+            max_iterations: Some(5),
+            sse_read_timeout: std::time::Duration::from_secs(60),
+            additional_read_roots: vec![],
+            additional_write_roots: vec![],
+            pattern_inject_images: false,
+            outbound: None,
+            topic_managers: None,
+            current_channel: None,
+            outbounds: None,
+            context_window: None,
+            auto_reset_threshold: 0.95,
+            thinking_enabled: false,
+            pricing: None,
+            model_label: "scripted-test-minimax-scrub",
+            context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+            reply_target: None,
+        })
+        .await
+        .expect("agent loop should run to completion");
+
+        // Marker scrubbed from the auto-delivered reply.
+        assert_eq!(
+            result.reply_text_from_tool.as_deref(),
+            Some("Now let me check the config: the answer\n\n— auto-delivered"),
+            "leak marker must be scrubbed from the delivered text, got: {:?}",
+            result.reply_text_from_tool
+        );
+
+        // Marker scrubbed from the stored raw context as well.
+        let raw: String = serde_json::to_string(&result.raw_context).unwrap();
+        assert!(
+            !raw.contains("]<]minimax[>["),
+            "leak marker must be scrubbed from raw context, got: {raw}"
+        );
+    }
+
     /// A `silent: true` reply call closes the turn cleanly: counts as
     /// reply-handled (no fallback warning, no reply text), delivers
     /// nothing, and stops the loop.

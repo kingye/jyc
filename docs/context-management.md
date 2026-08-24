@@ -342,7 +342,7 @@ Manual `/reset` uses the same `reset_compression` config as auto-reset.
 ```toml
 # Global default for all channels/topics
 [ai]
-context_strategy = { mode = "sliding_window", window = 10, note_window = 3 }
+context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 5000 }
 max_input_tokens = 122880        # optional; default = 95% of detected model context
 auto_reset_threshold = 0.95      # fraction of context window that triggers reset
 reset_compression = { mode = "heuristic", keep_pairs = 3 }
@@ -356,7 +356,57 @@ context_strategy = { mode = "full" }
 `window` counts **turns**, not messages or tokens. `note_window` is
 optional (unset = entire prior verbatim, `window` ignored; `0` = pure
 text window of the last `window` pairs) — see `note_window` above for
-the full boundary table.
+the full boundary table. `tool_result_cap` is a per-tool-result byte
+cap on the verbatim region — see below.
+
+### Verbatim tool-result cap (`tool_result_cap`)
+
+`sliding_window` mode sends the most recent `note_window` prior turns
+verbatim, plus the full current turn. Both regions can hold very large
+tool results (`read` of a 1000-line file, `bash` test output, etc.) —
+the verbatim region can balloon quickly when a single user input
+spawns many tool calls.
+
+`tool_result_cap: N` caps each tool result in regions ② and ③ at `N`
+bytes, suffixed with the standard `… [truncated N bytes]` marker (same
+format as the existing compaction truncation, so the model sees
+consistent truncation across all boundaries). Only string content is
+capped:
+
+- OpenAI / simple wire format (`role: "tool"`, string `content`) —
+  the string is truncated in place.
+- Anthropic wire format (`role: "user"` with `[tool_result]` blocks) —
+  each `tool_result` block's string `content` is truncated; non-tool
+  blocks (text/image) and block-level array `content` pass through.
+
+Non-tool messages (assistant / user with no `tool_result` blocks) are
+untouched. The compacted region ① is also untouched — it's text-only
+user/assistant pairs, no tool results to cap.
+
+| Value | Behavior |
+|-------|----------|
+| unset / absent | Every tool result is sent in full (default). |
+| `Some(0)` | Explicit "off" sentinel — same as unset. |
+| `Some(N > 0)` | Cap each tool result at `N` bytes. |
+
+**Resolution layer:** follows the same chain as the rest of
+`ContextStrategyConfig` (override file → matched pattern → first
+pattern → `[ai]` → built-in default). The CLI arg
+`/context sliding N M CAP` sets the third positional; absent means
+"use configured". The CLI enforces `0 ≤ CAP ≤ 1 MiB`; larger caps
+must go through `config.toml` or `.jyc/context-strategy.json`.
+
+**Interplay with `note_window`:** the cap only applies to messages in
+the verbatim region. If `note_window = 0` (text-only window) or
+`mode = "full"`, no tool results reach the wire verbatim, so the cap
+is a no-op even when set.
+
+**Why per-result, not global:** a single 5 KB `read` result is usually
+fine; ten 100 KB results from one bash test suite are the actual
+problem. Capping per-result gives both levers — keep individual
+results readable while bounding the total. A global token budget on
+the wire payload is a separate concern (`max_input_tokens` +
+auto-reset).
 
 **Resolution chain** (highest wins):
 
@@ -372,14 +422,14 @@ the full boundary table.
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
 | `/context full` | Send the full context |
-| `/context sliding [N] [M]` | Sliding window, N turns (default 10, max 200); optional M = note window |
+| `/context sliding [N] [M] [CAP]` | Sliding window, N turns (default 10, max 200); M = note window (default 5, max 200); CAP = tool-result byte cap on verbatim region (0..1 MiB, default off) |
 | `/context reset` | Remove the runtime override, revert to configured default |
 
 ## Code map
 
 | Component | Location |
 |-----------|----------|
-| Wire payload shaping (`build_send_context`, `build_send_context_with_regions`, `dump_send_context`) | `crates/jyc-agent/src/agent_loop/context.rs` |
+| Wire payload shaping (`build_send_context_with_regions`, `dump_send_context`, `cap_tool_result_content`) | `crates/jyc-agent/src/agent_loop/context.rs` |
 | Turn pairing, history notes, truncation caps (`extract_pairs`, `flush_turn`) | `crates/jyc-agent/src/session.rs` |
 | Wire-payload dump persistence (`read_wire_payload_dump_enabled`, `append_wire_payload_dump`) | `crates/jyc-agent/src/session.rs` |
 | Agent loop iteration (calls `build_send_context_with_regions`, triggers dump) | `crates/jyc-agent/src/agent_loop/mod.rs` |

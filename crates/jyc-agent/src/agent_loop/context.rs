@@ -107,6 +107,10 @@ fn format_cleaned_message(
 ///      emit instead of user-role text notes.
 ///   3. The full current turn (`raw_context[prior_len..]`) verbatim, so
 ///      tool calls / results stay coherent mid-loop.
+///
+/// Thin wrapper kept for the existing test surface; production callers
+/// use [`build_send_context_with_regions`] directly.
+#[allow(dead_code)]
 pub(crate) fn build_send_context<'a>(
     provider: &dyn Provider,
     raw_context: &'a [serde_json::Value],
@@ -184,7 +188,7 @@ pub(crate) fn build_send_context_with_regions<'a>(
             }
 
             out.extend_from_slice(current);
-            regions.extend(std::iter::repeat(3).take(current.len()));
+            regions.extend(std::iter::repeat_n(3, current.len()));
             (Cow::Owned(out), regions)
         }
     }
@@ -193,7 +197,10 @@ pub(crate) fn build_send_context_with_regions<'a>(
 /// Debug dump of what `build_send_context` would send to the LLM — a
 /// human-readable, region-labeled view of the wire payload. Caller
 /// chooses what to do with the returned string (`println!`, write to
-/// file, log via `tracing::debug!`, etc.).
+/// file, log via `tracing::debug!`, etc.). Currently used by the test
+/// suite — kept as a public(crate) API for future in-process debug
+/// tooling (e.g., a `/dump` rendering path).
+#[allow(dead_code)]
 pub(crate) fn dump_send_context(
     provider: &dyn Provider,
     raw_context: &[serde_json::Value],
@@ -283,17 +290,17 @@ fn append_region_summary(
 
 fn msg_one_line(msg: &serde_json::Value) -> String {
     let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("?");
-    let mut out = format!("{role}");
+    let mut out = role.to_string();
     let text = crate::session::extract_message_text(msg);
     if !text.is_empty() {
         let trimmed = text.replace('\n', " ");
         let preview: String = trimmed.chars().take(60).collect();
         out.push_str(&format!(" \"{preview}\""));
     }
-    if let Some(calls) = msg.get("tool_calls").and_then(|v| v.as_array()) {
-        if !calls.is_empty() {
-            out.push_str(&format!(" ({} tool_calls)", calls.len()));
-        }
+    if let Some(calls) = msg.get("tool_calls").and_then(|v| v.as_array())
+        && !calls.is_empty()
+    {
+        out.push_str(&format!(" ({} tool_calls)", calls.len()));
     }
     out
 }

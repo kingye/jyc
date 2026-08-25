@@ -367,11 +367,13 @@ tool results (`read` of a 1000-line file, `bash` test output, etc.) —
 the verbatim region can balloon quickly when a single user input
 spawns many tool calls.
 
-`tool_result_cap: N` caps each tool result in regions ② and ③ at `N`
-bytes, suffixed with the standard `… [truncated N bytes]` marker (same
-format as the existing compaction truncation, so the model sees
-consistent truncation across all boundaries). Only string content is
-capped:
+`tool_result_cap: N` caps each tool result in region ② (the verbatim
+prior region) at `N` bytes, suffixed with the standard `… [truncated N bytes]`
+marker (same format as the existing compaction truncation, so the model
+sees consistent truncation across all boundaries). **Region ③ (the
+current turn) is never truncated** — the model is reasoning over those
+tool results mid-loop, so they must stay complete. Only string content
+is capped:
 
 - OpenAI / simple wire format (`role: "tool"`, string `content`) —
   the string is truncated in place.
@@ -387,7 +389,7 @@ user/assistant pairs, no tool results to cap.
 |-------|----------|
 | unset / absent | Every tool result is sent in full (default). |
 | `Some(0)` | Explicit "off" sentinel — same as unset. |
-| `Some(N > 0)` | Cap each tool result at `N` bytes. |
+| `Some(N > 0)` | Cap each tool result in region ② (verbatim prior) at `N` bytes. The current turn (region ③) is never truncated. |
 
 **Resolution layer:** follows the same chain as the rest of
 `ContextStrategyConfig` (override file → matched pattern → first

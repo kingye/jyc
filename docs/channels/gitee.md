@@ -3,7 +3,7 @@
 JYC supports multi-agent workflows on Gitee issues and Pull Requests, similar
 to the GitHub channel. Since the pipe-only migration, the Gitee channel is a
 **pure pipe adapter**: it polls the Gitee API, re-targets each event into a
-hub channel (or an agent topic), and relays agent replies back as
+agent channel (or an agent topic), and relays agent replies back as
 issue/PR comments.
 
 ## Overview
@@ -17,7 +17,7 @@ Like `github`, the Gitee channel owns **no** TopicManager, agent service,
 outbound adapter, or orchestrator registration — all topics live in the pipe
 target. Dedup/cursor state lives at `<workdir>/channels/<channel>/.gitee/`
 (one-time rename from the old `<workdir>/<channel>/.gitee/`). See
-`docs/core-hub-adapters.md` for the full pipe architecture.
+`docs/architecture/overview.md` for the full pipe architecture.
 
 ## Configuration
 
@@ -35,7 +35,7 @@ poll_interval_secs = 60
 
 Every enabled Gitee pattern **must** declare a `pipe` target — matching
 messages are dropped otherwise (warned at startup). The pipe target routes
-into a hub channel (`channel`) or an agent topic (`agent`).
+into an agent channel (`channel`) or an agent topic (`agent`).
 
 ## Multi-Agent Workflow
 
@@ -96,7 +96,7 @@ the same type.
 
 ### Close Events
 
-A closed issue/PR closes the routed agent topics in the hub workspace
+A closed issue/PR closes the routed agent topics in the agent workspace
 (`plan-<N>`, `dev-<N>`, `review-<N>`, ...), derived from config
 (`close_event_topics`) and unioned with what this process routed.
 

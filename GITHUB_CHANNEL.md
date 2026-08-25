@@ -6,9 +6,9 @@ repositories through issue discussion, PR development, and code review.
 ## Architecture: pipe-only channel
 
 The GitHub channel is a **pipe-only adapter**: it polls the REST API, matches
-patterns, and re-targets each message into a hub channel (or an agent topic).
+patterns, and re-targets each message into an agent channel (or an agent topic).
 It owns no TopicManager, agent service, or outbound adapter — see
-[docs/core-hub-adapters.md](docs/core-hub-adapters.md). Consequences:
+[docs/architecture/overview.md](docs/architecture/overview.md). Consequences:
 
 - Every enabled pattern **must** declare a `pipe` target; patterns without one
   drop their matching messages (with a startup warning).
@@ -82,7 +82,7 @@ GitHub API (polling)
     ↓
 ┌─────────────────────────────────────────────────────────────────┐
 │ Pipe reply forwarder                                            │
-│   └─ jyc_reply_message → hub broadcast → POST comment    │
+│   └─ jyc_reply_message → agent broadcast → POST comment    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -386,7 +386,7 @@ topic directory is deleted.
 ### Close Event Matrix
 
 On any close event, jyc re-renders every enabled pattern's `pipe.topic`
-template for the closed number and closes the resulting topics in the hub
+template for the closed number and closes the resulting topics in the agent
 workspace. Deriving the names from config (rather than remembering what was
 routed) means a close event still works after a jyc restart.
 
@@ -429,7 +429,7 @@ PR #43 merged
 
 ### jyc_reply → GitHub Comment
 
-When an agent uses `jyc_reply_message`, the hub broadcasts the reply and this
+When an agent uses `jyc_reply_message`, the agent broadcasts the reply and this
 channel's reply forwarder posts it as a comment on the corresponding issue/PR.
 The forwarder keeps a `topic → (number, role)` map recorded when the message was
 routed inbound, so it knows which item to comment on.

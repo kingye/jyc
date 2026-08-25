@@ -265,7 +265,7 @@ fn cap_tool_result_content(msg: &serde_json::Value, cap: usize) -> serde_json::V
 /// wire payload. Used by the test suite to verify the region partition
 /// (`with_regions_labels_*` tests). Production debug dumps go through
 /// `session::append_wire_payload_dump` instead, which writes
-/// structured JSONL — see `docs/context-management.md` / Debug dump.
+/// structured JSONL — see `docs/architecture/context.md` / Debug dump.
 #[cfg(test)]
 fn dump_send_context(
     provider: &dyn Provider,

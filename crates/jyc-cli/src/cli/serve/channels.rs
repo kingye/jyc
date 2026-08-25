@@ -414,7 +414,7 @@ struct EmailReplyState {
 /// Spawn a pipe-only email adapter: the IMAP monitor plus one reply
 /// forwarder per distinct pipe target channel.
 ///
-/// Mirrors `spawn_feishu_adapter` (see `docs/core-hub-adapters.md`).
+/// Mirrors `spawn_feishu_adapter` (see `docs/architecture/overview.md`).
 /// Differences specific to email:
 ///
 /// - Keeps a `StateManager` (`<workdir>/channels/<channel>/.imap/`): it
@@ -1350,7 +1350,7 @@ pub(crate) fn spawn_gitee_adapter(
 /// Unlike full channels, a feishu adapter has no outbound adapter, agent
 /// service, TopicManager, StateManager, or orchestrator registration — all
 /// topics live in the pipe target (hub) channel. See
-/// `docs/core-hub-adapters.md`.
+/// `docs/architecture/overview.md`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_feishu_adapter(
     channel_config: &ChannelConfig,
@@ -1692,7 +1692,7 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 /// Spawn a pipe-only wecom_bot adapter: the inbound adapter plus one
 /// reply forwarder per distinct pipe target channel.
 ///
-/// Mirrors `spawn_feishu_adapter` (see `docs/core-hub-adapters.md`).
+/// Mirrors `spawn_feishu_adapter` (see `docs/architecture/overview.md`).
 /// Differences specific to wecom_bot:
 ///
 /// - Uses a shared `WecomBotConnectionHandle` (set by the inbound

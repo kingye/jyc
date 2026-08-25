@@ -226,7 +226,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             .as_ref()
             .and_then(|att| att.inbound.clone());
 
-        // Feishu is a pipe-only adapter (see docs/core-hub-adapters.md):
+        // Feishu is a pipe-only adapter (see docs/architecture/overview.md):
         // skip the full channel construction (outbound/agent/TopicManager/
         // StateManager/orchestrator) — spawn only the inbound adapter plus
         // pipe reply forwarders.

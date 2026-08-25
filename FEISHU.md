@@ -93,8 +93,8 @@ heartbeat_interval_secs = 30
 name = "mention_bot"
 enabled = true
 
-# Required: feishu is a pipe-only adapter — every enabled pattern must pipe
-# into a websocket hub channel (here: "local_dev"). The target pattern
+# Required: feishu is a pipe-only channel — every enabled pattern must pipe
+# into an agent's websocket channel (here: "local_dev"). The target pattern
 # ("group_chat") supplies the topic config (template/topic_path/skills);
 # "${msg.chat_name}" gives each group chat its own topic.
 # A matched pattern without `pipe` drops the message with a warning.
@@ -162,22 +162,22 @@ INFO  feishu pipe reply forwarder subscribed
 
 ### Reply not delivered
 
-- **Check the pipe forwarder**: replies are relayed by the pipe reply forwarder subscribed to the hub channel's broadcast. Look for `feishu pipe reply forwarder subscribed` at startup and `failed to relay reply to feishu` errors.
+- **Check the pipe forwarder**: replies are relayed by the pipe reply forwarder subscribed to the agent channel's broadcast. Look for `feishu pipe reply forwarder subscribed` at startup and `failed to relay reply to feishu` errors.
 - **No chat mapping**: the topic→chat_id mapping is in-memory, recorded when a feishu message is piped in. After a restart it is empty until the next inbound message — replies/proactive sends to not-yet-seen topics are skipped (`no chat mapping for reply`).
 - **Check Feishu API access**: The server must be able to reach `open.feishu.cn` for sending messages
 
 ### Proactive messages to a feishu chat
 
-`jyc_send_message(channel = "<hub channel>", recipient = "<topic>")` broadcasts
+`jyc_send_message(channel = "<agent channel>", recipient = "<topic>")` broadcasts
 a reply payload keyed by topic, which the pipe forwarder relays to the wired
-feishu chat — use the hub channel (e.g. `local_dev`), not the feishu channel,
+feishu chat — use the agent channel (e.g. `local_dev`), not the feishu channel,
 as the target. The recipient must be the exact piped topic name (the sanitized
 chat name). Limitation: after a restart the topic→chat mapping only exists
 once a new feishu message has arrived (see above).
 
 ### Topic directory names
 
-Piped topics live in the **hub channel's** workspace, named by the pipe
+Piped topics live in the **agent channel's** workspace, named by the pipe
 mapping — typically the sanitized chat name (`${msg.chat_name}`), e.g.
 `<workdir>/local_dev/workspace/Project Alpha`. The feishu adapter itself owns
 no topic directories.
@@ -186,9 +186,9 @@ If you rename the bot's display name in Feishu or change group names, new messag
 
 ## Architecture Overview
 
-Feishu is a **pipe-only adapter** in the core / hub / adapters architecture
-(see [docs/core-hub-adapters.md](docs/core-hub-adapters.md)): it speaks the
-Feishu protocol and pipes messages into a websocket hub channel, which owns
+Feishu is a **pipe-only channel** in the channels / agents / core+AI architecture
+(see [docs/architecture/overview.md](docs/architecture/overview.md)): it speaks the
+Feishu protocol and pipes messages into an agent's websocket channel, which owns
 the topics, agents, and conversation state.
 
 ```
@@ -210,7 +210,7 @@ Hub channel's MessageRouter → TopicManager → in-process agent
 Hub channel's WebsocketOutboundAdapter → broadcast {"type":"reply", topic, text, attachments}
      │
      ▼
-Feishu pipe reply forwarder (subscribed to the hub broadcast)
+Feishu pipe reply forwarder (subscribed to the agent broadcast)
      │ topic→chat_id lookup → FeishuClient.send_text_message()
      │ attachments: download from inspect files endpoint → re-upload to feishu
      ▼

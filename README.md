@@ -131,20 +131,20 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 - **Agents:** Planner, Developer, Reviewer templates for full PR workflow
 
 ### ✅ Feishu (飞书/Lark)
-- **Status:** Production ready (implemented in Phase 7); pipe-only adapter (see [docs/core-hub-adapters.md](docs/core-hub-adapters.md))
-- **Features:** Real-time messaging via WebSocket, messages piped into a websocket hub channel, replies relayed back (text + attachments)
+- **Status:** Production ready (implemented in Phase 7); pipe-only channel (see [docs/architecture/overview.md](docs/architecture/overview.md))
+- **Features:** Real-time messaging via WebSocket, messages piped into a agent's websocket channel, replies relayed back (text + attachments)
 - **API:** REST API with openlark SDK + WebSocket for real-time updates
 - **Authentication:** App credentials with automatic token refresh
 
 ### ✅ WeCom (企业微信)
-- **Status:** Pipe-only adapter (see [docs/core-hub-adapters.md](docs/core-hub-adapters.md))
-- **Features:** Bot webhook inbound piped into a websocket hub channel, external-contact API outbound with `corp_id` + `corp_secret` authentication
+- **Status:** Pipe-only channel (see [docs/architecture/overview.md](docs/architecture/overview.md))
+- **Features:** Bot webhook inbound piped into a agent's websocket channel, external-contact API outbound with `corp_id` + `corp_secret` authentication
 - **Protocols:** Shared axum HTTP server (inbound), REST API (outbound)
 - **Security:** AES-256-CBC decryption, SHA1 signature verification
 
 ### ✅ WeCom KF (Customer Service)
-- **Status:** Pipe-only adapter (see [docs/core-hub-adapters.md](docs/core-hub-adapters.md))
-- **Features:** Customer-service messaging via event notifications and `kf/sync_msg` API pull, piped into a websocket hub channel
+- **Status:** Pipe-only channel (see [docs/architecture/overview.md](docs/architecture/overview.md))
+- **Features:** Customer-service messaging via event notifications and `kf/sync_msg` API pull, piped into a agent's websocket channel
 - **Protocols:** Webhook events (inbound), REST API (outbound)
 - **Model:** Topic scoping via `pipe.topic` placeholders (`${msg.open_kfid}_${msg.external_userid}`)
 
@@ -520,7 +520,7 @@ This is useful for diagnosing reply delivery failures.
 | Document | Purpose |
 |----------|---------|
 | [DESIGN.md](DESIGN.md) | Architecture, data flow, component design, API reference |
-| [docs/context-management.md](docs/context-management.md) | Context strategies, sliding window, history notes, token safety nets |
+| [docs/architecture/context.md](docs/architecture/context.md) | Context strategies, sliding window, history notes, token safety nets |
 | [IMPLEMENTATION.md](IMPLEMENTATION.md) | Implementation phases and progress |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
 | [SYSTEMD.md](SYSTEMD.md) | systemd deployment and service management |

@@ -4,7 +4,7 @@
 //! (`/cgi-bin/externalcontact/message/send`). Authentication uses
 //! `corpid` + `corpsecret` to obtain an access_token.
 //!
-//! Pipe-only architecture (see docs/core-hub-adapters.md): the hub
+//! Pipe-only architecture (see docs/architecture/overview.md): the hub
 //! channel owns the reply lifecycle; this module only knows how to put a
 //! message on the wire.
 //!

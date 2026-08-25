@@ -1,6 +1,6 @@
 //! WeCom KF (Customer Service) outbound wire-format helper.
 //!
-//! Pipe-only architecture (see docs/core-hub-adapters.md): the hub
+//! Pipe-only architecture (see docs/architecture/overview.md): the hub
 //! channel owns the reply lifecycle; this module only knows how to put a
 //! text message on the wire via the KF `send_msg` API.
 //!

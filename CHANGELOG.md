@@ -203,7 +203,7 @@
   that pipe-only channels ignore `mcps`/`disabled_tools`/`skills` (#638)
 
 - **wecom and wecomkf are pipe-only adapters.** Both channel types were
-  migrated to the pipe architecture (docs/core-hub-adapters.md): pattern
+  migrated to the pipe architecture (docs/architecture/overview.md): pattern
   match → `pipe = { agent, topic }` retarget → hub routing, with reply
   forwarders subscribed to the hub broadcast. Patterns must now set
   `pipe`; matched messages without a pipe target are dropped with a
@@ -236,7 +236,7 @@
   note_window = 3 }` (pattern / `[agents]` / `[ai]`) or
   `/context sliding [N] [M]` (#632, #633)
 
-- **New topical doc: `docs/context-management.md`.** Consolidates how
+- **New topical doc: `docs/architecture/context.md`.** Consolidates how
   the wire payload is shaped (context strategies, turn pairing, history
   notes with truncation budgets, `context_browse` for dropped turns,
   token safety nets, configuration resolution chain) into one reference;
@@ -434,7 +434,7 @@
   locked decisions, target three-layer model, and phased PR plan.
 - **Config template regression test**: `config.example.toml` must parse and
   pass `validate_config` in CI.
-- **Core / hub / adapters architecture document.** `docs/core-hub-adapters.md`
+- **Core / hub / adapters architecture document.** `docs/architecture/overview.md`
   describes the target three-layer architecture (core: per-topic queues +
   workers; hub: the websocket channel, the only layer owning topics and
   agents; adapters: protocol-only channels that pipe into the hub). Feishu is
@@ -546,7 +546,7 @@
   (3 attempts, 2 retries). (#617)
 
 - **email channel is pipe-only** — `email` joins `feishu`/`wecom_bot` as a
-  pipe-only adapter (see `docs/core-hub-adapters.md`). Every enabled
+  pipe-only adapter (see `docs/architecture/overview.md`). Every enabled
   pattern must declare a `pipe` target; the adapter keeps only the IMAP
   monitor and SMTP reply forwarders (one per pipe target channel), which
   reply into the original mail thread (`In-Reply-To`/`References`).
@@ -577,7 +577,7 @@
   `AiConfig`. See `docs/agents-migration.md` for the full migration plan.
 
 - **wecom_bot channel is pipe-only** — `wecom_bot` (WeCom Smart Robot)
-  joins `feishu` as a pipe-only adapter (see `docs/core-hub-adapters.md`).
+  joins `feishu` as a pipe-only adapter (see `docs/architecture/overview.md`).
   Every enabled pattern must declare a `pipe` target; the adapter owns
   the WebSocket long connection and the streaming-reply lifecycle
   (`finish=false` indicator on receipt, a self-terminating keep-alive

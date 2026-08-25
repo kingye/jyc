@@ -174,6 +174,17 @@
 
 ### Changed
 
+- **Default `ContextStrategyConfig` is now `sliding_window / 15 / 5 / 2048`.**
+  Users without an explicit `[ai].context_strategy` in `config.toml` and no
+  `.jyc/context-strategy.json` runtime override previously fell back to
+  `full` mode (entire raw context on every request); they now default to
+  `sliding_window / window=15 / note_window=5 / tool_result_cap=2048` —
+  the configuration we've been running internally and that produced ~83%
+  per-call payload reduction in the PR #654 verification. Resolution
+  chain priority is unchanged, so users with any config.toml setting or
+  runtime override are unaffected. To restore full-mode behaviour, set
+  `context_strategy = { mode = "full" }` under `[ai]`.
+
 - **History notes filter out `jyc_reply_message`.** Windowed-view
   annotations no longer list the reply tool call alongside real tool
   calls; the reply's `message` is the text the user already saw and is

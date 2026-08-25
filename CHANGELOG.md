@@ -179,8 +179,7 @@
   `.jyc/context-strategy.json` runtime override previously fell back to
   `full` mode (entire raw context on every request); they now default to
   `sliding_window / window=15 / note_window=5 / tool_result_cap=2048` —
-  the configuration we've been running internally and that produced ~83%
-  per-call payload reduction in the PR #654 verification. Resolution
+  the configuration we've been running internally. Resolution
   chain priority is unchanged, so users with any config.toml setting or
   runtime override are unaffected. To restore full-mode behaviour, set
   `context_strategy = { mode = "full" }` under `[ai]`.

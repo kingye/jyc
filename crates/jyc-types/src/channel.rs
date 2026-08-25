@@ -598,7 +598,7 @@ pub struct ContextStrategyConfig {
 impl Default for ContextStrategyConfig {
     fn default() -> Self {
         Self {
-            mode: ContextStrategy::SlidingWindow,
+            mode: default_context_strategy(),
             window: default_context_window_size(),
             note_window: default_note_window(),
             tool_result_cap: default_tool_result_cap(),

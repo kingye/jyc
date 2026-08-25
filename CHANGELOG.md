@@ -162,6 +162,16 @@
   failure-aware reminder quoting the concrete tool error, and reply-tool
   error messages state explicitly that the reply was not delivered (#637)
 
+- **Tool results in the current turn (region ③) are no longer truncated
+  by `tool_result_cap`.** The model reasons over region ③ tool results
+  mid-loop — a just-returned `bash` output it needs to act on, an
+  `read` result it is about to summarize — so truncating them silently
+  fed the model incomplete data. `tool_result_cap` now applies only
+  to region ② (the verbatim prior region); region ③ is passed through
+  with `cap = 0` regardless of the configured cap. To bound region ③
+  payload size, fix the underlying tool (`head`, `grep`,
+  pagination, etc.) instead. (#657)
+
 ### Changed
 
 - **History notes filter out `jyc_reply_message`.** Windowed-view

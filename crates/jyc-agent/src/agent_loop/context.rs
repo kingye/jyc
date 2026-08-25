@@ -119,9 +119,11 @@ fn format_cleaned_message(
 /// - `3` = third region — current turn verbatim (`SlidingWindow` only).
 ///
 /// When `strategy.tool_result_cap` is `Some(cap > 0)`, every tool result
-/// in regions ② and ③ is truncated to at most `cap` bytes with the
-/// standard `… [truncated N bytes]` marker. `Some(0)` or `None` is a
-/// pass-through.
+/// in region ② is truncated to at most `cap` bytes with the standard
+/// `… [truncated N bytes]` marker. Region ③ (the current turn) is
+/// never truncated — the model is reasoning over those tool results
+/// mid-loop, so they must stay complete. `Some(0)` or `None` disables
+/// capping everywhere.
 pub(crate) fn build_send_context_with_regions<'a>(
     provider: &dyn Provider,
     raw_context: &'a [serde_json::Value],
@@ -185,10 +187,13 @@ pub(crate) fn build_send_context_with_regions<'a>(
                 regions.push(2);
             }
 
-            // Current turn verbatim — same cap applies so a 1000-line
-            // `read` result mid-loop doesn't blow the budget either.
+            // Current turn verbatim — never truncated. The model is
+            // reasoning over these tool results mid-loop, so they must
+            // stay complete. `0` is the explicit-off sentinel in
+            // `cap_tool_result_content` (see doc on
+            // `build_send_context_with_regions` above).
             for msg in current {
-                out.push(cap_tool_result_content(msg, cap));
+                out.push(cap_tool_result_content(msg, 0));
                 regions.push(3);
             }
             (Cow::Owned(out), regions)
@@ -996,15 +1001,21 @@ mod render_raw_context_tests {
     #[test]
     fn build_send_context_applies_cap_to_verbatim_region() {
         let big = "y".repeat(2000);
+        // Two prior turns, each with a tool call + big result. Both tool
+        // results live in region ② (verbatim prior) and must get capped.
+        // Region ③ (the current turn) is no longer capped — covered by
+        // `build_send_context_does_not_cap_current_turn_even_when_cap_set`.
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
-            json!({"role": "assistant", "content": "a1"}),
-            json!({"role": "user", "content": "u2"}),
             json!({"role": "assistant", "content": "calling bash", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
             json!({"role": "tool", "tool_call_id": "1", "content": big.clone()}),
-            json!({"role": "assistant", "content": "done"}),
+            json!({"role": "assistant", "content": "done1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "calling bash", "tool_calls": [{"id":"2","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "2", "content": big.clone()}),
+            json!({"role": "assistant", "content": "done2"}),
         ];
-        let current = vec![json!({"role": "tool", "tool_call_id": "2", "content": big.clone()})];
+        let current = vec![json!({"role": "user", "content": "u3"})];
         let mut ctx = prior.clone();
         ctx.extend(current.clone());
         let prior_len = prior.len();
@@ -1030,10 +1041,10 @@ mod render_raw_context_tests {
             capped_bytes < uncapped_bytes,
             "capping should reduce payload size: uncapped={uncapped_bytes} capped={capped_bytes}"
         );
-        // The cap should remove most of the 2000-byte bodies.
+        // The cap should remove most of the 2000-byte bodies (two of them).
         assert!(
             uncapped_bytes - capped_bytes > 3000,
-            "cap should drop at least 3KB across two tool results: uncapped={uncapped_bytes} capped={capped_bytes}"
+            "cap should drop at least 3KB across two prior tool results: uncapped={uncapped_bytes} capped={capped_bytes}"
         );
 
         // The standard truncation marker must appear in the capped payload.
@@ -1041,6 +1052,58 @@ mod render_raw_context_tests {
         assert!(
             capped_str.contains("[truncated ") && capped_str.contains("bytes]"),
             "missing truncation marker: {capped_str}"
+        );
+    }
+
+    /// Region ③ (current turn) is never truncated, regardless of
+    /// `tool_result_cap`. The full tool result must appear in the wire
+    /// payload with no truncation marker.
+    #[test]
+    fn build_send_context_does_not_cap_current_turn_even_when_cap_set() {
+        let big = "y".repeat(2000);
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+        ];
+        // Current turn contains a tool result mid-loop. The model is
+        // reasoning over this content; truncating it would corrupt
+        // mid-loop state.
+        let current = vec![
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "", "tool_calls": [{"id":"1","type":"function","function":{"name":"bash","arguments":"{}"}}]}),
+            json!({"role": "tool", "tool_call_id": "1", "content": big.clone()}),
+        ];
+        let mut ctx = prior.clone();
+        ctx.extend(current.clone());
+        let prior_len = prior.len();
+
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 5,
+            note_window: Some(5),
+            tool_result_cap: Some(50), // cap is ON
+        };
+        let (out, regions) = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg);
+        let wire = serde_json::to_string(out.as_ref()).unwrap();
+
+        // Full 2000-byte content must appear in region 3.
+        assert!(
+            wire.contains(&big),
+            "current-turn tool result was truncated: {wire}"
+        );
+        assert!(
+            !wire.contains("[truncated"),
+            "current-turn tool result has truncation marker: {wire}"
+        );
+
+        // The tool message is labelled region 3 (not 2).
+        let tool_idx = out
+            .iter()
+            .position(|m| m["role"] == "tool")
+            .expect("tool result must be in output");
+        assert_eq!(
+            regions[tool_idx], 3,
+            "tool result should be in region 3 (current turn)"
         );
     }
 

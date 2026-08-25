@@ -133,7 +133,8 @@ pipe = { agent = "jin" }
 # turns carry tool-call history notes; older turns are text-only.
 # Default: unset = notes on all windowed turns. 0 = no notes at all.
 # tool_result_cap: in sliding_window mode, cap each tool result in the
-# verbatim region (recent prior + current turn) at N bytes. Truncated
+# verbatim prior region (region ②; the current turn is never truncated)
+# at N bytes. Truncated
 # results are suffixed with '… [truncated N bytes]'. Only meaningful
 # when note_window > 0 (otherwise nothing is verbatim). Default: unset
 # = off (every tool result sent in full).
@@ -478,7 +479,8 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # turns carry tool-call history notes; older turns are text-only.
 # Default: unset = notes on all windowed turns. 0 = no notes at all.
 # tool_result_cap: in sliding_window mode, cap each tool result in the
-# verbatim region (recent prior + current turn) at N bytes. Truncated
+# verbatim prior region (region ②; the current turn is never truncated)
+# at N bytes. Truncated
 # results are suffixed with '… [truncated N bytes]'. Default: unset = off.
 # context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 5000 }
 
@@ -1083,7 +1085,8 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # turns carry tool-call history notes; older turns are text-only.
 # Default: unset = notes on all windowed turns. 0 = no notes at all.
 # tool_result_cap: in sliding_window mode, cap each tool result in the
-# verbatim region at N bytes. Truncated results are suffixed with
+# verbatim prior region (region ②; the current turn is never truncated)
+# at N bytes. Truncated results are suffixed with
 # '… [truncated N bytes]'. Default: unset = off.
 # context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 5000 }
 # attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }

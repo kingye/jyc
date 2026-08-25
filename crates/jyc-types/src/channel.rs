@@ -563,7 +563,7 @@ pub enum ContextStrategy {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextStrategyConfig {
     /// Context strategy mode. Default: `sliding_window`.
-    #[serde(default)]
+    #[serde(default = "default_context_strategy")]
     pub mode: ContextStrategy,
     /// Number of latest user+assistant turns to keep in `sliding_window`.
     /// Default: 15. Only meaningful when `mode = "sliding_window"`.
@@ -608,6 +608,10 @@ impl Default for ContextStrategyConfig {
 
 fn default_context_window_size() -> usize {
     15
+}
+
+fn default_context_strategy() -> ContextStrategy {
+    ContextStrategy::SlidingWindow
 }
 
 fn default_note_window() -> Option<usize> {
@@ -851,6 +855,18 @@ topic_path = "~/projects/jyc"
         assert_eq!(cfg.window, 15);
         assert_eq!(cfg.note_window, Some(5));
         assert_eq!(cfg.tool_result_cap, Some(2048));
+    }
+
+    #[test]
+    fn test_context_strategy_serde_empty_toml_equals_struct_default() {
+        // Empty TOML must produce the same struct as `Default::default()`.
+        // The mode field's serde default was `ContextStrategy::default() = Full`
+        // (from `#[derive(Default)]` + `#[default]` on the enum variant), while
+        // `ContextStrategyConfig::default()` sets `mode = SlidingWindow`. The
+        // helper `default_context_strategy` closes that gap so empty configs
+        // and `Default::default()` agree on `mode = SlidingWindow`.
+        let cfg: ContextStrategyConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg, ContextStrategyConfig::default());
     }
 
     #[test]

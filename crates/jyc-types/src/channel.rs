@@ -575,7 +575,7 @@ pub struct ContextStrategyConfig {
     /// `window`. Only meaningful when `mode = "sliding_window"`.
     /// Omitted from serialized override files when unset so existing
     /// readers stay compatible.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default = "default_note_window", skip_serializing_if = "Option::is_none")]
     pub note_window: Option<usize>,
     /// Byte cap on each tool result kept in the verbatim region
     /// (`sliding_window` mode). When a tool result exceeds `cap` bytes,
@@ -585,7 +585,7 @@ pub struct ContextStrategyConfig {
     /// Only meaningful when `mode = "sliding_window"`. Omitted from
     /// serialized override files when unset so existing readers stay
     /// compatible.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default = "default_tool_result_cap", skip_serializing_if = "Option::is_none")]
     pub tool_result_cap: Option<usize>,
 }
 
@@ -594,14 +594,22 @@ impl Default for ContextStrategyConfig {
         Self {
             mode: ContextStrategy::SlidingWindow,
             window: default_context_window_size(),
-            note_window: Some(5),
-            tool_result_cap: Some(2048),
+            note_window: default_note_window(),
+            tool_result_cap: default_tool_result_cap(),
         }
     }
 }
 
 fn default_context_window_size() -> usize {
     15
+}
+
+fn default_note_window() -> Option<usize> {
+    Some(5)
+}
+
+fn default_tool_result_cap() -> Option<usize> {
+    Some(2048)
 }
 
 /// Per-pattern filesystem access whitelist.
@@ -810,22 +818,34 @@ topic_path = "~/projects/jyc"
     }
 
     #[test]
-    fn test_context_strategy_tool_result_cap_default_is_2048() {
-        let cfg = ContextStrategyConfig::default();
-        assert_eq!(cfg.tool_result_cap, Some(2048));
-    }
-
-    #[test]
-    fn test_context_strategy_tool_result_cap_missing_field_is_none() {
-        // Legacy JSON without the field — pre-existing override files must
-        // keep deserializing.
+    fn test_context_strategy_tool_result_cap_missing_field_uses_default() {
+        // Legacy JSON without the field still deserializes successfully
+        // and picks up the struct default of `Some(2048)`. To explicitly
+        // disable capping, write `null` in JSON (see the roundtrip test
+        // below for `Some(0)` as the "off" sentinel).
         let toml_str = r#"
             mode = "sliding_window"
             window = 15
             note_window = 5
         "#;
         let cfg: ContextStrategyConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.tool_result_cap, None);
+        assert_eq!(cfg.tool_result_cap, Some(2048));
+    }
+
+    #[test]
+    fn test_context_strategy_serde_partial_toml_uses_defaults() {
+        // Regression guard for the partial-config bug: when a user writes
+        // just `mode = "sliding_window"` in config.toml, the unset
+        // `note_window` and `tool_result_cap` fields must pick up the
+        // struct defaults (`Some(5)` / `Some(2048)`), not `None`. Without
+        // the `default = "..."` serde attributes, `Option::default()`
+        // would yield `None` and silently disable capping/truncation.
+        let cfg: ContextStrategyConfig =
+            toml::from_str(r#"mode = "sliding_window""#).unwrap();
+        assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
+        assert_eq!(cfg.window, 15);
+        assert_eq!(cfg.note_window, Some(5));
+        assert_eq!(cfg.tool_result_cap, Some(2048));
     }
 
     #[test]

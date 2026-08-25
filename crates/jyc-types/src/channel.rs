@@ -566,11 +566,11 @@ pub struct ContextStrategyConfig {
     #[serde(default = "default_context_strategy")]
     pub mode: ContextStrategy,
     /// Number of latest user+assistant turns to keep in `sliding_window`.
-    /// Default: 15. Only meaningful when `mode = "sliding_window"`.
+    /// Default: 10. Only meaningful when `mode = "sliding_window"`.
     #[serde(default = "default_context_window_size")]
     pub window: usize,
     /// Number of most recent windowed turns that keep their tool-call
-    /// history note; turns older than that are text-only. `Some(5)` by
+    /// history note; turns older than that are text-only. `Some(3)` by
     /// default (sliding_window mode). Values above `window` clamp to
     /// `window`. Only meaningful when `mode = "sliding_window"`.
     /// Omitted from serialized override files when unset so existing
@@ -607,7 +607,7 @@ impl Default for ContextStrategyConfig {
 }
 
 fn default_context_window_size() -> usize {
-    15
+    10
 }
 
 fn default_context_strategy() -> ContextStrategy {
@@ -615,7 +615,7 @@ fn default_context_strategy() -> ContextStrategy {
 }
 
 fn default_note_window() -> Option<usize> {
-    Some(5)
+    Some(3)
 }
 
 fn default_tool_result_cap() -> Option<usize> {
@@ -805,13 +805,13 @@ topic_path = "~/projects/jyc"
             let cfg: ContextStrategyConfig = toml::from_str(&format!(r#"mode = "{s}""#)).unwrap();
             assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
             // window falls back to the default when omitted.
-            assert_eq!(cfg.window, 15);
+            assert_eq!(cfg.window, 10);
         }
 
         let cfg: ContextStrategyConfig = toml::from_str(r#"mode = "full""#).unwrap();
         assert_eq!(cfg.mode, ContextStrategy::Full);
 
-        // Default for an empty table is sliding_window / window 15.
+        // Default for an empty table is sliding_window / window 10.
         let cfg: ContextStrategyConfig = toml::from_str("").unwrap();
         assert_eq!(cfg, ContextStrategyConfig::default());
     }
@@ -822,8 +822,8 @@ topic_path = "~/projects/jyc"
         // `ContextStrategyConfig::default()` surfaces immediately.
         let cfg = ContextStrategyConfig::default();
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
-        assert_eq!(cfg.window, 15);
-        assert_eq!(cfg.note_window, Some(5));
+        assert_eq!(cfg.window, 10);
+        assert_eq!(cfg.note_window, Some(3));
         assert_eq!(cfg.tool_result_cap, Some(2048));
     }
 
@@ -835,8 +835,8 @@ topic_path = "~/projects/jyc"
         // below for `Some(0)` as the "off" sentinel).
         let toml_str = r#"
             mode = "sliding_window"
-            window = 15
-            note_window = 5
+            window = 10
+            note_window = 3
         "#;
         let cfg: ContextStrategyConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.tool_result_cap, Some(2048));
@@ -847,13 +847,13 @@ topic_path = "~/projects/jyc"
         // Regression guard for the partial-config bug: when a user writes
         // just `mode = "sliding_window"` in config.toml, the unset
         // `note_window` and `tool_result_cap` fields must pick up the
-        // struct defaults (`Some(5)` / `Some(2048)`), not `None`. Without
+        // struct defaults (`Some(3)` / `Some(2048)`), not `None`. Without
         // the `default = "..."` serde attributes, `Option::default()`
         // would yield `None` and silently disable capping/truncation.
         let cfg: ContextStrategyConfig = toml::from_str(r#"mode = "sliding_window""#).unwrap();
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
-        assert_eq!(cfg.window, 15);
-        assert_eq!(cfg.note_window, Some(5));
+        assert_eq!(cfg.window, 10);
+        assert_eq!(cfg.note_window, Some(3));
         assert_eq!(cfg.tool_result_cap, Some(2048));
     }
 

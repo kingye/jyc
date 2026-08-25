@@ -409,8 +409,8 @@ pub async fn read_context_strategy_override(topic_path: &Path) -> Option<Context
 /// Resolve the `ContextStrategyConfig` for a topic from config alone.
 ///
 /// Priority: matched pattern > first pattern > global `[ai].context_strategy` >
-/// `ContextStrategyConfig::default()` (sliding_window / window=15 /
-/// note_window=5 / tool_result_cap=2048).
+/// `ContextStrategyConfig::default()` (sliding_window / window=10 /
+/// note_window=3 / tool_result_cap=2048).
 ///
 /// Pass `matched_pattern = Some(name)` when the caller has access to the
 /// pattern that created the topic (e.g. `process()` with
@@ -1103,12 +1103,12 @@ mode = "agent"
     }
 
     #[test]
-    fn resolve_context_strategy_default_is_sliding_window_15_5_2048() {
+    fn resolve_context_strategy_default_is_sliding_window_10_3_2048() {
         let app = config_with_strategies(vec![], None);
         let resolved = resolve_context_strategy(&app, "c", Some("a"));
         assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
-        assert_eq!(resolved.window, 15);
-        assert_eq!(resolved.note_window, Some(5));
+        assert_eq!(resolved.window, 10);
+        assert_eq!(resolved.note_window, Some(3));
         assert_eq!(resolved.tool_result_cap, Some(2048));
     }
 
@@ -1127,8 +1127,8 @@ mode = "agent"
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 3);
         // Old override files without note_window still parse, picking up
-        // the struct default of `Some(5)`.
-        assert_eq!(cfg.note_window, Some(5));
+        // the struct default of `Some(3)`.
+        assert_eq!(cfg.note_window, Some(3));
     }
 
     #[tokio::test]

@@ -172,7 +172,7 @@ Size caps (constants in `session.rs`):
 | Single tool result | 500 bytes | full result is one `context_browse` away |
 | **Whole note** | **2000 bytes** | overflow folds to `…(N more calls)` |
 
-With the default `window = 15`, all notes together cost at most ~20 KB of
+With the default `window = 10`, all notes together cost at most ~20 KB of
 bytes. The dominant factor in window size is the untruncated
 user/assistant text itself, not the notes.
 
@@ -343,7 +343,7 @@ Manual `/reset` uses the same `reset_compression` config as auto-reset.
 ```toml
 # Global default for all channels/topics
 [ai]
-context_strategy = { mode = "sliding_window", window = 15, note_window = 5, tool_result_cap = 2048 }
+context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
 max_input_tokens = 122880        # optional; default = 95% of detected model context
 auto_reset_threshold = 0.95      # fraction of context window that triggers reset
 reset_compression = { mode = "heuristic", keep_pairs = 3 }
@@ -417,7 +417,7 @@ auto-reset).
 2. Matched pattern's `context_strategy` (or synthesized `[agents.<name>]`)
 3. First pattern fallback
 4. Global `[ai].context_strategy`
-5. Built-in default: `sliding_window` / `window = 15` / `note_window = 5` / `tool_result_cap = 2048`
+5. Built-in default: `sliding_window` / `window = 10` / `note_window = 3` / `tool_result_cap = 2048`
 
 **Runtime commands:**
 
@@ -425,7 +425,7 @@ auto-reset).
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
 | `/context full` | Send the full context |
-| `/context sliding [N] [M] [CAP]` | Sliding window, N turns (default 15, max 200); M = note window (default 5, max 200); CAP = tool-result byte cap on verbatim region (0..1 MiB, default 2048) |
+| `/context sliding [N] [M] [CAP]` | Sliding window, N turns (default 10, max 200); M = note window (default 3, max 200); CAP = tool-result byte cap on verbatim region (0..1 MiB, default 2048) |
 | `/context reset` | Remove the runtime override, revert to configured default |
 
 ## Code map

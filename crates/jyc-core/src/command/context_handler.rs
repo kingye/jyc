@@ -16,8 +16,8 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///     Switch to sliding window (default N = 15 turns). M is the optional
 ///     note window: only the most recent M windowed turns carry tool-call
 ///     history notes (default: 5). CAP is the optional per-tool-result
-///     byte cap on the verbatim region (default: 2048). 0 in any slot keeps
-///     the configured value.
+///     byte cap on the verbatim prior region (region ②; current turn is never
+///     truncated) (default: 2048). 0 in any slot keeps the configured value.
 ///   /context reset        Remove runtime override (revert to configured default)
 ///   /context dump [on|off]
 ///     Toggle wire-payload debug dump. When on, every LLM call appends

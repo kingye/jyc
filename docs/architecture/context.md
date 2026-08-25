@@ -23,20 +23,29 @@ Three core principles govern the whole system:
 
 ## Data Plane
 
-```
-.jyc/agent-context.json (on disk — always the FULL raw context)
-        │
-        ▼  loaded once per incoming message
-raw_context: Vec<serde_json::Value>   (provider wire format)
-        │
-        ├─ raw_context[..prior_len]    ← prior history (from disk)
-        └─ raw_context[prior_len..]    ← current turn (this message's loop)
-        │
-        ▼  per LLM request
-build_send_context(provider, raw_context, prior_len, strategy)
-        │
-        ▼
-wire payload sent to the provider
+```mermaid
+flowchart TD
+    subgraph Disk["On disk — source of truth"]
+        F[".jyc/agent-context.json<br/>FULL raw context"]
+    end
+    subgraph Mem["In memory — per incoming message"]
+        RC["raw_context: Vec&lt;serde_json::Value&gt;<br/>provider wire format"]
+        PRIOR["raw_context[..prior_len]<br/>prior history (from disk)"]
+        CURR["raw_context[prior_len..]<br/>current turn (this message's loop)"]
+    end
+    subgraph PerReq["Per LLM request"]
+        BSC["build_send_context<br/>(provider, raw_context, prior_len, strategy)"]
+        WIRE["wire payload sent to the provider"]
+    end
+    F --> RC
+    RC --> PRIOR
+    RC --> CURR
+    PRIOR --> BSC
+    CURR --> BSC
+    BSC --> WIRE
+    style Disk fill:#fff3e0,stroke:#e65100
+    style Mem fill:#e3f2fd,stroke:#1565c0
+    style PerReq fill:#f3e5f5,stroke:#6a1b9a
 ```
 
 `prior_len` is the length of the raw context at the moment the incoming
@@ -73,27 +82,28 @@ computes this via `verbatim_start_index` + `extract_pairs(...).len()`):
    intact**, passed through untouched.
 3. **Current turn, verbatim** — `raw_context[prior_len..]`, untouched.
 
-```
- ┌────────────────────────────────────────────────────────────┐
- │ ① Compacted history (older turns, text-only)               │
- │                                                            │
- │  user      │ "u1"                                          │
- │  assistant │ "a1"                    ← pure text, no tools  │
- ├────────────────────────────────────────────────────────────┤
- │ ② Recent turns — verbatim (structured tool calls kept)     │
- │                                                            │
- │  user      │ "u2"                                          │
- │  assistant │ tool_use / tool_calls blocks  ← as recorded   │
- │  tool/user │ tool_result / tool messages   ← as recorded   │
- │  assistant │ "a2"                                          │
- ├────────────────────────────────────────────────────────────┤
- │ ③ Current turn — verbatim                                  │
- │                                                            │
- │  user      │ "u3"                                          │
- │  assistant │ tool_use / tool_calls blocks  ← as recorded   │
- │  tool/user │ tool_result / tool messages   ← as recorded   │
- │  ...       │ further steps appended as the loop continues  │
- └────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph R1["① Compacted history — older turns, text-only"]
+        R1U["user: 'u1'"]
+        R1A["assistant: 'a1'<br/><i>pure text, no tools</i>"]
+    end
+    subgraph R2["② Recent turns — verbatim (structured tool calls kept)"]
+        R2U["user: 'u2'"]
+        R2ATU["assistant: tool_use / tool_calls blocks<br/><i>as recorded</i>"]
+        R2TR["tool/user: tool_result / tool messages<br/><i>as recorded</i>"]
+        R2A["assistant: 'a2'"]
+    end
+    subgraph R3["③ Current turn — verbatim"]
+        R3U["user: 'u3'"]
+        R3ATU["assistant: tool_use / tool_calls blocks<br/><i>as recorded</i>"]
+        R3TR["tool/user: tool_result / tool messages<br/><i>as recorded</i>"]
+        R3MORE["... further steps as the loop continues"]
+    end
+    R1 --> R2 --> R3
+    style R1 fill:#fce4ec,stroke:#c2185b
+    style R2 fill:#fff3e0,stroke:#e65100
+    style R3 fill:#e8f5e9,stroke:#2e7d32
 ```
 
 ② shows a single turn for brevity; in practice it holds up to
@@ -299,33 +309,28 @@ Independent of the configured strategy, three layers enforce the token
 budget (threshold: `context_window × auto_reset_threshold`, default 95%
 of the detected model context limit):
 
-```
-LLM response received (input_tokens known from SSE step-finish)
-        │
-        ▼  input_tokens ≥ context_window × auto_reset_threshold ?
-┌──────────────────────────────────────────────────────────────┐
-│ Mid-loop compression (agent_loop/mod.rs)                     │
-│ Shrinks raw_context + history IN MEMORY to the last 3 turns  │
-│ (hard-coded keep_pairs=3 — a 400-prevention safety net, NOT  │
-│ the user-configured compression). The shrunken context is    │
-│ what lands in agent-context.json when the loop persists at   │
-│ its end. Publishes a "session_reset" status event.           │
-└──────────────────────────────────────────────────────────────┘
-        │
-        ▼  between messages / at loop end
-┌──────────────────────────────────────────────────────────────┐
-│ Pre-loop pre-check (service/mod.rs): if the active model's   │
-│ context window shrank below the loaded session, reset BEFORE │
-│ the first LLM call.                                          │
-│ Post-loop auto-reset (update_tokens): when the budget is     │
-│ exceeded, reset the session using reset_compression config.  │
-└──────────────────────────────────────────────────────────────┘
-        │
-        ▼  provider rejects anyway (agent-server path)
-┌──────────────────────────────────────────────────────────────┐
-│ ContextOverflow recovery: SSE session.error → log, create a  │
-│ fresh session, retry the prompt once.                        │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    LLM["LLM response received<br/>(input_tokens from SSE step-finish)"]
+    Q{"input_tokens ≥<br/>context_window × auto_reset_threshold ?"}
+    subgraph Mid["Mid-loop compression — agent_loop/mod.rs"]
+        MID["Shrinks raw_context + history IN MEMORY<br/>to last 3 turns (keep_pairs=3, hard-coded)<br/>Persists at loop end → agent-context.json<br/>Publishes 'session_reset' status event"]
+    end
+    subgraph Pre["Between messages / at loop end — service/mod.rs"]
+        PRE["Pre-loop pre-check:<br/>if model context window shrank below<br/>loaded session, reset BEFORE first LLM call"]
+        POST["Post-loop auto-reset:<br/>when budget exceeded, reset using<br/>reset_compression config"]
+    end
+    subgraph Rec["Provider rejects anyway — agent-server path"]
+        REC["ContextOverflow recovery:<br/>SSE session.error → log,<br/>create fresh session, retry once"]
+    end
+    LLM --> Q
+    Q -->|"yes"| Mid
+    Mid --> Pre
+    Pre --> Rec
+    Q -->|"no"| NORMAL["normal loop continues"]
+    style Mid fill:#fce4ec,stroke:#c2185b
+    style Pre fill:#fff3e0,stroke:#e65100
+    style Rec fill:#f3e5f5,stroke:#6a1b9a
 ```
 
 Session resets apply the configured `reset_compression` mode:

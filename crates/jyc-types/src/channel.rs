@@ -562,16 +562,16 @@ pub enum ContextStrategy {
 /// latest user+assistant turns to keep in `sliding_window` mode.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextStrategyConfig {
-    /// Context strategy mode. Default: `full`.
+    /// Context strategy mode. Default: `sliding_window`.
     #[serde(default)]
     pub mode: ContextStrategy,
     /// Number of latest user+assistant turns to keep in `sliding_window`.
-    /// Default: 10. Only meaningful when `mode = "sliding_window"`.
+    /// Default: 15. Only meaningful when `mode = "sliding_window"`.
     #[serde(default = "default_context_window_size")]
     pub window: usize,
     /// Number of most recent windowed turns that keep their tool-call
-    /// history note; turns older than that are text-only. `None` (default)
-    /// keeps notes on all windowed turns. Values above `window` clamp to
+    /// history note; turns older than that are text-only. `Some(5)` by
+    /// default (sliding_window mode). Values above `window` clamp to
     /// `window`. Only meaningful when `mode = "sliding_window"`.
     /// Omitted from serialized override files when unset so existing
     /// readers stay compatible.
@@ -580,10 +580,11 @@ pub struct ContextStrategyConfig {
     /// Byte cap on each tool result kept in the verbatim region
     /// (`sliding_window` mode). When a tool result exceeds `cap` bytes,
     /// its content is truncated and suffixed with a marker noting the
-    /// dropped length. `Some(0)` (or `None`) disables capping — every
-    /// tool result is sent in full. Only meaningful when
-    /// `mode = "sliding_window"`. Omitted from serialized override files
-    /// when unset so existing readers stay compatible.
+    /// dropped length. `Some(2048)` by default (sliding_window mode);
+    /// `Some(0)` disables capping — every tool result is sent in full.
+    /// Only meaningful when `mode = "sliding_window"`. Omitted from
+    /// serialized override files when unset so existing readers stay
+    /// compatible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_result_cap: Option<usize>,
 }
@@ -591,16 +592,16 @@ pub struct ContextStrategyConfig {
 impl Default for ContextStrategyConfig {
     fn default() -> Self {
         Self {
-            mode: ContextStrategy::default(),
+            mode: ContextStrategy::SlidingWindow,
             window: default_context_window_size(),
-            note_window: None,
-            tool_result_cap: None,
+            note_window: Some(5),
+            tool_result_cap: Some(2048),
         }
     }
 }
 
 fn default_context_window_size() -> usize {
-    10
+    15
 }
 
 /// Per-pattern filesystem access whitelist.
@@ -786,21 +787,32 @@ topic_path = "~/projects/jyc"
             let cfg: ContextStrategyConfig = toml::from_str(&format!(r#"mode = "{s}""#)).unwrap();
             assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
             // window falls back to the default when omitted.
-            assert_eq!(cfg.window, 10);
+            assert_eq!(cfg.window, 15);
         }
 
         let cfg: ContextStrategyConfig = toml::from_str(r#"mode = "full""#).unwrap();
         assert_eq!(cfg.mode, ContextStrategy::Full);
 
-        // Default for an empty table is Full / window 10.
+        // Default for an empty table is sliding_window / window 15.
         let cfg: ContextStrategyConfig = toml::from_str("").unwrap();
         assert_eq!(cfg, ContextStrategyConfig::default());
     }
 
     #[test]
-    fn test_context_strategy_tool_result_cap_default_is_none() {
+    fn test_context_strategy_default_values() {
+        // Locks in the built-in defaults so a stray edit to
+        // `ContextStrategyConfig::default()` surfaces immediately.
         let cfg = ContextStrategyConfig::default();
-        assert_eq!(cfg.tool_result_cap, None);
+        assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
+        assert_eq!(cfg.window, 15);
+        assert_eq!(cfg.note_window, Some(5));
+        assert_eq!(cfg.tool_result_cap, Some(2048));
+    }
+
+    #[test]
+    fn test_context_strategy_tool_result_cap_default_is_2048() {
+        let cfg = ContextStrategyConfig::default();
+        assert_eq!(cfg.tool_result_cap, Some(2048));
     }
 
     #[test]

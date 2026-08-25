@@ -18,14 +18,14 @@ JYC is a channel-agnostic AI agent that operates through messaging channels. Use
 
 ## Architecture
 
-> **Architecture:** JYC follows the three-layer **core / hub / adapters**
-> model — the core (per-topic queues + workers), the hub (the websocket
-> channel, the only layer owning topics and agents), and protocol-only
-> adapters that pipe messages into the hub. All channel types are migrated;
-> the websocket channel is the only full channel. See
-> [docs/core-hub-adapters.md](docs/core-hub-adapters.md). Sections below
-> that describe per-channel TopicManagers and outbound adapters reflect the
-> legacy architecture and apply to the hub only.
+> **Architecture:** JYC follows the three-layer **channels / agents / core+AI**
+> model — pipe-only channels (Feishu, WeCom, Email, GitHub, Gitee, WeCom KF),
+> agents (first-class entities; own topics, synthesize a websocket channel),
+> and a channel-agnostic core (per-topic queues + workers + `[ai]` block).
+> See [docs/architecture/overview.md](docs/architecture/overview.md). Sections
+> below that describe per-channel TopicManagers and outbound adapters reflect
+> the legacy architecture and apply to the websocket channel synthesized by
+> an agent only.
 
 ### High-Level Flow
 
@@ -241,7 +241,7 @@ Each component has a single, clear responsibility. Data flows through the system
 - Adds `Re:` to subject, sets `In-Reply-To` and `References` headers for References
 - Does NOT build quoted history, does NOT clean or transform content
 - **Structured error handling**: Uses lettre's structured SmtpError API for error classification: permanent errors (5xx) fail immediately, transient errors (4xx) retry with exponential backoff (3 attempts, 5-60s), connection/timeout errors reconnect with backoff (2 attempts).
-- **Shared instance**: A single `SmtpClient` is created by the pipe-only email adapter at startup and shared by its reply forwarders (see `docs/core-hub-adapters.md`)
+- **Shared instance**: A single `SmtpClient` is created by the pipe-only email channel at startup and shared by its reply forwarders (see `docs/architecture/overview.md`)
 
 **Topic Event System**
 
@@ -441,10 +441,10 @@ supports_images = true      # Model-level overrides provider-level
 
 ## Feishu Channel Implementation
 
-Feishu (飞书) and WeCom Bot (`wecom_bot`) are migrated to the **core / hub / adapters**
-architecture — see [docs/core-hub-adapters.md](docs/core-hub-adapters.md). They
-are pipe-only adapters: they speak the channel protocol and pipe messages into
-a websocket hub channel; they have no TopicManager, agent service, state, or
+Feishu (飞书) and WeCom Bot (`wecom_bot`) are migrated to the **channels / agents / core+AI**
+architecture — see [docs/architecture/overview.md](docs/architecture/overview.md). They
+are pipe-only channels: they speak the channel protocol and pipe messages into
+an agent's websocket channel; they have no TopicManager, agent service, state, or
 outbound adapter of their own. Feishu was the first; wecom_bot follows the
 same pattern (with a streaming-reply twist for the WeCom passive reply window).
 
@@ -473,8 +473,8 @@ same pattern (with a streaming-reply twist for the WeCom passive reply window).
 │  Pipe wiring (jyc-cli serve/channels.rs)                     │
 │   • apply_pipe_retarget: rewrite channel/topic, resolve      │
 │     ${msg.chat_name}, record topic→chat_id mapping           │
-│   • route through the hub channel's own MessageRouter        │
-│   • reply forwarder: subscribe hub broadcast, relay via      │
+│   • route through the agent channel's own MessageRouter     │
+│   • reply forwarder: subscribe agent broadcast, relay via    │
 │     FeishuClient (attachments via inspect files endpoint)    │
 │                                                              │
 │  FeishuClient (client.rs)                                    │
@@ -497,7 +497,7 @@ base_url = "https://open.feishu.cn"
 [[channels.feishu_bot.patterns]]
 name = "mention_bot"
 enabled = true
-# Required: pipe into a websocket hub channel. A matched pattern
+# Required: pipe into an agent's websocket channel. A matched pattern
 # without `pipe` drops the message with a warning.
 pipe = { channel = "local_dev", pattern = "group_chat", topic = "${msg.chat_name}" }
 
@@ -1494,7 +1494,7 @@ Each agent mode implements this trait. Adding a new agent requires only implemen
 
 - Builds channel-formatted reply (footer, formatting)
 - Sends via channel transport
-  (email is now a pipe-only adapter — see `docs/core-hub-adapters.md`)
+  (email is now a pipe-only channel — see `docs/architecture/overview.md`)
 - Appends reply to chat log
 - Different channels (FeiShu, Slack) would implement different formatting + transport
 
@@ -1883,7 +1883,7 @@ JYC uses the following subset of the agent service API:
    (`content: "..."`) wire formats both stay valid.
 
    Full mechanism reference (turn pairing, history notes, token safety
-   nets, configuration): [docs/context-management.md](docs/context-management.md).
+   nets, configuration): [docs/architecture/context.md](docs/architecture/context.md).
 
 **Context Limits:**
 pub const MAX_BODY_IN_PROMPT: usize = 2000;
@@ -1923,8 +1923,8 @@ Topic files still provide recent conversation context
 
 ### Reply Text Building Pipeline
 
-All non-websocket channels are pipe-only adapters: they relay the agent's
-reply text as-is from the hub broadcast (see docs/core-hub-adapters.md).
+All non-websocket channels are pipe-only channels: they relay the agent's
+reply text as-is from the agent broadcast (see docs/architecture/overview.md).
 `build_footer()` (`crates/jyc-core/src/email_parser.rs`) builds the
 model/mode/tokens footer but currently has **no production caller** —
 `[channels.<name>.footer]` is inert. The agent

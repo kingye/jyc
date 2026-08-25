@@ -1,8 +1,8 @@
-# Core / Hub / Adapters — The Pipe Architecture
+# Channels, Agents, and AI — The Pipe Architecture
 
 **Status:** Reached. Feishu, wecom_bot, email, github, gitee, wecom, and
-wecomkf are all migrated — the websocket channel is the only full channel
-(hub); every other channel type is a pipe-only adapter. WeChat was removed
+wecomkf are all pipe-only channels — every channel type other than the
+synthesized agent websocket is a pipe-only channel. WeChat was removed
 instead of migrated (no production use, no migration path).
 
 ## Context
@@ -15,66 +15,49 @@ plumbing, and channel-specific behavior leaked into places it didn't belong.
 The pipe architecture splits the system into three layers with strict
 responsibilities:
 
+```mermaid
+flowchart TB
+    subgraph Channels["Channels — pipe-only<br/><i>protocol + matching + pipe</i>"]
+        direction LR
+        FS[feishu] --- WB[wecom_bot]
+        WB --- EM[email]
+        EM --- GH[github]
+        GH --- GI[gitee]
+        GI --- WC[wecom]
+        WC --- WK[wecomkf]
+    end
+    subgraph Agents["Agents — first-class entities<br/><i>behavior + own topics</i>"]
+        direction LR
+        A1[agents.invoice] --- A2[agents.jyc] --- A3[agents.jin]
+    end
+    subgraph Core["Core / AI — channel-agnostic engine<br/><i>per-topic queues + [ai] brain</i>"]
+        direction LR
+        TM[TopicManager] --- AS[Agent Service] --- MS[Message Storage] --- AI[ai block]
+    end
+    Channels -- "pipe = { agent, topic }" --> Agents
+    Agents --> Core
+    Humans["👤 TUI / dashboard"] -. bidir .-> Agents
+    style Channels fill:#e3f2fd,stroke:#1565c0
+    style Agents fill:#fff3e0,stroke:#e65100
+    style Core fill:#f3e5f5,stroke:#6a1b9a
+    style Humans fill:#fff,stroke:#666,stroke-dasharray: 5 5
 ```
-┌────────────────────────────────────────────────────────────┐
-│ Adapters (outer) — protocol only                            │
-│   feishu · wecom_bot · email · github · gitee · wecom ·     │
-│   wecomkf                                                    │
-│   platform events ⇄ InboundMessage; relay replies back      │
-└───────────────────────────┬────────────────────────────────┘
-                            │ pipe = { channel, topic, pattern }
-┌───────────────────────────▼────────────────────────────────┐
-│ Hub (middle) — the websocket channel                        │
-│   owns topics, routing, agents; outbound broadcast bus      │
-│   TUI / dashboard connect here                              │
-└───────────────────────────┬────────────────────────────────┘
-                            │ MessageRouter → TopicManager
-┌───────────────────────────▼────────────────────────────────┐
-│ Core (inner) — jyc-core                                     │
-│   per-topic message queues + worker tasks                   │
-│   (semaphore-bounded concurrency), agent service,           │
-│   message storage, templates, scheduler                     │
-└────────────────────────────────────────────────────────────┘
-```
 
-## Layer 1 — Core
+## Layer 1 — Channels (pipe-only)
 
-The core is channel-agnostic. It never sees platform-specific data — only
-`InboundMessage`, topics, and reply text.
+A channel speaks exactly one platform protocol and nothing else.
 
-- Per-topic message queues drained by worker tasks; concurrency bounded by a
-  semaphore.
-- Agent service (in-process agent), message storage, template resolution, job
-  scheduler.
-- One core instance per hub channel; adapters have no core presence.
-
-## Layer 2 — Hub
-
-The hub is the websocket channel — the **only** channel type that owns topics,
-routing, and agent wiring.
-
-- Inbound adapter + outbound broadcast bus (`tokio::sync::broadcast`) per hub
-  channel.
-- Replies are broadcast as `{"type":"reply","topic","text","attachments":[...]}`
-  payloads.
-- Humans (TUI, dashboard chat panes) and adapters are symmetric spokes of the
-  hub: both submit messages into topics and both can subscribe to replies.
-
-## Layer 3 — Adapters
-
-An adapter speaks exactly one platform protocol and nothing else.
-
-**An adapter MUST:**
+**A channel MUST:**
 
 - translate platform events into `InboundMessage` (with platform metadata:
   chat_id, chat_name, mentions, sender),
-- match its own patterns and re-target matching messages into a hub channel
-  via `pipe = { channel, topic?, pattern? }`,
-- record the resolved hub topic → platform address mapping for reply relay,
+- match its own patterns and re-target matching messages into an agent
+  channel via `pipe = { agent, topic?, pattern? }`,
+- record the resolved agent topic → platform address mapping for reply relay,
 - subscribe to the pipe target's broadcast and relay replies (text +
   attachments) back to the platform.
 
-**An adapter MUST NOT:**
+**A channel MUST NOT:**
 
 - create a TopicManager, agent service, or outbound adapter,
   and no conversation state manager (a *protocol* cursor is allowed — see
@@ -86,30 +69,112 @@ A matched pattern without `pipe` is a configuration error: the message is
 dropped with a warning at runtime, and startup logs a warning for each such
 pattern.
 
+## Layer 2 — Agents
+
+An agent is a first-class entity declared under `[agents.<name>]`. Each
+agent synthesizes a websocket channel — the **only** channel type that owns
+topics, routing, and agent wiring.
+
+- `[agents.<name>]` produces a websocket channel (`channel_type = "websocket"`,
+  `channel_name = "agents"`) with one implicit pattern per agent.
+- Inbound adapter + outbound broadcast bus (`tokio::sync::broadcast`) per
+  agent channel.
+- Replies are broadcast as `{"type":"reply","topic","text","attachments":[...]}`
+  payloads.
+- Humans (TUI, dashboard chat panes) and pipe-only channels are symmetric
+  spokes of the agent: both submit messages into topics and both can
+  subscribe to replies.
+
+```mermaid
+flowchart LR
+    subgraph Cfg["[channels.feishu_bot]"]
+        P1["pattern 'mentions'"]
+        P2["pattern 'tasks'"]
+    end
+    P1 -- "pipe.agent" --> A1["agents.jyc"]
+    P1 -- "pipe.topic" --> T1["topic: ${msg.chat_name}"]
+    P2 -- "pipe.agent" --> A2["agents.jin"]
+    P2 -- "pipe.topic" --> T2["topic: 'tasks'"]
+    A1 -- synthesizes --> WS1["websocket channel<br/>(name='agents')"]
+    A2 -- synthesizes --> WS2["websocket channel<br/>(name='agents')"]
+    style Cfg fill:#e3f2fd,stroke:#1565c0
+    style WS1 fill:#fff3e0,stroke:#e65100
+    style WS2 fill:#fff3e0,stroke:#e65100
+```
+
+## Layer 3 — Core / AI
+
+The core is channel-agnostic. It never sees platform-specific data — only
+`InboundMessage`, topics, and reply text.
+
+- Per-topic message queues drained by worker tasks; concurrency bounded by a
+  semaphore.
+- Agent service (in-process agent), message storage, template resolution, job
+  scheduler.
+- One core instance per agent channel; pipe-only channels have no core
+  presence.
+- The single `[ai]` block is the shared brain — model providers, prompts,
+  thinking, iteration limits, applied uniformly to every agent.
+
+### Context shaping
+
+How a topic's per-message JSONL history is sliced and shaped for the LLM
+request is governed by the context strategy — a separate concern from the
+layer architecture itself.
+
+**See [Context](context.md)** for the full treatment: data plane, `full`
+vs `sliding_window`, the ①②③ regions, `note_window`, `tool_result_cap`,
+token safety nets, and override files.
+
 ## Message flow
 
 **Inbound** (feishu example):
 
-```
-Feishu platform ──WS──► adapter: parse event → InboundMessage (+ metadata)
-                        → FeishuMatcher pattern match
-                        → apply_pipe_retarget: rewrite channel/topic,
-                          resolve ${msg.chat_name}, record topic→chat_id
-                        → hub channel's MessageRouter → core worker → agent
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant P as Platform<br/>(Feishu / Email / GitHub / ...)
+    participant C as Channel<br/>(pipe-only)
+    participant MR as Agent's<br/>MessageRouter
+    participant W as Worker Task
+    participant A as Agent Service<br/>([ai] block)
+
+    User->>P: send message
+    P->>C: platform event<br/>(WS frame, IMAP fetch, webhook)
+    C->>C: parse → InboundMessage<br/>match patterns
+    C->>C: apply_pipe_retarget<br/>resolve agent + topic<br/>record topic→address
+    C->>MR: InboundMessage<br/>(stamped with agent+topic)
+    MR->>W: enqueue
+    W->>A: prompt + history
+    A-->>W: reply text + attachments
+    W-->>MR: write reply to topic
+    Note over MR,A: reply broadcast on agent's<br/>WebsocketOutboundAdapter
 ```
 
 **Outbound:**
 
-```
-agent reply → hub's WebsocketOutboundAdapter → broadcast {"type":"reply",...}
-            → adapter's reply forwarder (subscribed to that broadcast)
-            → topic→chat_id lookup → FeishuClient.send_text_message
-            → attachments: download via inspect files endpoint,
-              apply [attachments.outbound] policy, re-upload to platform
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Agent Service
+    participant BO as Agent's<br/>WebsocketOutboundAdapter
+    participant C as Channel's<br/>reply forwarder
+    participant P as Platform
+
+    A->>BO: write reply.md
+    BO-->>C: broadcast {type:"reply",<br/>topic, text, attachments}
+    C->>C: topic → chat_id lookup<br/>(in-memory map)
+    alt hit
+        C->>P: platform API send<br/>(message + attachments)
+    else miss
+        C->>C: drop + log<br/>(map is empty until next inbound)
+    end
+    Note over C,P: GitHub: also post<br/>via create_comment API
 ```
 
-Proactive sends follow the same path: `jyc_send_message` to the hub channel
-broadcasts a `reply` payload keyed by topic, which the adapter's forwarder
+Proactive sends follow the same path: `jyc_send_message` to an agent channel
+broadcasts a `reply` payload keyed by topic, which the channel's forwarder
 relays. Known limitation: the topic→address mapping is in-memory and rebuilt
 on inbound traffic, so proactive sends right after restart are dropped until
 the next inbound message. Persisting the mapping (e.g. a `.jyc/` file in the
@@ -118,18 +183,19 @@ topic directory) is a planned follow-up.
 ## Design rules
 
 1. Core MUST NOT contain platform-specific code.
-2. The hub is the only place where topics, agents, and templates exist.
-3. New platform support = new adapter, never a new full channel.
-4. Adapters run **in-process** today (in-process re-targeting + broadcast
-   subscription). The adapter↔hub seam — the pipe re-target contract and the
-   broadcast payload schema — is the designated boundary where an
-   **external-process adapter** (e.g. a Node.js adapter connecting over real
+2. The agent (its synthesized websocket channel) is the only place where
+   topics, behavior, and templates exist.
+3. New platform support = new pipe-only channel, never a new full channel.
+4. Channels run **in-process** today (in-process re-targeting + broadcast
+   subscription). The channel↔agent seam — the pipe re-target contract and
+   the broadcast payload schema — is the designated boundary where an
+   **external-process channel** (e.g. a Node.js adapter connecting over real
    WebSocket) may attach in the future. Changes to this seam must keep that
-   option open; do not couple adapters to core internals beyond this contract.
+   option open; do not couple channels to core internals beyond this contract.
 
 ## Feishu — first migration
 
-Feishu is the reference implementation. After cleanup, the adapter retains
+Feishu is the reference implementation. After cleanup, the channel retains
 only:
 
 - `client.rs` — Feishu API client (send text/image/file, upload, name lookups)
@@ -146,13 +212,13 @@ registration, and topic-close handling (a no-op for piped topics).
 ## WeCom Bot — second migration
 
 `wecom_bot` (WeCom Smart Robot, WebSocket long connection) follows the
-same pipe-only migration as feishu. The adapter retains only:
+same pipe-only migration as feishu. The channel retains only:
 
 - `client.rs` — WebSocket lifecycle (connect, subscribe, heartbeat, reconnect).
 - `inbound.rs` — WebSocket frames → `InboundMessage` (with attach-download via
   `media::process_bot_attachments` for image/file/mixed).
 - `outbound.rs` — wire-format helpers only (streaming reply, attachment
-  upload, media body), re-exported as `pub` so the pipe adapter drives
+  upload, media body), re-exported as `pub` so the pipe channel drives
   them directly.
 - The new `spawn_wecom_bot_adapter` in `crates/jyc-cli/src/cli/serve/channels.rs`.
 
@@ -160,9 +226,9 @@ Removed in the migration: the `WecomBotOutboundAdapter` registration in
 `build_outbound_adapter`, the `"wecom_bot"` arm in `InboundSpawner::spawn`,
 the `wecom_bot_handle_arc` plumbing, and the channel-specific processing
 indicator / progress spinner code in `TopicManager::worker` (the core
-stays channel-agnostic — the pipe adapter owns the streaming reply).
+stays channel-agnostic — the pipe channel owns the streaming reply).
 The `WecomBotOutboundAdapter` struct itself was deleted afterwards
-(#599) — with the pipe adapter driving the free functions, nothing
+(#599) — with the pipe channel driving the free functions, nothing
 constructed it.
 
 **Placeholders.** Unlike feishu, wecom_bot does not populate a
@@ -172,14 +238,14 @@ chat_name, ...) — `channel_uid` unifies group chat (chatid) and single
 chat (userid) in one template (`topic = "bot-${msg.channel_uid}"`).
 
 **Streaming reply.** Because the WeCom passive reply window is short and
-the agent can take minutes, the adapter sends a `finish=false` streaming
+the agent can take minutes, the channel sends a `finish=false` streaming
 indicator immediately on inbound (the user-visible "thinking…" message).
 The reply forwarder completes the stream with `finish=true` and sends
 any attachments via proactive `aibot_send_msg` (no window constraint).
 
 ## Email — third migration
 
-Email (IMAP in, SMTP out) follows the same pipe-only migration. The adapter
+Email (IMAP in, SMTP out) follows the same pipe-only migration. The channel
 retains only:
 
 - `jyc-services/src/imap/` — IMAP client, monitor loop (IDLE/poll), raw email
@@ -195,10 +261,10 @@ Removed in the migration: `EmailOutboundAdapter` (whole file), the dead
 `email_parser::build_full_reply_text`, and the `"email"` arms in
 `build_outbound_adapter` / `InboundSpawner::spawn`.
 
-**Mailbox cursor state.** Unlike feishu/wecom_bot, the email adapter keeps a
+**Mailbox cursor state.** Unlike feishu/wecom_bot, the email channel keeps a
 `StateManager` at `<workdir>/channels/<channel_name>/.imap/` — the IMAP
 sequence number + processed UIDs. That is protocol-level dedup state, not
-conversation state, so it stays with the adapter. `--reset` clears it;
+conversation state, so it stays with the channel. `--reset` clears it;
 `--no-idle` forces poll mode. (The generic per-channel `StateManager` in
 `serve/mod.rs` went away with this migration: email was its only consumer.)
 
@@ -215,7 +281,7 @@ topic). The useful email keys are `${msg.from}` (one topic per sender) and
 (`email_parser::strip_reply_prefix`), configured pattern prefixes and
 filesystem sanitization by `derive_topic_name`. So `topic = "mail-${msg.topic}"`
 turns a `Re: Fw: Invoice 42` subject into the topic `mail-Invoice 42`. The
-adapter sets `message.topic` to the derived name before retargeting, which is
+channel sets `message.topic` to the derived name before retargeting, which is
 what makes the placeholder see the pattern-stripped value.
 
 **Reply threading.** The forwarder keeps a `topic → { recipient, subject,
@@ -229,7 +295,7 @@ share one entry (last writer wins).
 stripped); the model/mode/token footer is gone, so `[channels.<name>.footer]`
 no longer applies to email channels. Per-pattern
 `[channels.<name>.patterns.attachments]` also stops applying at route time
-(the hub channel's patterns are matched there) — the global
+(the agent channel's patterns are matched there) — the global
 `[attachments.inbound]` policy still applies, same as feishu/wecom_bot.
 
 ## GitHub
@@ -250,7 +316,7 @@ Removed: `GithubOutboundAdapter` (whole file), the `"github"` arms in
 `build_outbound_adapter` / `InboundSpawner::spawn`, and — repo-wide — the
 `repo_group` shared-repo feature.
 
-**Dedup/cursor state.** Like email, the adapter keeps its own protocol state,
+**Dedup/cursor state.** Like email, the channel keeps its own protocol state,
 at `<workdir>/channels/<channel_name>/.github/` (processed comments, seen
 issues, CI status, close-event notifications). A one-time rename migrates the
 old `<workdir>/<channel_name>/.github/` location on first start; if the rename
@@ -291,24 +357,24 @@ prefix is preserved — it is also how the poller recognizes its own comments an
 avoids self-loops (`extract_comment_role`). There is **no** model/mode/token
 footer, and GitHub comments carry no attachments (reply attachments are
 ignored, same as before the migration). Same in-memory limitation as the other
-adapters: the map is rebuilt from inbound traffic after a restart.
+channels: the map is rebuilt from inbound traffic after a restart.
 
-**Close events.** A closed issue/PR must close the topics in the *hub*
-workspace, which a pipe-only adapter cannot find by scanning its own
+**Close events.** A closed issue/PR must close the topics in the *agent's*
+workspace, which a pipe-only channel cannot find by scanning its own
 (nonexistent) workspace. `InboundAdapterOptions` therefore carries an
 `on_close_event: CloseEventCallback` (item number + `issue` /
 `pull_request`). The topic name is a pure function of `pipe.topic` and the
-number, so the adapter re-renders every enabled pattern's topic template for
+number, so the channel re-renders every enabled pattern's topic template for
 that number instead of trusting memory: the in-memory topic map is empty after
 a restart, so a close event for an item routed before the restart used to close
 nothing (#611). Both sources are unioned, so `review-5` and `dev-5` still close
 together. Only number-dependent templates participate — a static `pipe.topic`
 collects many items into one shared topic that must survive any single item
 closing — and `${msg.pr_number}` / `${msg.issue_number}` stay type-gated as at
-routing time, so an issue close never resolves a PR topic. The hub's
-`TopicManager` is reached through the shared hub registry, which carries
-`(MessageRouter, TopicManager)` per hub channel. wecom keeps using
-the name-based `on_topic_close` and is unaffected. Feishu reports
+routing time, so an issue close never resolves a PR topic. Each agent channel
+carries a `(MessageRouter, TopicManager)` pair; the close-event handler
+reaches the agent's TopicManager through the agent registry. wecom keeps
+using the name-based `on_topic_close` and is unaffected. Feishu reports
 `im.chat.disbanded_v1` over the same callback (carrying the upstream chat_id);
 the serve layer reverse-maps it via its topic→chat_id relay map and closes
 every piped topic for that chat. **All** auto-close paths funnel into
@@ -318,13 +384,29 @@ custom `topic_path` (e.g. a real project checkout) are skipped with an info
 log, and canonicalization blocks symlink escapes. Manual `/close` (with
 `--confirm`) still uses the unguarded `close_topic`.
 
+```mermaid
+stateDiagram-v2
+    [*] --> Open: PR / issue opened
+    Open --> Open: comment / label
+    Open --> Closing: platform close event
+    Closing --> ResolvedTopics: re-render<br/>pipe.topic templates<br/>(for every enabled pattern)
+    ResolvedTopics --> Closed: enumerate topic dirs<br/>under each agent's data dir
+    Closed --> [*]
+    note right of ResolvedTopics
+        Per #611: topic map is empty
+        after restart. Re-derive
+        from pipe.topic + number,
+        not from in-memory state.
+    end note
+```
+
 **No templates — initialization is a skill.** GitHub/Gitee patterns no longer
 inject a `template`; the agent initializes its own topic directory by following
 an init skill. Skills are discovered from the layered skill roots, so
 `{workdir}/skills/<name>/SKILL.md` is visible to every topic — that is where the
 init skill belongs. Note that per-pattern `skills`, `mode`, and `attachments`
-settings on GitHub/Gitee patterns stop applying (the hub channel's patterns are
-matched at route time), same as the other pipe-only adapters. The `template`
+settings on GitHub/Gitee patterns stop applying (the agent channel's patterns
+are matched at route time), same as the other pipe-only channels. The `template`
 machinery itself stays for wecom.
 
 Two ready-made skills ship in `skills/`; copy them into `{workdir}/skills/`:
@@ -350,7 +432,7 @@ by the existing topic-root scan.
 
 Gitee (REST polling in, issue/PR comments out) follows the same pipe-only
 migration as GitHub: no initialization templates, no shared repo directories,
-topics live in the pipe target (hub) channel.
+topics live in the pipe target (agent) channel.
 
 Retained:
 
@@ -362,7 +444,7 @@ Retained:
 Removed: `GiteeOutboundAdapter` (whole file, plus its inclusion in `mod.rs`),
 and the `"gitee"` arms in `build_outbound_adapter` / `InboundSpawner::spawn`.
 
-**Dedup/cursor state.** Like GitHub, the adapter keeps its own protocol state,
+**Dedup/cursor state.** Like GitHub, the channel keeps its own protocol state,
 at `<workdir>/channels/<channel>/.gitee/` (processed comments, seen issues,
 close-event notifications). A one-time rename migrates the old
 `<workdir>/<channel>/.gitee/` location on first start; if the rename fails,
@@ -385,8 +467,8 @@ type as well as number, so closing issue #5 never touches a PR #5 topic.
 
 **Close events.** A closed issue/PR re-renders every enabled pattern's topic
 template for that number via `close_event_topics` (same restart-proof logic as
-GitHub) and unions the in-memory routed topics (type-filtered). The hub's
-`TopicManager` is reached through the shared hub registry.
+GitHub) and unions the in-memory routed topics (type-filtered). The agent's
+`TopicManager` is reached through the agent registry.
 
 **No templates — initialization is a skill.** Same design as GitHub; the
 skills are `gitee-init` (plain `git clone` — Gitee has no `gh` CLI),
@@ -428,7 +510,7 @@ Retained:
 
 Removed: `WecomKfOutboundAdapter`, the `wecomkf` arms in
 `build_outbound_adapter` / `InboundSpawner`, and the shared
-`wecomkf_kf_client` plumbing in `serve` (the adapter builds its own
+`wecomkf_kf_client` plumbing in `serve` (the channel builds its own
 `KfApiClient`). The `channel == "wecomkf"` special-case in
 `chat_log_store` was generalized — topic.json `user_name` fallback now
 applies to every channel.
@@ -436,11 +518,11 @@ applies to every channel.
 Replies stay text-only: attachments were already ignored by the
 pre-migration outbound adapter, and the migration keeps that behavior.
 
-Known limitation (same as every other pipe adapter): the relay maps are
+Known limitation (same as every other pipe channel): the relay maps are
 in-memory, so after a daemon restart a reply to a topic whose last
 inbound message predates the restart is skipped until the user speaks
 again. The pre-migration KF adapter had a topic.json fallback for this;
-post-migration it is dropped deliberately — the hub topic still records
+post-migration it is dropped deliberately — the agent topic still records
 `open_kfid`/`external_userid` in topic.json (written by the core
 worker), so a future fallback can be built without protocol changes.
 
@@ -448,8 +530,16 @@ Startup credential checks (`verify_connectivity`) run as background
 tasks at spawn time and log errors, replacing the pre-migration
 fail-fast `connect()`.
 
-## Migrating other channels
+## Migrating new channels
 
-None left — all channel types are pipe-only adapters now. New channel
-types must be born pipe-only: protocol code + matcher + pipe wiring, no
+None left — all channel types are pipe-only now. New channel types must
+be born pipe-only: protocol code + matcher + pipe wiring, no
 TopicManager/agent/outbound-adapter registration.
+
+## See also
+
+- [Context](context.md) — how each agent shapes its LLM request
+- [`DESIGN.md`](../DESIGN.md) — system architecture overview
+- [`config.example.toml`](../config.example.toml) — full config reference
+- [`agents.example.md`](../agents.example.md) — `[agents.<name>]` reference
+- [`docs/channels/*.md`](../channels/) — per-channel setup guides

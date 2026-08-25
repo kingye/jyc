@@ -409,7 +409,8 @@ pub async fn read_context_strategy_override(topic_path: &Path) -> Option<Context
 /// Resolve the `ContextStrategyConfig` for a topic from config alone.
 ///
 /// Priority: matched pattern > first pattern > global `[ai].context_strategy` >
-/// `ContextStrategyConfig::default()` (full / window=10).
+/// `ContextStrategyConfig::default()` (sliding_window / window=10 /
+/// note_window=3 / tool_result_cap=2048).
 ///
 /// Pass `matched_pattern = Some(name)` when the caller has access to the
 /// pattern that created the topic (e.g. `process()` with
@@ -1102,11 +1103,13 @@ mode = "agent"
     }
 
     #[test]
-    fn resolve_context_strategy_default_is_full_window10() {
+    fn resolve_context_strategy_default_is_sliding_window_10_3_2048() {
         let app = config_with_strategies(vec![], None);
         let resolved = resolve_context_strategy(&app, "c", Some("a"));
-        assert_eq!(resolved.mode, ContextStrategy::Full);
+        assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
         assert_eq!(resolved.window, 10);
+        assert_eq!(resolved.note_window, Some(3));
+        assert_eq!(resolved.tool_result_cap, Some(2048));
     }
 
     #[tokio::test]
@@ -1123,8 +1126,9 @@ mode = "agent"
         let cfg = read_context_strategy_override(tmp.path()).await.unwrap();
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 3);
-        // Old override files without note_window still parse.
-        assert_eq!(cfg.note_window, None);
+        // Old override files without note_window still parse, picking up
+        // the struct default of `Some(3)`.
+        assert_eq!(cfg.note_window, Some(3));
     }
 
     #[tokio::test]
@@ -1214,9 +1218,9 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn read_context_strategy_override_tool_result_cap_missing_is_none() {
-        // Legacy override file without the field — must still parse and
-        // yield tool_result_cap = None.
+    async fn read_context_strategy_override_tool_result_cap_missing_uses_default() {
+        // Legacy override file without the field still parses, picking up
+        // the struct default of `Some(2048)`.
         let tmp = tempfile::tempdir().unwrap();
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
@@ -1227,6 +1231,6 @@ mode = "agent"
         .await
         .unwrap();
         let cfg = read_context_strategy_override(tmp.path()).await.unwrap();
-        assert_eq!(cfg.tool_result_cap, None);
+        assert_eq!(cfg.tool_result_cap, Some(2048));
     }
 }

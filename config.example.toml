@@ -122,8 +122,8 @@ pipe = { agent = "jin" }
 # history is sent to the LLM on each request. The on-disk
 # .jyc/agent-context.json always stores the full raw context unchanged;
 # this field only shapes the wire payload.
-# mode: "full" (default) | "sliding_window" (alias "sliding")
-# window: user+assistant turns to keep in sliding_window mode (default: 10).
+# mode: "full" | "sliding_window" (alias "sliding"). Default: "sliding_window".
+# window: user+assistant turns to keep in sliding_window mode. Default: 10.
 # In sliding_window mode the send context carries the last N text pairs
 # plus the current turn verbatim (tool calls / results intact).
 # Note: window counts TURNS, not tokens — a turn's folded tool-call
@@ -131,14 +131,13 @@ pipe = { agent = "jin" }
 # windowed part's token size is bounded per annotation but not per turn.
 # note_window: in sliding_window mode, only the most recent M windowed
 # turns carry tool-call history notes; older turns are text-only.
-# Default: unset = notes on all windowed turns. 0 = no notes at all.
+# Default: 5. 0 = no notes at all.
 # tool_result_cap: in sliding_window mode, cap each tool result in the
 # verbatim prior region (region ②; the current turn is never truncated)
 # at N bytes. Truncated
 # results are suffixed with '… [truncated N bytes]'. Only meaningful
-# when note_window > 0 (otherwise nothing is verbatim). Default: unset
-# = off (every tool result sent in full).
-# context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 5000 }
+# when note_window > 0 (otherwise nothing is verbatim). Default: 2048.
+# context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
 
 # Custom filesystem path for the topic directory.
 # When set, the topic's working directory is this path instead of the
@@ -473,16 +472,16 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # Default context management strategy. Per-pattern `context_strategy`
 # takes priority. Overridden at runtime by the `.jyc/context-strategy.json`
 # file written by `/context`.
-# mode: "full" (default) | "sliding_window" (alias "sliding")
-# window: user+assistant turns to keep in sliding_window mode (default: 10)
+# mode: "full" | "sliding_window" (alias "sliding"). Default: "sliding_window".
+# window: user+assistant turns to keep in sliding_window mode. Default: 10.
 # note_window: in sliding_window mode, only the most recent M windowed
 # turns carry tool-call history notes; older turns are text-only.
-# Default: unset = notes on all windowed turns. 0 = no notes at all.
+# Default: 5. 0 = no notes at all.
 # tool_result_cap: in sliding_window mode, cap each tool result in the
 # verbatim prior region (region ②; the current turn is never truncated)
 # at N bytes. Truncated
-# results are suffixed with '… [truncated N bytes]'. Default: unset = off.
-# context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 5000 }
+# results are suffixed with '… [truncated N bytes]'. Default: 2048.
+# context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
 
 
 [ai.attachments]
@@ -1083,12 +1082,12 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # auto_reset_threshold = 0.95
 # note_window: in sliding_window mode, only the most recent M windowed
 # turns carry tool-call history notes; older turns are text-only.
-# Default: unset = notes on all windowed turns. 0 = no notes at all.
+# Default: 5. 0 = no notes at all.
 # tool_result_cap: in sliding_window mode, cap each tool result in the
 # verbatim prior region (region ②; the current turn is never truncated)
 # at N bytes. Truncated results are suffixed with
-# '… [truncated N bytes]'. Default: unset = off.
-# context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 5000 }
+# '… [truncated N bytes]'. Default: 2048.
+# context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
 # attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
 
 # --- Channel: WebSocket (LEGACY — deprecated) ---

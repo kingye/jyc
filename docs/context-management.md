@@ -50,11 +50,12 @@ pairing stays valid mid-loop.
 Configured via `context_strategy` (see [Configuration](#configuration));
 changeable at runtime with the `/context` command.
 
-### `full` (default)
+### `full`
 
 Sends the entire raw context on every request — `build_send_context`
 returns `Cow::Borrowed`, a zero-copy borrow. Simple, accurate, and grows
 linearly with conversation length until a token safety net fires.
+Not the default — opt in via `context_strategy = { mode = "full" }`.
 
 ### `sliding_window`
 
@@ -181,7 +182,7 @@ user/assistant text itself, not the notes.
 window compact to text-only. Boundary cases (matching
 `verbatim_start_index` + `build_send_context`):
 
-- **Unset (default)** — the entire prior becomes verbatim and `window`
+- **Unset** — the entire prior becomes verbatim and `window`
   is effectively ignored. The implementation substitutes
   `usize::MAX`, so `verbatim_start_index` finds no `M`-th turn and
   returns 0. To get a `window`-bounded prior, set `note_window`
@@ -342,7 +343,7 @@ Manual `/reset` uses the same `reset_compression` config as auto-reset.
 ```toml
 # Global default for all channels/topics
 [ai]
-context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 5000 }
+context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
 max_input_tokens = 122880        # optional; default = 95% of detected model context
 auto_reset_threshold = 0.95      # fraction of context window that triggers reset
 reset_compression = { mode = "heuristic", keep_pairs = 3 }
@@ -352,7 +353,7 @@ reset_compression = { mode = "heuristic", keep_pairs = 3 }
 context_strategy = { mode = "full" }
 ```
 
-`mode` accepts `full` (default) or `sliding_window` (alias `sliding`).
+`mode` accepts `full` or `sliding_window` (alias `sliding`; default).
 `window` counts **turns**, not messages or tokens. `note_window` is
 optional (unset = entire prior verbatim, `window` ignored; `0` = pure
 text window of the last `window` pairs) — see `note_window` above for
@@ -387,9 +388,9 @@ user/assistant pairs, no tool results to cap.
 
 | Value | Behavior |
 |-------|----------|
-| unset / absent | Every tool result is sent in full (default). |
+| unset / absent | Every tool result is sent in full. |
 | `Some(0)` | Explicit "off" sentinel — same as unset. |
-| `Some(N > 0)` | Cap each tool result in region ② (verbatim prior) at `N` bytes. The current turn (region ③) is never truncated. |
+| `Some(N > 0)` | Cap each tool result in region ② (verbatim prior) at `N` bytes. The current turn (region ③) is never truncated. Default `2048`. |
 
 **Resolution layer:** follows the same chain as the rest of
 `ContextStrategyConfig` (override file → matched pattern → first
@@ -416,7 +417,7 @@ auto-reset).
 2. Matched pattern's `context_strategy` (or synthesized `[agents.<name>]`)
 3. First pattern fallback
 4. Global `[ai].context_strategy`
-5. Built-in default: `full` / `window = 10`
+5. Built-in default: `sliding_window` / `window = 10` / `note_window = 3` / `tool_result_cap = 2048`
 
 **Runtime commands:**
 
@@ -424,7 +425,7 @@ auto-reset).
 |---------|--------|
 | `/context` | Show current strategy and its source (`override` / `default`) |
 | `/context full` | Send the full context |
-| `/context sliding [N] [M] [CAP]` | Sliding window, N turns (default 10, max 200); M = note window (default 5, max 200); CAP = tool-result byte cap on verbatim region (0..1 MiB, default off) |
+| `/context sliding [N] [M] [CAP]` | Sliding window, N turns (default 10, max 200); M = note window (default 3, max 200); CAP = tool-result byte cap on verbatim region (0..1 MiB, default 2048) |
 | `/context reset` | Remove the runtime override, revert to configured default |
 
 ## Code map

@@ -23,8 +23,8 @@ max_queue_size_per_topic = 10
 # max_jobs_per_topic = 10   # Max jobs per topic (prevents unbounded creation)
 
 # --- Channel: jiny283 (email, pipe-only) ---
-# Email is a pipe-only adapter (see docs/core-hub-adapters.md): it owns no
-# topics or agents — every enabled pattern must pipe into a hub channel /
+# Email is a pipe-only channel (see docs/architecture/overview.md): it owns no
+# topics or agents — every enabled pattern must pipe into an agent channel /
 # agent. IMAP still receives and SMTP still replies (threaded into the
 # original mail thread); only the mailbox cursor lives with the adapter, at
 # <workdir>/channels/<channel_name>/.imap/.
@@ -74,7 +74,7 @@ folder = "INBOX"
 name = "xxx"
 enabled = true
 
-# Required: pipe messages matching this pattern into a hub channel / agent.
+# Required: pipe messages matching this pattern into an agent channel / agent.
 # Without `topic`, the subject-derived topic name is used (prefixes stripped),
 # i.e. one topic per mail subject — email's natural topic identity.
 #   pipe = { agent = "jin" }                       # topic = subject
@@ -171,7 +171,7 @@ exact = ["kingye@petalmail.com"]
 prefix = ["283", "jiny"]
 
 # NOTE: per-pattern attachment policy does not apply to pipe-only channels
-# (the hub channel's patterns are matched at route time); the global
+# (the agent channel's patterns are matched at route time); the global
 # [attachments.inbound] policy still applies.
 [channels.jiny283.patterns.attachments]
 enabled = true
@@ -243,9 +243,9 @@ max_file_size = "25mb"
 max_per_message = 10
 
 # --- Feishu Adapter Example (pipe-only) ---
-# Feishu is a pipe-only adapter (see docs/core-hub-adapters.md): it owns no
+# Feishu is a pipe-only channel (see docs/architecture/overview.md): it owns no
 # topics, agents, or state — every enabled pattern must pipe into a websocket
-# hub channel. Uncomment and configure for Feishu/Lark integration.
+# agent channel. Uncomment and configure for Feishu/Lark integration.
 [channels.feishu_bot]
 type = "feishu"
 #
@@ -263,9 +263,8 @@ heartbeat_interval_secs = 30
 [[channels.feishu_bot.patterns]]
 name = "feishu_bot"
 enabled = true
-# Required: pipe messages matching this pattern into a websocket hub
-# channel. The message is re-targeted and routed through the hub channel's
-# own router (identical to a chat-pane message), so the hub pattern's
+# Required: pipe messages matching this pattern into an agent's websocket channel. The message is re-targeted and routed through the agent channel's
+# own router (identical to a chat-pane message), so the agent pattern's
 # topic_path/template/skills apply. A matched pattern without `pipe` drops
 # the message with a warning.
 #
@@ -639,7 +638,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # --- Channel: Gitee Repository ---
 # Enables multi-agent workflow on Gitee issues and PRs.
 # Pipe-only adapter: the poller matches patterns and re-targets each event
-# into a hub channel / agent topic; a reply forwarder posts agent replies
+# into an agent channel / agent topic; a reply forwarder posts agent replies
 # back as issue/PR comments. State (dedup/cursor) lives under
 # <workdir>/channels/<channel>/.gitee/. Topic initialization is a skill
 # (gitee-init), not a per-pattern template.
@@ -704,7 +703,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # --- Channel: GitHub Repository ---
 # Enables multi-agent workflow on GitHub issues and PRs.
 # Pipe-only adapter: the poller matches patterns and re-targets each event
-# into a hub channel / agent topic; a reply forwarder posts agent replies
+# into an agent channel / agent topic; a reply forwarder posts agent replies
 # back as issue/PR comments. State (dedup/cursor) lives under
 # <workdir>/channels/<channel>/.github/. Topic initialization is a skill
 # (github-init), not a per-pattern template.
@@ -923,8 +922,8 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # corp_id = "ww1234567890abcdef"
 # corp_secret = "${WECOM_CORP_SECRET}"
 #
-# # wecom is a pipe-only adapter: every pattern must name a pipe target.
-# # Messages are routed into the hub channel; replies are relayed back to
+# # wecom is a pipe-only channel: every pattern must name a pipe target.
+# # Messages are routed into the agent channel; replies are relayed back to
 # # the chat group. Useful ${msg.<key>} placeholders for pipe.topic:
 # #   ${msg.chat_id} — group chat id; ${msg.from_user} — sender user id
 # [[channels.my_wecom_bot.patterns]]
@@ -974,7 +973,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # # Default: 300 (5 minutes). Set to 0 to disable age filtering.
 # # # max_message_age_seconds = 300
 # #
-# # # wecomkf is a pipe-only adapter: every pattern must name a pipe
+# # # wecomkf is a pipe-only channel: every pattern must name a pipe
 # # # target. One topic per customer per KF account via placeholders:
 # # #   ${msg.open_kfid} — KF account; ${msg.external_userid} — customer;
 # # #   ${msg.user_name} — customer display name (when available)
@@ -990,8 +989,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # --- Channel: WeCom Smart Robot (wecom_bot) ---
 #
 # Pipe-only adapter (same shape as feishu). The protocol layer keeps
-# the WebSocket connection and forwards inbound messages to a hub
-# channel (websocket or synthesized agents channel); the hub's agent
+# the WebSocket connection and forwards inbound messages to an agent's websocket channel (websocket or synthesized agents channel); the agent
 # produces the reply, which the adapter relays back via the WebSocket
 # streaming reply (`aibot_respond_msg` + `msgtype: stream`,
 # `finish=false` on receipt, `finish=true` on reply). Outbound
@@ -1028,7 +1026,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # [[channels.my_wecom_bot.patterns]]
 # name = "bot_all"
 # enabled = true
-# # Reach the agent named `jin`; one hub topic per group chat.
+# # Reach the agent named `jin`; one agent topic per group chat.
 # pipe = { agent = "jin", topic = "bot-${msg.channel_uid}" }
 #
 # [channels.my_wecom_bot.patterns.rules]

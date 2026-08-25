@@ -13,10 +13,10 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 ///   /context              Show current strategy
 ///   /context full         Switch to full context (send everything)
 ///   /context sliding [N] [M] [CAP]
-///     Switch to sliding window (default N = 10 turns). M is the optional
+///     Switch to sliding window (default N = 15 turns). M is the optional
 ///     note window: only the most recent M windowed turns carry tool-call
-///     history notes (default: all N). CAP is the optional per-tool-result
-///     byte cap on the verbatim region (default: off). 0 in any slot keeps
+///     history notes (default: 5). CAP is the optional per-tool-result
+///     byte cap on the verbatim region (default: 2048). 0 in any slot keeps
 ///     the configured value.
 ///   /context reset        Remove runtime override (revert to configured default)
 ///   /context dump [on|off]
@@ -470,8 +470,8 @@ mode = "agent"
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["mode"], "sliding_window");
-        // No explicit window → falls back to the configured default (10).
-        assert_eq!(v["window"], 10);
+        // No explicit window → falls back to the configured default (15).
+        assert_eq!(v["window"], 15);
     }
 
     #[tokio::test]

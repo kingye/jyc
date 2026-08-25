@@ -358,7 +358,8 @@ mode = "agent"
         let ctx = test_context(tmp.path());
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        assert!(result.message.contains("full"));
+        // Default strategy is now sliding_window (per #656).
+        assert!(result.message.contains("sliding_window"));
         assert!(result.message.contains("default"));
     }
 
@@ -375,9 +376,9 @@ mode = "agent"
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["mode"], "full");
-        // full preserves the configured window (10) so toggling
+        // full preserves the configured window (default 15) so toggling
         // full → sliding later still has a sensible default.
-        assert_eq!(v["window"], 10);
+        assert_eq!(v["window"], 15);
     }
 
     #[tokio::test]
@@ -442,7 +443,7 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn test_sliding_without_note_window_omits_field() {
+    async fn test_sliding_without_note_window_uses_default_5() {
         let tmp = tempfile::tempdir().unwrap();
         let handler = ContextCommandHandler;
         let mut ctx = test_context(tmp.path());
@@ -453,8 +454,11 @@ mode = "agent"
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        // Backward-compatible JSON: note_window absent when unset.
-        assert!(v.get("note_window").is_none());
+        // No explicit note_window arg → falls back to the configured
+        // default (`Some(5)`, per #656). The field is now always
+        // present in the override file unless the user explicitly
+        // sets it to null.
+        assert_eq!(v["note_window"], 5);
     }
 
     #[tokio::test]
@@ -675,9 +679,9 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn test_sliding_without_tool_result_cap_omits_field() {
-        // No CAP arg and config.toml doesn't set one → field omitted from
-        // override JSON (mirrors `test_sliding_without_note_window_omits_field`).
+    async fn test_sliding_without_tool_result_cap_uses_default_2048() {
+        // No CAP arg → falls back to the configured default
+        // (`Some(2048)`, per #656).
         let tmp = tempfile::tempdir().unwrap();
         let handler = ContextCommandHandler;
         let mut ctx = test_context(tmp.path());
@@ -690,7 +694,7 @@ mode = "agent"
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["window"], 15);
         assert_eq!(v["note_window"], 5);
-        assert!(v.get("tool_result_cap").is_none());
+        assert_eq!(v["tool_result_cap"], 2048);
     }
 
     #[tokio::test]
@@ -718,7 +722,9 @@ mode = "agent"
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v["mode"], "full");
-        assert!(v.get("tool_result_cap").is_none());
+        // `/context full` preserves the configured tool_result_cap
+        // (default `Some(2048)`, per #656).
+        assert_eq!(v["tool_result_cap"], 2048);
     }
 
     #[tokio::test]

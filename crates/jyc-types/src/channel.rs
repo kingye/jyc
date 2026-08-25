@@ -575,7 +575,10 @@ pub struct ContextStrategyConfig {
     /// `window`. Only meaningful when `mode = "sliding_window"`.
     /// Omitted from serialized override files when unset so existing
     /// readers stay compatible.
-    #[serde(default = "default_note_window", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default = "default_note_window",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub note_window: Option<usize>,
     /// Byte cap on each tool result kept in the verbatim region
     /// (`sliding_window` mode). When a tool result exceeds `cap` bytes,
@@ -585,7 +588,10 @@ pub struct ContextStrategyConfig {
     /// Only meaningful when `mode = "sliding_window"`. Omitted from
     /// serialized override files when unset so existing readers stay
     /// compatible.
-    #[serde(default = "default_tool_result_cap", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default = "default_tool_result_cap",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub tool_result_cap: Option<usize>,
 }
 
@@ -840,8 +846,7 @@ topic_path = "~/projects/jyc"
         // struct defaults (`Some(5)` / `Some(2048)`), not `None`. Without
         // the `default = "..."` serde attributes, `Option::default()`
         // would yield `None` and silently disable capping/truncation.
-        let cfg: ContextStrategyConfig =
-            toml::from_str(r#"mode = "sliding_window""#).unwrap();
+        let cfg: ContextStrategyConfig = toml::from_str(r#"mode = "sliding_window""#).unwrap();
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 15);
         assert_eq!(cfg.note_window, Some(5));

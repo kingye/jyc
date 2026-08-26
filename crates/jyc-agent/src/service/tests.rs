@@ -281,6 +281,7 @@ fn reload_picks_up_new_model_context_window_without_restart() {
                         supports_images: None,
                         params: None,
                         user_agent: None,
+                        cache_ttl: None,
                         pricing: None,
                         models: HashMap::new(),
                     },
@@ -336,6 +337,7 @@ fn reload_picks_up_new_model_context_window_without_restart() {
                 supports_images: Some(true),
                 params: None,
                 user_agent: None,
+                cache_ttl: None,
                 pricing: None,
             },
         );

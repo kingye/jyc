@@ -147,11 +147,7 @@ async fn lists_all_published_files_sorted() {
 
     assert_eq!(
         result.message,
-        "/exchange: 2 published files.\n\
-         - a.txt\n\
-           https://jyc.example.com/exchange/test/weather/a.txt?token=tok123\n\
-         - b.txt\n\
-           https://jyc.example.com/exchange/test/weather/b.txt?token=tok123"
+        "/exchange: 2 published files.\n- a.txt\n  https://jyc.example.com/exchange/test/weather/a.txt?token=tok123\n- b.txt\n  https://jyc.example.com/exchange/test/weather/b.txt?token=tok123"
     );
 }
 

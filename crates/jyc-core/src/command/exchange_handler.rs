@@ -177,11 +177,7 @@ mod tests {
         );
         assert_eq!(
             out,
-            "/exchange: 2 published files.\n\
-             - a.txt\n\
-               https://x.example.com/exchange/email/weather/a.txt?token=tok\n\
-             - report.pdf\n\
-               https://x.example.com/exchange/email/weather/report.pdf?token=tok"
+            "/exchange: 2 published files.\n- a.txt\n  https://x.example.com/exchange/email/weather/a.txt?token=tok\n- report.pdf\n  https://x.example.com/exchange/email/weather/report.pdf?token=tok"
         );
         // URLs stay raw — not wrapped in markdown links.
         assert!(!out.contains('[') && !out.contains('('));

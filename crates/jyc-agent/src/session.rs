@@ -1173,6 +1173,12 @@ const WINDOWED_ANNOTATION_MAX: usize = 2000;
 /// does not treat them as turn-opening user messages.
 pub(crate) const HISTORY_NOTE_PREFIX: &str = "[History note] assistant tool calls:";
 
+/// Wire-only marker inserted at the start of the compacted history region.
+/// It is **not** persisted to `raw_context`, so `extract_pairs` must never
+/// recognize it as a real user message.
+pub(crate) const HISTORY_MARKER_TEXT: &str =
+    "[History messages] earlier conversation follows — text-only, tool calls/results omitted.";
+
 /// One user→assistant turn extracted from raw context for the windowed
 /// view. The assistant entry holds ONLY the assistant's own text; the
 /// turn's tool calls are summarized in `note` — a separate user-role

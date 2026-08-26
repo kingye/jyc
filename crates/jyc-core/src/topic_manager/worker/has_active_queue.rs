@@ -1,9 +1,11 @@
 use super::*;
+use crate::agent::{AgentResult, AgentService};
 use crate::message_storage::MessageStorage;
 use crate::metrics::MetricsCollector;
 use crate::static_agent::StaticAgentService;
 use jyc_types::{ChangeKind, ChangedFileEntry, InboundMessage, PatternMatch};
 use std::collections::HashMap;
+use std::sync::Mutex;
 use tempfile::tempdir;
 
 /// Minimal outbound adapter that does nothing.
@@ -47,6 +49,83 @@ impl jyc_types::OutboundAdapter for NoopOutbound {
     }
 }
 
+/// Outbound adapter that records every `send_reply` call for assertions.
+#[derive(Default)]
+struct RecordingOutbound {
+    replies: Mutex<Vec<(String, String)>>,
+}
+
+#[async_trait::async_trait]
+impl jyc_types::OutboundAdapter for RecordingOutbound {
+    fn channel_type(&self) -> &str {
+        "test"
+    }
+    async fn connect(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn disconnect(&self) -> Result<()> {
+        Ok(())
+    }
+    fn clean_body(&self, raw_body: &str) -> String {
+        raw_body.to_string()
+    }
+    async fn send_reply(
+        &self,
+        original: &InboundMessage,
+        reply_text: &str,
+        _topic_path: &Path,
+        _message_dir: &str,
+        _attachments: Option<&[jyc_types::OutboundAttachment]>,
+    ) -> Result<jyc_types::SendResult> {
+        self.replies
+            .lock()
+            .expect("recording lock")
+            .push((original.id.clone(), reply_text.to_string()));
+        Ok(jyc_types::SendResult {
+            message_id: "recorded".to_string(),
+        })
+    }
+    async fn send_message(
+        &self,
+        _recipient: &str,
+        _subject: &str,
+        _body: &str,
+    ) -> Result<jyc_types::SendResult> {
+        Ok(jyc_types::SendResult {
+            message_id: "recorded".to_string(),
+        })
+    }
+}
+
+/// Agent service that always fails with a predictable message.
+struct FailingAgent;
+
+#[async_trait::async_trait]
+impl AgentService for FailingAgent {
+    async fn base_url(&self) -> Result<String> {
+        Ok("".to_string())
+    }
+    async fn process(
+        &self,
+        _message: &InboundMessage,
+        _topic_name: &str,
+        _topic_path: &Path,
+        _message_dir: &str,
+        _pending_rx: &mut mpsc::Receiver<jyc_types::QueueItem>,
+        _topic_cancel: CancellationToken,
+    ) -> Result<AgentResult> {
+        Err(anyhow::anyhow!("simulated agent failure"))
+    }
+    async fn reset_session(
+        &self,
+        _topic_path: &Path,
+        _topic_name: &str,
+        _config: &jyc_types::channel::ResetCompressionConfig,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
 fn make_test_tm(workspace: &std::path::Path) -> Arc<TopicManager> {
     make_test_tm_with_config(
         workspace,
@@ -72,6 +151,20 @@ mode = "agent"
 }
 
 fn make_test_tm_with_config(workspace: &std::path::Path, config_str: &str) -> Arc<TopicManager> {
+    make_test_tm_full(
+        workspace,
+        config_str,
+        Arc::new(NoopOutbound),
+        Arc::new(StaticAgentService::new("ok")),
+    )
+}
+
+fn make_test_tm_full(
+    workspace: &std::path::Path,
+    config_str: &str,
+    outbound: Arc<dyn jyc_types::OutboundAdapter>,
+    agent: Arc<dyn crate::agent::AgentService>,
+) -> Arc<TopicManager> {
     let storage = Arc::new(MessageStorage::new(workspace));
     let cancel = CancellationToken::new();
     let metrics_cancel = CancellationToken::new();
@@ -84,8 +177,8 @@ fn make_test_tm_with_config(workspace: &std::path::Path, config_str: &str) -> Ar
         1,
         10,
         storage,
-        Arc::new(NoopOutbound),
-        Arc::new(StaticAgentService::new("ok")),
+        outbound,
+        agent,
         cancel,
         true,
         workspace.join("templates"),
@@ -1432,6 +1525,105 @@ async fn list_topics_populates_changed_files_from_git_diff() {
     assert!(
         by_name("no-git").changed_files.is_none(),
         "non-git topic must have changed_files=None"
+    );
+
+    tm.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_processing_error_sends_failure_notice() {
+    let tmp = tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    let recording = Arc::new(RecordingOutbound::default());
+    let outbound: Arc<dyn jyc_types::OutboundAdapter> = Arc::clone(&recording) as _;
+    let agent: Arc<dyn AgentService> = Arc::new(FailingAgent);
+    let tm = make_test_tm_full(
+        &workspace,
+        r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        Arc::clone(&outbound),
+        agent,
+    );
+
+    let _topic_path = workspace.join("test-topic");
+    tokio::fs::create_dir_all(_topic_path.join(".jyc"))
+        .await
+        .unwrap();
+
+    let msg = InboundMessage {
+        id: "err-1".to_string(),
+        channel: "test-channel".to_string(),
+        channel_uid: "test".to_string(),
+        sender: "user".to_string(),
+        sender_address: "user".to_string(),
+        recipients: vec![],
+        topic: "test".to_string(),
+        content: jyc_types::MessageContent {
+            text: Some("hello".to_string()),
+            html: None,
+            markdown: None,
+        },
+        timestamp: chrono::Utc::now(),
+        references: None,
+        reply_to_id: None,
+        external_id: None,
+        attachments: vec![],
+        metadata: HashMap::new(),
+        matched_pattern: None,
+    };
+    let pattern_match = PatternMatch {
+        pattern_name: "test".to_string(),
+        channel: "websocket".to_string(),
+        matches: HashMap::new(),
+    };
+    tm.enqueue(
+        msg,
+        "test-topic".to_string(),
+        pattern_match,
+        None,
+        false,
+        None,
+    )
+    .await;
+
+    // Wait for the worker to process and fail.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let notice = {
+        let replies = recording.replies.lock().expect("recording lock");
+        assert_eq!(
+            replies.len(),
+            1,
+            "exactly one failure notice should be sent"
+        );
+        assert_eq!(replies[0].0, "err-1");
+        replies[0].1.clone()
+    };
+    assert!(
+        notice.starts_with("⚠️ Processing failed:"),
+        "notice should start with failure prefix: {notice}"
+    );
+    assert!(
+        notice.contains("simulated agent failure"),
+        "notice should include the original error: {notice}"
     );
 
     tm.shutdown().await;

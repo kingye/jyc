@@ -236,6 +236,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // Show progress if the server reports processing OR we've sent a message
     // locally and are still waiting for the server state to catch up.
     let show_progress = server_processing || app.chat.awaiting_response;
+    let has_error = live_processing
+        .as_ref()
+        .map(|(_, has_error)| *has_error)
+        .unwrap_or(false);
 
     if show_progress {
         // Read live activity + thinking from the WS-fed buffers, falling
@@ -455,6 +459,39 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 }
             }
         }
+    } else if has_error {
+        // Processing completed with an error. Show a persistent red warning
+        // until the next round starts (has_error is cleared by a new
+        // ProcessingStarted event).
+        let live_chan = app.chat.channel.clone();
+        let live_topic = app.chat.topic.clone();
+        let error_text = live_chan
+            .as_deref()
+            .zip(live_topic.as_deref())
+            .and_then(|(c, t)| {
+                app.chat
+                    .live_activity_for(c, t)
+                    .rev()
+                    .find(|e| {
+                        matches!(e.severity, jyc_types::Severity::Error)
+                            && e.text.starts_with("ERROR:")
+                    })
+                    .map(|e| e.text.clone())
+            })
+            .unwrap_or_else(|| "Processing failed".to_string());
+        let message = error_text
+            .strip_prefix("ERROR: ")
+            .unwrap_or(&error_text)
+            .chars()
+            .take(160)
+            .collect::<String>();
+        tail_lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                format!("⚠ {message}"),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        ]));
     }
 
     let inner_height = chunks[0].height as usize;

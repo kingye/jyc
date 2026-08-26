@@ -444,7 +444,37 @@ pub(crate) async fn process_message(
     // Propagate agent errors only AFTER the background tasks above are
     // stopped. Returning early via `?` inside the select loop would leak
     // the delivery watcher.
-    let result = result?;
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => {
+            let err_display = format!("{:#}", e);
+            let notice = format!(
+                "⚠️ Processing failed: {}\n\nThe agent was unable to complete this round. \
+                 Please try again, use /reset to clear the context, or use a model with a larger context window.",
+                err_display.chars().take(200).collect::<String>()
+            );
+            if store_result.topic_path.exists() {
+                if let Err(send_err) = outbound
+                    .send_reply(
+                        &message,
+                        &notice,
+                        &store_result.topic_path,
+                        &store_result.message_dir,
+                        None,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        error = %send_err,
+                        "Failed to send processing-error notice"
+                    );
+                } else {
+                    topic_manager.publish_reply_sent(topic_name, &notice).await;
+                }
+            }
+            return Err(e);
+        }
+    };
 
     // ── 5.5. GUARD: skip reply if topic directory no longer exists ──
     // If the topic was closed while AI was processing, the directory gets

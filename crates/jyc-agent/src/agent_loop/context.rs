@@ -164,6 +164,12 @@ pub(crate) fn build_send_context_with_regions<'a>(
             let compact_keep = strategy.window.saturating_sub(verbatim_pairs);
             let compacted =
                 crate::session::extract_user_assistant_pairs(compact_prior, compact_keep, Some(0));
+            if !compacted.is_empty() {
+                out.push(provider.format_user_message(&[ContentBlock::Text {
+                    text: crate::session::HISTORY_MARKER_TEXT.into(),
+                }]));
+                regions.push(1);
+            }
             for msg in &compacted {
                 // Defensive: skip messages with no extractable text so the
                 // wire payload never contains empty text blocks (which
@@ -616,18 +622,23 @@ mod render_raw_context_tests {
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         let sent = sent.into_owned();
 
-        // 1. Older pair compacted to pure text (no note, tool_calls dropped).
-        assert_eq!(sent[0], json!({"role": "user", "content": "u2"}));
-        assert_eq!(sent[1], json!({"role": "assistant", "content": "a2"}));
+        // 1. Compacted history marker, then older pair in pure text (no note,
+        //    tool_calls dropped).
+        assert_eq!(
+            sent[0],
+            json!({"role": "user", "content": crate::session::HISTORY_MARKER_TEXT})
+        );
+        assert_eq!(sent[1], json!({"role": "user", "content": "u2"}));
+        assert_eq!(sent[2], json!({"role": "assistant", "content": "a2"}));
 
         // 2. Recent pair verbatim.
-        assert_eq!(sent[2], json!({"role": "user", "content": "u3"}));
-        assert_eq!(sent[3], json!({"role": "assistant", "content": "a3"}));
+        assert_eq!(sent[3], json!({"role": "user", "content": "u3"}));
+        assert_eq!(sent[4], json!({"role": "assistant", "content": "a3"}));
 
         // 3. Current turn verbatim (tool_calls preserved).
-        assert_eq!(sent[4], current[0]);
-        assert_eq!(sent[5], current[1]);
-        assert_eq!(sent[6], current[2]);
+        assert_eq!(sent[5], current[0]);
+        assert_eq!(sent[6], current[1]);
+        assert_eq!(sent[7], current[2]);
     }
 
     #[test]
@@ -785,16 +796,20 @@ mod render_raw_context_tests {
             .0
             .into_owned();
 
-        // Older turn compacted text-only.
-        assert_eq!(sent[0], json!({"role": "user", "content": "u1"}));
-        assert_eq!(sent[1], json!({"role": "assistant", "content": "a1"}));
+        // Compacted history marker, then older turn text-only.
+        assert_eq!(
+            sent[0],
+            json!({"role": "user", "content": crate::session::HISTORY_MARKER_TEXT})
+        );
+        assert_eq!(sent[1], json!({"role": "user", "content": "u1"}));
+        assert_eq!(sent[2], json!({"role": "assistant", "content": "a1"}));
         // Recent turn VERBATIM: user, structured tool-call assistant, result.
-        assert_eq!(sent[2], json!({"role": "user", "content": "u2"}));
-        assert_eq!(sent[3], prior[3]);
-        assert_eq!(sent[4], prior[4]);
-        assert_eq!(sent[5], json!({"role": "assistant", "content": "done"}));
+        assert_eq!(sent[3], json!({"role": "user", "content": "u2"}));
+        assert_eq!(sent[4], prior[3]);
+        assert_eq!(sent[5], prior[4]);
+        assert_eq!(sent[6], json!({"role": "assistant", "content": "done"}));
         // Current turn verbatim.
-        assert_eq!(sent[6], current[0]);
+        assert_eq!(sent[7], current[0]);
     }
 
     /// Round-tripped history notes in the prior (from heuristic compaction)
@@ -876,7 +891,7 @@ mod render_raw_context_tests {
 
     #[test]
     fn with_regions_labels_sliding_window_three_regions() {
-        // ① compacted = (u1, a1), ② verbatim = (u2, a2), ③ current = (u3).
+        // ① compacted = marker + (u1, a1), ② verbatim = (u2, a2), ③ current = (u3).
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1"}),
@@ -893,8 +908,12 @@ mod render_raw_context_tests {
             tool_result_cap: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
-        assert_eq!(sent.len(), 5);
-        assert_eq!(regions, vec![1, 1, 2, 2, 3]);
+        assert_eq!(sent.len(), 6);
+        assert_eq!(regions, vec![1, 1, 1, 2, 2, 3]);
+        assert_eq!(
+            sent[0]["content"].as_str().unwrap(),
+            crate::session::HISTORY_MARKER_TEXT
+        );
 
         let dump = dump_send_context(&prov(), &ctx, prior.len(), &cfg);
         assert!(
@@ -906,6 +925,97 @@ mod render_raw_context_tests {
         assert!(
             dump.contains("--- wire payload ---"),
             "missing payload section: {dump}"
+        );
+    }
+
+    #[test]
+    fn history_marker_omitted_when_compacted_region_is_empty() {
+        // window == verbatim_pairs, so the compact region has zero pairs.
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+        ];
+        let current = vec![json!({"role": "user", "content": "u2"})];
+        let mut ctx = prior.clone();
+        ctx.extend(current.clone());
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 1,
+            note_window: Some(1),
+            tool_result_cap: None,
+        };
+        let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
+        assert_eq!(sent.len(), 3);
+        assert_eq!(regions, vec![2, 2, 3]);
+        let texts: Vec<&str> = sent.iter().filter_map(|m| m["content"].as_str()).collect();
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.starts_with(crate::session::HISTORY_MARKER_TEXT)),
+            "marker must not appear when compacted region is empty, got: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn history_marker_is_static_and_provider_agnostic() {
+        let marker_text = crate::session::HISTORY_MARKER_TEXT;
+        let prior1 = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        let prior2 = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+            json!({"role": "user", "content": "u3"}),
+            json!({"role": "assistant", "content": "a3"}),
+        ];
+
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 2,
+            note_window: Some(1),
+            tool_result_cap: None,
+        };
+
+        let (sent1, _) = build_send_context_with_regions(&prov(), &prior1, prior1.len(), &cfg);
+        let (sent2, _) = build_send_context_with_regions(&prov(), &prior2, prior2.len(), &cfg);
+
+        let marker1 = sent1[0]["content"].as_str().unwrap();
+        let marker2 = sent2[0]["content"].as_str().unwrap();
+        assert_eq!(marker1, marker_text);
+        assert_eq!(marker2, marker_text);
+
+        // Same marker text under the Anthropic provider shape as well.
+        let (sent_a, _) =
+            build_send_context_with_regions(&anthropic(), &prior1, prior1.len(), &cfg);
+        let first_block = sent_a[0]["content"].as_array().unwrap()[0].clone();
+        assert_eq!(first_block["text"].as_str().unwrap(), marker_text);
+    }
+
+    #[test]
+    fn full_mode_has_no_history_marker() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+        ];
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::Full,
+            window: 10,
+            note_window: None,
+            tool_result_cap: None,
+        };
+        let (sent, _) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
+        let texts: Vec<&str> = sent.iter().filter_map(|m| m["content"].as_str()).collect();
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.starts_with(crate::session::HISTORY_MARKER_TEXT)),
+            "Full mode must not inject the compacted-history marker, got: {texts:?}"
         );
     }
 

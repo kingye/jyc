@@ -9,11 +9,11 @@ use crate::topic_manager::TopicManager;
 /// /exchange command — show shareable URLs for this topic's published files.
 ///
 /// Usage:
-///   /exchange           List every published file as `name: url`
+///   /exchange           List every published file as a markdown list
 ///   /exchange <name>    Show only that file's URL
 ///
-/// Output is plain text (never a markdown link) so URLs can be copied
-/// verbatim. Reads the existing exchange token but never creates one:
+/// Output is a markdown bullet list with raw URLs so URLs stay
+/// copy-pasteable. Reads the existing exchange token but never creates one:
 /// listing must not grant access to a topic that has published nothing.
 pub struct ExchangeCommandHandler {
     topic_manager: Arc<TopicManager>,
@@ -139,19 +139,23 @@ async fn read_published_names(exchange_dir: &Path) -> Vec<String> {
     names
 }
 
-/// Render one `name: url` line per file — no header, no markdown, so the
-/// URLs stay copy-pasteable.
+/// Render a markdown bullet list with one `name` and raw `url` per file.
+/// For multiple files a short header is included.
 fn format_lines(names: &[String], base: &str, channel: &str, topic: &str, token: &str) -> String {
-    names
+    let list = names
         .iter()
         .map(|name| {
-            format!(
-                "{name}: {}",
-                crate::exchange_url(base, channel, topic, name, token)
-            )
+            let url = crate::exchange_url(base, channel, topic, name, token);
+            format!("- {name}\n  {url}")
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+
+    if names.len() > 1 {
+        format!("/exchange: {} published files.\n{list}", names.len())
+    } else {
+        list
+    }
 }
 
 #[cfg(test)]
@@ -163,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn one_line_per_file_no_markdown() {
+    fn renders_markdown_list() {
         let out = format_lines(
             &names(&["a.txt", "report.pdf"]),
             "https://x.example.com",
@@ -173,11 +177,10 @@ mod tests {
         );
         assert_eq!(
             out,
-            "a.txt: https://x.example.com/exchange/email/weather/a.txt?token=tok\n\
-             report.pdf: https://x.example.com/exchange/email/weather/report.pdf?token=tok"
+            "/exchange: 2 published files.\n- a.txt\n  https://x.example.com/exchange/email/weather/a.txt?token=tok\n- report.pdf\n  https://x.example.com/exchange/email/weather/report.pdf?token=tok"
         );
-        // Plain text only — a markdown link would break copy-paste.
-        assert!(!out.contains('[') && !out.contains('(') && !out.contains('`'));
+        // URLs stay raw — not wrapped in markdown links.
+        assert!(!out.contains('[') && !out.contains('('));
     }
 
     /// The name stays human-readable on the left while the URL is encoded.
@@ -192,14 +195,15 @@ mod tests {
         );
         assert_eq!(
             out,
-            "a b#c.pdf: https://x.example.com/exchange/email/weather/a%20b%23c.pdf?token=tok"
+            "- a b#c.pdf\n  https://x.example.com/exchange/email/weather/a%20b%23c.pdf?token=tok"
         );
     }
 
     #[test]
-    fn single_file_renders_one_line() {
+    fn single_file_renders_one_bullet() {
         let out = format_lines(&names(&["only.pdf"]), "http://h:1", "c", "t", "tok");
-        assert_eq!(out.lines().count(), 1);
+        assert!(out.starts_with("- only.pdf\n  http://h:1/exchange/c/t/only.pdf?token=tok"));
+        assert!(!out.contains("published files"));
     }
 
     #[tokio::test]

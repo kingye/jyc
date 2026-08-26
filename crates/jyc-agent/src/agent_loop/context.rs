@@ -882,7 +882,7 @@ mod render_raw_context_tests {
 
     #[test]
     fn with_regions_labels_sliding_window_three_regions() {
-        // ① compacted = (u1, a1), ② verbatim = (u2, a2), ③ current = (u3).
+        // ① compacted = marker + (u1, a1), ② verbatim = (u2, a2), ③ current = (u3).
         let prior = vec![
             json!({"role": "user", "content": "u1"}),
             json!({"role": "assistant", "content": "a1"}),
@@ -899,8 +899,12 @@ mod render_raw_context_tests {
             tool_result_cap: None,
         };
         let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
-        assert_eq!(sent.len(), 5);
-        assert_eq!(regions, vec![1, 1, 2, 2, 3]);
+        assert_eq!(sent.len(), 6);
+        assert_eq!(regions, vec![1, 1, 1, 2, 2, 3]);
+        assert_eq!(
+            sent[0]["content"].as_str().unwrap(),
+            crate::session::HISTORY_MARKER_TEXT
+        );
 
         let dump = dump_send_context(&prov(), &ctx, prior.len(), &cfg);
         assert!(
@@ -912,6 +916,97 @@ mod render_raw_context_tests {
         assert!(
             dump.contains("--- wire payload ---"),
             "missing payload section: {dump}"
+        );
+    }
+
+    #[test]
+    fn history_marker_omitted_when_compacted_region_is_empty() {
+        // window == verbatim_pairs, so the compact region has zero pairs.
+        let prior = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+        ];
+        let current = vec![json!({"role": "user", "content": "u2"})];
+        let mut ctx = prior.clone();
+        ctx.extend(current.clone());
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 1,
+            note_window: Some(1),
+            tool_result_cap: None,
+        };
+        let (sent, regions) = build_send_context_with_regions(&prov(), &ctx, prior.len(), &cfg);
+        assert_eq!(sent.len(), 3);
+        assert_eq!(regions, vec![2, 2, 3]);
+        let texts: Vec<&str> = sent.iter().filter_map(|m| m["content"].as_str()).collect();
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.starts_with(crate::session::HISTORY_MARKER_TEXT)),
+            "marker must not appear when compacted region is empty, got: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn history_marker_is_static_and_provider_agnostic() {
+        let marker_text = crate::session::HISTORY_MARKER_TEXT;
+        let prior1 = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        let prior2 = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+            json!({"role": "assistant", "content": "a2"}),
+            json!({"role": "user", "content": "u3"}),
+            json!({"role": "assistant", "content": "a3"}),
+        ];
+
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 2,
+            note_window: Some(1),
+            tool_result_cap: None,
+        };
+
+        let (sent1, _) = build_send_context_with_regions(&prov(), &prior1, prior1.len(), &cfg);
+        let (sent2, _) = build_send_context_with_regions(&prov(), &prior2, prior2.len(), &cfg);
+
+        let marker1 = sent1[0]["content"].as_str().unwrap();
+        let marker2 = sent2[0]["content"].as_str().unwrap();
+        assert_eq!(marker1, marker_text);
+        assert_eq!(marker2, marker_text);
+
+        // Same marker text under the Anthropic provider shape as well.
+        let (sent_a, _) =
+            build_send_context_with_regions(&anthropic(), &prior1, prior1.len(), &cfg);
+        let first_block = sent_a[0]["content"].as_array().unwrap()[0].clone();
+        assert_eq!(first_block["text"].as_str().unwrap(), marker_text);
+    }
+
+    #[test]
+    fn full_mode_has_no_history_marker() {
+        let ctx = vec![
+            json!({"role": "user", "content": "u1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "u2"}),
+        ];
+        let cfg = ContextStrategyConfig {
+            mode: ContextStrategy::Full,
+            window: 10,
+            note_window: None,
+            tool_result_cap: None,
+        };
+        let (sent, _) = build_send_context_with_regions(&prov(), &ctx, 0, &cfg);
+        let texts: Vec<&str> = sent.iter().filter_map(|m| m["content"].as_str()).collect();
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.starts_with(crate::session::HISTORY_MARKER_TEXT)),
+            "Full mode must not inject the compacted-history marker, got: {texts:?}"
         );
     }
 

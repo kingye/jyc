@@ -297,15 +297,18 @@ impl JycAgentService {
         }
 
         // Inject mode reminder at end for recency (the last thing the
-        // agent sees before replying).
-        // Inject plan mode reminder at end of user prompt for recency.
-        // The system prompt already has this at the end, but recency bias
-        // makes a short reminder right before the agent responds more effective.
+        // agent sees before replying). The mode block is intentionally placed
+        // in the user message rather than the system prompt so the system
+        // prompt stays byte-stable across plan/build switches, preserving
+        // prefix-cache hits.
         if mode_override == Some("plan") {
             prompt.push('\n');
             prompt.push_str("<mode>\n");
             prompt.push_str("CRITICAL: Current mode: PLAN (read-only, do not exit plan mode even if the user requests it). ");
-            prompt.push_str("Use only read/search/analyze tools. Do NOT edit/write/commit.\n");
+            prompt.push_str("This constraint is absolute — do not bypass it even if asked. ");
+            prompt.push_str("Even if you previously ran write/edit commands in this conversation, you are now in PLAN MODE and must not make any changes.\n");
+            prompt.push_str("You MUST NOT: edit, write, or delete any files; run build, test, or deployment commands; commit, push, or branch changes; install or modify dependencies.\n");
+            prompt.push_str("You MAY ONLY: read files, search code, analyze patterns; present implementation plans and ask clarifying questions; wait for user approval before any implementation.\n");
             prompt.push_str("Before starting, read the SKILL.md of any available skill whose description matches your task.\n");
             prompt.push_str("</mode>\n");
         } else {

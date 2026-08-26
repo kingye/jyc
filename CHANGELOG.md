@@ -29,6 +29,8 @@
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - **System prompt no longer varies with plan/build mode.** The mode
   `<system-reminder>` appended to the end of the system prompt was removed;
   the identical `<mode>` block already travels with every user message
@@ -212,6 +214,8 @@
   pagination, etc.) instead. (#657)
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **Default `ContextStrategyConfig` is now `sliding_window / 10 / 3 / 2048`.**
   Users without an explicit `[ai].context_strategy` in `config.toml` and no
@@ -510,6 +514,8 @@
   (#570)
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **Windowed tool-call summaries moved out of the assistant's own text.**
   The sliding window used to fold bare tool calls into the assistant
@@ -956,6 +962,8 @@
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - **Build: release profile + dependency slimming.** New `[profile.release]`
   (`opt-level = "s"`, `lto = "thin"`, `strip = "symbols"`; panic stays
   unwind for the dashboard's `catch_unwind`) shrinks the release binary
@@ -1066,6 +1074,8 @@
   yields `None` and the entire section is omitted. (#220)
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **Chat screen shows topic info + status bar by default.** The
   dashboard chat screen no longer starts in zen mode: the topic info
@@ -1270,6 +1280,8 @@
   OAuth config is replaced (same behavior as `auth_header`).
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **WeCom Bot ping ack log level.** Heartbeat ping acks (every 30s) now log
   at `debug` instead of `info`, keeping the info-level log free of heartbeat
@@ -1611,6 +1623,8 @@
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - **Tool definitions are sorted by name.** `ToolRegistry::definitions()`
   iterated a `HashMap`, whose order is randomized per process, so the
   serialized `tools` array differed on every restart. Prompt caching matches
@@ -1909,6 +1923,8 @@
   `jyc_types::AgentConfig` directly with these fields intact. (#477)
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **Eliminated duplicate agent config types (single source of truth).**
   `jyc-agent` no longer defines its own `ProviderConfig`, `ModelConfig`,
@@ -2286,6 +2302,8 @@
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - **Removed Shift+Tab mode switch shortcut** from the dashboard chat input.
   Mode switching is now done via `/plan` and `/build` commands in the popup.
 
@@ -2318,6 +2336,8 @@
 - **jyc stop command** — Stop a running jyc serve process via `jyc stop` (SIGTERM) or `jyc stop --force` (SIGKILL). Works with the same `--workdir` resolution as serve. (#400)
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **Default config/workdir locations.** `jyc serve` without `--workdir` no
   longer uses the current directory — it uses the platform data dir
@@ -2415,6 +2435,8 @@
   `JobScheduler`. (#348)
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **Renamed `jyc monitor` → `jyc serve`.** The main command for starting the
   agent is now `jyc serve`. `monitor` is kept as a hidden alias for backward
@@ -2604,6 +2626,8 @@
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - **BREAKING: removed line-delimited JSON inspect protocol.** The
   raw-TCP, one-JSON-object-per-line protocol that the inspect server
   used to accept is gone. All consumers must move to the new HTTP REST
@@ -2711,6 +2735,8 @@
   #285)
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **Unified config hot-reload for patterns and channel lifecycle.** `MessageRouter` now reads patterns dynamically from live `ArcSwap<AppConfig>` on every `route()` call instead of caching a static snapshot at startup. New `ChannelOrchestrator` component manages channel lifecycle: deleted channels are gracefully cancelled on reload, new channels are detected with a warning. Pattern additions/modifications take effect immediately without restart. `InspectContext` fields (`topic_managers`, `channels`, `workspace_dirs`) use `ArcSwap` for dynamic updates. (#338, #339)
 
@@ -2821,6 +2847,8 @@
   and auto-detection of text/markdown message types. (#225, #226)
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **WeCom channel: migrated from Bot webhook to external contact API.** The
   outbound adapter now uses `corp_id` + `corp_secret` for access_token-based
@@ -3031,6 +3059,8 @@
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - **`Provider::format_user_message`** now takes `&[ContentBlock]` instead
   of `&str`. Existing call sites that passed plain text wrap the string
   in a single `ContentBlock::Text { text }` — no behavior change for
@@ -3105,6 +3135,8 @@
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - **`session::summarize_context` now uses an LLM call** when `small_model` (or
   the main model as fallback) is provided. The previous heuristic
   ("keep the last 3 user+assistant text pairs") is preserved as
@@ -3154,6 +3186,8 @@
   truth.
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **`filter_valid_messages` no longer strips `reasoning_content`.** The
   v0.3.6 stripping logic is fully reverted. Every assistant turn that
@@ -3232,6 +3266,8 @@
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - **Default `max_iterations` raised from 200 to 500** per cycle. Higher
   iteration counts are now safe because in-loop summarization keeps the
   request size bounded regardless of cycle length.
@@ -3263,6 +3299,8 @@
   silently running the agent with the wrong `AGENTS.md`.
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - GitHub close-event handling now enumerates the workspace and closes every
   topic directory whose name matches `{anything}-{N}` for the closed
@@ -3308,6 +3346,8 @@
   If the progress-summary LLM call fails, a static template is used as fallback.
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **Default `max_iterations`** raised from 100 to 200 (per cycle).
 - **Agent system prompt** — removed the "Iteration Budget" section. Replaced with a
@@ -3409,6 +3449,8 @@ will produce progress replies automatically for long-running tasks.
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - Default agent mode changed from `"agent"` to `"agent"`
 - Config: `model` and `system_prompt` moved from `[agent.agent]` to `[agent]` directly
 - Config: provider definitions in `[agent.providers.*]` with per-model settings
@@ -3459,6 +3501,8 @@ will produce progress replies automatically for long-running tasks.
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - Replace `Arc<AppConfig>` with `ArcSwap` for live config reload support
 - Extend inspect protocol with `reload_config` command and typed responses
 
@@ -3496,6 +3540,8 @@ will produce progress replies automatically for long-running tasks.
 - **Pattern mode self-loop protection** (#69)
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **README documentation updates** (#96, #98)
 - **Developer agent template simplification** (#59)
@@ -3536,6 +3582,8 @@ will produce progress replies automatically for long-running tasks.
 - `AlertingConfig`, `HealthCheckConfig` structs kept for backward compatibility but unused
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 **TopicManager** — Added introspection for dashboard
 - `channel_name` and `workspace_dir` fields for identifying channel ownership
@@ -3640,6 +3688,8 @@ will produce progress replies automatically for long-running tasks.
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 **GitHub Agent Templates** — Updated hand-off workflow with routing labels
 - Planner: adds `--label "jyc:develop"` when creating PRs
 - Developer: adds `jyc:review` label when handing off to reviewer
@@ -3677,6 +3727,8 @@ will produce progress replies automatically for long-running tasks.
 - Fix install script: show pip output, handle --break-system-packages
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 **PDF Extraction**
 - Reorder PDF extraction: try text extraction first, fall back to vision MCP
@@ -3752,6 +3804,8 @@ will produce progress replies automatically for long-running tasks.
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - GitHub channel removed (reverted all GitHub-specific implementation)
 - `dev-workflow` skill enhanced with gh CLI instructions and token scope documentation
 - `deploy.sh` auto-detects paths from `JYC_BINARY` env var and script directory
@@ -3793,6 +3847,8 @@ will produce progress replies automatically for long-running tasks.
 - Bump version skill for automated version bumping workflow
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - MCP tool names unified to `jyc_` prefix (`jyc_reply`, `jyc_question`, `jyc_vision`)
 
@@ -3852,6 +3908,8 @@ will produce progress replies automatically for long-running tasks.
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - Consolidated `config_template.toml` and `config.example.toml` into single `config.example.toml`
 - `config init` CLI command now uses `config.example.toml`
 - Vision tool timeout: 300s (was 120s)
@@ -3886,6 +3944,8 @@ will produce progress replies automatically for long-running tasks.
 - Override capability for specific use cases
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 **SessionState Data Structure** — Updated for token tracking
 - Removed `total_active_time` and `last_active_start` fields
@@ -3953,6 +4013,8 @@ max_input_tokens = 122880
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 **Message Storage Architecture** — Simplified and unified
 - Removed timestamped directory creation logic from `MessageStorage::store_with_match()`
 - All messages and replies now append to daily chat log files
@@ -3992,6 +4054,8 @@ max_input_tokens = 122880
 ## [0.1.1] - 2026-04-06
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 **Feishu Message Format Enhancement**
 - Changed Feishu message sending from plain text (`msg_type: "text"`) to interactive cards with native markdown support (`msg_type: "interactive"`)
@@ -4045,6 +4109,8 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - **MCP Reply Tool**: no longer sends messages directly. Writes `reply.md` + signal file; monitor process delivers via pre-warmed outbound adapter. Eliminates cold-start timeouts for Feishu API calls.
 - **BUILD MODE Prompt**: categorizes messages — information questions (→ use `curl`), coding tasks (→ use tools), general conversation (→ reply directly). Prevents AI from exploring the filesystem for simple questions.
 - **Email Quoted History**: truncated to 1024 characters per entry (`MAX_QUOTED_BODY_CHARS`) with `...[truncated]` suffix
@@ -4090,6 +4156,8 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 - Configuration examples for Feishu channel setup
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **OutboundAdapter trait**: Added `send_heartbeat()` method for progress updates
 - **Channel registry**: Extended to support Feishu channel type
@@ -4199,6 +4267,8 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - **SYSTEMD.md**: Added deployment warnings to `systemctl stop` commands
 - **system.md.example**: Updated systemd stop command warning text
 
@@ -4231,12 +4301,16 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 - **DESIGN.md**: Added reference to `SYSTEMD.md` in References section
 - **Cargo.toml**: Bumped version from 0.0.8 to 0.0.9
 
 ## [0.0.8] - 2026-03-28
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 **Disk-based reply context (replaces REPLY_TOKEN)**
 - Reply context saved to `.jyc/reply-context.json` per-topic before AI prompt
@@ -4259,6 +4333,8 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 ## [0.0.7] - 2026-03-27
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 **Session preservation — keep session whenever possible**
 - Model passed per-prompt (`PromptRequest.model`) — `/model` switch no longer deletes session
@@ -4298,6 +4374,8 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 
 ### Changed
 
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
+
 **Token format: `REPLY_TOKEN=`**
 - `<reply_context>TOKEN</reply_context>` → `REPLY_TOKEN=TOKEN` — no XML tags, avoids triggering AI's "parse structured data" instinct
 - Tool parameter description updated to reference `REPLY_TOKEN=` line
@@ -4327,6 +4405,8 @@ First multi-channel release: JYC is now a truly channel-agnostic AI agent framew
 ## [0.0.5] - 2026-03-27
 
 ### Changed
+
+- **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 **Minimal reply context token (corruption-proof)**
 - Token slimmed from 12 fields to 5: `channel`, `topicName`, `incomingMessageDir`, `uid`, `_nonce`

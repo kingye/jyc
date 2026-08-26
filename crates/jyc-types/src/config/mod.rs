@@ -641,6 +641,10 @@ pub struct ProviderDef {
     /// Optional User-Agent header override for all models under this provider.
     /// Model-level `user_agent` takes precedence over this value.
     pub user_agent: Option<String>,
+    /// Prompt-cache TTL for Anthropic providers: "5m" (default) or "1h".
+    /// Per-model `ModelDef.cache_ttl` overrides this. Ignored by
+    /// non-Anthropic provider types.
+    pub cache_ttl: Option<String>,
     /// Default billing rates for all models under this provider.
     /// Per-model `ModelDef.pricing` overrides this. When neither is set,
     /// no cost is computed and the dashboard omits the cost row.
@@ -691,6 +695,9 @@ pub struct ModelDef {
     /// When set, the provider sends this value as the `User-Agent` header
     /// instead of the HTTP client's default.
     pub user_agent: Option<String>,
+    /// Prompt-cache TTL for Anthropic providers: "5m" (default) or "1h".
+    /// Overrides `ProviderDef.cache_ttl`.
+    pub cache_ttl: Option<String>,
     /// Billing rates for this specific model. Overrides
     /// `ProviderDef.pricing`.
     pub pricing: Option<ModelPricing>,

@@ -348,6 +348,21 @@ pub fn create_provider(
                 .base_url
                 .as_deref()
                 .unwrap_or("https://api.anthropic.com/v1");
+            // Resolve cache_ttl: model-level overrides provider-level.
+            let cache_ttl_1h = match config
+                .models
+                .get(model_id)
+                .and_then(|m| m.cache_ttl.as_deref())
+                .or(config.cache_ttl.as_deref())
+            {
+                None | Some("5m") => false,
+                Some("1h") => true,
+                Some(other) => anyhow::bail!(
+                    "Invalid cache_ttl '{}' for provider '{}': expected \"5m\" or \"1h\"",
+                    other,
+                    provider_name
+                ),
+            };
             Ok(Box::new(anthropic::AnthropicProvider::new(
                 base_url,
                 wire_model_id,
@@ -355,6 +370,7 @@ pub fn create_provider(
                 params,
                 supports_images,
                 user_agent,
+                cache_ttl_1h,
             )?))
         }
         "openai-compatible" | "openai" => {
@@ -852,6 +868,7 @@ mod model_id_tests {
             supports_images: None,
             params: None,
             user_agent: None,
+            cache_ttl: None,
             pricing: None,
         }
     }
@@ -869,6 +886,7 @@ mod model_id_tests {
                 supports_images: None,
                 params: None,
                 user_agent: None,
+                cache_ttl: None,
                 pricing: None,
                 models,
             },

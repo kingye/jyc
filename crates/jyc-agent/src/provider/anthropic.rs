@@ -25,6 +25,10 @@ pub struct AnthropicProvider {
     supports_images: bool,
     /// Optional User-Agent header override.
     user_agent: Option<String>,
+    /// Use 1-hour prompt-cache TTL (extended-cache-ttl beta) instead of the
+    /// default 5 minutes. Every breakpoint is written with `"ttl": "1h"`,
+    /// billed at 2× input price instead of the 1.25× 5-minute write rate.
+    cache_ttl_1h: bool,
 }
 
 impl AnthropicProvider {
@@ -35,6 +39,7 @@ impl AnthropicProvider {
         params: Option<serde_json::Value>,
         supports_images: bool,
         user_agent: Option<&str>,
+        cache_ttl_1h: bool,
     ) -> Result<Self> {
         // See `openai_compat::OpenAiCompatProvider::new` for the full
         // rationale on connection-pool hygiene. Same defaults are
@@ -54,6 +59,7 @@ impl AnthropicProvider {
             params,
             supports_images,
             user_agent: user_agent.map(|s| s.to_string()),
+            cache_ttl_1h,
         })
     }
 }
@@ -117,7 +123,7 @@ impl Provider for AnthropicProvider {
 
         // Prompt-cache breakpoints. See `complete_raw` above for why this
         // runs after the params merge.
-        apply_cache_breakpoints(&mut body);
+        apply_cache_breakpoints(&mut body, self.cache_ttl_1h);
 
         // Build request
         let mut req = self
@@ -125,6 +131,10 @@ impl Provider for AnthropicProvider {
             .post(&url)
             .header("content-type", "application/json")
             .header("anthropic-version", "2023-06-01");
+
+        if self.cache_ttl_1h {
+            req = req.header("anthropic-beta", "extended-cache-ttl-2025-04-11");
+        }
 
         if let Some(ref key) = self.api_key {
             req = req.header("x-api-key", key);
@@ -296,13 +306,17 @@ impl Provider for AnthropicProvider {
         // Prompt-cache breakpoints. Applied last so a `system` or `tools`
         // override coming from `params` is marked too, and cannot clobber
         // the markers by being merged over them.
-        apply_cache_breakpoints(&mut body);
+        apply_cache_breakpoints(&mut body, self.cache_ttl_1h);
 
         let mut req = self
             .client
             .post(&url)
             .header("content-type", "application/json")
             .header("anthropic-version", "2023-06-01");
+
+        if self.cache_ttl_1h {
+            req = req.header("anthropic-beta", "extended-cache-ttl-2025-04-11");
+        }
 
         if let Some(ref key) = self.api_key {
             req = req.header("x-api-key", key);
@@ -596,12 +610,19 @@ struct AnthropicTool {
 
 /// Attach an `ephemeral` cache-control marker to an array's last element.
 ///
+/// With `ttl_1h` the marker carries `"ttl": "1h"` (extended-cache-ttl beta);
+/// otherwise the API default of 5 minutes applies.
+///
 /// No-ops on an empty array or a non-object last element.
-fn mark_last(arr: &mut [serde_json::Value]) {
+fn mark_last(arr: &mut [serde_json::Value], ttl_1h: bool) {
     if let Some(obj) = arr.last_mut().and_then(|v| v.as_object_mut()) {
         obj.insert(
             "cache_control".to_string(),
-            serde_json::json!({ "type": "ephemeral" }),
+            if ttl_1h {
+                serde_json::json!({ "type": "ephemeral", "ttl": "1h" })
+            } else {
+                serde_json::json!({ "type": "ephemeral" })
+            },
         );
     }
 }
@@ -629,14 +650,14 @@ fn has_cache_control(v: &serde_json::Value) -> bool {
 /// first, since a bare string has nowhere to hang the marker.
 ///
 /// No-ops when the message has no content blocks to mark.
-fn mark_last_block_cached(msg: &mut serde_json::Value) {
+fn mark_last_block_cached(msg: &mut serde_json::Value, ttl_1h: bool) {
     // Normalize `content: "text"` → `content: [{"type":"text","text":"text"}]`
     if let Some(text) = msg.get("content").and_then(|c| c.as_str()) {
         msg["content"] = serde_json::json!([{ "type": "text", "text": text }]);
     }
 
     if let Some(blocks) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
-        mark_last(blocks);
+        mark_last(blocks, ttl_1h);
     }
 }
 
@@ -664,7 +685,7 @@ fn mark_last_block_cached(msg: &mut serde_json::Value) {
 /// span is absent or too short. Prompts below the model's minimum cacheable
 /// length (1024 tokens for Opus/Sonnet, 2048 for Haiku) are ignored by the
 /// API rather than erroring.
-fn apply_cache_breakpoints(body: &mut serde_json::Value) {
+fn apply_cache_breakpoints(body: &mut serde_json::Value, ttl_1h: bool) {
     // The caller already placed breakpoints — respect their layout rather
     // than adding to it and overflowing the per-request limit.
     if has_cache_control(body) {
@@ -673,7 +694,7 @@ fn apply_cache_breakpoints(body: &mut serde_json::Value) {
 
     // #1 — tools tail.
     if let Some(tools) = body.get_mut("tools").and_then(|t| t.as_array_mut()) {
-        mark_last(tools);
+        mark_last(tools, ttl_1h);
     }
 
     // #2 — system tail. `system` is built as a plain string; promote it to a
@@ -687,7 +708,7 @@ fn apply_cache_breakpoints(body: &mut serde_json::Value) {
         body["system"] = serde_json::json!([{ "type": "text", "text": text }]);
     }
     if let Some(blocks) = body.get_mut("system").and_then(|s| s.as_array_mut()) {
-        mark_last(blocks);
+        mark_last(blocks, ttl_1h);
     }
 
     // #3 / #4 — rolling window over history, skipping the newest message:
@@ -695,7 +716,7 @@ fn apply_cache_breakpoints(body: &mut serde_json::Value) {
     if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let n = messages.len();
         for idx in [n.checked_sub(3), n.checked_sub(2)].into_iter().flatten() {
-            mark_last_block_cached(&mut messages[idx]);
+            mark_last_block_cached(&mut messages[idx], ttl_1h);
         }
     }
 }
@@ -826,6 +847,7 @@ mod tests {
             None,
             false,
             None,
+            false,
         )
         .expect("provider construction");
 
@@ -893,6 +915,7 @@ mod tests {
             None,
             false,
             Some("opencode/1.15.13"),
+            false,
         )
         .expect("provider construction");
 
@@ -951,7 +974,7 @@ mod tests {
                 {"name": "write", "description": "d", "input_schema": {}},
             ]),
         );
-        apply_cache_breakpoints(&mut body);
+        apply_cache_breakpoints(&mut body, false);
 
         assert_eq!(
             count_breakpoints(&body),
@@ -989,7 +1012,7 @@ mod tests {
                 {"type": "tool_use", "id": "toolu_1", "name": "grep", "input": {}},
             ],
         });
-        mark_last_block_cached(&mut msg);
+        mark_last_block_cached(&mut msg, false);
 
         assert!(
             msg["content"][0].get("cache_control").is_none(),
@@ -1010,7 +1033,7 @@ mod tests {
     #[test]
     fn cache_breakpoint_normalizes_string_content() {
         let mut msg = json!({ "role": "user", "content": "plain string" });
-        mark_last_block_cached(&mut msg);
+        mark_last_block_cached(&mut msg, false);
 
         let blocks = msg["content"].as_array().expect("content became an array");
         assert_eq!(blocks.len(), 1);
@@ -1033,7 +1056,7 @@ mod tests {
                 json!(messages),
                 json!([{"name": "bash", "description": "d", "input_schema": {}}]),
             );
-            apply_cache_breakpoints(&mut body);
+            apply_cache_breakpoints(&mut body, false);
 
             assert_eq!(
                 count_breakpoints(&body),
@@ -1064,7 +1087,7 @@ mod tests {
             "system": "",
             "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
         });
-        apply_cache_breakpoints(&mut body);
+        apply_cache_breakpoints(&mut body, false);
 
         assert!(body.get("tools").is_none(), "must not invent a tools key");
         assert_eq!(body["system"], "", "empty system stays an empty string");
@@ -1083,7 +1106,7 @@ mod tests {
             ],
             "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
         });
-        apply_cache_breakpoints(&mut body);
+        apply_cache_breakpoints(&mut body, false);
 
         let system = body["system"].as_array().unwrap();
         assert_eq!(system.len(), 2, "caller blocks must be preserved");
@@ -1112,7 +1135,7 @@ mod tests {
         body["system"] = caller_system.clone();
         let before = body.clone();
 
-        apply_cache_breakpoints(&mut body);
+        apply_cache_breakpoints(&mut body, false);
 
         assert_eq!(
             body, before,
@@ -1140,7 +1163,7 @@ mod tests {
         );
         let before = body.clone();
 
-        apply_cache_breakpoints(&mut body);
+        apply_cache_breakpoints(&mut body, false);
 
         assert_eq!(body, before, "caller's tool marker wins");
         assert_eq!(count_breakpoints(&body), 1);
@@ -1183,9 +1206,16 @@ mod tests {
             json!({"role": "user", "content": [{"type": "text", "text": "m4"}]}),
         ];
 
-        let provider =
-            AnthropicProvider::new(&server.uri(), "claude-test", Some("k"), None, false, None)
-                .unwrap();
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-test",
+            Some("k"),
+            None,
+            false,
+            None,
+            false,
+        )
+        .unwrap();
         let stream = provider
             .complete_raw(&raw, &tools, "system prompt here")
             .await
@@ -1213,6 +1243,83 @@ mod tests {
         assert!(sent["messages"][3]["content"][0]["cache_control"].is_object());
         assert!(
             sent["messages"][4]["content"][0]
+                .get("cache_control")
+                .is_none()
+        );
+        // default TTL: no beta header, bare ephemeral markers
+        assert!(requests[0].headers.get("anthropic-beta").is_none());
+        assert_eq!(
+            sent["system"][0]["cache_control"],
+            json!({"type": "ephemeral"}),
+        );
+    }
+
+    /// With `cache_ttl = "1h"` every breakpoint on the wire carries
+    /// `"ttl": "1h"` and the request opts into the extended-cache-ttl beta.
+    #[tokio::test]
+    async fn complete_raw_sends_ttl_1h_breakpoints_and_beta_header() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+            )
+            .mount(&server)
+            .await;
+
+        let raw = vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "m0"}]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "m1"}]}),
+            json!({"role": "user", "content": [{"type": "text", "text": "m2"}]}),
+        ];
+
+        let provider = AnthropicProvider::new(
+            &server.uri(),
+            "claude-test",
+            Some("k"),
+            None,
+            false,
+            None,
+            true,
+        )
+        .unwrap();
+        let stream = provider
+            .complete_raw(&raw, &[], "system prompt here")
+            .await
+            .expect("stream");
+        // Drain so the request is definitely issued.
+        tokio::pin!(stream);
+        while stream.next().await.is_some() {}
+
+        let requests = server.received_requests().await.expect("requests recorded");
+        assert_eq!(
+            requests[0]
+                .headers
+                .get("anthropic-beta")
+                .expect("beta header"),
+            "extended-cache-ttl-2025-04-11"
+        );
+
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
+        // No tools: system tail + messages n-3/n-2 (idx 0 and 1) = 3 markers,
+        // all with the 1h TTL; newest (idx 2) stays unmarked.
+        assert_eq!(count_breakpoints(&sent), 3);
+        assert_eq!(
+            sent["system"][0]["cache_control"],
+            json!({"type": "ephemeral", "ttl": "1h"}),
+        );
+        assert_eq!(
+            sent["messages"][0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral", "ttl": "1h"}),
+        );
+        assert_eq!(
+            sent["messages"][1]["content"][0]["cache_control"],
+            json!({"type": "ephemeral", "ttl": "1h"}),
+        );
+        assert!(
+            sent["messages"][2]["content"][0]
                 .get("cache_control")
                 .is_none()
         );

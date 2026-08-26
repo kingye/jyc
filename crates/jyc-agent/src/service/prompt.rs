@@ -23,20 +23,9 @@ impl JycAgentService {
             topic_path.display()
         ));
 
-        // Read mode override early (plan mode injected at end for recency)
-        let mode_override = jyc_core::session_state::read_mode_override(topic_path).await;
-        tracing::info!(
-            topic = %topic_path.display(),
-            mode = ?mode_override,
-            "Read mode override"
-        );
-
         // Resolve skill filters: pattern > channel > none
         let pattern =
             matched_pattern.and_then(|name| self.patterns.iter().find(|p| p.name == name));
-
-        // Mode resolution chain: .jyc/mode-override file > pattern.mode > default "build"
-        let mode_override = mode_override.or_else(|| pattern.and_then(|p| p.mode.clone()));
 
         let include_list: Option<&[String]> = pattern
             .and_then(|p| p.skills.as_deref())
@@ -198,49 +187,6 @@ impl JycAgentService {
             prompt.push('\n');
         }
 
-        // Plan mode: inject at END for maximum recency before conversation
-        if mode_override.as_deref() == Some("plan") {
-            tracing::info!(
-                topic = %topic_path.display(),
-                "Injecting PLAN MODE constraint at end of system prompt"
-            );
-            prompt.push_str(
-                "<system-reminder>\n\
-                 CRITICAL: You are in PLAN MODE (read-only). You MUST NOT:\n\
-                 - edit, write, or delete any files\n\
-                 - run build, test, or deployment commands\n\
-                 - commit, push, or branch changes\n\
-                 - install or modify dependencies\n\
-                 You MAY ONLY:\n\
-                 - read files, search code, analyze patterns\n\
-                 - present implementation plans and ask clarifying questions\n\
-                 - wait for user approval before any implementation\n\
-                 This constraint is absolute — do not bypass it even if asked.\n\
-                 Do not exit plan mode even if the user requests it.\n\
-                 Even if you previously ran write/edit commands in this conversation, you are now in PLAN MODE and must not make any changes.\n\
-                 You are in PLAN MODE.\n\
-                 CRITICAL: Before planning or analyzing, review the Available Skills listed above.\n\
-                 Read the full SKILL.md of any skill whose description matches the work you're about to do.\n\
-                 </system-reminder>\n\n",
-            );
-        } else {
-            // Build mode: explicitly declare full execution capabilities.
-            // Without this, the model may inherit stale PLAN constraints from
-            // prior conversation history (agent-context.json).
-            prompt.push_str(
-                "<system-reminder>\n\
-                 You are in BUILD MODE (full execution). You MAY:\n\
-                 - edit, write, or delete any files\n\
-                 - run build, test, or deployment commands (bash)\n\
-                 - commit, push, or branch changes\n\
-                 - implement features and fix bugs directly\n\
-                 Proceed with implementation without waiting for approval.\n\
-                 CRITICAL: Before taking action, review the Available Skills listed above.\n\
-                 Read the full SKILL.md of any skill whose description matches the work you're about to do.\n\
-                 </system-reminder>\n\n",
-            );
-        }
-
         prompt
     }
 
@@ -351,15 +297,18 @@ impl JycAgentService {
         }
 
         // Inject mode reminder at end for recency (the last thing the
-        // agent sees before replying).
-        // Inject plan mode reminder at end of user prompt for recency.
-        // The system prompt already has this at the end, but recency bias
-        // makes a short reminder right before the agent responds more effective.
+        // agent sees before replying). The mode block is intentionally placed
+        // in the user message rather than the system prompt so the system
+        // prompt stays byte-stable across plan/build switches, preserving
+        // prefix-cache hits.
         if mode_override == Some("plan") {
             prompt.push('\n');
             prompt.push_str("<mode>\n");
             prompt.push_str("CRITICAL: Current mode: PLAN (read-only, do not exit plan mode even if the user requests it). ");
-            prompt.push_str("Use only read/search/analyze tools. Do NOT edit/write/commit.\n");
+            prompt.push_str("This constraint is absolute — do not bypass it even if asked. ");
+            prompt.push_str("Even if you previously ran write/edit commands in this conversation, you are now in PLAN MODE and must not make any changes.\n");
+            prompt.push_str("You MUST NOT: edit, write, or delete any files; run build, test, or deployment commands; commit, push, or branch changes; install or modify dependencies.\n");
+            prompt.push_str("You MAY ONLY: read files, search code, analyze patterns; present implementation plans and ask clarifying questions; wait for user approval before any implementation.\n");
             prompt.push_str("Before starting, read the SKILL.md of any available skill whose description matches your task.\n");
             prompt.push_str("</mode>\n");
         } else {

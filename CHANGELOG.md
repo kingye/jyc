@@ -1,3 +1,27 @@
+## [Unreleased]
+
+### Added
+
+- **Configurable prompt-cache TTL for Anthropic providers.** New
+  `cache_ttl` field (provider-level, with per-model override) accepting
+  `"5m"` (default) or `"1h"`. With `"1h"`, every cache breakpoint is
+  written with a 1-hour lifetime via Anthropic's extended-cache-ttl beta
+  (`anthropic-beta: extended-cache-ttl-2025-04-11` header), so bursty
+  conversations with turns minutes-to-an-hour apart keep cheap cache
+  reads instead of re-creating the whole prefix every turn. Cache writes
+  then bill at 2× the input rate instead of 1.25× — pair it with
+  `cache_creation_per_million` set to the 1h write rate.
+
+### Changed
+
+- **System prompt no longer varies with plan/build mode.** The mode
+  `<system-reminder>` appended to the end of the system prompt was removed;
+  the identical `<mode>` block already travels with every user message
+  (at the end of the request, always uncached). Mode switches no longer
+  invalidate the cached prompt prefix — this keeps Anthropic cache
+  breakpoints #2–4 and server-side automatic prefix caches (DeepSeek,
+  Kimi, OpenAI, etc.) warm across plan/build flips.
+
 ## [0.3.16] - 2026-08-25
 
 ### Added

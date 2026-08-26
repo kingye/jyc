@@ -360,6 +360,13 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # base_url = "https://api.anthropic.com/v1"
 # api_key = "${ANTHROPIC_API_KEY}"           # preferred
 # # api_key_env = "ANTHROPIC_API_KEY"        # legacy
+# # Prompt-cache TTL: "5m" (default) or "1h". With "1h", every cache
+# # breakpoint is written with a 1-hour lifetime (extended-cache-ttl beta)
+# # instead of 5 minutes — worthwhile for bursty traffic where turns are
+# # minutes-to-an-hour apart. Cache writes then bill at 2× the input rate
+# # instead of 1.25×, so pair it with cache_creation_per_million at the
+# # 1h write rate. Model-level `cache_ttl` overrides the provider value.
+# # cache_ttl = "1h"
 # # Provider-level billing rates, applied to every model under this
 # # provider unless the model sets its own. See "Cost tracking" below.
 # # Anthropic splits cache tokens into read (`cache_read_input_tokens`)

@@ -118,7 +118,7 @@ async fn url_uses_registered_topic_name_not_directory_basename() {
     assert!(result.success);
     assert_eq!(
         result.message,
-        "report.pdf: https://jyc.example.com/exchange/test/issue-197/report.pdf?token=tok123"
+        "- report.pdf\n  https://jyc.example.com/exchange/test/issue-197/report.pdf?token=tok123"
     );
     assert!(
         !result.message.contains("jin-197"),
@@ -147,8 +147,7 @@ async fn lists_all_published_files_sorted() {
 
     assert_eq!(
         result.message,
-        "a.txt: https://jyc.example.com/exchange/test/weather/a.txt?token=tok123\n\
-         b.txt: https://jyc.example.com/exchange/test/weather/b.txt?token=tok123"
+        "/exchange: 2 published files.\n- a.txt\n  https://jyc.example.com/exchange/test/weather/a.txt?token=tok123\n- b.txt\n  https://jyc.example.com/exchange/test/weather/b.txt?token=tok123"
     );
 }
 
@@ -170,7 +169,7 @@ async fn argument_narrows_output_to_one_file() {
 
     assert_eq!(
         result.message,
-        "report.pdf: https://jyc.example.com/exchange/test/weather/report.pdf?token=tok123"
+        "- report.pdf\n  https://jyc.example.com/exchange/test/weather/report.pdf?token=tok123"
     );
 }
 

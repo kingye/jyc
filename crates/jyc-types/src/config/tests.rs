@@ -16,6 +16,7 @@ mod config_loader_tests {
             supports_images: None,
             params: None,
             user_agent: None,
+            cache_ttl: None,
             pricing: None,
             models: std::collections::HashMap::new(),
         }

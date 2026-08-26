@@ -420,6 +420,15 @@ from reads — its `cache_creation_input_tokens` bills at ~1.25× the input
 rate. Set this field only for Anthropic providers; non-Anthropic providers
 that surface a single cache bucket ignore it.
 
+Anthropic cache entries live 5 minutes by default, so turns more than 5
+minutes apart re-create the whole prefix. Setting `cache_ttl = "1h"` on an
+Anthropic provider (or a single model, which overrides the provider value)
+opts into Anthropic's extended-cache-ttl beta: breakpoints are written with
+a 1-hour lifetime, keeping reads cheap across bursty conversations where
+turns are minutes-to-an-hour apart. Writes then bill at 2× the input rate
+instead of 1.25× — pair it with `cache_creation_per_million` set to the 1h
+write rate to keep the cost rows accurate.
+
 For Anthropic sessions the chat info pane and dashboard topic info
 area show two cache rows: `Cache hits: N` (reads only) followed by
 `Cache create: N` (writes). Non-Anthropic providers show a single

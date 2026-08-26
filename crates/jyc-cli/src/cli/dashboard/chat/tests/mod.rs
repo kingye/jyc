@@ -2,10 +2,15 @@ use super::render::{history_fingerprint, render_history_lines};
 use super::*;
 
 fn history_msg(sender: &str, text: &str, ts: Option<&str>) -> ChatMessage {
+    history_msg_with_id(sender, text, ts, 0)
+}
+
+fn history_msg_with_id(sender: &str, text: &str, ts: Option<&str>, id: u64) -> ChatMessage {
     ChatMessage {
         sender: sender.to_string(),
         text: text.to_string(),
         timestamp: ts.map(|s| s.to_string()),
+        id,
     }
 }
 
@@ -133,11 +138,13 @@ fn select_pattern_clears_chat_messages() {
         sender: "user".to_string(),
         text: "hello from topic A".to_string(),
         timestamp: None,
+        id: 0,
     });
     app.chat.messages.push(ChatMessage {
         sender: "ai".to_string(),
         text: "reply from topic A".to_string(),
         timestamp: None,
+        id: 0,
     });
     assert_eq!(app.chat.messages.len(), 2);
 
@@ -696,6 +703,7 @@ fn mouse_scroll_in_message_area_advances_scroll_offset() {
             sender: "user".into(),
             text: format!("msg {i}"),
             timestamp: Some("2026-01-01T00:00:00Z".into()),
+            id: 0,
         });
     }
 
@@ -789,6 +797,7 @@ fn mouse_scroll_ignored_when_capture_disabled() {
         sender: "user".into(),
         text: "hi".into(),
         timestamp: Some("2026-01-01T00:00:00Z".into()),
+        id: 0,
     });
 
     // Opt out of capture (simulating the `toggle mouse` leader-key
@@ -865,6 +874,7 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
             sender: "user".into(),
             text: format!("msg {i}"),
             timestamp: Some("2026-01-01T00:00:00Z".into()),
+            id: 0,
         });
     }
 
@@ -899,6 +909,7 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
             sender: "user".into(),
             text: format!("msg {i}"),
             timestamp: Some("2026-01-01T00:00:00Z".into()),
+            id: 0,
         });
     }
     app2.chat.focus = ChatFocus::ExplorerPane;
@@ -1249,6 +1260,178 @@ fn is_user_visible_activity_filters_internal_and_thinking() {
         is_internal: false,
     };
     assert!(!is_user_visible_activity(&legacy));
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Regression: identical AI replies across consecutive command runs
+// (`/exchange`, `/context`, etc.) must NOT be silently dropped by the
+// dashboard's poll-sync dedup. See `sync_live_chat_to_messages`.
+// ─────────────────────────────────────────────────────────────────────
+
+fn seed_live_chat(
+    app: &mut App,
+    channel: &str,
+    topic: &str,
+    entries: Vec<jyc_types::ChatMessageEntry>,
+) {
+    let key = (channel.to_string(), topic.to_string());
+    app.chat
+        .live_chat
+        .insert(key, std::collections::VecDeque::from(entries));
+}
+
+#[test]
+fn poll_sync_appends_exchange_repeats() {
+    // /exchange run twice with unchanged published files → byte-identical
+    // AI reply text on both runs. The second reply must survive the sync.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    let text = "/exchange: 4 published files.\n\
+                - a.png\n  http://example/a\n\
+                - b.html\n  http://example/b\n\
+                - c.html\n  http://example/c\n\
+                - d.html\n  http://example/d"
+        .to_string();
+    seed_live_chat(
+        &mut app,
+        "agents",
+        "c21-networkcalculation-srv",
+        vec![
+            jyc_types::ChatMessageEntry {
+                sender: "ai".into(),
+                text: text.clone(),
+                timestamp: Some("2026-01-01T00:00:01Z".into()),
+                id: 1,
+            },
+            jyc_types::ChatMessageEntry {
+                sender: "ai".into(),
+                text: text.clone(),
+                timestamp: Some("2026-01-01T00:00:05Z".into()),
+                id: 2,
+            },
+        ],
+    );
+
+    let added = app
+        .chat
+        .sync_live_chat_to_messages("agents", "c21-networkcalculation-srv");
+    assert!(added, "second identical AI reply must be appended");
+    let ai_msgs: Vec<&ChatMessage> = app
+        .chat
+        .messages
+        .iter()
+        .filter(|m| m.sender == "ai")
+        .collect();
+    assert_eq!(ai_msgs.len(), 2);
+    assert_eq!(ai_msgs[0].id, 1);
+    assert_eq!(ai_msgs[1].id, 2);
+}
+
+#[test]
+fn poll_sync_appends_context_repeats() {
+    // /context (no args) emits a deterministic format-string every run.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    let text = "/context: current strategy is sliding_window (default)".to_string();
+    seed_live_chat(
+        &mut app,
+        "agents",
+        "c21-networkcalculation-srv",
+        vec![
+            jyc_types::ChatMessageEntry {
+                sender: "ai".into(),
+                text: text.clone(),
+                timestamp: Some("2026-01-01T00:00:01Z".into()),
+                id: 10,
+            },
+            jyc_types::ChatMessageEntry {
+                sender: "ai".into(),
+                text: text.clone(),
+                timestamp: Some("2026-01-01T00:00:30Z".into()),
+                id: 11,
+            },
+        ],
+    );
+
+    let added = app
+        .chat
+        .sync_live_chat_to_messages("agents", "c21-networkcalculation-srv");
+    assert!(added);
+    let ai_msgs: Vec<&ChatMessage> = app
+        .chat
+        .messages
+        .iter()
+        .filter(|m| m.sender == "ai")
+        .collect();
+    assert_eq!(ai_msgs.len(), 2);
+    assert_eq!(ai_msgs[0].id, 10);
+    assert_eq!(ai_msgs[1].id, 11);
+}
+
+#[test]
+fn poll_sync_user_echo_still_deduped_by_sender_text() {
+    // Sanity check that the user-echo dedup path is preserved: the
+    // server's IncomingMessage echo arrives ~ms after the local echo
+    // with identical (sender, text) — must be a single row, not two.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    // Local echo first (id=0).
+    app.chat.messages.push(ChatMessage {
+        sender: "user".into(),
+        text: "/exchange".into(),
+        timestamp: Some("2026-01-01T00:00:00.500Z".into()),
+        id: 0,
+    });
+    // Server echo arrives through live_chat with its own monotonic id.
+    seed_live_chat(
+        &mut app,
+        "agents",
+        "t",
+        vec![jyc_types::ChatMessageEntry {
+            sender: "user".into(),
+            text: "/exchange".into(),
+            timestamp: Some("2026-01-01T00:00:00.700Z".into()),
+            id: 7,
+        }],
+    );
+
+    let _ = app.chat.sync_live_chat_to_messages("agents", "t");
+    let user_msgs: Vec<&ChatMessage> = app
+        .chat
+        .messages
+        .iter()
+        .filter(|m| m.sender == "user")
+        .collect();
+    assert_eq!(user_msgs.len(), 1);
+    assert_eq!(
+        user_msgs[0].id, 0,
+        "local echo (id=0) wins, server echo dropped"
+    );
+}
+
+#[test]
+fn poll_sync_does_not_mutate_live_chat() {
+    // The sync must be a pure read of `live_chat` — no drains, no
+    // removals, no in-place mutation. Otherwise a future refactor
+    // could accidentally couple the buffer's lifetime to the rendered
+    // message vec.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    seed_live_chat(
+        &mut app,
+        "agents",
+        "t",
+        vec![jyc_types::ChatMessageEntry {
+            sender: "ai".into(),
+            text: "hello".into(),
+            timestamp: Some("2026-01-01T00:00:00Z".into()),
+            id: 1,
+        }],
+    );
+
+    let _ = app.chat.sync_live_chat_to_messages("agents", "t");
+    let _ = app.chat.sync_live_chat_to_messages("agents", "t"); // idempotent
+    assert_eq!(app.chat.live_chat_for("agents", "t").count(), 1);
 }
 
 #[cfg(test)]

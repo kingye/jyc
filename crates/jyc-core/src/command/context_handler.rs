@@ -348,6 +348,7 @@ mode = "agent"
             template_dirs: TemplateDirs::single(PathBuf::from("/tmp/test/templates")),
             channel_type: "email".into(),
             config_path: None,
+            topic: "test".to_string(),
         }
     }
 

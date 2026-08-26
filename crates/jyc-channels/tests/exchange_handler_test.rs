@@ -56,6 +56,7 @@ fn test_context(topic_path: &Path, args: &[&str]) -> CommandContext {
         agent: None,
         template_dirs: PathBuf::from("/tmp/test/templates").into(),
         config_path: None,
+        topic: "test".to_string(),
     }
 }
 

@@ -25,6 +25,8 @@ pub struct CommandContext {
     pub template_dirs: crate::template_dirs::TemplateDirs,
     /// Path to the config.toml file (for commands that write config)
     pub config_path: Option<PathBuf>,
+    /// Topic name (used by commands that publish events per-topic)
+    pub topic: String,
 }
 
 impl std::fmt::Debug for CommandContext {
@@ -37,6 +39,7 @@ impl std::fmt::Debug for CommandContext {
             .field("channel_type", &self.channel_type)
             .field("agent", &self.agent.is_some())
             .field("config_path", &self.config_path)
+            .field("topic", &self.topic)
             .finish()
     }
 }

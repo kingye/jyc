@@ -252,6 +252,7 @@ context_window = 200000
             template_dirs: PathBuf::from("/tmp/test/templates").into(),
             channel_type: "websocket".to_string(),
             config_path: None,
+            topic: "test".to_string(),
         }
     }
 
@@ -303,6 +304,7 @@ mode = "agent"
             template_dirs: PathBuf::from("/tmp/test/templates").into(),
             channel_type: "websocket".to_string(),
             config_path: None,
+            topic: "test".to_string(),
         };
         let handler = ModelCommandHandler;
         let result = handler.execute(ctx).await.unwrap();

@@ -163,6 +163,7 @@ pub(crate) async fn process_message(
         agent: Some(agent.clone()),
         template_dirs: template_dirs.clone(),
         config_path: topic_manager.config_path.clone(),
+        topic: topic_name.to_string(),
     };
 
     let cmd_output = command_registry
@@ -352,6 +353,7 @@ pub(crate) async fn process_message(
                             agent: Some(agent.clone()),
                             template_dirs: template_dirs.clone(),
                             config_path: topic_manager.config_path.clone(),
+                            topic: topic_name.to_string(),
                         };
                         match command_registry.process_commands(trimmed, &cmd_ctx).await {
                             Ok(output) => {

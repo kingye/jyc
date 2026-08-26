@@ -83,6 +83,7 @@ mode = "agent"
             template_dirs: PathBuf::from("/tmp/test/templates").into(),
             channel_type: "websocket".to_string(),
             config_path: None,
+            topic: "test".to_string(),
         };
 
         let handler = HelpCommandHandler;
@@ -141,6 +142,7 @@ user_prompt = "Review it."
             template_dirs: PathBuf::from("/tmp/test/templates").into(),
             channel_type: "websocket".to_string(),
             config_path: None,
+            topic: "test".to_string(),
         };
 
         let result = HelpCommandHandler.execute(ctx).await.unwrap();

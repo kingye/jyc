@@ -10,6 +10,8 @@ use super::*;
 mod render;
 mod table_wrap;
 
+use jyc_core::gh_watcher::{GhSnapshot, render_snapshot_lines};
+
 use render::{RenderFingerprint, render_chat_conversation, truncate_to_width};
 /// Width of the input prompt gutter ("╰─❯ ").
 const PROMPT_GUTTER_WIDTH: u16 = 4;
@@ -149,6 +151,9 @@ pub(super) struct ChatState {
     /// Used to avoid re-hydrating the same topic on every poll when the
     /// user is browsing the overview.
     pub(super) last_hydrated_key: Option<(String, String)>,
+    /// Live GitHub status snapshot populated by WS `gh_status` events.
+    pub(super) live_gh_status:
+        std::collections::BTreeMap<(String, String), jyc_core::gh_watcher::GhSnapshot>,
     /// Address stash for `select_pattern` to call back into `open` when
     /// the user picks a pattern from the `c`-key pattern-select UI.
     pub(super) open_addr: Option<String>,
@@ -191,6 +196,14 @@ impl ChatState {
     pub(super) fn populate_editor(&mut self, cmd: &str) {
         self.editor = chat_editor(cmd);
     }
+}
+
+/// Render a GitHub status snapshot into ratatui `Line`s for the info pane.
+fn render_gh_status_lines(snapshot: &GhSnapshot) -> Vec<Line<'static>> {
+    render_snapshot_lines(snapshot)
+        .into_iter()
+        .map(|s| Line::from(Span::raw(s)))
+        .collect()
 }
 
 /// Format elapsed time from an RFC 3339 timestamp to now.
@@ -1378,6 +1391,21 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         vec![Line::from("Select a topic")]
     };
 
+    // Append a live GitHub status section when the selected topic has an
+    // active watcher and we have received at least one snapshot.
+    let mut lines = lines;
+    let gh_key = selected_topic_summary(app).map(|t| (t.channel.clone(), t.name.clone()));
+    if let Some(key) = gh_key {
+        if let Some(snapshot) = app.chat.live_gh_status.get(&key) {
+            lines.push(Line::default());
+            lines.push(Line::from(vec![Span::styled(
+                "── GitHub Status ",
+                Style::default().add_modifier(Modifier::BOLD),
+            )]));
+            lines.extend(render_gh_status_lines(snapshot));
+        }
+    }
+
     // Slice-skip in Rust (matching the activity pane's pattern) so we
     // never feed `usize::MAX` into `Paragraph::scroll` — that overflows
     // ratatui's `offset_y + height` math and panics the TUI.
@@ -1776,6 +1804,7 @@ impl ChatState {
             live_tick_ms: std::collections::BTreeMap::new(),
             last_seen_id: std::collections::BTreeMap::new(),
             last_hydrated_key: None,
+            live_gh_status: std::collections::BTreeMap::new(),
             open_addr: None,
             commands: vec![],
             models: vec![],
@@ -2248,6 +2277,9 @@ impl ChatState {
             | Some("resync") | Some("loop_tick") => {
                 self.handle_live_event(&parsed);
             }
+            Some("gh_status") => {
+                self.handle_gh_status_event(&parsed);
+            }
             _ => {}
         }
 
@@ -2350,6 +2382,7 @@ impl ChatState {
         self.live_chat.remove(&key);
         self.live_thinking.remove(&key);
         self.live_processing.remove(&key);
+        self.live_gh_status.remove(&key);
         self.last_seen_id.remove(&key);
     }
 
@@ -2452,9 +2485,41 @@ impl ChatState {
                 self.live_thinking.remove(&key);
                 self.live_processing.remove(&key);
                 self.live_tick_ms.remove(&key);
+                self.live_gh_status.remove(&key);
                 self.last_seen_id.remove(&key);
             }
             _ => {}
+        }
+    }
+
+    /// Handle a `{"type":"gh_status",...}` event by updating or removing
+    /// the per-topic GitHub status snapshot. Events are idempotent: the
+    /// latest snapshot overwrites the previous one, and a disabled event
+    /// clears the section from the info pane.
+    pub(super) fn handle_gh_status_event(&mut self, payload: &serde_json::Value) {
+        let channel = match payload.get("channel").and_then(|v| v.as_str()) {
+            Some(c) => c.to_string(),
+            None => return,
+        };
+        let topic = match payload.get("topic").and_then(|v| v.as_str()) {
+            Some(t) => t.to_string(),
+            None => return,
+        };
+        let key = (channel, topic);
+        let enabled = payload
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if enabled {
+            if let Some(snapshot) = payload
+                .get("snapshot")
+                .and_then(|v| serde_json::from_value::<GhSnapshot>(v.clone()).ok())
+            {
+                self.live_gh_status.insert(key, snapshot);
+            }
+        } else {
+            self.live_gh_status.remove(&key);
         }
     }
 

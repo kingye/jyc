@@ -2,6 +2,14 @@
 
 ### Added
 
+- **`/gh on|off` per-topic GitHub status watcher.** Running `/gh on` in a
+  chat topic spawns a background watcher inside the topic directory that
+  polls `gh pr status` and `gh run list --status in_progress` every 10
+  seconds. The latest snapshot is appended to the dashboard chat info pane
+  and refreshed live via WebSocket. The on/off state is persisted to
+  `<topic_path>/.jyc/gh-watcher.json` so the watcher auto-resumes when the
+  topic is next opened.
+
 - **Visible failure feedback when agent processing errors.** If the agent
   loop terminates with an error (e.g., provider context-limit or auth
   failure), a short `⚠️ Processing failed: …` reply is now sent through

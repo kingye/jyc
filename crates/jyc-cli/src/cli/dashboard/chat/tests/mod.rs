@@ -1251,5 +1251,48 @@ fn is_user_visible_activity_filters_internal_and_thinking() {
     assert!(!is_user_visible_activity(&legacy));
 }
 
+#[test]
+fn gh_status_event_round_trip() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut chat = ChatState::new(rx);
+
+    let payload = serde_json::json!({
+        "type": "gh_status",
+        "channel": "chan",
+        "topic": "t1",
+        "enabled": true,
+        "snapshot": {
+            "prs": [],
+            "runs": [],
+            "error": null,
+            "fetched_at": "2026-08-26T12:00:00Z"
+        }
+    });
+    chat.handle_ws_message(&payload.to_string());
+    assert!(
+        chat.live_gh_status
+            .contains_key(&("chan".to_string(), "t1".to_string()))
+    );
+
+    let off = serde_json::json!({
+        "type": "gh_status",
+        "channel": "chan",
+        "topic": "t1",
+        "enabled": false,
+        "snapshot": {
+            "prs": [],
+            "runs": [],
+            "error": null,
+            "fetched_at": "2026-08-26T12:00:00Z"
+        }
+    });
+    chat.handle_ws_message(&off.to_string());
+    assert!(
+        !chat
+            .live_gh_status
+            .contains_key(&("chan".to_string(), "t1".to_string()))
+    );
+}
+
 #[cfg(test)]
 mod part2;

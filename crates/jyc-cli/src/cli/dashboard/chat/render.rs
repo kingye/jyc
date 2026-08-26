@@ -241,14 +241,13 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         .map(|(_, has_error)| *has_error)
         .unwrap_or(false);
 
-    let live_chan = app.chat.channel.clone();
-    let live_topic = app.chat.topic.clone();
-
     if show_progress {
         // Read live activity + thinking from the WS-fed buffers, falling
         // back to the polled overview only as a last resort. The rendering
         // logic below is byte-for-byte identical to before — only the data
         // source changed.
+        let live_chan = app.chat.channel.clone();
+        let live_topic = app.chat.topic.clone();
         let activity_entries: Vec<jyc_types::ActivityEntry> = live_chan
             .as_deref()
             .zip(live_topic.as_deref())
@@ -464,6 +463,8 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         // Processing completed with an error. Show a persistent red warning
         // until the next round starts (has_error is cleared by a new
         // ProcessingStarted event).
+        let live_chan = app.chat.channel.clone();
+        let live_topic = app.chat.topic.clone();
         let error_text = live_chan
             .as_deref()
             .zip(live_topic.as_deref())

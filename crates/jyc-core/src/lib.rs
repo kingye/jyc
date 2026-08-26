@@ -6,6 +6,7 @@ pub mod channel_orchestrator;
 pub mod chat_log_store;
 pub mod command;
 pub mod email_parser;
+pub mod gh_watcher;
 pub mod job_store;
 pub mod message_router;
 pub mod message_storage;

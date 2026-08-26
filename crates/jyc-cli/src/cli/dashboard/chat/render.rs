@@ -1,5 +1,6 @@
 //! Chat rendering helpers.
 
+use super::table_wrap::wrap_tables;
 use super::*;
 use super::{App, ChatMessage, LINE_DRAWING};
 
@@ -135,10 +136,9 @@ pub(super) fn render_history_lines(messages: &[ChatMessage], width: usize) -> Ve
 
         // Render message (no side gutters).
         let md_text = softbreaks_to_hardbreaks(&format!("{prefix}{}\n", msg.text));
-        let msg_lines = wrap_styled_lines(
-            tui_markdown::from_str_with_options(&md_text, &chat_markdown_options()).lines,
-            width,
-        );
+        let rendered =
+            tui_markdown::from_str_with_options(&md_text, &chat_markdown_options()).lines;
+        let msg_lines = wrap_styled_lines(wrap_tables(rendered, width), width);
         all_lines.extend(msg_lines);
     }
 

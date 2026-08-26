@@ -39,6 +39,15 @@
   breakpoints #2–4 and server-side automatic prefix caches (DeepSeek,
   Kimi, OpenAI, etc.) warm across plan/build flips.
 
+### Fixed
+
+- **Table-aware wrapping for over-wide markdown tables in the dashboard
+  chat pane.** tui-markdown previously emitted table rows as single
+  unwrapped lines; the pane's generic word-wrap then split box-drawing
+  borders mid-row. Tables are now detected and rewrapped cell-by-cell,
+  with columns shrunk proportionally and borders rebuilt to fit the pane
+  width. (#664)
+
 ## [0.3.16] - 2026-08-25
 
 ### Added

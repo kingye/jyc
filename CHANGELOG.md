@@ -12,6 +12,16 @@
   then bill at 2× the input rate instead of 1.25× — pair it with
   `cache_creation_per_million` set to the 1h write rate.
 
+### Changed
+
+- **System prompt no longer varies with plan/build mode.** The mode
+  `<system-reminder>` appended to the end of the system prompt was removed;
+  the identical `<mode>` block already travels with every user message
+  (at the end of the request, always uncached). Mode switches no longer
+  invalidate the cached prompt prefix — this keeps Anthropic cache
+  breakpoints #2–4 and server-side automatic prefix caches (DeepSeek,
+  Kimi, OpenAI, etc.) warm across plan/build flips.
+
 ## [0.3.16] - 2026-08-25
 
 ### Added

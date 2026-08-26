@@ -2,7 +2,7 @@ use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio::sync::{Mutex, Semaphore, broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -90,6 +90,12 @@ pub struct TopicManager {
     // Custom topic paths (from pattern topic_path override), shared with
     // worker clones so list_topics() on the main TM sees paths from workers.
     pub(crate) topic_paths: Arc<Mutex<HashMap<String, PathBuf>>>,
+
+    // Broadcast bus used by /gh to push live GitHub status events to the
+    // dashboard. Set once after construction by the server bootstrap.
+    // Wrapped in Arc so the per-worker TopicManager clone shares the same
+    // sender without requiring OnceLock to be Clone.
+    inspect_broadcast: Arc<std::sync::OnceLock<Arc<broadcast::Sender<String>>>>,
 }
 
 #[allow(dead_code)]
@@ -170,6 +176,7 @@ impl TopicManager {
             cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
             topic_paths: Arc::new(Mutex::new(HashMap::new())),
+            inspect_broadcast: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -220,5 +227,16 @@ impl TopicManager {
             .general
             .max_concurrent_topics
             .saturating_sub(self.semaphore.available_permits())
+    }
+
+    /// Set the inspect broadcast bus used by the dashboard. Called once
+    /// during server startup; later calls are ignored.
+    pub fn set_inspect_broadcast(&self, bus: Arc<broadcast::Sender<String>>) {
+        let _ = self.inspect_broadcast.set(bus);
+    }
+
+    /// Return the inspect broadcast bus, if it has been wired up.
+    pub fn inspect_broadcast(&self) -> Option<&Arc<broadcast::Sender<String>>> {
+        self.inspect_broadcast.get()
     }
 }

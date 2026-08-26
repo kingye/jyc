@@ -457,6 +457,9 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             Some(config_path.clone()),
         ));
 
+        // Wire the dashboard broadcast bus so /gh can push live status events.
+        topic_manager.set_inspect_broadcast(inspect_broadcast.clone());
+
         // Wire topic_manager to websocket handler for custom topic_path resolution
         if let Some(ws_handler) = ws_handler_for_channel.get(channel_name) {
             ws_handler.set_topic_manager(topic_manager.clone());

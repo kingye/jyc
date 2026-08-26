@@ -160,6 +160,7 @@ impl TopicManager {
             cancel: self.cancel.clone(),
             worker_handles: Mutex::new(vec![]),
             topic_paths: self.topic_paths.clone(),
+            inspect_broadcast: self.inspect_broadcast.clone(),
         }
     }
 

@@ -2,6 +2,14 @@
 
 ### Added
 
+- **History marker for compacted sliding-window region.** The
+  `SlidingWindow` context strategy now prefixes the compacted history
+  region with a machine-generated `[History messages]` divider, marking
+  older turns that were flattened to plain text (tool calls/results
+  omitted). This gives the model an explicit signal that those turns are
+  degraded history rather than current user input, without affecting the
+  cached system prompt or adding a configuration knob.
+
 - **Configurable prompt-cache TTL for Anthropic providers.** New
   `cache_ttl` field (provider-level, with per-model override) accepting
   `"5m"` (default) or `"1h"`. With `"1h"`, every cache breakpoint is

@@ -8,6 +8,7 @@ use super::token_render::{
 use super::*;
 
 mod render;
+mod table_wrap;
 
 use render::{RenderFingerprint, render_chat_conversation, truncate_to_width};
 /// Width of the input prompt gutter ("╰─❯ ").

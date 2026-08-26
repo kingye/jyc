@@ -232,11 +232,13 @@ impl TopicManager {
     /// Set the inspect broadcast bus used by the dashboard. Called once
     /// during server startup; later calls are ignored.
     pub fn set_inspect_broadcast(&self, bus: Arc<broadcast::Sender<String>>) {
-        let _ = self.inspect_broadcast.set(bus);
+        if self.inspect_broadcast.set(bus).is_err() {
+            tracing::warn!("inspect_broadcast already set; ignoring duplicate");
+        }
     }
 
     /// Return the inspect broadcast bus, if it has been wired up.
-    pub fn inspect_broadcast(&self) -> Option<&Arc<broadcast::Sender<String>>> {
-        self.inspect_broadcast.get()
+    pub fn inspect_broadcast(&self) -> Option<Arc<broadcast::Sender<String>>> {
+        self.inspect_broadcast.get().cloned()
     }
 }

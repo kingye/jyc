@@ -17,8 +17,8 @@ use super::wrap_styled_lines;
 /// Rewrap over-wide table blocks so they fit within `max_width` display
 /// columns without mangling borders or column alignment.
 ///
-/// Non-table lines are returned unchanged (but owned).
-pub(super) fn wrap_tables<'a>(lines: Vec<Line<'a>>, max_width: usize) -> Vec<Line<'static>> {
+/// Non-table lines are returned unchanged.
+pub(super) fn wrap_tables<'a>(lines: Vec<Line<'a>>, max_width: usize) -> Vec<Line<'a>> {
     let mut out = Vec::with_capacity(lines.len());
     let mut i = 0;
     while i < lines.len() {
@@ -26,12 +26,29 @@ pub(super) fn wrap_tables<'a>(lines: Vec<Line<'a>>, max_width: usize) -> Vec<Lin
         if is_table_top(&text) {
             let start = i;
             i += 1;
+            let mut has_separator = false;
             while i < lines.len() && is_table_line(&lines[i].to_string()) {
+                if is_separator(&lines[i].to_string()) {
+                    has_separator = true;
+                }
                 i += 1;
             }
-            out.extend(wrap_table_block(&lines[start..i], max_width));
+            let block = &lines[start..i];
+            if has_separator {
+                out.extend(
+                    wrap_table_block(block, max_width)
+                        .into_iter()
+                        .map(|l: Line<'static>| -> Line<'a> { l }),
+                );
+            } else {
+                out.extend(
+                    block
+                        .iter()
+                        .map(|line: &Line<'_>| -> Line<'a> { to_owned_line(line) }),
+                );
+            }
         } else {
-            out.push(to_owned_line(&lines[i]));
+            out.push(lines[i].clone());
             i += 1;
         }
     }
@@ -211,18 +228,31 @@ fn shrink_to_budget(natural: &[usize], budget: usize) -> Vec<usize> {
     widths
 }
 
-fn content_to_spans(content: &[(char, Style)]) -> Vec<Span<'static>> {
-    content
-        .iter()
-        .map(|&(ch, style)| Span::styled(ch.to_string(), style))
-        .collect()
+/// Coalesce consecutive cells with the same style into a single span.
+fn cells_to_spans(cells: &[(char, Style)]) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut run = String::new();
+    let mut run_style: Option<Style> = None;
+    for &(ch, style) in cells {
+        if run_style != Some(style) {
+            if let Some(s) = run_style.take() {
+                spans.push(Span::styled(std::mem::take(&mut run), s));
+            }
+            run_style = Some(style);
+        }
+        run.push(ch);
+    }
+    if let Some(s) = run_style {
+        spans.push(Span::styled(std::mem::take(&mut run), s));
+    }
+    spans
 }
 
 fn wrap_cell(content: &[(char, Style)], width: usize) -> Vec<Vec<Span<'static>>> {
     if content.is_empty() {
         return vec![Vec::new()];
     }
-    let line = Line::from(content_to_spans(content));
+    let line = Line::from(cells_to_spans(content));
     wrap_styled_lines(vec![line], width)
         .into_iter()
         .map(|l| l.spans)
@@ -237,55 +267,43 @@ fn space_span(width: usize) -> Span<'static> {
     Span::styled(" ".repeat(width), Style::default())
 }
 
+fn border_line(
+    widths: &[usize],
+    left: char,
+    mid: char,
+    right: char,
+    style: Style,
+) -> Line<'static> {
+    let mut s = String::with_capacity(widths.iter().sum::<usize>() + widths.len() + 1);
+    s.push(left);
+    for (i, w) in widths.iter().enumerate() {
+        s.push_str(&"─".repeat(*w));
+        if i + 1 < widths.len() {
+            s.push(mid);
+        }
+    }
+    s.push(right);
+    Line::from(Span::styled(s, style))
+}
+
 fn render_wrapped_table(
     rows: &[WrappedRow],
     widths: &[usize],
     border_style: Style,
-    col_count: usize,
 ) -> Vec<Line<'static>> {
     let mut out = Vec::with_capacity(rows.len() * 2);
-    let border_count = col_count + 1;
 
     for (row_idx, row) in rows.iter().enumerate() {
         match row {
             WrappedRow::Border => {
-                let total: usize = widths.iter().sum::<usize>() + border_count;
-                if total == 0 {
-                    continue;
-                }
-                let mut s = String::with_capacity(total);
-                if row_idx == 0 {
-                    // top border
-                    s.push('┌');
-                    for (i, w) in widths.iter().enumerate() {
-                        s.push_str(&"─".repeat(*w));
-                        if i + 1 < widths.len() {
-                            s.push('┬');
-                        }
-                    }
-                    s.push('┐');
+                let line = if row_idx == 0 {
+                    border_line(widths, '┌', '┬', '┐', border_style)
                 } else if row_idx == rows.len() - 1 {
-                    // bottom border
-                    s.push('└');
-                    for (i, w) in widths.iter().enumerate() {
-                        s.push_str(&"─".repeat(*w));
-                        if i + 1 < widths.len() {
-                            s.push('┴');
-                        }
-                    }
-                    s.push('┘');
+                    border_line(widths, '└', '┴', '┘', border_style)
                 } else {
-                    // header separator
-                    s.push('├');
-                    for (i, w) in widths.iter().enumerate() {
-                        s.push_str(&"─".repeat(*w));
-                        if i + 1 < widths.len() {
-                            s.push('┼');
-                        }
-                    }
-                    s.push('┤');
-                }
-                out.push(Line::from(Span::styled(s, border_style)));
+                    border_line(widths, '├', '┼', '┤', border_style)
+                };
+                out.push(line);
             }
             WrappedRow::Data(cells) => {
                 let visual_rows = cells
@@ -303,8 +321,14 @@ fn render_wrapped_table(
                             let cw = chunk_width(chunk);
                             let pad = width.saturating_sub(cw);
                             let (pre, post) = match cell.align {
-                                CellAlign::Left => (0, pad),
-                                CellAlign::Right => (pad, 0),
+                                CellAlign::Left => {
+                                    let pre = 1usize.min(pad);
+                                    (pre, pad - pre)
+                                }
+                                CellAlign::Right => {
+                                    let post = 1usize.min(pad);
+                                    (pad - post, post)
+                                }
                                 CellAlign::Center => (pad / 2, pad - pad / 2),
                             };
                             if pre > 0 {
@@ -398,7 +422,7 @@ fn wrap_table_block(lines: &[Line<'_>], max_width: usize) -> Vec<Line<'static>> 
         })
         .collect();
 
-    render_wrapped_table(&wrapped, &widths, border_style, col_count)
+    render_wrapped_table(&wrapped, &widths, border_style)
 }
 
 #[cfg(test)]
@@ -418,40 +442,29 @@ mod tests {
         Line::from(spans)
     }
 
-    fn make_top(cells: &[&str]) -> Line<'static> {
-        let mut s = "┌".to_string();
+    fn make_border(cells: &[&str], left: char, mid: char, right: char) -> Line<'static> {
+        let mut s = String::new();
+        s.push(left);
         for (i, cell) in cells.iter().enumerate() {
             s.push_str(&"─".repeat(cell_width(cell)));
             if i + 1 < cells.len() {
-                s.push('┬');
+                s.push(mid);
             }
         }
-        s.push('┐');
+        s.push(right);
         Line::from(Span::styled(s, Style::default()))
+    }
+
+    fn make_top(cells: &[&str]) -> Line<'static> {
+        make_border(cells, '┌', '┬', '┐')
     }
 
     fn make_sep(cells: &[&str]) -> Line<'static> {
-        let mut s = "├".to_string();
-        for (i, cell) in cells.iter().enumerate() {
-            s.push_str(&"─".repeat(cell_width(cell)));
-            if i + 1 < cells.len() {
-                s.push('┼');
-            }
-        }
-        s.push('┤');
-        Line::from(Span::styled(s, Style::default()))
+        make_border(cells, '├', '┼', '┤')
     }
 
     fn make_bottom(cells: &[&str]) -> Line<'static> {
-        let mut s = "└".to_string();
-        for (i, cell) in cells.iter().enumerate() {
-            s.push_str(&"─".repeat(cell_width(cell)));
-            if i + 1 < cells.len() {
-                s.push('┴');
-            }
-        }
-        s.push('┘');
-        Line::from(Span::styled(s, Style::default()))
+        make_border(cells, '└', '┴', '┘')
     }
 
     fn max_line_width(lines: &[Line<'_>]) -> usize {
@@ -474,7 +487,51 @@ mod tests {
         ];
         let out = wrap_tables(lines.clone(), 80);
         assert_eq!(out.len(), lines.len());
-        assert_eq!(max_line_width(&out), max_line_width(&lines));
+        for (a, b) in out.iter().zip(lines.iter()) {
+            assert_eq!(a.to_string(), b.to_string());
+        }
+    }
+
+    fn make_row_aligned(cells: &[&str], widths: &[usize], align: CellAlign) -> Line<'static> {
+        let mut spans = vec![Span::styled("│", Style::default())];
+        for (i, cell) in cells.iter().enumerate() {
+            let width = widths.get(i).copied().unwrap_or_else(|| cell.width() + 2);
+            let cw = cell.width();
+            let pad = width.saturating_sub(cw + 2);
+            let (pre, post) = match align {
+                CellAlign::Left => (1, 1 + pad),
+                CellAlign::Right => (1 + pad, 1),
+                CellAlign::Center => {
+                    let left = pad / 2;
+                    (1 + left, 1 + pad - left)
+                }
+            };
+            spans.push(Span::styled(" ".repeat(pre), Style::default()));
+            spans.push(Span::styled(cell.to_string(), Style::default()));
+            spans.push(Span::styled(" ".repeat(post), Style::default()));
+            spans.push(Span::styled("│", Style::default()));
+        }
+        Line::from(spans)
+    }
+
+    #[test]
+    fn narrow_data_rows_keep_alignment() {
+        // Headers are the widest cells, so shorter data rows are left-aligned
+        // with one leading padding space (tui-markdown's convention).
+        let headers = &["name", "value"];
+        let widths = vec![cell_width("name"), cell_width("value")];
+        let lines = vec![
+            make_top(headers),
+            make_row(headers),
+            make_sep(headers),
+            make_row_aligned(&["x", "yy"], &widths, CellAlign::Left),
+            make_bottom(headers),
+        ];
+        let out = wrap_tables(lines.clone(), 80);
+        assert_eq!(out.len(), lines.len());
+        for (a, b) in out.iter().zip(lines.iter()) {
+            assert_eq!(a.to_string(), b.to_string(), "row mismatch");
+        }
     }
 
     #[test]
@@ -516,6 +573,47 @@ mod tests {
                     || s.starts_with('├')
                     || s.starts_with('└'),
                 "table line lost border: {}",
+                s
+            );
+        }
+    }
+
+    #[test]
+    fn ascii_box_art_is_not_misdetected_as_table() {
+        // No `├...┼...┤` separator, so this should be left untouched.
+        let lines: Vec<Line<'static>> = vec![
+            Line::from("┌──────────┐"),
+            Line::from("│  hello   │"),
+            Line::from("└──────────┘"),
+        ];
+        let out = wrap_tables(lines.clone(), 20);
+        assert_eq!(out.len(), lines.len());
+        for (a, b) in out.iter().zip(lines.iter()) {
+            assert_eq!(a.to_string(), b.to_string());
+        }
+    }
+
+    #[test]
+    fn real_markdown_table_with_cjk_fits_width() {
+        let md = concat!(
+            "| 方案 | 描述 |\n",
+            "|---|---|\n",
+            "| A. 方案 | 这是一个非常非常非常非常非常非常长的描述 |\n",
+        );
+        let rendered = tui_markdown::from_str(md).lines;
+        let width = 40;
+        let out = wrap_tables(rendered, width);
+        assert!(!out.is_empty());
+        let max = max_line_width(&out);
+        assert!(max <= width, "max width {} > {}", max, width);
+        for line in &out {
+            let s = line.to_string();
+            assert!(
+                s.starts_with('│')
+                    || s.starts_with('┌')
+                    || s.starts_with('├')
+                    || s.starts_with('└'),
+                "lost border: {}",
                 s
             );
         }

@@ -45,8 +45,8 @@
   chat pane.** tui-markdown previously emitted table rows as single
   unwrapped lines; the pane's generic word-wrap then split box-drawing
   borders mid-row. Tables are now detected and rewrapped cell-by-cell,
-  with columns shrunk proportionally and borders rebuilt to fit the pane
-  width. (#664)
+  with columns shrunk greedily from the widest column and borders rebuilt
+  to fit the pane width. (#664)
 
 ## [0.3.16] - 2026-08-25
 

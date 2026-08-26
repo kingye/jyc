@@ -622,18 +622,23 @@ mod render_raw_context_tests {
         let sent = build_send_context_with_regions(&prov(), &ctx, prior_len, &cfg).0;
         let sent = sent.into_owned();
 
-        // 1. Older pair compacted to pure text (no note, tool_calls dropped).
-        assert_eq!(sent[0], json!({"role": "user", "content": "u2"}));
-        assert_eq!(sent[1], json!({"role": "assistant", "content": "a2"}));
+        // 1. Compacted history marker, then older pair in pure text (no note,
+        //    tool_calls dropped).
+        assert_eq!(
+            sent[0],
+            json!({"role": "user", "content": crate::session::HISTORY_MARKER_TEXT})
+        );
+        assert_eq!(sent[1], json!({"role": "user", "content": "u2"}));
+        assert_eq!(sent[2], json!({"role": "assistant", "content": "a2"}));
 
         // 2. Recent pair verbatim.
-        assert_eq!(sent[2], json!({"role": "user", "content": "u3"}));
-        assert_eq!(sent[3], json!({"role": "assistant", "content": "a3"}));
+        assert_eq!(sent[3], json!({"role": "user", "content": "u3"}));
+        assert_eq!(sent[4], json!({"role": "assistant", "content": "a3"}));
 
         // 3. Current turn verbatim (tool_calls preserved).
-        assert_eq!(sent[4], current[0]);
-        assert_eq!(sent[5], current[1]);
-        assert_eq!(sent[6], current[2]);
+        assert_eq!(sent[5], current[0]);
+        assert_eq!(sent[6], current[1]);
+        assert_eq!(sent[7], current[2]);
     }
 
     #[test]
@@ -791,16 +796,20 @@ mod render_raw_context_tests {
             .0
             .into_owned();
 
-        // Older turn compacted text-only.
-        assert_eq!(sent[0], json!({"role": "user", "content": "u1"}));
-        assert_eq!(sent[1], json!({"role": "assistant", "content": "a1"}));
+        // Compacted history marker, then older turn text-only.
+        assert_eq!(
+            sent[0],
+            json!({"role": "user", "content": crate::session::HISTORY_MARKER_TEXT})
+        );
+        assert_eq!(sent[1], json!({"role": "user", "content": "u1"}));
+        assert_eq!(sent[2], json!({"role": "assistant", "content": "a1"}));
         // Recent turn VERBATIM: user, structured tool-call assistant, result.
-        assert_eq!(sent[2], json!({"role": "user", "content": "u2"}));
-        assert_eq!(sent[3], prior[3]);
-        assert_eq!(sent[4], prior[4]);
-        assert_eq!(sent[5], json!({"role": "assistant", "content": "done"}));
+        assert_eq!(sent[3], json!({"role": "user", "content": "u2"}));
+        assert_eq!(sent[4], prior[3]);
+        assert_eq!(sent[5], prior[4]);
+        assert_eq!(sent[6], json!({"role": "assistant", "content": "done"}));
         // Current turn verbatim.
-        assert_eq!(sent[6], current[0]);
+        assert_eq!(sent[7], current[0]);
     }
 
     /// Round-tripped history notes in the prior (from heuristic compaction)

@@ -164,6 +164,12 @@ pub(crate) fn build_send_context_with_regions<'a>(
             let compact_keep = strategy.window.saturating_sub(verbatim_pairs);
             let compacted =
                 crate::session::extract_user_assistant_pairs(compact_prior, compact_keep, Some(0));
+            if !compacted.is_empty() {
+                out.push(provider.format_user_message(&[ContentBlock::Text {
+                    text: crate::session::HISTORY_MARKER_TEXT.into(),
+                }]));
+                regions.push(1);
+            }
             for msg in &compacted {
                 // Defensive: skip messages with no extractable text so the
                 // wire payload never contains empty text blocks (which

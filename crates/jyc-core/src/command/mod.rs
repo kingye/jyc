@@ -3,6 +3,7 @@ pub mod close_handler;
 pub mod context_handler;
 pub mod custom_handler;
 pub mod exchange_handler;
+pub mod gh_handler;
 pub mod handler;
 pub mod help_handler;
 pub mod mode_handler;
@@ -83,6 +84,10 @@ pub fn all_commands() -> Vec<CommandInfo> {
             name: "/context".into(),
             description: "View or change the context strategy / debug-dump wire payload".into(),
         },
+        CommandInfo {
+            name: "/gh".into(),
+            description: "Toggle the per-topic GitHub status watcher (args: on|off)".into(),
+        },
     ]
 }
 
@@ -131,6 +136,7 @@ mod tests {
             "/thinking",
             "/exchange",
             "/context",
+            "/gh",
         ] {
             assert!(
                 names.contains(expected),
@@ -139,7 +145,7 @@ mod tests {
         }
         assert_eq!(
             commands.len(),
-            14,
+            15,
             "all_commands() count changed. Update this test if intentional."
         );
     }

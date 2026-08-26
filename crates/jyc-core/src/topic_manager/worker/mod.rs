@@ -17,6 +17,7 @@ use crate::command::close_handler::CloseCommandHandler;
 use crate::command::context_handler::ContextCommandHandler;
 use crate::command::custom_handler::CustomCommandHandler;
 use crate::command::exchange_handler::ExchangeCommandHandler;
+use crate::command::gh_handler::GhCommandHandler;
 use crate::command::handler::CommandContext;
 use crate::command::help_handler::HelpCommandHandler;
 use crate::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
@@ -123,6 +124,9 @@ pub(crate) async fn process_message(
     // From here on we only need a shared borrow of the message.
     let message = &item.message;
 
+    // Auto-resume GitHub status watcher if the topic has it enabled on disk.
+    topic_manager.maybe_resume_gh_watcher(topic_name).await;
+
     // ── 2. COMMAND PROCESS ────────────────────────────────────────────
     let raw_body = message
         .content
@@ -146,6 +150,7 @@ pub(crate) async fn process_message(
     command_registry.register(Box::new(ThinkingCommandHandler));
     command_registry.register(Box::new(ExchangeCommandHandler::new(topic_manager.clone())));
     command_registry.register(Box::new(ContextCommandHandler));
+    command_registry.register(Box::new(GhCommandHandler::new(topic_manager.clone())));
 
     // User-defined commands from config.toml `[[commands]]`. Registered last,
     // but `register()` warns on collisions and config validation rejects

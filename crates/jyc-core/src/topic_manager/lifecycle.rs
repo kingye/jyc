@@ -27,6 +27,12 @@ impl TopicManager {
             let mut event_buses = self.event_buses.lock().await;
             event_buses.clear();
         }
+        {
+            let mut watchers = self.gh_watchers.lock().await;
+            for (_, token) in watchers.drain() {
+                token.cancel();
+            }
+        }
         let mut handles = self.worker_handles.lock().await;
         for handle in handles.drain(..) {
             let _ = handle.await;

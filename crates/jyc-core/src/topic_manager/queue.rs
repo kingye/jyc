@@ -149,6 +149,7 @@ impl TopicManager {
             event_buses: Mutex::new(HashMap::new()),
             enable_events: self.enable_events,
             topic_cancels: self.topic_cancels.clone(),
+            gh_watchers: self.gh_watchers.clone(),
             template_dirs: self.template_dirs.clone(),
             channel_name: self.channel_name.clone(),
             channel_type: self.channel_type.clone(),

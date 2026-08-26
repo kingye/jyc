@@ -14,6 +14,7 @@ use crate::metrics::MetricsHandle;
 use jyc_types::{OutboundAdapter, QueueItem};
 
 mod events;
+mod gh;
 mod git;
 mod lifecycle;
 mod queue;
@@ -60,6 +61,10 @@ pub struct TopicManager {
     // sees the same map — otherwise /cancel and /close look up an empty map
     // and silently fail to cancel the running worker.
     pub(crate) topic_cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
+
+    // Per-topic GitHub status watcher tokens. Shared via Arc so the per-worker
+    // TopicManager clone can start/stop watchers started by earlier workers.
+    pub(crate) gh_watchers: Arc<Mutex<HashMap<String, CancellationToken>>>,
 
     // Template directories for topic initialization (layered: L1 global < L2 workdir)
     template_dirs: crate::template_dirs::TemplateDirs,
@@ -165,6 +170,7 @@ impl TopicManager {
             event_buses: Mutex::new(HashMap::new()),
             enable_events,
             topic_cancels: Arc::new(Mutex::new(HashMap::new())),
+            gh_watchers: Arc::new(Mutex::new(HashMap::new())),
             template_dirs: template_dirs.into(),
             channel_name,
             channel_type,

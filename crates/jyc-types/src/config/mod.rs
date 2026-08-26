@@ -184,6 +184,7 @@ pub const BUILTIN_COMMAND_NAMES: &[&str] = &[
     "/thinking",
     "/exchange",
     "/context",
+    "/gh",
 ];
 
 /// General application settings.

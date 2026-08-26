@@ -2,6 +2,13 @@
 
 ### Added
 
+- **Visible failure feedback when agent processing errors.** If the agent
+  loop terminates with an error (e.g., provider context-limit or auth
+  failure), a short `⚠️ Processing failed: …` reply is now sent through
+  the outbound adapter and surfaced as a chat message. The dashboard chat
+  pane also keeps a red `⚠` error line in the progress area until the
+  next round starts, instead of silently dropping the progress tail.
+
 - **History marker for compacted sliding-window region.** The
   `SlidingWindow` context strategy now prefixes the compacted history
   region with a machine-generated `[History messages]` divider, marking

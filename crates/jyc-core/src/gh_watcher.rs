@@ -9,10 +9,17 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::process::Command;
 
 const GH_TIMEOUT: Duration = Duration::from_secs(5);
+
+static ANSI_RE: OnceLock<Regex> = OnceLock::new();
+
+fn ansi_re() -> &'static Regex {
+    ANSI_RE.get_or_init(|| Regex::new(r"\x1b\[[0-9;]*m").expect("ANSI regex is valid"))
+}
 
 /// Snapshot of GitHub status for one topic.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -124,10 +131,9 @@ async fn run_gh(cwd: &Path, gh_bin: &Path, args: &[&str]) -> Result<Vec<String>>
         anyhow::bail!("gh failed: {}", msg);
     }
 
-    let ansi_re = Regex::new(r"\x1b\[[0-9;]*m").unwrap();
     Ok(stdout
         .lines()
-        .map(|line| ansi_re.replace_all(line, "").to_string())
+        .map(|line| ansi_re().replace_all(line, "").to_string())
         .collect())
 }
 

@@ -37,14 +37,17 @@ impl TopicManager {
 
         self.set_gh_watcher_enabled(topic, true).await?;
 
-        let snapshot = fetch_snapshot(&topic_path, Path::new("gh")).await;
-        self.broadcast_gh_status(topic, true, &snapshot);
-
+        // Register the cancellation token before fetching so a racing
+        // `/gh off` can cancel the loop even if it arrives while the
+        // initial snapshot is still in flight.
         let token = CancellationToken::new();
         {
             let mut watchers = self.gh_watchers.lock().await;
             watchers.insert(topic.to_string(), token.clone());
         }
+
+        let snapshot = fetch_snapshot(&topic_path, Path::new("gh")).await;
+        self.broadcast_gh_status(topic, true, &snapshot);
 
         let broadcast = self.inspect_broadcast();
         let channel = self.channel_name.clone();

@@ -572,35 +572,12 @@ pub async fn run(
                         if let Some(channel) = app.chat.channel.as_deref()
                             && let Some(topic) = app.chat.topic.as_deref()
                         {
-                            // Collect into a Vec first to release the immutable
-                            // borrow on app.chat.live_chat before mutating
-                            // app.chat.messages.
-                            let live_msgs: Vec<jyc_types::ChatMessageEntry> =
-                                app.chat.live_chat_for(channel, topic).cloned().collect();
-                            let mut new_msg = false;
-                            for msg in &live_msgs {
-                                // Dedup by (sender, text) instead of
-                                // (text, timestamp) because the
-                                // local-echo timestamp in
-                                // send_message_inner differs from
-                                // the server-generated IncomingMessage
-                                // timestamp by ≤1s, causing false
-                                // duplication on every user message.
-                                let already = app
-                                    .chat
-                                    .messages
-                                    .iter()
-                                    .any(|m| m.sender == msg.sender && m.text == msg.text);
-                                if !already {
-                                    app.chat.messages.push(ChatMessage {
-                                        sender: msg.sender.clone(),
-                                        text: msg.text.clone(),
-                                        timestamp: msg.timestamp.clone(),
-                                    });
-                                    new_msg = true;
-                                }
-                            }
-                            if new_msg {
+                            // Clone to release the borrows on
+                            // `app.chat.channel` / `.topic` before the
+                            // mutable call into `poll_sync_live_chat`.
+                            let channel = channel.to_string();
+                            let topic = topic.to_string();
+                            if app.chat.poll_sync_live_chat(&channel, &topic) {
                                 app.chat.scroll = 0;
                             }
                         }

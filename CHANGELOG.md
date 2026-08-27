@@ -41,6 +41,23 @@
 
 ### Fixed
 
+- **Repeated identical `/`-command replies no longer scrolled off the
+  chat pane.** Any `/`-command whose output is deterministic across runs
+  (`/context`, `/exchange`, `/help`, `/model <x>`, …) produced a fresh
+  `chat_message` event per run, but the dashboard's poll-driven sync
+  from `live_chat` to `self.messages` deduplicated by `(sender, text)` —
+  dropping the second and subsequent AI replies. Live AI replies are
+  now keyed by the activity-tracker's monotonic per-topic id (each event
+  has a fresh one), while the `(sender, text)` rule is retained only for
+  user echoes so the local + server-echo timing mismatch does not
+  duplicate the user's typed message. A separate `(sender, text)` fallback
+  for historical rows with `id == 0` (from `chat_log_store.rs` JSONL
+  hydrate, where every pre-seq-field row shares `id = 0`) prevents the
+  500 ms poll loop from re-pushing the same historical entry on every
+  cycle, which was the failure mode of the earlier `id`-only attempt.
+  A new `ChatState::poll_sync_live_chat` helper centralises the rules;
+  covered by five regression tests in `dashboard/chat/tests/mod.rs`.
+
 - **Table-aware wrapping for over-wide markdown tables in the dashboard
   chat pane.** tui-markdown previously emitted table rows as single
   unwrapped lines; the pane's generic word-wrap then split box-drawing

@@ -2,15 +2,11 @@ use super::render::{history_fingerprint, render_history_lines};
 use super::*;
 
 fn history_msg(sender: &str, text: &str, ts: Option<&str>) -> ChatMessage {
-    history_msg_with_id(sender, text, ts, 0)
-}
-
-fn history_msg_with_id(sender: &str, text: &str, ts: Option<&str>, id: u64) -> ChatMessage {
     ChatMessage {
         sender: sender.to_string(),
         text: text.to_string(),
         timestamp: ts.map(|s| s.to_string()),
-        id,
+        id: 0,
     }
 }
 

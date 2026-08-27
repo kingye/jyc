@@ -2553,7 +2553,6 @@ impl ChatState {
     ///   text)` rule would swallow every repeat. The server-stamped id
     ///   is unique for each event and is the same id already used by
     ///   the activity log's own dedup.
-    #[allow(dead_code)]
     pub(super) fn sync_live_chat_to_messages(&mut self, channel: &str, topic: &str) -> bool {
         // Collect into a Vec first to release the immutable borrow on
         // self.live_chat before mutating self.messages.

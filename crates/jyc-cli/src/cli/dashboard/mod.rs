@@ -577,28 +577,62 @@ pub async fn run(
                             // app.chat.messages.
                             let live_msgs: Vec<jyc_types::ChatMessageEntry> =
                                 app.chat.live_chat_for(channel, topic).cloned().collect();
+                            // Track the highest live `id` already pushed to
+                            // `self.messages` so we can skip live entries on
+                            // subsequent polls without growing the message list.
+                            // The `id == 0` branch (historical rows from
+                            // `chat_log_store.rs` JSONL hydrate) cannot use the
+                            // id-tracker because all such rows share id=0 —
+                            // they fall back to (sender, text) dedup.
+                            let push_key = (channel.to_string(), topic.to_string());
+                            let last_pushed = app
+                                .chat
+                                .last_pushed_chat_id
+                                .get(&push_key)
+                                .copied()
+                                .unwrap_or(0);
                             let mut new_msg = false;
+                            let mut max_pushed = last_pushed;
                             for msg in &live_msgs {
-                                // Dedup by (sender, text) instead of
-                                // (text, timestamp) because the
-                                // local-echo timestamp in
-                                // send_message_inner differs from
-                                // the server-generated IncomingMessage
-                                // timestamp by ≤1s, causing false
-                                // duplication on every user message.
-                                let already = app
-                                    .chat
-                                    .messages
-                                    .iter()
-                                    .any(|m| m.sender == msg.sender && m.text == msg.text);
-                                if !already {
-                                    app.chat.messages.push(ChatMessage {
-                                        sender: msg.sender.clone(),
-                                        text: msg.text.clone(),
-                                        timestamp: msg.timestamp.clone(),
-                                    });
-                                    new_msg = true;
+                                // Live entries are server-stamped with a
+                                // monotonic per-topic id; skip if we've
+                                // already pushed this id in an earlier poll.
+                                if msg.id != 0 && msg.id <= last_pushed {
+                                    continue;
                                 }
+                                // User echoes: the local echo pushed by
+                                // `send_message_inner` shares (sender, text)
+                                // with the server's IncomingMessage echo, so
+                                // dedup by (sender, text) drops the duplicate.
+                                if msg.sender == "user"
+                                    && app.chat.messages.iter().any(|m| {
+                                        m.sender == "user" && m.text == msg.text
+                                    })
+                                {
+                                    continue;
+                                }
+                                // Historical rows (id == 0 from JSONL hydrate):
+                                // dedup by (sender, text) so the 500 ms poll
+                                // loop doesn't re-push the same row forever.
+                                if msg.id == 0
+                                    && app.chat.messages.iter().any(|m| {
+                                        m.sender == msg.sender && m.text == msg.text
+                                    })
+                                {
+                                    continue;
+                                }
+                                app.chat.messages.push(ChatMessage {
+                                    sender: msg.sender.clone(),
+                                    text: msg.text.clone(),
+                                    timestamp: msg.timestamp.clone(),
+                                });
+                                new_msg = true;
+                                if msg.id > max_pushed {
+                                    max_pushed = msg.id;
+                                }
+                            }
+                            if max_pushed > last_pushed {
+                                app.chat.last_pushed_chat_id.insert(push_key, max_pushed);
                             }
                             if new_msg {
                                 app.chat.scroll = 0;

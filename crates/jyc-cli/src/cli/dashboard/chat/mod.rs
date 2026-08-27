@@ -145,6 +145,12 @@ pub(super) struct ChatState {
     /// Last-seen monotonic id per (channel, topic) — used to drop duplicate
     /// WS events after reconnect / `resync`.
     pub(super) last_seen_id: std::collections::BTreeMap<(String, String), u64>,
+    /// Highest `ChatMessageEntry::id` already pushed from `live_chat` into
+    /// `messages` for each (channel, topic). Used by the poll-driven sync
+    /// to skip live entries that have already been pushed; without this,
+    /// historical `id = 0` rows from `chat_log_store.rs` JSONL hydrate
+    /// would re-push on every 500 ms poll cycle.
+    pub(super) last_pushed_chat_id: std::collections::BTreeMap<(String, String), u64>,
     /// Last (channel, topic) that was REST-hydrated by the poll loop.
     /// Used to avoid re-hydrating the same topic on every poll when the
     /// user is browsing the overview.
@@ -1775,6 +1781,7 @@ impl ChatState {
             live_processing: std::collections::BTreeMap::new(),
             live_tick_ms: std::collections::BTreeMap::new(),
             last_seen_id: std::collections::BTreeMap::new(),
+            last_pushed_chat_id: std::collections::BTreeMap::new(),
             last_hydrated_key: None,
             open_addr: None,
             commands: vec![],
@@ -2336,7 +2343,13 @@ impl ChatState {
         }
         self.live_activity.insert(key.clone(), activity_buf);
         self.live_chat.insert(key.clone(), chat_buf);
-        self.last_seen_id.insert(key, max_id);
+        self.last_seen_id.insert(key.clone(), max_id);
+        // Reset the egress tracker for the freshly-seeded topic. `messages`
+        // was cleared by `open()` / `open_pattern_select()` /
+        // `select_pattern_inner()` and the freshly-hydrated `live_chat` must
+        // be re-pushed in full — leaving the previous visit's max id here
+        // would skip every hydrated historical row whose id ≤ old max.
+        self.last_pushed_chat_id.insert(key, 0);
     }
 
     /// Handle a `{"type":"resync", "channel":..., "topic":...}` event by
@@ -2351,6 +2364,7 @@ impl ChatState {
         self.live_thinking.remove(&key);
         self.live_processing.remove(&key);
         self.last_seen_id.remove(&key);
+        self.last_pushed_chat_id.remove(&key);
     }
 
     /// Handle a parsed `{"type":"activity",...}` or similar WS payload.
@@ -2453,6 +2467,7 @@ impl ChatState {
                 self.live_processing.remove(&key);
                 self.live_tick_ms.remove(&key);
                 self.last_seen_id.remove(&key);
+                self.last_pushed_chat_id.remove(&key);
             }
             _ => {}
         }
@@ -2525,6 +2540,73 @@ impl ChatState {
             .get(&(channel.to_string(), topic.to_string()))
             .map(|v| v.iter())
             .unwrap_or_else(|| EMPTY_CHAT_DEQUE.iter())
+    }
+
+    /// Append new chat messages from the live buffer to the rendered
+    /// message list. Returns `true` if at least one row was pushed.
+    ///
+    /// Three dedup rules apply:
+    /// - **Live entries** (`id != 0`): skipped if already pushed in an
+    ///   earlier poll (`id <= last_pushed_chat_id`). This is what makes
+    ///   repeated `/`-commands (`/context`, `/exchange`, `/help`,
+    ///   `/model <x>`) emit byte-identical AI text every run but still
+    ///   show up — each event has a fresh monotonic per-topic id.
+    /// - **User echoes** (`sender == "user"`): dedup by `(sender, text)`
+    ///   because the local echo pushed by `send_message_inner` shares
+    ///   `(sender, text)` with the server's IncomingMessage echo (which
+    ///   has `id > 0`).
+    /// - **Historical rows** (`id == 0` from `chat_log_store.rs` JSONL
+    ///   hydrate): dedup by `(sender, text)`. All historical rows share
+    ///   `id = 0` so the id-tracker cannot distinguish them; without
+    ///   this fallback the 500 ms poll loop would re-push the same row
+    ///   every cycle and flood `self.messages`.
+    pub(super) fn poll_sync_live_chat(&mut self, channel: &str, topic: &str) -> bool {
+        // Collect into a Vec first to release the immutable borrow on
+        // self.live_chat before mutating self.messages and last_pushed_chat_id.
+        let live_msgs: Vec<jyc_types::ChatMessageEntry> =
+            self.live_chat_for(channel, topic).cloned().collect();
+        let push_key = (channel.to_string(), topic.to_string());
+        let last_pushed = self
+            .last_pushed_chat_id
+            .get(&push_key)
+            .copied()
+            .unwrap_or(0);
+        let mut new_msg = false;
+        let mut max_pushed = last_pushed;
+        for msg in &live_msgs {
+            if msg.id != 0 && msg.id <= last_pushed {
+                continue;
+            }
+            if msg.sender == "user"
+                && self
+                    .messages
+                    .iter()
+                    .any(|m| m.sender == "user" && m.text == msg.text)
+            {
+                continue;
+            }
+            if msg.id == 0
+                && self
+                    .messages
+                    .iter()
+                    .any(|m| m.sender == msg.sender && m.text == msg.text)
+            {
+                continue;
+            }
+            self.messages.push(ChatMessage {
+                sender: msg.sender.clone(),
+                text: msg.text.clone(),
+                timestamp: msg.timestamp.clone(),
+            });
+            new_msg = true;
+            if msg.id > max_pushed {
+                max_pushed = msg.id;
+            }
+        }
+        if max_pushed > last_pushed {
+            self.last_pushed_chat_id.insert(push_key, max_pushed);
+        }
+        new_msg
     }
 }
 

@@ -145,6 +145,12 @@ pub(super) struct ChatState {
     /// Last-seen monotonic id per (channel, topic) — used to drop duplicate
     /// WS events after reconnect / `resync`.
     pub(super) last_seen_id: std::collections::BTreeMap<(String, String), u64>,
+    /// Highest `ChatMessageEntry::id` already pushed from `live_chat` into
+    /// `messages` for each (channel, topic). Used by the poll-driven sync
+    /// to skip live entries that have already been pushed; without this,
+    /// historical `id = 0` rows from `chat_log_store.rs` JSONL hydrate
+    /// would re-push on every 500 ms poll cycle.
+    pub(super) last_pushed_chat_id: std::collections::BTreeMap<(String, String), u64>,
     /// Last (channel, topic) that was REST-hydrated by the poll loop.
     /// Used to avoid re-hydrating the same topic on every poll when the
     /// user is browsing the overview.
@@ -1775,6 +1781,7 @@ impl ChatState {
             live_processing: std::collections::BTreeMap::new(),
             live_tick_ms: std::collections::BTreeMap::new(),
             last_seen_id: std::collections::BTreeMap::new(),
+            last_pushed_chat_id: std::collections::BTreeMap::new(),
             last_hydrated_key: None,
             open_addr: None,
             commands: vec![],
@@ -2351,6 +2358,7 @@ impl ChatState {
         self.live_thinking.remove(&key);
         self.live_processing.remove(&key);
         self.last_seen_id.remove(&key);
+        self.last_pushed_chat_id.remove(&key);
     }
 
     /// Handle a parsed `{"type":"activity",...}` or similar WS payload.
@@ -2453,6 +2461,7 @@ impl ChatState {
                 self.live_processing.remove(&key);
                 self.live_tick_ms.remove(&key);
                 self.last_seen_id.remove(&key);
+                self.last_pushed_chat_id.remove(&key);
             }
             _ => {}
         }

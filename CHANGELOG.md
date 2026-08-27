@@ -41,19 +41,6 @@
 
 ### Fixed
 
-- **Repeated identical-command replies no longer silently dropped in the
-  dashboard chat pane.** Any `/`-command whose output is deterministic
-  across runs — `/exchange`, `/context`, `/model <x>`, `/help <x>` —
-  emits byte-identical `chat_message` events to the dashboard. The
-  dashboard's poll-driven sync from `live_chat` to the rendered message
-  list previously deduped AI replies by `(sender, text)`, which
-  swallowed the second (and every subsequent) repeat. Non-user senders
-  now dedup on the activity-tracker's monotonic per-topic id; the
-  `(sender, text)` rule is retained only for user echoes, whose local
-  + server-echo timing mismatch would otherwise duplicate the user's
-  typed message. Restarting `jyc serve` does not mask the bug — the
-  dedup state is in-memory only and re-appears on every repeat run.
-
 - **Table-aware wrapping for over-wide markdown tables in the dashboard
   chat pane.** tui-markdown previously emitted table rows as single
   unwrapped lines; the pane's generic word-wrap then split box-drawing

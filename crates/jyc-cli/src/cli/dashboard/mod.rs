@@ -568,14 +568,39 @@ pub async fn run(
                         // Append new chat messages from the live buffer to the
                         // dashboard's `chat.messages` vec. The live buffer is
                         // populated by REST hydrate on selection and updated by
-                        // WS `chat_message` events. Dedup logic lives in
-                        // `ChatState::sync_live_chat_to_messages`.
-                        if let (Some(channel), Some(topic)) =
-                            (app.chat.channel.as_deref(), app.chat.topic.as_deref())
+                        // WS `chat_message` events.
+                        if let Some(channel) = app.chat.channel.as_deref()
+                            && let Some(topic) = app.chat.topic.as_deref()
                         {
-                            let channel = channel.to_string();
-                            let topic = topic.to_string();
-                            if app.chat.sync_live_chat_to_messages(&channel, &topic) {
+                            // Collect into a Vec first to release the immutable
+                            // borrow on app.chat.live_chat before mutating
+                            // app.chat.messages.
+                            let live_msgs: Vec<jyc_types::ChatMessageEntry> =
+                                app.chat.live_chat_for(channel, topic).cloned().collect();
+                            let mut new_msg = false;
+                            for msg in &live_msgs {
+                                // Dedup by (sender, text) instead of
+                                // (text, timestamp) because the
+                                // local-echo timestamp in
+                                // send_message_inner differs from
+                                // the server-generated IncomingMessage
+                                // timestamp by ≤1s, causing false
+                                // duplication on every user message.
+                                let already = app
+                                    .chat
+                                    .messages
+                                    .iter()
+                                    .any(|m| m.sender == msg.sender && m.text == msg.text);
+                                if !already {
+                                    app.chat.messages.push(ChatMessage {
+                                        sender: msg.sender.clone(),
+                                        text: msg.text.clone(),
+                                        timestamp: msg.timestamp.clone(),
+                                    });
+                                    new_msg = true;
+                                }
+                            }
+                            if new_msg {
                                 app.chat.scroll = 0;
                             }
                         }

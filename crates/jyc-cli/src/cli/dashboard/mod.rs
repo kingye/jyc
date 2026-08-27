@@ -572,69 +572,12 @@ pub async fn run(
                         if let Some(channel) = app.chat.channel.as_deref()
                             && let Some(topic) = app.chat.topic.as_deref()
                         {
-                            // Collect into a Vec first to release the immutable
-                            // borrow on app.chat.live_chat before mutating
-                            // app.chat.messages.
-                            let live_msgs: Vec<jyc_types::ChatMessageEntry> =
-                                app.chat.live_chat_for(channel, topic).cloned().collect();
-                            // Track the highest live `id` already pushed to
-                            // `self.messages` so we can skip live entries on
-                            // subsequent polls without growing the message list.
-                            // The `id == 0` branch (historical rows from
-                            // `chat_log_store.rs` JSONL hydrate) cannot use the
-                            // id-tracker because all such rows share id=0 —
-                            // they fall back to (sender, text) dedup.
-                            let push_key = (channel.to_string(), topic.to_string());
-                            let last_pushed = app
-                                .chat
-                                .last_pushed_chat_id
-                                .get(&push_key)
-                                .copied()
-                                .unwrap_or(0);
-                            let mut new_msg = false;
-                            let mut max_pushed = last_pushed;
-                            for msg in &live_msgs {
-                                // Live entries are server-stamped with a
-                                // monotonic per-topic id; skip if we've
-                                // already pushed this id in an earlier poll.
-                                if msg.id != 0 && msg.id <= last_pushed {
-                                    continue;
-                                }
-                                // User echoes: the local echo pushed by
-                                // `send_message_inner` shares (sender, text)
-                                // with the server's IncomingMessage echo, so
-                                // dedup by (sender, text) drops the duplicate.
-                                if msg.sender == "user"
-                                    && app.chat.messages.iter().any(|m| {
-                                        m.sender == "user" && m.text == msg.text
-                                    })
-                                {
-                                    continue;
-                                }
-                                // Historical rows (id == 0 from JSONL hydrate):
-                                // dedup by (sender, text) so the 500 ms poll
-                                // loop doesn't re-push the same row forever.
-                                if msg.id == 0
-                                    && app.chat.messages.iter().any(|m| {
-                                        m.sender == msg.sender && m.text == msg.text
-                                    })
-                                {
-                                    continue;
-                                }
-                                app.chat.messages.push(ChatMessage {
-                                    sender: msg.sender.clone(),
-                                    text: msg.text.clone(),
-                                    timestamp: msg.timestamp.clone(),
-                                });
-                                new_msg = true;
-                                if msg.id > max_pushed {
-                                    max_pushed = msg.id;
-                                }
-                            }
-                            if max_pushed > last_pushed {
-                                app.chat.last_pushed_chat_id.insert(push_key, max_pushed);
-                            }
-                            if new_msg {
+                            // Clone to release the borrows on
+                            // `app.chat.channel` / `.topic` before the
+                            // mutable call into `poll_sync_live_chat`.
+                            let channel = channel.to_string();
+                            let topic = topic.to_string();
+                            if app.chat.poll_sync_live_chat(&channel, &topic) {
                                 app.chat.scroll = 0;
                             }
                         }

@@ -1251,5 +1251,251 @@ fn is_user_visible_activity_filters_internal_and_thinking() {
     assert!(!is_user_visible_activity(&legacy));
 }
 
+// ---------------------------------------------------------------------------
+// Regression tests for the chat-pane poll-sync dedup
+// (`ChatState::poll_sync_live_chat`).
+//
+// Bug history: the original `(sender, text)` dedup silently dropped repeated
+// runs of `/context` and similar deterministic-output commands. Fixing that
+// with an id-based dedup exposed a second bug: historical rows from
+// `chat_log_store.rs` JSONL hydrate carry `id = 0`, so a naive id-tracker
+// treated them as never-pushed and re-appended them on every 500 ms poll
+// cycle, flooding `self.messages` and pushing the live content off-screen.
+//
+// `poll_sync_live_chat` implements three dedup rules:
+//   1. Live entries (`id != 0`): skip if already pushed (`id <= last_pushed`).
+//   2. User echoes (`sender == "user"`): dedup by `(sender, text)` so the
+//      server's IncomingMessage echo is dropped against the local echo from
+//      `send_message_inner`.
+//   3. Historical rows (`id == 0`): dedup by `(sender, text)` so the poll
+//      loop does not re-push them forever.
+// ---------------------------------------------------------------------------
+
+fn push_live_chat(
+    app: &mut App,
+    channel: &str,
+    topic: &str,
+    entries: Vec<jyc_types::ChatMessageEntry>,
+) {
+    use std::collections::VecDeque;
+    let key = (channel.to_string(), topic.to_string());
+    app.chat.live_chat.insert(key, VecDeque::from(entries));
+}
+
+#[test]
+fn poll_sync_appends_each_live_entry_by_unique_id() {
+    // Two live AI replies with byte-identical text but distinct monotonic
+    // ids must both land in `self.messages` — this is the original bug
+    // that motivated the fix.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    let text = "/context: current strategy is sliding_window (window=10) (default)".to_string();
+    push_live_chat(
+        &mut app,
+        "agents",
+        "t",
+        vec![
+            jyc_types::ChatMessageEntry {
+                sender: "ai".into(),
+                text: text.clone(),
+                timestamp: Some("2026-01-01T00:00:01Z".into()),
+                id: 2,
+            },
+            jyc_types::ChatMessageEntry {
+                sender: "ai".into(),
+                text,
+                timestamp: Some("2026-01-01T00:00:02Z".into()),
+                id: 4,
+            },
+        ],
+    );
+    assert!(app.chat.poll_sync_live_chat("agents", "t"));
+    assert_eq!(app.chat.messages.len(), 2);
+    // Second sync: nothing new; tracker stays at id 4.
+    assert!(!app.chat.poll_sync_live_chat("agents", "t"));
+    assert_eq!(app.chat.messages.len(), 2);
+}
+
+#[test]
+fn poll_sync_does_not_repush_historical_id_zero_rows_across_polls() {
+    // 5 identical historical AI rows (id == 0) flushed by REST hydrate.
+    // After 10 sync cycles `self.messages` must still contain exactly one
+    // copy — the bug that produced the `id == 0` flood.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    let text = "/context: current strategy is sliding_window (window=10) (default)".to_string();
+    let rows = (0..5)
+        .map(|i| jyc_types::ChatMessageEntry {
+            sender: "ai".into(),
+            text: text.clone(),
+            timestamp: Some(format!("2026-01-01T00:00:0{i}Z")),
+            id: 0,
+        })
+        .collect();
+    push_live_chat(&mut app, "agents", "t", rows);
+    for _ in 0..10 {
+        app.chat.poll_sync_live_chat("agents", "t");
+    }
+    assert_eq!(
+        app.chat.messages.len(),
+        1,
+        "historical id=0 row must not be re-pushed across polls"
+    );
+}
+
+#[test]
+fn poll_sync_keeps_distinct_historical_texts() {
+    // Distinct historical texts must all be kept — `id == 0` should not
+    // collapse every historical row to one.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    push_live_chat(
+        &mut app,
+        "agents",
+        "t",
+        vec![
+            jyc_types::ChatMessageEntry {
+                sender: "ai".into(),
+                text: "first ai reply".into(),
+                timestamp: Some("2026-01-01T00:00:00Z".into()),
+                id: 0,
+            },
+            jyc_types::ChatMessageEntry {
+                sender: "ai".into(),
+                text: "second ai reply".into(),
+                timestamp: Some("2026-01-01T00:00:01Z".into()),
+                id: 0,
+            },
+            jyc_types::ChatMessageEntry {
+                sender: "user".into(),
+                text: "user said something".into(),
+                timestamp: Some("2026-01-01T00:00:02Z".into()),
+                id: 0,
+            },
+        ],
+    );
+    assert!(app.chat.poll_sync_live_chat("agents", "t"));
+    assert_eq!(app.chat.messages.len(), 3);
+    assert!(!app.chat.poll_sync_live_chat("agents", "t"));
+    assert_eq!(app.chat.messages.len(), 3);
+}
+
+#[test]
+fn poll_sync_local_user_echo_and_server_echo_are_deduped() {
+    // `send_message_inner` pushes the local echo with no id; the server
+    // echoes back via `live_chat` with id > 0. The local echo must stay,
+    // the server echo must be dropped — this is rule (2).
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    // Local echo.
+    app.chat.send_message_inner("/hello".into());
+    // Server echoes back via live_chat.
+    push_live_chat(
+        &mut app,
+        "agents",
+        "t",
+        vec![jyc_types::ChatMessageEntry {
+            sender: "user".into(),
+            text: "/hello".into(),
+            timestamp: Some("2026-01-01T00:00:00.500Z".into()),
+            id: 7,
+        }],
+    );
+    app.chat.poll_sync_live_chat("agents", "t");
+    let user_msgs: Vec<&ChatMessage> = app
+        .chat
+        .messages
+        .iter()
+        .filter(|m| m.sender == "user")
+        .collect();
+    assert_eq!(
+        user_msgs.len(),
+        1,
+        "local echo must win, server echo dropped"
+    );
+}
+
+#[test]
+fn poll_sync_command_repeats_with_historical_backdrop() {
+    // The user's exact scenario: 30 historical rows (id == 0) plus 3
+    // fresh `/context` commands. All 3 user echoes + 3 AI replies must
+    // be present, and the historical rows must not be re-pushed across
+    // polls.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    // Seed 30 historical rows: 15 user + 15 ai, all id == 0, distinct text.
+    let mut hist: Vec<jyc_types::ChatMessageEntry> = (0..15)
+        .flat_map(|i| {
+            [
+                jyc_types::ChatMessageEntry {
+                    sender: "user".into(),
+                    text: format!("old-user-{i}"),
+                    timestamp: Some(format!("2026-01-01T00:00:{i:02}Z")),
+                    id: 0,
+                },
+                jyc_types::ChatMessageEntry {
+                    sender: "ai".into(),
+                    text: format!("old-ai-{i}"),
+                    timestamp: Some(format!("2026-01-01T00:01:{i:02}Z")),
+                    id: 0,
+                },
+            ]
+        })
+        .collect();
+    push_live_chat(&mut app, "agents", "t", hist.clone());
+
+    // User types /context three times. Each typing pushes a local echo;
+    // each server reply arrives via live_chat with a fresh id.
+    let ai_text = "/context: current strategy is sliding_window (window=10) (default)".to_string();
+    for round in 0..3 {
+        app.chat.send_message_inner("/context".into());
+        hist.push(jyc_types::ChatMessageEntry {
+            sender: "user".into(),
+            text: "/context".into(),
+            timestamp: Some(format!("2026-02-01T00:0{round}:00Z")),
+            id: 100 + round as u64 * 2,
+        });
+        hist.push(jyc_types::ChatMessageEntry {
+            sender: "ai".into(),
+            text: ai_text.clone(),
+            timestamp: Some(format!("2026-02-01T00:0{round}:01Z")),
+            id: 101 + round as u64 * 2,
+        });
+        // Reset live_chat buffer to the new full set so each round
+        // simulates the live state after the server has flushed events.
+        use std::collections::VecDeque;
+        let key = ("agents".to_string(), "t".to_string());
+        app.chat.live_chat.insert(key, VecDeque::from(hist.clone()));
+    }
+    // One more sync to pick up the last batch.
+    app.chat.poll_sync_live_chat("agents", "t");
+    // Two extra sync cycles must not change the message count.
+    app.chat.poll_sync_live_chat("agents", "t");
+    app.chat.poll_sync_live_chat("agents", "t");
+
+    let user_msgs: Vec<&ChatMessage> = app
+        .chat
+        .messages
+        .iter()
+        .filter(|m| m.sender == "user")
+        .collect();
+    let ai_msgs: Vec<&ChatMessage> = app
+        .chat
+        .messages
+        .iter()
+        .filter(|m| m.sender == "ai")
+        .collect();
+    assert_eq!(
+        user_msgs.len(),
+        15 + 3,
+        "15 historical user rows + 3 fresh /context echoes"
+    );
+    assert_eq!(
+        ai_msgs.len(),
+        15 + 3,
+        "15 historical ai rows + 3 fresh /context replies"
+    );
+}
+
 #[cfg(test)]
 mod part2;

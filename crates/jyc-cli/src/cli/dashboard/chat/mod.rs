@@ -2535,6 +2535,73 @@ impl ChatState {
             .map(|v| v.iter())
             .unwrap_or_else(|| EMPTY_CHAT_DEQUE.iter())
     }
+
+    /// Append new chat messages from the live buffer to the rendered
+    /// message list. Returns `true` if at least one row was pushed.
+    ///
+    /// Three dedup rules apply:
+    /// - **Live entries** (`id != 0`): skipped if already pushed in an
+    ///   earlier poll (`id <= last_pushed_chat_id`). This is what makes
+    ///   repeated `/`-commands (`/context`, `/exchange`, `/help`,
+    ///   `/model <x>`) emit byte-identical AI text every run but still
+    ///   show up — each event has a fresh monotonic per-topic id.
+    /// - **User echoes** (`sender == "user"`): dedup by `(sender, text)`
+    ///   because the local echo pushed by `send_message_inner` shares
+    ///   `(sender, text)` with the server's IncomingMessage echo (which
+    ///   has `id > 0`).
+    /// - **Historical rows** (`id == 0` from `chat_log_store.rs` JSONL
+    ///   hydrate): dedup by `(sender, text)`. All historical rows share
+    ///   `id = 0` so the id-tracker cannot distinguish them; without
+    ///   this fallback the 500 ms poll loop would re-push the same row
+    ///   every cycle and flood `self.messages`.
+    pub(super) fn poll_sync_live_chat(&mut self, channel: &str, topic: &str) -> bool {
+        // Collect into a Vec first to release the immutable borrow on
+        // self.live_chat before mutating self.messages and last_pushed_chat_id.
+        let live_msgs: Vec<jyc_types::ChatMessageEntry> =
+            self.live_chat_for(channel, topic).cloned().collect();
+        let push_key = (channel.to_string(), topic.to_string());
+        let last_pushed = self
+            .last_pushed_chat_id
+            .get(&push_key)
+            .copied()
+            .unwrap_or(0);
+        let mut new_msg = false;
+        let mut max_pushed = last_pushed;
+        for msg in &live_msgs {
+            if msg.id != 0 && msg.id <= last_pushed {
+                continue;
+            }
+            if msg.sender == "user"
+                && self
+                    .messages
+                    .iter()
+                    .any(|m| m.sender == "user" && m.text == msg.text)
+            {
+                continue;
+            }
+            if msg.id == 0
+                && self
+                    .messages
+                    .iter()
+                    .any(|m| m.sender == msg.sender && m.text == msg.text)
+            {
+                continue;
+            }
+            self.messages.push(ChatMessage {
+                sender: msg.sender.clone(),
+                text: msg.text.clone(),
+                timestamp: msg.timestamp.clone(),
+            });
+            new_msg = true;
+            if msg.id > max_pushed {
+                max_pushed = msg.id;
+            }
+        }
+        if max_pushed > last_pushed {
+            self.last_pushed_chat_id.insert(push_key, max_pushed);
+        }
+        new_msg
+    }
 }
 
 /// Static empty deque used as a fallback when no live data is seeded for a

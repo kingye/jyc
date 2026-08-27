@@ -2343,7 +2343,13 @@ impl ChatState {
         }
         self.live_activity.insert(key.clone(), activity_buf);
         self.live_chat.insert(key.clone(), chat_buf);
-        self.last_seen_id.insert(key, max_id);
+        self.last_seen_id.insert(key.clone(), max_id);
+        // Reset the egress tracker for the freshly-seeded topic. `messages`
+        // was cleared by `open()` / `open_pattern_select()` /
+        // `select_pattern_inner()` and the freshly-hydrated `live_chat` must
+        // be re-pushed in full — leaving the previous visit's max id here
+        // would skip every hydrated historical row whose id ≤ old max.
+        self.last_pushed_chat_id.insert(key, 0);
     }
 
     /// Handle a `{"type":"resync", "channel":..., "topic":...}` event by

@@ -1497,5 +1497,62 @@ fn poll_sync_command_repeats_with_historical_backdrop() {
     );
 }
 
+#[test]
+fn seed_live_resets_last_pushed_chat_id_so_revisit_rehydrates() {
+    // The bug fixed by `seed_live` resetting `last_pushed_chat_id` to 0:
+    // when the user closes and reopens a topic, the egress tracker still
+    // holds the previous visit's max id. Without the reset, the freshly
+    // hydrated historical rows (whose ids ≤ old max) would all be
+    // skipped by rule (1), so the chat pane would show only new live
+    // entries — no historical context.
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    let historical: Vec<jyc_types::ChatMessageEntry> = (0..10)
+        .map(|i| jyc_types::ChatMessageEntry {
+            sender: if i % 2 == 0 {
+                "user".into()
+            } else {
+                "ai".into()
+            },
+            text: format!("history-{i}"),
+            timestamp: Some(format!("2026-01-01T00:00:{i:02}Z")),
+            id: i as u64 + 1,
+        })
+        .collect();
+    // First visit: seed + sync.
+    app.chat
+        .seed_live("agents", "t", vec![], historical.clone());
+    app.chat.poll_sync_live_chat("agents", "t");
+    assert_eq!(app.chat.messages.len(), 10);
+    // The egress tracker now sits at the max historical id (10).
+    assert_eq!(
+        app.chat
+            .last_pushed_chat_id
+            .get(&("agents".into(), "t".into()))
+            .copied(),
+        Some(10)
+    );
+    // Second visit: simulate `open()` clearing `messages` + a fresh
+    // REST hydrate via `seed_live`. The tracker must be reset so the
+    // hydrated historicals are re-pushed.
+    app.chat.messages.clear();
+    app.chat
+        .seed_live("agents", "t", vec![], historical.clone());
+    assert_eq!(
+        app.chat
+            .last_pushed_chat_id
+            .get(&("agents".into(), "t".into()))
+            .copied(),
+        Some(0),
+        "seed_live must reset the egress tracker so the freshly hydrated rows are not skipped"
+    );
+    app.chat.poll_sync_live_chat("agents", "t");
+    assert_eq!(
+        app.chat.messages.len(),
+        10,
+        "all 10 hydrated historical rows must be re-pushed on revisit"
+    );
+}
+
 #[cfg(test)]
 mod part2;

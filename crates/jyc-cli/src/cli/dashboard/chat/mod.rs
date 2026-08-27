@@ -48,6 +48,11 @@ pub(super) struct ChatMessage {
     pub(super) sender: String,
     pub(super) text: String,
     pub(super) timestamp: Option<String>,
+    /// Monotonic per-topic id mirrored from `ChatMessageEntry::id` for
+    /// server-stamped entries. `0` for local user echoes (the server's
+    /// IncomingMessage echo carries the real id and dedupes against this
+    /// entry separately — see `sync_live_chat_to_messages`).
+    pub(super) id: u64,
 }
 
 /// Aux-pane visibility snapshot taken when entering zen mode and restored
@@ -2215,6 +2220,7 @@ impl ChatState {
             sender: "user".to_string(),
             text: text.clone(),
             timestamp: Some(chrono::Utc::now().to_rfc3339()),
+            id: 0,
         });
         // The /ws/<channel>/<topic> URL already carries the topic name.
         // Both ScopedWsHandler (websocket channel) and TopicProxyHandler
@@ -2525,6 +2531,53 @@ impl ChatState {
             .get(&(channel.to_string(), topic.to_string()))
             .map(|v| v.iter())
             .unwrap_or_else(|| EMPTY_CHAT_DEQUE.iter())
+    }
+
+    /// Sync the per-topic `live_chat` buffer into the renderable
+    /// `self.messages` vec.
+    ///
+    /// Returns `true` if at least one new entry was appended (callers
+    /// use this to scroll the chat pane to the bottom).
+    ///
+    /// Dedup rules:
+    /// - **User echoes** (`sender == "user"`) dedup by `(sender, text)`.
+    ///   The server's `IncomingMessage` echo of a freshly-sent user
+    ///   message arrives through `live_chat` with identical `(sender,
+    ///   text)` to the locally-echoed entry that `send_message_inner`
+    ///   pushed (which carries `id = 0`). This rule drops that
+    ///   duplicate echo.
+    /// - **Non-user entries** (AI replies, system messages) dedup by
+    ///   the activity-tracker's monotonic per-topic `id`. Many
+    ///   `/`-commands (`/exchange`, `/context`, `/help`, `/model <x>`,
+    ///   …) emit byte-identical output across runs, so a `(sender,
+    ///   text)` rule would swallow every repeat. The server-stamped id
+    ///   is unique for each event and is the same id already used by
+    ///   the activity log's own dedup.
+    pub(super) fn sync_live_chat_to_messages(&mut self, channel: &str, topic: &str) -> bool {
+        // Collect into a Vec first to release the immutable borrow on
+        // self.live_chat before mutating self.messages.
+        let live_msgs: Vec<jyc_types::ChatMessageEntry> =
+            self.live_chat_for(channel, topic).cloned().collect();
+        let mut new_msg = false;
+        for msg in &live_msgs {
+            let already = if msg.sender == "user" {
+                self.messages
+                    .iter()
+                    .any(|m| m.sender == msg.sender && m.text == msg.text)
+            } else {
+                msg.id != 0 && self.messages.iter().any(|m| m.id == msg.id)
+            };
+            if !already {
+                self.messages.push(ChatMessage {
+                    sender: msg.sender.clone(),
+                    text: msg.text.clone(),
+                    timestamp: msg.timestamp.clone(),
+                    id: msg.id,
+                });
+                new_msg = true;
+            }
+        }
+        new_msg
     }
 }
 

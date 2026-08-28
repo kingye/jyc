@@ -334,10 +334,6 @@ impl JycAgentService {
     ///   lookup misses, and we rebuild and re-cache.
     /// - **Different topic** → separate cache entry; topic-level
     ///   (`L3`) `.jyc/config.toml` MCP overlays require it.
-    ///
-    /// A cached `None` value would mean the last build for that key
-    /// failed (likely an MCP timeout or spawn error). We currently
-    /// only ever cache the success value; on miss we always rebuild.
     pub(crate) async fn get_or_build_tool_registry(
         &self,
         topic_name: &str,
@@ -353,7 +349,7 @@ impl JycAgentService {
         };
 
         // Fast path: cache hit with a previously-successful build.
-        if let Some(Some(arc)) = self.registry_cache.lock().await.get(&key).cloned() {
+        if let Some(arc) = self.registry_cache.lock().await.get(&key).cloned() {
             return arc;
         }
 
@@ -371,7 +367,7 @@ impl JycAgentService {
         self.registry_cache
             .lock()
             .await
-            .insert(key, Some(arc.clone()));
+            .insert(key, arc.clone());
         arc
     }
 

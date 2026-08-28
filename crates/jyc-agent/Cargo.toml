@@ -14,7 +14,6 @@ jyc-mcp = { path = "../jyc-mcp" }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
-futures-util = "0.3"
 
 # HTTP + streaming
 reqwest = { version = "0.13", features = ["json", "stream", "form"] }

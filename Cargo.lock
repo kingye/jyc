@@ -1852,7 +1852,6 @@ dependencies = [
  "chrono",
  "cron",
  "futures",
- "futures-util",
  "glob",
  "http",
  "jyc-core",

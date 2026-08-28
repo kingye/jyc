@@ -1660,8 +1660,9 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
         focused,
         // Chat screen: only the top edge borders the chat pane above;
         // bottom/left/right sit at the screen edge or against an adjacent
-        // pane and are intentionally left open.
+        // pane and are intentionally left open. No title on this screen.
         Borders::TOP,
+        false,
     );
 }
 
@@ -1673,8 +1674,16 @@ pub(super) fn render_activity_log_inner(
     hscroll: usize,
     focused: bool,
     borders: Borders,
+    titled: bool,
 ) {
-    let mut block = Block::default().borders(borders);
+    // The chat screen renders the activity pane without a title; the
+    // dashboard/overview screen keeps the `── Activity` title in its
+    // top border. See chat/mod.rs vs dashboard/mod.rs call sites.
+    let mut block = if titled {
+        Block::default().title("── Activity ").borders(borders)
+    } else {
+        Block::default().borders(borders)
+    };
     if focused {
         block = block.border_style(
             Style::default()

@@ -1484,6 +1484,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         0,
         false,
         Borders::TOP | Borders::LEFT | Borders::RIGHT,
+        true,
     );
 }
 
@@ -2083,5 +2084,38 @@ mod tests {
                 "row {y} right edge should be `│`, got {right:?}"
             );
         }
+    }
+
+    /// Regression: the dashboard/overview activity pane keeps its `── Activity`
+    /// title in the top border. PR #669 removed the title from the shared
+    /// `render_activity_log_inner`, stripping it from the dashboard too. The
+    /// title must stay on the dashboard (only the chat screen drops it).
+    #[test]
+    fn overview_activity_pane_keeps_title() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = make_test_app();
+        app.state = Some(make_overview_with_topics(&["alpha"]));
+        app.table_state.select(Some(0));
+
+        let width: u16 = 40;
+        let height: u16 = 20;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_details(frame, frame.area(), &app))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer().clone();
+        // Activity pane top border is at y = 9 (info pane occupies 0..9).
+        let activity_top: u16 = 9;
+        let title_row: String = (0..width)
+            .map(|x| buffer[(x, activity_top)].symbol().to_string())
+            .collect();
+        assert!(
+            title_row.contains("── Activity"),
+            "dashboard activity pane should keep its `── Activity` title, got: {title_row:?}"
+        );
     }
 }

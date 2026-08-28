@@ -13,47 +13,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use arc_swap::ArcSwap;
 use jyc_types::ChannelPattern;
 use jyc_types::config::{McpServerConfig, McpServerKind};
 
 use crate::service::JycAgentService;
-
-/// Build a minimal `AppConfig` for tests — fields irrelevant to MCP
-/// loading are zero/default values. `AppConfig` doesn't implement
-/// `Default`, so this is hand-rolled to keep the dependency surface
-/// narrow.
-fn minimal_app_config() -> jyc_types::AppConfig {
-    jyc_types::AppConfig {
-        general: jyc_types::GeneralConfig::default(),
-        channels: HashMap::new(),
-        ai: jyc_types::AiConfig {
-            enabled: true,
-            mode: "agent".to_string(),
-            model: None,
-            plan_model: None,
-            build_model: None,
-            small_model: None,
-            system_prompt: None,
-            max_iterations: 500,
-            sse_read_timeout_secs: 120,
-            text: None,
-            attachments: None,
-            providers: HashMap::new(),
-            vision: None,
-            reset_compression: None,
-            auto_reset_threshold: 0.95,
-            context_strategy: None,
-        },
-        inspect: None,
-        attachments: None,
-        wecom: None,
-        mcps: Vec::new(),
-        scheduler: jyc_types::SchedulerConfig::default(),
-        commands: Vec::new(),
-        agents: HashMap::new(),
-    }
-}
+use crate::service::tests::app_config_with_model;
 
 /// Build a Service with the given channel-level MCP configs and a
 /// short per-server timeout (so tests don't take forever).
@@ -70,7 +34,7 @@ fn service_with_timeout_ms(
             cfg
         })
         .collect();
-    let config = Arc::new(ArcSwap::from_pointee(minimal_app_config()));
+    let config = app_config_with_model(None);
     let svc = JycAgentService::new(
         config,
         Path::new("/tmp/test-topic").to_path_buf(),
@@ -215,7 +179,7 @@ async fn cache_hit_avoids_reloading_mcps() {
 async fn cache_invalidates_on_config_swap() {
     let mut hanger = hanging_mcp("hanger");
     hanger.timeout_ms = Some(300);
-    let config = Arc::new(ArcSwap::from_pointee(minimal_app_config()));
+    let config = app_config_with_model(None);
     let svc = JycAgentService::new(
         config.clone(),
         Path::new("/tmp/test-topic").to_path_buf(),
@@ -241,7 +205,12 @@ async fn cache_invalidates_on_config_swap() {
 
     // Swap config to a fresh snapshot. This changes the Arc pointer
     // the cache key is derived from, so the next call MUST miss.
-    config.store(Arc::new(minimal_app_config()));
+    // `app_config_with_model` allocates a fresh `Arc<AppConfig>` per
+    // call, so the inner `AppConfig` clone here ends up wrapped in a
+    // new Arc with a different pointer than the original snapshot.
+    let new_snapshot: jyc_types::AppConfig =
+        app_config_with_model(None).load().as_ref().clone();
+    config.store(Arc::new(new_snapshot));
 
     let start = Instant::now();
     let _second = svc

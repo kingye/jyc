@@ -9,7 +9,7 @@ use std::sync::Arc;
 /// Helper: build a minimal `AppConfig` wrapped in an `Arc<ArcSwap>`.
 /// `model` becomes the global `[agent].model`. Add to `providers`/`channels`
 /// to simulate config knobs.
-fn app_config_with_model(model: Option<&str>) -> Arc<ArcSwap<jyc_types::AppConfig>> {
+pub(super) fn app_config_with_model(model: Option<&str>) -> Arc<ArcSwap<jyc_types::AppConfig>> {
     let app = jyc_types::AppConfig {
         general: jyc_types::GeneralConfig::default(),
         channels: HashMap::new(),

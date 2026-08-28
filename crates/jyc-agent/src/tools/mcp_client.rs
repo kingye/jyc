@@ -43,7 +43,7 @@ pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
     // proportional to N. The cap keeps a flood of MCPs from
     // overwhelming the local box (file descriptors, sockets, OAuth
     // fetches).
-    let load_mcp = |cfg: &McpServerConfig| {
+    let load_mcp = |(i, cfg): (usize, &McpServerConfig)| {
         let cfg = cfg.clone();
         let http = &http;
         let timeout_ms = cfg.timeout_ms.unwrap_or(10_000);
@@ -67,7 +67,7 @@ pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
                         timeout_ms,
                         "Loaded MCP tools"
                     );
-                    Some((cfg.name, discovered))
+                    Some((i, cfg.name, discovered))
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(
@@ -90,22 +90,18 @@ pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
         }
     };
 
-    let mut results: Vec<(String, Vec<Box<dyn Tool>>)> = stream::iter(cfgs.iter().map(load_mcp))
-        .buffer_unordered(4)
-        .filter_map(|r| async move { r })
-        .collect()
-        .await;
+    let mut results: Vec<(usize, String, Vec<Box<dyn Tool>>)> =
+        stream::iter(cfgs.iter().enumerate().map(load_mcp))
+            .buffer_unordered(4)
+            .filter_map(|r| async move { r })
+            .collect()
+            .await;
 
     // Sort by config order so the registered tool list is deterministic.
-    let order: std::collections::HashMap<&str, usize> = cfgs
-        .iter()
-        .enumerate()
-        .map(|(i, c)| (c.name.as_str(), i))
-        .collect();
-    results.sort_by_key(|(name, _)| order.get(name.as_str()).copied().unwrap_or(usize::MAX));
+    results.sort_by_key(|(i, _, _)| *i);
 
     let mut tools: Vec<Box<dyn Tool>> = Vec::new();
-    for (_name, mut discovered) in results {
+    for (_i, _name, mut discovered) in results {
         tools.append(&mut discovered);
     }
     tools

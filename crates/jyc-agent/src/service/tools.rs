@@ -343,10 +343,7 @@ impl JycAgentService {
         matched_pattern_name: Option<&str>,
     ) -> Arc<ToolRegistry> {
         let config_ptr = Arc::as_ptr(&self.config.load()) as usize;
-        let key = super::RegistryCacheKey {
-            topic: topic_name.to_string(),
-            config_ptr,
-        };
+        let key = (topic_name.to_string(), config_ptr);
 
         // Fast path: cache hit with a previously-successful build.
         if let Some(arc) = self.registry_cache.lock().await.get(&key).cloned() {

@@ -35,17 +35,6 @@ pub struct SkillMeta {
     pub source_path: PathBuf,
 }
 
-/// Cache key for `Service::registry_cache`.
-///
-/// `config_ptr` is the address of the `Arc<AppConfig>` returned by
-/// `ArcSwap::load()` — stable per snapshot, so a config swap
-/// invalidates the cached registry automatically.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct RegistryCacheKey {
-    topic: String,
-    config_ptr: usize,
-}
-
 /// Parse frontmatter from a SKILL.md file.
 pub struct JycAgentService {
     /// Live, swappable view of the full application config (shared with
@@ -79,7 +68,7 @@ pub struct JycAgentService {
     /// hasn't changed. A config swap (via `ArcSwap::store`) gives the
     /// new `Arc<AppConfig>` a fresh pointer, so the cache key
     /// invalidates automatically.
-    registry_cache: Mutex<HashMap<RegistryCacheKey, Arc<ToolRegistry>>>,
+    registry_cache: Mutex<HashMap<(String, usize), Arc<ToolRegistry>>>,
     /// Outbound adapter for proactive messaging tools (e.g. `jyc_send_message`).
     outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
     /// Channel-level tools to disable (merged with pattern-level).

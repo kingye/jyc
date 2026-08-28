@@ -37,6 +37,11 @@ pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
     // gives us connection pooling without a per-call builder.
     let http = reqwest::Client::new();
 
+    /// Per-server load result carrying the original config index so
+    /// the parallel results can be sorted back into config order
+    /// before being flattened into the final tool list.
+    type LoadResult = (usize, String, Vec<Box<dyn Tool>>);
+
     // Load MCPs concurrently with bounded parallelism (`4`). Without
     // this the loop was sequential, so N slow MCPs added up to the
     // sum of their latencies and blocked agent-loop startup
@@ -90,12 +95,11 @@ pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
         }
     };
 
-    let mut results: Vec<(usize, String, Vec<Box<dyn Tool>>)> =
-        stream::iter(cfgs.iter().enumerate().map(load_mcp))
-            .buffer_unordered(4)
-            .filter_map(|r| async move { r })
-            .collect()
-            .await;
+    let mut results: Vec<LoadResult> = stream::iter(cfgs.iter().enumerate().map(load_mcp))
+        .buffer_unordered(4)
+        .filter_map(|r| async move { r })
+        .collect()
+        .await;
 
     // Sort by config order so the registered tool list is deterministic.
     results.sort_by_key(|(i, _, _)| *i);

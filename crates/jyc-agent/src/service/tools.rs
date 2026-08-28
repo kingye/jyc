@@ -361,10 +361,7 @@ impl JycAgentService {
             )
             .await;
         let arc = Arc::new(built);
-        self.registry_cache
-            .lock()
-            .await
-            .insert(key, arc.clone());
+        self.registry_cache.lock().await.insert(key, arc.clone());
         arc
     }
 

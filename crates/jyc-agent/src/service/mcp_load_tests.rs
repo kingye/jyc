@@ -208,8 +208,7 @@ async fn cache_invalidates_on_config_swap() {
     // `app_config_with_model` allocates a fresh `Arc<AppConfig>` per
     // call, so the inner `AppConfig` clone here ends up wrapped in a
     // new Arc with a different pointer than the original snapshot.
-    let new_snapshot: jyc_types::AppConfig =
-        app_config_with_model(None).load().as_ref().clone();
+    let new_snapshot: jyc_types::AppConfig = app_config_with_model(None).load().as_ref().clone();
     config.store(Arc::new(new_snapshot));
 
     let start = Instant::now();

@@ -1226,9 +1226,15 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     // row acts as a separator between the heading and the content below.
     // When focused, paint the border yellow so the user knows they own
     // the scroll keys (mirrors render_activity_log_inner).
-    let mut block = Block::default()
-        .title("── Topic Info ")
-        .borders(Borders::TOP | Borders::LEFT);
+    // Chat screen: the title and top border are removed, leaving only the
+    // left border to separate the pane from the chat content.
+    let mut block = if app.chat.phase == ChatPhase::Chatting {
+        Block::default().borders(Borders::LEFT)
+    } else {
+        Block::default()
+            .title("── Topic Info ")
+            .borders(Borders::TOP | Borders::LEFT)
+    };
     if focused {
         block = block.border_style(
             Style::default()
@@ -1668,7 +1674,7 @@ pub(super) fn render_activity_log_inner(
     focused: bool,
     borders: Borders,
 ) {
-    let mut block = Block::default().title("── Activity ").borders(borders);
+    let mut block = Block::default().borders(borders);
     if focused {
         block = block.border_style(
             Style::default()

@@ -1666,6 +1666,7 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_activity_log_inner(
     frame: &mut Frame,
     area: Rect,

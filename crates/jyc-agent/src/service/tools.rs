@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use std::path::Path;
+use std::sync::Arc;
 
 use jyc_core::topic_event_bus::TopicEventBusRef;
 use jyc_types::{McpServerConfig, TopicConfig};
@@ -316,6 +317,64 @@ impl JycAgentService {
         }
 
         registry
+    }
+
+    /// Cache-aware variant of [`Self::build_tool_registry`].
+    ///
+    /// The MCP-loaded portion of the registry can be expensive
+    /// (subprocess spawn + handshake + `list_tools()` for each
+    /// server, even when run in parallel), and historically this ran
+    /// on every inbound message. To avoid that, we cache the result
+    /// keyed by `(topic, current_config_snapshot_ptr)`:
+    ///
+    /// - **Same `topic` + same config snapshot** → return a clone of
+    ///   the cached `Arc<ToolRegistry>` (no I/O).
+    /// - **Different config snapshot** (e.g. after `config.toml`
+    ///   reload via `ArcSwap::store`) → the pointer changes, the
+    ///   lookup misses, and we rebuild and re-cache.
+    /// - **Different topic** → separate cache entry; topic-level
+    ///   (`L3`) `.jyc/config.toml` MCP overlays require it.
+    ///
+    /// A cached `None` value would mean the last build for that key
+    /// failed (likely an MCP timeout or spawn error). We currently
+    /// only ever cache the success value; on miss we always rebuild.
+    pub(crate) async fn get_or_build_tool_registry(
+        &self,
+        topic_name: &str,
+        topic_path: &Path,
+        topic_cfg: Option<&TopicConfig>,
+        supports_images: bool,
+        matched_pattern_name: Option<&str>,
+    ) -> Arc<ToolRegistry> {
+        let config_ptr = Arc::as_ptr(&self.config.load()) as usize;
+        let key = super::RegistryCacheKey {
+            topic: topic_name.to_string(),
+            config_ptr,
+        };
+
+        // Fast path: cache hit with a previously-successful build.
+        if let Some(cached) = self.registry_cache.lock().await.get(&key).cloned() {
+            if let Some(arc) = cached {
+                return arc;
+            }
+        }
+
+        // Slow path: rebuild (cache miss or previously-failed key).
+        let built = self
+            .build_tool_registry(
+                topic_name,
+                topic_path,
+                topic_cfg,
+                supports_images,
+                matched_pattern_name,
+            )
+            .await;
+        let arc = Arc::new(built);
+        self.registry_cache
+            .lock()
+            .await
+            .insert(key, Some(arc.clone()));
+        arc
     }
 
     /// Get or create the provider for the current model, using the given

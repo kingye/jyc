@@ -624,6 +624,7 @@ async fn disabled_mcp_servers_filters_channel_configs() {
             environment: std::collections::HashMap::new(),
         },
         enabled_tools: None,
+        timeout_ms: None,
     }]);
     let svc = service_with_full_exclusion(patterns, None, None, channel_mcps);
     let registry = svc
@@ -720,6 +721,7 @@ async fn enabled_tools_on_mcp_server_config_does_not_panic() {
             environment: std::collections::HashMap::new(),
         },
         enabled_tools: Some(vec!["allowed_tool".to_string()]),
+        timeout_ms: None,
     }]);
     let svc = service_with_full_exclusion(patterns, None, None, channel_mcps);
     let registry = svc
@@ -1277,6 +1279,7 @@ async fn pattern_mcps_remote_is_registered_at_runtime() {
                 environment: std::collections::HashMap::new(),
             },
             enabled_tools: None,
+            timeout_ms: None,
         }]),
         ..AgentConfig::default()
     };
@@ -1332,6 +1335,7 @@ fn debug_print_pattern_mcps_resolution() {
                     environment: std::collections::HashMap::new(),
                 },
                 enabled_tools: None,
+                timeout_ms: None,
             }]),
             ..AgentConfig::default()
         };

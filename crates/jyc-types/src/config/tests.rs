@@ -1069,6 +1069,7 @@ mode = "static"
                 environment: Default::default(),
             },
             enabled_tools: None,
+            timeout_ms: None,
         }
     }
 
@@ -1083,6 +1084,7 @@ mode = "static"
                 oauth: None,
             },
             enabled_tools: None,
+            timeout_ms: None,
         }
     }
 

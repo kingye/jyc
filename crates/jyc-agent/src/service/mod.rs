@@ -20,6 +20,7 @@ use crate::provider;
 use crate::session;
 use crate::tools::OutboundsMap;
 use crate::tools::TopicManagersMap;
+use crate::tools::registry::ToolRegistry;
 use crate::vision::VisionClient;
 use std::sync::Arc;
 
@@ -32,6 +33,17 @@ pub struct SkillMeta {
     pub description: String,
     /// Path to the skill's directory (contains SKILL.md)
     pub source_path: PathBuf,
+}
+
+/// Cache key for `Service::registry_cache`.
+///
+/// `config_ptr` is the address of the `Arc<AppConfig>` returned by
+/// `ArcSwap::load()` — stable per snapshot, so a config swap
+/// invalidates the cached registry automatically.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RegistryCacheKey {
+    topic: String,
+    config_ptr: usize,
 }
 
 /// Parse frontmatter from a SKILL.md file.
@@ -61,6 +73,13 @@ pub struct JycAgentService {
     global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
     /// Vision fallback client for text-only models to analyze images.
     vision_client: Option<Arc<VisionClient>>,
+    /// Cache of MCP-enriched tool registries keyed by
+    /// `(channel, topic, config_snapshot_ptr)`. Bypasses the
+    /// subprocess-spawn / HTTP-handshake cost on every inbound message
+    /// when the config hasn't changed. `None` values mean the last
+    /// attempt failed and the agent should fall through to a direct
+    /// rebuild on the next message.
+    registry_cache: Mutex<HashMap<RegistryCacheKey, Option<Arc<ToolRegistry>>>>,
     /// Outbound adapter for proactive messaging tools (e.g. `jyc_send_message`).
     outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
     /// Channel-level tools to disable (merged with pattern-level).
@@ -118,6 +137,7 @@ impl JycAgentService {
             channel_disabled_mcp_servers,
             channel_skills,
             channel_disabled_skills,
+            registry_cache: Mutex::new(HashMap::new()),
             topic_managers: std::sync::Mutex::new(None),
             channel_name,
             outbounds: std::sync::Mutex::new(None),
@@ -346,9 +366,10 @@ impl AgentService for JycAgentService {
         let user_blocks =
             self.build_user_blocks(message, provider.supports_images(), current_mode.as_deref());
 
-        // 5. Build tool registry
-        let tools = self
-            .build_tool_registry(
+        // 5. Build tool registry (cached per (topic, config snapshot) so
+        //    MCP subprocess spawn + handshake only runs when configs change).
+        let tools_arc = self
+            .get_or_build_tool_registry(
                 topic_name,
                 topic_path,
                 topic_cfg.as_ref(),
@@ -356,6 +377,7 @@ impl AgentService for JycAgentService {
                 message.matched_pattern.as_deref(),
             )
             .await;
+        let tools = &*tools_arc;
 
         // 6. Get event bus for this topic
         let event_bus = self.get_event_bus(topic_name).await;
@@ -663,6 +685,8 @@ pub fn derive_agent_config(app: &jyc_types::AppConfig, channel_name: &str) -> jy
     agent
 }
 
+#[cfg(test)]
+mod mcp_load_tests;
 mod prompt;
 mod skills;
 #[cfg(test)]

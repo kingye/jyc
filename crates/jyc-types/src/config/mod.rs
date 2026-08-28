@@ -35,6 +35,14 @@ pub struct McpServerConfig {
     /// (default), all discovered tools are loaded.
     #[serde(default)]
     pub enabled_tools: Option<Vec<String>>,
+
+    /// Maximum time (milliseconds) to spend on `connect + list_tools`
+    /// for this server before giving up and skipping it. Defaults to
+    /// 10000 ms when `None`. Hung MCPs (subprocess that never speaks
+    /// the protocol, unresponsive HTTP endpoint, OAuth endpoint that
+    /// hangs) would otherwise block the entire agent loop startup.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 /// Kind of MCP server — either `local` (subprocess) or `remote` (HTTP).

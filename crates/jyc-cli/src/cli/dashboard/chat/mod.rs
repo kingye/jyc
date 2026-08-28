@@ -1678,10 +1678,12 @@ pub(super) fn render_activity_log_inner(
     titled: bool,
 ) {
     // The chat screen renders the activity pane without a title; the
-    // dashboard/overview screen keeps the `── Activity` title in its
-    // top border. See chat/mod.rs vs dashboard/mod.rs call sites.
+    // dashboard/overview screen keeps the `Activity` title in its top
+    // border, using the same plain ` Text ` format as the other dashboard
+    // panes (Channels / Topics / Details). See chat/mod.rs vs
+    // dashboard/mod.rs call sites.
     let mut block = if titled {
-        Block::default().title("── Activity ").borders(borders)
+        Block::default().title(" Activity ").borders(borders)
     } else {
         Block::default().borders(borders)
     };

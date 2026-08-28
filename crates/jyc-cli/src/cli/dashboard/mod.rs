@@ -2086,10 +2086,12 @@ mod tests {
         }
     }
 
-    /// Regression: the dashboard/overview activity pane keeps its `── Activity`
-    /// title in the top border. PR #669 removed the title from the shared
-    /// `render_activity_log_inner`, stripping it from the dashboard too. The
-    /// title must stay on the dashboard (only the chat screen drops it).
+    /// Regression: the dashboard/overview activity pane keeps its `Activity`
+    /// title in the top border, using the same plain ` Text ` format as the
+    /// other dashboard panes (Channels / Topics / Details). PR #669 removed
+    /// the title from the shared `render_activity_log_inner`, stripping it
+    /// from the dashboard too. The title must stay on the dashboard (only the
+    /// chat screen drops it).
     #[test]
     fn overview_activity_pane_keeps_title() {
         use ratatui::Terminal;
@@ -2114,8 +2116,15 @@ mod tests {
             .map(|x| buffer[(x, activity_top)].symbol().to_string())
             .collect();
         assert!(
-            title_row.contains("── Activity"),
-            "dashboard activity pane should keep its `── Activity` title, got: {title_row:?}"
+            title_row.contains("Activity"),
+            "dashboard activity pane should keep its `Activity` title, got: {title_row:?}"
+        );
+        // The title must use the plain dashboard format (` Text `, like the
+        // Channels/Topics/Details panes), not the chat-screen `── Activity `
+        // box-drawing prefix that leaves leading dashes.
+        assert!(
+            !title_row.contains("── Activity"),
+            "dashboard activity title should not carry the `── ` box-drawing prefix, got: {title_row:?}"
         );
     }
 }

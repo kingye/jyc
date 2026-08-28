@@ -501,7 +501,7 @@ impl AgentService for JycAgentService {
             small_provider: small_provider
                 .as_deref()
                 .map(|p| p as &dyn provider::Provider),
-            tools: &tools,
+            tools,
             system_prompt: &system_prompt,
             user_blocks,
             working_dir: topic_path,

@@ -353,10 +353,8 @@ impl JycAgentService {
         };
 
         // Fast path: cache hit with a previously-successful build.
-        if let Some(cached) = self.registry_cache.lock().await.get(&key).cloned() {
-            if let Some(arc) = cached {
-                return arc;
-            }
+        if let Some(Some(arc)) = self.registry_cache.lock().await.get(&key).cloned() {
+            return arc;
         }
 
         // Slow path: rebuild (cache miss or previously-failed key).

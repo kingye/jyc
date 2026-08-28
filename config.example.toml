@@ -607,6 +607,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # type = "local"
 # command = ["jyc", "mcp-reply-tool"]
 # # environment = { "JYC_THREAD_DIR" = "/path/to/topic" }
+# # timeout_ms = 5000          # optional; max connect+list_tools time. Default 10000.
 
 # [[mcps]]
 # name = "invoice"

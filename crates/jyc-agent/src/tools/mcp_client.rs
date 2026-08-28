@@ -10,6 +10,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use futures::StreamExt;
+use futures::stream;
 use http::{HeaderName, HeaderValue};
 use jyc_types::OAuthClientCredentialsConfig;
 use serde_json::Value;
@@ -34,28 +36,78 @@ pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
     // One shared HTTP client for OAuth token fetches across all MCPs;
     // gives us connection pooling without a per-call builder.
     let http = reqwest::Client::new();
-    let mut tools: Vec<Box<dyn Tool>> = Vec::new();
 
-    for cfg in cfgs {
-        match connect_and_list_tools(cfg, &http).await {
-            Ok(mut discovered) => {
-                tracing::info!(
-                    mcp_name = %cfg.name,
-                    tool_count = discovered.len(),
-                    "Loaded MCP tools"
-                );
-                tools.append(&mut discovered);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    mcp_name = %cfg.name,
-                    error = %e,
-                    "Failed to load MCP tools, skipping"
-                );
+    /// Per-server load result carrying the original config index so
+    /// the parallel results can be sorted back into config order
+    /// before being flattened into the final tool list.
+    type LoadResult = (usize, String, Vec<Box<dyn Tool>>);
+
+    // Load MCPs concurrently with bounded parallelism (`4`). Without
+    // this the loop was sequential, so N slow MCPs added up to the
+    // sum of their latencies and blocked agent-loop startup
+    // proportional to N. The cap keeps a flood of MCPs from
+    // overwhelming the local box (file descriptors, sockets, OAuth
+    // fetches).
+    let load_mcp = |(i, cfg): (usize, &McpServerConfig)| {
+        let cfg = cfg.clone();
+        let http = &http;
+        let timeout_ms = cfg.timeout_ms.unwrap_or(10_000);
+        async move {
+            // Per-server timeout: a hung MCP (subprocess that never
+            // speaks the protocol, unresponsive HTTP endpoint,
+            // OAuth endpoint that hangs) must not block agent-loop
+            // startup. On timeout we drop the future — for
+            // `TokioChildProcess` this signals SIGKILL via Drop on
+            // the child handle.
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(timeout_ms),
+                connect_and_list_tools(&cfg, http),
+            )
+            .await
+            {
+                Ok(Ok(discovered)) => {
+                    tracing::info!(
+                        mcp_name = %cfg.name,
+                        tool_count = discovered.len(),
+                        timeout_ms,
+                        "Loaded MCP tools"
+                    );
+                    Some((i, cfg.name, discovered))
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        mcp_name = %cfg.name,
+                        timeout_ms,
+                        error = %e,
+                        "Failed to load MCP tools, skipping"
+                    );
+                    None
+                }
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        mcp_name = %cfg.name,
+                        timeout_ms,
+                        "MCP load timed out, skipping"
+                    );
+                    None
+                }
             }
         }
-    }
+    };
 
+    let mut results: Vec<LoadResult> = stream::iter(cfgs.iter().enumerate().map(load_mcp))
+        .buffer_unordered(4)
+        .filter_map(|r| async move { r })
+        .collect()
+        .await;
+
+    // Sort by config order so the registered tool list is deterministic.
+    results.sort_by_key(|(i, _, _)| *i);
+
+    let mut tools: Vec<Box<dyn Tool>> = Vec::new();
+    for (_i, _name, mut discovered) in results {
+        tools.append(&mut discovered);
+    }
     tools
 }
 

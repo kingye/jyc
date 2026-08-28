@@ -65,6 +65,22 @@
   with columns shrunk greedily from the widest column and borders rebuilt
   to fit the pane width. (#664)
 
+- **Slow or hung MCP servers no longer block agent-loop startup.** Three
+  coupled fixes on the MCP-loading path:
+  1. **Per-server timeout** — each `connect + list_tools` is now wrapped
+     in `tokio::time::timeout`. A hung subprocess or unresponsive HTTP
+     endpoint gives up after `timeout_ms` (default 10000 ms, configurable
+     per server in `config.toml`) instead of blocking forever; the
+     server is logged and skipped, the agent loop proceeds.
+  2. **Bounded concurrent loading** — MCPs are loaded with
+     `buffer_unordered(4)` instead of `await`-in-a-loop, so wall-clock
+     cost is `max(per-server latency)` instead of `sum`, capped at 4
+     concurrent subprocess/HTTP handshakes.
+  3. **Tool-registry cache** — `build_tool_registry` results are now
+     cached per `(topic, ArcSwap snapshot pointer)`. The subprocess
+     spawn + handshake + `list_tools` only runs when configs change
+     (via `ArcSwap::store`), not on every inbound message.
+
 ## [0.3.16] - 2026-08-25
 
 ### Added

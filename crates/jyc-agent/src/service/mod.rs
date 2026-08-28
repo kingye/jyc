@@ -20,6 +20,7 @@ use crate::provider;
 use crate::session;
 use crate::tools::OutboundsMap;
 use crate::tools::TopicManagersMap;
+use crate::tools::registry::ToolRegistry;
 use crate::vision::VisionClient;
 use std::sync::Arc;
 
@@ -61,6 +62,13 @@ pub struct JycAgentService {
     global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
     /// Vision fallback client for text-only models to analyze images.
     vision_client: Option<Arc<VisionClient>>,
+    /// Cache of MCP-enriched tool registries keyed by
+    /// `(topic, config_snapshot_ptr)`. Bypasses the subprocess-spawn
+    /// / HTTP-handshake cost on every inbound message when the config
+    /// hasn't changed. A config swap (via `ArcSwap::store`) gives the
+    /// new `Arc<AppConfig>` a fresh pointer, so the cache key
+    /// invalidates automatically.
+    registry_cache: Mutex<HashMap<(String, usize), Arc<ToolRegistry>>>,
     /// Outbound adapter for proactive messaging tools (e.g. `jyc_send_message`).
     outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
     /// Channel-level tools to disable (merged with pattern-level).
@@ -118,6 +126,7 @@ impl JycAgentService {
             channel_disabled_mcp_servers,
             channel_skills,
             channel_disabled_skills,
+            registry_cache: Mutex::new(HashMap::new()),
             topic_managers: std::sync::Mutex::new(None),
             channel_name,
             outbounds: std::sync::Mutex::new(None),
@@ -346,9 +355,10 @@ impl AgentService for JycAgentService {
         let user_blocks =
             self.build_user_blocks(message, provider.supports_images(), current_mode.as_deref());
 
-        // 5. Build tool registry
-        let tools = self
-            .build_tool_registry(
+        // 5. Build tool registry (cached per (topic, config snapshot) so
+        //    MCP subprocess spawn + handshake only runs when configs change).
+        let tools_arc = self
+            .get_or_build_tool_registry(
                 topic_name,
                 topic_path,
                 topic_cfg.as_ref(),
@@ -356,6 +366,7 @@ impl AgentService for JycAgentService {
                 message.matched_pattern.as_deref(),
             )
             .await;
+        let tools = &*tools_arc;
 
         // 6. Get event bus for this topic
         let event_bus = self.get_event_bus(topic_name).await;
@@ -479,7 +490,7 @@ impl AgentService for JycAgentService {
             small_provider: small_provider
                 .as_deref()
                 .map(|p| p as &dyn provider::Provider),
-            tools: &tools,
+            tools,
             system_prompt: &system_prompt,
             user_blocks,
             working_dir: topic_path,
@@ -663,6 +674,8 @@ pub fn derive_agent_config(app: &jyc_types::AppConfig, channel_name: &str) -> jy
     agent
 }
 
+#[cfg(test)]
+mod mcp_load_tests;
 mod prompt;
 mod skills;
 #[cfg(test)]

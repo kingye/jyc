@@ -186,3 +186,50 @@ impl AgentConfig {
         pattern.context_strategy = self.context_strategy.clone();
     }
 }
+
+/// Build one `ChannelPattern` from one `[agents.<name>]` entry.
+///
+/// Thin wrapper over `AgentConfig::fill_into_pattern` — kept as a
+/// function so callers have one obvious entry point. Adding a new
+/// behavior field to `AgentConfig` requires updating
+/// `fill_into_pattern` only; both this function and `validate_agent`
+/// route through it.
+pub fn synthesize_agent_pattern(agent_name: &str, agent: &AgentConfig) -> ChannelPattern {
+    let mut pattern = ChannelPattern::default();
+    agent.fill_into_pattern(&mut pattern, agent_name);
+    pattern
+}
+
+/// Build the synthesized `channels.agents` entry from the current
+/// `config.agents`. Returns `None` when there are no agents.
+///
+/// Deterministic pattern order: agent names are sorted before
+/// iteration so `pattern_names()` (the dashboard's pattern-select UI)
+/// is stable across restarts.
+///
+/// Both startup (`install_agents_channel`) and config reload
+/// (`post_reload_config`) call this — reload loads a fresh config from
+/// disk that does *not* contain the synthesized `agents` channel, so
+/// it must re-run this synthesis before storing. Otherwise the
+/// orchestrator's reload diff sees `agents` as removed and cancels the
+/// websocket channel the dashboard is connected to.
+pub fn synthesize_agents_channel(snapshot: &super::AppConfig) -> Option<super::ChannelConfig> {
+    if snapshot.agents.is_empty() {
+        return None;
+    }
+    let mut names: Vec<&String> = snapshot.agents.keys().collect();
+    names.sort();
+    let patterns: Vec<ChannelPattern> = names
+        .into_iter()
+        .map(|name| synthesize_agent_pattern(name, &snapshot.agents[name]))
+        .collect();
+    tracing::info!(
+        count = patterns.len(),
+        "Synthesized 'agents' channel from [agents.<name>] entries"
+    );
+    Some(super::ChannelConfig {
+        channel_type: "websocket".to_string(),
+        patterns: Some(patterns),
+        ..Default::default()
+    })
+}

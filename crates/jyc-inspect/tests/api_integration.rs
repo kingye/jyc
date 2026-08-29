@@ -251,3 +251,80 @@ async fn reload_config_returns_422_when_no_path() {
         .unwrap();
     assert_eq!(res.status(), 422);
 }
+
+/// Regression: config reload must re-synthesize the implicit `agents`
+/// websocket channel from `[agents.<name>]` entries, mirroring startup's
+/// `install_agents_channel`. Without this, the reloaded config (loaded fresh
+/// from disk) lacks the `agents` channel, so the orchestrator's reload diff
+/// treats `agents` as removed and cancels the websocket channel the dashboard
+/// is connected to — manifesting as a crash / "websocket connection error" /
+/// "unauthorized" in the TUI.
+#[tokio::test]
+async fn reload_re_synthesizes_agents_channel() {
+    // A minimal valid config with one `[agents.jyc]` entry but NO
+    // `[channels.agents]` block — exactly what a user writes on disk.
+    let toml = r#"
+[general]
+max_concurrent_topics = 3
+max_queue_size_per_topic = 10
+
+[ai]
+mode = "agent"
+
+[agents.jyc]
+template = "jyc"
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.toml");
+    std::fs::write(&cfg_path, toml).unwrap();
+
+    // Seed the live ArcSwap with the *raw* config (no synthesized `agents`
+    // channel) — this is the "before reload" state, identical to what the
+    // reload endpoint will load from disk.
+    let raw = jyc_types::load_config_layered(None, &cfg_path).unwrap();
+    assert!(
+        !raw.channels.contains_key("agents"),
+        "raw on-disk config must not contain the synthesized channel"
+    );
+    let config = Arc::new(ArcSwap::from_pointee(raw));
+
+    let ctx = Arc::new(InspectContext {
+        topic_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+        channels: Arc::new(ArcSwap::from_pointee(vec![])),
+        health_stats: Arc::new(Mutex::new(HealthStats::default())),
+        activity_map: Arc::new(Mutex::new(HashMap::new())),
+        start_time: Instant::now(),
+        config_path: Some(cfg_path),
+        global_config_path: None,
+        config: Some(config.clone()),
+        workspace_dirs: Arc::new(ArcSwap::from_pointee(vec![])),
+        websocket_handlers: None,
+        reload_callback: None,
+        auth_token: Some("secret".to_string()),
+        inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(1).0),
+    });
+    let addr = start_server(ctx).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("http://{addr}/api/config/reload"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "reload should succeed");
+
+    // After reload, the live config MUST contain the synthesized `agents`
+    // websocket channel — otherwise the orchestrator cancels it.
+    let after = config.load();
+    assert!(
+        after.channels.contains_key("agents"),
+        "reloaded config must contain the synthesized 'agents' channel"
+    );
+    assert_eq!(after.channels["agents"].channel_type, "websocket");
+    let pats = after.channels["agents"]
+        .patterns
+        .as_ref()
+        .expect("synthesized channel has patterns");
+    assert_eq!(pats.len(), 1, "one pattern per [agents.<name>] entry");
+    assert_eq!(pats[0].name, "jyc");
+}

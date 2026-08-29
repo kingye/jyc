@@ -8,57 +8,27 @@
 //! `[channels.<name>] type = "websocket"` form, so no WebSocket
 //! adapter code is touched.
 //!
-//! The synthesis runs once at startup and stores the augmented config
-//! back into the `ArcSwap`; reloads pick it up automatically.
+//! The synthesis logic (`synthesize_agents_channel`) lives in
+//! `jyc-types` so it is callable from both this module (startup) and
+//! `jyc-inspect::api::post_reload_config` (config reload). Reloading
+//! loads a fresh config from disk that lacks the synthesized `agents`
+//! channel, so the reload path must re-run the synthesis before
+//! storing — otherwise the orchestrator's reload diff treats `agents`
+//! as removed and cancels the websocket channel the dashboard is
+//! connected to.
 
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use jyc_types::{AgentConfig, AppConfig, ChannelConfig, ChannelPattern};
+use jyc_types::AppConfig;
 
-/// Build one `ChannelPattern` from one `[agents.<name>]` entry.
-///
-/// Thin wrapper over `AgentConfig::fill_into_pattern` — kept as a
-/// function so callers have one obvious entry point. Adding a new
-/// behavior field to `AgentConfig` requires updating
-/// `fill_into_pattern` only; both this function and `validate_agent`
-/// route through it.
-pub fn synthesize_agent_pattern(agent_name: &str, agent: &AgentConfig) -> ChannelPattern {
-    let mut pattern = ChannelPattern::default();
-    agent.fill_into_pattern(&mut pattern, agent_name);
-    pattern
-}
-
-/// Build the synthesized `channels.agents` entry from the current
-/// `config_snapshot.agents`. Returns `None` when there are no agents.
-///
-/// Deterministic pattern order: agent names are sorted before
-/// iteration so `pattern_names()` (the dashboard's pattern-select UI)
-/// is stable across restarts.
-pub fn synthesize_agents_channel(snapshot: &AppConfig) -> Option<ChannelConfig> {
-    if snapshot.agents.is_empty() {
-        return None;
-    }
-    let mut names: Vec<&String> = snapshot.agents.keys().collect();
-    names.sort();
-    let patterns: Vec<ChannelPattern> = names
-        .into_iter()
-        .map(|name| synthesize_agent_pattern(name, &snapshot.agents[name]))
-        .collect();
-    tracing::info!(
-        count = patterns.len(),
-        "Synthesized 'agents' channel from [agents.<name>] entries"
-    );
-    Some(ChannelConfig {
-        channel_type: "websocket".to_string(),
-        patterns: Some(patterns),
-        ..Default::default()
-    })
-}
+// Re-export the pure synthesis helper so call sites and tests in this
+// module keep resolving to `agents_synth::synthesize_agents_channel`.
+pub use jyc_types::synthesize_agents_channel;
 
 /// Inject the synthesized "agents" channel into the live config and
-/// publish the augmented snapshot to the `ArcSwap` so subsequent
-/// reloads see it. No-op when `[agents.*]` is empty.
+/// publish the augmented snapshot to the `ArcSwap`. No-op when
+/// `[agents.*]` is empty.
 pub fn install_agents_channel(config: &Arc<ArcSwap<AppConfig>>) {
     let snapshot = config.load();
     let Some(synthesized) = synthesize_agents_channel(&snapshot) else {
@@ -74,7 +44,7 @@ pub fn install_agents_channel(config: &Arc<ArcSwap<AppConfig>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jyc_types::AiConfig;
+    use jyc_types::{AgentConfig, AiConfig, ChannelConfig, ChannelPattern};
 
     fn minimal_app_config() -> AppConfig {
         // AppConfig doesn't derive Default; build the minimum needed

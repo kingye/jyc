@@ -190,11 +190,11 @@ impl AgentConfig {
 /// Build one `ChannelPattern` from one `[agents.<name>]` entry.
 ///
 /// Thin wrapper over `AgentConfig::fill_into_pattern` — kept as a
-/// function so callers have one obvious entry point. Adding a new
-/// behavior field to `AgentConfig` requires updating
+/// function so `synthesize_agents_channel` has one obvious entry point.
+/// Adding a new behavior field to `AgentConfig` requires updating
 /// `fill_into_pattern` only; both this function and `validate_agent`
 /// route through it.
-pub fn synthesize_agent_pattern(agent_name: &str, agent: &AgentConfig) -> ChannelPattern {
+fn synthesize_agent_pattern(agent_name: &str, agent: &AgentConfig) -> ChannelPattern {
     let mut pattern = ChannelPattern::default();
     agent.fill_into_pattern(&mut pattern, agent_name);
     pattern

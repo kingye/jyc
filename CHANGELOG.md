@@ -52,7 +52,7 @@
   reconnect. The reload path now re-runs the agents-channel synthesis
   before storing the config, mirroring startup. The synthesis logic
   moved to `jyc-types` so both startup and reload share one source of
-  truth; covered by an integration test.
+  truth; covered by an integration test. (#671)
 
 - **Repeated identical `/`-command replies no longer scrolled off the
   chat pane.** Any `/`-command whose output is deterministic across runs

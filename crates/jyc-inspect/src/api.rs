@@ -415,8 +415,9 @@ pub async fn post_reload_config(
         }
     };
     tracing::info!(path = %config_path.display(), "Reloading configuration");
-    let new_config = jyc_types::load_config_layered(ctx.global_config_path.as_deref(), config_path)
-        .map_err(|e| ApiError::unprocessable(format!("failed to load config: {e:#}")))?;
+    let mut new_config =
+        jyc_types::load_config_layered(ctx.global_config_path.as_deref(), config_path)
+            .map_err(|e| ApiError::unprocessable(format!("failed to load config: {e:#}")))?;
     let errors = jyc_types::validation::validate_config(&new_config);
     if !errors.is_empty() {
         let msg = errors
@@ -425,6 +426,16 @@ pub async fn post_reload_config(
             .collect::<Vec<_>>()
             .join("; ");
         return Err(ApiError::unprocessable(format!("validation failed: {msg}")));
+    }
+    // Re-synthesize the implicit `agents` websocket channel from
+    // `[agents.<name>]` entries — mirrors startup's
+    // `install_agents_channel`. Reloading loads a fresh config from
+    // disk that lacks the synthesized channel; without this step the
+    // orchestrator's reload diff treats `agents` as removed and
+    // cancels the websocket channel the dashboard is connected to
+    // (manifesting as a "websocket connection error" / "unauthorized").
+    if let Some(synth) = jyc_types::synthesize_agents_channel(&new_config) {
+        new_config.channels.insert("agents".to_string(), synth);
     }
     config_swap.store(Arc::new(new_config));
     if let Some(cb) = &ctx.reload_callback

@@ -41,6 +41,19 @@
 
 ### Fixed
 
+- **Config reload no longer kills the dashboard's `agents` websocket
+  channel.** Reloading the config (`Ctrl+P` → `reload config` in the
+  dashboard, or `POST /api/config/reload`) loaded a fresh config from
+  disk that lacked the synthesized `channels.agents` websocket channel
+  (built at startup from `[agents.<name>]` entries). The orchestrator's
+  reload diff then treated `agents` as removed and cancelled its task,
+  dropping the TUI's websocket connection — manifesting as a backend
+  "crash", a websocket connection error, and later "unauthorized" on
+  reconnect. The reload path now re-runs the agents-channel synthesis
+  before storing the config, mirroring startup. The synthesis logic
+  moved to `jyc-types` so both startup and reload share one source of
+  truth; covered by an integration test. (#671)
+
 - **Repeated identical `/`-command replies no longer scrolled off the
   chat pane.** Any `/`-command whose output is deterministic across runs
   (`/context`, `/exchange`, `/help`, `/model <x>`, …) produced a fresh

@@ -170,26 +170,19 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         None
     };
 
-    // Generate and persist the inspect auth token BEFORE spawning channels:
+    // Resolve and persist the inspect auth token BEFORE spawning channels:
     // piped-channel reply forwarders (e.g. feishu) read this file at startup
     // to build their inspect client — writing it later would race them and
     // leave them holding a stale (or no) token, failing every attachment
-    // relay with 401 until the next restart.
+    // relay with 401 until the next restart. An existing token is reused so
+    // running dashboard connections survive a `jyc serve` restart; a fresh
+    // token is generated only when no token file exists yet.
     let inspect_auth_token: Option<String> =
         if config_snapshot.inspect.as_ref().is_some_and(|i| i.enabled) {
-            let auth_token = jyc_utils::auth_token::generate_token();
-            let token_path = jyc_utils::auth_token::token_path(workdir);
-            jyc_utils::auth_token::write_token(&token_path, &auth_token).with_context(|| {
-                format!(
-                    "Failed to write authorization token to {}. \
-                     Dashboard will not be able to connect. Fix the path \
-                     and rerun `jyc serve`.",
-                    token_path.display()
-                )
-            })?;
+            let auth_token = jyc_utils::auth_token::resolve_or_generate_token(workdir)?;
             tracing::info!(
-                path = %token_path.display(),
-                "Authorization token written; retrieve with `jyc token show`"
+                path = %jyc_utils::auth_token::token_path(workdir).display(),
+                "Authorization token ready; retrieve with `jyc token show`"
             );
             Some(auth_token)
         } else {

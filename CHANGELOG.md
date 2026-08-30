@@ -27,6 +27,11 @@
   then bill at 2× the input rate instead of 1.25× — pair it with
   `cache_creation_per_million` set to the 1h write rate.
 
+- **`jyc token reset` command for manual token rotation.** Generates a
+  new random token, writes it to the workdir, and prints it. Restart
+  `jyc serve` afterward for it to take effect; existing dashboards must
+  reconnect with `jyc dashboard`.
+
 ### Changed
 
 - **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
@@ -40,6 +45,14 @@
   Kimi, OpenAI, etc.) warm across plan/build flips.
 
 ### Fixed
+
+- **Dashboard connections no longer break on `jyc serve` restart.** The
+  inspect auth token is now reused across restarts instead of being
+  regenerated each time. Previously every `jyc serve` generated a fresh
+  random token, invalidating every running dashboard's cached token and
+  surfacing as 401 "unauthorized" on reconnect. A fresh token is now
+  generated only on the first run (no token file yet). To force rotation,
+  use `jyc token reset`. (#672)
 
 - **Config reload no longer kills the dashboard's `agents` websocket
   channel.** Reloading the config (`Ctrl+P` → `reload config` in the

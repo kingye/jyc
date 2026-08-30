@@ -14,6 +14,10 @@ pub struct TokenArgs {
 pub enum TokenAction {
     /// Print the dashboard authorization token.
     Show,
+    /// Generate a new random token and write it to the workdir, replacing
+    /// the existing one. Run this when a server restart should also rotate
+    /// the token (e.g. after a suspected leak), then restart `jyc serve`.
+    Reset,
 }
 
 /// Run a token management command.
@@ -28,6 +32,17 @@ pub fn run(args: &TokenArgs, workdir: &Path) -> Result<()> {
                 )
             })?;
             println!("{token}");
+            Ok(())
+        }
+        TokenAction::Reset => {
+            let token = jyc_utils::auth_token::generate_and_write_token(workdir)?;
+            println!("{token}");
+            eprintln!(
+                "Token written to {}. Restart `jyc serve` (workdir {}) for it to take effect; \
+                 existing dashboards must reconnect with `jyc dashboard`.",
+                jyc_utils::auth_token::token_path(workdir).display(),
+                workdir.display()
+            );
             Ok(())
         }
     }

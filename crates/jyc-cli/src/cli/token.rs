@@ -35,16 +35,12 @@ pub fn run(args: &TokenArgs, workdir: &Path) -> Result<()> {
             Ok(())
         }
         TokenAction::Reset => {
-            let path = jyc_utils::auth_token::token_path(workdir);
-            let token = jyc_utils::auth_token::generate_token();
-            jyc_utils::auth_token::write_token(&path, &token).with_context(|| {
-                format!("failed to write authorization token to {}", path.display())
-            })?;
+            let token = jyc_utils::auth_token::generate_and_write_token(workdir)?;
             println!("{token}");
             eprintln!(
                 "Token written to {}. Restart `jyc serve` (workdir {}) for it to take effect; \
                  existing dashboards must reconnect with `jyc dashboard`.",
-                path.display(),
+                jyc_utils::auth_token::token_path(workdir).display(),
                 workdir.display()
             );
             Ok(())

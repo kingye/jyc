@@ -49,18 +49,22 @@ pub fn resolve_or_generate_token(workdir: &Path) -> Result<String> {
     let path = token_path(workdir);
     match read_token(&path) {
         Ok(existing) => Ok(existing),
-        Err(_) => {
-            let token = generate_token();
-            write_token(&path, &token).with_context(|| {
-                format!(
-                    "failed to write authorization token to {}. \
-                 Dashboard will not be able to connect. Fix the path and rerun `jyc serve`.",
-                    path.display()
-                )
-            })?;
-            Ok(token)
-        }
+        Err(_) => generate_and_write_token(workdir),
     }
+}
+
+/// Generate a fresh random token, persist it to the workdir, and return it.
+pub fn generate_and_write_token(workdir: &Path) -> Result<String> {
+    let path = token_path(workdir);
+    let token = generate_token();
+    write_token(&path, &token).with_context(|| {
+        format!(
+            "failed to write authorization token to {}. \
+             Dashboard will not be able to connect. Fix the path and rerun `jyc serve`.",
+            path.display()
+        )
+    })?;
+    Ok(token)
 }
 
 /// Read and trim an authorization token from disk.

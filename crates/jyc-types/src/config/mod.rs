@@ -13,7 +13,7 @@ use crate::wecom_config::WecomConfig;
 use crate::wecom_kf_config::WecomKfConfig;
 
 pub mod agent;
-pub use agent::AgentConfig;
+pub use agent::{AgentConfig, synthesize_agents_channel};
 
 /// MCP server configuration for agent dynamic tool loading.
 ///

@@ -1,16 +1,14 @@
 use super::*;
 use arc_swap::ArcSwap;
-use jyc_types::{ChannelPattern, ChannelType};
+use jyc_types::{ChannelConfig, ChannelPattern, ChannelType, McpServerConfig};
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Helper: build a minimal `AppConfig` wrapped in an `Arc<ArcSwap>`.
-/// `model` becomes the global `[agent].model`. Add to `providers`/`channels`
-/// to simulate config knobs.
-pub(super) fn app_config_with_model(model: Option<&str>) -> Arc<ArcSwap<jyc_types::AppConfig>> {
-    let app = jyc_types::AppConfig {
+/// Helper: build a minimal `AppConfig` struct (no channels, no mcps).
+fn base_app_config(model: Option<&str>) -> jyc_types::AppConfig {
+    jyc_types::AppConfig {
         general: jyc_types::GeneralConfig::default(),
         channels: HashMap::new(),
         ai: jyc_types::AiConfig {
@@ -38,7 +36,26 @@ pub(super) fn app_config_with_model(model: Option<&str>) -> Arc<ArcSwap<jyc_type
         scheduler: jyc_types::SchedulerConfig::default(),
         commands: Vec::new(),
         agents: std::collections::HashMap::new(),
-    };
+    }
+}
+
+/// Helper: build a minimal `AppConfig` with a set of channels.
+pub(super) fn app_config_with_channels(
+    model: Option<&str>,
+    channels: HashMap<String, ChannelConfig>,
+) -> Arc<ArcSwap<jyc_types::AppConfig>> {
+    let mut app = base_app_config(model);
+    app.channels = channels;
+    Arc::new(ArcSwap::from_pointee(app))
+}
+
+/// Helper: build a minimal `AppConfig` with global `[[mcps]]` entries.
+pub(super) fn app_config_with_mcps(
+    model: Option<&str>,
+    mcps: Vec<McpServerConfig>,
+) -> Arc<ArcSwap<jyc_types::AppConfig>> {
+    let mut app = base_app_config(model);
+    app.mcps = mcps;
     Arc::new(ArcSwap::from_pointee(app))
 }
 
@@ -47,13 +64,16 @@ fn service_with_patterns(
     config_model: Option<&str>,
     patterns: Vec<ChannelPattern>,
 ) -> JycAgentService {
+    let channel = ChannelConfig {
+        patterns: Some(patterns.clone()),
+        ..Default::default()
+    };
+    let mut channels = HashMap::new();
+    channels.insert("test".to_string(), channel);
     JycAgentService::new(
-        app_config_with_model(config_model),
+        app_config_with_channels(config_model, channels),
         PathBuf::from("/tmp/test-workdir"),
-        vec![],
-        None,
         patterns,
-        None,
         None,
         None,
         None,
@@ -85,17 +105,22 @@ fn service_with_full_exclusion(
     channel_disabled_mcp_servers: Option<Vec<String>>,
     channel_mcp_configs: Option<Vec<McpServerConfig>>,
 ) -> JycAgentService {
+    let channel = ChannelConfig {
+        patterns: Some(patterns.clone()),
+        mcps: channel_mcp_configs,
+        disabled_mcp_servers: channel_disabled_mcp_servers,
+        ..Default::default()
+    };
+    let mut channels = HashMap::new();
+    channels.insert("test".to_string(), channel);
     JycAgentService::new(
-        app_config_with_model(None),
+        app_config_with_channels(None, channels),
         PathBuf::from("/tmp/test-workdir"),
-        vec![],
-        channel_mcp_configs,
         patterns,
         None,
         None,
         None,
         channel_disabled_tools,
-        channel_disabled_mcp_servers,
         None,
         None,
         "test".to_string(),
@@ -108,13 +133,16 @@ fn service_with_skills(
     channel_skills: Option<Vec<String>>,
     channel_disabled_skills: Option<Vec<String>>,
 ) -> JycAgentService {
+    let channel = ChannelConfig {
+        patterns: Some(patterns.clone()),
+        ..Default::default()
+    };
+    let mut channels = HashMap::new();
+    channels.insert("test".to_string(), channel);
     JycAgentService::new(
-        app_config_with_model(None),
+        app_config_with_channels(None, channels),
         PathBuf::from("/tmp/test-workdir"),
-        vec![],
-        None,
         patterns,
-        None,
         None,
         None,
         None,
@@ -306,9 +334,6 @@ fn reload_picks_up_new_model_context_window_without_restart() {
         config.clone(),
         PathBuf::from("/tmp/test-workdir"),
         vec![],
-        None,
-        vec![],
-        None,
         None,
         None,
         None,

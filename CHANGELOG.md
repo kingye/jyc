@@ -69,14 +69,14 @@
 
 - **Config reload now picks up newly added/changed MCP server configs.**
   The tool-registry builder read frozen MCP snapshots (`[[mcps]]`,
-  channel-level `mcps`, pattern-level `mcps`, `disabled_mcp_servers`)
-  captured at `jyc serve` startup. A config reload swapped the shared
-  `ArcSwap` (invalidating the registry cache and triggering a rebuild),
-  but the rebuild re-read the same stale list — so newly added MCP
-  servers were invisible until a full restart. The builder now derives
-  MCP configs from the live `ArcSwap` on each build, mirroring how
-  `agent_config()` already re-reads model/provider settings. Covered by
-  a regression test.
+  channel-level `mcps`, pattern-level `mcps`, `disabled_mcp_servers`,
+  `disabled_tools`) captured at `jyc serve` startup. A config reload
+  swapped the shared `ArcSwap` (invalidating the registry cache and
+  triggering a rebuild), but the rebuild re-read the same stale list —
+  so newly added MCP servers were invisible until a full restart. The
+  builder now derives MCP configs from the live `ArcSwap` on each build,
+  mirroring how `agent_config()` already re-reads model/provider settings.
+  Covered by a regression test. (#673)
 
 - **Repeated identical `/`-command replies no longer scrolled off the
   chat pane.** Any `/`-command whose output is deterministic across runs

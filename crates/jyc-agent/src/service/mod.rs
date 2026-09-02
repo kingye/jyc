@@ -69,8 +69,6 @@ pub struct JycAgentService {
     registry_cache: Mutex<HashMap<(String, usize), Arc<ToolRegistry>>>,
     /// Outbound adapter for proactive messaging tools (e.g. `jyc_send_message`).
     outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
-    /// Channel-level tools to disable (merged with pattern-level).
-    channel_disabled_tools: Option<Vec<String>>,
     /// Channel-level skills whitelist.
     channel_skills: Option<Vec<String>>,
     /// Channel-level skills to disable (merged with pattern-level).
@@ -100,7 +98,6 @@ impl JycAgentService {
         global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
         vision_client: Option<Arc<VisionClient>>,
         outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
-        channel_disabled_tools: Option<Vec<String>>,
         channel_skills: Option<Vec<String>>,
         channel_disabled_skills: Option<Vec<String>>,
         channel_name: String,
@@ -113,7 +110,6 @@ impl JycAgentService {
             global_inbound_attachments,
             vision_client,
             outbound,
-            channel_disabled_tools,
             channel_skills,
             channel_disabled_skills,
             registry_cache: Mutex::new(HashMap::new()),

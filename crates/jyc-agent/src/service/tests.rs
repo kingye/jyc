@@ -79,7 +79,6 @@ fn service_with_patterns(
         None,
         None,
         None,
-        None,
         "test".to_string(),
     )
 }
@@ -107,6 +106,7 @@ fn service_with_full_exclusion(
 ) -> JycAgentService {
     let channel = ChannelConfig {
         patterns: Some(patterns.clone()),
+        disabled_tools: channel_disabled_tools,
         mcps: channel_mcp_configs,
         disabled_mcp_servers: channel_disabled_mcp_servers,
         ..Default::default()
@@ -120,7 +120,6 @@ fn service_with_full_exclusion(
         None,
         None,
         None,
-        channel_disabled_tools,
         None,
         None,
         "test".to_string(),
@@ -143,7 +142,6 @@ fn service_with_skills(
         app_config_with_channels(None, channels),
         PathBuf::from("/tmp/test-workdir"),
         patterns,
-        None,
         None,
         None,
         None,
@@ -334,7 +332,6 @@ fn reload_picks_up_new_model_context_window_without_restart() {
         config.clone(),
         PathBuf::from("/tmp/test-workdir"),
         vec![],
-        None,
         None,
         None,
         None,

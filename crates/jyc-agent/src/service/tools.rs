@@ -81,6 +81,7 @@ impl JycAgentService {
             live_ch.and_then(|c| c.patterns.clone()).unwrap_or_default();
         let channel_mcp_configs = live_ch.and_then(|c| c.mcps.clone());
         let channel_disabled_mcp_servers = live_ch.and_then(|c| c.disabled_mcp_servers.clone());
+        let channel_disabled_tools = live_ch.and_then(|c| c.disabled_tools.clone());
         let mcp_configs: Vec<McpServerConfig> = live_cfg.mcps.clone();
         // Release the ArcSwap guard before any `.await` below.
         drop(live_cfg);
@@ -201,7 +202,7 @@ impl JycAgentService {
         // Merge channel-level + pattern-level + backward-compatible alias
         let disabled_tools: Vec<&str> = {
             let mut set = Vec::new();
-            if let Some(ref tools) = self.channel_disabled_tools {
+            if let Some(ref tools) = channel_disabled_tools {
                 for t in tools {
                     set.push(t.as_str());
                 }

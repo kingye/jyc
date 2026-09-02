@@ -17,9 +17,9 @@ use jyc_types::ChannelPattern;
 use jyc_types::config::{McpServerConfig, McpServerKind};
 
 use crate::service::JycAgentService;
-use crate::service::tests::app_config_with_model;
+use crate::service::tests::app_config_with_mcps;
 
-/// Build a Service with the given channel-level MCP configs and a
+/// Build a Service with the given global MCP configs and a
 /// short per-server timeout (so tests don't take forever).
 fn service_with_timeout_ms(
     mcp_configs: Vec<McpServerConfig>,
@@ -34,15 +34,11 @@ fn service_with_timeout_ms(
             cfg
         })
         .collect();
-    let config = app_config_with_model(None);
+    let config = app_config_with_mcps(None, mcp_configs);
     let svc = JycAgentService::new(
         config,
         Path::new("/tmp/test-topic").to_path_buf(),
-        mcp_configs,
-        None,
         vec![ChannelPattern::default()],
-        None,
-        None,
         None,
         None,
         None,
@@ -51,7 +47,7 @@ fn service_with_timeout_ms(
         "test".to_string(),
     );
     // Sanity-check: every MCP must end up with a positive timeout.
-    for cfg in &svc.mcp_configs {
+    for cfg in &svc.config.load().mcps {
         assert!(
             cfg.timeout_ms.unwrap_or(0) > 0,
             "test pre-condition: every MCP must have a positive timeout",
@@ -179,15 +175,11 @@ async fn cache_hit_avoids_reloading_mcps() {
 async fn cache_invalidates_on_config_swap() {
     let mut hanger = hanging_mcp("hanger");
     hanger.timeout_ms = Some(300);
-    let config = app_config_with_model(None);
+    let config = app_config_with_mcps(None, vec![hanger]);
     let svc = JycAgentService::new(
         config.clone(),
         Path::new("/tmp/test-topic").to_path_buf(),
-        vec![hanger],
-        None,
         vec![ChannelPattern::default()],
-        None,
-        None,
         None,
         None,
         None,
@@ -197,18 +189,16 @@ async fn cache_invalidates_on_config_swap() {
     );
     let svc = Arc::new(svc);
 
-    // First call: cache miss → MCP load (which times out at default).
+    // First call: cache miss → MCP load (which times out at ~300ms).
     // We don't care about its duration — just that it ran.
     let _first = svc
         .get_or_build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
         .await;
 
-    // Swap config to a fresh snapshot. This changes the Arc pointer
-    // the cache key is derived from, so the next call MUST miss.
-    // `app_config_with_model` allocates a fresh `Arc<AppConfig>` per
-    // call, so the inner `AppConfig` clone here ends up wrapped in a
-    // new Arc with a different pointer than the original snapshot.
-    let new_snapshot: jyc_types::AppConfig = app_config_with_model(None).load().as_ref().clone();
+    // Swap config to a fresh snapshot (same mcps, different Arc pointer).
+    // The cache key is derived from the Arc pointer, so the next call MUST
+    // miss and re-run MCP load.
+    let new_snapshot: jyc_types::AppConfig = config.load().as_ref().clone();
     config.store(Arc::new(new_snapshot));
 
     let start = Instant::now();
@@ -232,6 +222,69 @@ async fn cache_invalidates_on_config_swap() {
         elapsed < Duration::from_millis(2_000),
         "MCP reload after invalidation should still be bounded by timeout; \
          took {:?}",
+        elapsed
+    );
+}
+
+/// Regression: a newly added global `[[mcps]]` entry in a reloaded
+/// config must be loaded without a restart. Before the fix,
+/// `build_tool_registry` read frozen MCP snapshots captured at
+/// `JycAgentService::new` time, so a config swap was invisible — the
+/// new MCP was never resolved or loaded.
+#[tokio::test]
+async fn reload_picks_up_newly_added_global_mcp() {
+    // Start with a config that has NO mcps.
+    let config = app_config_with_mcps(None, vec![]);
+    let svc = JycAgentService::new(
+        config.clone(),
+        Path::new("/tmp/test-topic").to_path_buf(),
+        vec![ChannelPattern::default()],
+        None,
+        None,
+        None,
+        None,
+        None,
+        "test".to_string(),
+    );
+    let svc = Arc::new(svc);
+
+    // First build: no MCPs → must be instant (no subprocess spawn).
+    let t0 = Instant::now();
+    let _first = svc
+        .get_or_build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
+        .await;
+    assert!(
+        t0.elapsed() < Duration::from_millis(100),
+        "first build with no mcps should be instant; took {:?}",
+        t0.elapsed()
+    );
+
+    // Reload: add a hanging MCP (300ms timeout) to the live config.
+    let mut hanger = hanging_mcp("hanger");
+    hanger.timeout_ms = Some(300);
+    let mut new_snapshot: jyc_types::AppConfig = config.load().as_ref().clone();
+    new_snapshot.mcps = vec![hanger];
+    config.store(Arc::new(new_snapshot));
+
+    // Second build: cache invalidated (new config pointer) → rebuild
+    // reads the NEW config's mcps → loads the hanging MCP → ~300ms.
+    // If the frozen-snapshot bug were still present, the rebuild would
+    // see the original (empty) mcp list and return instantly.
+    let t1 = Instant::now();
+    let _second = svc
+        .get_or_build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
+        .await;
+    let elapsed = t1.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(200),
+        "after reload, the newly added MCP should be loaded (timeout ~300ms); \
+         took {:?} — the new MCP was NOT picked up from the reloaded config",
+        elapsed
+    );
+    assert!(
+        elapsed < Duration::from_millis(2_000),
+        "MCP load should still be bounded by timeout; took {:?}",
         elapsed
     );
 }

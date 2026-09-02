@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use jyc_core::topic_event_bus::TopicEventBusRef;
-use jyc_types::{McpServerConfig, TopicConfig};
+use jyc_types::{ChannelPattern, McpServerConfig, TopicConfig};
 
 use crate::provider;
 use crate::tools::registry::ToolRegistry;
@@ -61,11 +61,12 @@ impl JycAgentService {
             self.vision_client.clone(),
         );
 
-        // Register jyc_publish_file with the base URL for shareable links
-        // ([inspect] base_url, falling back to http://<bind>).
-        let publish_base_url = self
-            .config
-            .load()
+        // Derive MCP/pattern/disabled config from the LIVE config (via the
+        // shared ArcSwap) so a config reload picks up newly added/edited/
+        // removed MCP servers without a restart — same pattern as
+        // `agent_config()`. The frozen constructor snapshots are gone.
+        let live_cfg = self.config.load();
+        let publish_base_url = live_cfg
             .inspect
             .clone()
             .unwrap_or_default()
@@ -75,22 +76,19 @@ impl JycAgentService {
         // Add MCP bridge tools (reply_message, etc.)
         crate::tools::mcp_bridge::register_mcp_tools(&mut registry);
 
+        let live_ch = live_cfg.channels.get(&self.channel_name);
+        let patterns: Vec<ChannelPattern> =
+            live_ch.and_then(|c| c.patterns.clone()).unwrap_or_default();
+        let channel_mcp_configs = live_ch.and_then(|c| c.mcps.clone());
+        let channel_disabled_mcp_servers = live_ch.and_then(|c| c.disabled_mcp_servers.clone());
+        let channel_disabled_tools = live_ch.and_then(|c| c.disabled_tools.clone());
+        let mcp_configs: Vec<McpServerConfig> = live_cfg.mcps.clone();
+        // Release the ArcSwap guard before any `.await` below.
+        drop(live_cfg);
+
         // Find matched pattern for per-pattern overrides
         let matched_pattern =
-            matched_pattern_name.and_then(|name| self.patterns.iter().find(|p| p.name == name));
-
-        // TEMP DEBUG: trace the MCP resolution pipeline.
-        tracing::warn!(
-            channel = %self.channel_name,
-            topic = %topic_name,
-            matched_pattern_name = ?matched_pattern_name,
-            patterns_count = self.patterns.len(),
-            pattern_names = ?self.patterns.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
-            matched_pattern_mcps_len = matched_pattern.as_ref().and_then(|p| p.mcps.as_ref()).map(|v| v.len()),
-            channel_mcp_configs_len = self.channel_mcp_configs.as_ref().map(|v| v.len()).unwrap_or(0),
-            global_mcp_configs_len = self.mcp_configs.len(),
-            "DEBUG agent MCP resolution pipeline (delete before merge)"
-        );
+            matched_pattern_name.and_then(|name| patterns.iter().find(|p| p.name == name));
 
         // --- L3 topic-local config lifecycle log ---
         // Always emit one of three outcomes so a remote-deploy grep on
@@ -140,7 +138,7 @@ impl JycAgentService {
         // Merge channel-level + pattern-level disabled MCP servers
         let disabled_mcp_servers: Vec<&str> = {
             let mut set = Vec::new();
-            if let Some(ref servers) = self.channel_disabled_mcp_servers {
+            if let Some(ref servers) = channel_disabled_mcp_servers {
                 for s in servers {
                     set.push(s.as_str());
                 }
@@ -161,10 +159,10 @@ impl JycAgentService {
         let (base_mcps, base_layer): (&[McpServerConfig], McpLayer) =
             if let Some(p) = matched_pattern.and_then(|p| p.mcps.as_ref()) {
                 (p.as_slice(), McpLayer::Pattern)
-            } else if let Some(c) = self.channel_mcp_configs.as_deref() {
+            } else if let Some(c) = channel_mcp_configs.as_deref() {
                 (c, McpLayer::Channel)
             } else {
-                (self.mcp_configs.as_slice(), McpLayer::Global)
+                (mcp_configs.as_slice(), McpLayer::Global)
             };
 
         // Layer topic (L3) MCPs from the pre-loaded <topic_path>/.jyc/config.toml
@@ -204,7 +202,7 @@ impl JycAgentService {
         // Merge channel-level + pattern-level + backward-compatible alias
         let disabled_tools: Vec<&str> = {
             let mut set = Vec::new();
-            if let Some(ref tools) = self.channel_disabled_tools {
+            if let Some(ref tools) = channel_disabled_tools {
                 for t in tools {
                     set.push(t.as_str());
                 }
@@ -267,12 +265,11 @@ impl JycAgentService {
                 "Resolved MCP servers for topic"
             );
         } else {
-            tracing::warn!(
+            tracing::debug!(
                 channel = %self.channel_name,
                 topic = %topic_name,
-                pattern = ?matched_pattern_name,
                 disabled = ?disabled_mcp_servers,
-                "DEBUG no MCP servers resolved for topic (delete before merge)"
+                "No MCP servers resolved for topic"
             );
         }
 

@@ -13,9 +13,7 @@ use jyc_agent::JycAgentService;
 use jyc_agent::service::derive_agent_config;
 use jyc_core::agent::AgentService;
 use jyc_core::static_agent::StaticAgentService;
-use jyc_types::{
-    ChannelConfig, ChannelPattern, InboundAttachmentConfig, McpServerConfig, OutboundAdapter,
-};
+use jyc_types::{ChannelConfig, ChannelPattern, InboundAttachmentConfig, OutboundAdapter};
 
 /// Result of building an agent service.
 ///
@@ -59,7 +57,6 @@ pub fn build_agent_service(
     workdir: &Path,
     outbound: Arc<dyn OutboundAdapter>,
     patterns: Vec<ChannelPattern>,
-    global_mcp_configs: Vec<McpServerConfig>,
     inbound_attachment_config: Option<InboundAttachmentConfig>,
     channel_name: &str,
 ) -> Result<AgentServiceResult> {
@@ -113,14 +110,10 @@ pub fn build_agent_service(
             let jyc_agent_svc = Arc::new(JycAgentService::new(
                 live_config,
                 workdir.to_path_buf(),
-                global_mcp_configs,
-                channel_config.mcps.clone(),
                 patterns,
                 inbound_attachment_config,
                 vision_client,
                 Some(outbound),
-                channel_config.disabled_tools.clone(),
-                channel_config.disabled_mcp_servers.clone(),
                 channel_config.skills.clone(),
                 channel_config.disabled_skills.clone(),
                 channel_name.to_string(),

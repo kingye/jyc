@@ -411,7 +411,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             workdir,
             outbound.clone(),
             patterns.clone(),
-            config_snapshot.mcps.clone(),
             inbound_attachment_config.clone(),
             channel_name,
         )?;

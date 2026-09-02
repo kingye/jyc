@@ -13,7 +13,7 @@ use tracing;
 
 use jyc_core::agent::{AgentResult, AgentService};
 use jyc_core::topic_event_bus::TopicEventBusRef;
-use jyc_types::{ChannelPattern, InboundMessage, McpServerConfig, QueueItem};
+use jyc_types::{ChannelPattern, InboundMessage, QueueItem};
 
 use crate::agent_loop::{self, AgentLoopConfig};
 use crate::provider;
@@ -48,15 +48,13 @@ pub struct JycAgentService {
     event_buses: Mutex<HashMap<String, TopicEventBusRef>>,
     /// JYC workdir (for discovering global skills).
     workdir: PathBuf,
-    /// MCP server configurations for dynamic tool loading.
-    mcp_configs: Vec<McpServerConfig>,
     /// Channel patterns for the current channel (not cross-channel flattened).
     /// Used to look up per-pattern agent runtime flags (e.g.
     /// `inject_inbound_images`, model/small_model overrides, mcps,
     /// disabled_builtin_tools) by `InboundMessage.matched_pattern`.
+    /// NOTE: only used by the prompt/model-resolution path; the tool
+    /// registry derives MCP configs live from `config` on each build.
     patterns: Vec<ChannelPattern>,
-    /// Channel-level MCP configs (fallback when pattern-level is unset).
-    channel_mcp_configs: Option<Vec<McpServerConfig>>,
     /// Global `[attachments.inbound]` config (used as fallback when a matched
     /// pattern does not specify its own `attachments`).
     global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
@@ -71,10 +69,6 @@ pub struct JycAgentService {
     registry_cache: Mutex<HashMap<(String, usize), Arc<ToolRegistry>>>,
     /// Outbound adapter for proactive messaging tools (e.g. `jyc_send_message`).
     outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
-    /// Channel-level tools to disable (merged with pattern-level).
-    channel_disabled_tools: Option<Vec<String>>,
-    /// Channel-level MCP servers to disable (merged with pattern-level).
-    channel_disabled_mcp_servers: Option<Vec<String>>,
     /// Channel-level skills whitelist.
     channel_skills: Option<Vec<String>>,
     /// Channel-level skills to disable (merged with pattern-level).
@@ -100,14 +94,10 @@ impl JycAgentService {
     pub fn new(
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
         workdir: PathBuf,
-        mcp_configs: Vec<McpServerConfig>,
-        channel_mcp_configs: Option<Vec<McpServerConfig>>,
         patterns: Vec<ChannelPattern>,
         global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
         vision_client: Option<Arc<VisionClient>>,
         outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
-        channel_disabled_tools: Option<Vec<String>>,
-        channel_disabled_mcp_servers: Option<Vec<String>>,
         channel_skills: Option<Vec<String>>,
         channel_disabled_skills: Option<Vec<String>>,
         channel_name: String,
@@ -116,14 +106,10 @@ impl JycAgentService {
             config,
             event_buses: Mutex::new(HashMap::new()),
             workdir,
-            mcp_configs,
-            channel_mcp_configs,
             patterns,
             global_inbound_attachments,
             vision_client,
             outbound,
-            channel_disabled_tools,
-            channel_disabled_mcp_servers,
             channel_skills,
             channel_disabled_skills,
             registry_cache: Mutex::new(HashMap::new()),

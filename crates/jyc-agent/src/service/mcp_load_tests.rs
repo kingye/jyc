@@ -227,3 +227,67 @@ async fn cache_invalidates_on_config_swap() {
         elapsed
     );
 }
+
+/// Regression: a newly added global `[[mcps]]` entry in a reloaded
+/// config must be loaded without a restart. Before the fix,
+/// `build_tool_registry` read frozen MCP snapshots captured at
+/// `JycAgentService::new` time, so a config swap was invisible — the
+/// new MCP was never resolved or loaded.
+#[tokio::test]
+async fn reload_picks_up_newly_added_global_mcp() {
+    // Start with a config that has NO mcps.
+    let config = app_config_with_mcps(None, vec![]);
+    let svc = JycAgentService::new(
+        config.clone(),
+        Path::new("/tmp/test-topic").to_path_buf(),
+        vec![ChannelPattern::default()],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "test".to_string(),
+    );
+    let svc = Arc::new(svc);
+
+    // First build: no MCPs → must be instant (no subprocess spawn).
+    let t0 = Instant::now();
+    let _first = svc
+        .get_or_build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
+        .await;
+    assert!(
+        t0.elapsed() < Duration::from_millis(100),
+        "first build with no mcps should be instant; took {:?}",
+        t0.elapsed()
+    );
+
+    // Reload: add a hanging MCP (300ms timeout) to the live config.
+    let mut hanger = hanging_mcp("hanger");
+    hanger.timeout_ms = Some(300);
+    let mut new_snapshot: jyc_types::AppConfig = config.load().as_ref().clone();
+    new_snapshot.mcps = vec![hanger];
+    config.store(Arc::new(new_snapshot));
+
+    // Second build: cache invalidated (new config pointer) → rebuild
+    // reads the NEW config's mcps → loads the hanging MCP → ~300ms.
+    // If the frozen-snapshot bug were still present, the rebuild would
+    // see the original (empty) mcp list and return instantly.
+    let t1 = Instant::now();
+    let _second = svc
+        .get_or_build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
+        .await;
+    let elapsed = t1.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(200),
+        "after reload, the newly added MCP should be loaded (timeout ~300ms); \
+         took {:?} — the new MCP was NOT picked up from the reloaded config",
+        elapsed
+    );
+    assert!(
+        elapsed < Duration::from_millis(2_000),
+        "MCP load should still be bounded by timeout; took {:?}",
+        elapsed
+    );
+}

@@ -200,7 +200,9 @@ impl ChatState {
 }
 
 /// Format elapsed time from an RFC 3339 timestamp to now.
-/// Returns a string like "15s" or "2m" or "" if parsing fails.
+/// Returns a string like "15s", "2m05s", or "1h30m"; "" if parsing fails.
+/// Mirrors `format_elapsed_ms` at minute scale so both halves of the
+/// dual-time progress line (`2m05s / 10m20s`) have second granularity.
 pub(super) fn format_elapsed(timestamp: &Option<String>) -> String {
     let ts = match timestamp {
         Some(t) => t,
@@ -217,8 +219,10 @@ pub(super) fn format_elapsed(timestamp: &Option<String>) -> String {
     }
     if secs < 60 {
         format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
     } else {
-        format!("{}m", secs / 60)
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
     }
 }
 

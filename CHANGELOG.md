@@ -73,6 +73,9 @@
 
 ### Fixed
 
+- TUI chat progress line: the since-last-activity timer no longer drops
+  seconds at or above one minute — `2m / 10m20s` now reads `2m05s / 10m20s`
+  (hour scale renders `1h30m`) (#680)
 - **Topic event bus publish no longer stalls on slow subscribers.**
   `forward_to_subscribers` awaited each subscriber's channel in order, so
   one lagging subscriber (e.g. a Feishu progress watcher blocked in a

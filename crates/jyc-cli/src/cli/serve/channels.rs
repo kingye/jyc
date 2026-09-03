@@ -1344,14 +1344,6 @@ pub(crate) fn spawn_gitee_adapter(
     Ok(())
 }
 
-/// Spawn a pipe-only feishu adapter: the inbound adapter plus one reply
-/// forwarder per distinct pipe target channel.
-///
-/// Unlike full channels, a feishu adapter has no outbound adapter, agent
-/// service, TopicManager, StateManager, or orchestrator registration — all
-/// topics live in the pipe target (hub) channel. See
-/// `docs/architecture/overview.md`.
-///
 /// Per-topic Feishu progress indicator state.
 ///
 /// The reply forwarder swaps `typing_reaction_id` to DONE on the first
@@ -1522,6 +1514,13 @@ fn spawn_progress_watcher(
     });
 }
 
+/// Spawn a pipe-only feishu adapter: the inbound adapter plus one reply
+/// forwarder per distinct pipe target channel.
+///
+/// Unlike full channels, a feishu adapter has no outbound adapter, agent
+/// service, TopicManager, StateManager, or orchestrator registration — all
+/// topics live in the pipe target (hub) channel. See
+/// `docs/architecture/overview.md`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_feishu_adapter(
     channel_config: &ChannelConfig,

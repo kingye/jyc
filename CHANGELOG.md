@@ -53,16 +53,30 @@
   breakpoints #2–4 and server-side automatic prefix caches (DeepSeek,
   Kimi, OpenAI, etc.) warm across plan/build flips.
 
+- **Feishu progress indicator code moved out of the serve wiring.** The
+  status-card watcher, card renderer, and tool-activity summaries now
+  live in the Feishu channel module
+  (`jyc-channels/src/feishu/progress.rs`); `cli/serve/channels.rs` only
+  resolves the pipe target's `TopicManager` and calls it, keeping the
+  serve layer channel-agnostic. (#677)
+
 ### Fixed
 
-- **`TopicEventBus::subscribe` could deadlock the agent loop.** The
-  replay of buffered events `send().await`ed while holding the
-  subscribers mutex, but the receiver is only handed out *after* the
-  replay — with more buffered events than the subscriber channel's
-  capacity, subscribe() blocked forever and every subsequent publish()
-  (i.e. the agent loop) stalled on the mutex. The subscriber channel now
-  exceeds the event-log capacity and replay uses `try_send`, making
-  blocking structurally impossible. Covered by a regression test. (#674)
+- **Topic event bus publish no longer stalls on slow subscribers.**
+  `forward_to_subscribers` awaited each subscriber's channel in order, so
+  one lagging subscriber (e.g. a Feishu progress watcher blocked in a
+  slow HTTP call) stalled the publisher — typically the agent loop — and
+  starved every subscriber behind it, including the dashboard activity
+  feed. Forwarding now uses `try_send`: a full subscriber has the event
+  dropped for it (with a warning) instead of blocking everyone. Covered
+  by a regression test. (#677)
+
+- **Feishu status card is sent only when processing actually starts.**
+  The progress watcher now waits for the first fresh `ProcessingStarted`
+  event before sending the card, so messages that never reach the agent
+  (slash commands like `/plan`, empty-body drops) no longer leave a
+  `处理中` card spinning until the 2h safety cap. (Re-applies the
+  reverted #676.) (#677)
 
 - **Dashboard connections no longer break on `jyc serve` restart.** The
   inspect auth token is now reused across restarts instead of being

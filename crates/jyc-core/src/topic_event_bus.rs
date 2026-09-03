@@ -22,7 +22,9 @@ const EVENT_LOG_CAPACITY: usize = 20;
 pub trait TopicEventBus: Send + Sync {
     /// Publish an event to this topic's event bus.
     ///
-    /// Returns an error if the event bus is closed or the channel is full.
+    /// Never blocks on slow subscribers: a subscriber whose channel is
+    /// full has the event dropped (with a warning) so the publisher —
+    /// typically the agent loop — is never stalled.
     async fn publish(&self, event: TopicEvent) -> Result<()>;
 
     /// Subscribe to events from this topic's event bus.
@@ -48,8 +50,8 @@ pub struct SimpleThreadEventBus {
 impl SimpleThreadEventBus {
     /// Create a new topic event bus with the given capacity.
     ///
-    /// The capacity determines how many events can be queued before
-    /// `publish` starts blocking or returning errors.
+    /// The capacity determines how many events a subscriber can queue
+    /// before `publish` starts dropping events for that subscriber.
     pub fn new(_capacity: usize) -> Self {
         Self {
             subscribers: Mutex::new(Vec::new()),
@@ -59,9 +61,10 @@ impl SimpleThreadEventBus {
 
     /// Internal method to forward events to all subscribers.
     ///
-    /// Sends events sequentially (awaited) to preserve ordering. The mpsc channel
-    /// capacity (10) provides backpressure — if a subscriber falls behind, the
-    /// agent will slow down rather than send events out of order.
+    /// Non-blocking per subscriber: a lagging subscriber (full channel)
+    /// has the event dropped for it, rather than stalling the publisher —
+    /// which is typically the agent loop — and every subscriber behind it.
+    /// Healthy subscribers still receive events in publication order.
     async fn forward_to_subscribers(&self, event: &TopicEvent) {
         let mut subscribers = self.subscribers.lock().await;
 
@@ -70,7 +73,15 @@ impl SimpleThreadEventBus {
 
         // Forward event to all active subscribers IN ORDER
         for subscriber in subscribers.iter() {
-            let _ = subscriber.send(event.clone()).await;
+            match subscriber.try_send(event.clone()) {
+                Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!(
+                        event = ?event,
+                        "topic event subscriber lagging; event dropped to keep publish non-blocking"
+                    );
+                }
+            }
         }
     }
 }
@@ -276,5 +287,44 @@ mod tests {
             }
             _ => panic!("Unexpected event type"),
         }
+    }
+
+    /// Regression test: a lagging subscriber (channel full, never drained)
+    /// must not block `publish` — events are dropped for it, while healthy
+    /// subscribers keep receiving. Previously `send().await` stalled the
+    /// publisher (usually the agent loop) and starved later subscribers.
+    #[tokio::test]
+    async fn lagging_subscriber_does_not_block_publish() {
+        let bus = SimpleThreadEventBus::new(10);
+
+        // Lagging subscriber: subscribe and never read. Fill its channel
+        // (capacity EVENT_LOG_CAPACITY * 2) plus some overflow.
+        let _lagging_rx = bus.subscribe().await.unwrap();
+        for i in 0..50 {
+            bus.publish(make_event(&format!("filler-{i}")))
+                .await
+                .unwrap();
+        }
+
+        // A healthy subscriber added afterwards must still receive events.
+        // (It first gets the replay buffer — scan until the live event.)
+        let mut healthy_rx = bus.subscribe().await.unwrap();
+        bus.publish(make_event("live")).await.unwrap();
+
+        let mut got_live = false;
+        for _ in 0..EVENT_LOG_CAPACITY + 1 {
+            let e = tokio::time::timeout(std::time::Duration::from_secs(1), healthy_rx.recv())
+                .await
+                .expect("publish must not block on a lagging subscriber")
+                .expect("healthy subscriber should keep receiving events");
+            match e {
+                TopicEvent::ProcessingStarted { topic_name, .. } if topic_name == "live" => {
+                    got_live = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(got_live, "healthy subscriber must receive the live event");
     }
 }

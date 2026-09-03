@@ -3,7 +3,7 @@
 //! Extracted from the monolithic `topic_manager.rs`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use jyc_types::{TopicCost, TopicInfo, TopicStatus};
 
@@ -11,6 +11,39 @@ use super::TopicManager;
 /// Per-topic queue stats.
 use super::git::{branch_for_topic_path, changed_files_for_topic_path};
 use super::worker::read_skills;
+
+/// Display-relevant state for one topic (mode, model, context usage).
+/// Produced by [`TopicManager::topic_display_state`]; all fields are
+/// `None` when the topic has no recorded state yet.
+#[derive(Debug, Default, Clone)]
+pub struct TopicDisplayState {
+    /// Effective mode ("plan"/"build") after the override chain.
+    pub mode: Option<String>,
+    /// Effective model after the full override chain.
+    pub model: Option<String>,
+    /// Current context input tokens from the session state file.
+    pub input_tokens: Option<u64>,
+    /// Context window size.
+    pub max_tokens: Option<u64>,
+}
+
+impl TopicDisplayState {
+    /// Input-token percentage of the context window. `None` when either
+    /// bound is missing or `max_tokens` is zero (mirrors the dashboard's
+    /// `input_token_pct`).
+    pub fn context_pct(&self) -> Option<u32> {
+        let cur = self.input_tokens?;
+        let max = self.max_tokens?;
+        if max == 0 {
+            return None;
+        }
+        Some(
+            cur.checked_mul(100)
+                .and_then(|v| v.checked_div(max))
+                .unwrap_or(0) as u32,
+        )
+    }
+}
 
 impl TopicManager {
     pub async fn topic_path(&self, topic_name: &str) -> Option<PathBuf> {
@@ -24,6 +57,135 @@ impl TopicManager {
             return Some(default_path);
         }
         None
+    }
+
+    /// Resolve display-relevant per-topic state: pattern, session token
+    /// usage, mode override, and the model override chain. Shared by
+    /// `list_topics()` and `topic_display_state()` so the dashboard and
+    /// the Feishu status card can never drift apart. Small state-file
+    /// reads only — no workspace scan, no git calls.
+    ///
+    /// Returns `(pattern, token_state, mode, model)` where `token_state`
+    /// is the raw tuple from `read_token_state()`.
+    #[allow(clippy::type_complexity)]
+    async fn resolve_display_state(
+        &self,
+        topic_path: &Path,
+    ) -> (
+        Option<String>,
+        (
+            Option<u64>,
+            Option<u64>,
+            Option<u64>,
+            Option<u64>,
+            Option<u64>,
+            Option<u64>,
+        ),
+        Option<String>,
+        Option<String>,
+    ) {
+        // Read pattern from .jyc/pattern
+        let pattern = tokio::fs::read_to_string(topic_path.join(".jyc").join("pattern"))
+            .await
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        // Read session state
+        let token_state = crate::session_state::read_token_state(topic_path).await;
+
+        // Read mode first — needed to resolve mode-specific model overrides.
+        // Chain: .jyc/mode-override > pattern mode from config > build default.
+        let mode = crate::session_state::resolve_effective_mode(
+            topic_path,
+            &self.config.load(),
+            &self.channel_name,
+        )
+        .await;
+
+        // Read mode-specific override file first, fallback to legacy.
+        let file_override = {
+            async fn read_trimmed(path: &std::path::Path) -> Option<String> {
+                tokio::fs::read_to_string(path)
+                    .await
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            }
+            let plan_path = topic_path.join(".jyc").join("plan-model-override");
+            let build_path = topic_path.join(".jyc").join("build-model-override");
+            let legacy_path = topic_path.join(".jyc").join("model-override");
+
+            let mode_specific = match mode.as_deref() {
+                Some("plan") => read_trimmed(&plan_path).await,
+                _ => read_trimmed(&build_path).await, // None = build mode
+            };
+            if mode_specific.is_some() {
+                mode_specific
+            } else {
+                read_trimmed(&legacy_path).await
+            }
+        };
+
+        // Resolve effective model with priority:
+        // 1. .jyc/<mode>-model-override (mode-specific runtime override)
+        // 2. .jyc/model-override (legacy generic override)
+        // 3. Pattern-level plan_model / build_model (mode-specific)
+        // 4. Pattern-level model (generic)
+        // 5. Channel-level model (generic)
+        // 6. Global plan_model / build_model (mode-specific)
+        // 7. Global model (generic)
+
+        let model = if let Some(ref m) = file_override {
+            Some(m.clone())
+        } else if let Some(ref pattern_name) = pattern {
+            let cfg = self.config.load();
+            let channel_cfg = cfg.channels.get(&self.channel_name);
+            let pattern_override = channel_cfg
+                .and_then(|c| c.patterns.as_ref())
+                .and_then(|pats| pats.iter().find(|p| p.name == *pattern_name));
+            pattern_override
+                .and_then(|p| match mode.as_deref() {
+                    Some("plan") => p.plan_model.clone(),
+                    _ => p.build_model.clone(), // None = build mode
+                })
+                .or_else(|| pattern_override.and_then(|p| p.model.clone()))
+        } else {
+            None
+        }
+        .or_else(|| {
+            let cfg = self.config.load();
+            let channel_cfg = cfg.channels.get(&self.channel_name)?;
+            channel_cfg.model.clone()
+        })
+        .or_else(|| {
+            let cfg = self.config.load();
+            match mode.as_deref() {
+                Some("plan") => cfg.ai.plan_model.clone(),
+                _ => cfg.ai.build_model.clone(), // None = build mode
+            }
+        })
+        .or_else(|| self.config.load().ai.model.clone());
+
+        (pattern, token_state, mode, model)
+    }
+
+    /// Lightweight display state for one topic (mode, model, context
+    /// usage) — same resolution as `list_topics()` via the shared helper,
+    /// but without the workspace scan or git calls, so the Feishu
+    /// status-card watcher can poll it every few seconds.
+    pub async fn topic_display_state(&self, topic_name: &str) -> TopicDisplayState {
+        let Some(topic_path) = self.topic_path(topic_name).await else {
+            return TopicDisplayState::default();
+        };
+        let (_pattern, token_state, mode, model) = self.resolve_display_state(&topic_path).await;
+        let (input_tokens, max_tokens, ..) = token_state;
+        TopicDisplayState {
+            mode,
+            model,
+            input_tokens,
+            max_tokens,
+        }
     }
 
     /// Get all custom topic paths (from pattern `topic_path` overrides).
@@ -229,7 +391,7 @@ impl TopicManager {
     /// This includes both actively queued topics and idle topics that have been
     /// created but have no messages pending.
     pub async fn list_topics(&self) -> Vec<TopicInfo> {
-        use crate::session_state::{read_session_cost, read_token_state};
+        use crate::session_state::read_session_cost;
 
         // Collect names of actively queued topics
         let queues = self.topic_queues.lock().await;
@@ -286,14 +448,10 @@ impl TopicManager {
                 .unwrap_or_else(|| self.workspace_dir.join(&name));
             drop(paths);
 
-            // Read pattern from .jyc/pattern
-            let pattern = tokio::fs::read_to_string(topic_path.join(".jyc").join("pattern"))
-                .await
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-
-            // Read session state
+            // Resolve display state (pattern, mode, model, token usage) —
+            // shared with `topic_display_state()` so consumers can never
+            // drift apart.
+            let (pattern, token_state, mode, model) = self.resolve_display_state(&topic_path).await;
             let (
                 input_tokens,
                 max_tokens,
@@ -301,80 +459,7 @@ impl TopicManager {
                 total_input_tokens,
                 total_cache_hit_tokens,
                 total_cache_creation_tokens,
-            ) = read_token_state(&topic_path).await;
-
-            // Read mode first — needed to resolve mode-specific model overrides.
-            // Chain: .jyc/mode-override > pattern mode from config > build default.
-            let mode = crate::session_state::resolve_effective_mode(
-                &topic_path,
-                &self.config.load(),
-                &self.channel_name,
-            )
-            .await;
-
-            // Read mode-specific override file first, fallback to legacy.
-            let file_override = {
-                async fn read_trimmed(path: &std::path::Path) -> Option<String> {
-                    tokio::fs::read_to_string(path)
-                        .await
-                        .ok()
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                }
-                let plan_path = topic_path.join(".jyc").join("plan-model-override");
-                let build_path = topic_path.join(".jyc").join("build-model-override");
-                let legacy_path = topic_path.join(".jyc").join("model-override");
-
-                let mode_specific = match mode.as_deref() {
-                    Some("plan") => read_trimmed(&plan_path).await,
-                    _ => read_trimmed(&build_path).await, // None = build mode
-                };
-                if mode_specific.is_some() {
-                    mode_specific
-                } else {
-                    read_trimmed(&legacy_path).await
-                }
-            };
-
-            // Resolve effective model with priority:
-            // 1. .jyc/<mode>-model-override (mode-specific runtime override)
-            // 2. .jyc/model-override (legacy generic override)
-            // 3. Pattern-level plan_model / build_model (mode-specific)
-            // 4. Pattern-level model (generic)
-            // 5. Channel-level model (generic)
-            // 6. Global plan_model / build_model (mode-specific)
-            // 7. Global model (generic)
-
-            let model = if let Some(ref m) = file_override {
-                Some(m.clone())
-            } else if let Some(ref pattern_name) = pattern {
-                let cfg = self.config.load();
-                let channel_cfg = cfg.channels.get(&self.channel_name);
-                let pattern_override = channel_cfg
-                    .and_then(|c| c.patterns.as_ref())
-                    .and_then(|pats| pats.iter().find(|p| p.name == *pattern_name));
-                pattern_override
-                    .and_then(|p| match mode.as_deref() {
-                        Some("plan") => p.plan_model.clone(),
-                        _ => p.build_model.clone(), // None = build mode
-                    })
-                    .or_else(|| pattern_override.and_then(|p| p.model.clone()))
-            } else {
-                None
-            }
-            .or_else(|| {
-                let cfg = self.config.load();
-                let channel_cfg = cfg.channels.get(&self.channel_name)?;
-                channel_cfg.model.clone()
-            })
-            .or_else(|| {
-                let cfg = self.config.load();
-                match mode.as_deref() {
-                    Some("plan") => cfg.ai.plan_model.clone(),
-                    _ => cfg.ai.build_model.clone(), // None = build mode
-                }
-            })
-            .or_else(|| self.config.load().ai.model.clone());
+            ) = token_state;
 
             // Read skills from .jyc/skills.json
             let skills = read_skills(&topic_path).await;
@@ -636,5 +721,48 @@ mode = "agent"
             .expect("topic should be listed");
         assert_eq!(info.mode.as_deref(), Some("build"));
         assert_eq!(info.model.as_deref(), Some("deepseek/deepseek-chat"));
+    }
+
+    /// `topic_display_state` resolves the same mode/model chain as
+    /// `list_topics` plus context token usage — without a workspace scan
+    /// or git calls (polled by the Feishu status-card watcher).
+    #[tokio::test]
+    async fn topic_display_state_resolves_mode_model_and_context() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let topic_path = workspace.join("plan-615");
+        tokio::fs::create_dir_all(topic_path.join(".jyc"))
+            .await
+            .unwrap();
+        tokio::fs::write(topic_path.join(".jyc").join("pattern"), "p1\n")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            topic_path.join(".jyc").join("agent-session.json"),
+            r#"{"context_input_tokens":1500,"max_input_tokens":10000}"#,
+        )
+        .await
+        .unwrap();
+        let tm = make_tm(&workspace);
+
+        let state = tm.topic_display_state("plan-615").await;
+        assert_eq!(state.mode.as_deref(), Some("plan"));
+        assert_eq!(state.model.as_deref(), Some("deepseek/deepseek-reasoner"));
+        assert_eq!(state.input_tokens, Some(1500));
+        assert_eq!(state.max_tokens, Some(10000));
+        assert_eq!(state.context_pct(), Some(15));
+
+        // Mode override file flips mode and the mode-specific model.
+        tokio::fs::write(topic_path.join(".jyc").join("mode-override"), "build\n")
+            .await
+            .unwrap();
+        let state = tm.topic_display_state("plan-615").await;
+        assert_eq!(state.mode.as_deref(), Some("build"));
+        assert_eq!(state.model.as_deref(), Some("deepseek/deepseek-chat"));
+
+        // Unknown topic → all fields None (no directory, no state files).
+        let state = tm.topic_display_state("no-such-topic").await;
+        assert!(state.mode.is_none() && state.model.is_none());
+        assert_eq!(state.context_pct(), None);
     }
 }

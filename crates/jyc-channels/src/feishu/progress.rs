@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use jyc_core::topic_event::TopicEvent;
-use jyc_core::topic_manager::TopicManager;
+use jyc_core::topic_manager::{TopicDisplayState, TopicManager};
 
 use super::client::FeishuClient;
 
@@ -59,14 +59,27 @@ fn tool_activity(tool_name: &str, input: Option<&str>) -> Option<String> {
 /// Build the status-card markdown for the Feishu progress watcher.
 ///
 /// `state` is `"⏳ 处理中"` while running, `"✅ 完成"` on success,
-/// `"❌ 失败"` on failure.
+/// `"❌ 失败"` on failure. Display segments (mode · model · context %)
+/// are omitted when the topic has no recorded state yet — `pct` needs
+/// both token bounds, i.e. at least one LLM call.
 fn progress_card(
     state: &str,
     elapsed_secs: u64,
     tool_count: usize,
     activity: Option<&str>,
+    display: &TopicDisplayState,
 ) -> String {
-    let mut lines = vec![format!("{state} · {elapsed_secs}s · 工具 {tool_count}")];
+    let mut line = format!("{state} · {elapsed_secs}s · 工具 {tool_count}");
+    if let Some(mode) = &display.mode {
+        line.push_str(&format!(" · {mode}"));
+    }
+    if let Some(model) = &display.model {
+        line.push_str(&format!(" · {model}"));
+    }
+    if let Some(pct) = display.context_pct() {
+        line.push_str(&format!(" · {pct}%"));
+    }
+    let mut lines = vec![line];
     if let Some(a) = activity {
         lines.push(format!("最近：{a}"));
     }
@@ -132,7 +145,8 @@ pub fn spawn_progress_watcher(
             if !is_start {
                 continue;
             }
-            let text = progress_card("⏳ 处理中", start.elapsed().as_secs(), 0, None);
+            let display = topic_manager.topic_display_state(&topic).await;
+            let text = progress_card("⏳ 处理中", start.elapsed().as_secs(), 0, None, &display);
             // Bounded send: the event bus is shared with the agent loop,
             // so a hung Feishu call must never stall this watcher.
             match tokio::time::timeout(
@@ -162,8 +176,7 @@ pub fn spawn_progress_watcher(
         // ── Phase 2: live updates until ProcessingCompleted ─────────────
         let mut tool_count = 0usize;
         let mut last_activity: Option<String> = None;
-        let mut done: Option<bool> = None;
-        let mut final_text = String::new();
+        let mut done: Option<(bool, u64)> = None;
         let mut last_patch = std::time::Instant::now();
         let mut fails = 0u32;
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -201,14 +214,7 @@ pub fn spawn_progress_watcher(
                                 duration_secs,
                                 ..
                             } => {
-                                done = Some(success);
-                                let state = if success { "✅ 完成" } else { "❌ 失败" };
-                                final_text = progress_card(
-                                    state,
-                                    duration_secs,
-                                    tool_count,
-                                    last_activity.as_deref(),
-                                );
+                                done = Some((success, duration_secs));
                             }
                             _ => {}
                         }
@@ -222,15 +228,25 @@ pub fn spawn_progress_watcher(
             if !terminal && last_patch.elapsed() < PROGRESS_PATCH_INTERVAL {
                 continue;
             }
-            let text = if terminal {
-                final_text.clone()
-            } else {
-                progress_card(
+            // Fetch display state (mode · model · context %) at render
+            // time — small state-file reads, cheap enough per tick, so
+            // mid-run /plan or /model switches show up on the next PATCH.
+            let display = topic_manager.topic_display_state(&topic).await;
+            let text = match done {
+                Some((success, duration_secs)) => progress_card(
+                    if success { "✅ 完成" } else { "❌ 失败" },
+                    duration_secs,
+                    tool_count,
+                    last_activity.as_deref(),
+                    &display,
+                ),
+                None => progress_card(
                     "⏳ 处理中",
                     start.elapsed().as_secs(),
                     tool_count,
                     last_activity.as_deref(),
-                )
+                    &display,
+                ),
             };
             if !terminal && text == last_text {
                 continue;
@@ -348,17 +364,66 @@ mod tests {
 
     #[test]
     fn progress_card_renders_state_elapsed_and_activity() {
+        let none = TopicDisplayState::default();
         assert_eq!(
-            progress_card("⏳ 处理中", 12, 3, None),
+            progress_card("⏳ 处理中", 12, 3, None, &none),
             "⏳ 处理中 · 12s · 工具 3"
         );
         assert_eq!(
-            progress_card("⏳ 处理中", 12, 3, Some("edit — tools.rs")),
+            progress_card("⏳ 处理中", 12, 3, Some("edit — tools.rs"), &none),
             "⏳ 处理中 · 12s · 工具 3\n最近：edit — tools.rs"
         );
         assert_eq!(
-            progress_card("✅ 完成", 52, 8, None),
+            progress_card("✅ 完成", 52, 8, None, &none),
             "✅ 完成 · 52s · 工具 8"
+        );
+    }
+
+    #[test]
+    fn progress_card_display_segments() {
+        // Full display state: mode · model · context % all appended.
+        let full = TopicDisplayState {
+            mode: Some("plan".to_string()),
+            model: Some("kimi/k3-256k".to_string()),
+            input_tokens: Some(108_134),
+            max_tokens: Some(262_144),
+        };
+        assert_eq!(
+            progress_card("⏳ 处理中", 23, 2, None, &full),
+            "⏳ 处理中 · 23s · 工具 2 · plan · kimi/k3-256k · 41%"
+        );
+        assert_eq!(
+            progress_card("✅ 完成", 757, 24, None, &full),
+            "✅ 完成 · 757s · 工具 24 · plan · kimi/k3-256k · 41%"
+        );
+
+        // Activity line still comes second when present.
+        let with_activity = progress_card("⏳ 处理中", 23, 2, Some("bash — cargo check"), &full);
+        assert_eq!(
+            with_activity,
+            "⏳ 处理中 · 23s · 工具 2 · plan · kimi/k3-256k · 41%\n最近：bash — cargo check"
+        );
+
+        // pct hidden until both token bounds are known (pre-first-LLM-call).
+        let no_tokens = TopicDisplayState {
+            mode: Some("build".to_string()),
+            model: Some("kimi/k3-256k".to_string()),
+            ..TopicDisplayState::default()
+        };
+        assert_eq!(
+            progress_card("⏳ 处理中", 3, 0, None, &no_tokens),
+            "⏳ 处理中 · 3s · 工具 0 · build · kimi/k3-256k"
+        );
+
+        // Zero max_tokens → pct hidden (division guard).
+        let zero_max = TopicDisplayState {
+            input_tokens: Some(100),
+            max_tokens: Some(0),
+            ..TopicDisplayState::default()
+        };
+        assert_eq!(
+            progress_card("⏳ 处理中", 3, 0, None, &zero_max),
+            "⏳ 处理中 · 3s · 工具 0"
         );
     }
 }

@@ -21,6 +21,8 @@ mod template;
 mod topics;
 mod worker;
 
+pub use topics::TopicDisplayState;
+
 /// Per-topic queue stats.
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]

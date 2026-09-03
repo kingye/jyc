@@ -52,6 +52,8 @@
 
 ### Changed
 
+- Feishu status card renders elapsed time in human-readable form:
+  `42s` below a minute, `1m38s` below an hour, `2h05m` beyond (#679)
 - **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
 
 - **System prompt no longer varies with plan/build mode.** The mode

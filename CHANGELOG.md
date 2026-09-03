@@ -52,6 +52,13 @@
 
 ### Changed
 
+- All duration displays now render through one shared formatter
+  (`jyc_core::duration`, Ticking/Precise/Coarse styles) across the
+  dashboard, chat screen, and Feishu surfaces. Side effects: the
+  chat group footer and the Feishu reply footer (`⏱ 耗时`) now show
+  minutes+seconds (`12m37s`) instead of truncating to whole minutes
+  or bare seconds; the live ticker renders `1h00m00s` past the hour
+  instead of `60m00s` (#680)
 - Feishu status card renders elapsed time in human-readable form:
   `42s` below a minute, `1m38s` below an hour, `2h05m` beyond (#679)
 - **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
@@ -73,6 +80,9 @@
 
 ### Fixed
 
+- TUI chat progress line: the since-last-activity timer no longer drops
+  seconds at or above one minute — `2m / 10m20s` now reads `2m05s / 10m20s`
+  (hour scale renders `1h30m`) (#680)
 - **Topic event bus publish no longer stalls on slow subscribers.**
   `forward_to_subscribers` awaited each subscriber's channel in order, so
   one lagging subscriber (e.g. a Feishu progress watcher blocked in a

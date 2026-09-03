@@ -41,6 +41,15 @@
   a `⏱ 耗时 Ns` footer. Degrades gracefully to the old Typing→DONE
   reactions when the event bus or card send is unavailable. (#674)
 
+- The Feishu status card now also shows the topic's effective mode,
+  model, and context-window usage — e.g. `⏳ 处理中 · 23s · 工具 2 ·
+  plan · kimi/k3-256k · 41%`. The segments refresh on every card update,
+  so a mid-run `/plan` or `/model` switch shows up within seconds. The
+  percentage appears once the first LLM call has recorded token usage.
+  Resolution shares the exact override chain with the dashboard via a
+  lightweight `TopicManager::topic_display_state` accessor (no workspace
+  scan, no git calls). (#678)
+
 ### Changed
 
 - **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.

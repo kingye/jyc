@@ -369,7 +369,7 @@ mod tests {
                 Some(r#"{"url": "https://open.feishu.cn/document/server-docs/im"}"#)
             )
             .as_deref(),
-            Some("https://open.feishu.cn/document/server-…")
+            Some("https://open.feishu.cn/document/server-docs/im")
         );
     }
 

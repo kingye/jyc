@@ -1351,6 +1351,177 @@ pub(crate) fn spawn_gitee_adapter(
 /// service, TopicManager, StateManager, or orchestrator registration — all
 /// topics live in the pipe target (hub) channel. See
 /// `docs/architecture/overview.md`.
+///
+/// Per-topic Feishu progress indicator state.
+///
+/// The reply forwarder swaps `typing_reaction_id` to DONE on the first
+/// relayed reply (then sets it to `None`); the entry itself stays so later
+/// replies (progress replies with `stop_after: false`) still carry the
+/// elapsed-time footer.
+struct FeishuIndicator {
+    /// User's original message — the Typing/DONE reaction lives here.
+    user_message_id: String,
+    /// Typing reaction id, `None` once swapped for DONE.
+    typing_reaction_id: Option<String>,
+    /// Start time, used for the reply footer and status card.
+    start: std::time::Instant,
+}
+
+/// Minimum seconds between Feishu status-card PATCHes (rate-limit guard).
+const PROGRESS_PATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Watch one topic's event bus and live-update the Feishu status card.
+///
+/// Exits on `ProcessingCompleted` (final card), when the bus is dropped, or
+/// after `MAX_LIFETIME` (safety net). Silent on Feishu API errors after 3
+/// consecutive failures — the Typing/DONE reaction and the reply footer
+/// still work independently.
+fn spawn_progress_watcher(
+    feishu_client: Arc<FeishuClient>,
+    routers: HubRegistry,
+    hub_channel: String,
+    topic: String,
+    status_message_id: String,
+    start: std::time::Instant,
+) {
+    tokio::spawn(async move {
+        const MAX_LIFETIME: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+        const MAX_PATCH_FAILURES: u32 = 3;
+
+        // Resolve the hub's TopicManager and the topic's event bus. No bus
+        // (events disabled) → no live updates; leave the initial card alone.
+        let tm = {
+            let reg = routers.lock().unwrap();
+            reg.get(&hub_channel).map(|(_, tm)| tm.clone())
+        };
+        let Some(tm) = tm else { return };
+        let Some(bus) = tm.get_or_create_event_bus(&topic).await else {
+            return;
+        };
+        let mut rx = match bus.subscribe().await {
+            Ok(rx) => rx,
+            Err(_) => return,
+        };
+
+        // Ignore events replayed from the bus buffer (previous runs).
+        let seen_after = chrono::Utc::now();
+        let mut tool_count = 0usize;
+        let mut last_activity: Option<String> = None;
+        let mut done: Option<bool> = None;
+        let mut final_text = String::new();
+        let mut last_patch = std::time::Instant::now();
+        // Matches the initial card sent by the inbound handler — the first
+        // live update (≥ PROGRESS_PATCH_INTERVAL later) re-renders elapsed.
+        let mut last_text = progress_card("⏳ 处理中", 0, 0, None);
+        let mut fails = 0u32;
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
+
+        loop {
+            if start.elapsed() > MAX_LIFETIME {
+                break;
+            }
+            let ev = if done.is_some() {
+                None
+            } else {
+                tokio::select! {
+                    ev = rx.recv() => Some(ev),
+                    _ = ticker.tick() => None,
+                }
+            };
+            match ev {
+                Some(Some(ev)) => {
+                    use jyc_core::topic_event::TopicEvent;
+                    let fresh = ev.timestamp() > seen_after;
+                    if fresh {
+                        match ev {
+                            TopicEvent::ToolStarted {
+                                tool_name, input, ..
+                            } => {
+                                tool_count += 1;
+                                last_activity = tool_activity(&tool_name, input.as_deref())
+                                    .map(|a| format!("{tool_name} — {a}"));
+                            }
+                            TopicEvent::ProcessingCompleted {
+                                success,
+                                duration_secs,
+                                ..
+                            } => {
+                                done = Some(success);
+                                let state = if success { "✅ 完成" } else { "❌ 失败" };
+                                final_text = progress_card(
+                                    state,
+                                    duration_secs,
+                                    tool_count,
+                                    last_activity.as_deref(),
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Some(None) => break, // bus dropped
+                None => {}           // tick or terminal
+            }
+
+            let terminal = done.is_some();
+            if !terminal && last_patch.elapsed() < PROGRESS_PATCH_INTERVAL {
+                continue;
+            }
+            let text = if terminal {
+                final_text.clone()
+            } else {
+                progress_card(
+                    "⏳ 处理中",
+                    start.elapsed().as_secs(),
+                    tool_count,
+                    last_activity.as_deref(),
+                )
+            };
+            if !terminal && text == last_text {
+                continue;
+            }
+            // Bounded update: the event bus applies backpressure to the
+            // agent loop (publish awaits the subscriber channel), so a
+            // hung Feishu PATCH must never block this watcher forever.
+            let upd = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                feishu_client.update_text_message(&status_message_id, &text),
+            )
+            .await;
+            match upd {
+                Ok(Ok(())) => {
+                    fails = 0;
+                    last_text = text;
+                    last_patch = std::time::Instant::now();
+                }
+                Ok(Err(e)) => {
+                    fails += 1;
+                    tracing::debug!(
+                        error = %e, topic = %topic, fails,
+                        "feishu progress watcher: status card update failed"
+                    );
+                    if fails >= MAX_PATCH_FAILURES {
+                        break;
+                    }
+                }
+                Err(_elapsed) => {
+                    fails += 1;
+                    tracing::debug!(
+                        topic = %topic, fails,
+                        "feishu progress watcher: status card update timed out"
+                    );
+                    if fails >= MAX_PATCH_FAILURES {
+                        break;
+                    }
+                }
+            }
+            if terminal {
+                break;
+            }
+        }
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_feishu_adapter(
     channel_config: &ChannelConfig,
@@ -1388,12 +1559,15 @@ pub(crate) fn spawn_feishu_adapter(
             let feishu_client = std::sync::Arc::new(FeishuClient::new(feishu_config.clone()));
             let topic_chat: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>> =
                 std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
-            // Per-topic progress indicator state: maps topic -> (user_message_id,
-            // typing_reaction_id) so the reply forwarder can replace the Typing
-            // reaction with DONE once a reply lands. In-memory only; lost on
-            // restart (orphan Typing reactions stay until cleared manually).
+            // Per-topic progress indicator state: the Typing→DONE reaction
+            // swap on the user's message, plus the start time used for the
+            // reply footer ("⏱ 耗时 Ns") and the live status card. Entries
+            // live from inbound until the topic is closed (chat disband) or
+            // overwritten by the next message. In-memory only; lost on
+            // restart (orphan Typing reactions/status cards stay until
+            // cleared manually).
             let topic_reactions: std::sync::Arc<
-                std::sync::Mutex<HashMap<String, (String, String)>>,
+                std::sync::Mutex<HashMap<String, FeishuIndicator>>,
             > = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
 
             // One reply forwarder per distinct pipe target channel:
@@ -1454,18 +1628,43 @@ pub(crate) fn spawn_feishu_adapter(
                             tracing::debug!(topic = %topic, "feishu pipe: no chat mapping for reply, skipping");
                             continue;
                         };
-                        let send_result = feishu_client.send_text_message(&chat_id, text).await;
+                        let send_result = {
+                            // Completion footer (Option A): every relayed
+                            // reply carries the elapsed time since the
+                            // indicator started — useful for both the final
+                            // reply and mid-run progress replies.
+                            let elapsed = topic_reactions
+                                .lock()
+                                .unwrap()
+                                .get(topic)
+                                .map(|i| i.start.elapsed().as_secs());
+                            let text = match elapsed {
+                                Some(s) => format!("{text}\n\n⏱ 耗时 {s}s"),
+                                None => text.to_string(),
+                            };
+                            feishu_client.send_text_message(&chat_id, &text).await
+                        };
                         if let Err(e) = &send_result {
                             tracing::error!(error = %e, "failed to relay reply to feishu");
                         }
                         // Swap the Typing reaction (added on inbound) for DONE
                         // on the user's original message — only when the reply
-                        // was actually delivered. Best-effort: skipped silently
-                        // when the tracking entry is missing (e.g. daemon
-                        // restart), leaving an orphan Typing reaction.
+                        // was actually delivered, and only once (later replies
+                        // keep the DONE). Best-effort: skipped silently when
+                        // the tracking entry is missing (e.g. daemon restart),
+                        // leaving an orphan Typing reaction.
                         if send_result.is_ok() {
-                            let reaction_track = topic_reactions.lock().unwrap().remove(topic);
-                            if let Some((user_message_id, typing_reaction_id)) = reaction_track {
+                            let swap = {
+                                let mut map = topic_reactions.lock().unwrap();
+                                match map.get_mut(topic) {
+                                    Some(ind) => ind
+                                        .typing_reaction_id
+                                        .take()
+                                        .map(|rid| (ind.user_message_id.clone(), rid)),
+                                    None => None,
+                                }
+                            };
+                            if let Some((user_message_id, typing_reaction_id)) = swap {
                             if let Err(e) = feishu_client
                                 .delete_reaction(&user_message_id, &typing_reaction_id)
                                 .await
@@ -1516,6 +1715,7 @@ pub(crate) fn spawn_feishu_adapter(
             }
 
             let topic_chat_for_close = topic_chat.clone();
+            let topic_reactions_for_close = topic_reactions.clone();
             let routers_for_close = routers.clone();
 
             let options = jyc_types::InboundAdapterOptions {
@@ -1552,37 +1752,77 @@ pub(crate) fn spawn_feishu_adapter(
                         };
 
                         // Record resolved topic -> chat_id for reply relay.
-                        if let Some(chat_id) =
-                            message.metadata.get("chat_id").and_then(|v| v.as_str())
-                        {
+                        let chat_id = message
+                            .metadata
+                            .get("chat_id")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        if let Some(chat_id) = &chat_id {
                             topic_chat
                                 .lock()
                                 .unwrap()
-                                .insert(message.topic.clone(), chat_id.to_string());
+                                .insert(message.topic.clone(), chat_id.clone());
                         }
 
-                        // Best-effort Typing drop. The reaction API needs the
-                        // message_id — `external_id` carries it, `channel_uid`
-                        // is the chat_id. Skip (warn) if external_id is unset.
+                        // Progress indicator (best-effort): Typing reaction
+                        // on the user's message + a live status card in the
+                        // chat, updated by a watcher on the topic's event
+                        // bus. The reaction API needs the message_id —
+                        // `external_id` carries it. Skip (warn) if unset.
                         if let Some(user_message_id) = message.external_id.as_deref() {
-                            match feishu_client
+                            let start = std::time::Instant::now();
+                            let typing_reaction_id = match feishu_client
                                 .add_reaction(user_message_id, "Typing")
                                 .await
                             {
-                                Ok(reaction_id) => {
-                                    topic_reactions.lock().unwrap().insert(
-                                        message.topic.clone(),
-                                        (user_message_id.to_string(), reaction_id),
-                                    );
-                                }
+                                Ok(reaction_id) => Some(reaction_id),
                                 Err(e) => {
                                     tracing::warn!(
                                         error = %e,
                                         topic = %message.topic,
                                         "feishu pipe: failed to add Typing reaction"
                                     );
+                                    None
                                 }
+                            };
+                            let status_message_id = match &chat_id {
+                                Some(cid) => match feishu_client
+                                    .send_text_message(
+                                        cid,
+                                        &progress_card("⏳ 处理中", 0, 0, None),
+                                    )
+                                    .await
+                                {
+                                    Ok(r) => Some(r.message_id),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            topic = %message.topic,
+                                            "feishu pipe: failed to send status card"
+                                        );
+                                        None
+                                    }
+                                },
+                                None => None,
+                            };
+                            if let Some(sm) = status_message_id {
+                                spawn_progress_watcher(
+                                    feishu_client.clone(),
+                                    routers.clone(),
+                                    message.channel.clone(),
+                                    message.topic.clone(),
+                                    sm,
+                                    start,
+                                );
                             }
+                            topic_reactions.lock().unwrap().insert(
+                                message.topic.clone(),
+                                FeishuIndicator {
+                                    user_message_id: user_message_id.to_string(),
+                                    typing_reaction_id,
+                                    start,
+                                },
+                            );
                         } else {
                             tracing::warn!(
                                 topic = %message.topic,
@@ -1600,6 +1840,7 @@ pub(crate) fn spawn_feishu_adapter(
                 }),
                 on_topic_close: Some(Box::new(move |chat_id: String| {
                     let topic_chat = topic_chat_for_close.clone();
+                    let topic_reactions = topic_reactions_for_close.clone();
                     let routers = routers_for_close.clone();
                     tokio::spawn(async move {
                         // Reverse-lookup: the disband event carries the
@@ -1636,6 +1877,9 @@ pub(crate) fn spawn_feishu_adapter(
                             }
                         }
                         topic_chat.lock().unwrap().retain(|_, v| v != &chat_id);
+                        for topic in &topics_to_close {
+                            topic_reactions.lock().unwrap().remove(topic);
+                        }
                     });
                     Ok(())
                 })),
@@ -2161,7 +2405,12 @@ pub(crate) fn tool_activity(tool_name: &str, input: Option<&str>) -> Option<Stri
 ///
 /// `state` is `"⏳ 处理中"` while running, `"✅ 完成"` on success,
 /// `"❌ 失败"` on failure.
-fn progress_card(state: &str, elapsed_secs: u64, tool_count: usize, activity: Option<&str>) -> String {
+fn progress_card(
+    state: &str,
+    elapsed_secs: u64,
+    tool_count: usize,
+    activity: Option<&str>,
+) -> String {
     let mut lines = vec![format!("{state} · {elapsed_secs}s · 工具 {tool_count}")];
     if let Some(a) = activity {
         lines.push(format!("最近：{a}"));
@@ -3376,7 +3625,8 @@ mod tests {
 
     #[test]
     fn tool_activity_extracts_basename_for_file_tools() {
-        let input = r#"{"file_path": "/home/jiny/projects/jyc/crates/jyc-agent/src/service/tools.rs"}"#;
+        let input =
+            r#"{"file_path": "/home/jiny/projects/jyc/crates/jyc-agent/src/service/tools.rs"}"#;
         assert_eq!(
             tool_activity("edit", Some(input)).as_deref(),
             Some("tools.rs")
@@ -3398,7 +3648,11 @@ mod tests {
             Some("cargo check -p jyc-cli")
         );
         assert_eq!(
-            tool_activity("grep", Some(r#"{"pattern": "TopicEvent", "path": "crates"}"#)).as_deref(),
+            tool_activity(
+                "grep",
+                Some(r#"{"pattern": "TopicEvent", "path": "crates"}"#)
+            )
+            .as_deref(),
             Some("TopicEvent")
         );
         assert_eq!(

@@ -2112,6 +2112,63 @@ fn warn_on_bad_pipe_patterns(
     }
 }
 
+/// Compact "what is happening now" summary for a tool call, extracted from
+/// the `ToolStarted` event's JSON input. Used by the Feishu progress
+/// watcher's live status card: `edit — service/tools.rs`, `bash — cargo ch…
+///
+/// File paths are reduced to their basename (the Feishu card stays short);
+/// commands/URLs/patterns are truncated. Tools without a meaningful
+/// argument (or with sensitive args like the reply text) return `None`.
+pub(crate) fn tool_activity(tool_name: &str, input: Option<&str>) -> Option<String> {
+    let raw = match tool_name {
+        "read" | "edit" | "write" | "read_image" => {
+            let p = serde_json::from_str::<serde_json::Value>(input?)
+                .ok()?
+                .get("file_path")?
+                .as_str()?
+                .to_string();
+            // Basename keeps the card short; empty for bare names like "Cargo.toml"
+            // handled by the truncation below anyway.
+            p.rsplit('/').next().unwrap_or(&p).to_string()
+        }
+        "grep" | "glob" => serde_json::from_str::<serde_json::Value>(input?)
+            .ok()?
+            .get("pattern")?
+            .as_str()?
+            .to_string(),
+        "bash" => serde_json::from_str::<serde_json::Value>(input?)
+            .ok()?
+            .get("command")?
+            .as_str()?
+            .to_string(),
+        "webfetch" => serde_json::from_str::<serde_json::Value>(input?)
+            .ok()?
+            .get("url")?
+            .as_str()?
+            .to_string(),
+        _ => return None,
+    };
+    const MAX: usize = 40;
+    let truncated: String = if raw.chars().count() > MAX {
+        raw.chars().take(MAX - 1).collect::<String>() + "…"
+    } else {
+        raw
+    };
+    Some(truncated)
+}
+
+/// Build the status-card markdown for the Feishu progress watcher.
+///
+/// `state` is `"⏳ 处理中"` while running, `"✅ 完成"` on success,
+/// `"❌ 失败"` on failure.
+fn progress_card(state: &str, elapsed_secs: u64, tool_count: usize, activity: Option<&str>) -> String {
+    let mut lines = vec![format!("{state} · {elapsed_secs}s · 工具 {tool_count}")];
+    if let Some(a) = activity {
+        lines.push(format!("最近：{a}"));
+    }
+    lines.join("\n")
+}
+
 /// Pipe-adapter step 1 (shared): match the message against this channel's
 /// patterns and return the matched pattern plus the match details. The
 /// pattern is guaranteed to carry a `pipe` target; mismatches and
@@ -3314,6 +3371,78 @@ mod tests {
         assert_eq!(
             close_event_topics(&patterns, 42, "issue", "jyc"),
             vec![("gitee-42".to_string(), "agents".to_string())]
+        );
+    }
+
+    #[test]
+    fn tool_activity_extracts_basename_for_file_tools() {
+        let input = r#"{"file_path": "/home/jiny/projects/jyc/crates/jyc-agent/src/service/tools.rs"}"#;
+        assert_eq!(
+            tool_activity("edit", Some(input)).as_deref(),
+            Some("tools.rs")
+        );
+        assert_eq!(
+            tool_activity("read", Some(input)).as_deref(),
+            Some("tools.rs")
+        );
+        assert_eq!(
+            tool_activity("write", Some(input)).as_deref(),
+            Some("tools.rs")
+        );
+    }
+
+    #[test]
+    fn tool_activity_extracts_command_pattern_url() {
+        assert_eq!(
+            tool_activity("bash", Some(r#"{"command": "cargo check -p jyc-cli"}"#)).as_deref(),
+            Some("cargo check -p jyc-cli")
+        );
+        assert_eq!(
+            tool_activity("grep", Some(r#"{"pattern": "TopicEvent", "path": "crates"}"#)).as_deref(),
+            Some("TopicEvent")
+        );
+        assert_eq!(
+            tool_activity(
+                "webfetch",
+                Some(r#"{"url": "https://open.feishu.cn/document/server-docs/im"}"#)
+            )
+            .as_deref(),
+            Some("https://open.feishu.cn/document/server-…")
+        );
+    }
+
+    #[test]
+    fn tool_activity_truncates_long_values() {
+        let long = "a".repeat(100);
+        let input = format!(r#"{{"command": "{long}"}}"#);
+        let got = tool_activity("bash", Some(&input)).unwrap();
+        assert_eq!(got.chars().count(), 40);
+        assert!(got.ends_with('…'));
+    }
+
+    #[test]
+    fn tool_activity_none_for_unknown_or_missing_input() {
+        assert!(tool_activity("jyc_reply_message", Some(r#"{"message": "hi"}"#)).is_none());
+        assert!(tool_activity("read", None).is_none());
+        // Malformed JSON input → None (never panics).
+        assert!(tool_activity("edit", Some("not json")).is_none());
+        // Valid JSON but missing the expected key → None.
+        assert!(tool_activity("edit", Some(r#"{"other": 1}"#)).is_none());
+    }
+
+    #[test]
+    fn progress_card_renders_state_elapsed_and_activity() {
+        assert_eq!(
+            progress_card("⏳ 处理中", 12, 3, None),
+            "⏳ 处理中 · 12s · 工具 3"
+        );
+        assert_eq!(
+            progress_card("⏳ 处理中", 12, 3, Some("edit — tools.rs")),
+            "⏳ 处理中 · 12s · 工具 3\n最近：edit — tools.rs"
+        );
+        assert_eq!(
+            progress_card("✅ 完成", 52, 8, None),
+            "✅ 完成 · 52s · 工具 8"
         );
     }
 }

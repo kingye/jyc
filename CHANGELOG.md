@@ -55,16 +55,6 @@
 
 ### Fixed
 
-- **Feishu status card spinning forever for slash commands.** The card was
-  sent at message arrival but finalized only on `ProcessingCompleted`,
-  which fires exclusively in the agent loop — `/plan` and friends are
-  consumed by the command registry before the agent starts, so their card
-  kept re-PATCHing "⏳ 处理中 · Ns" until the 2h safety cap (~1800 wasted
-  API calls). The watcher now sends the card only when the first fresh
-  `ProcessingStarted` arrives (two-phase: waiting → live). Messages that
-  never reach the agent — slash commands, empty-body drops — produce no
-  card at all. (#674)
-
 - **`TopicEventBus::subscribe` could deadlock the agent loop.** The
   replay of buffered events `send().await`ed while holding the
   subscribers mutex, but the receiver is only handed out *after* the

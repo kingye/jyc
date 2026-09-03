@@ -1347,27 +1347,17 @@ pub(crate) fn spawn_gitee_adapter(
 /// Minimum seconds between Feishu status-card PATCHes (rate-limit guard).
 const PROGRESS_PATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Watch one topic's event bus and maintain the Feishu status card.
+/// Watch one topic's event bus and live-update the Feishu status card.
 ///
-/// Two phases:
-/// 1. **Waiting** — no card is sent until the first fresh
-///    `ProcessingStarted`. Messages that never reach the agent loop
-///    (slash commands, empty-body drops) publish no such event, so they
-///    produce no card at all — previously they left a "处理中" card
-///    spinning until `MAX_LIFETIME`.
-/// 2. **Live** — PATCH the card as tools fire; finalize on
-///    `ProcessingCompleted`.
-///
-/// Exits on `ProcessingCompleted` (final card), when the bus is dropped,
-/// after `MAX_LIFETIME` (safety net — a waiting watcher is one sleeping
-/// task, zero API calls), or silently after 3 consecutive Feishu API
-/// failures — the reply footer works independently.
+/// Exits on `ProcessingCompleted` (final card), when the bus is dropped, or
+/// after `MAX_LIFETIME` (safety net). Silent on Feishu API errors after 3
+/// consecutive failures — the reply footer still works independently.
 fn spawn_progress_watcher(
     feishu_client: Arc<FeishuClient>,
     routers: HubRegistry,
     hub_channel: String,
     topic: String,
-    chat_id: String,
+    status_message_id: String,
     start: std::time::Instant,
     seen_after: chrono::DateTime<chrono::Utc>,
 ) {
@@ -1376,7 +1366,7 @@ fn spawn_progress_watcher(
         const MAX_PATCH_FAILURES: u32 = 3;
 
         // Resolve the hub's TopicManager and the topic's event bus. No bus
-        // (events disabled) → no status card at all.
+        // (events disabled) → no live updates; leave the initial card alone.
         let tm = {
             let reg = routers.lock().unwrap();
             reg.get(&hub_channel).map(|(_, tm)| tm.clone())
@@ -1390,59 +1380,20 @@ fn spawn_progress_watcher(
             Err(_) => return,
         };
 
-        // ── Phase 1: wait for the first fresh ProcessingStarted ─────────
-        //
-        // `seen_after` is captured by the caller *before routing*, so
-        // every event of this run is strictly newer and previous runs'
-        // replayed events stay filtered. A fresh ProcessingCompleted
-        // while waiting belongs to a *previous* run — ignored: this
-        // message may still be queued behind it.
-        let (status_message_id, mut last_text) = loop {
-            if start.elapsed() > MAX_LIFETIME {
-                return;
-            }
-            let ev = match rx.recv().await {
-                Some(ev) => ev,
-                None => return, // bus dropped
-            };
-            let is_start = ev.timestamp() > seen_after
-                && matches!(
-                    ev,
-                    jyc_core::topic_event::TopicEvent::ProcessingStarted { .. }
-                );
-            if !is_start {
-                continue;
-            }
-            let text = progress_card("⏳ 处理中", start.elapsed().as_secs(), 0, None);
-            // Bounded send: the event bus backpressures the agent loop,
-            // so a hung Feishu call must never block this watcher.
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                feishu_client.send_text_message(&chat_id, &text),
-            )
-            .await
-            {
-                Ok(Ok(r)) => break (r.message_id, text),
-                Ok(Err(e)) => {
-                    tracing::warn!(
-                        error = %e, topic = %topic,
-                        "feishu pipe: failed to send status card"
-                    );
-                    return;
-                }
-                Err(_) => {
-                    tracing::warn!(topic = %topic, "feishu pipe: status card send timed out");
-                    return;
-                }
-            }
-        };
-
-        // ── Phase 2: live updates until ProcessingCompleted ─────────────
+        // `seen_after` is captured by the caller *before routing*, so every
+        // event of this run is strictly newer and previous runs' replayed
+        // events stay filtered. (Capturing it here — after subscribe —
+        // would race with a fast run completing before the task even
+        // starts, hiding its ProcessingCompleted and pinning the card at
+        // "处理中" for the full MAX_LIFETIME.)
         let mut tool_count = 0usize;
         let mut last_activity: Option<String> = None;
         let mut done: Option<bool> = None;
         let mut final_text = String::new();
         let mut last_patch = std::time::Instant::now();
+        // Matches the initial card sent by the inbound handler — the first
+        // live update (≥ PROGRESS_PATCH_INTERVAL later) re-renders elapsed.
+        let mut last_text = progress_card("⏳ 处理中", 0, 0, None);
         let mut fails = 0u32;
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
 
@@ -1763,26 +1714,40 @@ pub(crate) fn spawn_feishu_adapter(
                                 .insert(message.topic.clone(), chat_id.clone());
                         }
 
-                        // Progress indicator (best-effort): the watcher
-                        // sends the live status card once processing
-                        // actually starts (see spawn_progress_watcher —
-                        // slash commands never start it, so they get no
-                        // card). Footer timing is recorded unconditionally.
+                        // Progress indicator (best-effort): a live status
+                        // card in the chat, updated by a watcher on the
+                        // topic's event bus. The footer timing is recorded
+                        // even if the card send fails.
                         if let Some(cid) = &chat_id {
                             let start = std::time::Instant::now();
-                            // Event freshness cutoff for the watcher —
-                            // taken here, before routing, so no event of
-                            // this run can predate it.
+                            // Event freshness cutoff for the watcher — taken
+                            // here, before routing, so no event of this run
+                            // can predate it (see spawn_progress_watcher).
                             let seen_after = chrono::Utc::now();
-                            spawn_progress_watcher(
-                                feishu_client.clone(),
-                                routers.clone(),
-                                message.channel.clone(),
-                                message.topic.clone(),
-                                cid.clone(),
-                                start,
-                                seen_after,
-                            );
+                            match feishu_client
+                                .send_text_message(
+                                    cid,
+                                    &progress_card("⏳ 处理中", 0, 0, None),
+                                )
+                                .await
+                            {
+                                Ok(r) => spawn_progress_watcher(
+                                    feishu_client.clone(),
+                                    routers.clone(),
+                                    message.channel.clone(),
+                                    message.topic.clone(),
+                                    r.message_id,
+                                    start,
+                                    seen_after,
+                                ),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        topic = %message.topic,
+                                        "feishu pipe: failed to send status card"
+                                    );
+                                }
+                            }
                             topic_starts
                                 .lock()
                                 .unwrap()

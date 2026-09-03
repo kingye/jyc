@@ -84,7 +84,24 @@ fn format_elapsed_ms_at_and_above_60s() {
     assert_eq!(format_elapsed_ms(60_000), "1m00s");
     assert_eq!(format_elapsed_ms(65_000), "1m05s");
     assert_eq!(format_elapsed_ms(125_000), "2m05s");
-    assert_eq!(format_elapsed_ms(3_600_000), "60m00s");
+    assert_eq!(format_elapsed_ms(3_600_000), "1h00m00s");
+}
+
+#[test]
+fn format_elapsed_keeps_seconds_at_and_above_60s() {
+    // Timestamps relative to now; `num_seconds` truncation absorbs the
+    // sub-second drift between fixture creation and the call.
+    let ago = |secs: i64| Some((chrono::Utc::now() - chrono::Duration::seconds(secs)).to_rfc3339());
+    assert_eq!(format_elapsed(&None), "");
+    assert_eq!(format_elapsed(&Some("not-a-date".to_string())), "");
+    assert_eq!(format_elapsed(&ago(0)), "0s");
+    assert_eq!(format_elapsed(&ago(59)), "59s");
+    assert_eq!(format_elapsed(&ago(60)), "1m00s");
+    assert_eq!(format_elapsed(&ago(65)), "1m05s");
+    assert_eq!(format_elapsed(&ago(125)), "2m05s");
+    assert_eq!(format_elapsed(&ago(3599)), "59m59s");
+    assert_eq!(format_elapsed(&ago(3600)), "1h00m");
+    assert_eq!(format_elapsed(&ago(7387)), "2h03m");
 }
 
 #[test]

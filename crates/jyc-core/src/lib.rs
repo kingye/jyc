@@ -5,6 +5,7 @@ pub mod billing_log_store;
 pub mod channel_orchestrator;
 pub mod chat_log_store;
 pub mod command;
+pub mod duration;
 pub mod email_parser;
 pub mod job_store;
 pub mod message_router;

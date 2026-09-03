@@ -8,6 +8,7 @@ use crossterm::{
     },
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use jyc_core::duration::{DurationStyle, format_duration_secs};
 use ratatui::{
     Frame, Terminal,
     layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
@@ -1564,7 +1565,7 @@ fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             stats.total_topics,
             stats.messages_received,
             stats.errors,
-            format_duration(state.uptime_secs),
+            format_duration_secs(state.uptime_secs, DurationStyle::Coarse),
             state.version,
         ))
     };
@@ -1614,16 +1615,6 @@ fn render_mouse_chip(frame: &mut Frame, area: Rect, mouse_capture_enabled: bool)
     ))
     .alignment(Alignment::Center);
     frame.render_widget(chip, area);
-}
-
-fn format_duration(secs: u64) -> String {
-    let hours = secs / 3600;
-    let mins = (secs % 3600) / 60;
-    if hours > 0 {
-        format!("{hours}h{mins:02}m")
-    } else {
-        format!("{mins}m")
-    }
 }
 
 fn format_last_active(value: Option<&str>) -> String {

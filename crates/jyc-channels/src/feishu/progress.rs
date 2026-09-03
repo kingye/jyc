@@ -13,6 +13,7 @@
 
 use std::sync::Arc;
 
+use jyc_core::duration::{DurationStyle, format_duration_secs};
 use jyc_core::topic_event::TopicEvent;
 use jyc_core::topic_manager::{TopicDisplayState, TopicManager};
 
@@ -62,19 +63,6 @@ fn tool_activity(tool_name: &str, input: Option<&str>) -> Option<String> {
 /// `"❌ 失败"` on failure. Display segments (mode · model · context %)
 /// are omitted when the topic has no recorded state yet — `pct` needs
 /// both token bounds, i.e. at least one LLM call.
-/// Format a duration for the status card: `42s` below a minute,
-/// `1m38s` below an hour, `2h05m` beyond (seconds dropped at hour
-/// scale). Mirrors the dashboard's elapsed/duration styles.
-fn fmt_elapsed(secs: u64) -> String {
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m{:02}s", secs / 60, secs % 60)
-    } else {
-        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
-    }
-}
-
 fn progress_card(
     state: &str,
     elapsed_secs: u64,
@@ -84,7 +72,7 @@ fn progress_card(
 ) -> String {
     let mut line = format!(
         "{state} · {} · 工具 {tool_count}",
-        fmt_elapsed(elapsed_secs)
+        format_duration_secs(elapsed_secs, DurationStyle::Precise)
     );
     if let Some(mode) = &display.mode {
         line.push_str(&format!(" · {mode}"));
@@ -393,18 +381,6 @@ mod tests {
             progress_card("✅ 完成", 52, 8, None, &none),
             "✅ 完成 · 52s · 工具 8"
         );
-    }
-
-    #[test]
-    fn fmt_elapsed_boundaries() {
-        assert_eq!(fmt_elapsed(0), "0s");
-        assert_eq!(fmt_elapsed(59), "59s");
-        assert_eq!(fmt_elapsed(60), "1m00s");
-        assert_eq!(fmt_elapsed(65), "1m05s");
-        assert_eq!(fmt_elapsed(98), "1m38s");
-        assert_eq!(fmt_elapsed(3599), "59m59s");
-        assert_eq!(fmt_elapsed(3600), "1h00m");
-        assert_eq!(fmt_elapsed(7387), "2h03m");
     }
 
     #[test]

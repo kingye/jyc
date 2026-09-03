@@ -110,13 +110,13 @@ impl TopicManager {
                     return;
                 }
                 Err(mpsc::error::TrySendError::Closed(item)) => {
+                    // Worker exited (e.g. after /cancel) and dropped its
+                    // receiver. Respawn below — but keep the existing event
+                    // bus: long-lived subscribers (TUI WS relay, Feishu
+                    // forwarder) hold receivers of it, so recreating the bus
+                    // here would orphan them and silence the topic's event
+                    // stream. Bus cleanup belongs to cleanup_topic_state.
                     queues.remove(&topic_name);
-                    // Clean up event bus for this topic
-                    if self.enable_events {
-                        let mut event_buses = self.event_buses.lock().await;
-                        event_buses.remove(&topic_name);
-                        tracing::debug!(topic = %topic_name, "Cleaned up event bus for closed queue");
-                    }
                     self.create_and_enqueue(&mut queues, topic_name.clone(), item)
                         .await;
                     self.publish_incoming_message(&topic_name, &event_sender, &event_text)

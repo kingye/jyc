@@ -116,12 +116,16 @@ pub fn spawn_progress_watcher(
         // while waiting belongs to a *previous* run — ignored: this
         // message may still be queued behind it.
         let (status_message_id, mut last_text) = loop {
-            if start.elapsed() > MAX_LIFETIME {
+            // Bounded wait: even on a completely silent topic (no events
+            // at all) the watcher exits once MAX_LIFETIME is exceeded.
+            let remaining = MAX_LIFETIME.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
                 return;
             }
-            let ev = match rx.recv().await {
-                Some(ev) => ev,
-                None => return, // bus dropped
+            let ev = match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Some(ev)) => ev,
+                Ok(None) => return, // bus dropped
+                Err(_) => return,   // lifetime exceeded
             };
             let is_start =
                 ev.timestamp() > seen_after && matches!(ev, TopicEvent::ProcessingStarted { .. });

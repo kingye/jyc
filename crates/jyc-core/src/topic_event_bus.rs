@@ -76,8 +76,11 @@ impl SimpleThreadEventBus {
             match subscriber.try_send(event.clone()) {
                 Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => {
+                    // Deliberately no event payload here: this fires per
+                    // dropped event (log spam) and some variants carry
+                    // user message text.
                     tracing::warn!(
-                        event = ?event,
+                        topic = %event.topic_name(),
                         "topic event subscriber lagging; event dropped to keep publish non-blocking"
                     );
                 }

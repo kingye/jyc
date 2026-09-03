@@ -49,11 +49,15 @@ fn tool_activity(tool_name: &str, input: Option<&str>) -> Option<String> {
         "webfetch" => get("url")?,
         _ => return None,
     };
-    const MAX: usize = 40;
-    if raw.chars().count() > MAX {
-        Some(raw.chars().take(MAX - 1).collect::<String>() + "…")
+    // Collapse newlines/excess whitespace so a multi-line command can't
+    // break the card's markdown layout, then truncate to a budget that
+    // shows the full call in most cases (~160 chars ≈ 2–3 card lines).
+    let flat = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    const MAX: usize = 160;
+    if flat.chars().count() > MAX {
+        Some(flat.chars().take(MAX - 1).collect::<String>() + "…")
     } else {
-        Some(raw)
+        Some(flat)
     }
 }
 
@@ -365,17 +369,24 @@ mod tests {
                 Some(r#"{"url": "https://open.feishu.cn/document/server-docs/im"}"#)
             )
             .as_deref(),
-            Some("https://open.feishu.cn/document/server-…")
+            Some("https://open.feishu.cn/document/server-docs/im")
         );
     }
 
     #[test]
     fn tool_activity_truncates_long_values() {
-        let long = "a".repeat(100);
+        let long = "a".repeat(200);
         let input = format!(r#"{{"command": "{long}"}}"#);
         let got = tool_activity("bash", Some(&input)).unwrap();
-        assert_eq!(got.chars().count(), 40);
+        assert_eq!(got.chars().count(), 160);
         assert!(got.ends_with('…'));
+        // Newlines/excess whitespace collapse — multi-line commands must
+        // not break the card's markdown layout.
+        let multi = r#"{"command": "ls\n   -la"}"#;
+        assert_eq!(
+            tool_activity("bash", Some(multi)).as_deref(),
+            Some("ls -la")
+        );
     }
 
     #[test]

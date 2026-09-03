@@ -39,7 +39,7 @@
   updates throttled to ≥4s. On completion the card flips to
   `✅ 完成 · 52s · 工具 8` (or `❌ 失败`), and every relayed reply gains
   a `⏱ 耗时 Ns` footer. Degrades gracefully to the old Typing→DONE
-  reactions when the event bus or card send is unavailable.
+  reactions when the event bus or card send is unavailable. (#674)
 
 ### Changed
 
@@ -62,7 +62,7 @@
   capacity, subscribe() blocked forever and every subsequent publish()
   (i.e. the agent loop) stalled on the mutex. The subscriber channel now
   exceeds the event-log capacity and replay uses `try_send`, making
-  blocking structurally impossible. Covered by a regression test.
+  blocking structurally impossible. Covered by a regression test. (#674)
 
 - **Dashboard connections no longer break on `jyc serve` restart.** The
   inspect auth token is now reused across restarts instead of being

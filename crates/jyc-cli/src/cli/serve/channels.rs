@@ -1375,6 +1375,7 @@ fn spawn_progress_watcher(
     topic: String,
     status_message_id: String,
     start: std::time::Instant,
+    seen_after: chrono::DateTime<chrono::Utc>,
 ) {
     tokio::spawn(async move {
         const MAX_LIFETIME: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
@@ -1395,8 +1396,12 @@ fn spawn_progress_watcher(
             Err(_) => return,
         };
 
-        // Ignore events replayed from the bus buffer (previous runs).
-        let seen_after = chrono::Utc::now();
+        // `seen_after` is captured by the caller *before routing*, so every
+        // event of this run is strictly newer and previous runs' replayed
+        // events stay filtered. (Capturing it here — after subscribe —
+        // would race with a fast run completing before the task even
+        // starts, hiding its ProcessingCompleted and pinning the card at
+        // "处理中" for the full MAX_LIFETIME.)
         let mut tool_count = 0usize;
         let mut last_activity: Option<String> = None;
         let mut done: Option<bool> = None;
@@ -1430,8 +1435,12 @@ fn spawn_progress_watcher(
                                 tool_name, input, ..
                             } => {
                                 tool_count += 1;
-                                last_activity = tool_activity(&tool_name, input.as_deref())
-                                    .map(|a| format!("{tool_name} — {a}"));
+                                // Keep the previous activity when the tool has
+                                // no summary (reply/MCP tools) — otherwise the
+                                // "最近：" line flickers away mid-run.
+                                if let Some(a) = tool_activity(&tool_name, input.as_deref()) {
+                                    last_activity = Some(format!("{tool_name} — {a}"));
+                                }
                             }
                             TopicEvent::ProcessingCompleted {
                                 success,
@@ -1770,6 +1779,10 @@ pub(crate) fn spawn_feishu_adapter(
                         // `external_id` carries it. Skip (warn) if unset.
                         if let Some(user_message_id) = message.external_id.as_deref() {
                             let start = std::time::Instant::now();
+                            // Event freshness cutoff for the watcher — taken
+                            // here, before routing, so no event of this run
+                            // can predate it (see spawn_progress_watcher).
+                            let seen_after = chrono::Utc::now();
                             let typing_reaction_id = match feishu_client
                                 .add_reaction(user_message_id, "Typing")
                                 .await
@@ -1812,6 +1825,7 @@ pub(crate) fn spawn_feishu_adapter(
                                     message.topic.clone(),
                                     sm,
                                     start,
+                                    seen_after,
                                 );
                             }
                             topic_reactions.lock().unwrap().insert(
@@ -2363,41 +2377,31 @@ fn warn_on_bad_pipe_patterns(
 /// commands/URLs/patterns are truncated. Tools without a meaningful
 /// argument (or with sensitive args like the reply text) return `None`.
 pub(crate) fn tool_activity(tool_name: &str, input: Option<&str>) -> Option<String> {
+    let get = |key: &str| -> Option<String> {
+        serde_json::from_str::<serde_json::Value>(input?)
+            .ok()?
+            .get(key)?
+            .as_str()
+            .map(str::to_string)
+    };
     let raw = match tool_name {
+        // File tools: basename keeps the card short (read_image names its
+        // argument "path", the others "file_path").
         "read" | "edit" | "write" | "read_image" => {
-            let p = serde_json::from_str::<serde_json::Value>(input?)
-                .ok()?
-                .get("file_path")?
-                .as_str()?
-                .to_string();
-            // Basename keeps the card short; empty for bare names like "Cargo.toml"
-            // handled by the truncation below anyway.
+            let p = get("file_path").or_else(|| get("path"))?;
             p.rsplit('/').next().unwrap_or(&p).to_string()
         }
-        "grep" | "glob" => serde_json::from_str::<serde_json::Value>(input?)
-            .ok()?
-            .get("pattern")?
-            .as_str()?
-            .to_string(),
-        "bash" => serde_json::from_str::<serde_json::Value>(input?)
-            .ok()?
-            .get("command")?
-            .as_str()?
-            .to_string(),
-        "webfetch" => serde_json::from_str::<serde_json::Value>(input?)
-            .ok()?
-            .get("url")?
-            .as_str()?
-            .to_string(),
+        "grep" | "glob" => get("pattern")?,
+        "bash" => get("command")?,
+        "webfetch" => get("url")?,
         _ => return None,
     };
     const MAX: usize = 40;
-    let truncated: String = if raw.chars().count() > MAX {
-        raw.chars().take(MAX - 1).collect::<String>() + "…"
+    if raw.chars().count() > MAX {
+        Some(raw.chars().take(MAX - 1).collect::<String>() + "…")
     } else {
-        raw
-    };
-    Some(truncated)
+        Some(raw)
+    }
 }
 
 /// Build the status-card markdown for the Feishu progress watcher.
@@ -3637,6 +3641,11 @@ mod tests {
         assert_eq!(
             tool_activity("write", Some(input)).as_deref(),
             Some("tools.rs")
+        );
+        // read_image names its argument "path", not "file_path".
+        assert_eq!(
+            tool_activity("read_image", Some(r#"{"path": "/tmp/x/photo.png"}"#)).as_deref(),
+            Some("photo.png")
         );
     }
 

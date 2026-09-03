@@ -32,6 +32,15 @@
   `jyc serve` afterward for it to take effect; existing dashboards must
   reconnect with `jyc dashboard`.
 
+- **Feishu live progress indicator.** Piped Feishu messages now get a
+  status card in the chat, updated as the agent works (elapsed time, tool
+  call count, and the latest tool with its target — e.g. `edit —
+  tools.rs`, `bash — cargo check`), driven by the topic event bus with
+  updates throttled to ≥4s. On completion the card flips to
+  `✅ 完成 · 52s · 工具 8` (or `❌ 失败`), and every relayed reply gains
+  a `⏱ 耗时 Ns` footer. Degrades gracefully to the old Typing→DONE
+  reactions when the event bus or card send is unavailable. (#674)
+
 ### Changed
 
 - **/` +exchange` output is now a markdown bullet list.** Instead of `name: url`, multiple published files are rendered as a markdown list with the filename on one line and the raw shareable URL on the next, keeping URLs copy-pasteable while displaying better in chat and email.
@@ -45,6 +54,15 @@
   Kimi, OpenAI, etc.) warm across plan/build flips.
 
 ### Fixed
+
+- **`TopicEventBus::subscribe` could deadlock the agent loop.** The
+  replay of buffered events `send().await`ed while holding the
+  subscribers mutex, but the receiver is only handed out *after* the
+  replay — with more buffered events than the subscriber channel's
+  capacity, subscribe() blocked forever and every subsequent publish()
+  (i.e. the agent loop) stalled on the mutex. The subscriber channel now
+  exceeds the event-log capacity and replay uses `try_send`, making
+  blocking structurally impossible. Covered by a regression test. (#674)
 
 - **Dashboard connections no longer break on `jyc serve` restart.** The
   inspect auth token is now reused across restarts instead of being

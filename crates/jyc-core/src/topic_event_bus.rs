@@ -96,7 +96,13 @@ impl TopicEventBus for SimpleThreadEventBus {
     }
 
     async fn subscribe(&self) -> Result<mpsc::Receiver<TopicEvent>> {
-        let (tx, rx) = mpsc::channel(10);
+        // Capacity must exceed EVENT_LOG_CAPACITY: the replay below sends
+        // while holding the subscribers mutex, and the caller cannot read
+        // `rx` until subscribe() returns. A bounded channel that fills
+        // during replay would block `send()` forever — deadlocking every
+        // subsequent publish() (and thus the agent loop). `try_send` makes
+        // blocking structurally impossible.
+        let (tx, rx) = mpsc::channel(EVENT_LOG_CAPACITY * 2);
 
         let mut subscribers = self.subscribers.lock().await;
 
@@ -106,7 +112,7 @@ impl TopicEventBus for SimpleThreadEventBus {
         // subscribers (including the new one).
         let log = self.event_log.lock().await;
         for event in log.iter() {
-            let _ = tx.send(event.clone()).await;
+            let _ = tx.try_send(event.clone());
         }
         drop(log);
 
@@ -163,6 +169,37 @@ mod tests {
                 _ => panic!("Unexpected event type"),
             }
         }
+    }
+
+    /// Regression test: `subscribe()` must not deadlock when the replay
+    /// buffer is fuller than the old subscriber-channel capacity. The
+    /// replay used to `send().await` while holding the subscribers mutex
+    /// with no reader for `rx` yet — with a full buffer it blocked forever
+    /// and every subsequent `publish()` (agent loop!) stalled.
+    #[tokio::test]
+    async fn subscribe_with_full_event_log_does_not_deadlock() {
+        let bus: Arc<dyn TopicEventBus> = Arc::new(SimpleThreadEventBus::new(10));
+
+        // Fill the replay buffer to capacity with no subscriber present.
+        for i in 0..EVENT_LOG_CAPACITY {
+            bus.publish(make_event(&format!("t{i}"))).await.unwrap();
+        }
+
+        // Subscribe must return promptly despite the full buffer…
+        let rx = tokio::time::timeout(std::time::Duration::from_secs(5), bus.subscribe())
+            .await
+            .expect("subscribe deadlocked with a full event log")
+            .unwrap();
+
+        // …and publishing afterwards must not block on the new subscriber.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            bus.publish(make_event("after")),
+        )
+        .await
+        .expect("publish deadlocked after subscribe with full log")
+        .unwrap();
+        drop(rx);
     }
 
     #[tokio::test]

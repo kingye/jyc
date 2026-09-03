@@ -52,6 +52,10 @@
 
 ### Changed
 
+- Feishu live status card: the "最近" (recent tool) line now shows up to
+  160 chars of the tool call (was 40), so full bash commands/patterns are
+  visible in most cases; newlines collapse to spaces so multi-line
+  commands can't break the card layout (#684)
 - All duration displays now render through one shared formatter
   (`jyc_core::duration`, Ticking/Precise/Coarse styles) across the
   dashboard, chat screen, and Feishu surfaces. Side effects: the

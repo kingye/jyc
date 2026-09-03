@@ -104,6 +104,12 @@ fn progress_card(
 /// Exits on `ProcessingCompleted` (final card), when the bus is dropped,
 /// after `MAX_LIFETIME` (safety net), or silently after 3 consecutive
 /// Feishu API failures — the reply footer works independently.
+///
+/// Concurrent watchers of the same topic share one status message via the
+/// `cards` registry: the first watcher to arm posts it and records the
+/// message id; later watchers armed by the same run reuse that id instead
+/// of posting a duplicate. The entry is removed when the run finalizes,
+/// so the next run posts a fresh message.
 pub fn spawn_progress_watcher(
     feishu_client: Arc<FeishuClient>,
     topic_manager: Arc<TopicManager>,
@@ -111,6 +117,7 @@ pub fn spawn_progress_watcher(
     chat_id: String,
     start: std::time::Instant,
     seen_after: chrono::DateTime<chrono::Utc>,
+    cards: Arc<tokio::sync::Mutex<std::collections::HashMap<String, String>>>,
 ) {
     tokio::spawn(async move {
         const MAX_LIFETIME: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
@@ -151,6 +158,15 @@ pub fn spawn_progress_watcher(
             }
             let display = topic_manager.topic_display_state(&topic).await;
             let text = progress_card("⏳ 处理中", start.elapsed().as_secs(), 0, None, &display);
+            // Dedup: another watcher of this topic may already have posted
+            // this run's status message (a dormant watcher armed by the
+            // same ProcessingStarted). Reuse its message id instead of
+            // posting a duplicate. The lock is held across the send so two
+            // watchers arming concurrently can't both create.
+            let mut cards = cards.lock().await;
+            if let Some(existing) = cards.get(&topic) {
+                break (existing.clone(), text);
+            }
             // Bounded send: the event bus is shared with the agent loop,
             // so a hung Feishu call must never stall this watcher.
             match tokio::time::timeout(
@@ -159,7 +175,10 @@ pub fn spawn_progress_watcher(
             )
             .await
             {
-                Ok(Ok(r)) => break (r.message_id, text),
+                Ok(Ok(r)) => {
+                    cards.insert(topic.clone(), r.message_id.clone());
+                    break (r.message_id, text);
+                }
                 Ok(Err(e)) => {
                     tracing::warn!(
                         error = %e, topic = %topic,
@@ -290,6 +309,9 @@ pub fn spawn_progress_watcher(
                 }
             }
             if terminal {
+                // Run finalized — release the dedup entry so the next run
+                // posts a fresh status message.
+                cards.lock().await.remove(&topic);
                 break;
             }
         }

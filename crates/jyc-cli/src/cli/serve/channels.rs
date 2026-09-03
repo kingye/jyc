@@ -1398,6 +1398,15 @@ pub(crate) fn spawn_feishu_adapter(
                 std::sync::Mutex<HashMap<String, std::time::Instant>>,
             > = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
 
+            // Live status message per topic (dedup registry): the first
+            // progress watcher armed by a run posts the message and records
+            // its id here; other watchers armed by the same run reuse the
+            // id instead of posting a duplicate. The watcher removes the
+            // entry when the run finalizes. In-memory only.
+            let progress_cards: std::sync::Arc<
+                tokio::sync::Mutex<HashMap<String, String>>,
+            > = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
             // One reply forwarder per distinct pipe target channel:
             // subscribe to the target channel's broadcast and relay
             // replies back to feishu.
@@ -1514,6 +1523,7 @@ pub(crate) fn spawn_feishu_adapter(
                     let config_for_pipe = config_for_spawn.clone();
                     let topic_chat = topic_chat.clone();
                     let topic_starts = topic_starts.clone();
+                    let progress_cards = progress_cards.clone();
                     let feishu_client = feishu_client.clone();
                     let channel_name_self = channel_name.clone();
                     let routers = routers.clone();
@@ -1560,7 +1570,21 @@ pub(crate) fn spawn_feishu_adapter(
                         // processing actually starts, then updates it from
                         // the topic's event bus. The footer timing is
                         // recorded unconditionally.
-                        if let Some(cid) = &chat_id {
+                        //
+                        // Skipped for slash commands: they are intercepted
+                        // in the worker without an agent run, so they never
+                        // emit ProcessingStarted — the watcher would sleep
+                        // until MAX_LIFETIME and then double-post alongside
+                        // the next real message's watcher. Slash replies
+                        // are instant; no status card or ⏱ footer needed.
+                        let is_command = message
+                            .content
+                            .text
+                            .as_deref()
+                            .unwrap_or("")
+                            .trim()
+                            .starts_with('/');
+                        if !is_command && let Some(cid) = &chat_id {
                             let start = std::time::Instant::now();
                             // Event freshness cutoff for the watcher — taken
                             // here, before routing, so no event of this run
@@ -1578,6 +1602,7 @@ pub(crate) fn spawn_feishu_adapter(
                                     cid.clone(),
                                     start,
                                     seen_after,
+                                    progress_cards.clone(),
                                 );
                             }
                             topic_starts

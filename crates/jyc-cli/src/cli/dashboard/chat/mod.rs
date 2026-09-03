@@ -6,6 +6,7 @@ use super::token_render::{
     push_output_span, push_tokens_span, push_total_input_span,
 };
 use super::*;
+use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
 
 mod render;
 mod table_wrap;
@@ -217,26 +218,15 @@ pub(super) fn format_elapsed(timestamp: &Option<String>) -> String {
     if secs < 0 {
         return String::new();
     }
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m{:02}s", secs / 60, secs % 60)
-    } else {
-        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
-    }
+    format_duration_secs(secs as u64, DurationStyle::Precise)
 }
 
 /// Format a wall-clock duration in milliseconds for the live loop ticker.
-/// Below 60s renders one decimal (`"12.4s"`); at or above 60s renders as
-/// `"1m05s"` style. Used by the dashboard Details panel, chat-mode info
-/// pane, and chat progress line.
+/// Delegates to `jyc_core::duration` (Ticking style): `"12.4s"` below a
+/// minute, then `"1m05s"`, `"1h02m03s"`. Used by the dashboard Details
+/// panel, chat-mode info pane, and chat progress line.
 pub(super) fn format_elapsed_ms(ms: u64) -> String {
-    if ms < 60_000 {
-        format!("{}.{}s", ms / 1000, (ms / 100) % 10)
-    } else {
-        let s = ms / 1000;
-        format!("{}m{:02}s", s / 60, s % 60)
-    }
+    format_duration_ms(ms, DurationStyle::Ticking)
 }
 
 /// Format a message timestamp for the chat group header (╭─ line).
@@ -281,11 +271,7 @@ pub(super) fn format_group_elapsed(start: &Option<String>, end: &Option<String>)
     if secs <= 0 {
         return String::new();
     }
-    if secs < 60 {
-        format!("{secs}s")
-    } else {
-        format!("{}m", secs / 60)
-    }
+    format_duration_secs(secs as u64, DurationStyle::Precise)
 }
 
 /// Count the number of visual lines when `text` is hard-wrapped within

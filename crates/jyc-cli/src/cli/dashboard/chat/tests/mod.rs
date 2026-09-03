@@ -84,7 +84,7 @@ fn format_elapsed_ms_at_and_above_60s() {
     assert_eq!(format_elapsed_ms(60_000), "1m00s");
     assert_eq!(format_elapsed_ms(65_000), "1m05s");
     assert_eq!(format_elapsed_ms(125_000), "2m05s");
-    assert_eq!(format_elapsed_ms(3_600_000), "60m00s");
+    assert_eq!(format_elapsed_ms(3_600_000), "1h00m00s");
 }
 
 #[test]

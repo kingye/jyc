@@ -29,6 +29,7 @@ use jyc_channels::wecom::server::WecomWebhookServer;
 use jyc_channels::wecom::token_cache::AccessTokenCache;
 use jyc_channels::wecom_bot::inbound::{WecomBotInboundAdapter, WecomBotMatcher};
 use jyc_core::channel_orchestrator::ChannelOrchestrator;
+use jyc_core::duration::{DurationStyle, format_duration_secs};
 use jyc_core::message_router::MessageRouter;
 use jyc_core::state_manager::StateManager;
 use jyc_core::topic_manager::TopicManager;
@@ -1389,7 +1390,7 @@ pub(crate) fn spawn_feishu_adapter(
             let topic_chat: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>> =
                 std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
             // Per-topic start times, used for the reply footer
-            // ("⏱ 耗时 Ns") and the live status card. Entries live from
+            // ("⏱ 耗时 <elapsed>") and the live status card. Entries live from
             // inbound until the topic is closed (chat disband) or
             // overwritten by the next message. In-memory only; lost on
             // restart (status cards stay frozen until cleared manually).
@@ -1466,7 +1467,10 @@ pub(crate) fn spawn_feishu_adapter(
                                 .get(topic)
                                 .map(|s| s.elapsed().as_secs());
                             let text = match elapsed {
-                                Some(s) => format!("{text}\n\n⏱ 耗时 {s}s"),
+                                Some(s) => format!(
+                                    "{text}\n\n⏱ 耗时 {}",
+                                    format_duration_secs(s, DurationStyle::Precise)
+                                ),
                                 None => text.to_string(),
                             };
                             feishu_client.send_text_message(&chat_id, &text).await

@@ -619,79 +619,6 @@ impl FeishuClient {
         Ok(image_bytes)
     }
 
-    /// Add an emoji reaction to a message.
-    ///
-    /// Returns the `reaction_id` (needed to remove the reaction later via
-    /// `delete_reaction`). Calls `POST /open-apis/im/v1/messages/{id}/reactions`.
-    /// Requires scope: `im:message` (already granted if the bot can send
-    /// messages) or `im:message.reactions:write_only`.
-    pub async fn add_reaction(&self, message_id: &str, emoji_type: &str) -> Result<String> {
-        let token = self.get_token().await?;
-        let url = add_reaction_url(&self.config.base_url, message_id);
-        let body = serde_json::json!({ "reaction_type": { "emoji_type": emoji_type } });
-
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(token)
-            .json(&body)
-            .send()
-            .await
-            .context("Failed to send Feishu add-reaction request")?;
-
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .context("Failed to parse Feishu add-reaction response")?;
-
-        if body["code"].as_i64() != Some(0) {
-            anyhow::bail!(
-                "Feishu add_reaction failed: code={}, msg={}",
-                body["code"].as_i64().unwrap_or(-1),
-                body["msg"].as_str().unwrap_or("unknown")
-            );
-        }
-
-        let reaction_id = body["data"]["reaction_id"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Feishu add_reaction response missing reaction_id"))?
-            .to_string();
-
-        Ok(reaction_id)
-    }
-
-    /// Remove an emoji reaction previously added by `add_reaction`.
-    ///
-    /// The bot may only remove reactions it added itself. Calls
-    /// `DELETE /open-apis/im/v1/messages/{id}/reactions/{reaction_id}`.
-    pub async fn delete_reaction(&self, message_id: &str, reaction_id: &str) -> Result<()> {
-        let token = self.get_token().await?;
-        let url = delete_reaction_url(&self.config.base_url, message_id, reaction_id);
-
-        let resp = self
-            .http
-            .delete(&url)
-            .bearer_auth(token)
-            .send()
-            .await
-            .context("Failed to send Feishu delete-reaction request")?;
-
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .context("Failed to parse Feishu delete-reaction response")?;
-
-        if body["code"].as_i64() != Some(0) {
-            anyhow::bail!(
-                "Feishu delete_reaction failed: code={}, msg={}",
-                body["code"].as_i64().unwrap_or(-1),
-                body["msg"].as_str().unwrap_or("unknown")
-            );
-        }
-
-        Ok(())
-    }
-
     /// Edit the content of an already-sent interactive-card message.
     ///
     /// Calls `PATCH /open-apis/im/v1/messages/{message_id}`. Only messages
@@ -742,22 +669,6 @@ impl FeishuClient {
 #[derive(Debug, Clone)]
 pub struct FeishuMessageResult {
     pub message_id: String,
-}
-
-/// Build the URL for adding a reaction to a message.
-///
-/// `POST /open-apis/im/v1/messages/{message_id}/reactions`
-fn add_reaction_url(base_url: &str, message_id: &str) -> String {
-    let base_url = base_url.trim_end_matches('/');
-    format!("{base_url}/open-apis/im/v1/messages/{message_id}/reactions")
-}
-
-/// Build the URL for deleting a reaction previously added by the bot.
-///
-/// `DELETE /open-apis/im/v1/messages/{message_id}/reactions/{reaction_id}`
-fn delete_reaction_url(base_url: &str, message_id: &str, reaction_id: &str) -> String {
-    let base_url = base_url.trim_end_matches('/');
-    format!("{base_url}/open-apis/im/v1/messages/{message_id}/reactions/{reaction_id}")
 }
 
 /// Build the URL for editing a message's content (`update_text_message`).
@@ -838,33 +749,6 @@ mod tests {
         assert_eq!(
             url,
             "https://open.feishu.cn/open-apis/im/v1/files/file_v3_x"
-        );
-    }
-
-    #[test]
-    fn test_add_reaction_url_builds_expected_path() {
-        let url = add_reaction_url("https://open.feishu.cn", "om_abc123");
-        assert_eq!(
-            url,
-            "https://open.feishu.cn/open-apis/im/v1/messages/om_abc123/reactions"
-        );
-    }
-
-    #[test]
-    fn test_add_reaction_url_trims_trailing_slash() {
-        let url = add_reaction_url("https://open.feishu.cn/", "om_abc123");
-        assert_eq!(
-            url,
-            "https://open.feishu.cn/open-apis/im/v1/messages/om_abc123/reactions"
-        );
-    }
-
-    #[test]
-    fn test_delete_reaction_url_builds_expected_path() {
-        let url = delete_reaction_url("https://open.feishu.cn", "om_abc123", "rc_xyz");
-        assert_eq!(
-            url,
-            "https://open.feishu.cn/open-apis/im/v1/messages/om_abc123/reactions/rc_xyz"
         );
     }
 

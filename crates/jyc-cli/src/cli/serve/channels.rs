@@ -1344,21 +1344,6 @@ pub(crate) fn spawn_gitee_adapter(
     Ok(())
 }
 
-/// Per-topic Feishu progress indicator state.
-///
-/// The reply forwarder swaps `typing_reaction_id` to DONE on the first
-/// relayed reply (then sets it to `None`); the entry itself stays so later
-/// replies (progress replies with `stop_after: false`) still carry the
-/// elapsed-time footer.
-struct FeishuIndicator {
-    /// User's original message — the Typing/DONE reaction lives here.
-    user_message_id: String,
-    /// Typing reaction id, `None` once swapped for DONE.
-    typing_reaction_id: Option<String>,
-    /// Start time, used for the reply footer and status card.
-    start: std::time::Instant,
-}
-
 /// Minimum seconds between Feishu status-card PATCHes (rate-limit guard).
 const PROGRESS_PATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4);
 
@@ -1366,8 +1351,7 @@ const PROGRESS_PATCH_INTERVAL: std::time::Duration = std::time::Duration::from_s
 ///
 /// Exits on `ProcessingCompleted` (final card), when the bus is dropped, or
 /// after `MAX_LIFETIME` (safety net). Silent on Feishu API errors after 3
-/// consecutive failures — the Typing/DONE reaction and the reply footer
-/// still work independently.
+/// consecutive failures — the reply footer still works independently.
 fn spawn_progress_watcher(
     feishu_client: Arc<FeishuClient>,
     routers: HubRegistry,
@@ -1567,15 +1551,13 @@ pub(crate) fn spawn_feishu_adapter(
             let feishu_client = std::sync::Arc::new(FeishuClient::new(feishu_config.clone()));
             let topic_chat: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>> =
                 std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
-            // Per-topic progress indicator state: the Typing→DONE reaction
-            // swap on the user's message, plus the start time used for the
-            // reply footer ("⏱ 耗时 Ns") and the live status card. Entries
-            // live from inbound until the topic is closed (chat disband) or
+            // Per-topic start times, used for the reply footer
+            // ("⏱ 耗时 Ns") and the live status card. Entries live from
+            // inbound until the topic is closed (chat disband) or
             // overwritten by the next message. In-memory only; lost on
-            // restart (orphan Typing reactions/status cards stay until
-            // cleared manually).
-            let topic_reactions: std::sync::Arc<
-                std::sync::Mutex<HashMap<String, FeishuIndicator>>,
+            // restart (status cards stay frozen until cleared manually).
+            let topic_starts: std::sync::Arc<
+                std::sync::Mutex<HashMap<String, std::time::Instant>>,
             > = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
 
             // One reply forwarder per distinct pipe target channel:
@@ -1602,7 +1584,7 @@ pub(crate) fn spawn_feishu_adapter(
             for channel in &pipe_channels {
                 let ws_broadcasts = ws_broadcasts.clone();
                 let topic_chat = topic_chat.clone();
-                let topic_reactions = topic_reactions.clone();
+                let topic_starts = topic_starts.clone();
                 let feishu_client = feishu_client.clone();
                 let channel = channel.clone();
                 let inspect_client = inspect_client.clone();
@@ -1637,15 +1619,15 @@ pub(crate) fn spawn_feishu_adapter(
                             continue;
                         };
                         let send_result = {
-                            // Completion footer (Option A): every relayed
-                            // reply carries the elapsed time since the
-                            // indicator started — useful for both the final
-                            // reply and mid-run progress replies.
-                            let elapsed = topic_reactions
+                            // Completion footer: every relayed reply carries
+                            // the elapsed time since the indicator started —
+                            // useful for both the final reply and mid-run
+                            // progress replies.
+                            let elapsed = topic_starts
                                 .lock()
                                 .unwrap()
                                 .get(topic)
-                                .map(|i| i.start.elapsed().as_secs());
+                                .map(|s| s.elapsed().as_secs());
                             let text = match elapsed {
                                 Some(s) => format!("{text}\n\n⏱ 耗时 {s}s"),
                                 None => text.to_string(),
@@ -1654,46 +1636,6 @@ pub(crate) fn spawn_feishu_adapter(
                         };
                         if let Err(e) = &send_result {
                             tracing::error!(error = %e, "failed to relay reply to feishu");
-                        }
-                        // Swap the Typing reaction (added on inbound) for DONE
-                        // on the user's original message — only when the reply
-                        // was actually delivered, and only once (later replies
-                        // keep the DONE). Best-effort: skipped silently when
-                        // the tracking entry is missing (e.g. daemon restart),
-                        // leaving an orphan Typing reaction.
-                        if send_result.is_ok() {
-                            let swap = {
-                                let mut map = topic_reactions.lock().unwrap();
-                                match map.get_mut(topic) {
-                                    Some(ind) => ind
-                                        .typing_reaction_id
-                                        .take()
-                                        .map(|rid| (ind.user_message_id.clone(), rid)),
-                                    None => None,
-                                }
-                            };
-                            if let Some((user_message_id, typing_reaction_id)) = swap {
-                            if let Err(e) = feishu_client
-                                .delete_reaction(&user_message_id, &typing_reaction_id)
-                                .await
-                            {
-                                tracing::warn!(
-                                    error = %e,
-                                    topic = %topic,
-                                    "feishu pipe: failed to remove Typing reaction"
-                                );
-                            }
-                            if let Err(e) = feishu_client
-                                .add_reaction(&user_message_id, "DONE")
-                                .await
-                            {
-                                tracing::warn!(
-                                    error = %e,
-                                    topic = %topic,
-                                    "feishu pipe: failed to add DONE reaction"
-                                );
-                            }
-                            }
                         }
                         // Relay reply attachments: download from the inspect
                         // server's files endpoint, re-upload to feishu.
@@ -1723,14 +1665,14 @@ pub(crate) fn spawn_feishu_adapter(
             }
 
             let topic_chat_for_close = topic_chat.clone();
-            let topic_reactions_for_close = topic_reactions.clone();
+            let topic_starts_for_close = topic_starts.clone();
             let routers_for_close = routers.clone();
 
             let options = jyc_types::InboundAdapterOptions {
                 on_message: Box::new(move |message| {
                     let config_for_pipe = config_for_spawn.clone();
                     let topic_chat = topic_chat.clone();
-                    let topic_reactions = topic_reactions.clone();
+                    let topic_starts = topic_starts.clone();
                     let feishu_client = feishu_client.clone();
                     let channel_name_self = channel_name.clone();
                     let routers = routers.clone();
@@ -1772,76 +1714,44 @@ pub(crate) fn spawn_feishu_adapter(
                                 .insert(message.topic.clone(), chat_id.clone());
                         }
 
-                        // Progress indicator (best-effort): Typing reaction
-                        // on the user's message + a live status card in the
-                        // chat, updated by a watcher on the topic's event
-                        // bus. The reaction API needs the message_id —
-                        // `external_id` carries it. Skip (warn) if unset.
-                        if let Some(user_message_id) = message.external_id.as_deref() {
+                        // Progress indicator (best-effort): a live status
+                        // card in the chat, updated by a watcher on the
+                        // topic's event bus. The footer timing is recorded
+                        // even if the card send fails.
+                        if let Some(cid) = &chat_id {
                             let start = std::time::Instant::now();
                             // Event freshness cutoff for the watcher — taken
                             // here, before routing, so no event of this run
                             // can predate it (see spawn_progress_watcher).
                             let seen_after = chrono::Utc::now();
-                            let typing_reaction_id = match feishu_client
-                                .add_reaction(user_message_id, "Typing")
+                            match feishu_client
+                                .send_text_message(
+                                    cid,
+                                    &progress_card("⏳ 处理中", 0, 0, None),
+                                )
                                 .await
                             {
-                                Ok(reaction_id) => Some(reaction_id),
-                                Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        topic = %message.topic,
-                                        "feishu pipe: failed to add Typing reaction"
-                                    );
-                                    None
-                                }
-                            };
-                            let status_message_id = match &chat_id {
-                                Some(cid) => match feishu_client
-                                    .send_text_message(
-                                        cid,
-                                        &progress_card("⏳ 处理中", 0, 0, None),
-                                    )
-                                    .await
-                                {
-                                    Ok(r) => Some(r.message_id),
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            error = %e,
-                                            topic = %message.topic,
-                                            "feishu pipe: failed to send status card"
-                                        );
-                                        None
-                                    }
-                                },
-                                None => None,
-                            };
-                            if let Some(sm) = status_message_id {
-                                spawn_progress_watcher(
+                                Ok(r) => spawn_progress_watcher(
                                     feishu_client.clone(),
                                     routers.clone(),
                                     message.channel.clone(),
                                     message.topic.clone(),
-                                    sm,
+                                    r.message_id,
                                     start,
                                     seen_after,
-                                );
+                                ),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        topic = %message.topic,
+                                        "feishu pipe: failed to send status card"
+                                    );
+                                }
                             }
-                            topic_reactions.lock().unwrap().insert(
-                                message.topic.clone(),
-                                FeishuIndicator {
-                                    user_message_id: user_message_id.to_string(),
-                                    typing_reaction_id,
-                                    start,
-                                },
-                            );
-                        } else {
-                            tracing::warn!(
-                                topic = %message.topic,
-                                "feishu pipe: inbound message missing external_id; \
-                                 skipping Typing reaction"
-                            );
+                            topic_starts
+                                .lock()
+                                .unwrap()
+                                .insert(message.topic.clone(), start);
                         }
 
                         // Route through the target's own MessageRouter — the
@@ -1853,7 +1763,7 @@ pub(crate) fn spawn_feishu_adapter(
                 }),
                 on_topic_close: Some(Box::new(move |chat_id: String| {
                     let topic_chat = topic_chat_for_close.clone();
-                    let topic_reactions = topic_reactions_for_close.clone();
+                    let topic_starts = topic_starts_for_close.clone();
                     let routers = routers_for_close.clone();
                     tokio::spawn(async move {
                         // Reverse-lookup: the disband event carries the
@@ -1891,7 +1801,7 @@ pub(crate) fn spawn_feishu_adapter(
                         }
                         topic_chat.lock().unwrap().retain(|_, v| v != &chat_id);
                         for topic in &topics_to_close {
-                            topic_reactions.lock().unwrap().remove(topic);
+                            topic_starts.lock().unwrap().remove(topic);
                         }
                     });
                     Ok(())

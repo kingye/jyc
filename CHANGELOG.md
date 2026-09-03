@@ -136,6 +136,14 @@
      spawn + handshake + `list_tools` only runs when configs change
      (via `ArcSwap::store`), not on every inbound message.
 
+### Removed
+
+- **Feishu Typing→DONE reaction chips.** The emoji reactions the pipe bot
+  added to the user's message while processing are gone — the live status
+  card (`⏳ 处理中…` → `✅ 完成 · Ns · 工具 M`) now covers both progress and
+  completion, and reaction chips (emoji + bot name) cluttered the user's
+  message. The `⏱ 耗时 Ns` reply footer is unchanged. (#674)
+
 ## [0.3.16] - 2026-08-25
 
 ### Added

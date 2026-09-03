@@ -691,6 +691,51 @@ impl FeishuClient {
 
         Ok(())
     }
+
+    /// Edit the content of an already-sent interactive-card message.
+    ///
+    /// Calls `PATCH /open-apis/im/v1/messages/{message_id}`. Only messages
+    /// sent by the bot itself can be updated. Used by the progress watcher
+    /// to refresh the live status card as processing advances.
+    pub async fn update_text_message(&self, message_id: &str, text: &str) -> Result<()> {
+        let token = self.get_token().await?;
+        let url = update_message_url(&self.config.base_url, message_id);
+        let card_content = serde_json::json!({
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": text
+                }
+            ]
+        });
+        let body = serde_json::json!({
+            "content": card_content.to_string(),
+        });
+
+        let resp = self
+            .http
+            .patch(&url)
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to send Feishu update-message request")?;
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .context("Failed to parse Feishu update-message response")?;
+
+        if body["code"].as_i64() != Some(0) {
+            anyhow::bail!(
+                "Feishu update_message failed: code={}, msg={}",
+                body["code"].as_i64().unwrap_or(-1),
+                body["msg"].as_str().unwrap_or("unknown")
+            );
+        }
+
+        Ok(())
+    }
 }
 
 /// Result of sending a Feishu message.
@@ -713,6 +758,14 @@ fn add_reaction_url(base_url: &str, message_id: &str) -> String {
 fn delete_reaction_url(base_url: &str, message_id: &str, reaction_id: &str) -> String {
     let base_url = base_url.trim_end_matches('/');
     format!("{base_url}/open-apis/im/v1/messages/{message_id}/reactions/{reaction_id}")
+}
+
+/// Build the URL for editing a message's content (`update_text_message`).
+///
+/// `PATCH /open-apis/im/v1/messages/{message_id}`
+fn update_message_url(base_url: &str, message_id: &str) -> String {
+    let base_url = base_url.trim_end_matches('/');
+    format!("{base_url}/open-apis/im/v1/messages/{message_id}")
 }
 
 /// Build the download URL for a message file.
@@ -812,6 +865,20 @@ mod tests {
         assert_eq!(
             url,
             "https://open.feishu.cn/open-apis/im/v1/messages/om_abc123/reactions/rc_xyz"
+        );
+    }
+
+    #[test]
+    fn test_update_message_url_builds_expected_path() {
+        let url = update_message_url("https://open.feishu.cn", "om_abc123");
+        assert_eq!(
+            url,
+            "https://open.feishu.cn/open-apis/im/v1/messages/om_abc123"
+        );
+        let url = update_message_url("https://open.feishu.cn/", "om_abc123");
+        assert_eq!(
+            url,
+            "https://open.feishu.cn/open-apis/im/v1/messages/om_abc123"
         );
     }
 

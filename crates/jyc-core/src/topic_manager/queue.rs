@@ -35,23 +35,14 @@ impl TopicManager {
 
         // Periodic cleanup: remove closed senders to prevent unbounded HashMap growth.
         // This is cheap (O(n) scan) and only retains senders that are still open.
-        let mut closed_topics = Vec::new();
-        queues.retain(|name, sender| {
-            let is_open = !sender.is_closed();
-            if !is_open {
-                closed_topics.push(name.clone());
-            }
-            is_open
-        });
-
-        // Clean up event buses for closed topics
-        if !closed_topics.is_empty() && self.enable_events {
-            let mut event_buses = self.event_buses.lock().await;
-            for topic_name in closed_topics {
-                event_buses.remove(&topic_name);
-                tracing::debug!(topic = %topic_name, "Cleaned up event bus for closed topic");
-            }
-        }
+        //
+        // Event buses are deliberately NOT removed here. Subscribers (TUI WS
+        // relay, Feishu forwarder) hold receivers that outlive any single
+        // worker — a worker respawned later in this call must find the same
+        // bus, or those subscribers are orphaned on a dead channel and the
+        // topic's event stream goes silent. Bus removal happens in
+        // cleanup_topic_state (/close), where teardown is intentional.
+        queues.retain(|_, sender| !sender.is_closed());
 
         // Capture data for IncomingMessage event before `message` is moved.
         // Use full text — no truncation — so dashboard dedup between history
@@ -110,13 +101,13 @@ impl TopicManager {
                     return;
                 }
                 Err(mpsc::error::TrySendError::Closed(item)) => {
+                    // Worker exited (e.g. after /cancel) and dropped its
+                    // receiver. Respawn below — but keep the existing event
+                    // bus: long-lived subscribers (TUI WS relay, Feishu
+                    // forwarder) hold receivers of it, so recreating the bus
+                    // here would orphan them and silence the topic's event
+                    // stream. Bus cleanup belongs to cleanup_topic_state.
                     queues.remove(&topic_name);
-                    // Clean up event bus for this topic
-                    if self.enable_events {
-                        let mut event_buses = self.event_buses.lock().await;
-                        event_buses.remove(&topic_name);
-                        tracing::debug!(topic = %topic_name, "Cleaned up event bus for closed queue");
-                    }
                     self.create_and_enqueue(&mut queues, topic_name.clone(), item)
                         .await;
                     self.publish_incoming_message(&topic_name, &event_sender, &event_text)

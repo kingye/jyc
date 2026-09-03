@@ -80,6 +80,12 @@
 
 ### Fixed
 
+- Feishu duplicate live status messages: slash commands spawned a dormant
+  progress watcher (they emit no run events, so it never armed or exited),
+  which later double-posted a card alongside the next real message's
+  watcher. Slash commands no longer spawn a watcher (or the ⏱ footer),
+  and concurrent watchers of a topic now share one status message via a
+  create-or-reuse registry (#683)
 - Event streams (TUI chat screen, Feishu status card) went dead after
   `/cancel`: the worker-respawn path recreated the topic's event bus,
   orphaning long-lived subscribers on the old channel. Respawn now reuses

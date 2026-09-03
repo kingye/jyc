@@ -443,6 +443,116 @@ async fn test_cancel_topic_via_worker_clone_really_cancels() {
     assert!(!clone.cancel_topic("no-such-topic").await);
 }
 
+/// Regression test: respawning a worker after /cancel must NOT recreate
+/// the topic's event bus. The Closed-queue respawn path used to remove
+/// the bus from the map, so the respawn created a fresh channel and
+/// long-lived subscribers (TUI WS relay, Feishu forwarder) were left
+/// watching an orphaned one — the topic's event stream went dead after
+/// the first /cancel.
+#[tokio::test]
+async fn test_worker_respawn_after_cancel_keeps_event_bus() {
+    let tmp = tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let tm = make_test_tm(&workspace);
+    tokio::fs::create_dir_all(workspace.join("test-topic").join(".jyc"))
+        .await
+        .unwrap();
+
+    // Long-lived subscriber, taken BEFORE any worker exists — simulates
+    // the TUI WS relay / Feishu forwarder.
+    let bus = tm.get_or_create_event_bus("test-topic").await.unwrap();
+    let mut rx = bus.subscribe().await.unwrap();
+
+    let enqueue = |text: &str| {
+        let tm = tm.clone();
+        let text = text.to_string();
+        async move {
+            let msg = InboundMessage {
+                id: text.clone(),
+                channel: "test-channel".to_string(),
+                channel_uid: "test".to_string(),
+                sender: "user".to_string(),
+                sender_address: "user".to_string(),
+                recipients: vec![],
+                topic: "test".to_string(),
+                content: jyc_types::MessageContent {
+                    text: Some(text),
+                    html: None,
+                    markdown: None,
+                },
+                timestamp: chrono::Utc::now(),
+                references: None,
+                reply_to_id: None,
+                external_id: None,
+                attachments: vec![],
+                metadata: HashMap::new(),
+                matched_pattern: None,
+            };
+            let pattern_match = PatternMatch {
+                pattern_name: "test".to_string(),
+                channel: "websocket".to_string(),
+                matches: HashMap::new(),
+            };
+            tm.enqueue(
+                msg,
+                "test-topic".to_string(),
+                pattern_match,
+                None,
+                false,
+                None,
+            )
+            .await;
+        }
+    };
+
+    // First message spawns worker #1; cancel makes it exit and drop its
+    // queue receiver.
+    enqueue("one").await;
+    assert!(tm.cancel_topic("test-topic").await);
+
+    // Wait for the cancelled worker to fully exit — deterministic, so the
+    // next enqueue is guaranteed to hit the Closed-respawn path.
+    let mut exited = false;
+    for _ in 0..200 {
+        if tm
+            .worker_handles
+            .lock()
+            .await
+            .iter()
+            .all(|h| h.is_finished())
+        {
+            exited = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(exited, "cancelled worker should exit");
+
+    // Second message respawns the worker. With the bug, this recreated the
+    // event bus and the event below never reached `rx`.
+    enqueue("two").await;
+
+    let got = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Some(event) = rx.recv().await {
+            if matches!(
+                event,
+                crate::topic_event::TopicEvent::IncomingMessage { ref text, .. } if text == "two"
+            ) {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert!(
+        matches!(got, Ok(true)),
+        "pre-cancel subscriber must keep receiving events after worker respawn"
+    );
+
+    tm.shutdown().await;
+}
+
 #[tokio::test]
 async fn test_publish_incoming_message_on_event_bus() {
     let tmp = tempdir().unwrap();

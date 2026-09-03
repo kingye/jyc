@@ -80,6 +80,10 @@
 
 ### Fixed
 
+- Event streams (TUI chat screen, Feishu status card) went dead after
+  `/cancel`: the worker-respawn path recreated the topic's event bus,
+  orphaning long-lived subscribers on the old channel. Respawn now reuses
+  the existing bus (#682)
 - TUI chat progress line: the since-last-activity timer no longer drops
   seconds at or above one minute — `2m / 10m20s` now reads `2m05s / 10m20s`
   (hour scale renders `1h30m`) (#680)

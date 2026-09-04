@@ -171,16 +171,17 @@ fn repair_dangling_tool_calls(messages: Vec<serde_json::Value>) -> Vec<serde_jso
 /// histories keep working after a `/model` switch.
 ///
 /// Conversion rules:
-/// - assistant content arrays → joined `text` blocks as string content +
-///   `tool_use` blocks as `tool_calls` entries (`arguments` is the input
-///   JSON serialized to a string)
+/// - assistant content arrays → `text` blocks joined with `\n` as string
+///   content + `tool_use` blocks as `tool_calls` entries (`arguments` is
+///   the input JSON serialized to a string)
 /// - `thinking`/`redacted_thinking` blocks are dropped — OpenAI reasoning
 ///   models do not accept replayed chain-of-thought
-/// - user messages containing `tool_result` blocks → one `role:"tool"`
-///   message per block (block content arrays are flattened to text),
-///   followed by a user message with any remaining text blocks
+/// - user content arrays are normalized block by block: `tool_result`
+///   blocks become one `role:"tool"` message each (array content flattened
+///   to text), Anthropic `image` blocks become chat `image_url` parts,
+///   `text`/already-chat parts pass through
 /// - everything else passes through unchanged
-pub fn anthropic_to_chat_messages(messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
+pub(crate) fn anthropic_to_chat_messages(messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let mut out = Vec::with_capacity(messages.len());
 
     for msg in messages {
@@ -193,7 +194,8 @@ pub fn anthropic_to_chat_messages(messages: &[serde_json::Value]) -> Vec<serde_j
                     .iter()
                     .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
                     .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                    .collect();
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 let tool_calls: Vec<serde_json::Value> = blocks
                     .iter()
                     .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
@@ -221,11 +223,8 @@ pub fn anthropic_to_chat_messages(messages: &[serde_json::Value]) -> Vec<serde_j
                 }
                 out.push(m);
             }
-            ("user", Some(serde_json::Value::Array(blocks)))
-                if blocks
-                    .iter()
-                    .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result")) =>
-            {
+            ("user", Some(serde_json::Value::Array(blocks))) => {
+                let mut parts: Vec<serde_json::Value> = Vec::new();
                 for b in blocks {
                     match b.get("type").and_then(|t| t.as_str()) {
                         Some("tool_result") => {
@@ -237,7 +236,8 @@ pub fn anthropic_to_chat_messages(messages: &[serde_json::Value]) -> Vec<serde_j
                                         p.get("type").and_then(|t| t.as_str()) == Some("text")
                                     })
                                     .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-                                    .collect(),
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
                                 _ => String::new(),
                             };
                             // Match the [SUCCESS]/[ERROR] labeling jyc's own
@@ -257,18 +257,56 @@ pub fn anthropic_to_chat_messages(messages: &[serde_json::Value]) -> Vec<serde_j
                                 "content": labeled,
                             }));
                         }
-                        Some("text") => {
-                            if let Some(t) = b.get("text").and_then(|t| t.as_str())
-                                && !t.is_empty()
-                            {
-                                out.push(serde_json::json!({
-                                    "role": "user",
-                                    "content": t,
-                                }));
-                            }
+                        // Anthropic image block → chat image_url part.
+                        Some("image") => {
+                            let source = b.get("source");
+                            let url =
+                                match source.and_then(|s| s.get("type")).and_then(|t| t.as_str()) {
+                                    Some("base64") => format!(
+                                        "data:{};base64,{}",
+                                        source
+                                            .and_then(|s| s.get("media_type"))
+                                            .and_then(|m| m.as_str())
+                                            .unwrap_or("image/png"),
+                                        source
+                                            .and_then(|s| s.get("data"))
+                                            .and_then(|d| d.as_str())
+                                            .unwrap_or("")
+                                    ),
+                                    _ => source
+                                        .and_then(|s| s.get("url"))
+                                        .and_then(|u| u.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                };
+                            parts.push(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": { "url": url },
+                            }));
                         }
-                        _ => {}
+                        // text and already-chat-format parts pass through.
+                        _ => parts.push(b.clone()),
                     }
+                }
+                if !parts.is_empty() {
+                    // Single text part → legacy string content (same
+                    // dual-form rationale as build_openai_user_content:
+                    // some servers reject array content for text-only
+                    // user messages).
+                    let only_text = parts.len() == 1
+                        && parts[0].get("type").and_then(|t| t.as_str()) == Some("text");
+                    let content = if only_text {
+                        parts[0]
+                            .get("text")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null)
+                    } else {
+                        serde_json::Value::Array(parts)
+                    };
+                    out.push(serde_json::json!({
+                        "role": "user",
+                        "content": content,
+                    }));
                 }
             }
             _ => out.push(msg.clone()),
@@ -960,6 +998,34 @@ mod dangling_tool_call_tests {
         })];
         let out = anthropic_to_chat_messages(&raw);
         assert_eq!(out[0]["content"], "[ERROR] boom");
+    }
+
+    #[test]
+    fn anthropic_to_chat_converts_image_blocks() {
+        let raw = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64",
+                 "media_type": "image/png", "data": "QUJD"}},
+                {"type": "image", "source": {"type": "url",
+                 "url": "https://example.com/x.jpg"}},
+                {"type": "text", "text": "what are these?"},
+            ],
+        })];
+        let out = anthropic_to_chat_messages(&raw);
+        assert_eq!(
+            out,
+            vec![serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "image_url",
+                     "image_url": {"url": "data:image/png;base64,QUJD"}},
+                    {"type": "image_url",
+                     "image_url": {"url": "https://example.com/x.jpg"}},
+                    {"type": "text", "text": "what are these?"},
+                ],
+            })]
+        );
     }
 
     #[test]

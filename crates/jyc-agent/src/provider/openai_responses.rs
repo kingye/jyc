@@ -305,19 +305,20 @@ fn message_to_responses_input(msg: &Message) -> Vec<serde_json::Value> {
             items
         }
         Role::Tool => {
-            if let Some(ContentBlock::ToolResult {
-                tool_use_id,
-                content,
-                ..
-            }) = msg.content.first()
-            {
-                vec![serde_json::json!({
+            // Tool messages are always constructed via Message::tool_result
+            // with a single ToolResult block; anything else is a bug at the
+            // call site, not a case to handle.
+            match msg.content.first() {
+                Some(ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                }) => vec![serde_json::json!({
                     "type": "function_call_output",
                     "call_id": tool_use_id,
                     "output": content,
-                })]
-            } else {
-                vec![user_message_item(&msg.content)]
+                })],
+                _ => vec![],
             }
         }
     }
@@ -378,49 +379,48 @@ pub(crate) fn chat_messages_to_responses_input(
     for msg in messages {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
         match role {
-            "user" | "system" => {
-                let item_role = if role == "system" { "system" } else { "user" };
-                match msg.get("content") {
-                    Some(serde_json::Value::String(text)) => {
+            // raw_context never contains system messages — the system prompt
+            // is prepended as `instructions` at request time.
+            "user" => match msg.get("content") {
+                Some(serde_json::Value::String(text)) => {
+                    input.push(serde_json::json!({
+                        "type": "message",
+                        "role": "user",
+                        "content": [{ "type": "input_text", "text": text }],
+                    }));
+                }
+                Some(serde_json::Value::Array(parts)) => {
+                    let converted: Vec<serde_json::Value> = parts
+                        .iter()
+                        .filter_map(|p| match p.get("type").and_then(|t| t.as_str()) {
+                            Some("text") => Some(serde_json::json!({
+                                "type": "input_text",
+                                "text": p.get("text").and_then(|t| t.as_str()).unwrap_or(""),
+                            })),
+                            Some("image_url") => {
+                                let url = p
+                                    .get("image_url")
+                                    .and_then(|i| i.get("url"))
+                                    .and_then(|u| u.as_str())
+                                    .unwrap_or("");
+                                Some(serde_json::json!({
+                                    "type": "input_image",
+                                    "image_url": url,
+                                }))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    if !converted.is_empty() {
                         input.push(serde_json::json!({
                             "type": "message",
-                            "role": item_role,
-                            "content": [{ "type": "input_text", "text": text }],
+                            "role": "user",
+                            "content": converted,
                         }));
                     }
-                    Some(serde_json::Value::Array(parts)) => {
-                        let converted: Vec<serde_json::Value> = parts
-                            .iter()
-                            .filter_map(|p| match p.get("type").and_then(|t| t.as_str()) {
-                                Some("text") => Some(serde_json::json!({
-                                    "type": "input_text",
-                                    "text": p.get("text").and_then(|t| t.as_str()).unwrap_or(""),
-                                })),
-                                Some("image_url") => {
-                                    let url = p
-                                        .get("image_url")
-                                        .and_then(|i| i.get("url"))
-                                        .and_then(|u| u.as_str())
-                                        .unwrap_or("");
-                                    Some(serde_json::json!({
-                                        "type": "input_image",
-                                        "image_url": url,
-                                    }))
-                                }
-                                _ => None,
-                            })
-                            .collect();
-                        if !converted.is_empty() {
-                            input.push(serde_json::json!({
-                                "type": "message",
-                                "role": item_role,
-                                "content": converted,
-                            }));
-                        }
-                    }
-                    _ => {}
                 }
-            }
+                _ => {}
+            },
             "assistant" => {
                 if let Some(text) = msg.get("content").and_then(|c| c.as_str())
                     && !text.is_empty()
@@ -605,7 +605,7 @@ fn parse_responses_event(data: &str, state: &mut ResponsesStreamState) -> Option
                 events.push(StreamEvent::Done);
             }
         }
-        "response.failed" | "response.incomplete" => {
+        "response.failed" => {
             let msg = value
                 .get("response")
                 .and_then(|r| r.get("error"))
@@ -613,6 +613,17 @@ fn parse_responses_event(data: &str, state: &mut ResponsesStreamState) -> Option
                 .and_then(|m| m.as_str())
                 .unwrap_or(event_type);
             events.push(StreamEvent::Error(msg.to_string()));
+        }
+        "response.incomplete" => {
+            // Incomplete carries the reason under `incomplete_details`
+            // (e.g. "max_output_tokens"), not `response.error`.
+            let msg = value
+                .get("response")
+                .and_then(|r| r.get("incomplete_details"))
+                .and_then(|d| d.get("reason"))
+                .and_then(|m| m.as_str())
+                .unwrap_or(event_type);
+            events.push(StreamEvent::Error(format!("response incomplete: {msg}")));
         }
         "error" => {
             let msg = value
@@ -823,6 +834,110 @@ mod tests {
         let input = chat_messages_to_responses_input(&msgs);
         assert_eq!(input.len(), 1);
         assert!(input[0].get("reasoning_content").is_none());
+    }
+
+    #[tokio::test]
+    async fn complete_round_trip_over_wire() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        let sse_body = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n",
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"thinking \"}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read\"}}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"path\\\":\\\"a\\\"}\"}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"a\\\"}\"}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":3},\"output_tokens_details\":{\"reasoning_tokens\":2}}}}\n\n",
+        );
+
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(header("authorization", "Bearer test-key"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse_body),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiResponsesProvider::new(
+            &server.uri(),
+            "gpt-test",
+            Some("test-key"),
+            None,
+            false,
+            None,
+        )
+        .expect("provider construction");
+
+        let tools = vec![crate::types::ToolDefinition {
+            name: "read".into(),
+            description: "read a file".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let messages = vec![Message::user("hi")];
+        let mut stream = provider
+            .complete(&messages, &tools, "be helpful")
+            .await
+            .expect("complete should return a stream");
+
+        let mut events = Vec::new();
+        while let Some(ev) = stream.next().await {
+            events.push(ev.expect("stream event"));
+        }
+
+        // Full event sequence: text deltas, reasoning, tool call, usage, done.
+        assert!(matches!(&events[0], StreamEvent::TextDelta(t) if t == "Hel"));
+        assert!(matches!(&events[1], StreamEvent::TextDelta(t) if t == "lo"));
+        assert!(matches!(&events[2], StreamEvent::ReasoningDelta(t) if t == "thinking "));
+        assert!(matches!(
+            &events[3],
+            StreamEvent::ToolUseStart { id, name } if id == "call_1" && name == "read"
+        ));
+        assert!(matches!(&events[4], StreamEvent::ToolInputDelta(d) if d == "{\"path\":\"a\"}"));
+        assert!(matches!(&events[5], StreamEvent::ToolUseEnd));
+        assert!(matches!(
+            &events[6],
+            StreamEvent::Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_hit_tokens: 3,
+                reasoning_tokens: 2,
+                ..
+            }
+        ));
+        assert!(matches!(&events[7], StreamEvent::Done));
+
+        // Request body: Responses-API shape.
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests[0].body).expect("request body is JSON");
+        assert_eq!(body["model"], "gpt-test");
+        assert_eq!(body["instructions"], "be helpful");
+        assert_eq!(body["store"], false);
+        assert_eq!(body["stream"], true);
+        assert_eq!(
+            body["input"],
+            serde_json::json!([{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hi"}],
+            }])
+        );
+        assert_eq!(
+            body["tools"],
+            serde_json::json!([{
+                "type": "function",
+                "name": "read",
+                "description": "read a file",
+                "parameters": {"type": "object"},
+            }])
+        );
     }
 
     #[test]

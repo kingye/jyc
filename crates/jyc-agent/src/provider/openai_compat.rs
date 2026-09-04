@@ -10,7 +10,7 @@ use futures::StreamExt;
 use serde_json;
 use std::collections::VecDeque;
 
-use crate::provider::usage::extract_cache_hit_tokens;
+use crate::provider::usage::{extract_cache_hit_tokens, extract_openai_cache_split};
 use crate::provider::{EventStream, Provider};
 use crate::types::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 
@@ -752,15 +752,17 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         if input > 0 || output > 0 {
-            let cache_hit = extract_cache_hit_tokens(usage);
+            // OpenAI shape: GPT-5.6+ reports read AND write buckets
+            // under `prompt_tokens_details`. Other OpenAI-compat
+            // vendors report a single read bucket (root fields), which
+            // `extract_cache_hit_tokens` still finds.
+            let (cache_hit, cache_write) = extract_openai_cache_split(usage);
+            let cache_hit = cache_hit.max(extract_cache_hit_tokens(usage));
             events.push(StreamEvent::Usage {
                 input_tokens: input,
                 output_tokens: output,
                 cache_hit_tokens: cache_hit,
-                // OpenAI-compat providers (OpenAI / DeepSeek / Kimi /
-                // 火山引擎 / MiniMax) surface only a single cache
-                // bucket; no creation/write field exists for them.
-                cache_creation_tokens: 0,
+                cache_creation_tokens: cache_write,
             });
         }
     }
@@ -1657,5 +1659,64 @@ mod tests {
             .as_str()
             .expect("arguments is a JSON string");
         assert_eq!(args, "{}");
+    }
+
+    /// Extract the token quadruple from the `Usage` event in `events`.
+    fn usage_tuple(events: &[StreamEvent]) -> Option<(u64, u64, u64, u64)> {
+        events.iter().find_map(|e| match e {
+            StreamEvent::Usage {
+                input_tokens,
+                output_tokens,
+                cache_hit_tokens,
+                cache_creation_tokens,
+            } => Some((
+                *input_tokens,
+                *output_tokens,
+                *cache_hit_tokens,
+                *cache_creation_tokens,
+            )),
+            _ => None,
+        })
+    }
+
+    /// GPT-5.6 usage chunk: read AND write cache buckets land in the
+    /// Usage event (`cache_creation_tokens` was hard-coded to 0 for
+    /// OpenAI-compat providers before).
+    #[test]
+    fn parse_usage_chunk_maps_gpt56_cache_buckets() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 1640,
+                "completion_tokens": 102,
+                "total_tokens": 1742,
+                "prompt_tokens_details": {
+                    "cached_tokens": 1200,
+                    "cache_write_tokens": 300
+                }
+            }
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).expect("events");
+        assert_eq!(usage_tuple(&events), Some((1640, 102, 1200, 300)));
+    }
+
+    /// DeepSeek-style root cache-hit field still reaches the Usage event
+    /// through the legacy fallback chain, with no write bucket.
+    #[test]
+    fn parse_usage_chunk_legacy_single_bucket() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 50,
+                "prompt_cache_hit_tokens": 800
+            }
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).expect("events");
+        assert_eq!(usage_tuple(&events), Some((1000, 50, 800, 0)));
     }
 }

@@ -112,6 +112,24 @@
   (`jyc-channels/src/feishu/progress.rs`); `cli/serve/channels.rs` only
   resolves the pipe target's `TopicManager` and calls it, keeping the
   serve layer channel-agnostic. (#677)
+- **Long-context pricing tier.** `pricing.long_context = { threshold,
+  ... }` on a provider/model switches ALL FOUR rates for a request whose
+  provider-reported input (cache buckets included) exceeds `threshold` —
+  matching providers like GPT-5.6 that re-bill the whole request at
+  elevated rates past a prompt-size boundary (input 2×, output 1.5× past
+  272K). Tier cache rates left unset inherit/collapse like
+  `time_windows` fields; a matching time window never shields a request
+  from the tier.
+- **GPT-5.6 cache-write tokens are now tracked and billed.** OpenAI's
+  `usage.prompt_tokens_details.cache_write_tokens` feeds the
+  cache-creation bucket (previously Anthropic-only), so
+  `cache_creation_per_million` applies and the `Cache create: N` row
+  renders for GPT-5.6 sessions. GPT-5.6 caching is opt-in per request —
+  `params = { prompt_cache_key = ..., prompt_cache_options = {...} }`
+  now supports `{channel}`/`{topic}` placeholders, expanded per session
+  so each topic gets its own cache-affinity bucket. (Cache hits are
+  always matched by prompt-prefix content; the key only stops different
+  workloads from evicting each other's entries.)
 
 ### Fixed
 

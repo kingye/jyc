@@ -275,6 +275,51 @@ pub fn merge_params(body: &mut serde_json::Value, params: &Option<serde_json::Va
     }
 }
 
+/// Expand `{channel}` and `{topic}` placeholders in every string value
+/// of each provider's `params` (provider- and model-level, recursively).
+///
+/// Lets request-level fields vary per session without a static config
+/// value per topic — e.g. OpenAI's opt-in prompt caching:
+/// `params = { prompt_cache_key = "jyc-{channel}-{topic}", ... }` gives
+/// every topic its own cache-affinity bucket. Cache *safety* never
+/// depends on the key (hits are matched by prompt-prefix content); the
+/// key only keeps different workloads from evicting each other's
+/// entries.
+pub fn expand_params_placeholders(
+    providers: &mut std::collections::HashMap<String, jyc_types::ProviderDef>,
+    channel: &str,
+    topic: &str,
+) {
+    fn expand(value: &mut serde_json::Value, channel: &str, topic: &str) {
+        match value {
+            serde_json::Value::String(s) if s.contains('{') => {
+                *s = s.replace("{channel}", channel).replace("{topic}", topic);
+            }
+            serde_json::Value::Array(items) => {
+                for v in items {
+                    expand(v, channel, topic);
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for v in map.values_mut() {
+                    expand(v, channel, topic);
+                }
+            }
+            _ => {}
+        }
+    }
+    for def in providers.values_mut() {
+        if let Some(params) = &mut def.params {
+            expand(params, channel, topic);
+        }
+        for model in def.models.values_mut() {
+            if let Some(params) = &mut model.params {
+                expand(params, channel, topic);
+            }
+        }
+    }
+}
+
 pub fn create_provider(
     model: &str,
     providers: &std::collections::HashMap<String, jyc_types::ProviderDef>,
@@ -936,5 +981,90 @@ mod model_id_tests {
         let low = create_provider("kimi/k3-low", &providers).unwrap();
         assert_eq!(high.model(), "k3");
         assert_eq!(low.model(), "k3");
+    }
+}
+
+#[cfg(test)]
+mod params_placeholder_tests {
+    use super::*;
+    use jyc_types::{ModelDef, ProviderDef};
+    use std::collections::HashMap;
+
+    fn providers() -> HashMap<String, ProviderDef> {
+        let mut models = HashMap::new();
+        models.insert(
+            "gpt-5.6-sol".to_string(),
+            ModelDef {
+                model_id: None,
+                context_window: None,
+                supports_images: None,
+                params: Some(serde_json::json!({
+                    "prompt_cache_key": "model-{topic}",
+                })),
+                user_agent: None,
+                cache_ttl: None,
+                pricing: None,
+            },
+        );
+        let mut providers = HashMap::new();
+        providers.insert(
+            "openai".to_string(),
+            ProviderDef {
+                provider_type: "openai-compatible".to_string(),
+                base_url: None,
+                api_key: None,
+                api_key_env: None,
+                context_window: None,
+                supports_images: None,
+                params: Some(serde_json::json!({
+                    "prompt_cache_key": "jyc-{channel}-{topic}",
+                    "prompt_cache_options": { "mode": "implicit", "ttl": "30m" },
+                    "tags": ["{channel}", "static"],
+                    "untouched": 42,
+                })),
+                user_agent: None,
+                cache_ttl: None,
+                pricing: None,
+                models,
+            },
+        );
+        providers
+    }
+
+    #[test]
+    fn placeholders_expand_recursively_in_provider_and_model_params() {
+        let mut providers = providers();
+        expand_params_placeholders(&mut providers, "feishu_work", "proj-a");
+
+        let def = &providers["openai"];
+        let params = def.params.as_ref().unwrap();
+        assert_eq!(params["prompt_cache_key"], "jyc-feishu_work-proj-a");
+        // Nested objects keep non-placeholder strings untouched.
+        assert_eq!(
+            params["prompt_cache_options"],
+            serde_json::json!({ "mode": "implicit", "ttl": "30m" })
+        );
+        assert_eq!(params["tags"], serde_json::json!(["feishu_work", "static"]));
+        assert_eq!(params["untouched"], 42);
+        // Model-level params expand too.
+        assert_eq!(
+            def.models["gpt-5.6-sol"].params.as_ref().unwrap()["prompt_cache_key"],
+            "model-proj-a"
+        );
+    }
+
+    #[test]
+    fn strings_without_placeholders_are_untouched() {
+        let mut providers = providers();
+        for def in providers.values_mut() {
+            if let Some(p) = &mut def.params {
+                p["prompt_cache_key"] = serde_json::json!("no-placeholders");
+            }
+        }
+        expand_params_placeholders(&mut providers, "feishu_work", "proj-a");
+        assert_eq!(
+            providers["openai"].params.as_ref().unwrap()["prompt_cache_key"],
+            "no-placeholders"
+        );
     }
 }

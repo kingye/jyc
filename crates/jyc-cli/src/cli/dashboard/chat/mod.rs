@@ -1304,10 +1304,10 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         if !cache_hit_spans.is_empty() {
             out.push(Line::from(cache_hit_spans));
         }
-        // Cache create row — Anthropic-only cache **write** tokens
-        // billed at the (typically 1.25× input) creation rate.
-        // Rendered only when the running total is non-zero, so
-        // non-Anthropic sessions see no extra row.
+        // Cache create row — cache **write** tokens billed at the
+        // creation rate (Anthropic ~1.25× input; GPT-5.6 reports
+        // `cache_write_tokens` too). Rendered only when the running
+        // total is non-zero, so other sessions see no extra row.
         let mut cache_creation_spans = Vec::with_capacity(2);
         push_cache_creation_span(&mut cache_creation_spans, t);
         if !cache_creation_spans.is_empty() {

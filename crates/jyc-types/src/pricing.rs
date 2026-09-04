@@ -258,7 +258,26 @@ fn compute_cost_split_at_with_rates(
     cache_read_tokens: u64,
     cache_creation_tokens: u64,
 ) -> (f64, AppliedRates) {
-    let (r, source) = effective_rates(pricing, now);
+    let (mut r, source) = effective_rates(pricing, now);
+
+    // Long-context tier: providers like GPT-5.6 re-bill the WHOLE
+    // request at elevated rates once its input exceeds a threshold.
+    // `input_tokens` is the provider-reported prompt size (cache buckets
+    // included), matching the provider's own tier judgement. A cache-hit
+    // rate unset on the tier inherits the base rate resolved above; an
+    // unset cache-creation rate collapses writes into the (resolved)
+    // cache-hit rate, mirroring `ModelPricing::cache_creation_per_million`.
+    if let Some(tier) = &pricing.long_context
+        && input_tokens > tier.threshold
+    {
+        r = Rates {
+            input: tier.input_per_million,
+            output: tier.output_per_million,
+            cache_hit: tier.cache_hit_per_million.unwrap_or(r.cache_hit),
+            cache_creation: tier.cache_creation_per_million,
+        };
+    }
+
     let uncached_input = input_tokens
         .saturating_sub(cache_read_tokens)
         .saturating_sub(cache_creation_tokens);
@@ -340,6 +359,7 @@ mod tests {
             currency: None,
             time_windows: Vec::new(),
             utc_offset: None,
+            long_context: None,
         }
     }
 
@@ -354,6 +374,7 @@ mod tests {
             currency: None,
             time_windows: Vec::new(),
             utc_offset: None,
+            long_context: None,
         }
     }
 
@@ -591,6 +612,7 @@ mod tests {
                 currency: None,
                 time_windows: Vec::new(),
                 utc_offset: None,
+                long_context: None,
             };
             assert_eq!(compute_cost_split(&p, 0, 0, 0, 0), 0.0);
         }
@@ -640,6 +662,7 @@ mod tests {
                     window("16:30", "00:30", 1.5, 6.0),
                 ],
                 utc_offset: None,
+                long_context: None,
             }
         }
 
@@ -757,6 +780,7 @@ mod tests {
                     cache_creation_per_million: Some(0.5),
                 }],
                 utc_offset: None,
+                long_context: None,
             };
             // 100 input, all cached-read → 100 * 0.25 / 1e6.
             let read = compute_cost_split_at_with_rates(&p, utc(6, 0), 100, 0, 100, 0).0;
@@ -890,6 +914,7 @@ mod tests {
                     cache_creation_per_million: None,
                 }],
                 utc_offset: None,
+                long_context: None,
             }
         }
 
@@ -989,6 +1014,116 @@ mod tests {
                 windowed.billing_fields(),
                 (Some("16:30-00:30".to_string()), "+08:00".to_string()),
             );
+        }
+    }
+
+    mod long_context {
+        use super::*;
+        use crate::config::LongContextPricing;
+
+        /// GPT-5.6-shaped pricing: short tier plus a long-context tier
+        /// at >272K input tokens with every rate elevated.
+        fn gpt56_pricing() -> ModelPricing {
+            ModelPricing {
+                long_context: Some(LongContextPricing {
+                    threshold: 272_000,
+                    input_per_million: 6.77,
+                    output_per_million: 30.19,
+                    cache_hit_per_million: Some(0.68),
+                    cache_creation_per_million: Some(8.46),
+                }),
+                ..pricing_split(3.42, 20.15, 0.34, 4.27)
+            }
+        }
+
+        /// Above the threshold the WHOLE request bills at tier rates —
+        /// all four buckets, not just the overflow.
+        #[test]
+        fn long_tier_applies_to_whole_request_above_threshold() {
+            let p = gpt56_pricing();
+            // 300k input = 230k uncached + 50k read + 20k write.
+            let (cost, applied) =
+                compute_cost_split_at_with_rates(&p, utc(12, 0), 300_000, 1_000, 50_000, 20_000);
+            assert_eq!(applied.input_per_million, 6.77);
+            assert_eq!(applied.output_per_million, 30.19);
+            assert_eq!(applied.cache_hit_per_million, 0.68);
+            assert_eq!(applied.cache_creation_per_million, Some(8.46));
+            let expected =
+                (230_000.0 * 6.77 + 1_000.0 * 30.19 + 50_000.0 * 0.68 + 20_000.0 * 8.46) / 1e6;
+            assert!((cost - expected).abs() < 1e-9, "{cost} != {expected}");
+        }
+
+        /// The threshold is strict ("exceeds"): exactly at it the base
+        /// rates still apply.
+        #[test]
+        fn long_tier_is_strictly_above_threshold() {
+            let p = gpt56_pricing();
+            let (_, applied) =
+                compute_cost_split_at_with_rates(&p, utc(12, 0), 272_000, 1_000, 0, 0);
+            assert_eq!(applied.input_per_million, 3.42);
+            let (_, applied) =
+                compute_cost_split_at_with_rates(&p, utc(12, 0), 272_001, 1_000, 0, 0);
+            assert_eq!(applied.input_per_million, 6.77);
+        }
+
+        /// Tier cache rates left unset: hit rate inherits the resolved
+        /// base rate; writes collapse into the resolved hit rate (same
+        /// as a flat pricing without `cache_creation_per_million`).
+        #[test]
+        fn long_tier_unset_cache_rates_inherit_or_collapse() {
+            let p = ModelPricing {
+                long_context: Some(LongContextPricing {
+                    threshold: 100,
+                    input_per_million: 10.0,
+                    output_per_million: 40.0,
+                    cache_hit_per_million: None,
+                    cache_creation_per_million: None,
+                }),
+                ..pricing_split(2.0, 8.0, 0.5, 1.5)
+            };
+            // input 200 = 150 uncached + 30 read + 20 write; write bills
+            // at the inherited hit rate 0.5, not the base write rate 1.5.
+            let (cost, applied) = compute_cost_split_at_with_rates(&p, utc(12, 0), 200, 10, 30, 20);
+            assert_eq!(applied.input_per_million, 10.0);
+            assert_eq!(applied.cache_hit_per_million, 0.5);
+            assert_eq!(applied.cache_creation_per_million, None);
+            let expected = (150.0 * 10.0 + 10.0 * 40.0 + 30.0 * 0.5 + 20.0 * 0.5) / 1e6;
+            assert!((cost - expected).abs() < 1e-12, "{cost} != {expected}");
+        }
+
+        /// A matching time window does not shield the request from the
+        /// tier: above the threshold the tier overrides window rates too.
+        #[test]
+        fn long_tier_overrides_matching_window() {
+            let p = ModelPricing {
+                long_context: Some(LongContextPricing {
+                    threshold: 100,
+                    input_per_million: 10.0,
+                    output_per_million: 40.0,
+                    cache_hit_per_million: Some(2.0),
+                    cache_creation_per_million: None,
+                }),
+                ..ModelPricing {
+                    time_windows: vec![crate::TimeWindowPricing {
+                        start: "00:00".to_string(),
+                        end: "08:00".to_string(),
+                        days: Vec::new(),
+                        input_per_million: 1.0,
+                        output_per_million: 4.0,
+                        cache_hit_per_million: Some(0.25),
+                        cache_creation_per_million: None,
+                    }],
+                    ..pricing_split(2.0, 8.0, 0.5, 1.5)
+                }
+            };
+            // The 00:00-08:00 window discounts input to 1.0 — ignored
+            // here because 500 > threshold.
+            let (_, applied) = compute_cost_split_at_with_rates(&p, utc(3, 0), 500, 0, 0, 0);
+            assert_eq!(applied.input_per_million, 10.0);
+            assert_eq!(applied.output_per_million, 40.0);
+            assert_eq!(applied.cache_hit_per_million, 2.0);
+            // Provenance still reports the window the base rates came from.
+            assert!(matches!(applied.source, RateSource::Window { .. }));
         }
     }
 }

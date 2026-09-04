@@ -84,9 +84,9 @@ pub(super) fn push_cache_hit_span(spans: &mut Vec<Span>, t: &TopicSummary) {
 }
 
 /// Append the "Cache create: N" row to `spans`. Pushes nothing when
-/// `total_cache_creation_tokens` is missing. Anthropic is the only
-/// provider that reports writes separately from reads; for every other
-/// vendor this stays `None` and the row never renders. Sits next to
+/// `total_cache_creation_tokens` is missing. Only Anthropic and GPT-5.6
+/// (`cache_write_tokens`) report writes separately from reads; for every
+/// other vendor this stays `None` and the row never renders. Sits next to
 /// [`push_cache_hit_span`] in the chat info pane and dashboard topic
 /// info area so users with cache-heavy Anthropic workflows can see
 /// the write volume that the cache-creation premium rate applies to.

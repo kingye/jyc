@@ -101,10 +101,10 @@ fn format_topic_info(t: &TopicInfo) -> String {
     if let Some(hits) = t.total_cache_hit_tokens {
         lines.push(format!("Cache hits: {hits}"));
     }
-    if let Some(creation) = t.total_cache_creation_tokens {
-        if creation > 0 {
-            lines.push(format!("Cache create: {creation}"));
-        }
+    if let Some(creation) = t.total_cache_creation_tokens
+        && creation > 0
+    {
+        lines.push(format!("Cache create: {creation}"));
     }
     if let Some(cost) = &t.cost {
         lines.push(format!(

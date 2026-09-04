@@ -391,6 +391,8 @@ impl ActivityTracker {
                                                                         }
                                                                     } else {
                                                                         // Thinking event: update thinking_text and fan out.
+                                                                        // (Accumulation across the turn is a
+                                                                        // display concern, handled client-side.)
                                                                         if let TopicEvent::Thinking { ref text, .. } = event {
                                                                             let mut map = map.lock().await;
                                                                             let state = map

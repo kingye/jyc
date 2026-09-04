@@ -42,14 +42,22 @@ pub(crate) struct RenderFingerprint {
     text_len_sum: usize,
     last_timestamp: Option<String>,
     width: usize,
+    /// Thinking expand/collapse affects the rendered lines of
+    /// `sender == "thinking"` pseudo-messages, so it must bust the cache.
+    thinking_expanded: bool,
 }
 
-pub(super) fn history_fingerprint(messages: &[ChatMessage], width: usize) -> RenderFingerprint {
+pub(super) fn history_fingerprint(
+    messages: &[ChatMessage],
+    width: usize,
+    thinking_expanded: bool,
+) -> RenderFingerprint {
     RenderFingerprint {
         count: messages.len(),
         text_len_sum: messages.iter().map(|m| m.text.len()).sum(),
         last_timestamp: messages.last().and_then(|m| m.timestamp.clone()),
         width,
+        thinking_expanded,
     }
 }
 
@@ -68,21 +76,47 @@ fn is_user_message(sender: &str) -> bool {
 /// `(messages, width)` so the result is cached per frame — the dynamic
 /// progress tail (thinking / activity / live ticker) is appended by the
 /// caller after these lines and stays per-frame.
-pub(super) fn render_history_lines(messages: &[ChatMessage], width: usize) -> Vec<Line<'static>> {
+pub(super) fn render_history_lines(
+    messages: &[ChatMessage],
+    width: usize,
+    thinking_expanded: bool,
+) -> Vec<Line<'static>> {
     let mut all_lines: Vec<Line<'static>> = Vec::new();
 
     let dim_style = Style::default().fg(Color::DarkGray);
+    let thinking_style = Style::default()
+        .fg(Color::Gray)
+        .add_modifier(Modifier::ITALIC);
     let mut group_start_ts: Option<String> = None;
+    // Last *conversation* sender (user/AI) — thinking pseudo-messages are
+    // skipped so the user→AI separator and AI→user round close still fire
+    // across an interleaved thinking block. Tracked incrementally.
+    let mut prev_conv_sender: Option<&str> = None;
 
     for (idx, msg) in messages.iter().enumerate() {
+        // Completed-turn thinking pseudo-message: collapsed one-liner by
+        // default, full wrapped text when expanded. Takes no part in
+        // round-rule grouping — the rules key off user/AI turns only.
+        if msg.sender == "thinking" {
+            if thinking_expanded && !msg.text.is_empty() {
+                for line in wrap_text_to_width(&msg.text, width) {
+                    all_lines.push(Line::from(Span::styled(line, thinking_style)));
+                }
+            } else {
+                let chars = msg.text.chars().count();
+                all_lines.push(Line::from(Span::styled(
+                    format!("💭 thinking — {chars} chars (ctrl+p t to expand)"),
+                    thinking_style,
+                )));
+            }
+            all_lines.push(Line::from(""));
+            continue;
+        }
+
         let is_user = is_user_message(&msg.sender);
         let prefix = if is_user { "**You:** " } else { "**AI:** " };
 
-        let prev_sender = if idx > 0 {
-            Some(messages[idx - 1].sender.as_str())
-        } else {
-            None
-        };
+        let prev_sender = prev_conv_sender;
 
         // Close previous round when transitioning AI → user. Bottom rule
         // has the duration right-aligned with breathing space:
@@ -140,6 +174,7 @@ pub(super) fn render_history_lines(messages: &[ChatMessage], width: usize) -> Ve
             tui_markdown::from_str_with_options(&md_text, &chat_markdown_options()).lines;
         let msg_lines = wrap_styled_lines(wrap_tables(rendered, width), width);
         all_lines.extend(msg_lines);
+        prev_conv_sender = Some(msg.sender.as_str());
     }
 
     // Close any open round at the end (same bottom-rule format as above).
@@ -200,10 +235,18 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // arrives / streams / clears or the pane width changes. Without the
     // cache every frame (each keystroke, 50ms poll, 1Hz tick) re-parsed
     // the whole transcript's markdown — the per-keystroke input lag.
-    let fingerprint = history_fingerprint(&app.chat.messages, messages_width);
+    let fingerprint = history_fingerprint(
+        &app.chat.messages,
+        messages_width,
+        app.chat.thinking_expanded,
+    );
     let cache_hit = matches!(&app.chat.render_cache, Some((fp, _)) if *fp == fingerprint);
     if !cache_hit {
-        let lines = render_history_lines(&app.chat.messages, messages_width);
+        let lines = render_history_lines(
+            &app.chat.messages,
+            messages_width,
+            app.chat.thinking_expanded,
+        );
         app.chat.render_cache = Some((fingerprint, lines));
     }
 
@@ -264,11 +307,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             })
             .unwrap_or_default();
 
-        let thinking_text: Option<String> = live_chan
+        let thinking_blocks: Option<&[String]> = live_chan
             .as_deref()
             .zip(live_topic.as_deref())
-            .and_then(|(c, t)| app.chat.live_thinking_for(c, t))
-            .map(|s| s.to_string());
+            .and_then(|(c, t)| app.chat.live_thinking_for(c, t));
 
         // Live wall-clock ticker (1 Hz, with the first tick at t=0). When
         // present, it is the authoritative elapsed-time display for the
@@ -280,27 +322,47 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             .zip(live_topic.as_deref())
             .and_then(|(c, t)| app.chat.live_tick_ms_for(c, t));
 
-        // Render thinking text first (same wrap + indent as before).
-        // This comes from TopicEvent::Thinking events and is NOT stored
-        // in the activity buffer or activity.jsonl.
-        if let Some(thinking) = thinking_text.as_deref()
-            && !thinking.is_empty()
+        // Render thinking first (same wrap + indent as before). Blocks are
+        // accumulated per turn (never overwritten); collapsed to a one-line
+        // summary by default, expanded via the leader popup (`ctrl+p t`).
+        // Thinking events are NOT stored in the activity buffer or
+        // activity.jsonl.
+        let has_thinking = matches!(thinking_blocks, Some(b) if !b.is_empty());
+        if let Some(blocks) = thinking_blocks
+            && !blocks.is_empty()
         {
-            let gray_style = Style::default().fg(Color::Gray);
+            let gray_style = Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::ITALIC);
             // Hard-wrap long lines so nothing is clipped at the right edge.
             // The 2 accounts for the "  " indent prefix below; each wrapped
             // segment becomes its own `Line` so the scroll calculation sees
             // the correct visual row count.
             let avail = chunks[0].width.saturating_sub(2) as usize;
-            for line in wrap_text_to_width(thinking, avail) {
+            if app.chat.thinking_expanded {
+                let joined = blocks.join("\n\n");
+                for line in wrap_text_to_width(&joined, avail) {
+                    tail_lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(line, gray_style),
+                    ]));
+                }
+            } else {
+                let chars: usize = blocks.iter().map(|b| b.chars().count()).sum();
                 tail_lines.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(line, gray_style),
+                    Span::styled(
+                        format!(
+                            "💭 thinking — {} blocks · {chars} chars (ctrl+p t)",
+                            blocks.len()
+                        ),
+                        gray_style,
+                    ),
                 ]));
             }
         }
 
-        if activity_entries.is_empty() && thinking_text.is_none() {
+        if activity_entries.is_empty() && !has_thinking {
             // Pre-activity placeholder: shown only between ProcessingStarted
             // and the first ToolStarted/LLMRequestStarted event. There's
             // no "since-event" numerator to pair with, so we display the

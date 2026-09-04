@@ -160,6 +160,124 @@ fn repair_dangling_tool_calls(messages: Vec<serde_json::Value>) -> Vec<serde_jso
     result
 }
 
+/// Convert Anthropic-format messages in a raw context to OpenAI chat format.
+///
+/// Topics that previously ran on an Anthropic provider persist assistant
+/// messages as content-block arrays (`[{type:"text"…}, {type:"tool_use"…}]`)
+/// and tool results as `tool_result` blocks inside user messages. Replaying
+/// them verbatim against an OpenAI-family endpoint fails with HTTP 400
+/// (`tool_use` is not a valid field there). OpenAI-family providers call
+/// this on the raw context before filtering/sending so mixed-format
+/// histories keep working after a `/model` switch.
+///
+/// Conversion rules:
+/// - assistant content arrays → joined `text` blocks as string content +
+///   `tool_use` blocks as `tool_calls` entries (`arguments` is the input
+///   JSON serialized to a string)
+/// - `thinking`/`redacted_thinking` blocks are dropped — OpenAI reasoning
+///   models do not accept replayed chain-of-thought
+/// - user messages containing `tool_result` blocks → one `role:"tool"`
+///   message per block (block content arrays are flattened to text),
+///   followed by a user message with any remaining text blocks
+/// - everything else passes through unchanged
+pub fn anthropic_to_chat_messages(messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let mut out = Vec::with_capacity(messages.len());
+
+    for msg in messages {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        let content = msg.get("content");
+
+        match (role, content) {
+            ("assistant", Some(serde_json::Value::Array(blocks))) => {
+                let text: String = blocks
+                    .iter()
+                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                    .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                    .collect();
+                let tool_calls: Vec<serde_json::Value> = blocks
+                    .iter()
+                    .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                    .map(|b| {
+                        serde_json::json!({
+                            "id": b.get("id").and_then(|i| i.as_str()).unwrap_or(""),
+                            "type": "function",
+                            "function": {
+                                "name": b.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                                "arguments": b.get("input")
+                                    .map(|i| i.to_string())
+                                    .unwrap_or_else(|| "{}".to_string()),
+                            }
+                        })
+                    })
+                    .collect();
+                let mut m = serde_json::json!({ "role": "assistant" });
+                m["content"] = if text.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::String(text)
+                };
+                if !tool_calls.is_empty() {
+                    m["tool_calls"] = serde_json::Value::Array(tool_calls);
+                }
+                out.push(m);
+            }
+            ("user", Some(serde_json::Value::Array(blocks)))
+                if blocks
+                    .iter()
+                    .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result")) =>
+            {
+                for b in blocks {
+                    match b.get("type").and_then(|t| t.as_str()) {
+                        Some("tool_result") => {
+                            let text = match b.get("content") {
+                                Some(serde_json::Value::String(s)) => s.clone(),
+                                Some(serde_json::Value::Array(parts)) => parts
+                                    .iter()
+                                    .filter(|p| {
+                                        p.get("type").and_then(|t| t.as_str()) == Some("text")
+                                    })
+                                    .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                                    .collect(),
+                                _ => String::new(),
+                            };
+                            // Match the [SUCCESS]/[ERROR] labeling jyc's own
+                            // chat-format history uses, so the model sees a
+                            // consistent convention across the switch.
+                            let labeled =
+                                if b.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false) {
+                                    format!("[ERROR] {text}")
+                                } else {
+                                    format!("[SUCCESS] {text}")
+                                };
+                            out.push(serde_json::json!({
+                                "role": "tool",
+                                "tool_call_id": b.get("tool_use_id")
+                                    .and_then(|i| i.as_str())
+                                    .unwrap_or(""),
+                                "content": labeled,
+                            }));
+                        }
+                        Some("text") => {
+                            if let Some(t) = b.get("text").and_then(|t| t.as_str())
+                                && !t.is_empty()
+                            {
+                                out.push(serde_json::json!({
+                                    "role": "user",
+                                    "content": t,
+                                }));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => out.push(msg.clone()),
+        }
+    }
+
+    out
+}
+
 /// Extract tool call IDs from an assistant message (both OpenAI and
 /// Anthropic formats).
 fn extract_tool_call_ids(msg: &serde_json::Value) -> Vec<String> {
@@ -786,6 +904,95 @@ mod classifier_tests {
 mod dangling_tool_call_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    #[test]
+    fn anthropic_to_chat_converts_tool_use_blocks() {
+        let raw = vec![
+            serde_json::json!({"role": "user", "content": "read file a"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "hmm"},
+                    {"type": "text", "text": "Let me read it."},
+                    {"type": "tool_use", "id": "tu_1", "name": "read",
+                     "input": {"path": "a"}},
+                ],
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1",
+                     "content": [{"type": "text", "text": "file body"}]},
+                    {"type": "text", "text": "thanks"},
+                ],
+            }),
+        ];
+        let out = anthropic_to_chat_messages(&raw);
+        assert_eq!(
+            out,
+            vec![
+                serde_json::json!({"role": "user", "content": "read file a"}),
+                serde_json::json!({
+                    "role": "assistant",
+                    "content": "Let me read it.",
+                    "tool_calls": [{
+                        "id": "tu_1",
+                        "type": "function",
+                        "function": {"name": "read", "arguments": "{\"path\":\"a\"}"},
+                    }],
+                }),
+                serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": "tu_1",
+                    "content": "[SUCCESS] file body",
+                }),
+                serde_json::json!({"role": "user", "content": "thanks"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn anthropic_to_chat_labels_error_results() {
+        let raw = vec![serde_json::json!({
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tu_2",
+                         "is_error": true, "content": "boom"}],
+        })];
+        let out = anthropic_to_chat_messages(&raw);
+        assert_eq!(out[0]["content"], "[ERROR] boom");
+    }
+
+    #[test]
+    fn anthropic_to_chat_passes_chat_format_through() {
+        let raw = vec![
+            serde_json::json!({"role": "assistant", "content": "plain text"}),
+            serde_json::json!({"role": "tool", "tool_call_id": "c1", "content": "x"}),
+        ];
+        assert_eq!(anthropic_to_chat_messages(&raw), raw);
+    }
+
+    #[test]
+    fn anthropic_to_chat_then_filter_drops_dangling() {
+        // Anthropic assistant with tool_use but no tool_result → the whole
+        // tail must be dropped after conversion (same repair semantics as
+        // native chat format).
+        let raw = vec![
+            serde_json::json!({"role": "user", "content": "hi"}),
+            serde_json::json!({
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "tu_9", "name": "read",
+                             "input": {}}],
+            }),
+            serde_json::json!({"role": "user", "content": "follow-up"}),
+        ];
+        let converted = anthropic_to_chat_messages(&raw);
+        let filtered = filter_valid_messages(&converted);
+        assert_eq!(
+            filtered,
+            vec![serde_json::json!({"role": "user", "content": "hi"})]
+        );
+    }
 
     #[test]
     fn openai_complete_context_not_modified() {

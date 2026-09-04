@@ -267,7 +267,11 @@ impl Provider for OpenAiCompatProvider {
     ) -> Result<EventStream> {
         let url = format!("{}/chat/completions", self.base_url);
 
-        // Build messages array: system + raw messages (filtered)
+        // Build messages array: system + raw messages (converted + filtered).
+        // Raw context may contain Anthropic-format messages if the topic
+        // previously ran on an Anthropic provider — normalize first so the
+        // upstream never sees `tool_use` blocks (HTTP 400).
+        let converted = super::anthropic_to_chat_messages(raw_messages);
         let mut api_messages: Vec<serde_json::Value> = Vec::new();
         if !system.is_empty() {
             api_messages.push(serde_json::json!({
@@ -275,7 +279,7 @@ impl Provider for OpenAiCompatProvider {
                 "content": system,
             }));
         }
-        api_messages.extend(super::filter_valid_messages(raw_messages));
+        api_messages.extend(super::filter_valid_messages(&converted));
 
         // Build request body
         let mut body = serde_json::json!({

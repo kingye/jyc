@@ -264,7 +264,11 @@ impl Provider for OpenAiResponsesProvider {
         tools: &[ToolDefinition],
         system: &str,
     ) -> Result<EventStream> {
-        let filtered = super::filter_valid_messages(raw_messages);
+        // Raw context may contain Anthropic-format messages if the topic
+        // previously ran on an Anthropic provider — normalize to chat
+        // format first, then convert to Responses input items.
+        let converted = super::anthropic_to_chat_messages(raw_messages);
+        let filtered = super::filter_valid_messages(&converted);
         let input = chat_messages_to_responses_input(&filtered);
         self.send(input, tools, system)
     }

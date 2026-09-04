@@ -16,6 +16,9 @@ use std::sync::Arc;
 use jyc_core::duration::{DurationStyle, format_duration_secs};
 use jyc_core::topic_event::TopicEvent;
 use jyc_core::topic_manager::{TopicDisplayState, TopicManager};
+// Shared tool-call formatter (field extraction + basename + collapse +
+// truncate) — also used by the TUI chat progress tail at render time.
+use jyc_types::inspect::tool_activity_summary as tool_activity;
 
 use super::client::FeishuClient;
 
@@ -23,44 +26,6 @@ use super::client::FeishuClient;
 const PROGRESS_PATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Compact "what is happening now" summary for a tool call, extracted from
-/// the `ToolStarted` event's JSON input. Used by the Feishu progress
-/// watcher's live status card: `edit — service/tools.rs`, `bash — cargo ch…`
-///
-/// File paths are reduced to their basename (the Feishu card stays short);
-/// commands/URLs/patterns are truncated. Tools without a meaningful
-/// argument (or with sensitive args like the reply text) return `None`.
-fn tool_activity(tool_name: &str, input: Option<&str>) -> Option<String> {
-    let get = |key: &str| -> Option<String> {
-        serde_json::from_str::<serde_json::Value>(input?)
-            .ok()?
-            .get(key)?
-            .as_str()
-            .map(str::to_string)
-    };
-    let raw = match tool_name {
-        // File tools: basename keeps the card short (read_image names its
-        // argument "path", the others "file_path").
-        "read" | "edit" | "write" | "read_image" => {
-            let p = get("file_path").or_else(|| get("path"))?;
-            p.rsplit('/').next().unwrap_or(&p).to_string()
-        }
-        "grep" | "glob" => get("pattern")?,
-        "bash" => get("command")?,
-        "webfetch" => get("url")?,
-        _ => return None,
-    };
-    // Collapse newlines/excess whitespace so a multi-line command can't
-    // break the card's markdown layout, then truncate to a budget that
-    // shows the full call in most cases (~160 chars ≈ 2–3 card lines).
-    let flat = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    const MAX: usize = 160;
-    if flat.chars().count() > MAX {
-        Some(flat.chars().take(MAX - 1).collect::<String>() + "…")
-    } else {
-        Some(flat)
-    }
-}
-
 /// Build the status-card markdown for the Feishu progress watcher.
 ///
 /// `state` is `"⏳ 处理中"` while running, `"✅ 完成"` on success,
@@ -325,79 +290,6 @@ pub fn spawn_progress_watcher(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn tool_activity_extracts_basename_for_file_tools() {
-        let input =
-            r#"{"file_path": "/home/jiny/projects/jyc/crates/jyc-agent/src/service/tools.rs"}"#;
-        assert_eq!(
-            tool_activity("edit", Some(input)).as_deref(),
-            Some("tools.rs")
-        );
-        assert_eq!(
-            tool_activity("read", Some(input)).as_deref(),
-            Some("tools.rs")
-        );
-        assert_eq!(
-            tool_activity("write", Some(input)).as_deref(),
-            Some("tools.rs")
-        );
-        // read_image names its argument "path", not "file_path".
-        assert_eq!(
-            tool_activity("read_image", Some(r#"{"path": "/tmp/x/photo.png"}"#)).as_deref(),
-            Some("photo.png")
-        );
-    }
-
-    #[test]
-    fn tool_activity_extracts_command_pattern_url() {
-        assert_eq!(
-            tool_activity("bash", Some(r#"{"command": "cargo check -p jyc-cli"}"#)).as_deref(),
-            Some("cargo check -p jyc-cli")
-        );
-        assert_eq!(
-            tool_activity(
-                "grep",
-                Some(r#"{"pattern": "TopicEvent", "path": "crates"}"#)
-            )
-            .as_deref(),
-            Some("TopicEvent")
-        );
-        assert_eq!(
-            tool_activity(
-                "webfetch",
-                Some(r#"{"url": "https://open.feishu.cn/document/server-docs/im"}"#)
-            )
-            .as_deref(),
-            Some("https://open.feishu.cn/document/server-docs/im")
-        );
-    }
-
-    #[test]
-    fn tool_activity_truncates_long_values() {
-        let long = "a".repeat(200);
-        let input = format!(r#"{{"command": "{long}"}}"#);
-        let got = tool_activity("bash", Some(&input)).unwrap();
-        assert_eq!(got.chars().count(), 160);
-        assert!(got.ends_with('…'));
-        // Newlines/excess whitespace collapse — multi-line commands must
-        // not break the card's markdown layout.
-        let multi = r#"{"command": "ls\n   -la"}"#;
-        assert_eq!(
-            tool_activity("bash", Some(multi)).as_deref(),
-            Some("ls -la")
-        );
-    }
-
-    #[test]
-    fn tool_activity_none_for_unknown_or_missing_input() {
-        assert!(tool_activity("jyc_reply_message", Some(r#"{"message": "hi"}"#)).is_none());
-        assert!(tool_activity("read", None).is_none());
-        // Malformed JSON input → None (never panics).
-        assert!(tool_activity("edit", Some("not json")).is_none());
-        // Valid JSON but missing the expected key → None.
-        assert!(tool_activity("edit", Some(r#"{"other": 1}"#)).is_none());
-    }
 
     #[test]
     fn progress_card_renders_state_elapsed_and_activity() {

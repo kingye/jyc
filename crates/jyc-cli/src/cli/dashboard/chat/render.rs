@@ -426,8 +426,21 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                     }
                     out
                 } else {
-                    // Plain text — split by newlines for display
-                    let lines: Vec<&str> = a.text.split('\n').collect();
+                    // Plain text — split by newlines for display. Tool-call
+                    // lines carry the raw JSON input; extract a readable
+                    // summary at render time (the WS/log data stays raw).
+                    let lines: Vec<String> = a
+                        .text
+                        .split('\n')
+                        .enumerate()
+                        .map(|(i, line)| {
+                            if i == 0 {
+                                reformat_tool_line(line)
+                            } else {
+                                line.to_string()
+                            }
+                        })
+                        .collect();
                     lines
                         .iter()
                         .enumerate()
@@ -604,6 +617,28 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     }
 }
 
+/// Reformat an activity line of the form `Tool: <name> — <json input>`
+/// (optionally `Tool: <name> (done, Xs) — <json>`) into a readable summary
+/// using the shared extractor, e.g. `Tool: bash — ls -la`. Extraction
+/// happens here — at render time — so the WS payload and `activity.jsonl`
+/// keep the raw JSON. Lines that don't match, or whose input can't be
+/// summarized, pass through unchanged.
+fn reformat_tool_line(text: &str) -> String {
+    let Some(rest) = text.strip_prefix("Tool: ") else {
+        return text.to_string();
+    };
+    let Some((prefix, input)) = rest.split_once(" — ") else {
+        return text.to_string();
+    };
+    // `prefix` is either the bare tool name ("bash") or the completion
+    // variant ("bash (done, 3s)") — the extractor needs the name only.
+    let name = prefix.split(" (").next().unwrap_or(prefix);
+    match jyc_types::inspect::tool_activity_summary(name, Some(input)) {
+        Some(summary) => format!("Tool: {prefix} — {summary}"),
+        None => text.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -624,5 +659,36 @@ mod tests {
     #[test]
     fn agent_reply_is_ai_side() {
         assert!(!is_user_message("ai"));
+    }
+
+    #[test]
+    fn reformat_tool_line_extracts_started_and_completed() {
+        assert_eq!(
+            reformat_tool_line(r#"Tool: bash — {"command": "ls -la"}"#),
+            "Tool: bash — ls -la"
+        );
+        assert_eq!(
+            reformat_tool_line(r#"Tool: bash (done, 3s) — {"command": "ls -la"}"#),
+            "Tool: bash (done, 3s) — ls -la"
+        );
+        assert_eq!(
+            reformat_tool_line(
+                r#"Tool: edit — {"file_path": "/home/jiny/projects/jyc/src/tools.rs"}"#
+            ),
+            "Tool: edit — tools.rs"
+        );
+    }
+
+    #[test]
+    fn reformat_tool_line_passthrough() {
+        // Unknown tool / unparseable input: show the line unchanged — the
+        // raw JSON still carries information in the activity view.
+        let unknown = r#"Tool: context_browse — {"offset": 0}"#;
+        assert_eq!(reformat_tool_line(unknown), unknown);
+        let bad_json = "Tool: bash — not json";
+        assert_eq!(reformat_tool_line(bad_json), bad_json);
+        // Non-tool lines are untouched.
+        let other = "Thinking... (iteration 2)";
+        assert_eq!(reformat_tool_line(other), other);
     }
 }

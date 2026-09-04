@@ -58,6 +58,13 @@
 
 ### Changed
 
+- TUI chat progress tail: tool-call lines now show the extracted argument
+  (`Tool: bash — ls -la`, `Tool: edit — tools.rs`) instead of the raw JSON
+  input, reusing the shared formatter also used by the Feishu status card
+  (`jyc_types::inspect::tool_activity_summary`). Extraction happens at
+  render time only — WS payloads and `activity.jsonl` keep the raw JSON;
+  unknown/unparseable tools pass through unchanged
+
 - Feishu live status card: the "最近" (recent tool) line now shows up to
   160 chars of the tool call (was 40), so full bash commands/patterns are
   visible in most cases; newlines collapse to spaces so multi-line

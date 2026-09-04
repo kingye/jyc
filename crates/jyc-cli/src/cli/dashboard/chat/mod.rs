@@ -2439,10 +2439,14 @@ impl ChatState {
             }
             "thinking" => {
                 if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
-                    self.live_thinking
-                        .entry(key)
-                        .or_default()
-                        .push(text.to_string());
+                    // The agent publishes the cumulative reasoning content of the
+                    // current LLM request, so an event extending the last block is
+                    // a snapshot update, not a new block.
+                    let blocks = self.live_thinking.entry(key).or_default();
+                    match blocks.last_mut() {
+                        Some(last) if text.starts_with(last.as_str()) => *last = text.to_string(),
+                        _ => blocks.push(text.to_string()),
+                    }
                 }
             }
             "processing" => {

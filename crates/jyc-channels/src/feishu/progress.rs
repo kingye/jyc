@@ -26,6 +26,21 @@ use super::client::FeishuClient;
 const PROGRESS_PATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Compact "what is happening now" summary for a tool call, extracted from
+/// Max chars of the thinking tail shown on the progress card.
+const THINKING_PREVIEW_CHARS: usize = 1500;
+
+/// Return the trailing `max_chars` characters of `text`, cut on a char
+/// boundary. Returns the whole string when it fits.
+fn tail_chars(text: &str, max_chars: usize) -> &str {
+    if max_chars == 0 {
+        return "";
+    }
+    match text.char_indices().rev().nth(max_chars - 1) {
+        Some((idx, _)) => &text[idx..],
+        None => text,
+    }
+}
+
 /// Build the status-card markdown for the Feishu progress watcher.
 ///
 /// `state` is `"⏳ 处理中"` while running, `"✅ 完成"` on success,
@@ -38,6 +53,7 @@ fn progress_card(
     tool_count: usize,
     activity: Option<&str>,
     display: &TopicDisplayState,
+    thinking: Option<&str>,
 ) -> String {
     let mut line = format!(
         "{state} · {} · 工具 {tool_count}",
@@ -55,6 +71,10 @@ fn progress_card(
     let mut lines = vec![line];
     if let Some(a) = activity {
         lines.push(format!("最近：{a}"));
+    }
+    let thinking = thinking.map(str::trim).filter(|t| !t.is_empty());
+    if let Some(t) = thinking {
+        lines.push(format!("💭 {}", tail_chars(t, THINKING_PREVIEW_CHARS)));
     }
     lines.join("\n")
 }
@@ -126,7 +146,14 @@ pub fn spawn_progress_watcher(
                 continue;
             }
             let display = topic_manager.topic_display_state(&topic).await;
-            let text = progress_card("⏳ 处理中", start.elapsed().as_secs(), 0, None, &display);
+            let text = progress_card(
+                "⏳ 处理中",
+                start.elapsed().as_secs(),
+                0,
+                None,
+                &display,
+                None,
+            );
             // Dedup: another watcher of this topic may already have posted
             // this run's status message (a dormant watcher armed by the
             // same ProcessingStarted). Reuse its message id instead of
@@ -168,6 +195,7 @@ pub fn spawn_progress_watcher(
         // ── Phase 2: live updates until ProcessingCompleted ─────────────
         let mut tool_count = 0usize;
         let mut last_activity: Option<String> = None;
+        let mut last_thinking: Option<String> = None;
         let mut done: Option<(bool, u64)> = None;
         let mut last_patch = std::time::Instant::now();
         let mut fails = 0u32;
@@ -208,6 +236,12 @@ pub fn spawn_progress_watcher(
                             } => {
                                 done = Some((success, duration_secs));
                             }
+                            // Cumulative snapshot of the current LLM request
+                            // (throttled at the agent loop): keep the latest —
+                            // its tail is the current thinking position.
+                            TopicEvent::Thinking { text, .. } => {
+                                last_thinking = Some(text);
+                            }
                             _ => {}
                         }
                     }
@@ -231,6 +265,7 @@ pub fn spawn_progress_watcher(
                     tool_count,
                     last_activity.as_deref(),
                     &display,
+                    last_thinking.as_deref(),
                 ),
                 None => progress_card(
                     "⏳ 处理中",
@@ -238,6 +273,7 @@ pub fn spawn_progress_watcher(
                     tool_count,
                     last_activity.as_deref(),
                     &display,
+                    last_thinking.as_deref(),
                 ),
             };
             if !terminal && text == last_text {
@@ -295,17 +331,65 @@ mod tests {
     fn progress_card_renders_state_elapsed_and_activity() {
         let none = TopicDisplayState::default();
         assert_eq!(
-            progress_card("⏳ 处理中", 12, 3, None, &none),
+            progress_card("⏳ 处理中", 12, 3, None, &none, None),
             "⏳ 处理中 · 12s · 工具 3"
         );
         assert_eq!(
-            progress_card("⏳ 处理中", 12, 3, Some("edit — tools.rs"), &none),
+            progress_card("⏳ 处理中", 12, 3, Some("edit — tools.rs"), &none, None),
             "⏳ 处理中 · 12s · 工具 3\n最近：edit — tools.rs"
         );
         assert_eq!(
-            progress_card("✅ 完成", 52, 8, None, &none),
+            progress_card("✅ 完成", 52, 8, None, &none, None),
             "✅ 完成 · 52s · 工具 8"
         );
+    }
+
+    #[test]
+    fn progress_card_shows_thinking_tail_and_retains_it_on_finalize() {
+        let none = TopicDisplayState::default();
+        let thinking = "计划步骤一\n然后调用工具读取文件";
+        let card = progress_card(
+            "⏳ 处理中",
+            12,
+            3,
+            Some("read — a.rs"),
+            &none,
+            Some(thinking),
+        );
+        assert!(
+            card.contains("💭 计划步骤一\n然后调用工具读取文件"),
+            "card:\n{card}"
+        );
+        // Thinking line renders after the activity line.
+        let activity_pos = card.find("最近：read — a.rs").expect("activity line");
+        let thinking_pos = card.find('💭').expect("thinking line");
+        assert!(thinking_pos > activity_pos);
+        // Finalized card keeps the last thinking preview.
+        let done = progress_card("✅ 完成", 52, 8, None, &none, Some(thinking));
+        assert!(done.contains("💭 计划步骤一"), "card:\n{done}");
+        // No thinking (or whitespace-only) → no 💭 line.
+        assert!(!progress_card("⏳ 处理中", 12, 3, None, &none, None).contains('💭'));
+        assert!(!progress_card("⏳ 处理中", 12, 3, None, &none, Some("  ")).contains('💭'));
+    }
+
+    #[test]
+    fn progress_card_truncates_thinking_to_tail_chars() {
+        let none = TopicDisplayState::default();
+        let thinking = "a".repeat(THINKING_PREVIEW_CHARS + 500);
+        let card = progress_card("⏳ 处理中", 1, 0, None, &none, Some(&thinking));
+        let line = card
+            .lines()
+            .find(|l| l.starts_with('💭'))
+            .expect("thinking line");
+        assert_eq!(line.chars().count(), 2 + THINKING_PREVIEW_CHARS);
+    }
+
+    #[test]
+    fn tail_chars_keeps_last_chars_on_char_boundaries() {
+        assert_eq!(tail_chars("hello", 3), "llo");
+        assert_eq!(tail_chars("héllo", 3), "llo");
+        assert_eq!(tail_chars("短", THINKING_PREVIEW_CHARS), "短");
+        assert_eq!(tail_chars("hi", 0), "");
     }
 
     #[test]
@@ -318,16 +402,17 @@ mod tests {
             max_tokens: Some(262_144),
         };
         assert_eq!(
-            progress_card("⏳ 处理中", 23, 2, None, &full),
+            progress_card("⏳ 处理中", 23, 2, None, &full, None),
             "⏳ 处理中 · 23s · 工具 2 · plan · kimi/k3-256k · 41%"
         );
         assert_eq!(
-            progress_card("✅ 完成", 757, 24, None, &full),
+            progress_card("✅ 完成", 757, 24, None, &full, None),
             "✅ 完成 · 12m37s · 工具 24 · plan · kimi/k3-256k · 41%"
         );
 
         // Activity line still comes second when present.
-        let with_activity = progress_card("⏳ 处理中", 23, 2, Some("bash — cargo check"), &full);
+        let with_activity =
+            progress_card("⏳ 处理中", 23, 2, Some("bash — cargo check"), &full, None);
         assert_eq!(
             with_activity,
             "⏳ 处理中 · 23s · 工具 2 · plan · kimi/k3-256k · 41%\n最近：bash — cargo check"
@@ -340,7 +425,7 @@ mod tests {
             ..TopicDisplayState::default()
         };
         assert_eq!(
-            progress_card("⏳ 处理中", 3, 0, None, &no_tokens),
+            progress_card("⏳ 处理中", 3, 0, None, &no_tokens, None),
             "⏳ 处理中 · 3s · 工具 0 · build · kimi/k3-256k"
         );
 
@@ -351,7 +436,7 @@ mod tests {
             ..TopicDisplayState::default()
         };
         assert_eq!(
-            progress_card("⏳ 处理中", 3, 0, None, &zero_max),
+            progress_card("⏳ 处理中", 3, 0, None, &zero_max, None),
             "⏳ 处理中 · 3s · 工具 0"
         );
     }

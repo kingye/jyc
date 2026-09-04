@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use jyc_types::{ChangeKind, TopicInfo};
+use jyc_types::{ChangeKind, TopicInfo, format_amount};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::topic_manager::TopicManager;
@@ -132,17 +132,6 @@ fn format_topic_info(t: &TopicInfo) -> String {
         }
     }
     lines.join("\n")
-}
-
-/// Mirror of the dashboard's amount formatting (jyc-cli can't be imported
-/// from jyc-core): four decimals because a single cheap call can cost well
-/// under a cent.
-fn format_amount(amount: f64, currency: &str) -> String {
-    match currency {
-        "USD" => format!("${amount:.4}"),
-        "CNY" => format!("¥{amount:.4}"),
-        other => format!("{amount:.4} {other}"),
-    }
 }
 
 #[cfg(test)]

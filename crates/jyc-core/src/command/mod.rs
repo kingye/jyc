@@ -145,7 +145,7 @@ mod tests {
         }
         assert_eq!(
             commands.len(),
-            14,
+            15,
             "all_commands() count changed. Update this test if intentional."
         );
     }

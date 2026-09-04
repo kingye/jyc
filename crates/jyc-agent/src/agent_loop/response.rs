@@ -30,6 +30,11 @@ pub(crate) struct CollectedResponse {
     /// is the only vendor that reports writes separately from
     /// reads; for every other provider this is `0`.
     pub(crate) cache_creation_tokens: u64,
+    /// Per-call reasoning (thinking) tokens — the hidden chain-of-thought
+    /// share of the output. Already included in `output_tokens` (and
+    /// billed as such); informational only. `0` when the provider
+    /// doesn't break it out.
+    pub(crate) reasoning_tokens: u64,
 }
 
 impl CollectedResponse {
@@ -169,11 +174,13 @@ pub(crate) async fn collect_response(
                 output_tokens,
                 cache_hit_tokens,
                 cache_creation_tokens,
+                reasoning_tokens,
             } => {
                 response.input_tokens = input_tokens;
                 response.output_tokens += output_tokens;
                 response.cache_hit_tokens = cache_hit_tokens;
                 response.cache_creation_tokens = cache_creation_tokens;
+                response.reasoning_tokens += reasoning_tokens;
             }
             StreamEvent::Done => break,
             StreamEvent::Error(msg) => {

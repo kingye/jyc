@@ -2,6 +2,18 @@
 
 ### Added
 
+- **OpenAI Responses API provider.** New `type = "openai-responses"`
+  provider targeting `POST {base_url}/responses` — the recommended way to
+  run GPT-5.x / o-series reasoning models. Unlike Chat Completions it
+  supports tools + reasoning together, and with
+  `params = { reasoning = { effort = "...", summary = "auto" } }` it
+  streams reasoning **summaries**, surfaced through the existing
+  `/thinking show` display. Reasoning token counts are extracted from
+  usage (Responses `output_tokens_details.reasoning_tokens`, Chat
+  Completions `completion_tokens_details.reasoning_tokens`) and shown in
+  `/info` as `Reasoning: N`; they remain informational only — billing is
+  unchanged since reasoning tokens are already part of `output_tokens`.
+
 - **Thinking display overhaul in the dashboard chat screen.** Agent
   thinking blocks now accumulate for the whole processing round instead
   of each new block overwriting the previous one (client-side, from the
@@ -133,6 +145,13 @@
 
 ### Fixed
 
+- **HTTP 400 when replaying mixed-format history after `/model` switch.**
+  A topic that previously ran on an Anthropic provider persists assistant
+  messages as content-block arrays (`tool_use` blocks, `tool_result` blocks
+  in user messages). Switching the topic to an OpenAI-family model replayed
+  them verbatim, and the upstream rejected the request with HTTP 400
+  (`tool_use` is not a valid field there). OpenAI-family providers now
+  convert Anthropic-format raw context to chat format before sending.
 - Feishu progress card elapsed time no longer includes queue wait: the
   card clock was captured when the inbound message arrived, so a message
   queued behind a busy topic showed the previous run's processing time

@@ -106,6 +106,11 @@ fn format_topic_info(t: &TopicInfo) -> String {
     {
         lines.push(format!("Cache create: {creation}"));
     }
+    if let Some(reasoning) = t.total_reasoning_tokens
+        && reasoning > 0
+    {
+        lines.push(format!("Reasoning: {reasoning}"));
+    }
     if let Some(cost) = &t.cost {
         lines.push(format!(
             "Cost: {} session · {} today",
@@ -154,6 +159,7 @@ mod tests {
             total_input_tokens: Some(1_234_567),
             total_cache_hit_tokens: Some(987_654),
             total_cache_creation_tokens: Some(111),
+            total_reasoning_tokens: Some(4_096),
             last_active_at: None,
             skills: vec![],
             recent_messages: vec![],
@@ -197,6 +203,7 @@ Output: 12345
 Total input: 1234567
 Cache hits: 987654
 Cache create: 111
+Reasoning: 4096
 Cost: $0.4200 session · $1.2300 today
 Files (2):
 + src/new.rs
@@ -216,6 +223,7 @@ Files (2):
         t.total_input_tokens = None;
         t.total_cache_hit_tokens = None;
         t.total_cache_creation_tokens = None;
+        t.total_reasoning_tokens = None;
         t.changed_files = None;
         t.cost = None;
         t.pattern = None;

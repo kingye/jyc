@@ -55,6 +55,22 @@ pub async fn read_total_cache_creation_tokens(topic_path: &Path) -> Option<u64> 
     cache_creation
 }
 
+/// Read accumulated reasoning (thinking) tokens from the agent session
+/// state file. Returns `None` when the file is missing, malformed, or the
+/// accumulated value is zero — zero covers both "no calls yet" and
+/// "provider doesn't break out reasoning tokens".
+///
+/// Kept separate from `read_token_state` rather than widening its tuple,
+/// mirroring `read_session_cost`: one extra read of an already
+/// page-cached file is cheaper than threading a seventh element through
+/// every tuple consumer.
+pub async fn read_total_reasoning_tokens(topic_path: &Path) -> Option<u64> {
+    let agent_path = topic_path.join(".jyc").join("agent-session.json");
+    let content = tokio::fs::read_to_string(&agent_path).await.ok()?;
+    let state = serde_json::from_str::<AgentSessionState>(&content).ok()?;
+    (state.total_reasoning_tokens > 0).then_some(state.total_reasoning_tokens)
+}
+
 /// Read the accumulated cost of the current session.
 ///
 /// Returns `None` when the file is missing, malformed, or the cost is
@@ -135,6 +151,8 @@ struct AgentSessionState {
     #[serde(default)]
     #[allow(dead_code)]
     total_cache_creation_tokens: u64,
+    #[serde(default)]
+    total_reasoning_tokens: u64,
     #[serde(default)]
     max_input_tokens: u64,
     #[serde(default)]

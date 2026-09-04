@@ -543,6 +543,7 @@ impl AgentService for JycAgentService {
             result.output_tokens,
             result.total_cache_hit_tokens,
             result.total_cache_creation_tokens,
+            result.total_reasoning_tokens,
             context_window,
             summary_provider,
             auto_reset_threshold,

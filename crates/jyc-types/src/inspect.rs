@@ -264,6 +264,12 @@ pub struct TopicInfo {
     /// description.
     #[serde(default)]
     pub total_cache_creation_tokens: Option<u64>,
+    /// Accumulated reasoning (thinking) tokens across all LLM calls in
+    /// this session — the hidden chain-of-thought share of the output,
+    /// already included in `output_tokens`. Informational only; `None`
+    /// when zero or reported by no provider.
+    #[serde(default)]
+    pub total_reasoning_tokens: Option<u64>,
     /// Recent activity events (newest first, max ~20)
     #[serde(default)]
     pub activity: Vec<ActivityEntry>,
@@ -497,6 +503,7 @@ mod tests {
                 total_input_tokens: Some(45000),
                 total_cache_hit_tokens: None,
                 total_cache_creation_tokens: None,
+                total_reasoning_tokens: None,
                 activity: vec![],
                 last_active_at: None,
                 skills: vec!["coding-principles".to_string(), "dev-workflow".to_string()],

@@ -145,6 +145,18 @@
 
 ### Fixed
 
+- **Opaque "unknown Responses API error" on streamed failures.** The
+  Responses provider extracted error text only from the official
+  top-level `message` field, so gateways emitting Chat-Completions-style
+  nested errors (`{"type":"error","error":{"message":...}}`) or any
+  other shape surfaced a generic "unknown" string. Error extraction now
+  also checks nested `error.message` / string forms, and — when nothing
+  matches — embeds the raw payload (bounded) in the error message so
+  failures stay diagnosable from logs. Additionally, streamed error
+  events whose text indicates rate limiting or overload (e.g. "rate
+  limit", "overloaded", "429") are now classified as throttled and get
+  the patient retry schedule instead of dying immediately as terminal.
+
 - **HTTP 400 when replaying mixed-format history after `/model` switch.**
   A topic that previously ran on an Anthropic provider persists assistant
   messages as content-block arrays (`tool_use` blocks, `tool_result` blocks

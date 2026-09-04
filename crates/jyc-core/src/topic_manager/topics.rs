@@ -551,7 +551,6 @@ impl TopicManager {
                 skills,
                 recent_messages: vec![], // Filled by InspectServer from event bus
                 thinking_text: None,     // Filled by InspectServer from event bus
-                thinking_blocks: vec![], // Filled by InspectServer from event bus
                 topic_path: Some(topic_path.clone()),
                 branch: branch_for_topic_path(&topic_path),
                 changed_files: changed_files_for_topic_path(&topic_path),

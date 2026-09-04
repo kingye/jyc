@@ -82,9 +82,6 @@ pub struct TopicActivityState {
     pub recent_messages: VecDeque<ChatMessageEntry>,
     /// Latest AI thinking/reasoning text (full, untruncated).
     pub thinking_text: Option<String>,
-    /// All thinking blocks of the current processing turn (arrival order).
-    /// Cleared when a processing cycle starts or completes.
-    pub thinking_blocks: Vec<String>,
     /// Monotonic per-topic counter used to assign unique `id` to each entry
     /// and chat message. Wraps to 0 after `u64::MAX` (effectively never).
     pub next_id: u64,
@@ -313,7 +310,6 @@ impl InspectServer {
                 topic.activity = state.entries.iter().cloned().collect();
                 topic.recent_messages = state.recent_messages.iter().cloned().collect();
                 topic.thinking_text = state.thinking_text.clone();
-                topic.thinking_blocks = state.thinking_blocks.clone();
                 if state.is_processing {
                     topic.status = TopicStatus::Processing;
                 } else if state.has_error {

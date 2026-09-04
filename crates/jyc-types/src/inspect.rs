@@ -280,12 +280,6 @@ pub struct TopicInfo {
     /// Set while the topic is processing and thinking is enabled; cleared on completion.
     #[serde(default)]
     pub thinking_text: Option<String>,
-    /// All thinking blocks of the current processing turn (full text,
-    /// in arrival order). Cleared when a processing cycle starts or
-    /// completes. Lets late-joining clients see every block of the
-    /// in-flight turn, not just the latest.
-    #[serde(default)]
-    pub thinking_blocks: Vec<String>,
     /// Filesystem path for this topic (may differ from workspace/name when
     /// a pattern's `topic_path` override is active).
     #[serde(default)]
@@ -508,7 +502,6 @@ mod tests {
                 skills: vec!["coding-principles".to_string(), "dev-workflow".to_string()],
                 recent_messages: vec![],
                 thinking_text: None,
-                thinking_blocks: vec![],
                 topic_path: None,
                 branch: None,
                 changed_files: None,

@@ -19,6 +19,7 @@ use crate::command::custom_handler::CustomCommandHandler;
 use crate::command::exchange_handler::ExchangeCommandHandler;
 use crate::command::handler::CommandContext;
 use crate::command::help_handler::HelpCommandHandler;
+use crate::command::info_handler::InfoCommandHandler;
 use crate::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
 use crate::command::model_handler::ModelCommandHandler;
 use crate::command::new_handler::NewCommandHandler;
@@ -146,6 +147,7 @@ pub(crate) async fn process_message(
     command_registry.register(Box::new(ThinkingCommandHandler));
     command_registry.register(Box::new(ExchangeCommandHandler::new(topic_manager.clone())));
     command_registry.register(Box::new(ContextCommandHandler));
+    command_registry.register(Box::new(InfoCommandHandler::new(topic_manager.clone())));
 
     // User-defined commands from config.toml `[[commands]]`. Registered last,
     // but `register()` warns on collisions and config validation rejects

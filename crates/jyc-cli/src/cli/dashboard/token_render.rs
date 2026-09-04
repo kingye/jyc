@@ -9,7 +9,7 @@
 //! Kept module-private (`pub(super)`) — these are TUI internals, not part
 //! of the dashboard's public surface.
 
-use jyc_types::TopicSummary;
+use jyc_types::{TopicSummary, format_amount};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
@@ -97,23 +97,6 @@ pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicSummary) 
             Style::default().add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(format!("{cache_creation}")));
-    }
-}
-
-/// Format a cost amount for display.
-///
-/// Renders `$` for USD and `¥` for CNY (the two currencies the feature
-/// was specified against); any other label is shown as a suffix, so an
-/// unrecognised currency still reads correctly rather than being
-/// mislabelled with the wrong symbol.
-///
-/// Four decimals: a single cheap call can cost well under a cent, and
-/// rounding to 2 places would display it as `0.00`.
-fn format_amount(amount: f64, currency: &str) -> String {
-    match currency {
-        "USD" => format!("${amount:.4}"),
-        "CNY" => format!("¥{amount:.4}"),
-        other => format!("{amount:.4} {other}"),
     }
 }
 

@@ -192,6 +192,7 @@ pub const BUILTIN_COMMAND_NAMES: &[&str] = &[
     "/thinking",
     "/exchange",
     "/context",
+    "/info",
 ];
 
 /// General application settings.

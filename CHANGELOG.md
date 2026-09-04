@@ -113,6 +113,16 @@
 
 ### Fixed
 
+- Feishu progress card elapsed time no longer includes queue wait: the
+  card clock was captured when the inbound message arrived, so a message
+  queued behind a busy topic showed the previous run's processing time
+  on top of its own. The clock now resets when the run's fresh
+  `ProcessingStarted` arrives, matching the TUI's elapsed-time display.
+- Feishu progress card now appears for custom slash commands (e.g.
+  `/review`): the watcher was skipped for every `/`-prefixed message,
+  but custom commands inject a prompt and continue into an agent run.
+  Only built-in command names (which reply without an agent run) are
+  skipped now.
 - The tail of each thinking block no longer goes missing in live
   thinking displays: the stream loop only published throttled snapshots,
   so reasoning accumulated after the last publish of a request was never

@@ -611,8 +611,11 @@ fn parse_responses_event(data: &str, state: &mut ResponsesStreamState) -> Option
                 .and_then(|r| r.get("error"))
                 .and_then(|e| e.get("message"))
                 .and_then(|m| m.as_str())
-                .unwrap_or(event_type);
-            events.push(StreamEvent::Error(msg.to_string()));
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    extract_responses_error(value.get("response").unwrap_or(&value))
+                });
+            events.push(StreamEvent::Error(msg));
         }
         "response.incomplete" => {
             // Incomplete carries the reason under `incomplete_details`
@@ -622,16 +625,11 @@ fn parse_responses_event(data: &str, state: &mut ResponsesStreamState) -> Option
                 .and_then(|r| r.get("incomplete_details"))
                 .and_then(|d| d.get("reason"))
                 .and_then(|m| m.as_str())
-                .unwrap_or(event_type);
-            events.push(StreamEvent::Error(format!("response incomplete: {msg}")));
+                .map(|r| format!("response incomplete: {r}"))
+                .unwrap_or_else(|| extract_responses_error(&value));
+            events.push(StreamEvent::Error(msg));
         }
-        "error" => {
-            let msg = value
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown Responses API error");
-            events.push(StreamEvent::Error(msg.to_string()));
-        }
+        "error" => events.push(StreamEvent::Error(extract_responses_error(&value))),
         _ => {}
     }
 
@@ -640,6 +638,33 @@ fn parse_responses_event(data: &str, state: &mut ResponsesStreamState) -> Option
     } else {
         Some(events)
     }
+}
+
+/// Best-effort extraction of an error message from a Responses API error
+/// payload. The official shape puts `message` at the top level, but
+/// gateways may nest it under `error` (Chat-Completions style) or use a
+/// shape we don't know — in that case embed the raw payload (bounded) so
+/// the failure stays diagnosable from logs instead of degrading to a
+/// generic "unknown" string.
+fn extract_responses_error(value: &serde_json::Value) -> String {
+    if let Some(msg) = value.get("message").and_then(|v| v.as_str()) {
+        return msg.to_string();
+    }
+    if let Some(err) = value.get("error") {
+        if let Some(msg) = err.get("message").and_then(|v| v.as_str()) {
+            return msg.to_string();
+        }
+        if let Some(s) = err.as_str() {
+            return s.to_string();
+        }
+        if !err.is_null() {
+            return err.to_string();
+        }
+    }
+    format!(
+        "unrecognized Responses API error payload: {}",
+        jyc_utils::helpers::truncate_str_ellipsis(&value.to_string(), 500)
+    )
 }
 
 #[cfg(test)]
@@ -745,6 +770,49 @@ mod tests {
         // A stray output_item.done without a matching added emits nothing.
         let events = parse_responses_event(&item_done.to_string(), &mut state);
         assert!(events.is_none());
+    }
+
+    #[test]
+    #[test]
+    fn parse_error_event_nested_gateway_shape() {
+        let mut state = ResponsesStreamState::default();
+        let events = parse_responses_event(
+            r#"{"type":"error","error":{"code":"rate_limit_exceeded","message":"slow down"}}"#,
+            &mut state,
+        )
+        .unwrap();
+        assert!(matches!(&events[0], StreamEvent::Error(m) if m == "slow down"));
+    }
+
+    #[test]
+    fn parse_error_event_unknown_shape_embeds_raw_payload() {
+        let mut state = ResponsesStreamState::default();
+        let events =
+            parse_responses_event(r#"{"type":"error","weird_field":"some clue"}"#, &mut state)
+                .unwrap();
+        match &events[0] {
+            StreamEvent::Error(m) => {
+                assert!(m.contains("unrecognized Responses API error payload"));
+                assert!(m.contains("some clue"));
+            }
+            other => panic!("expected Error event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_failed_without_error_object_embeds_raw_payload() {
+        let mut state = ResponsesStreamState::default();
+        let events = parse_responses_event(
+            r#"{"type":"response.failed","response":{"status":"failed","error":null}}"#,
+            &mut state,
+        )
+        .unwrap();
+        match &events[0] {
+            StreamEvent::Error(m) => {
+                assert!(m.contains("unrecognized Responses API error payload"))
+            }
+            other => panic!("expected Error event, got {other:?}"),
+        }
     }
 
     #[test]

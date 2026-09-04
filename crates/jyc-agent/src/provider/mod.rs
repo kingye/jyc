@@ -695,11 +695,34 @@ pub fn classify_retry(err: &anyhow::Error) -> RetryClass {
         };
     }
 
+    // Streamed provider error events ("LLM error: ...") carry no HTTP
+    // status; classify rate-limit/overload text as throttled so a
+    // mid-stream 429-in-disguise still gets the patient retry schedule
+    // instead of dying as Terminal.
+    if lower.starts_with("llm error:") && matches_throttled_pattern(&lower) {
+        return RetryClass::Throttled;
+    }
+
     if matches_transient_pattern(&lower) {
         RetryClass::Transient
     } else {
         RetryClass::Terminal
     }
+}
+
+/// Message-text patterns indicating a throttling/overload condition inside
+/// a streamed provider error event (no HTTP status available).
+fn matches_throttled_pattern(lower_msg: &str) -> bool {
+    const THROTTLED_PATTERNS: &[&str] = &[
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "429",
+        "overload",
+        "capacity",
+        "quota",
+    ];
+    THROTTLED_PATTERNS.iter().any(|p| lower_msg.contains(p))
 }
 
 /// Map an HTTP status code to a retry class: 429/502/503/504 are throttled,
@@ -875,6 +898,26 @@ mod classifier_tests {
             extract_diag_status("foo (HTTP 429 body: {\"error\": ...})"),
             Some(429)
         );
+    }
+
+    #[test]
+    fn streamed_llm_error_rate_limit_is_throttled() {
+        // Mid-stream provider error events carry no HTTP status; a
+        // rate-limit text must still get the throttled retry schedule.
+        let e = err("LLM error: rate limit exceeded, please retry later");
+        assert_eq!(classify_retry(&e), RetryClass::Throttled);
+    }
+
+    #[test]
+    fn streamed_llm_error_overloaded_is_throttled() {
+        let e = err("LLM error: model overloaded");
+        assert_eq!(classify_retry(&e), RetryClass::Throttled);
+    }
+
+    #[test]
+    fn streamed_llm_error_other_is_terminal() {
+        let e = err("LLM error: invalid tool arguments in request");
+        assert_eq!(classify_retry(&e), RetryClass::Terminal);
     }
 
     #[test]

@@ -177,7 +177,15 @@ impl AgentService for JycAgentService {
         // 0. Snapshot the live agent config once for this request.
         //    Re-reads from the shared `ArcSwap` on every call, so any
         //    config reload (TUI `reload config`) takes effect immediately.
-        let agent_cfg = self.agent_config();
+        let mut agent_cfg = self.agent_config();
+        // Expand `{channel}`/`{topic}` placeholders in provider `params`
+        // (e.g. OpenAI `prompt_cache_key`) so this session's requests get
+        // their own cache-affinity bucket.
+        provider::expand_params_placeholders(
+            &mut agent_cfg.providers,
+            &self.channel_name,
+            topic_name,
+        );
 
         // 0b. Load topic-level (L3) `<topic>/.jyc/config.toml` once and
         //     share the result with both the [agent] model-resolution block
@@ -583,7 +591,14 @@ impl AgentService for JycAgentService {
     ) -> Result<()> {
         // Read the live agent config so reload of small_model / providers
         // takes effect without a server restart.
-        let agent_cfg = self.agent_config();
+        let mut agent_cfg = self.agent_config();
+        // Same `{channel}`/`{topic}` expansion as process() — otherwise a
+        // templated `prompt_cache_key` would reach the provider literally.
+        provider::expand_params_placeholders(
+            &mut agent_cfg.providers,
+            &self.channel_name,
+            topic_name,
+        );
         // Use the agent config's small_model as the compression provider if available
         let small_model = agent_cfg.small_model.as_deref();
         let provider: Option<Box<dyn provider::Provider>> =

@@ -24,7 +24,8 @@
 //! |---------------|------------------------------------------------|-----------------------------------|
 //! | DeepSeek      | `prompt_cache_hit_tokens`                      | `usage` root                      |
 //! | Kimi          | `cached_tokens`                                | `usage` root                      |
-//! | OpenAI        | `cached_tokens`                                | `usage.prompt_tokens_details`     |
+//! | OpenAI        | `cached_tokens` (read),                        | `usage.prompt_tokens_details`     |
+//! |               | `cache_write_tokens` (write, GPT-5.6+)         | `usage.prompt_tokens_details`     |
 //! | 火山引擎      | `cached_tokens`                                | `usage.prompt_tokens_details`     |
 //! | MiniMax       | `cached_tokens`                                | `usage.prompt_tokens_details`     |
 //! | Anthropic     | `cache_read_input_tokens` (read)               | `usage` root                      |
@@ -132,6 +133,27 @@ pub fn extract_anthropic_cache_split(usage: &Value) -> (u64, u64) {
         field("cache_read_input_tokens"),
         field("cache_creation_input_tokens"),
     )
+}
+
+/// OpenAI-specific: extract the read and write cache buckets separately.
+/// Returns `(cache_read_tokens, cache_creation_tokens)`.
+///
+/// GPT-5.6+ reports both under `usage.prompt_tokens_details`:
+/// `cached_tokens` (reads) and `cache_write_tokens` (writes). Older
+/// OpenAI models and the other OpenAI-compatible vendors only have
+/// `cached_tokens`; absent or non-numeric fields default to `0`, so
+/// this is safe to call on every OpenAI-compatible response. `prompt`
+///-side totals already include both buckets, matching the
+/// [`jyc_types::pricing::compute_cost_split`] contract.
+pub fn extract_openai_cache_split(usage: &Value) -> (u64, u64) {
+    let details = usage.get("prompt_tokens_details");
+    let field = |name: &str| {
+        details
+            .and_then(|d| d.get(name))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    };
+    (field("cached_tokens"), field("cache_write_tokens"))
 }
 
 #[cfg(test)]
@@ -326,6 +348,7 @@ mod tests {
             currency: None,
             time_windows: Vec::new(),
             utc_offset: None,
+            long_context: None,
         };
         let usage = json!({
             "input_tokens": 2_800,
@@ -410,5 +433,33 @@ mod tests {
             "cache_creation_input_tokens": null,
         });
         assert_eq!(extract_anthropic_cache_split(&usage), (0, 0));
+    }
+
+    /// GPT-5.6 shape: read and write buckets under
+    /// `prompt_tokens_details`, alongside the other detail fields.
+    #[test]
+    fn openai_cache_split_gpt56_shape() {
+        let usage = json!({
+            "prompt_tokens": 1640,
+            "completion_tokens": 102,
+            "total_tokens": 1742,
+            "prompt_tokens_details": {
+                "audio_tokens": 0,
+                "cached_tokens": 1200,
+                "cache_write_tokens": 300,
+            },
+            "completion_tokens_details": { "reasoning_tokens": 109 },
+        });
+        assert_eq!(extract_openai_cache_split(&usage), (1200, 300));
+    }
+
+    /// Pre-5.6 OpenAI shape (no `cache_write_tokens`) and vendors
+    /// without any details object both degrade to zeros for the
+    /// missing buckets.
+    #[test]
+    fn openai_cache_split_missing_fields() {
+        let legacy = json!({ "prompt_tokens_details": { "cached_tokens": 64 } });
+        assert_eq!(extract_openai_cache_split(&legacy), (64, 0));
+        assert_eq!(extract_openai_cache_split(&json!({})), (0, 0));
     }
 }

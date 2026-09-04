@@ -2201,6 +2201,7 @@ mod billing_integration {
             currency: Some("USD".to_string()),
             time_windows: Vec::new(),
             utc_offset: None,
+            long_context: None,
         }
     }
 
@@ -2428,6 +2429,7 @@ mod billing_integration {
                 cache_creation_per_million: None,
             }],
             utc_offset: None,
+            long_context: None,
         };
 
         let (cost, rates) = compute_cost_split_with_rates(&p, 1000, 100, 0, 0);

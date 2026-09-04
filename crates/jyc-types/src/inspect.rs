@@ -193,6 +193,23 @@ pub struct TopicCost {
     pub currency: String,
 }
 
+/// Format a cost amount for display.
+///
+/// Renders `$` for USD and `¥` for CNY (the two currencies the feature
+/// was specified against); any other label is shown as a suffix, so an
+/// unrecognised currency still reads correctly rather than being
+/// mislabelled with the wrong symbol.
+///
+/// Four decimals: a single cheap call can cost well under a cent, and
+/// rounding to 2 places would display it as `0.00`.
+pub fn format_amount(amount: f64, currency: &str) -> String {
+    match currency {
+        "USD" => format!("${amount:.4}"),
+        "CNY" => format!("¥{amount:.4}"),
+        other => format!("{amount:.4} {other}"),
+    }
+}
+
 /// Information about a configured channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelInfo {

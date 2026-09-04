@@ -2,6 +2,12 @@
 
 ### Added
 
+- New `/info` slash command (all channels): replies with the topic's info
+  mirroring the dashboard chat screen's Topic Info pane — name, channel,
+  pattern, model, mode, branch, status, token usage, cache stats, cost,
+  and changed files. Reads the same `TopicManager::list_topics` snapshot
+  the TUI renders (#685)
+
 - **Visible failure feedback when agent processing errors.** If the agent
   loop terminates with an error (e.g., provider context-limit or auth
   failure), a short `⚠️ Processing failed: …` reply is now sent through

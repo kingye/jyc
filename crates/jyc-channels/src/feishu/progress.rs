@@ -128,6 +128,12 @@ pub fn spawn_progress_watcher(
         // replayed events stay filtered. A fresh ProcessingCompleted
         // while waiting belongs to a *previous* run — ignored: this
         // message may still be queued behind it.
+        // `start` is captured by the caller at message *arrival*. A
+        // message queued behind a busy topic would otherwise count the
+        // queue wait as processing time, so the card clock is reset when
+        // this run actually starts (until then the watcher-lifetime bound
+        // still uses the original `start`).
+        let mut start = start;
         let (status_message_id, mut last_text) = loop {
             // Bounded wait: even on a completely silent topic (no events
             // at all) the watcher exits once MAX_LIFETIME is exceeded.
@@ -145,6 +151,9 @@ pub fn spawn_progress_watcher(
             if !is_start {
                 continue;
             }
+            // Processing actually starts now — exclude the queue wait
+            // from the elapsed time shown on the card.
+            start = std::time::Instant::now();
             let display = topic_manager.topic_display_state(&topic).await;
             let text = progress_card(
                 "⏳ 处理中",

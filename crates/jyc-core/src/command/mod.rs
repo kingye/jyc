@@ -5,6 +5,7 @@ pub mod custom_handler;
 pub mod exchange_handler;
 pub mod handler;
 pub mod help_handler;
+pub mod info_handler;
 pub mod mode_handler;
 pub mod model_handler;
 pub mod new_handler;
@@ -83,6 +84,10 @@ pub fn all_commands() -> Vec<CommandInfo> {
             name: "/context".into(),
             description: "View or change the context strategy / debug-dump wire payload".into(),
         },
+        CommandInfo {
+            name: "/info".into(),
+            description: "Show topic info (mode, model, tokens, cost, files)".into(),
+        },
     ]
 }
 
@@ -131,6 +136,7 @@ mod tests {
             "/thinking",
             "/exchange",
             "/context",
+            "/info",
         ] {
             assert!(
                 names.contains(expected),

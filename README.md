@@ -415,10 +415,49 @@ equal to `input_per_million` for providers that bill cache hits normally.
 
 `cache_creation_per_million` is **optional** and defaults to
 `cache_hit_per_million` (i.e. cache writes bill at the same rate as cache
-reads). Anthropic is the only provider that distinguishes cache writes
-from reads — its `cache_creation_input_tokens` bills at ~1.25× the input
-rate. Set this field only for Anthropic providers; non-Anthropic providers
-that surface a single cache bucket ignore it.
+reads). Two providers distinguish cache writes from reads: Anthropic
+(`cache_creation_input_tokens`, ~1.25× the input rate) and GPT-5.6
+(`usage.prompt_tokens_details.cache_write_tokens`). Set this field only
+for them; other providers surface a single cache bucket and ignore it.
+
+**Long-context pricing.** Providers like GPT-5.6 re-bill the *whole*
+request at elevated rates once its input exceeds a threshold (past 272K
+input tokens: input 2×, output 1.5×, cache rates higher too). Add a
+`long_context` block to the model's `pricing`:
+
+```toml
+[agent.providers.openai.models."gpt-5.6-sol"]
+model_id = "gpt-5.6-sol"
+pricing = { input_per_million = 3.42, output_per_million = 20.15, cache_hit_per_million = 0.34, cache_creation_per_million = 4.27, currency = "CNY", long_context = {
+  # The request's total input (cache buckets included) exceeding
+  # `threshold` switches ALL FOUR rates for that request — including
+  # rates a matching `time_windows` entry resolved.
+  threshold = 272_000,
+  input_per_million = 6.77,
+  output_per_million = 30.19,
+  # Optional; an omitted cache-hit rate inherits the resolved base
+  # rate, and an omitted cache-creation rate collapses writes into
+  # the resolved cache-hit rate.
+  cache_hit_per_million = 0.68,
+  cache_creation_per_million = 8.46,
+} }
+```
+
+**Opt-in prompt caching (GPT-5.6).** GPT-5.6 does not cache by default;
+enable implicit caching by injecting `prompt_cache_key` /
+`prompt_cache_options` into every request via `params`. Placeholders
+`{channel}` and `{topic}` expand per session so each topic gets its own
+cache-affinity bucket (cache *hits* are always matched by prompt-prefix
+content — the key only stops different workloads from evicting each
+other's entries):
+
+```toml
+[agent.providers.openai.models."gpt-5.6-sol"]
+params = { prompt_cache_key = "jyc-{channel}-{topic}", prompt_cache_options = { mode = "implicit", ttl = "30m" } }
+```
+
+Explicit mode (message-level `cache_control` breakpoints) is not
+supported.
 
 Anthropic cache entries live 5 minutes by default, so turns more than 5
 minutes apart re-create the whole prefix. Setting `cache_ttl = "1h"` on an
@@ -429,9 +468,9 @@ turns are minutes-to-an-hour apart. Writes then bill at 2× the input rate
 instead of 1.25× — pair it with `cache_creation_per_million` set to the 1h
 write rate to keep the cost rows accurate.
 
-For Anthropic sessions the chat info pane and dashboard topic info
-area show two cache rows: `Cache hits: N` (reads only) followed by
-`Cache create: N` (writes). Non-Anthropic providers show a single
+For Anthropic and GPT-5.6 sessions the chat info pane and dashboard
+topic info area show two cache rows: `Cache hits: N` (reads only)
+followed by `Cache create: N` (writes). Other providers show a single
 `Cache hits: N` row as before. The two rows map directly to
 `cache_read_tokens * cache_hit_per_million` and
 `cache_creation_tokens * cache_creation_per_million` in the cost formula.

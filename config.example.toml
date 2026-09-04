@@ -436,6 +436,25 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # #   { start = "00:00", end = "00:00", days = ["sat", "sun"], input_per_million = 1.0, output_per_million = 4.0 },
 # # ] }
 # #
+# # Long-context pricing: providers like GPT-5.6 re-bill the WHOLE request
+# # at elevated rates once its input (cache buckets included) exceeds a
+# # threshold. Add `long_context` to the pricing block; cache rates omitted
+# # on the tier inherit/collapse like window fields:
+# #
+# # pricing = { input_per_million = 3.42, output_per_million = 20.15, cache_hit_per_million = 0.34, cache_creation_per_million = 4.27, currency = "CNY", long_context = {
+# #   threshold = 272_000,
+# #   input_per_million = 6.77, output_per_million = 30.19,
+# #   cache_hit_per_million = 0.68, cache_creation_per_million = 8.46,
+# # } }
+# #
+# # Opt-in prompt caching (GPT-5.6): inject `prompt_cache_key` /
+# # `prompt_cache_options` into every request via `params`. Placeholders
+# # `{channel}` / `{topic}` expand per session so each topic gets its own
+# # cache-affinity bucket (cache hits are always matched by prompt-prefix
+# # content; the key only stops workloads evicting each other):
+# #
+# # params = { prompt_cache_key = "jyc-{channel}-{topic}", prompt_cache_options = { mode = "implicit", ttl = "30m" } }
+# #
 # Two figures are tracked per topic:
 #   - session: resets when the agent session resets (context auto-reset,
 #     /reset, or a model switch to a smaller context window)

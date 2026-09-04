@@ -177,7 +177,15 @@ impl AgentService for JycAgentService {
         // 0. Snapshot the live agent config once for this request.
         //    Re-reads from the shared `ArcSwap` on every call, so any
         //    config reload (TUI `reload config`) takes effect immediately.
-        let agent_cfg = self.agent_config();
+        let mut agent_cfg = self.agent_config();
+        // Expand `{channel}`/`{topic}` placeholders in provider `params`
+        // (e.g. OpenAI `prompt_cache_key`) so this session's requests get
+        // their own cache-affinity bucket.
+        provider::expand_params_placeholders(
+            &mut agent_cfg.providers,
+            &self.channel_name,
+            topic_name,
+        );
 
         // 0b. Load topic-level (L3) `<topic>/.jyc/config.toml` once and
         //     share the result with both the [agent] model-resolution block

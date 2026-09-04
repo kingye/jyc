@@ -564,6 +564,42 @@ pub struct ModelPricing {
     /// discount schedule). Defaults to UTC when omitted or unparseable.
     #[serde(default)]
     pub utc_offset: Option<String>,
+    /// Long-context price tier (e.g. GPT-5.6: the whole request switches
+    /// to higher rates once its input exceeds a threshold). `None`
+    /// (default) bills every request at the flat/window rates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_context: Option<LongContextPricing>,
+}
+
+/// Elevated rates a provider charges when a single request's input
+/// exceeds `threshold` tokens (e.g. GPT-5.6: input doubles and output
+/// grows 50% past 272K input tokens).
+///
+/// The tier applies to the **whole request** — when the provider-reported
+/// `input_tokens` (total prompt size, *including* cache read/write
+/// buckets) is strictly greater than `threshold`, all four rates are
+/// replaced by the tier's rates. A cache-hit rate left unset inherits
+/// the already-resolved base rate (flat or matching `time_windows`
+/// entry); a cache-creation rate left unset collapses writes into the
+/// resolved cache-hit rate, mirroring
+/// [`ModelPricing::cache_creation_per_million`].
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct LongContextPricing {
+    /// Total input tokens (cache buckets included) **above** which the
+    /// long-context rates apply.
+    pub threshold: u64,
+    /// Price per 1M uncached input tokens in the long-context tier.
+    pub input_per_million: f64,
+    /// Price per 1M output tokens in the long-context tier.
+    pub output_per_million: f64,
+    /// Price per 1M prompt-cache-hit (read) tokens in the tier.
+    /// `None` inherits the resolved base cache-hit rate.
+    #[serde(default)]
+    pub cache_hit_per_million: Option<f64>,
+    /// Price per 1M prompt-cache-creation (write) tokens in the tier.
+    /// `None` collapses writes into the tier's cache-hit rate.
+    #[serde(default)]
+    pub cache_creation_per_million: Option<f64>,
 }
 
 /// Rates for one time-of-day window within [`ModelPricing`].

@@ -10,7 +10,7 @@ use futures::StreamExt;
 use serde_json;
 use std::collections::VecDeque;
 
-use crate::provider::usage::extract_cache_hit_tokens;
+use crate::provider::usage::{extract_cache_hit_tokens, extract_openai_cache_split};
 use crate::provider::{EventStream, Provider};
 use crate::types::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 
@@ -752,15 +752,17 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         if input > 0 || output > 0 {
-            let cache_hit = extract_cache_hit_tokens(usage);
+            // OpenAI shape: GPT-5.6+ reports read AND write buckets
+            // under `prompt_tokens_details`. Other OpenAI-compat
+            // vendors report a single read bucket (root fields), which
+            // `extract_cache_hit_tokens` still finds.
+            let (cache_hit, cache_write) = extract_openai_cache_split(usage);
+            let cache_hit = cache_hit.max(extract_cache_hit_tokens(usage));
             events.push(StreamEvent::Usage {
                 input_tokens: input,
                 output_tokens: output,
                 cache_hit_tokens: cache_hit,
-                // OpenAI-compat providers (OpenAI / DeepSeek / Kimi /
-                // 火山引擎 / MiniMax) surface only a single cache
-                // bucket; no creation/write field exists for them.
-                cache_creation_tokens: 0,
+                cache_creation_tokens: cache_write,
             });
         }
     }

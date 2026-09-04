@@ -49,6 +49,11 @@
   `jyc serve` afterward for it to take effect; existing dashboards must
   reconnect with `jyc dashboard`.
 
+- The Feishu live progress card now shows a 💭 thinking preview — the tail
+  (≤1,500 chars) of the latest cumulative thinking snapshot — while
+  processing, and retains it on the finalized `✅/❌` card. Respects
+  `/thinking hide` (no thinking events are published at all).
+
 - **Feishu live progress indicator.** Piped Feishu messages now get a
   status card in the chat, updated as the agent works (elapsed time, tool
   call count, and the latest tool with its target — e.g. `edit —

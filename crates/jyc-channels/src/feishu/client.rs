@@ -619,15 +619,12 @@ impl FeishuClient {
         Ok(image_bytes)
     }
 
-    /// Edit the content of an already-sent interactive-card message.
+    /// Edit an already-sent interactive-card message with new markdown text.
     ///
-    /// Calls `PATCH /open-apis/im/v1/messages/{message_id}`. Only messages
-    /// sent by the bot itself can be updated. Used by the progress watcher
-    /// to refresh the live status card as processing advances.
+    /// Thin wrapper around [`Self::update_card_message`] that wraps the text
+    /// in a single-element card.
     pub async fn update_text_message(&self, message_id: &str, text: &str) -> Result<()> {
-        let token = self.get_token().await?;
-        let url = update_message_url(&self.config.base_url, message_id);
-        let card_content = serde_json::json!({
+        let card = serde_json::json!({
             "elements": [
                 {
                     "tag": "markdown",
@@ -635,8 +632,24 @@ impl FeishuClient {
                 }
             ]
         });
+        self.update_card_message(message_id, &card).await
+    }
+
+    /// Replace the content of an already-sent interactive-card message with
+    /// the given card JSON.
+    ///
+    /// Calls `PATCH /open-apis/im/v1/messages/{message_id}`. Only messages
+    /// sent by the bot itself can be updated. Used by the progress watcher
+    /// to refresh the live status card as processing advances.
+    pub async fn update_card_message(
+        &self,
+        message_id: &str,
+        card: &serde_json::Value,
+    ) -> Result<()> {
+        let token = self.get_token().await?;
+        let url = update_message_url(&self.config.base_url, message_id);
         let body = serde_json::json!({
-            "content": card_content.to_string(),
+            "content": card.to_string(),
         });
 
         let resp = self

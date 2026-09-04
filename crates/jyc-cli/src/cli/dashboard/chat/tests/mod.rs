@@ -18,8 +18,8 @@ fn history_fingerprint_stable_for_unchanged_input() {
         history_msg("ai", "world", Some("2026-08-13T10:00:05Z")),
     ];
     assert_eq!(
-        history_fingerprint(&msgs, 80),
-        history_fingerprint(&msgs, 80)
+        history_fingerprint(&msgs, 80, false),
+        history_fingerprint(&msgs, 80, false)
     );
 }
 
@@ -29,28 +29,28 @@ fn history_fingerprint_changes_on_message_mutations() {
         history_msg("user", "hello", Some("2026-08-13T10:00:00Z")),
         history_msg("ai", "world", Some("2026-08-13T10:00:05Z")),
     ];
-    let base = history_fingerprint(&msgs, 80);
+    let base = history_fingerprint(&msgs, 80, false);
 
     // New message pushed.
     let mut pushed = msgs.clone();
     pushed.push(history_msg("user", "again", None));
-    assert_ne!(base, history_fingerprint(&pushed, 80));
+    assert_ne!(base, history_fingerprint(&pushed, 80, false));
 
     // Streaming append to the last message's text.
     let mut streamed = msgs.clone();
     streamed[1].text.push_str(" more");
-    assert_ne!(base, history_fingerprint(&streamed, 80));
+    assert_ne!(base, history_fingerprint(&streamed, 80, false));
 
     // Last message timestamp set after the fact.
     let mut stamped = msgs.clone();
     stamped[1].timestamp = Some("2026-08-13T10:00:06Z".to_string());
-    assert_ne!(base, history_fingerprint(&stamped, 80));
+    assert_ne!(base, history_fingerprint(&stamped, 80, false));
 
     // Cleared history.
-    assert_ne!(base, history_fingerprint(&[], 80));
+    assert_ne!(base, history_fingerprint(&[], 80, false));
 
     // Pane resize (re-wrap needed).
-    assert_ne!(base, history_fingerprint(&msgs, 100));
+    assert_ne!(base, history_fingerprint(&msgs, 100, false));
 }
 
 #[test]
@@ -60,13 +60,13 @@ fn render_history_lines_deterministic_for_cache_reuse() {
         history_msg("ai", "world\nsecond line", Some("2026-08-13T10:00:05Z")),
     ];
     assert_eq!(
-        render_history_lines(&msgs, 80),
-        render_history_lines(&msgs, 80)
+        render_history_lines(&msgs, 80, false),
+        render_history_lines(&msgs, 80, false)
     );
     // Different width re-wraps — cache must not be reused.
     assert_ne!(
-        render_history_lines(&msgs, 80),
-        render_history_lines(&msgs, 20)
+        render_history_lines(&msgs, 80, false),
+        render_history_lines(&msgs, 20, false)
     );
 }
 
@@ -530,7 +530,7 @@ fn clear_live_transient_removes_stale_state_for_switched_topic() {
     app.chat.live_processing.insert(done.clone(), (true, false));
     app.chat
         .live_thinking
-        .insert(done.clone(), "old thinking".into());
+        .insert(done.clone(), vec!["old thinking".to_string()]);
     app.chat
         .live_processing
         .insert(busy.clone(), (false, false));
@@ -1198,8 +1198,179 @@ fn handle_ws_message_routes_thinking_to_live_buffer() {
     app.chat.handle_ws_message(&payload.to_string());
     assert_eq!(
         app.chat.live_thinking_for("github", "pr-1"),
-        Some("I am thinking about the problem")
+        Some(&["I am thinking about the problem".to_string()][..])
     );
+}
+
+#[test]
+fn thinking_events_accumulate_instead_of_overwriting() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut chat = ChatState::new(rx);
+    for text in ["first block", "second block", "third block"] {
+        chat.handle_live_event(&serde_json::json!({
+            "type": "thinking",
+            "channel": "chan",
+            "topic": "t1",
+            "text": text,
+        }));
+    }
+    assert_eq!(
+        chat.live_thinking_for("chan", "t1"),
+        Some(
+            &[
+                "first block".to_string(),
+                "second block".to_string(),
+                "third block".to_string()
+            ][..]
+        )
+    );
+}
+
+#[test]
+fn processing_start_clears_accumulated_thinking_blocks() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut chat = ChatState::new(rx);
+    chat.handle_live_event(&serde_json::json!({
+        "type": "thinking",
+        "channel": "chan",
+        "topic": "t1",
+        "text": "old round",
+    }));
+    chat.handle_live_event(&serde_json::json!({
+        "type": "processing",
+        "channel": "chan",
+        "topic": "t1",
+        "is_processing": true,
+        "has_error": false,
+    }));
+    assert!(chat.live_thinking_for("chan", "t1").is_none());
+}
+
+#[test]
+fn processing_complete_folds_thinking_into_pseudo_message() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.phase = ChatPhase::Chatting;
+    app.chat.channel = Some("chan".to_string());
+    app.chat.topic = Some("t1".to_string());
+
+    for text in ["block one", "block two"] {
+        app.chat.handle_live_event(&serde_json::json!({
+            "type": "thinking",
+            "channel": "chan",
+            "topic": "t1",
+            "text": text,
+        }));
+    }
+    app.chat.handle_live_event(&serde_json::json!({
+        "type": "processing",
+        "channel": "chan",
+        "topic": "t1",
+        "is_processing": false,
+        "has_error": false,
+    }));
+
+    assert!(app.chat.live_thinking_for("chan", "t1").is_none());
+    let thinking_msgs: Vec<_> = app
+        .chat
+        .messages
+        .iter()
+        .filter(|m| m.sender == "thinking")
+        .collect();
+    assert_eq!(thinking_msgs.len(), 1);
+    assert_eq!(thinking_msgs[0].text, "block one\n\nblock two");
+}
+
+#[test]
+fn processing_complete_drops_thinking_when_topic_not_open() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.phase = ChatPhase::Chatting;
+    app.chat.channel = Some("chan".to_string());
+    app.chat.topic = Some("other".to_string());
+
+    app.chat.handle_live_event(&serde_json::json!({
+        "type": "thinking",
+        "channel": "chan",
+        "topic": "t1",
+        "text": "unwatched round",
+    }));
+    app.chat.handle_live_event(&serde_json::json!({
+        "type": "processing",
+        "channel": "chan",
+        "topic": "t1",
+        "is_processing": false,
+        "has_error": false,
+    }));
+
+    assert!(app.chat.live_thinking_for("chan", "t1").is_none());
+    assert!(
+        app.chat.messages.iter().all(|m| m.sender != "thinking"),
+        "no pseudo-message for a topic that is not open"
+    );
+}
+
+#[test]
+fn leader_toggle_thinking_flips_expanded_flag() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    assert!(!app.chat.thinking_expanded);
+    execute_local_action(
+        &mut app,
+        &mut test_terminal(),
+        local_commands::LocalAction::ToggleThinking,
+    );
+    assert!(app.chat.thinking_expanded);
+    execute_local_action(
+        &mut app,
+        &mut test_terminal(),
+        local_commands::LocalAction::ToggleThinking,
+    );
+    assert!(!app.chat.thinking_expanded);
+}
+
+#[test]
+fn history_fingerprint_changes_on_thinking_expanded_flip() {
+    let msgs = vec![history_msg("user", "hi", None)];
+    assert_ne!(
+        history_fingerprint(&msgs, 80, false),
+        history_fingerprint(&msgs, 80, true)
+    );
+}
+
+#[test]
+fn render_history_thinking_collapsed_shows_summary_not_body() {
+    let msgs = vec![
+        history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
+        history_msg("thinking", "secret chain of thought body", None),
+        history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
+    ];
+    let lines = render_history_lines(&msgs, 80, false);
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect();
+    assert!(text.contains("💭 thinking — 28 chars"), "got: {text}");
+    assert!(!text.contains("secret chain of thought body"));
+    // The user→AI separator must still render across the thinking block.
+    assert!(text.contains("┄"), "separator lost across thinking: {text}");
+}
+
+#[test]
+fn render_history_thinking_expanded_shows_full_text() {
+    let msgs = vec![
+        history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
+        history_msg("thinking", "full chain of thought", None),
+        history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
+    ];
+    let lines = render_history_lines(&msgs, 80, true);
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect();
+    assert!(text.contains("full chain of thought"), "got: {text}");
 }
 
 #[test]

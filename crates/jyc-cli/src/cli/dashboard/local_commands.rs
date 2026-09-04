@@ -62,6 +62,9 @@ pub enum LocalAction {
     /// Open the `/` command popup (leader equivalent of typing `/` in
     /// an empty input).
     OpenCommandPopup,
+    /// Expand/collapse thinking display (live progress tail and the
+    /// completed-turn pseudo-messages in the chat history).
+    ToggleThinking,
 }
 
 /// Static metadata for one leader entry.
@@ -170,6 +173,13 @@ pub fn local_commands() -> &'static [LocalCommand] {
             scope: Chat,
             action: LocalAction::OpenExternalEditor,
             leader_keys: "o",
+        },
+        LocalCommand {
+            name: "toggle thinking",
+            description: "Expand/collapse thinking display",
+            scope: Chat,
+            action: LocalAction::ToggleThinking,
+            leader_keys: "t",
         },
         LocalCommand {
             name: "toggle mouse",

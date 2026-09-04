@@ -51,7 +51,9 @@
 
 - The Feishu live progress card now shows a 💭 thinking preview — the tail
   (≤1,500 chars) of the latest cumulative thinking snapshot — while
-  processing, and retains it on the finalized `✅/❌` card. Respects
+  processing. The finalized `✅/❌` card embeds the run's full thinking
+  (all LLM rounds, tail-capped at 8,000 chars to stay under the card size
+  limit) in a collapsed, expandable panel (Feishu client ≥ V7.9). Respects
   `/thinking hide` (no thinking events are published at all).
 
 - **Feishu live progress indicator.** Piped Feishu messages now get a

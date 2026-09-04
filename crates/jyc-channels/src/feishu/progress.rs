@@ -29,6 +29,11 @@ const PROGRESS_PATCH_INTERVAL: std::time::Duration = std::time::Duration::from_s
 /// Max chars of the thinking tail shown on the progress card.
 const THINKING_PREVIEW_CHARS: usize = 1500;
 
+/// Max chars of accumulated thinking embedded in the final card's collapsed
+/// panel. Card JSON is limited to ~30 KB (bytes); CJK chars take 3 UTF-8
+/// bytes each, so 8 000 chars stays safely under the cap.
+const FINAL_THINKING_PANEL_CHARS: usize = 8_000;
+
 /// Return the trailing `max_chars` characters of `text`, cut on a char
 /// boundary. Returns the whole string when it fits.
 fn tail_chars(text: &str, max_chars: usize) -> &str {
@@ -39,6 +44,49 @@ fn tail_chars(text: &str, max_chars: usize) -> &str {
         Some((idx, _)) => &text[idx..],
         None => text,
     }
+}
+
+/// Record a cumulative thinking snapshot. Snapshots within one LLM request
+/// grow by extension — replace the current block. A snapshot that does not
+/// extend the current block starts a new request's block, so the final card
+/// can embed every round's thinking, not just the last one.
+fn push_thinking_block(blocks: &mut Vec<String>, text: String) {
+    match blocks.last_mut() {
+        Some(last) if text.starts_with(last.as_str()) => *last = text,
+        _ => blocks.push(text),
+    }
+}
+
+/// Build the finalized status card JSON: the status markdown followed by a
+/// collapsed panel (Feishu `collapsible_panel`, client ≥ V7.9) holding all
+/// accumulated thinking blocks, tail-capped to stay under the card size
+/// limit. Without thinking the card is a single markdown element.
+fn final_card_json(status_text: &str, thinking_blocks: &[String]) -> serde_json::Value {
+    let mut elements = vec![serde_json::json!({
+        "tag": "markdown",
+        "content": status_text
+    })];
+    let thinking = thinking_blocks.join("\n\n---\n\n");
+    let thinking = thinking.trim();
+    if !thinking.is_empty() {
+        let truncated = thinking.chars().count() > FINAL_THINKING_PANEL_CHARS;
+        let body = tail_chars(thinking, FINAL_THINKING_PANEL_CHARS);
+        let content = if truncated {
+            format!("…（仅显示尾部 {FINAL_THINKING_PANEL_CHARS} 字符）\n\n{body}")
+        } else {
+            body.to_string()
+        };
+        elements.push(serde_json::json!({
+            "tag": "collapsible_panel",
+            "expanded": false,
+            "background_color": "grey",
+            "header": {
+                "title": {"tag": "plain_text", "content": "💭 Thinking"}
+            },
+            "elements": [{"tag": "markdown", "content": content}]
+        }));
+    }
+    serde_json::json!({"elements": elements})
 }
 
 /// Build the status-card markdown for the Feishu progress watcher.
@@ -204,7 +252,7 @@ pub fn spawn_progress_watcher(
         // ── Phase 2: live updates until ProcessingCompleted ─────────────
         let mut tool_count = 0usize;
         let mut last_activity: Option<String> = None;
-        let mut last_thinking: Option<String> = None;
+        let mut thinking_blocks: Vec<String> = Vec::new();
         let mut done: Option<(bool, u64)> = None;
         let mut last_patch = std::time::Instant::now();
         let mut fails = 0u32;
@@ -246,10 +294,11 @@ pub fn spawn_progress_watcher(
                                 done = Some((success, duration_secs));
                             }
                             // Cumulative snapshot of the current LLM request
-                            // (throttled at the agent loop): keep the latest —
-                            // its tail is the current thinking position.
+                            // (throttled at the agent loop): extend the
+                            // current block, or start a new one per request,
+                            // so the final card can embed the full history.
                             TopicEvent::Thinking { text, .. } => {
-                                last_thinking = Some(text);
+                                push_thinking_block(&mut thinking_blocks, text);
                             }
                             _ => {}
                         }
@@ -267,14 +316,18 @@ pub fn spawn_progress_watcher(
             // time — small state-file reads, cheap enough per tick, so
             // mid-run /plan or /model switches show up on the next PATCH.
             let display = topic_manager.topic_display_state(&topic).await;
+            let preview = thinking_blocks.last().map(String::as_str);
             let text = match done {
+                // Final card: the 💭 preview line is replaced by a collapsed
+                // panel holding the full thinking history (PATCHed as card
+                // JSON below).
                 Some((success, duration_secs)) => progress_card(
                     if success { "✅ 完成" } else { "❌ 失败" },
                     duration_secs,
                     tool_count,
                     last_activity.as_deref(),
                     &display,
-                    last_thinking.as_deref(),
+                    None,
                 ),
                 None => progress_card(
                     "⏳ 处理中",
@@ -282,7 +335,7 @@ pub fn spawn_progress_watcher(
                     tool_count,
                     last_activity.as_deref(),
                     &display,
-                    last_thinking.as_deref(),
+                    preview,
                 ),
             };
             if !terminal && text == last_text {
@@ -290,11 +343,20 @@ pub fn spawn_progress_watcher(
             }
             // Bounded update: the event bus is shared with the agent loop,
             // so a hung Feishu PATCH must never stall this watcher.
-            let upd = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                feishu_client.update_text_message(&status_message_id, &text),
-            )
-            .await;
+            let upd = if terminal && !thinking_blocks.is_empty() {
+                let card = final_card_json(&text, &thinking_blocks);
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    feishu_client.update_card_message(&status_message_id, &card),
+                )
+                .await
+            } else {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    feishu_client.update_text_message(&status_message_id, &text),
+                )
+                .await
+            };
             match upd {
                 Ok(Ok(())) => {
                     fails = 0;
@@ -399,6 +461,60 @@ mod tests {
         assert_eq!(tail_chars("héllo", 3), "llo");
         assert_eq!(tail_chars("短", THINKING_PREVIEW_CHARS), "短");
         assert_eq!(tail_chars("hi", 0), "");
+    }
+
+    #[test]
+    fn push_thinking_block_extends_or_appends() {
+        let mut blocks = Vec::new();
+        push_thinking_block(&mut blocks, "abc".to_string());
+        // Same request: snapshot grows by extension → replace in place.
+        push_thinking_block(&mut blocks, "abcdef".to_string());
+        assert_eq!(blocks, vec!["abcdef".to_string()]);
+        // New request: snapshot is not an extension → new block.
+        push_thinking_block(&mut blocks, "new request".to_string());
+        assert_eq!(blocks.len(), 2);
+        // Identical re-publish (final flush) replaces, no new block.
+        push_thinking_block(&mut blocks, "new request".to_string());
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn final_card_embeds_collapsed_thinking_panel() {
+        let blocks = vec!["block one".to_string(), "block two".to_string()];
+        let card = final_card_json("✅ 完成 · 52s · 工具 8", &blocks);
+        let elements = card["elements"].as_array().unwrap();
+        assert_eq!(elements[0]["tag"].as_str().unwrap(), "markdown");
+        assert_eq!(
+            elements[0]["content"].as_str().unwrap(),
+            "✅ 完成 · 52s · 工具 8"
+        );
+        let panel = &elements[1];
+        assert_eq!(panel["tag"].as_str().unwrap(), "collapsible_panel");
+        // Collapsed by default: expand reveals all rounds, TUI-style.
+        assert!(!panel["expanded"].as_bool().unwrap());
+        let content = panel["elements"][0]["content"].as_str().unwrap();
+        assert!(content.contains("block one\n\n---\n\nblock two"));
+    }
+
+    #[test]
+    fn final_card_without_thinking_has_no_panel() {
+        let card = final_card_json("✅ 完成", &[]);
+        assert_eq!(card["elements"].as_array().unwrap().len(), 1);
+        // Whitespace-only thinking collapses to nothing.
+        let card = final_card_json("✅ 完成", &["  ".to_string()]);
+        assert_eq!(card["elements"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn final_card_truncates_long_thinking_tail() {
+        let long = "x".repeat(FINAL_THINKING_PANEL_CHARS + 500);
+        let card = final_card_json("✅ 完成", &[long]);
+        let content = card["elements"][1]["elements"][0]["content"]
+            .as_str()
+            .unwrap();
+        assert!(content.starts_with('…'));
+        // Truncation marker plus the capped tail.
+        assert!(content.len() < FINAL_THINKING_PANEL_CHARS + 100);
     }
 
     #[test]

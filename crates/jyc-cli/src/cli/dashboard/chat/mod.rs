@@ -2473,10 +2473,10 @@ impl ChatState {
                             timestamp: Some(chrono::Utc::now().to_rfc3339()),
                         });
                     }
-                    // Processing completed - clear per-round transient
+                    // Processing completed - the fold above already removed
+                    // the thinking entry; clear the other per-round transient
                     // artifacts but keep live_activity as the audit trail
                     // across rounds. Buffer is bounded at 180 entries.
-                    self.live_thinking.remove(&key);
                     self.live_tick_ms.remove(&key);
                     self.awaiting_response = false;
                 } else {

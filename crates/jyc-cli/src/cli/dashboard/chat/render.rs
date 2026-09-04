@@ -88,6 +88,10 @@ pub(super) fn render_history_lines(
         .fg(Color::Gray)
         .add_modifier(Modifier::ITALIC);
     let mut group_start_ts: Option<String> = None;
+    // Last *conversation* sender (user/AI) — thinking pseudo-messages are
+    // skipped so the user→AI separator and AI→user round close still fire
+    // across an interleaved thinking block. Tracked incrementally.
+    let mut prev_conv_sender: Option<&str> = None;
 
     for (idx, msg) in messages.iter().enumerate() {
         // Completed-turn thinking pseudo-message: collapsed one-liner by
@@ -112,14 +116,7 @@ pub(super) fn render_history_lines(
         let is_user = is_user_message(&msg.sender);
         let prefix = if is_user { "**You:** " } else { "**AI:** " };
 
-        // Previous *conversation* message: thinking pseudo-messages are
-        // skipped so the user→AI separator and AI→user round close still
-        // fire across an interleaved thinking block.
-        let prev_sender = messages[..idx]
-            .iter()
-            .rev()
-            .find(|m| m.sender != "thinking")
-            .map(|m| m.sender.as_str());
+        let prev_sender = prev_conv_sender;
 
         // Close previous round when transitioning AI → user. Bottom rule
         // has the duration right-aligned with breathing space:
@@ -177,6 +174,7 @@ pub(super) fn render_history_lines(
             tui_markdown::from_str_with_options(&md_text, &chat_markdown_options()).lines;
         let msg_lines = wrap_styled_lines(wrap_tables(rendered, width), width);
         all_lines.extend(msg_lines);
+        prev_conv_sender = Some(msg.sender.as_str());
     }
 
     // Close any open round at the end (same bottom-rule format as above).
@@ -309,11 +307,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             })
             .unwrap_or_default();
 
-        let thinking_blocks: Option<Vec<String>> = live_chan
+        let thinking_blocks: Option<&[String]> = live_chan
             .as_deref()
             .zip(live_topic.as_deref())
-            .and_then(|(c, t)| app.chat.live_thinking_for(c, t))
-            .map(|b| b.to_vec());
+            .and_then(|(c, t)| app.chat.live_thinking_for(c, t));
 
         // Live wall-clock ticker (1 Hz, with the first tick at t=0). When
         // present, it is the authoritative elapsed-time display for the
@@ -330,8 +327,8 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         // summary by default, expanded via the leader popup (`ctrl+p t`).
         // Thinking events are NOT stored in the activity buffer or
         // activity.jsonl.
-        let has_thinking = matches!(&thinking_blocks, Some(b) if !b.is_empty());
-        if let Some(blocks) = thinking_blocks.as_deref()
+        let has_thinking = matches!(thinking_blocks, Some(b) if !b.is_empty());
+        if let Some(blocks) = thinking_blocks
             && !blocks.is_empty()
         {
             let gray_style = Style::default()

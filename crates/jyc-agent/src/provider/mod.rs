@@ -906,7 +906,6 @@ mod dangling_tool_call_tests {
     use serde_json::json;
 
     #[test]
-    #[test]
     fn anthropic_to_chat_converts_tool_use_blocks() {
         let raw = vec![
             serde_json::json!({"role": "user", "content": "read file a"}),

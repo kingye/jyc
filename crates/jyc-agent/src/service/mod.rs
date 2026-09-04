@@ -591,7 +591,14 @@ impl AgentService for JycAgentService {
     ) -> Result<()> {
         // Read the live agent config so reload of small_model / providers
         // takes effect without a server restart.
-        let agent_cfg = self.agent_config();
+        let mut agent_cfg = self.agent_config();
+        // Same `{channel}`/`{topic}` expansion as process() — otherwise a
+        // templated `prompt_cache_key` would reach the provider literally.
+        provider::expand_params_placeholders(
+            &mut agent_cfg.providers,
+            &self.channel_name,
+            topic_name,
+        );
         // Use the agent config's small_model as the compression provider if available
         let small_model = agent_cfg.small_model.as_deref();
         let provider: Option<Box<dyn provider::Provider>> =

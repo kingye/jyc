@@ -1660,4 +1660,63 @@ mod tests {
             .expect("arguments is a JSON string");
         assert_eq!(args, "{}");
     }
+
+    /// Extract the token quadruple from the `Usage` event in `events`.
+    fn usage_tuple(events: &[StreamEvent]) -> Option<(u64, u64, u64, u64)> {
+        events.iter().find_map(|e| match e {
+            StreamEvent::Usage {
+                input_tokens,
+                output_tokens,
+                cache_hit_tokens,
+                cache_creation_tokens,
+            } => Some((
+                *input_tokens,
+                *output_tokens,
+                *cache_hit_tokens,
+                *cache_creation_tokens,
+            )),
+            _ => None,
+        })
+    }
+
+    /// GPT-5.6 usage chunk: read AND write cache buckets land in the
+    /// Usage event (`cache_creation_tokens` was hard-coded to 0 for
+    /// OpenAI-compat providers before).
+    #[test]
+    fn parse_usage_chunk_maps_gpt56_cache_buckets() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 1640,
+                "completion_tokens": 102,
+                "total_tokens": 1742,
+                "prompt_tokens_details": {
+                    "cached_tokens": 1200,
+                    "cache_write_tokens": 300
+                }
+            }
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).expect("events");
+        assert_eq!(usage_tuple(&events), Some((1640, 102, 1200, 300)));
+    }
+
+    /// DeepSeek-style root cache-hit field still reaches the Usage event
+    /// through the legacy fallback chain, with no write bucket.
+    #[test]
+    fn parse_usage_chunk_legacy_single_bucket() {
+        let mut state = OpenAiStreamState::default();
+        let chunk = serde_json::json!({
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 50,
+                "prompt_cache_hit_tokens": 800
+            }
+        })
+        .to_string();
+        let events = parse_openai_chunk(&chunk, &mut state).expect("events");
+        assert_eq!(usage_tuple(&events), Some((1000, 50, 800, 0)));
+    }
 }

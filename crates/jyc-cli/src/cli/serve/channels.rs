@@ -1571,19 +1571,29 @@ pub(crate) fn spawn_feishu_adapter(
                         // the topic's event bus. The footer timing is
                         // recorded unconditionally.
                         //
-                        // Skipped for slash commands: they are intercepted
-                        // in the worker without an agent run, so they never
-                        // emit ProcessingStarted — the watcher would sleep
-                        // until MAX_LIFETIME and then double-post alongside
-                        // the next real message's watcher. Slash replies
-                        // are instant; no status card or ⏱ footer needed.
-                        let is_command = message
+                        // Skipped for *built-in* slash commands: they are
+                        // intercepted in the worker without an agent run,
+                        // so they never emit ProcessingStarted — the
+                        // watcher would sleep until MAX_LIFETIME and then
+                        // double-post alongside the next real message's
+                        // watcher. Built-in replies are instant; no status
+                        // card or ⏱ footer needed.
+                        //
+                        // Custom commands and unknown slash names are NOT
+                        // skipped: they inject a prompt and continue into
+                        // an agent run (ProcessingStarted is emitted), so
+                        // they need the card just like a plain message.
+                        let first_token = message
                             .content
                             .text
                             .as_deref()
                             .unwrap_or("")
-                            .trim()
-                            .starts_with('/');
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or("");
+                        let is_command = jyc_core::command::all_commands()
+                            .iter()
+                            .any(|c| c.name == first_token);
                         if !is_command && let Some(cid) = &chat_id {
                             let start = std::time::Instant::now();
                             // Event freshness cutoff for the watcher — taken

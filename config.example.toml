@@ -355,6 +355,30 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # #   params = { reasoning_effort = "low" }
 # # model_id = "ep-xxxxxxxx"
 #
+# --- OpenAI Responses API provider (GPT-5.x / o-series reasoning models) ---
+#
+# `type = "openai-responses"` targets the Responses API (`POST
+# {base_url}/responses`) instead of Chat Completions. Recommended for OpenAI
+# reasoning models:
+# - Chat Completions never streams reasoning content (only bills it), and
+#   for gpt-5.6+ rejects requests combining tools with a non-"none"
+#   reasoning_effort. The Responses API supports tools + reasoning together.
+# - With `reasoning.summary` set, a reasoning SUMMARY is streamed and shown
+#   by `/thinking show` (raw chain-of-thought is never exposed by OpenAI).
+#
+# [ai.providers.openai]
+# type = "openai-responses"
+# base_url = "https://api.openai.com/v1"
+# api_key = "${OPENAI_API_KEY}"
+#
+# # Per-model reasoning effort via the model_id alias pattern:
+# [ai.providers.openai.models."gpt-5.6-low"]
+# model_id = "gpt-5.6"
+# params = { reasoning = { effort = "low", summary = "auto" } }
+# # [ai.providers.openai.models."gpt-5.6-high"]
+# # model_id = "gpt-5.6"
+# # params = { reasoning = { effort = "high", summary = "auto" } }
+#
 # [ai.providers.anthropic]
 # type = "anthropic"
 # base_url = "https://api.anthropic.com/v1"

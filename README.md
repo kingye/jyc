@@ -323,7 +323,12 @@ Key sections:
 - **`[agent]`** -- AI agent settings (model, system prompt, progress updates)
 - **`[agent.providers.<name>]`** -- LLM provider (type, base_url, `api_key =
   "${ENV_VAR}"` (preferred) or `api_key_env = "ENV_VAR"` (legacy), `pricing`);
-  `[agent.providers.<name>.models.<id>]` overrides per model
+  `[agent.providers.<name>.models.<id>]` overrides per model.
+  `type` is one of `"anthropic"`, `"openai-compatible"` (Chat Completions),
+  or `"openai-responses"` (OpenAI Responses API — recommended for GPT-5.x /
+  o-series reasoning models: streams reasoning **summaries** when the model
+  sets `params = { reasoning = { effort = "...", summary = "auto" } }`, and
+  unlike Chat Completions supports tools + reasoning together)
 - **`[inspect]`** -- Inspect server settings (enabled, bind address,
   `base_url` for links that leave the server, e.g. `/exchange` share links)
 - **`[vision]`** -- DEPRECATED: Vision is now configured via `[[mcps]]` (see `config.example.toml` for the new approach)

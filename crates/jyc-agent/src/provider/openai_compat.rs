@@ -247,16 +247,7 @@ impl Provider for OpenAiCompatProvider {
         content: &str,
         is_error: bool,
     ) -> serde_json::Value {
-        let labeled = if is_error {
-            format!("[ERROR] {content}")
-        } else {
-            format!("[SUCCESS] {content}")
-        };
-        serde_json::json!({
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "content": labeled,
-        })
+        build_openai_tool_result(tool_call_id, content, is_error)
     }
 
     fn build_raw_assistant_message(
@@ -265,64 +256,7 @@ impl Provider for OpenAiCompatProvider {
         reasoning: &str,
         tool_calls: &[(String, String, String)],
     ) -> serde_json::Value {
-        let mut msg = serde_json::json!({ "role": "assistant" });
-
-        // Content: when both reasoning and response text are present, inline
-        // the reasoning as `<think>...</think>` tags so providers that expect
-        // thinking inline (e.g. MiniMax M3) receive it in the right shape on
-        // replay. Providers that use a separate `reasoning_content` field
-        // (e.g. DeepSeek) still get the field below, so this is additive and
-        // does not break them.
-        if !reasoning.is_empty() && !text.is_empty() {
-            msg["content"] =
-                serde_json::Value::String(format!("<think>{reasoning}</think>\n\n{text}"));
-        } else if !text.is_empty() {
-            msg["content"] = serde_json::Value::String(text.to_string());
-        } else {
-            msg["content"] = serde_json::Value::Null;
-        }
-
-        // Reasoning content (DeepSeek v4-pro)
-        if !reasoning.is_empty() {
-            msg["reasoning_content"] = serde_json::Value::String(reasoning.to_string());
-        }
-
-        // Tool calls
-        if !tool_calls.is_empty() {
-            let tc_json: Vec<serde_json::Value> = tool_calls
-                .iter()
-                .map(|(id, name, args)| {
-                    // Validate arguments JSON before embedding. Some models
-                    // (e.g. MiniMax M3) occasionally emit malformed tool call
-                    // arguments that survive the current turn but poison the
-                    // `raw_context` — replaying them on the next request
-                    // triggers a 400 with "invalid function arguments json
-                    // string". Fall back to "{}" to match the Anthropic path
-                    // and keep the conversation consistent.
-                    let safe_args = if serde_json::from_str::<serde_json::Value>(args).is_ok() {
-                        args.clone()
-                    } else {
-                        tracing::warn!(
-                            tool_name = %name,
-                            args = %args,
-                            "Malformed tool call arguments from model, replacing with empty object for replay"
-                        );
-                        "{}".to_string()
-                    };
-                    serde_json::json!({
-                        "id": id,
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "arguments": safe_args,
-                        }
-                    })
-                })
-                .collect();
-            msg["tool_calls"] = serde_json::Value::Array(tc_json);
-        }
-
-        msg
+        build_openai_raw_assistant(text, reasoning, tool_calls)
     }
 
     async fn complete_raw(
@@ -834,6 +768,96 @@ fn to_openai_message(msg: &Message) -> serde_json::Value {
     }
 }
 
+/// Build an OpenAI chat-format tool result message (for context persistence).
+///
+/// Shared with the Responses API provider, which persists `raw_context` in
+/// chat format and converts to Responses input items at the wire boundary.
+pub(crate) fn build_openai_tool_result(
+    tool_call_id: &str,
+    content: &str,
+    is_error: bool,
+) -> serde_json::Value {
+    let labeled = if is_error {
+        format!("[ERROR] {content}")
+    } else {
+        format!("[SUCCESS] {content}")
+    };
+    serde_json::json!({
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "content": labeled,
+    })
+}
+
+/// Build an OpenAI chat-format assistant message from a collected streaming
+/// response (for context persistence).
+///
+/// Shared with the Responses API provider, which persists `raw_context` in
+/// chat format and converts to Responses input items at the wire boundary.
+pub(crate) fn build_openai_raw_assistant(
+    text: &str,
+    reasoning: &str,
+    tool_calls: &[(String, String, String)],
+) -> serde_json::Value {
+    let mut msg = serde_json::json!({ "role": "assistant" });
+
+    // Content: when both reasoning and response text are present, inline
+    // the reasoning as `<think>...</think>` tags so providers that expect
+    // thinking inline (e.g. MiniMax M3) receive it in the right shape on
+    // replay. Providers that use a separate `reasoning_content` field
+    // (e.g. DeepSeek) still get the field below, so this is additive and
+    // does not break them.
+    if !reasoning.is_empty() && !text.is_empty() {
+        msg["content"] = serde_json::Value::String(format!("<think>{reasoning}</think>\n\n{text}"));
+    } else if !text.is_empty() {
+        msg["content"] = serde_json::Value::String(text.to_string());
+    } else {
+        msg["content"] = serde_json::Value::Null;
+    }
+
+    // Reasoning content (DeepSeek v4-pro)
+    if !reasoning.is_empty() {
+        msg["reasoning_content"] = serde_json::Value::String(reasoning.to_string());
+    }
+
+    // Tool calls
+    if !tool_calls.is_empty() {
+        let tc_json: Vec<serde_json::Value> = tool_calls
+            .iter()
+            .map(|(id, name, args)| {
+                // Validate arguments JSON before embedding. Some models
+                // (e.g. MiniMax M3) occasionally emit malformed tool call
+                // arguments that survive the current turn but poison the
+                // `raw_context` — replaying them on the next request
+                // triggers a 400 with "invalid function arguments json
+                // string". Fall back to "{}" to match the Anthropic path
+                // and keep the conversation consistent.
+                let safe_args = if serde_json::from_str::<serde_json::Value>(args).is_ok() {
+                    args.clone()
+                } else {
+                    tracing::warn!(
+                        tool_name = %name,
+                        args = %args,
+                        "Malformed tool call arguments from model, replacing with empty object for replay"
+                    );
+                    "{}".to_string()
+                };
+                serde_json::json!({
+                    "id": id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": safe_args,
+                    }
+                })
+            })
+            .collect();
+        msg["tool_calls"] = serde_json::Value::Array(tc_json);
+    }
+
+    msg
+}
+
 /// Build an OpenAI-compatible user message from content blocks.
 ///
 /// When the message contains only text, emits the legacy string-content form
@@ -844,7 +868,7 @@ fn to_openai_message(msg: &Message) -> serde_json::Value {
 /// reject array content for purely textual user messages, so we keep the
 /// minimal-friction string form for the common case and only escalate to the
 /// array form when actually needed for multimodal input.
-fn build_openai_user_content(content: &[ContentBlock]) -> serde_json::Value {
+pub(crate) fn build_openai_user_content(content: &[ContentBlock]) -> serde_json::Value {
     let has_image = content
         .iter()
         .any(|b| matches!(b, ContentBlock::Image { .. }));

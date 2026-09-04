@@ -6,6 +6,7 @@
 
 pub mod anthropic;
 pub mod openai_compat;
+pub mod openai_responses;
 pub mod sse;
 pub mod usage;
 
@@ -426,6 +427,22 @@ pub fn create_provider(
                 )
             })?;
             Ok(Box::new(openai_compat::OpenAiCompatProvider::new(
+                base_url,
+                wire_model_id,
+                api_key.as_deref(),
+                params,
+                supports_images,
+                user_agent,
+            )?))
+        }
+        "openai-responses" => {
+            let base_url = config.base_url.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "OpenAI Responses provider '{}' requires base_url",
+                    provider_name
+                )
+            })?;
+            Ok(Box::new(openai_responses::OpenAiResponsesProvider::new(
                 base_url,
                 wire_model_id,
                 api_key.as_deref(),

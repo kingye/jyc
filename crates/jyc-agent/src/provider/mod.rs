@@ -713,6 +713,8 @@ pub fn classify_retry(err: &anyhow::Error) -> RetryClass {
 /// Message-text patterns indicating a throttling/overload condition inside
 /// a streamed provider error event (no HTTP status available).
 fn matches_throttled_pattern(lower_msg: &str) -> bool {
+    // NB: no "quota" — OpenAI's `insufficient_quota` is billing exhaustion
+    // (persistent), and retrying it on the patient schedule wastes ~30min.
     const THROTTLED_PATTERNS: &[&str] = &[
         "rate limit",
         "rate_limit",
@@ -720,7 +722,6 @@ fn matches_throttled_pattern(lower_msg: &str) -> bool {
         "429",
         "overload",
         "capacity",
-        "quota",
     ];
     THROTTLED_PATTERNS.iter().any(|p| lower_msg.contains(p))
 }

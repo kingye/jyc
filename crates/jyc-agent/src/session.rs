@@ -57,6 +57,13 @@ pub struct SessionState {
     /// written before the field existed deserialize as `0`.
     #[serde(default)]
     pub total_cache_creation_tokens: u64,
+    /// Accumulated reasoning (thinking) tokens across all LLM calls in
+    /// this session — the hidden chain-of-thought share of the output,
+    /// already included in `total_output_tokens`. Informational only.
+    /// `serde(default)` so session files written before the field
+    /// existed deserialize as `0`.
+    #[serde(default)]
+    pub total_reasoning_tokens: u64,
     /// Max tokens (context window) for the model.
     #[serde(default)]
     pub max_input_tokens: u64,
@@ -410,6 +417,7 @@ pub async fn persist_tokens(
     output_tokens: u64,
     total_cache_hit_tokens: u64,
     total_cache_creation_tokens: u64,
+    total_reasoning_tokens: u64,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
     call_cost: f64,
@@ -421,6 +429,7 @@ pub async fn persist_tokens(
         output_tokens,
         total_cache_hit_tokens,
         total_cache_creation_tokens,
+        total_reasoning_tokens,
         context_window,
         auto_reset_threshold,
         call_cost,
@@ -439,6 +448,7 @@ async fn persist_tokens_returning_state(
     output_tokens: u64,
     total_cache_hit_tokens: u64,
     total_cache_creation_tokens: u64,
+    total_reasoning_tokens: u64,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
     call_cost: f64,
@@ -451,6 +461,7 @@ async fn persist_tokens_returning_state(
     state.total_output_tokens = output_tokens;
     state.total_cache_hit_tokens = total_cache_hit_tokens;
     state.total_cache_creation_tokens = total_cache_creation_tokens;
+    state.total_reasoning_tokens = total_reasoning_tokens;
     // The one accumulating field: each call's cost adds to the session
     // total rather than replacing it.
     state.session_cost += call_cost;
@@ -523,6 +534,7 @@ pub async fn update_tokens(
     output_tokens: u64,
     total_cache_hit_tokens: u64,
     total_cache_creation_tokens: u64,
+    total_reasoning_tokens: u64,
     context_window: Option<u64>,
     summary_provider: &dyn crate::provider::Provider,
     auto_reset_threshold: f64,
@@ -539,6 +551,7 @@ pub async fn update_tokens(
         output_tokens,
         total_cache_hit_tokens,
         total_cache_creation_tokens,
+        total_reasoning_tokens,
         context_window,
         auto_reset_threshold,
         // Cost already banked per-call by the agent loop.
@@ -572,6 +585,7 @@ pub async fn update_tokens(
         // the session, and the durable ledger is bill-YYYY-MM-DD.jsonl.
         persist_tokens(
             topic_path,
+            0,
             0,
             0,
             0,
@@ -866,6 +880,7 @@ async fn generate_context_summary(
                 output_tokens,
                 cache_hit_tokens,
                 cache_creation_tokens,
+                ..
             }) => {
                 usage = (
                     input_tokens,

@@ -692,11 +692,20 @@ fn parse_openai_chunk(data: &str, state: &mut OpenAiStreamState) -> Option<Vec<S
             // `extract_cache_hit_tokens` still finds.
             let (cache_hit, cache_write) = extract_openai_cache_split(usage);
             let cache_hit = cache_hit.max(extract_cache_hit_tokens(usage));
+            // GPT-5.x/o-series report the hidden chain-of-thought share of
+            // output here. Informational only — already billed inside
+            // `completion_tokens`.
+            let reasoning = usage
+                .get("completion_tokens_details")
+                .and_then(|d| d.get("reasoning_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             events.push(StreamEvent::Usage {
                 input_tokens: input,
                 output_tokens: output,
                 cache_hit_tokens: cache_hit,
                 cache_creation_tokens: cache_write,
+                reasoning_tokens: reasoning,
             });
         }
     }
@@ -1693,6 +1702,7 @@ mod tests {
                 output_tokens,
                 cache_hit_tokens,
                 cache_creation_tokens,
+                ..
             } => Some((
                 *input_tokens,
                 *output_tokens,

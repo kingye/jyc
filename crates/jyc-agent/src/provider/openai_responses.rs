@@ -516,6 +516,17 @@ fn parse_responses_event(data: &str, state: &mut ResponsesStreamState) -> Option
                 events.push(StreamEvent::TextDelta(delta.to_string()));
             }
         }
+        // Reasoning summary stream — the only way to surface GPT-5.x
+        // thinking (Chat Completions never exposes reasoning content).
+        // Requires `reasoning = { summary = "auto" }` (or "detailed") in
+        // the model's `params`.
+        "response.reasoning_summary_text.delta" => {
+            if let Some(delta) = value.get("delta").and_then(|d| d.as_str())
+                && !delta.is_empty()
+            {
+                events.push(StreamEvent::ReasoningDelta(delta.to_string()));
+            }
+        }
         "response.output_item.added" => {
             let item = value.get("item")?;
             if item.get("type").and_then(|t| t.as_str()) == Some("function_call") {
@@ -571,11 +582,17 @@ fn parse_responses_event(data: &str, state: &mut ResponsesStreamState) -> Option
                         .and_then(|d| d.get("cached_tokens"))
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
+                    let reasoning = usage
+                        .get("output_tokens_details")
+                        .and_then(|d| d.get("reasoning_tokens"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     events.push(StreamEvent::Usage {
                         input_tokens: input,
                         output_tokens: output,
                         cache_hit_tokens: cache_hit,
                         cache_creation_tokens: 0,
+                        reasoning_tokens: reasoning,
                     });
                 }
             }
@@ -647,6 +664,7 @@ mod tests {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_hit_tokens: 40,
+                reasoning_tokens: 20,
                 ..
             }
         )));
@@ -655,6 +673,19 @@ mod tests {
         // A trailing [DONE]-equivalent completed event must not re-emit Done.
         let events2 = parse_responses_event(&event.to_string(), &mut state).unwrap();
         assert!(!events2.iter().any(|e| matches!(e, StreamEvent::Done)));
+    }
+
+    #[test]
+    fn parse_reasoning_summary_delta() {
+        let mut state = ResponsesStreamState::default();
+        let event = serde_json::json!({
+            "type": "response.reasoning_summary_text.delta",
+            "delta": "Comparing the two numbers…",
+        });
+        let events = parse_responses_event(&event.to_string(), &mut state).unwrap();
+        assert!(
+            matches!(&events[0], StreamEvent::ReasoningDelta(t) if t == "Comparing the two numbers…")
+        );
     }
 
     #[test]

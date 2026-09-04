@@ -472,6 +472,8 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                         output_tokens: output,
                         cache_hit_tokens: cache_read,
                         cache_creation_tokens: cache_creation,
+                        // Anthropic does not break out reasoning tokens.
+                        reasoning_tokens: 0,
                     }]);
                 }
             }
@@ -492,6 +494,8 @@ fn parse_anthropic_sse(data: &str, state: &mut StreamState) -> Option<Vec<Stream
                         output_tokens: output,
                         cache_hit_tokens: cache_read,
                         cache_creation_tokens: cache_creation,
+                        // Anthropic does not break out reasoning tokens.
+                        reasoning_tokens: 0,
                     }]);
                 }
             }

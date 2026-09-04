@@ -320,6 +320,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // at `0`. Surfaced to the dashboard as
     // `total_cache_creation_tokens`.
     let mut total_cache_creation_tokens: u64 = 0;
+    // Sum of every LLM call's reasoning (thinking) tokens in this round.
+    // Informational only — already included in `total_output_tokens`.
+    let mut total_reasoning_tokens: u64 = 0;
     let mut reply_sent_by_tool = false;
     let mut reply_auto_delivered = false;
     let mut reply_text_from_tool: Option<String> = None;
@@ -611,6 +614,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         total_output_tokens += response.output_tokens;
         total_cache_hit_tokens += response.cache_hit_tokens;
         total_cache_creation_tokens += response.cache_creation_tokens;
+        total_reasoning_tokens += response.reasoning_tokens;
 
         // Bill this call from its own usage payload, before anything can
         // reset or overwrite the round's counters. Doing it per call (rather
@@ -687,6 +691,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             total_output_tokens,
             total_cache_hit_tokens,
             total_cache_creation_tokens,
+            total_reasoning_tokens,
             context_window,
             auto_reset_threshold,
             call_cost,
@@ -850,6 +855,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 output_tokens: total_output_tokens,
                 total_cache_hit_tokens,
                 total_cache_creation_tokens,
+                total_reasoning_tokens,
                 history,
                 raw_context,
             });
@@ -1121,6 +1127,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 output_tokens: total_output_tokens,
                 total_cache_hit_tokens,
                 total_cache_creation_tokens,
+                total_reasoning_tokens,
                 history,
                 raw_context,
             });
@@ -1176,6 +1183,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         output_tokens: total_output_tokens,
         total_cache_hit_tokens,
         total_cache_creation_tokens,
+        total_reasoning_tokens,
         history,
         raw_context,
     })

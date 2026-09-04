@@ -156,6 +156,15 @@ pub enum StreamEvent {
         /// folded into `cache_hit_per_million` (parity with the
         /// pre-split model).
         cache_creation_tokens: u64,
+        /// Reasoning (thinking) tokens reported by the provider for this
+        /// call — the hidden chain-of-thought portion of the output.
+        /// OpenAI GPT-5.x/o-series report it via
+        /// `completion_tokens_details.reasoning_tokens` (Chat Completions)
+        /// or `output_tokens_details.reasoning_tokens` (Responses API);
+        /// `0` for providers that don't break it out. These tokens are
+        /// already included in (and billed as) `output_tokens` — this
+        /// field is informational only.
+        reasoning_tokens: u64,
     },
     /// Stream is complete.
     Done,
@@ -216,6 +225,11 @@ pub struct AgentLoopResult {
     /// vendor this is `0`. Billed at `cache_creation_per_million`
     /// when configured, otherwise folded into the read rate.
     pub total_cache_creation_tokens: u64,
+    /// Accumulated reasoning (thinking) tokens across all LLM calls in
+    /// this round — the hidden chain-of-thought share of the output.
+    /// Already included in (and billed as) `output_tokens`;
+    /// informational only. `0` when no provider broke it out.
+    pub total_reasoning_tokens: u64,
     /// The full conversation history (internal format for logic).
     pub history: Vec<Message>,
     /// Raw provider-formatted context (for persistence in agent-context.json).
@@ -393,6 +407,7 @@ mod tests {
                 output_tokens: 5,
                 cache_hit_tokens: 0,
                 cache_creation_tokens: 0,
+                reasoning_tokens: 0,
             },
             StreamEvent::Done,
             StreamEvent::Error("oops".to_string()),

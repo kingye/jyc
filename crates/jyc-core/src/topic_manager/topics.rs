@@ -546,6 +546,10 @@ impl TopicManager {
                 total_input_tokens,
                 total_cache_hit_tokens,
                 total_cache_creation_tokens,
+                total_reasoning_tokens: crate::session_state::read_total_reasoning_tokens(
+                    &topic_path,
+                )
+                .await,
                 activity: vec![], // Filled by InspectServer from event bus
                 last_active_at,   // Filled by activity tracker; falls back to .jyc mtime
                 skills,

@@ -773,7 +773,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn parse_error_event_nested_gateway_shape() {
         let mut state = ResponsesStreamState::default();
         let events = parse_responses_event(

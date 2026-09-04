@@ -108,6 +108,11 @@
 
 ### Fixed
 
+- TUI thinking accumulation no longer duplicates cumulative snapshots:
+  the agent publishes the current LLM request's full reasoning content
+  per event, so a text extending the last block is now applied as an
+  in-place update instead of appended as a new block (#688)
+
 - Feishu duplicate live status messages: slash commands spawned a dormant
   progress watcher (they emit no run events, so it never armed or exited),
   which later double-posted a card alongside the next real message's

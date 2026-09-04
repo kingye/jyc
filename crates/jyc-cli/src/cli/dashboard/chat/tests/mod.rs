@@ -1206,7 +1206,9 @@ fn handle_ws_message_routes_thinking_to_live_buffer() {
 fn thinking_events_accumulate_instead_of_overwriting() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut chat = ChatState::new(rx);
-    for text in ["first block", "second block", "third block"] {
+    // The agent publishes the cumulative reasoning content of the current LLM
+    // request, so a text extending the last block updates it in place.
+    for text in ["first block", "first block grows", "first block grows more"] {
         chat.handle_live_event(&serde_json::json!({
             "type": "thinking",
             "channel": "chan",
@@ -1216,11 +1218,21 @@ fn thinking_events_accumulate_instead_of_overwriting() {
     }
     assert_eq!(
         chat.live_thinking_for("chan", "t1"),
+        Some(&["first block grows more".to_string()][..])
+    );
+    // Text that does not extend the last block starts a new block.
+    chat.handle_live_event(&serde_json::json!({
+        "type": "thinking",
+        "channel": "chan",
+        "topic": "t1",
+        "text": "second block",
+    }));
+    assert_eq!(
+        chat.live_thinking_for("chan", "t1"),
         Some(
             &[
-                "first block".to_string(),
-                "second block".to_string(),
-                "third block".to_string()
+                "first block grows more".to_string(),
+                "second block".to_string()
             ][..]
         )
     );

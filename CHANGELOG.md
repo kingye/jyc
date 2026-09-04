@@ -2,6 +2,18 @@
 
 ### Added
 
+- **Thinking display overhaul in the dashboard chat screen.** Agent
+  thinking blocks now accumulate for the whole processing round instead
+  of each new block overwriting the previous one. The live progress tail
+  collapses thinking to a one-line summary (`💭 thinking — N blocks · M
+  chars`); a new chat-scoped leader command `ctrl+p t` ("toggle
+  thinking") expands/collapses it. When the round completes, its
+  thinking is folded into the chat history as a collapsed
+  pseudo-message above the AI reply (in-memory only; same toggle
+  expands it). Server-side, `TopicInfo` gains a `thinking_blocks` field
+  carrying the full per-round blocks alongside the existing
+  `thinking_text`.
+
 - New `/info` slash command (all channels): replies with the topic's info
   mirroring the dashboard chat screen's Topic Info pane — name, channel,
   pattern, model, mode, branch, status, token usage, cache stats, cost,

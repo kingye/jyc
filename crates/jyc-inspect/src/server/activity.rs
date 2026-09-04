@@ -362,6 +362,7 @@ impl ActivityTracker {
                                                                             | TopicEvent::ProcessingCompleted { .. }
                                                                         ) {
                                                                             state.thinking_text = None;
+                                                                            state.thinking_blocks.clear();
                                                                         }
                                                                         state.last_active_at = Some(event.timestamp());
                                                                         if is_processing {
@@ -390,13 +391,16 @@ impl ActivityTracker {
                                                                             );
                                                                         }
                                                                     } else {
-                                                                        // Thinking event: update thinking_text and fan out.
+                                                                        // Thinking event: accumulate the full
+                                                                        // text (never overwritten; cleared at
+                                                                        // cycle start/complete) and fan out.
                                                                         if let TopicEvent::Thinking { ref text, .. } = event {
                                                                             let mut map = map.lock().await;
                                                                             let state = map
                                                                                 .entry((channel_for_task.clone(), name.clone()))
                                                                                 .or_default();
                                                                             state.thinking_text = Some(text.clone());
+                                                                            state.thinking_blocks.push(text.clone());
                                                                             state.last_active_at = Some(event.timestamp());
                                                                             publish_thinking_event(
                                                                                 &inspect_broadcast_for_task,

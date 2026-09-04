@@ -158,6 +158,7 @@ mod tests {
             skills: vec![],
             recent_messages: vec![],
             thinking_text: None,
+            thinking_blocks: vec![],
             activity: vec![],
             topic_path: Some(PathBuf::from("/tmp/topic")),
             branch: Some("fix/issue-42-timeout".into()),

@@ -133,8 +133,14 @@ pub(super) struct ChatState {
         (String, String),
         std::collections::VecDeque<jyc_types::ChatMessageEntry>,
     >,
-    /// Live thinking text — overwritten by WS `thinking` events.
-    pub(super) live_thinking: std::collections::BTreeMap<(String, String), String>,
+    /// Live thinking blocks — appended by WS `thinking` events (never
+    /// overwritten); cleared when a processing round starts, converted
+    /// into a `sender: "thinking"` pseudo-message when it completes.
+    pub(super) live_thinking: std::collections::BTreeMap<(String, String), Vec<String>>,
+    /// Whether thinking display is expanded (live tail + completed-turn
+    /// pseudo-messages). Toggled via the leader popup (`t`); default
+    /// collapsed.
+    pub(super) thinking_expanded: bool,
     /// Live processing status — updated by WS `processing` events.
     pub(super) live_processing: std::collections::BTreeMap<(String, String), (bool, bool)>,
     /// Live loop duration in milliseconds — updated by WS `loop_tick`
@@ -614,6 +620,9 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
                 app.chat.focus = ChatFocus::ChatPane;
                 app.chat.command_popup = Some(CommandPopupState::new());
             }
+        }
+        LocalAction::ToggleThinking => {
+            app.chat.thinking_expanded = !app.chat.thinking_expanded;
         }
     }
 }
@@ -1786,6 +1795,7 @@ impl ChatState {
             live_activity: std::collections::BTreeMap::new(),
             live_chat: std::collections::BTreeMap::new(),
             live_thinking: std::collections::BTreeMap::new(),
+            thinking_expanded: false,
             live_processing: std::collections::BTreeMap::new(),
             live_tick_ms: std::collections::BTreeMap::new(),
             last_seen_id: std::collections::BTreeMap::new(),
@@ -2429,7 +2439,10 @@ impl ChatState {
             }
             "thinking" => {
                 if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
-                    self.live_thinking.insert(key, text.to_string());
+                    self.live_thinking
+                        .entry(key)
+                        .or_default()
+                        .push(text.to_string());
                 }
             }
             "processing" => {
@@ -2444,6 +2457,22 @@ impl ChatState {
                 self.live_processing
                     .insert(key.clone(), (is_processing, has_error));
                 if !is_processing {
+                    // Processing completed — fold the round's accumulated
+                    // thinking blocks into a collapsed pseudo-message above
+                    // the AI reply (in-memory only; gone on TUI restart),
+                    // then clear the live buffer. Only when this topic is
+                    // the one open in the chat pane.
+                    if let Some(blocks) = self.live_thinking.remove(&key)
+                        && !blocks.is_empty()
+                        && self.channel.as_deref() == Some(key.0.as_str())
+                        && self.topic.as_deref() == Some(key.1.as_str())
+                    {
+                        self.messages.push(ChatMessage {
+                            sender: "thinking".to_string(),
+                            text: blocks.join("\n\n"),
+                            timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                        });
+                    }
                     // Processing completed - clear per-round transient
                     // artifacts but keep live_activity as the audit trail
                     // across rounds. Buffer is bounded at 180 entries.
@@ -2511,11 +2540,12 @@ impl ChatState {
             .unwrap_or_else(|| EMPTY_VEC_DEQUE.iter())
     }
 
-    /// Get the current thinking text for the given (channel, topic), if any.
-    pub(super) fn live_thinking_for(&self, channel: &str, topic: &str) -> Option<&str> {
+    /// Get the current turn's thinking blocks for the given
+    /// (channel, topic), if any (arrival order, full text).
+    pub(super) fn live_thinking_for(&self, channel: &str, topic: &str) -> Option<&[String]> {
         self.live_thinking
             .get(&(channel.to_string(), topic.to_string()))
-            .map(|s| s.as_str())
+            .map(|v| v.as_slice())
     }
 
     /// Get the current processing status for the given (channel, topic).

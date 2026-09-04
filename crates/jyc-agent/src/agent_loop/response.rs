@@ -182,6 +182,22 @@ pub(crate) async fn collect_response(
         }
     }
 
+    // Final thinking flush: the throttled publishes inside the stream loop
+    // may have skipped the tail of the reasoning stream — emit one last
+    // snapshot with the full text so live consumers don't lose the ending.
+    if thinking_enabled && !response.reasoning_content.is_empty() {
+        publish_event(
+            event_bus,
+            TopicEvent::Thinking {
+                topic_name: topic_name.to_string(),
+                text: response.reasoning_content.clone(),
+                full_length: response.reasoning_content.len(),
+                timestamp: Utc::now(),
+            },
+        )
+        .await;
+    }
+
     // Safety net: flush any pending tool call that was started (ToolUseStart)
     // but never ended (ToolUseEnd). Providers that omit `finish_reason` on
     // the last chunk, or that stream the entire tool call in a single chunk

@@ -113,6 +113,12 @@
 
 ### Fixed
 
+- The tail of each thinking block no longer goes missing in live
+  thinking displays: the stream loop only published throttled snapshots,
+  so reasoning accumulated after the last publish of a request was never
+  emitted. A final full-text Thinking event is now published when each
+  LLM request's stream completes, fixing the truncated endings in the
+  TUI and on the Feishu progress card.
 - TUI thinking accumulation no longer duplicates cumulative snapshots:
   the agent publishes the current LLM request's full reasoning content
   per event, so a text extending the last block is now applied as an

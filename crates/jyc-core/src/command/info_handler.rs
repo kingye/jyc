@@ -203,6 +203,7 @@ Output: 12345
 Total input: 1234567
 Cache hits: 987654
 Cache create: 111
+Reasoning: 4096
 Cost: $0.4200 session · $1.2300 today
 Files (2):
 + src/new.rs
@@ -222,6 +223,7 @@ Files (2):
         t.total_input_tokens = None;
         t.total_cache_hit_tokens = None;
         t.total_cache_creation_tokens = None;
+        t.total_reasoning_tokens = None;
         t.changed_files = None;
         t.cost = None;
         t.pattern = None;

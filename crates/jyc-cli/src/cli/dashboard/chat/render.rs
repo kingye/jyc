@@ -9,6 +9,15 @@ use super::{App, ChatMessage, LINE_DRAWING};
 /// write diffs) and `format_tool_input_full` (generic tool field listings).
 const TOOL_DETAIL_MAX_LINES: usize = 20;
 
+/// Prefix `render_file_tool_diff` emits for removed lines. Two leading
+/// spaces indent the diff one column past the file header line. Kept as
+/// constants so `render_file_tool_diff` (producer) and `style_diff_line`
+/// (consumer) cannot drift apart — a drift here would silently re-break
+/// the gray/green styling.
+const DIFF_REMOVED_PREFIX: &str = "  -";
+/// Prefix `render_file_tool_diff` emits for added lines.
+const DIFF_ADDED_PREFIX: &str = "  +";
+
 pub(super) fn truncate_to_width(s: &str, max_width: usize) -> String {
     use unicode_width::UnicodeWidthChar;
     if max_width == 0 {
@@ -420,12 +429,17 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 // Split multi-line entries (e.g. edit diff) into separate lines
                 // — edit/write JSON events carry their own data; the helper
                 // unifies the `ctrl+p T` toggle across every tool.
-                let rendered_lines: Vec<String> =
+                //
+                // Diff-specific styling (`-` gray, `+` green) is decided here
+                // on the *unpadded* `line`, before the caller pads it with
+                // `"⏳ "` / `"   "` — checking the padded label would always
+                // miss because the prefix sits two columns in.
+                let rendered_lines: Vec<(Style, String)> =
                     render_activity_entry(&a.text, app.chat.tool_detail_expanded)
                         .into_iter()
                         .enumerate()
                         .map(|(line_idx, line)| {
-                            if line_idx == 0 && is_last {
+                            let label = if line_idx == 0 && is_last {
                                 if elapsed.is_empty() {
                                     format!("⏳ {line}")
                                 } else {
@@ -434,16 +448,13 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                             } else {
                                 // Pad with 3 spaces to visually align with "⏳ "
                                 format!("   {line}")
-                            }
+                            };
+                            let label_style = style_diff_line(&line, style);
+                            (label_style, label)
                         })
                         .collect();
 
-                for label in rendered_lines {
-                    let label_style = if label.starts_with("  -") {
-                        Style::default().fg(Color::Gray)
-                    } else {
-                        style
-                    };
+                for (label_style, label) in rendered_lines {
                     tail_lines.push(Line::from(vec![
                         Span::raw("  "),
                         Span::styled(label, label_style),
@@ -678,17 +689,17 @@ fn render_file_tool_diff(tool_name: &str, json: &serde_json::Value) -> Vec<Strin
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             for line in old_str.split('\n') {
-                out.push(format!("  -{line}"));
+                out.push(format!("{DIFF_REMOVED_PREFIX}{line}"));
             }
             for line in new_str.split('\n') {
-                out.push(format!("  +{line}"));
+                out.push(format!("{DIFF_ADDED_PREFIX}{line}"));
             }
         }
         "write" => {
             let content = json.get("content").and_then(|v| v.as_str()).unwrap_or("");
             let content_lines: Vec<&str> = content.split('\n').collect();
             for line in content_lines.iter().take(TOOL_DETAIL_MAX_LINES) {
-                out.push(format!("  +{line}"));
+                out.push(format!("{DIFF_ADDED_PREFIX}{line}"));
             }
             if content_lines.len() > TOOL_DETAIL_MAX_LINES {
                 out.push(format!(
@@ -700,6 +711,24 @@ fn render_file_tool_diff(tool_name: &str, json: &serde_json::Value) -> Vec<Strin
         _ => {}
     }
     out
+}
+
+/// Style one unpadded diff line. The caller pads with `"⏳ "` / `"   "`
+/// later, so the prefix check runs on the **unpadded** input — checking
+/// the padded label would always miss because the prefix sits two
+/// characters in (`"⏳ -..."` or `"   -..."`), not at column 0.
+///
+/// Returns `default` for the header (`<file>:<line>`), truncation
+/// marker (`… (N more lines)`), and the empty case, so the rest of the
+/// progress tail keeps its yellow-italic styling.
+fn style_diff_line(unpadded: &str, default: Style) -> Style {
+    if unpadded.starts_with(DIFF_REMOVED_PREFIX) {
+        Style::default().fg(Color::Gray)
+    } else if unpadded.starts_with(DIFF_ADDED_PREFIX) {
+        Style::default().fg(Color::Green)
+    } else {
+        default
+    }
 }
 
 fn reformat_tool_line(text: &str) -> String {
@@ -989,5 +1018,67 @@ mod tests {
         let lines = render_activity_entry(text, true);
         // Summary on first line; only `timeout` survives the skip.
         assert_eq!(lines, vec!["Tool: bash — ls -la", "  timeout: 5000"]);
+    }
+
+    /// The minus line produced by `render_file_tool_diff` must round-trip
+    /// through `style_diff_line` and come back gray — this is the exact
+    /// regression that was missed when the prefix check moved after the
+    /// caller padded the line with `"⏳ "` / `"   "`. Goes through the full
+    /// `render_activity_entry` path so the wire format and the helper stay
+    /// wired to the same JSON shape used by the rest of the test module.
+    #[test]
+    fn style_diff_line_minus_emitted_by_render_file_tool_diff_is_gray() {
+        let text = edit_event("src/foo.rs", None, "removed line", "added line");
+        let lines = render_activity_entry(&text, true);
+        // First line is the file header (default style); second is the
+        // `-` removed line (must be gray); third is the `+` added line.
+        assert_eq!(lines[0], "src/foo.rs");
+        assert!(lines[1].starts_with(DIFF_REMOVED_PREFIX));
+        assert!(lines[2].starts_with(DIFF_ADDED_PREFIX));
+
+        let default = Style::default().fg(Color::Yellow);
+        assert_eq!(
+            style_diff_line(&lines[1], default).fg,
+            Some(Color::Gray),
+            "- line must be gray, not default"
+        );
+        assert_eq!(
+            style_diff_line(&lines[2], default).fg,
+            Some(Color::Green),
+            "+ line must be green, not default"
+        );
+    }
+
+    #[test]
+    fn style_diff_line_plus_uses_green() {
+        let default = Style::default().fg(Color::Yellow);
+        let s = style_diff_line("  +added line", default);
+        assert_eq!(s.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn style_diff_line_minus_uses_gray() {
+        let default = Style::default().fg(Color::Yellow);
+        let s = style_diff_line("  -removed line", default);
+        assert_eq!(s.fg, Some(Color::Gray));
+    }
+
+    #[test]
+    fn style_diff_line_header_uses_default() {
+        // File header like `src/foo.rs:42` has no diff prefix and must
+        // fall through to the caller's default style.
+        let default = Style::default().fg(Color::Yellow);
+        let s = style_diff_line("src/foo.rs:42", default);
+        assert_eq!(s, default);
+    }
+
+    #[test]
+    fn style_diff_line_truncation_marker_uses_default() {
+        // The `… (N more lines)` marker is emitted by `render_file_tool_diff`
+        // for truncated write content; it has no diff prefix and must keep
+        // the default style.
+        let default = Style::default().fg(Color::Yellow);
+        let s = style_diff_line("  … (5 more lines)", default);
+        assert_eq!(s, default);
     }
 }

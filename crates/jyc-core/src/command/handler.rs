@@ -100,4 +100,22 @@ pub trait CommandHandler: Send + Sync {
 
     /// Execute the command with the given context.
     async fn execute(&self, context: CommandContext) -> Result<CommandResult>;
+
+    /// If `true`, the registry collects subsequent non-blank lines into
+    /// `args[1..]` (one line per element) before dispatching to the
+    /// handler. Collection stops at the first blank line so a body that
+    /// follows the command block is still passed to the agent.
+    ///
+    /// **Caveat**: lines starting with `/` are also collected as
+    /// description text — they are NOT dispatched as commands. Users
+    /// must insert a blank line between a multi-line command and the
+    /// next `/command`. This is intentional: descriptions like
+    /// `/path/to/file` should be preserved literally.
+    ///
+    /// Used by commands whose first argument is free-form multi-line text
+    /// (e.g. `/backlog push <description>`). Default `false` preserves
+    /// the existing single-line `args` semantics.
+    fn collect_subsequent_lines(&self) -> bool {
+        false
+    }
 }

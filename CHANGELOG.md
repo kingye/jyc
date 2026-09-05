@@ -18,6 +18,16 @@
   the full tool input (each top-level argument on its own indented line,
   multi-line values preserved, capped at 20 lines); toggle again to
   return to the one-line extracted summary.
+- **`/backlog` command for saving and replaying user messages per topic.**
+  Storage: `<topic_path>/.jyc/backlog.jsonl` (JSONL, one item per line).
+  Subcommands: `push <multi-line description>` appends a new item
+  (continuation lines collected until blank line, then re-joined with
+  `\n`); `list` prints a numbered list (or `(empty)`); `pop [N]` removes
+  the N-th item (default 1) and injects its text into the next agent turn
+  as a user message via `append_body`; `rm <N>` removes the N-th item
+  without injecting. Also teaches the command registry an opt-in
+  `collect_subsequent_lines` mechanism so future commands can accept
+  multi-line first arguments the same way.
 
 ### Changed
 

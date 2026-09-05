@@ -61,7 +61,11 @@ impl CommandRegistry {
         let mut body_lines = Vec::new();
         let mut in_command_block = true;
 
-        for line in body.lines() {
+        // Peekable so opt-in handlers can collect continuation lines into
+        // their `args` vector without changing outer loop control flow.
+        let mut lines_iter = body.lines().peekable();
+
+        while let Some(line) = lines_iter.next() {
             let trimmed = line.trim();
 
             if in_command_block {
@@ -75,7 +79,25 @@ impl CommandRegistry {
                     let cmd_name = parts[0].to_lowercase();
 
                     if let Some(handler) = self.handlers.get(&cmd_name) {
-                        let args: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
+                        let mut args: Vec<String> =
+                            parts[1..].iter().map(|s| s.to_string()).collect();
+
+                        // Commands that opt into continuation lines (e.g.
+                        // `/backlog push`) get subsequent non-blank lines
+                        // appended as additional args. Stops at the first
+                        // blank line so a body that follows the command
+                        // block still flows through to the agent.
+                        if handler.collect_subsequent_lines() {
+                            while let Some(&next) = lines_iter.peek() {
+                                if next.trim().is_empty() {
+                                    lines_iter.next(); // consume the blank separator
+                                    break;
+                                }
+                                args.push(next.to_string());
+                                lines_iter.next();
+                            }
+                        }
+
                         let ctx = CommandContext {
                             args,
                             ..context.clone()
@@ -461,5 +483,85 @@ focus on error handling",
             .unwrap();
 
         assert_eq!(output.cleaned_body, "[args=] PROMPT");
+    }
+
+    /// A handler that opts into collecting continuation lines. Subsequent
+    /// non-blank lines are appended to `args` (one line per arg), and the
+    /// registry stops at the first blank line so a body that follows can
+    /// still be passed to the agent.
+    struct MultiLineHandler;
+
+    #[async_trait]
+    impl CommandHandler for MultiLineHandler {
+        fn name(&self) -> &str {
+            "/backlog"
+        }
+        fn description(&self) -> &str {
+            "multiline opt-in"
+        }
+        fn collect_subsequent_lines(&self) -> bool {
+            true
+        }
+        async fn execute(&self, ctx: CommandContext) -> Result<CommandResult> {
+            // Echo the joined args back so the test can assert exact contents.
+            Ok(CommandResult {
+                success: true,
+                message: format!("args={:?}", ctx.args),
+                error: None,
+                append_body: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_collect_subsequent_lines_stops_at_blank() {
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(MultiLineHandler));
+
+        let body = "/backlog push\nline 1\nline 2\nline 3\n\nbody text";
+        let output = registry
+            .process_commands(body, &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(output.results.len(), 1);
+        assert_eq!(
+            output.results[0].message,
+            r#"args=["push", "line 1", "line 2", "line 3"]"#
+        );
+        // Trailing body still flows through after the blank line.
+        assert_eq!(output.cleaned_body, "body text");
+    }
+
+    #[tokio::test]
+    async fn test_collect_subsequent_lines_until_end_of_body() {
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(MultiLineHandler));
+
+        // No trailing blank line; collection runs until the body ends.
+        let body = "/backlog push\nonly line";
+        let output = registry
+            .process_commands(body, &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(output.results[0].message, r#"args=["push", "only line"]"#);
+        assert!(output.body_empty);
+    }
+
+    #[tokio::test]
+    async fn test_collect_subsequent_lines_no_continuation() {
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(MultiLineHandler));
+
+        // Blank line right after the command — nothing to collect.
+        let body = "/backlog push\n\nlater body";
+        let output = registry
+            .process_commands(body, &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(output.results[0].message, r#"args=["push"]"#);
+        assert_eq!(output.cleaned_body, "later body");
     }
 }

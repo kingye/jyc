@@ -1,3 +1,4 @@
+pub mod backlog_handler;
 pub mod cancel_handler;
 pub mod close_handler;
 pub mod context_handler;
@@ -88,6 +89,10 @@ pub fn all_commands() -> Vec<CommandInfo> {
             name: "/info".into(),
             description: "Show topic info (mode, model, tokens, cost, files)".into(),
         },
+        CommandInfo {
+            name: "/backlog".into(),
+            description: "Save and replay user messages (push|list|pop|rm)".into(),
+        },
     ]
 }
 
@@ -137,6 +142,7 @@ mod tests {
             "/exchange",
             "/context",
             "/info",
+            "/backlog",
         ] {
             assert!(
                 names.contains(expected),
@@ -145,7 +151,7 @@ mod tests {
         }
         assert_eq!(
             commands.len(),
-            15,
+            16,
             "all_commands() count changed. Update this test if intentional."
         );
     }

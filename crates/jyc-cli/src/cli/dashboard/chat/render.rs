@@ -801,13 +801,15 @@ mod tests {
         let lines = format_tool_input_full(
             r#"Tool: edit — {"file_path": "src/tools.rs", "old_string": "fn a() {\n}", "new_string": "fn b() {}"}"#,
         );
+        // serde_json without `preserve_order` stores objects as BTreeMap,
+        // so fields render in alphabetical order.
         assert_eq!(
             lines,
             vec![
                 "  file_path: src/tools.rs",
+                "  new_string: fn b() {}",
                 "  old_string: fn a() {",
                 "    }",
-                "  new_string: fn b() {}",
             ]
         );
     }

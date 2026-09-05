@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::AgentService;
+use crate::command::backlog_handler::BacklogCommandHandler;
 use crate::command::cancel_handler::CancelCommandHandler;
 use crate::command::close_handler::CloseCommandHandler;
 use crate::command::context_handler::ContextCommandHandler;
@@ -148,6 +149,7 @@ pub(crate) async fn process_message(
     command_registry.register(Box::new(ExchangeCommandHandler::new(topic_manager.clone())));
     command_registry.register(Box::new(ContextCommandHandler));
     command_registry.register(Box::new(InfoCommandHandler::new(topic_manager.clone())));
+    command_registry.register(Box::new(BacklogCommandHandler::new()));
 
     // User-defined commands from config.toml `[[commands]]`. Registered last,
     // but `register()` warns on collisions and config validation rejects

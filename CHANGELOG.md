@@ -18,6 +18,21 @@
   the full tool input (each top-level argument on its own indented line,
   multi-line values preserved, capped at 20 lines); toggle again to
   return to the one-line extracted summary.
+
+### Changed
+
+- **TUI progress indicator: `edit`/`write` tools unified under the
+  `ctrl+p T` toggle.** Previously, `edit` and `write` tool entries
+  rendered an always-on multi-line diff in the progress tail, independent
+  of the tool-detail toggle. They now follow the same rule as every
+  other tool: with the toggle off, they collapse to the one-line summary
+  `Tool: edit — <basename>:<line>` (or `Tool: write — <basename>`);
+  with the toggle on, they expand to the full diff (`-`/`+` lines,
+  content for `write`, capped at 20 lines). Side effect: the redundant
+  `  command: <cmd>` line that previously appeared below the `bash`
+  summary is no longer shown — the summary already inlines the command.
+  Also fixes a duplicated `⏳ ` prefix and double `elapsed` on the
+  `edit`/`write` header line.
 - **OpenAI Responses API provider.** New `type = "openai-responses"`
   provider targeting `POST {base_url}/responses` — the recommended way to
   run GPT-5.x / o-series reasoning models. Unlike Chat Completions it

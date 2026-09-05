@@ -199,10 +199,11 @@ impl CommandHandler for BacklogCommandHandler {
             }
 
             "pop" => {
-                let n = match Self::parse_n(args, 1).map_err(anyhow::Error::msg)? {
-                    Some(n) => n,
-                    None => 1, // default: pop the first item
-                };
+                // Default to `1` when no index is given (matches the user
+                // spec: "/backlog pop" pops the first item).
+                let n: usize = Self::parse_n(args, 1)
+                    .map_err(anyhow::Error::msg)?
+                    .unwrap_or(1);
                 let mut items = Self::read_items(&path)?;
                 if n > items.len() {
                     let err = format!("index {n} out of range (backlog has {} items)", items.len());

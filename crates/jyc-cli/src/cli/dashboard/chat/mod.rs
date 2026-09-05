@@ -141,6 +141,10 @@ pub(super) struct ChatState {
     /// pseudo-messages). Toggled via the leader popup (`t`); default
     /// collapsed.
     pub(super) thinking_expanded: bool,
+    /// Whether tool-call lines in the progress tail show the full,
+    /// multi-line input detail instead of the one-line extracted
+    /// summary. Toggled via the leader popup (`T`); default collapsed.
+    pub(super) tool_detail_expanded: bool,
     /// Live processing status — updated by WS `processing` events.
     pub(super) live_processing: std::collections::BTreeMap<(String, String), (bool, bool)>,
     /// Live loop duration in milliseconds — updated by WS `loop_tick`
@@ -623,6 +627,9 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
         }
         LocalAction::ToggleThinking => {
             app.chat.thinking_expanded = !app.chat.thinking_expanded;
+        }
+        LocalAction::ToggleToolDetail => {
+            app.chat.tool_detail_expanded = !app.chat.tool_detail_expanded;
         }
     }
 }
@@ -1796,6 +1803,7 @@ impl ChatState {
             live_chat: std::collections::BTreeMap::new(),
             live_thinking: std::collections::BTreeMap::new(),
             thinking_expanded: false,
+            tool_detail_expanded: false,
             live_processing: std::collections::BTreeMap::new(),
             live_tick_ms: std::collections::BTreeMap::new(),
             last_seen_id: std::collections::BTreeMap::new(),

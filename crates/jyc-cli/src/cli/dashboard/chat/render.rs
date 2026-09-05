@@ -491,18 +491,20 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                     // Plain text — split by newlines for display. Tool-call
                     // lines carry the raw JSON input; extract a readable
                     // summary at render time (the WS/log data stays raw).
-                    let lines: Vec<String> = a
-                        .text
-                        .split('\n')
-                        .enumerate()
-                        .map(|(i, line)| {
-                            if i == 0 {
-                                reformat_tool_line(line)
-                            } else {
-                                line.to_string()
+                    let mut lines: Vec<String> = Vec::new();
+                    for (i, line) in a.text.split('\n').enumerate() {
+                        if i == 0 {
+                            lines.push(reformat_tool_line(line));
+                            // Expanded tool detail: full multi-line field
+                            // listing of the raw JSON input below the
+                            // one-line summary.
+                            if app.chat.tool_detail_expanded {
+                                lines.extend(format_tool_input_full(line));
                             }
-                        })
-                        .collect();
+                        } else {
+                            lines.push(line.to_string());
+                        }
+                    }
                     lines
                         .iter()
                         .enumerate()
@@ -701,6 +703,46 @@ fn reformat_tool_line(text: &str) -> String {
     }
 }
 
+/// Render the raw JSON input of a `Tool: <name> — <json>` activity line as
+/// an indented multi-line field listing (`  key: value`), for the expanded
+/// tool-detail view (`ctrl+p T`). Multi-line string values keep their
+/// newlines with indented continuation lines; nested values stay on one
+/// line in compact form. Capped at 20 lines with a trailing
+/// `… (N more lines)` marker — same convention as the edit-diff renderer.
+/// Returns empty for non-tool lines or unparseable input.
+fn format_tool_input_full(text: &str) -> Vec<String> {
+    let Some((_, input)) = text
+        .strip_prefix("Tool: ")
+        .and_then(|rest| rest.split_once(" — "))
+    else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
+        return Vec::new();
+    };
+    let Some(obj) = value.as_object() else {
+        return Vec::new();
+    };
+    const MAX_LINES: usize = 20;
+    let mut out: Vec<String> = Vec::new();
+    for (key, val) in obj {
+        match val {
+            serde_json::Value::String(s) => {
+                let mut parts = s.split('\n');
+                out.push(format!("  {key}: {}", parts.next().unwrap_or("")));
+                out.extend(parts.map(|l| format!("    {l}")));
+            }
+            other => out.push(format!("  {key}: {other}")),
+        }
+    }
+    if out.len() > MAX_LINES {
+        let more = out.len() - MAX_LINES;
+        out.truncate(MAX_LINES);
+        out.push(format!("  … ({more} more lines)"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -752,5 +794,48 @@ mod tests {
         // Non-tool lines are untouched.
         let other = "Thinking... (iteration 2)";
         assert_eq!(reformat_tool_line(other), other);
+    }
+
+    #[test]
+    fn format_tool_input_full_lists_fields_multiline() {
+        let lines = format_tool_input_full(
+            r#"Tool: edit — {"file_path": "src/tools.rs", "old_string": "fn a() {\n}", "new_string": "fn b() {}"}"#,
+        );
+        // serde_json without `preserve_order` stores objects as BTreeMap,
+        // so fields render in alphabetical order.
+        assert_eq!(
+            lines,
+            vec![
+                "  file_path: src/tools.rs",
+                "  new_string: fn b() {}",
+                "  old_string: fn a() {",
+                "    }",
+            ]
+        );
+    }
+
+    #[test]
+    fn format_tool_input_full_keeps_nested_values_compact() {
+        let lines = format_tool_input_full(r#"Tool: batch — {"items": [1, 2], "n": 3}"#);
+        assert_eq!(lines, vec!["  items: [1,2]", "  n: 3"]);
+    }
+
+    #[test]
+    fn format_tool_input_full_empty_for_non_tool_or_bad_input() {
+        assert!(format_tool_input_full("user typed something").is_empty());
+        assert!(format_tool_input_full("Tool: bash — {bad json").is_empty());
+        assert!(format_tool_input_full(r#"Tool: bash — "just a string""#).is_empty());
+    }
+
+    #[test]
+    fn format_tool_input_full_caps_at_max_lines() {
+        let long = (0..30)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\\n");
+        let input = format!(r#"Tool: write — {{"content": "{long}"}}"#);
+        let lines = format_tool_input_full(&input);
+        assert_eq!(lines.len(), 21);
+        assert_eq!(lines[20], "  … (10 more lines)");
     }
 }

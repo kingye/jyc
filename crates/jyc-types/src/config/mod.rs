@@ -142,9 +142,25 @@ pub struct AppConfig {
 
 /// A user-defined slash command declared in `config.toml` as `[[commands]]`.
 ///
-/// Invoking `/<name>` switches the topic to `mode` (when set), points the
-/// agent at `skills`, and appends `user_prompt` to the message body. The
-/// command also appears in `/?` and the dashboard command popup.
+/// Two flavors are supported — only one per entry:
+///
+/// - **Prompt-injection** (default): invoking `/<name>` appends `user_prompt`
+///   to the message body. The agent receives the prompt and uses its tools
+///   to do the work (this path costs tokens).
+/// - **Direct shell execution** (when `shell` is set): the handler runs the
+///   argv directly via `tokio::process::Command` and replies with stdout +
+///   stderr. **No LLM is involved, so no tokens are spent.** The user args
+///   typed after the command are appended to `shell` as additional argv
+///   elements (e.g. `/ls -la` → `["ls", "-la"]`). No shell quoting or
+///   interpolation — each argv element is a literal argument.
+///
+/// Inbound channels (email, feishu, websocket) can trigger any registered
+/// command — including `shell` ones — so treat `[[commands]]` as an
+/// operator-trust surface: only put shell commands in the config that you
+/// would accept any inbound sender invoking.
+///
+/// The command appears in `/?` and the dashboard command popup regardless
+/// of flavor.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CustomCommand {
     /// Command name without the leading slash (e.g. `review`).
@@ -155,7 +171,8 @@ pub struct CustomCommand {
     pub description: String,
 
     /// Mode to switch to before running: `plan` or `build`.
-    /// When unset, the current topic mode is left unchanged.
+    /// When unset, the current topic mode is left unchanged. Only meaningful
+    /// for prompt-injection commands — shell commands ignore it.
     #[serde(default)]
     pub mode: Option<String>,
 
@@ -164,12 +181,25 @@ pub struct CustomCommand {
     /// These names are surfaced to the agent in the appended prompt. The
     /// system prompt already lists every discovered skill with its path and
     /// description, so naming them here is enough for the agent to locate
-    /// and read the corresponding `SKILL.md`.
+    /// and read the corresponding `SKILL.md`. Only meaningful for
+    /// prompt-injection commands — shell commands ignore it.
     #[serde(default)]
     pub skills: Option<Vec<String>>,
 
     /// Instruction text appended to the message body after the command runs.
-    pub user_prompt: String,
+    /// Required when `shell` is unset; must be unset (or validation rejects
+    /// the config) when `shell` is set.
+    #[serde(default)]
+    pub user_prompt: Option<String>,
+
+    /// Direct argv to execute via `tokio::process::Command`. User args typed
+    /// after the command on the same line are appended. Required for
+    /// shell-only commands; must be unset when `user_prompt` is set.
+    ///
+    /// ponytail: no per-command timeout / cwd / env knobs — wrap with a
+    /// script (`shell = ["./scripts/deploy.sh"]`) when those matter.
+    #[serde(default)]
+    pub shell: Option<Vec<String>>,
 }
 
 /// Names of the built-in slash commands, including the leading slash.

@@ -639,6 +639,35 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # mode = "build"
 # skills = ["dev-workflow"]
 # user_prompt = "Run the pre-PR checklist, then summarize what is left to do."
+#
+# --- Shell variant ---
+# A `[[commands]]` entry can also be a direct shell invocation instead of an
+# LLM prompt — set `shell` to an argv array. The handler runs it via
+# `tokio::process::Command` and replies with stdout/stderr; the LLM is NOT
+# invoked, so no tokens are spent. User args typed after the command are
+# appended to `shell` as more argv elements:
+#
+#   /deploy staging prod  →  runs scripts/deploy.sh staging prod
+#
+# Security note: `shell` is argv-only (no shell quoting, no interpolation),
+# but ANY inbound channel (email, feishu, websocket) can trigger any
+# registered command. Treat `[[commands]]` as an operator-trust surface —
+# only add shell commands that you would accept any inbound sender invoking.
+# Timeout 30s and output cap 8 KiB are fixed (see README "Shell Commands").
+#
+# `shell` and `user_prompt` are mutually exclusive — one per command. `mode`
+# and `skills` are silently ignored on shell commands (they are an LLM
+# concept and this path never reaches the LLM).
+#
+# [[commands]]
+# name = "ls"
+# description = "List the topic directory"
+# shell = ["ls"]              # /ls -la  →  runs ["ls", "-la"]
+#
+# [[commands]]
+# name = "deploy"
+# description = "Deploy to staging"
+# shell = ["./scripts/deploy.sh"]  # user args appended: /deploy staging prod
 
 # --- MCP Servers ---
 # Named MCP server definitions are configured here and loaded by the agent at startup.

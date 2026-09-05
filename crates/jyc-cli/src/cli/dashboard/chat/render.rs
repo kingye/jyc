@@ -4,6 +4,11 @@ use super::table_wrap::wrap_tables;
 use super::*;
 use super::{App, ChatMessage, LINE_DRAWING};
 
+/// Max lines a tool detail expansion can render before trailing it with
+/// a `… (N more lines)` marker. Shared by `render_file_tool_diff` (edit /
+/// write diffs) and `format_tool_input_full` (generic tool field listings).
+const TOOL_DETAIL_MAX_LINES: usize = 20;
+
 pub(super) fn truncate_to_width(s: &str, max_width: usize) -> String {
     use unicode_width::UnicodeWidthChar;
     if max_width == 0 {
@@ -412,101 +417,12 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::ITALIC);
 
-                // Split multi-line entries (e.g. edit diff) into separate lines.
-                // Try parsing as JSON first — edit events store full data as JSON.
-                let rendered_lines: Vec<String> = if let Ok(json) =
-                    serde_json::from_str::<serde_json::Value>(&a.text)
-                    && json.get("type").and_then(|t| t.as_str()) == Some("edit")
-                {
-                    let file_path = json
-                        .get("file_path")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let line_no = json.get("line_no").and_then(|v| v.as_u64());
-                    let old_str = json
-                        .get("old_string")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let new_str = json
-                        .get("new_string")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let location = match line_no {
-                        Some(n) => format!("{file_path}:{n}"),
-                        None => file_path.to_string(),
-                    };
-                    let mut out = Vec::new();
-                    // Header line
-                    if is_last {
-                        if elapsed.is_empty() {
-                            out.push(format!("⏳ {location}"));
-                        } else {
-                            out.push(format!("⏳ {location} {elapsed}"));
-                        }
-                    } else {
-                        out.push(format!("   {location}"));
-                    }
-                    // Old lines
-                    for line in old_str.split('\n') {
-                        out.push(format!("  -{line}"));
-                    }
-                    // New lines
-                    for line in new_str.split('\n') {
-                        out.push(format!("  +{line}"));
-                    }
-                    out
-                } else if let Ok(json) = serde_json::from_str::<serde_json::Value>(&a.text)
-                    && json.get("type").and_then(|t| t.as_str()) == Some("write")
-                {
-                    let file_path = json
-                        .get("file_path")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let content = json.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                    let mut out = Vec::new();
-                    // Header line
-                    if is_last {
-                        if elapsed.is_empty() {
-                            out.push(format!("⏳ {file_path}"));
-                        } else {
-                            out.push(format!("⏳ {file_path} {elapsed}"));
-                        }
-                    } else {
-                        out.push(format!("   {file_path}"));
-                    }
-                    // Content lines (truncated to avoid flooding the pane)
-                    let content_lines: Vec<&str> = content.split('\n').collect();
-                    let max_lines = 20;
-                    for line in content_lines.iter().take(max_lines) {
-                        out.push(format!("  +{line}"));
-                    }
-                    if content_lines.len() > max_lines {
-                        out.push(format!(
-                            "  … ({} more lines)",
-                            content_lines.len() - max_lines
-                        ));
-                    }
-                    out
-                } else {
-                    // Plain text — split by newlines for display. Tool-call
-                    // lines carry the raw JSON input; extract a readable
-                    // summary at render time (the WS/log data stays raw).
-                    let mut lines: Vec<String> = Vec::new();
-                    for (i, line) in a.text.split('\n').enumerate() {
-                        if i == 0 {
-                            lines.push(reformat_tool_line(line));
-                            // Expanded tool detail: full multi-line field
-                            // listing of the raw JSON input below the
-                            // one-line summary.
-                            if app.chat.tool_detail_expanded {
-                                lines.extend(format_tool_input_full(line));
-                            }
-                        } else {
-                            lines.push(line.to_string());
-                        }
-                    }
-                    lines
-                        .iter()
+                // Split multi-line entries (e.g. edit diff) into separate lines
+                // — edit/write JSON events carry their own data; the helper
+                // unifies the `ctrl+p T` toggle across every tool.
+                let rendered_lines: Vec<String> =
+                    render_activity_entry(&a.text, app.chat.tool_detail_expanded)
+                        .into_iter()
                         .enumerate()
                         .map(|(line_idx, line)| {
                             if line_idx == 0 && is_last {
@@ -520,8 +436,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                                 format!("   {line}")
                             }
                         })
-                        .collect()
-                };
+                        .collect();
 
                 for label in rendered_lines {
                     let label_style = if label.starts_with("  -") {
@@ -687,6 +602,106 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
 /// happens here — at render time — so the WS payload and `activity.jsonl`
 /// keep the raw JSON. Lines that don't match, or whose input can't be
 /// summarized, pass through unchanged.
+/// Render the raw text of one activity entry into a list of display
+/// lines. The caller applies the per-line `⏳ ` / `   ` padding based on
+/// `is_last` + `elapsed`.
+///
+/// Edit/write events arrive as bare JSON (`{"type":"edit",...}`) carrying
+/// `old_string` / `new_string` / `content` for a diff view. That diff is
+/// shown only when `tool_detail_expanded` (the `ctrl+p T` toggle) is on;
+/// otherwise the entry collapses to the same one-line
+/// `Tool: <name> — <basename>` form every other tool uses. Putting edit
+/// and write under the same toggle unifies the "tool details" pane — no
+/// more independent always-on rendering for file-write tools.
+fn render_activity_entry(text: &str, tool_detail_expanded: bool) -> Vec<String> {
+    let parsed = serde_json::from_str::<serde_json::Value>(text).ok();
+    // Take ownership of the parsed value so `typ` can borrow from it
+    // without conflicting with later moves.
+    let json = parsed.unwrap_or_default();
+    let typ = json.get("type").and_then(|t| t.as_str());
+
+    if matches!(typ, Some("edit") | Some("write")) {
+        let tool_name = typ.unwrap_or("?");
+        if tool_detail_expanded {
+            render_file_tool_diff(tool_name, &json)
+        } else {
+            let file_path = json
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let basename = file_path.rsplit('/').next().unwrap_or(file_path);
+            let line_no = json.get("line_no").and_then(|v| v.as_u64());
+            let label = match line_no {
+                Some(n) => format!("{basename}:{n}"),
+                None => basename.to_string(),
+            };
+            vec![format!("Tool: {tool_name} — {label}")]
+        }
+    } else {
+        // Standard `Tool: <name> — <json>` path.
+        let mut lines: Vec<String> = Vec::new();
+        for (i, line) in text.split('\n').enumerate() {
+            if i == 0 {
+                lines.push(reformat_tool_line(line));
+                if tool_detail_expanded {
+                    lines.extend(format_tool_input_full(line));
+                }
+            } else {
+                lines.push(line.to_string());
+            }
+        }
+        lines
+    }
+}
+
+/// Rich diff view for an `edit` or `write` JSON event. Lines are bare
+/// content (no `⏳ ` prefix) — the caller applies per-line padding.
+fn render_file_tool_diff(tool_name: &str, json: &serde_json::Value) -> Vec<String> {
+    let file_path = json
+        .get("file_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let line_no = json.get("line_no").and_then(|v| v.as_u64());
+    let location = match line_no {
+        Some(n) => format!("{file_path}:{n}"),
+        None => file_path.to_string(),
+    };
+    let mut out = vec![location];
+    match tool_name {
+        "edit" => {
+            let old_str = json
+                .get("old_string")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let new_str = json
+                .get("new_string")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            for line in old_str.split('\n') {
+                out.push(format!("  -{line}"));
+            }
+            for line in new_str.split('\n') {
+                out.push(format!("  +{line}"));
+            }
+        }
+        "write" => {
+            let content = json.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            let content_lines: Vec<&str> = content.split('\n').collect();
+            for line in content_lines.iter().take(TOOL_DETAIL_MAX_LINES) {
+                out.push(format!("  +{line}"));
+            }
+            if content_lines.len() > TOOL_DETAIL_MAX_LINES {
+                out.push(format!(
+                    "  … ({} more lines)",
+                    content_lines.len() - TOOL_DETAIL_MAX_LINES
+                ));
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 fn reformat_tool_line(text: &str) -> String {
     let Some(rest) = text.strip_prefix("Tool: ") else {
         return text.to_string();
@@ -710,22 +725,47 @@ fn reformat_tool_line(text: &str) -> String {
 /// line in compact form. Capped at 20 lines with a trailing
 /// `… (N more lines)` marker — same convention as the edit-diff renderer.
 /// Returns empty for non-tool lines or unparseable input.
+/// Per-tool list of field names whose values already appear in the
+/// one-line summary produced by `jyc_types::inspect::tool_activity_summary`
+/// — skipping them in `format_tool_input_full` prevents a redundant line
+/// appearing below a summary that already inlines the value.
+///
+/// When `tool_activity_summary` reads either of two alternate keys for a
+/// tool (e.g. `read_image` accepts `file_path` *or* `path`), list both —
+/// the skip is a set, not a single key.
+fn primary_field_keys(tool_name: &str) -> &'static [&'static str] {
+    match tool_name {
+        "bash" => &["command"],
+        "read" | "edit" | "write" => &["file_path"],
+        "read_image" => &["path", "file_path"],
+        "grep" | "glob" => &["pattern"],
+        "webfetch" => &["url"],
+        _ => &[],
+    }
+}
+
 fn format_tool_input_full(text: &str) -> Vec<String> {
-    let Some((_, input)) = text
+    let Some((prefix, input)) = text
         .strip_prefix("Tool: ")
         .and_then(|rest| rest.split_once(" — "))
     else {
         return Vec::new();
     };
+    // `prefix` is either the bare tool name or the completion variant
+    // ("bash (done, 3s)") — primary keys are keyed on the bare name.
+    let name = prefix.split(" (").next().unwrap_or(prefix);
+    let skip = primary_field_keys(name);
     let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
         return Vec::new();
     };
     let Some(obj) = value.as_object() else {
         return Vec::new();
     };
-    const MAX_LINES: usize = 20;
     let mut out: Vec<String> = Vec::new();
     for (key, val) in obj {
+        if skip.contains(&key.as_str()) {
+            continue;
+        }
         match val {
             serde_json::Value::String(s) => {
                 let mut parts = s.split('\n');
@@ -735,9 +775,9 @@ fn format_tool_input_full(text: &str) -> Vec<String> {
             other => out.push(format!("  {key}: {other}")),
         }
     }
-    if out.len() > MAX_LINES {
-        let more = out.len() - MAX_LINES;
-        out.truncate(MAX_LINES);
+    if out.len() > TOOL_DETAIL_MAX_LINES {
+        let more = out.len() - TOOL_DETAIL_MAX_LINES;
+        out.truncate(TOOL_DETAIL_MAX_LINES);
         out.push(format!("  … ({more} more lines)"));
     }
     out
@@ -798,8 +838,12 @@ mod tests {
 
     #[test]
     fn format_tool_input_full_lists_fields_multiline() {
+        // `batch` has no primary field — every JSON key expands. Switching
+        // the example tool away from `edit` keeps the test focused on the
+        // multi-line field rendering, not on primary-key skipping (which
+        // has its own test below).
         let lines = format_tool_input_full(
-            r#"Tool: edit — {"file_path": "src/tools.rs", "old_string": "fn a() {\n}", "new_string": "fn b() {}"}"#,
+            r#"Tool: batch — {"file_path": "src/tools.rs", "old_string": "fn a() {\n}", "new_string": "fn b() {}"}"#,
         );
         // serde_json without `preserve_order` stores objects as BTreeMap,
         // so fields render in alphabetical order.
@@ -812,6 +856,41 @@ mod tests {
                 "    }",
             ]
         );
+    }
+
+    #[test]
+    fn format_tool_input_full_skips_primary_field_for_bash() {
+        let lines = format_tool_input_full(r#"Tool: bash — {"command": "ls -la"}"#);
+        assert!(lines.is_empty(), "got {lines:?}");
+    }
+
+    #[test]
+    fn format_tool_input_full_keeps_secondary_fields_for_read() {
+        // `read`'s primary field is `file_path` — only `offset` + `limit`
+        // should survive the skip.
+        let lines = format_tool_input_full(
+            r#"Tool: read — {"file_path": "x.rs", "offset": 10, "limit": 5}"#,
+        );
+        assert_eq!(lines, vec!["  limit: 5", "  offset: 10"]);
+    }
+
+    #[test]
+    fn format_tool_input_full_skips_primary_field_for_completion_variant() {
+        // "bash (done, 3s)" — `primary_field_keys` only sees the bare name.
+        let lines = format_tool_input_full(r#"Tool: bash (done, 3s) — {"command": "ls"}"#);
+        assert!(lines.is_empty(), "got {lines:?}");
+    }
+
+    #[test]
+    fn format_tool_input_full_skips_primary_field_for_read_image() {
+        // `read_image` names its argument `path`, not `file_path` (see
+        // `inspect.rs` `tool_activity_summary_extracts_basename_for_file_tools`).
+        // Either key must be skipped when listed in `primary_field_keys`.
+        let lines_path = format_tool_input_full(r#"Tool: read_image — {"path": "/tmp/x.png"}"#);
+        assert!(lines_path.is_empty(), "got {lines_path:?}");
+        let lines_file_path =
+            format_tool_input_full(r#"Tool: read_image — {"file_path": "/tmp/x.png"}"#);
+        assert!(lines_file_path.is_empty(), "got {lines_file_path:?}");
     }
 
     #[test]
@@ -837,5 +916,78 @@ mod tests {
         let lines = format_tool_input_full(&input);
         assert_eq!(lines.len(), 21);
         assert_eq!(lines[20], "  … (10 more lines)");
+    }
+
+    // `render_activity_entry` — `ctrl+p T` toggle behavior for edit/write.
+
+    fn edit_event(file_path: &str, line_no: Option<u64>, old: &str, new: &str) -> String {
+        serde_json::json!({
+            "type": "edit",
+            "file_path": file_path,
+            "line_no": line_no,
+            "old_string": old,
+            "new_string": new,
+        })
+        .to_string()
+    }
+
+    fn write_event(file_path: &str, content: &str) -> String {
+        serde_json::json!({
+            "type": "write",
+            "file_path": file_path,
+            "content": content,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn render_activity_entry_edit_on_detail_shows_diff() {
+        let text = edit_event("src/foo.rs", Some(42), "old\n", "new\n");
+        let lines = render_activity_entry(&text, true);
+        assert_eq!(
+            lines,
+            vec!["src/foo.rs:42", "  -old", "  -", "  +new", "  +"]
+        );
+    }
+
+    #[test]
+    fn render_activity_entry_edit_off_detail_collapses_to_oneline() {
+        let text = edit_event("src/foo.rs", Some(42), "old", "new");
+        let lines = render_activity_entry(&text, false);
+        assert_eq!(lines, vec!["Tool: edit — foo.rs:42"]);
+    }
+
+    #[test]
+    fn render_activity_entry_edit_off_detail_omits_line_no_when_absent() {
+        let text = edit_event("src/foo.rs", None, "old", "new");
+        let lines = render_activity_entry(&text, false);
+        assert_eq!(lines, vec!["Tool: edit — foo.rs"]);
+    }
+
+    #[test]
+    fn render_activity_entry_write_on_detail_truncates_content() {
+        let long: Vec<String> = (0..30).map(|i| format!("line{i}")).collect();
+        let text = write_event("src/foo.rs", &long.join("\n"));
+        let lines = render_activity_entry(&text, true);
+        assert_eq!(lines.len(), 1 + 20 + 1); // header + 20 content lines + ellipsis
+        assert_eq!(lines[0], "src/foo.rs");
+        assert!(lines.last().unwrap().starts_with("  …"));
+    }
+
+    #[test]
+    fn render_activity_entry_write_off_detail_collapses_to_oneline() {
+        let text = write_event("src/foo.rs", "anything");
+        let lines = render_activity_entry(&text, false);
+        assert_eq!(lines, vec!["Tool: write — foo.rs"]);
+    }
+
+    #[test]
+    fn render_activity_entry_bash_on_detail_still_uses_standard_path() {
+        // Non-edit/write JSON: the standard `Tool: <name> — <summary>`
+        // path runs, with `format_tool_input_full` skipping `command`.
+        let text = r#"Tool: bash — {"command": "ls -la", "timeout": 5000}"#;
+        let lines = render_activity_entry(text, true);
+        // Summary on first line; only `timeout` survives the skip.
+        assert_eq!(lines, vec!["Tool: bash — ls -la", "  timeout: 5000"]);
     }
 }

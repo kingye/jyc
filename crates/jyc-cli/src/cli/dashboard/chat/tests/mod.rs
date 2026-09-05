@@ -1344,6 +1344,25 @@ fn leader_toggle_thinking_flips_expanded_flag() {
 }
 
 #[test]
+fn leader_toggle_tool_detail_flips_expanded_flag() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    assert!(!app.chat.tool_detail_expanded);
+    execute_local_action(
+        &mut app,
+        &mut test_terminal(),
+        local_commands::LocalAction::ToggleToolDetail,
+    );
+    assert!(app.chat.tool_detail_expanded);
+    execute_local_action(
+        &mut app,
+        &mut test_terminal(),
+        local_commands::LocalAction::ToggleToolDetail,
+    );
+    assert!(!app.chat.tool_detail_expanded);
+}
+
+#[test]
 fn history_fingerprint_changes_on_thinking_expanded_flip() {
     let msgs = vec![history_msg("user", "hi", None)];
     assert_ne!(

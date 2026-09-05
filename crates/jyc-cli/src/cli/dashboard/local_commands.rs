@@ -65,6 +65,9 @@ pub enum LocalAction {
     /// Expand/collapse thinking display (live progress tail and the
     /// completed-turn pseudo-messages in the chat history).
     ToggleThinking,
+    /// Show/hide the full multi-line tool-call input in the chat
+    /// progress tail (default: one-line extracted summary).
+    ToggleToolDetail,
 }
 
 /// Static metadata for one leader entry.
@@ -180,6 +183,13 @@ pub fn local_commands() -> &'static [LocalCommand] {
             scope: Chat,
             action: LocalAction::ToggleThinking,
             leader_keys: "t",
+        },
+        LocalCommand {
+            name: "toggle tool detail",
+            description: "Show full tool-call input in the progress tail",
+            scope: Chat,
+            action: LocalAction::ToggleToolDetail,
+            leader_keys: "T",
         },
         LocalCommand {
             name: "toggle mouse",

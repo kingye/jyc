@@ -200,10 +200,22 @@ impl CommandHandler for BacklogCommandHandler {
 
             "pop" => {
                 // Default to `1` when no index is given (matches the user
-                // spec: "/backlog pop" pops the first item).
-                let n: usize = Self::parse_n(args, 1)
-                    .map_err(anyhow::Error::msg)?
-                    .unwrap_or(1);
+                // spec: "/backlog pop" pops the first item). Propagate
+                // parse errors as a friendly CommandResult instead of
+                // bubbling them up — otherwise the registry collapses
+                // them into a generic "/backlog: error" reply.
+                let n = match Self::parse_n(args, 1).map_err(anyhow::Error::msg) {
+                    Ok(Some(n)) => n,
+                    Ok(None) => 1,
+                    Err(e) => {
+                        return Ok(CommandResult {
+                            success: false,
+                            message: format!("/backlog pop: {e}"),
+                            error: Some(e.to_string()),
+                            append_body: None,
+                        });
+                    }
+                };
                 let mut items = Self::read_items(&path)?;
                 if n > items.len() {
                     let err = format!("index {n} out of range (backlog has {} items)", items.len());
@@ -228,14 +240,22 @@ impl CommandHandler for BacklogCommandHandler {
             }
 
             "rm" => {
-                let n = match Self::parse_n(args, 1).map_err(anyhow::Error::msg)? {
-                    Some(n) => n,
-                    None => {
+                let n = match Self::parse_n(args, 1).map_err(anyhow::Error::msg) {
+                    Ok(Some(n)) => n,
+                    Ok(None) => {
                         let err = "missing index (usage: /backlog rm <N>)".to_string();
                         return Ok(CommandResult {
                             success: false,
                             message: format!("/backlog rm: {err}"),
                             error: Some(err),
+                            append_body: None,
+                        });
+                    }
+                    Err(e) => {
+                        return Ok(CommandResult {
+                            success: false,
+                            message: format!("/backlog rm: {e}"),
+                            error: Some(e.to_string()),
                             append_body: None,
                         });
                     }
@@ -327,10 +347,17 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn push_single_line_appends_and_reports_index() {
+    async fn push_joins_space_separated_tokens_with_newlines() {
         let dir = fresh_topic();
         let h = BacklogCommandHandler::new();
 
+        // When all content tokens arrive on a single command line, the
+        // registry cannot tell them apart from continuation lines (it
+        // just pushes both into `args` as one element per token). The
+        // handler therefore joins them with `\n` for consistency with
+        // multi-line push. Users who want a single-line description
+        // across words can either use continuation lines or push one
+        // word at a time.
         let r = run(&h, dir.path(), &["push", "hello", "world"]).await;
         assert!(r.success, "{:?}", r.error);
         assert_eq!(r.message, "Backlog: pushed item 1");
@@ -339,7 +366,7 @@ mode = "agent"
             BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
                 .unwrap();
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].text, "hello world");
+        assert_eq!(items[0].text, "hello\nworld");
     }
 
     #[tokio::test]
@@ -515,7 +542,16 @@ mode = "agent"
         let h = BacklogCommandHandler::new();
         let r = run(&h, dir.path(), &[]).await;
         assert!(!r.success);
-        assert!(r.message.contains("missing subcommand"));
+        // The handler puts the actionable reason in `error` because that's
+        // what `results_summary()` prepends with "Error: " when success=false.
+        assert!(
+            r.error
+                .as_deref()
+                .unwrap_or("")
+                .contains("missing subcommand"),
+            "expected error to mention 'missing subcommand', got {:?}",
+            r.error
+        );
     }
 
     #[tokio::test]

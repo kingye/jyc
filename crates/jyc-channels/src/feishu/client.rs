@@ -619,22 +619,6 @@ impl FeishuClient {
         Ok(image_bytes)
     }
 
-    /// Edit an already-sent interactive-card message with new markdown text.
-    ///
-    /// Thin wrapper around [`Self::update_card_message`] that wraps the text
-    /// in a single-element card.
-    pub async fn update_text_message(&self, message_id: &str, text: &str) -> Result<()> {
-        let card = serde_json::json!({
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": text
-                }
-            ]
-        });
-        self.update_card_message(message_id, &card).await
-    }
-
     /// Replace the content of an already-sent interactive-card message with
     /// the given card JSON.
     ///
@@ -684,7 +668,7 @@ pub struct FeishuMessageResult {
     pub message_id: String,
 }
 
-/// Build the URL for editing a message's content (`update_text_message`).
+/// Build the URL for editing a message's content (`update_card_message`).
 ///
 /// `PATCH /open-apis/im/v1/messages/{message_id}`
 fn update_message_url(base_url: &str, message_id: &str) -> String {

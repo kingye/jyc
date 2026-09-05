@@ -101,7 +101,6 @@ fn progress_card(
     tool_count: usize,
     activity: Option<&str>,
     display: &TopicDisplayState,
-    thinking: Option<&str>,
 ) -> String {
     let mut line = format!(
         "{state} · {} · 工具 {tool_count}",
@@ -120,11 +119,35 @@ fn progress_card(
     if let Some(a) = activity {
         lines.push(format!("最近：{a}"));
     }
+    lines.join("\n")
+}
+
+/// Build the in-progress status card: status markdown plus, when thinking
+/// is present, a collapsed panel holding the live thinking tail — keeps
+/// the noisy stream folded behind a header tap, matching the final card's
+/// presentation. (NB: each PATCH re-sends `expanded: false`, so manually
+/// expanding mid-run folds back on the next update.)
+fn progress_card_json(status_text: &str, thinking: Option<&str>) -> serde_json::Value {
+    let mut elements = vec![serde_json::json!({
+        "tag": "markdown",
+        "content": status_text
+    })];
     let thinking = thinking.map(str::trim).filter(|t| !t.is_empty());
     if let Some(t) = thinking {
-        lines.push(format!("💭 {}", tail_chars(t, THINKING_PREVIEW_CHARS)));
+        elements.push(serde_json::json!({
+            "tag": "collapsible_panel",
+            "expanded": false,
+            "background_color": "grey",
+            "header": {
+                "title": {"tag": "plain_text", "content": "💭 Thinking"}
+            },
+            "elements": [{
+                "tag": "markdown",
+                "content": tail_chars(t, THINKING_PREVIEW_CHARS)
+            }]
+        }));
     }
-    lines.join("\n")
+    serde_json::json!({"elements": elements})
 }
 
 /// Watch one topic's event bus and maintain the Feishu status card.
@@ -203,14 +226,7 @@ pub fn spawn_progress_watcher(
             // from the elapsed time shown on the card.
             start = std::time::Instant::now();
             let display = topic_manager.topic_display_state(&topic).await;
-            let text = progress_card(
-                "⏳ 处理中",
-                start.elapsed().as_secs(),
-                0,
-                None,
-                &display,
-                None,
-            );
+            let text = progress_card("⏳ 处理中", start.elapsed().as_secs(), 0, None, &display);
             // Dedup: another watcher of this topic may already have posted
             // this run's status message (a dormant watcher armed by the
             // same ProcessingStarted). Reuse its message id instead of
@@ -218,7 +234,10 @@ pub fn spawn_progress_watcher(
             // watchers arming concurrently can't both create.
             let mut cards = cards.lock().await;
             if let Some(existing) = cards.get(&topic) {
-                break (existing.clone(), text);
+                break (
+                    existing.clone(),
+                    progress_card_json(&text, None).to_string(),
+                );
             }
             // Bounded send: the event bus is shared with the agent loop,
             // so a hung Feishu call must never stall this watcher.
@@ -230,7 +249,7 @@ pub fn spawn_progress_watcher(
             {
                 Ok(Ok(r)) => {
                     cards.insert(topic.clone(), r.message_id.clone());
-                    break (r.message_id, text);
+                    break (r.message_id, progress_card_json(&text, None).to_string());
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(
@@ -318,16 +337,12 @@ pub fn spawn_progress_watcher(
             let display = topic_manager.topic_display_state(&topic).await;
             let preview = thinking_blocks.last().map(String::as_str);
             let text = match done {
-                // Final card: the 💭 preview line is replaced by a collapsed
-                // panel holding the full thinking history (PATCHed as card
-                // JSON below).
                 Some((success, duration_secs)) => progress_card(
                     if success { "✅ 完成" } else { "❌ 失败" },
                     duration_secs,
                     tool_count,
                     last_activity.as_deref(),
                     &display,
-                    None,
                 ),
                 None => progress_card(
                     "⏳ 处理中",
@@ -335,32 +350,30 @@ pub fn spawn_progress_watcher(
                     tool_count,
                     last_activity.as_deref(),
                     &display,
-                    preview,
                 ),
             };
-            if !terminal && text == last_text {
+            let card = if terminal {
+                final_card_json(&text, &thinking_blocks)
+            } else {
+                progress_card_json(&text, preview)
+            };
+            // Dedup on the serialized card: thinking lives in the panel
+            // body now, so thinking-only updates must still trigger a PATCH.
+            let card_str = card.to_string();
+            if !terminal && card_str == last_text {
                 continue;
             }
             // Bounded update: the event bus is shared with the agent loop,
             // so a hung Feishu PATCH must never stall this watcher.
-            let upd = if terminal && !thinking_blocks.is_empty() {
-                let card = final_card_json(&text, &thinking_blocks);
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    feishu_client.update_card_message(&status_message_id, &card),
-                )
-                .await
-            } else {
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    feishu_client.update_text_message(&status_message_id, &text),
-                )
-                .await
-            };
+            let upd = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                feishu_client.update_card_message(&status_message_id, &card),
+            )
+            .await;
             match upd {
                 Ok(Ok(())) => {
                     fails = 0;
-                    last_text = text;
+                    last_text = card_str;
                     last_patch = std::time::Instant::now();
                 }
                 Ok(Err(e)) => {
@@ -402,57 +415,55 @@ mod tests {
     fn progress_card_renders_state_elapsed_and_activity() {
         let none = TopicDisplayState::default();
         assert_eq!(
-            progress_card("⏳ 处理中", 12, 3, None, &none, None),
+            progress_card("⏳ 处理中", 12, 3, None, &none),
             "⏳ 处理中 · 12s · 工具 3"
         );
         assert_eq!(
-            progress_card("⏳ 处理中", 12, 3, Some("edit — tools.rs"), &none, None),
+            progress_card("⏳ 处理中", 12, 3, Some("edit — tools.rs"), &none),
             "⏳ 处理中 · 12s · 工具 3\n最近：edit — tools.rs"
         );
         assert_eq!(
-            progress_card("✅ 完成", 52, 8, None, &none, None),
+            progress_card("✅ 完成", 52, 8, None, &none),
             "✅ 完成 · 52s · 工具 8"
         );
     }
 
     #[test]
-    fn progress_card_shows_thinking_tail_and_retains_it_on_finalize() {
+    fn progress_card_json_folds_thinking_into_collapsed_panel() {
         let none = TopicDisplayState::default();
-        let thinking = "计划步骤一\n然后调用工具读取文件";
-        let card = progress_card(
-            "⏳ 处理中",
-            12,
-            3,
-            Some("read — a.rs"),
-            &none,
-            Some(thinking),
+        let status = progress_card("⏳ 处理中", 12, 3, Some("read — a.rs"), &none);
+        let card = progress_card_json(&status, Some("计划步骤一\n然后调用工具读取文件"));
+        let elements = card["elements"].as_array().expect("elements");
+        assert_eq!(elements.len(), 2, "card: {card}");
+        assert_eq!(elements[0]["tag"], "markdown");
+        assert_eq!(elements[0]["content"], status);
+        let panel = &elements[1];
+        assert_eq!(panel["tag"], "collapsible_panel");
+        assert_eq!(panel["expanded"], false);
+        assert_eq!(panel["header"]["title"]["content"], "💭 Thinking");
+        assert_eq!(
+            panel["elements"][0]["content"],
+            "计划步骤一\n然后调用工具读取文件"
         );
-        assert!(
-            card.contains("💭 计划步骤一\n然后调用工具读取文件"),
-            "card:\n{card}"
-        );
-        // Thinking line renders after the activity line.
-        let activity_pos = card.find("最近：read — a.rs").expect("activity line");
-        let thinking_pos = card.find('💭').expect("thinking line");
-        assert!(thinking_pos > activity_pos);
-        // Finalized card keeps the last thinking preview.
-        let done = progress_card("✅ 完成", 52, 8, None, &none, Some(thinking));
-        assert!(done.contains("💭 计划步骤一"), "card:\n{done}");
-        // No thinking (or whitespace-only) → no 💭 line.
-        assert!(!progress_card("⏳ 处理中", 12, 3, None, &none, None).contains('💭'));
-        assert!(!progress_card("⏳ 处理中", 12, 3, None, &none, Some("  ")).contains('💭'));
     }
 
     #[test]
-    fn progress_card_truncates_thinking_to_tail_chars() {
-        let none = TopicDisplayState::default();
+    fn progress_card_json_omits_panel_without_thinking() {
+        let card = progress_card_json("⏳ 处理中 · 1s · 工具 0", None);
+        assert_eq!(card["elements"].as_array().expect("elements").len(), 1);
+        // Whitespace-only thinking → no panel either.
+        let card = progress_card_json("⏳ 处理中 · 1s · 工具 0", Some("  "));
+        assert_eq!(card["elements"].as_array().expect("elements").len(), 1);
+    }
+
+    #[test]
+    fn progress_card_json_truncates_thinking_to_tail_chars() {
         let thinking = "a".repeat(THINKING_PREVIEW_CHARS + 500);
-        let card = progress_card("⏳ 处理中", 1, 0, None, &none, Some(&thinking));
-        let line = card
-            .lines()
-            .find(|l| l.starts_with('💭'))
-            .expect("thinking line");
-        assert_eq!(line.chars().count(), 2 + THINKING_PREVIEW_CHARS);
+        let card = progress_card_json("⏳ 处理中 · 1s · 工具 0", Some(&thinking));
+        let body = card["elements"][1]["elements"][0]["content"]
+            .as_str()
+            .expect("panel body");
+        assert_eq!(body.chars().count(), THINKING_PREVIEW_CHARS);
     }
 
     #[test]
@@ -527,17 +538,16 @@ mod tests {
             max_tokens: Some(262_144),
         };
         assert_eq!(
-            progress_card("⏳ 处理中", 23, 2, None, &full, None),
+            progress_card("⏳ 处理中", 23, 2, None, &full),
             "⏳ 处理中 · 23s · 工具 2 · plan · kimi/k3-256k · 41%"
         );
         assert_eq!(
-            progress_card("✅ 完成", 757, 24, None, &full, None),
+            progress_card("✅ 完成", 757, 24, None, &full),
             "✅ 完成 · 12m37s · 工具 24 · plan · kimi/k3-256k · 41%"
         );
 
         // Activity line still comes second when present.
-        let with_activity =
-            progress_card("⏳ 处理中", 23, 2, Some("bash — cargo check"), &full, None);
+        let with_activity = progress_card("⏳ 处理中", 23, 2, Some("bash — cargo check"), &full);
         assert_eq!(
             with_activity,
             "⏳ 处理中 · 23s · 工具 2 · plan · kimi/k3-256k · 41%\n最近：bash — cargo check"
@@ -550,7 +560,7 @@ mod tests {
             ..TopicDisplayState::default()
         };
         assert_eq!(
-            progress_card("⏳ 处理中", 3, 0, None, &no_tokens, None),
+            progress_card("⏳ 处理中", 3, 0, None, &no_tokens),
             "⏳ 处理中 · 3s · 工具 0 · build · kimi/k3-256k"
         );
 
@@ -561,7 +571,7 @@ mod tests {
             ..TopicDisplayState::default()
         };
         assert_eq!(
-            progress_card("⏳ 处理中", 3, 0, None, &zero_max, None),
+            progress_card("⏳ 处理中", 3, 0, None, &zero_max),
             "⏳ 处理中 · 3s · 工具 0"
         );
     }

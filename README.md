@@ -240,6 +240,39 @@ focus on error handling
 shadow a built-in command from the table above. Invalid names are rejected at
 startup, not silently ignored.
 
+#### Shell Commands
+
+A `[[commands]]` entry can also be a direct shell invocation instead of an
+LLM-prompt command. Set `shell` to an argv array and omit `user_prompt`:
+
+```toml
+[[commands]]
+name = "ls"
+description = "List the topic directory"
+shell = ["ls"]                       # /ls -la  →  runs ["ls", "-la"]
+
+[[commands]]
+name = "deploy"
+description = "Deploy to staging"
+shell = ["./scripts/deploy.sh"]      # /deploy staging prod  →  runs the script with those args
+```
+
+On invocation the handler runs the argv via `tokio::process::Command` and
+replies with stdout/stderr. **No LLM is involved, so no tokens are spent.**
+Anything you type after the command is appended as more argv elements (so
+`/ls -la` is `["ls", "-la"]`, not a shell string — there is no quoting or
+interpolation).
+
+**Security:** `shell` is argv-only, but any inbound channel (email, feishu,
+websocket) can trigger any registered command. Treat `[[commands]]` as an
+operator-trust surface — only add shell commands that you would accept any
+inbound sender invoking. The process inherits jyc's working directory; if you
+need a different cwd or environment, wrap with a script (`shell =
+["./scripts/deploy.sh"]`).
+
+**Limits (fixed, not configurable per command):** timeout 30s, output cap 8 KiB.
+Use a wrapper script when those don't fit.
+
 ### Topic-Specific Customization
 
 Place a `system.md` file in a topic's workspace directory to customize the AI's behavior for that topic. See `system.md.example` for a reference.

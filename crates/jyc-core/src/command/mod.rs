@@ -188,7 +188,8 @@ mod tests {
             description: description.into(),
             mode: None,
             skills: None,
-            user_prompt: "do it".into(),
+            user_prompt: Some("do it".into()),
+            shell: None,
         }
     }
 

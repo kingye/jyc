@@ -471,11 +471,33 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
             });
         }
 
-        if cmd.user_prompt.trim().is_empty() {
-            errors.push(ValidationError {
-                path: format!("{prefix}.user_prompt"),
-                message: "must not be empty".into(),
-            });
+        // Each `[[commands]]` entry is either prompt-injection or shell —
+        // never both, never neither. `shell` is the direct-execution flavor
+        // (no LLM, no tokens); `user_prompt` injects into the agent's prompt.
+        let has_prompt = cmd
+            .user_prompt
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+        match (has_prompt, cmd.shell.as_deref()) {
+            (true, Some(_)) => {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.user_prompt"),
+                    message: "mutually exclusive with 'shell' — pick one flavor per command".into(),
+                });
+            }
+            (false, None) => {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.user_prompt"),
+                    message: "must be set (or use 'shell' for direct execution)".into(),
+                });
+            }
+            (false, Some([])) => {
+                errors.push(ValidationError {
+                    path: format!("{prefix}.shell"),
+                    message: "must contain at least one element (the executable)".into(),
+                });
+            }
+            _ => {}
         }
     }
 

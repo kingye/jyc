@@ -966,6 +966,92 @@ user_prompt = "   "
     assert!(errors.iter().any(|e| e.path == "commands[0].user_prompt"));
 }
 
+/// Shell-only command: no user_prompt, just an argv. Validates that the
+/// direct-execution flavor deserializes and passes validation without
+/// touching the agent path.
+#[test]
+fn custom_command_accepts_shell_without_prompt() {
+    let toml = config_with(
+        r#"
+[[commands]]
+name = "ls"
+shell = ["ls"]
+"#,
+    );
+    let config = load_config_from_str(&toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        !errors.iter().any(|e| e.path.starts_with("commands")),
+        "shell-only command must validate, got: {errors:?}"
+    );
+    let cmd = &config.commands[0];
+    assert!(cmd.user_prompt.is_none());
+    assert_eq!(cmd.shell.as_deref(), Some(["ls".to_string()].as_slice()));
+}
+
+/// Shell argv is empty: nothing to execute. Rejected at load time so the
+/// failure mode is "config error", not "command silently does nothing" at
+/// first invocation.
+#[test]
+fn custom_command_rejects_empty_shell() {
+    let toml = config_with(
+        r#"
+[[commands]]
+name = "ls"
+shell = []
+"#,
+    );
+    let config = load_config_from_str(&toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors.iter().any(|e| e.path == "commands[0].shell"),
+        "empty shell argv must be rejected, got: {errors:?}"
+    );
+}
+
+/// A command can't be both flavors — that's a misconfiguration, not a
+/// "last writer wins". Pick one.
+#[test]
+fn custom_command_rejects_shell_with_user_prompt() {
+    let toml = config_with(
+        r#"
+[[commands]]
+name = "ls"
+shell = ["ls"]
+user_prompt = "list things"
+"#,
+    );
+    let config = load_config_from_str(&toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors.iter().any(
+            |e| e.path == "commands[0].user_prompt" && e.message.contains("mutually exclusive")
+        ),
+        "shell + user_prompt must be rejected, got: {errors:?}"
+    );
+}
+
+/// Neither flavor set — the command has nothing to do. Surfaced as a
+/// `user_prompt` error to point at the missing field (since shell is the
+/// newer field, the error message names the alternative).
+#[test]
+fn custom_command_rejects_neither_shell_nor_prompt() {
+    let toml = config_with(
+        r#"
+[[commands]]
+name = "ls"
+"#,
+    );
+    let config = load_config_from_str(&toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.path == "commands[0].user_prompt" && e.message.contains("'shell'")),
+        "missing both flavors must be rejected, got: {errors:?}"
+    );
+}
+
 #[test]
 fn custom_command_rejects_duplicates_and_empty_name() {
     let toml = config_with(

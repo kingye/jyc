@@ -70,7 +70,13 @@ fn example_commands_parse_and_validate() {
         review.skills.as_deref(),
         Some(&["pr-review".to_string(), "ponytail-review".to_string()][..])
     );
-    assert!(review.user_prompt.contains("Report findings"));
+    assert!(
+        review
+            .user_prompt
+            .as_deref()
+            .unwrap_or("")
+            .contains("Report findings")
+    );
 
     let ship = &config.commands[1];
     assert_eq!(ship.name, "ship");

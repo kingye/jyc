@@ -2,6 +2,17 @@
 
 ### Added
 
+- **Shell-only `[[commands]]` variant.** A `[[commands]]` entry can now run a
+  direct shell command instead of injecting a prompt into the LLM. Set
+  `shell` to an argv array (e.g. `shell = ["ls"]`); the handler runs it
+  via `tokio::process::Command`, replies with stdout/stderr, and never
+  invokes the LLM — so **no tokens are spent**. User args typed after the
+  command are appended as more argv elements (`/ls -la` → `["ls", "-la"]`).
+  `shell` and `user_prompt` are mutually exclusive, validated at startup;
+  `mode`/`skills` are silently ignored on shell commands. Fixed limits:
+  30s timeout, 8 KiB output cap. Because any inbound channel can trigger
+  any registered command, treat `[[commands]]` as an operator-trust surface
+  and only add shell commands you would accept any inbound sender invoking.
 - TUI chat: new leader command `ctrl+p T` ("toggle tool detail") expands
   tool-call lines in the progress tail to a multi-line field listing of
   the full tool input (each top-level argument on its own indented line,

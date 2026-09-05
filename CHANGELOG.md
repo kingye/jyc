@@ -88,6 +88,14 @@
 
 ### Changed
 
+- Feishu progress card: the live thinking tail is no longer appended as an
+  open `💭 ...` markdown line (up to 1500 chars of noise on every refresh).
+  It now renders inside a collapsed `collapsible_panel` — the same
+  presentation as the finalized card — so the status card stays compact
+  while processing runs; expanding the panel shows the current thinking
+  tail. Note each PATCH re-sends `expanded: false`, so a manually expanded
+  panel folds back on the next refresh (~4 s).
+
 - TUI chat progress tail: tool-call lines now show the extracted argument
   (`Tool: bash — ls -la`, `Tool: edit — tools.rs`) instead of the raw JSON
   input, reusing the shared formatter also used by the Feishu status card

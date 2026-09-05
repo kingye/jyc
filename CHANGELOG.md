@@ -2,6 +2,11 @@
 
 ### Added
 
+- TUI chat: new leader command `ctrl+p T` ("toggle tool detail") expands
+  tool-call lines in the progress tail to a multi-line field listing of
+  the full tool input (each top-level argument on its own indented line,
+  multi-line values preserved, capped at 20 lines); toggle again to
+  return to the one-line extracted summary.
 - **OpenAI Responses API provider.** New `type = "openai-responses"`
   provider targeting `POST {base_url}/responses` — the recommended way to
   run GPT-5.x / o-series reasoning models. Unlike Chat Completions it

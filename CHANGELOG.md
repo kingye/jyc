@@ -335,6 +335,17 @@
      spawn + handshake + `list_tools` only runs when configs change
      (via `ArcSwap::store`), not on every inbound message.
 
+- **TUI edit diff `+`/`-` lines now render in distinct colors.** When
+  `edit`/`write` tool detail is expanded under the `ctrl+p T` toggle,
+  removed lines (`-`) render in gray and added lines (`+`) in green,
+  instead of inheriting the yellow italic default. The previous prefix
+  check ran on the post-padding label where the `  -` marker sat two
+  columns in, so the check always missed and every diff line ended up
+  yellow italic. Styling is now decided on the unpadded line via a new
+  `style_diff_line` helper that uses shared `DIFF_REMOVED_PREFIX` /
+  `DIFF_ADDED_PREFIX` constants so the producer and the stayer cannot
+  drift apart.
+
 ### Removed
 
 - **Feishu Typing→DONE reaction chips.** The emoji reactions the pipe bot

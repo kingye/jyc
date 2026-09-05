@@ -1023,18 +1023,13 @@ mod tests {
     /// The minus line produced by `render_file_tool_diff` must round-trip
     /// through `style_diff_line` and come back gray — this is the exact
     /// regression that was missed when the prefix check moved after the
-    /// caller padded the line with `"⏳ "` / `"   "`.
+    /// caller padded the line with `"⏳ "` / `"   "`. Goes through the full
+    /// `render_activity_entry` path so the wire format and the helper stay
+    /// wired to the same JSON shape used by the rest of the test module.
     #[test]
     fn style_diff_line_minus_emitted_by_render_file_tool_diff_is_gray() {
-        let lines = render_file_tool_diff(
-            "edit",
-            &serde_json::json!({
-                "type": "edit",
-                "file_path": "src/foo.rs",
-                "old_string": "removed line",
-                "new_string": "added line",
-            }),
-        );
+        let text = edit_event("src/foo.rs", None, "removed line", "added line");
+        let lines = render_activity_entry(&text, true);
         // First line is the file header (default style); second is the
         // `-` removed line (must be gray); third is the `+` added line.
         assert_eq!(lines[0], "src/foo.rs");

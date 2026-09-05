@@ -3,25 +3,19 @@
 //! Storage: `<topic_path>/.jyc/backlog.jsonl`, one JSON object per line:
 //!
 //! ```text
-//! {"text":"...","created_at":"2026-09-05T15:00:00Z"}
+//! {"text":"..."}
 //! ```
 //!
 //! Each item's `text` is a free-form user message (may be multi-line — the
 //! registry collects continuation lines into one newline-separated string).
 //! Items are referenced by 1-based position, so `pop 2` removes the second
 //! entry and `rm 2` does the same without injecting into the next agent turn.
-//!
-//! Concurrency: this handler holds no shared state — each call reads, mutates,
-//! and rewrites the file. Topic state is single-user, so simultaneous
-//! push/pop is extremely unlikely in practice. If races are ever observed,
-//! add `fs2` file locking.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
@@ -33,8 +27,6 @@ const BACKLOG_FILENAME: &str = "backlog.jsonl";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct BacklogItem {
     text: String,
-    /// RFC 3339 timestamp of when the item was pushed.
-    created_at: String,
 }
 
 /// Handler for `/backlog push|list|pop|rm`.
@@ -71,7 +63,8 @@ impl BacklogCommandHandler {
         Ok(items)
     }
 
-    /// Writes the items atomically (best-effort: tmp + rename).
+    /// Writes the items atomically (tempfile + rename) so a crash mid-write
+    /// leaves the previous file intact instead of truncating it to nothing.
     fn write_items(path: &Path, items: &[BacklogItem]) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -85,25 +78,32 @@ impl BacklogCommandHandler {
             content.push_str(&serde_json::to_string(item)?);
             content.push('\n');
         }
-        fs::write(path, content).with_context(|| format!("write backlog {}", path.display()))?;
+        let tmp = path.with_extension("jsonl.tmp");
+        fs::write(&tmp, &content)
+            .with_context(|| format!("write tmp backlog {}", tmp.display()))?;
+        // `fs::rename` is atomic on POSIX and Windows; on a crash the
+        // either the old file is still there, or the new one is fully
+        // written — never a half-written file.
+        fs::rename(&tmp, path).with_context(|| {
+            format!("rename tmp backlog {} → {}", tmp.display(), path.display())
+        })?;
         Ok(())
     }
 
-    /// Parse a 1-based index from an arg slot, or fall back to `default`.
-    fn parse_n(args: &[String], slot: usize, default: usize) -> Result<usize, String> {
-        match args.get(slot) {
-            None => Ok(default),
-            Some(raw) => raw
-                .parse::<usize>()
-                .map_err(|_| format!("invalid index {raw:?} (expected positive integer)"))
-                .and_then(|n| {
-                    if n == 0 {
-                        Err("index must be 1 or greater".to_string())
-                    } else {
-                        Ok(n)
-                    }
-                }),
+    /// Parse a 1-based index from an arg slot. Returns `Ok(None)` when the
+    /// slot is absent, leaving the default up to the caller; returns
+    /// `Err` for non-numeric input or `0`.
+    fn parse_n(args: &[String], slot: usize) -> Result<Option<usize>, String> {
+        let Some(raw) = args.get(slot) else {
+            return Ok(None);
+        };
+        let n: usize = raw
+            .parse()
+            .map_err(|_| format!("invalid index {raw:?} (expected positive integer)"))?;
+        if n == 0 {
+            return Err("index must be 1 or greater".to_string());
         }
+        Ok(Some(n))
     }
 }
 
@@ -131,6 +131,12 @@ impl CommandHandler for BacklogCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
+        // Concurrency: this handler holds no shared state. Each call does
+        // a read-modify-write via atomic tempfile-rename, so two
+        // simultaneous calls could race — the last writer wins, and
+        // earlier items would be lost. Topic state is single-user, so
+        // simultaneous push/pop is extremely unlikely. If races are ever
+        // observed, add `fs2` file locking around the read-modify-write.
         let args = &context.args;
         let path = Self::backlog_path(&context.topic_path);
 
@@ -158,10 +164,7 @@ impl CommandHandler for BacklogCommandHandler {
                     });
                 }
                 let mut items = Self::read_items(&path)?;
-                items.push(BacklogItem {
-                    text: description,
-                    created_at: Utc::now().to_rfc3339(),
-                });
+                items.push(BacklogItem { text: description });
                 let new_index = items.len();
                 Self::write_items(&path, &items)?;
                 Ok(CommandResult {
@@ -196,16 +199,9 @@ impl CommandHandler for BacklogCommandHandler {
             }
 
             "pop" => {
-                let n = match Self::parse_n(args, 1, 1) {
-                    Ok(n) => n,
-                    Err(e) => {
-                        return Ok(CommandResult {
-                            success: false,
-                            message: format!("/backlog pop: {e}"),
-                            error: Some(e),
-                            append_body: None,
-                        });
-                    }
+                let n = match Self::parse_n(args, 1).map_err(anyhow::Error::msg)? {
+                    Some(n) => n,
+                    None => 1, // default: pop the first item
                 };
                 let mut items = Self::read_items(&path)?;
                 if n > items.len() {
@@ -231,22 +227,14 @@ impl CommandHandler for BacklogCommandHandler {
             }
 
             "rm" => {
-                let n = match Self::parse_n(args, 1, usize::MAX) {
-                    Ok(n) if n != usize::MAX => n,
-                    Ok(_) => {
+                let n = match Self::parse_n(args, 1).map_err(anyhow::Error::msg)? {
+                    Some(n) => n,
+                    None => {
                         let err = "missing index (usage: /backlog rm <N>)".to_string();
                         return Ok(CommandResult {
                             success: false,
                             message: format!("/backlog rm: {err}"),
                             error: Some(err),
-                            append_body: None,
-                        });
-                    }
-                    Err(e) => {
-                        return Ok(CommandResult {
-                            success: false,
-                            message: format!("/backlog rm: {e}"),
-                            error: Some(e),
                             append_body: None,
                         });
                     }
@@ -351,7 +339,6 @@ mode = "agent"
                 .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "hello world");
-        assert!(!items[0].created_at.is_empty());
     }
 
     #[tokio::test]
@@ -560,5 +547,47 @@ mode = "agent"
         let r = run(&h, dir.path(), &["pop", "abc"]).await;
         assert!(!r.success);
         assert!(r.message.contains("invalid index"));
+    }
+
+    /// Atomic write should leave a stale tmp file alone if a previous
+    /// attempt was interrupted, and never leave a half-written .jsonl.
+    #[tokio::test]
+    async fn write_items_does_not_leave_tmp_on_success() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+
+        run(&h, dir.path(), &["push", "x"]).await;
+
+        let path = BacklogCommandHandler::backlog_path(dir.path());
+        assert!(path.exists(), "backlog.jsonl should exist after push");
+        let tmp = path.with_extension("jsonl.tmp");
+        assert!(
+            !tmp.exists(),
+            "tmp file should be renamed away after write, but {} still exists",
+            tmp.display()
+        );
+    }
+
+    #[tokio::test]
+    async fn write_items_recovers_when_stale_tmp_is_present() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+
+        // Pre-plant a stale tmp from a previous interrupted write.
+        let path = BacklogCommandHandler::backlog_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let tmp = path.with_extension("jsonl.tmp");
+        std::fs::write(&tmp, b"stale garbage\n").unwrap();
+
+        // The new push must succeed — overwriting the stale tmp is correct.
+        let r = run(&h, dir.path(), &["push", "fresh"]).await;
+        assert!(r.success, "{:?}", r.error);
+
+        // Tmp file no longer exists (it was the rename target and got moved).
+        assert!(!tmp.exists());
+        // Real file contains only the new item, not the stale garbage.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("fresh"));
+        assert!(!raw.contains("stale garbage"));
     }
 }

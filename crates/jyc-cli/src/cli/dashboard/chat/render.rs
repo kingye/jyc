@@ -4,6 +4,11 @@ use super::table_wrap::wrap_tables;
 use super::*;
 use super::{App, ChatMessage, LINE_DRAWING};
 
+/// Max lines a tool detail expansion can render before trailing it with
+/// a `… (N more lines)` marker. Shared by `render_file_tool_diff` (edit /
+/// write diffs) and `format_tool_input_full` (generic tool field listings).
+const TOOL_DETAIL_MAX_LINES: usize = 20;
+
 pub(super) fn truncate_to_width(s: &str, max_width: usize) -> String {
     use unicode_width::UnicodeWidthChar;
     if max_width == 0 {
@@ -616,8 +621,9 @@ fn render_activity_entry(text: &str, tool_detail_expanded: bool) -> Vec<String> 
     let typ = json.get("type").and_then(|t| t.as_str());
 
     if matches!(typ, Some("edit") | Some("write")) {
+        let tool_name = typ.unwrap_or("?");
         if tool_detail_expanded {
-            render_file_tool_diff(typ.unwrap_or("?"), &json)
+            render_file_tool_diff(tool_name, &json)
         } else {
             let file_path = json
                 .get("file_path")
@@ -629,7 +635,7 @@ fn render_activity_entry(text: &str, tool_detail_expanded: bool) -> Vec<String> 
                 Some(n) => format!("{basename}:{n}"),
                 None => basename.to_string(),
             };
-            vec![format!("Tool: {} — {label}", typ.unwrap_or("?"))]
+            vec![format!("Tool: {tool_name} — {label}")]
         }
     } else {
         // Standard `Tool: <name> — <json>` path.
@@ -681,14 +687,13 @@ fn render_file_tool_diff(tool_name: &str, json: &serde_json::Value) -> Vec<Strin
         "write" => {
             let content = json.get("content").and_then(|v| v.as_str()).unwrap_or("");
             let content_lines: Vec<&str> = content.split('\n').collect();
-            const MAX_LINES: usize = 20;
-            for line in content_lines.iter().take(MAX_LINES) {
+            for line in content_lines.iter().take(TOOL_DETAIL_MAX_LINES) {
                 out.push(format!("  +{line}"));
             }
-            if content_lines.len() > MAX_LINES {
+            if content_lines.len() > TOOL_DETAIL_MAX_LINES {
                 out.push(format!(
                     "  … ({} more lines)",
-                    content_lines.len() - MAX_LINES
+                    content_lines.len() - TOOL_DETAIL_MAX_LINES
                 ));
             }
         }
@@ -720,12 +725,14 @@ fn reformat_tool_line(text: &str) -> String {
 /// line in compact form. Capped at 20 lines with a trailing
 /// `… (N more lines)` marker — same convention as the edit-diff renderer.
 /// Returns empty for non-tool lines or unparseable input.
-/// Field names that `tool_activity_summary` already inlines into the
-/// one-line summary. Skipping them in the detail expansion prevents a
-/// redundant `  command: <cmd>` line appearing below a summary that
-/// already shows `<cmd>`. Mirrors the per-tool logic in
-/// `jyc_types::inspect::tool_activity_summary` — keep in sync if you
-/// change one.
+/// Per-tool list of field names whose values already appear in the
+/// one-line summary produced by `jyc_types::inspect::tool_activity_summary`
+/// — skipping them in `format_tool_input_full` prevents a redundant line
+/// appearing below a summary that already inlines the value.
+///
+/// When `tool_activity_summary` reads either of two alternate keys for a
+/// tool (e.g. `read_image` accepts `file_path` *or* `path`), list both —
+/// the skip is a set, not a single key.
 fn primary_field_keys(tool_name: &str) -> &'static [&'static str] {
     match tool_name {
         "bash" => &["command"],
@@ -754,7 +761,6 @@ fn format_tool_input_full(text: &str) -> Vec<String> {
     let Some(obj) = value.as_object() else {
         return Vec::new();
     };
-    const MAX_LINES: usize = 20;
     let mut out: Vec<String> = Vec::new();
     for (key, val) in obj {
         if skip.contains(&key.as_str()) {
@@ -769,9 +775,9 @@ fn format_tool_input_full(text: &str) -> Vec<String> {
             other => out.push(format!("  {key}: {other}")),
         }
     }
-    if out.len() > MAX_LINES {
-        let more = out.len() - MAX_LINES;
-        out.truncate(MAX_LINES);
+    if out.len() > TOOL_DETAIL_MAX_LINES {
+        let more = out.len() - TOOL_DETAIL_MAX_LINES;
+        out.truncate(TOOL_DETAIL_MAX_LINES);
         out.push(format!("  … ({more} more lines)"));
     }
     out
@@ -873,6 +879,18 @@ mod tests {
         // "bash (done, 3s)" — `primary_field_keys` only sees the bare name.
         let lines = format_tool_input_full(r#"Tool: bash (done, 3s) — {"command": "ls"}"#);
         assert!(lines.is_empty(), "got {lines:?}");
+    }
+
+    #[test]
+    fn format_tool_input_full_skips_primary_field_for_read_image() {
+        // `read_image` names its argument `path`, not `file_path` (see
+        // `inspect.rs` `tool_activity_summary_extracts_basename_for_file_tools`).
+        // Either key must be skipped when listed in `primary_field_keys`.
+        let lines_path = format_tool_input_full(r#"Tool: read_image — {"path": "/tmp/x.png"}"#);
+        assert!(lines_path.is_empty(), "got {lines_path:?}");
+        let lines_file_path =
+            format_tool_input_full(r#"Tool: read_image — {"file_path": "/tmp/x.png"}"#);
+        assert!(lines_file_path.is_empty(), "got {lines_file_path:?}");
     }
 
     #[test]

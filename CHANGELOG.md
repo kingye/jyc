@@ -202,6 +202,10 @@
 
 ### Fixed
 
+- **Custom shell commands now run in the topic's workspace**, not
+  whichever directory jyc was launched from. Matches the agent's `bash`
+  tool; use a wrapper script (`shell = ["./scripts/other.sh"]`) to
+  override.
 - **Opaque "unknown Responses API error" on streamed failures.** The
   Responses provider extracted error text only from the official
   top-level `message` field, so gateways emitting Chat-Completions-style

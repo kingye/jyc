@@ -202,15 +202,10 @@
 
 ### Fixed
 
-- **Custom shell commands now run in the topic's workspace, not jyc's
-  cwd.** The `shell = [...]` variant of `[[commands]]` previously
-  inherited whichever directory jyc was launched from, so `/ls` from
-  any topic showed the same files and commands like `cargo build`
-  resolved relative paths against the wrong directory. It now sets
-  `Command::current_dir` to the topic's `CommandContext.topic_path`,
-  matching the convention used by the agent's `bash` tool. Use a
-  wrapper script (`shell = ["./scripts/other.sh"]`) when a different
-  cwd is genuinely needed.
+- **Custom shell commands now run in the topic's workspace**, not
+  whichever directory jyc was launched from. Matches the agent's `bash`
+  tool; use a wrapper script (`shell = ["./scripts/other.sh"]`) to
+  override.
 - **Opaque "unknown Responses API error" on streamed failures.** The
   Responses provider extracted error text only from the official
   top-level `message` field, so gateways emitting Chat-Completions-style

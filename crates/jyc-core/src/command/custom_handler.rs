@@ -135,13 +135,9 @@ impl CustomCommandHandler {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .current_dir(topic_path);
-        // Run in the topic's workspace — that's where the user's mental
-        // model places the command (e.g. `/ls` from a topic lists that
-        // topic's files, not jyc's cwd). Without this every topic's
-        // shell commands collide on whichever directory jyc was
-        // started from. Use a wrapper script
-        // (`shell = ["./scripts/other.sh"]`) when a different cwd is
-        // genuinely needed.
+        // Topic's workspace, not jyc's cwd — without this every topic's
+        // shell commands collide on whichever directory jyc was started
+        // from. Use a wrapper script when a different cwd is needed.
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,

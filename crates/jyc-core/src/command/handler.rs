@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use jyc_types::AppConfig;
+use jyc_types::{AppConfig, CustomCommand};
 
 /// Context passed to a command handler during execution.
 #[derive(Clone)]
@@ -25,6 +25,31 @@ pub struct CommandContext {
     pub template_dirs: crate::template_dirs::TemplateDirs,
     /// Path to the config.toml file (for commands that write config)
     pub config_path: Option<PathBuf>,
+    /// Per-agent custom commands for this topic's agent
+    /// (`[[agents.<pattern>.commands]]`). Empty for non-agent topics.
+    /// Used by `/?` so it reflects what actually dispatches at runtime
+    /// (per-agent wins on collision with globals).
+    pub per_agent_commands: Vec<CustomCommand>,
+}
+
+impl Default for CommandContext {
+    /// Test-only default — every handler test that just needs *a*
+    /// `CommandContext` can spread `..Default::default()` and only fill
+    /// the fields under test. Production code constructs one explicitly
+    /// in `topic_manager::worker::process_message`.
+    fn default() -> Self {
+        Self {
+            args: vec![],
+            topic_path: PathBuf::new(),
+            config: Arc::new(AppConfig::default()),
+            channel: String::new(),
+            channel_type: String::new(),
+            agent: None,
+            template_dirs: crate::template_dirs::TemplateDirs::default(),
+            config_path: None,
+            per_agent_commands: vec![],
+        }
+    }
 }
 
 impl std::fmt::Debug for CommandContext {
@@ -37,6 +62,14 @@ impl std::fmt::Debug for CommandContext {
             .field("channel_type", &self.channel_type)
             .field("agent", &self.agent.is_some())
             .field("config_path", &self.config_path)
+            .field(
+                "per_agent_commands",
+                &self
+                    .per_agent_commands
+                    .iter()
+                    .map(|c| &c.name)
+                    .collect::<Vec<_>>(),
+            )
             .finish()
     }
 }

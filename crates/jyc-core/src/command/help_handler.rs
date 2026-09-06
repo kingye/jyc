@@ -21,8 +21,10 @@ impl CommandHandler for HelpCommandHandler {
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         // Generated from all_commands_with() so built-ins and user-defined
-        // `[[commands]]` stay in sync with the dashboard command popup.
-        let commands = super::all_commands_with(&context.config.commands);
+        // globals + this topic's per-agent commands stay in sync with the
+        // dashboard command popup.
+        let commands =
+            super::all_commands_with(&context.config.commands, &context.per_agent_commands);
         let width = commands.iter().map(|c| c.name.len()).max().unwrap_or(0);
 
         let mut help = String::from("Available commands:\n");
@@ -53,8 +55,6 @@ mod tests {
     #[tokio::test]
     async fn test_help_contains_commands() {
         let ctx = CommandContext {
-            args: vec![],
-            topic_path: PathBuf::from("/tmp/test"),
             config: Arc::new(
                 jyc_types::load_config_from_str(
                     r#"
@@ -78,11 +78,9 @@ mode = "agent"
                 )
                 .unwrap(),
             ),
-            channel: "test".into(),
-            agent: None,
             template_dirs: PathBuf::from("/tmp/test/templates").into(),
             channel_type: "websocket".to_string(),
-            config_path: None,
+            ..Default::default()
         };
 
         let handler = HelpCommandHandler;
@@ -133,14 +131,10 @@ user_prompt = "Review it."
         .unwrap();
 
         let ctx = CommandContext {
-            args: vec![],
-            topic_path: PathBuf::from("/tmp/test"),
             config: Arc::new(config),
-            channel: "test".into(),
-            agent: None,
             template_dirs: PathBuf::from("/tmp/test/templates").into(),
             channel_type: "websocket".to_string(),
-            config_path: None,
+            ..Default::default()
         };
 
         let result = HelpCommandHandler.execute(ctx).await.unwrap();
@@ -148,5 +142,50 @@ user_prompt = "Review it."
         assert!(result.message.contains("Review the PR"));
         // built-ins are still listed
         assert!(result.message.contains("/plan"));
+    }
+
+    /// Per-agent commands must show in `/?` so the user knows what this
+    /// topic's agent provides on top of the global set.
+    #[tokio::test]
+    async fn test_help_lists_per_agent_commands() {
+        let config = jyc_types::load_config_from_str(
+            r#"
+[general]
+[ai]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agents.jyc]
+mode = "build"
+
+[[agents.jyc.commands]]
+name = "deploy"
+description = "self deploy"
+shell = ["bash", "./deploy.sh"]
+"#,
+        )
+        .unwrap();
+        let per_agent = config.agents.get("jyc").unwrap().commands.clone();
+
+        let ctx = CommandContext {
+            config: Arc::new(config),
+            template_dirs: PathBuf::from("/tmp/test/templates").into(),
+            channel_type: "websocket".to_string(),
+            per_agent_commands: per_agent,
+            ..Default::default()
+        };
+
+        let result = HelpCommandHandler.execute(ctx).await.unwrap();
+        assert!(result.message.contains("/deploy"));
+        assert!(result.message.contains("self deploy"));
     }
 }

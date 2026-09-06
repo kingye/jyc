@@ -91,7 +91,7 @@ pub struct OAuthClientCredentialsConfig {
 }
 
 /// Top-level application configuration, deserialized from config.toml.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct AppConfig {
     /// General settings (concurrency, queue sizes)
     #[serde(default)]

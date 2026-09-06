@@ -184,6 +184,7 @@ mod tests {
                 today: 1.23,
                 currency: "USD".into(),
             }),
+            commands: vec![],
         }
     }
 

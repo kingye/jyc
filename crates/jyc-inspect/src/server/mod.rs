@@ -246,13 +246,17 @@ impl InspectServer {
         }
         drop(activity_map);
 
-        // Slim each TopicInfo down to a TopicSummary.
+        // Slim each TopicInfo down to a TopicSummary, attaching per-topic
+        // commands so the dashboard `/` popup reflects what actually
+        // dispatches in that topic (built-ins + globals + per-agent for
+        // the topic's pattern; per-agent wins on collision).
+        let (global_customs, agents) = snapshot_config_commands(context);
         let mut summaries: Vec<TopicSummary> = topics
             .into_iter()
             .map(|t| TopicSummary {
                 name: t.name,
                 channel: t.channel,
-                pattern: t.pattern,
+                pattern: t.pattern.clone(),
                 status: t.status,
                 model: t.model,
                 mode: t.mode,
@@ -268,6 +272,7 @@ impl InspectServer {
                 branch: t.branch,
                 changed_files: t.changed_files,
                 cost: t.cost,
+                commands: commands_for_topic(t.pattern.as_deref(), &global_customs, &agents),
             })
             .collect();
         // list_topics() sorts within each channel, but topics from multiple
@@ -288,7 +293,7 @@ impl InspectServer {
             commands: context
                 .config
                 .as_ref()
-                .map(|cfg| all_commands_with(&cfg.load().commands))
+                .map(|cfg| all_commands_with(&cfg.load().commands, &[]))
                 .unwrap_or_else(all_commands),
             models: context
                 .config
@@ -326,6 +331,18 @@ impl InspectServer {
             compute_global_stats(context, active_workers, total_topics, max_concurrent).await;
         let channels = build_channels(context, &per_channel_workers);
 
+        // Attach per-topic commands so the dashboard `/` popup reflects
+        // what actually dispatches in this topic (built-ins + globals +
+        // per-agent for the topic's pattern; per-agent wins on collision).
+        let (global_customs, agents) = snapshot_config_commands(context);
+        let topics: Vec<TopicInfo> = topics
+            .into_iter()
+            .map(|mut t| {
+                t.commands = commands_for_topic(t.pattern.as_deref(), &global_customs, &agents);
+                t
+            })
+            .collect();
+
         InspectState {
             uptime_secs: uptime,
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -335,7 +352,7 @@ impl InspectServer {
             commands: context
                 .config
                 .as_ref()
-                .map(|cfg| all_commands_with(&cfg.load().commands))
+                .map(|cfg| all_commands_with(&cfg.load().commands, &[]))
                 .unwrap_or_else(all_commands),
             models: context
                 .config
@@ -422,6 +439,39 @@ pub(crate) fn build_channels(
         }
     }
     channels
+}
+
+/// Commands available in a topic: built-ins + globals +
+/// `[[agents.<pattern>.commands]]` for the topic's agent, with per-agent
+/// winning on collision (matching `CommandRegistry::register`). Used by
+/// both `build_overview_state` and `build_state` so the dashboard `/`
+/// popup reflects what actually dispatches at runtime.
+fn commands_for_topic(
+    pattern: Option<&str>,
+    globals: &[CustomCommand],
+    agents: &std::collections::HashMap<String, AgentConfig>,
+) -> Vec<CommandInfo> {
+    let per_agent: &[CustomCommand] = pattern
+        .and_then(|p| agents.get(p))
+        .map(|a| a.commands.as_slice())
+        .unwrap_or(&[]);
+    all_commands_with(globals, per_agent)
+}
+
+/// Snapshot the globals + agents maps out of the live config so the
+/// per-topic commands computation doesn't have to re-walk
+/// `Arc<AppConfig>` once per topic.
+fn snapshot_config_commands(
+    context: &InspectContext,
+) -> (
+    Vec<CustomCommand>,
+    std::collections::HashMap<String, AgentConfig>,
+) {
+    let cfg = context.config.as_ref().map(|c| c.load());
+    (
+        cfg.as_ref().map(|c| c.commands.clone()).unwrap_or_default(),
+        cfg.map(|c| c.agents.clone()).unwrap_or_default(),
+    )
 }
 
 /// Filter activity entries by `since` timestamp (RFC 3339 string).

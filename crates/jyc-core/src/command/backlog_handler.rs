@@ -28,6 +28,16 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 /// File name (relative to `<topic_path>/.jyc/`).
 const BACKLOG_FILENAME: &str = "backlog.jsonl";
 
+/// Help text returned by `/backlog` with no subcommand. Lists all
+/// subcommands and notes the `ls` alias for `list`.
+const BACKLOG_HELP: &str = "Backlog: save and replay user messages.\n\
+Usage:\n  \
+/backlog push <description>  Add an item (multi-line until blank line)\n  \
+/backlog list (alias: ls)    List all items with 1-based index\n  \
+/backlog pop [N]             Remove item N (default 1) and inject text as next user message\n  \
+/backlog rm <N>              Remove item N without injecting\n\n\
+Storage: <topic>/.jyc/backlog.jsonl";
+
 /// One persisted backlog item.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct BacklogItem {
@@ -151,9 +161,9 @@ impl CommandHandler for BacklogCommandHandler {
 
         if args.is_empty() {
             return Ok(CommandResult {
-                success: false,
-                message: "Usage: /backlog <push|list|pop|rm> ...".to_string(),
-                error: Some("missing subcommand".to_string()),
+                success: true,
+                message: BACKLOG_HELP.to_string(),
+                error: None,
                 append_body: None,
             });
         }
@@ -198,7 +208,7 @@ impl CommandHandler for BacklogCommandHandler {
                 })
             }
 
-            "list" => {
+            "list" | "ls" => {
                 let items = Self::read_items(&path)?;
                 if items.is_empty() {
                     return Ok(CommandResult {
@@ -621,21 +631,40 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn no_subcommand_returns_error() {
+    async fn no_subcommand_outputs_helper_text() {
         let dir = fresh_topic();
         let h = BacklogCommandHandler::new();
         let r = run(&h, dir.path(), &[]).await;
-        assert!(!r.success);
-        // The handler puts the actionable reason in `error` because that's
-        // what `results_summary()` prepends with "Error: " when success=false.
+        assert!(r.success, "no-subcommand should succeed with help text");
+        let msg = &r.message;
         assert!(
-            r.error
-                .as_deref()
-                .unwrap_or("")
-                .contains("missing subcommand"),
-            "expected error to mention 'missing subcommand', got {:?}",
-            r.error
+            msg.contains("Usage:") && msg.contains("/backlog push"),
+            "helper text should contain 'Usage:' and '/backlog push', got: {msg}"
         );
+        assert!(
+            msg.contains("ls"),
+            "helper text should mention the `ls` alias"
+        );
+        assert!(r.error.is_none());
+        assert!(r.append_body.is_none());
+    }
+
+    /// `/backlog ls` is a shortcut for `/backlog list`.
+    #[tokio::test]
+    async fn ls_subcommand_is_alias_for_list() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+
+        run(&h, dir.path(), &["push", "first"]).await;
+        run(&h, dir.path(), &["push", "second\ncontinuation"]).await;
+
+        let list_r = run(&h, dir.path(), &["list"]).await;
+        let ls_r = run(&h, dir.path(), &["ls"]).await;
+
+        assert!(list_r.success);
+        assert!(ls_r.success);
+        assert_eq!(ls_r.message, list_r.message);
+        assert_eq!(ls_r.error, list_r.error);
     }
 
     #[tokio::test]

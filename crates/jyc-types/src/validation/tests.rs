@@ -1151,3 +1151,112 @@ user_prompt = "b"
         "'/review' collides with 'review' at registration, got: {errors:?}"
     );
 }
+
+/// Duplicate names within one agent's `[[agents.<name>.commands]]` are
+/// rejected (same scoping rule as the global `[[commands]]`).
+#[test]
+fn agent_command_duplicate_within_agent_fails() {
+    let toml = config_with(
+        r#"
+[agents.jin]
+template = "self"
+
+[[agents.jin.commands]]
+name = "foo"
+user_prompt = "a"
+
+[[agents.jin.commands]]
+name = "foo"
+user_prompt = "b"
+"#,
+    );
+    let config = load_config_from_str(&toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.path == "agents.jin.commands[1].name" && e.message.contains("duplicate")),
+        "within-agent duplicate must be rejected, got: {errors:?}"
+    );
+}
+
+/// Two different agents may each declare `/foo` — each agent is its own
+/// scope, no cross-agent collision.
+#[test]
+fn agent_command_same_name_across_agents_passes() {
+    let toml = config_with(
+        r#"
+[agents.jin]
+template = "self"
+
+[[agents.jin.commands]]
+name = "foo"
+user_prompt = "jin foo"
+
+[agents.mail]
+template = "self"
+
+[[agents.mail.commands]]
+name = "foo"
+user_prompt = "mail foo"
+"#,
+    );
+    let config = load_config_from_str(&toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors.is_empty(),
+        "cross-agent same name must be allowed, got: {errors:?}"
+    );
+}
+
+/// Global `[[commands]]` and `[agents.<name>].commands` may share a name —
+/// at runtime the per-agent command overwrites the global one with a
+/// `tracing::warn`. Validation must not flag this as a collision.
+#[test]
+fn global_and_agent_command_same_name_passes() {
+    let toml = config_with(
+        r#"
+[[commands]]
+name = "foo"
+user_prompt = "global foo"
+
+[agents.jin]
+template = "self"
+
+[[agents.jin.commands]]
+name = "foo"
+user_prompt = "jin foo"
+"#,
+    );
+    let config = load_config_from_str(&toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors.is_empty(),
+        "global-vs-agent same name must be allowed (overwrite at runtime), got: {errors:?}"
+    );
+}
+
+/// Per-agent command shadowing a built-in is rejected the same way as
+/// in the global `[[commands]]` scope.
+#[test]
+fn agent_command_shadowing_builtin_fails() {
+    let toml = config_with(
+        r#"
+[agents.jin]
+template = "self"
+
+[[agents.jin.commands]]
+name = "model"
+user_prompt = "clobber /model"
+"#,
+    );
+    let config = load_config_from_str(&toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.path == "agents.jin.commands[0].name"
+                && e.message.contains("shadows a built-in")),
+        "per-agent /model shadow must be rejected, got: {errors:?}"
+    );
+}

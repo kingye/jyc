@@ -14,7 +14,7 @@
 
 use serde::Deserialize;
 
-use super::{InboundAttachmentConfig, McpServerConfig};
+use super::{CustomCommand, InboundAttachmentConfig, McpServerConfig};
 use crate::channel::{
     AccessConfig, ChannelPattern, ContextStrategyConfig, PatternRules, ResetCompressionConfig,
 };
@@ -128,6 +128,19 @@ pub struct AgentConfig {
     /// Falls back to `[ai].context_strategy` when unset.
     #[serde(default)]
     pub context_strategy: Option<ContextStrategyConfig>,
+
+    /// Per-agent slash commands declared as `[[agents.<name>.commands]]`,
+    /// registered into the topic's CommandRegistry alongside the top-level
+    /// `[[commands]]` so they only fire when routed to this agent.
+    ///
+    /// Within one agent, names must be unique. Across scopes (global vs
+    /// this agent, this agent vs another) names MAY repeat — at runtime
+    /// the per-agent command overwrites the global one
+    /// (`CommandRegistry::register` last-registered-wins with a
+    /// `tracing::warn`). Reuses `CustomCommand` so validation, help, and
+    /// shell-vs-prompt semantics are unchanged.
+    #[serde(default)]
+    pub commands: Vec<CustomCommand>,
 }
 
 fn default_true() -> bool {
@@ -139,10 +152,11 @@ impl AgentConfig {
     /// setting the pattern's identity fields to point at this agent.
     ///
     /// Single source of truth for the AgentConfig → ChannelPattern
-    /// mirror. Adding a new behavior field to AgentConfig only requires
-    /// updating this method; both the CLI synthesis
-    /// (`synthesize_agent_pattern`) and the validation pass
-    /// (`validate_agent`) use it, so they cannot drift.
+    /// mirror for *routing-relevant* fields. The `commands` field is
+    /// intentionally NOT mirrored — the worker reads it directly when
+    /// building the per-topic CommandRegistry, and ChannelPattern
+    /// carries no command state. Adding any other behavior field to
+    /// AgentConfig requires updating this method.
     ///
     /// The caller supplies `agent_name` (the TOML table key, not a
     /// field on AgentConfig itself).

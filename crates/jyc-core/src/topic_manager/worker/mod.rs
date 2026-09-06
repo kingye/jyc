@@ -151,12 +151,17 @@ pub(crate) async fn process_message(
     command_registry.register(Box::new(InfoCommandHandler::new(topic_manager.clone())));
     command_registry.register(Box::new(BacklogCommandHandler::new()));
 
-    // User-defined commands from config.toml `[[commands]]`. Registered last,
-    // but `register()` warns on collisions and config validation rejects
-    // names that shadow a built-in.
-    for custom in &config.load().commands {
-        command_registry.register(Box::new(CustomCommandHandler::new(custom.clone())));
-    }
+    // User-defined commands: global `[[commands]]` first, then
+    // `[[agents.<name>.commands]]` for the agent the topic is routed
+    // to. Registration order matters — `CommandRegistry::register`
+    // overwrites on collision with a `tracing::warn`, so a per-agent
+    // command with the same name as a global one wins for that
+    // agent's topics. Non-agent topics see only the global set.
+    register_custom_commands(
+        &config.load(),
+        &item.pattern_match.pattern_name,
+        &mut command_registry,
+    );
 
     let cmd_context = CommandContext {
         args: vec![],
@@ -619,9 +624,28 @@ pub(crate) async fn read_skills(topic_path: &Path) -> Vec<String> {
     }
 }
 
-/// Error returned when an existing topic directory was created from a
-/// different template than the one the current message is requesting. The
-/// topic manager surfaces this and drops the message rather than risk
-/// overwriting AGENTS.md / template files in place.
+/// Register user-defined slash commands into the topic's `CommandRegistry`.
+///
+/// Order: globals first, then per-agent commands for the agent this topic
+/// is routed to. `CommandRegistry::register` overwrites on collision with
+/// a `tracing::warn`, so a per-agent command with the same name as a
+/// global one wins for that agent's topics (and emits a visible warn at
+/// every topic start — the only signal that an overwrite happened).
+/// `pattern_name` is empty for non-agent topics; in that case only
+/// globals are registered.
+pub(crate) fn register_custom_commands(
+    cfg: &jyc_types::AppConfig,
+    pattern_name: &str,
+    command_registry: &mut CommandRegistry,
+) {
+    for custom in &cfg.commands {
+        command_registry.register(Box::new(CustomCommandHandler::new(custom.clone())));
+    }
+    if let Some(agent) = cfg.agents.get(pattern_name) {
+        for custom in &agent.commands {
+            command_registry.register(Box::new(CustomCommandHandler::new(custom.clone())));
+        }
+    }
+}
 #[cfg(test)]
 mod has_active_queue;

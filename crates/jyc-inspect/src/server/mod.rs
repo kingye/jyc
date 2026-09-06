@@ -437,14 +437,14 @@ pub(crate) fn build_channels(
     channels
 }
 
-/// Build the dashboard-visible command list for one topic: built-ins
-/// + globals + `[[agents.<pattern>.commands]]` for the topic's
-/// pattern, with per-agent winning on collision (matching
-/// `CommandRegistry::register`). Used by both `build_overview_state`
-/// and `build_state` so the dashboard `/` popup reflects what
-/// actually dispatches at runtime. Per-agent lookup is the shared
+/// Build the dashboard-visible command list for one topic. Composed
+/// of built-ins + globals + `[[agents.<pattern>.commands]]` for the
+/// topic's pattern; per-agent wins on collision, matching
+/// `CommandRegistry::register`.
+///
+/// Per-agent lookup is the shared
 /// `jyc_core::command::per_agent_commands` helper — the same call the
-/// worker makes — guaranteeing the popup and `/?` agree.
+/// worker makes — so the popup and `/?` always agree.
 fn commands_for_topic(pattern: Option<&str>, cfg: &AppConfig) -> Vec<CommandInfo> {
     let per_agent = pattern
         .map(|p| per_agent_commands(cfg, p))

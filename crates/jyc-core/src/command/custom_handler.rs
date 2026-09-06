@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -120,6 +121,7 @@ impl CustomCommandHandler {
         &self,
         argv: &[String],
         user_args: &[String],
+        topic_path: &Path,
         timeout: Duration,
     ) -> Result<CommandResult> {
         let mut cmd = Command::new(&argv[0]);
@@ -131,12 +133,11 @@ impl CustomCommandHandler {
         }
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        // Inherit jyc's cwd — predictable default. Per-command cwd is a
-        // matrix-bomb: most callers don't think about cwd, and a surprising
-        // one silently breaks them. Wrap with `cd /path && cmd` in a script
-        // (`shell = ["./scripts/deploy.sh"]`) when a different directory
-        // matters.
+            .stderr(Stdio::piped())
+            .current_dir(topic_path);
+        // Topic's workspace, not jyc's cwd — without this every topic's
+        // shell commands collide on whichever directory jyc was started
+        // from. Use a wrapper script when a different cwd is needed.
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -270,7 +271,12 @@ impl CommandHandler for CustomCommandHandler {
         // anything. Documented in the struct-level rustdoc.
         if let Some(argv) = self.config.shell.as_deref() {
             return self
-                .execute_shell(argv, &context.args, Duration::from_secs(SHELL_TIMEOUT_SECS))
+                .execute_shell(
+                    argv,
+                    &context.args,
+                    &context.topic_path,
+                    Duration::from_secs(SHELL_TIMEOUT_SECS),
+                )
                 .await;
         }
 
@@ -560,6 +566,27 @@ mode = "agent"
         assert_eq!(result.message, "hello\n");
     }
 
+    /// Regression: shell commands must run in the topic's workspace, not
+    /// jyc's cwd. Without `current_dir`, `/ls` from every topic would
+    /// list the same directory (whichever jyc was launched from),
+    /// breaking the user-mental-model expectation.
+    #[tokio::test]
+    async fn shell_runs_in_topic_path() {
+        let topic_tmp = tempfile::tempdir().unwrap();
+        let handler = CustomCommandHandler::new(shell_cmd(&["sh", "-c", "pwd -P"]));
+
+        let result = handler
+            .execute(test_context(topic_tmp.path()))
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        // `pwd -P` resolves symlinks (e.g. macOS /tmp → /private/tmp);
+        // canonicalize the topic path the same way for a stable compare.
+        let canonical = tokio::fs::canonicalize(topic_tmp.path()).await.unwrap();
+        assert_eq!(result.message.trim(), canonical.to_string_lossy());
+    }
+
     /// Argv is exec'd directly — no shell parses the elements, so a
     /// shell-meta argument is just a literal argument. Locks in the
     /// injection-safety claim.
@@ -652,6 +679,7 @@ mode = "agent"
             .execute_shell(
                 &["sh".into(), "-c".into(), script],
                 &[],
+                tmp.path(),
                 Duration::from_millis(500),
             )
             .await

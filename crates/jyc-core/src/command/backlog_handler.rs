@@ -95,11 +95,14 @@ impl BacklogCommandHandler {
         Ok(())
     }
 
-    /// Parse a 1-based index from an arg slot. Returns `Ok(None)` when the
-    /// slot is absent, leaving the default up to the caller; returns
-    /// `Err` for non-numeric input or `0`.
+    /// Parse a 1-based index from an arg slot. Returns `Ok(None)` when
+    /// the slot is absent OR present-but-empty (the registry inserts an
+    /// empty placeholder at `args[1]` for `collect_subsequent_lines`
+    /// handlers, so a slot that the user did not fill arrives as `""`,
+    /// not as a missing slot); leaves the default up to the caller.
+    /// Returns `Err` for non-numeric input or `0`.
     fn parse_n(args: &[String], slot: usize) -> Result<Option<usize>, String> {
-        let Some(raw) = args.get(slot) else {
+        let Some(raw) = args.get(slot).filter(|s| !s.is_empty()) else {
             return Ok(None);
         };
         let n: usize = raw
@@ -486,6 +489,44 @@ mode = "agent"
                 .unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].text, "second");
+    }
+
+    /// Regression: the registry now pushes an empty placeholder at
+    /// `args[1]` when the user typed `/backlog pop` with no index (see
+    /// `test_collect_subsequent_lines_no_continuation` in registry.rs).
+    /// `parse_n` must treat both the missing slot and the empty slot as
+    /// `Ok(None)` so `pop` still defaults to item 1.
+    #[tokio::test]
+    async fn pop_empty_arg_defaults_to_first_item() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+
+        run(&h, dir.path(), &["push", "first"]).await;
+        run(&h, dir.path(), &["push", "second"]).await;
+
+        // Simulate the post-registry args shape for `/backlog pop`.
+        let r = run(&h, dir.path(), &["pop", ""]).await;
+        assert!(r.success);
+        assert_eq!(r.message, "Backlog: popped item 1: first");
+        assert_eq!(r.append_body.as_deref(), Some("first"));
+    }
+
+    /// Regression counterpart for `rm`: empty index slot must produce
+    /// the existing "missing index" error, not a bogus "invalid index" error.
+    #[tokio::test]
+    async fn rm_empty_arg_returns_missing_index_error() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+
+        run(&h, dir.path(), &["push", "only"]).await;
+
+        let r = run(&h, dir.path(), &["rm", ""]).await;
+        assert!(!r.success);
+        assert!(
+            r.error.as_deref().unwrap_or("").contains("missing index"),
+            "expected 'missing index' error, got: {:?}",
+            r.error
+        );
     }
 
     #[tokio::test]

@@ -345,6 +345,32 @@
   `style_diff_line` helper that uses shared `DIFF_REMOVED_PREFIX` /
   `DIFF_ADDED_PREFIX` constants so the producer and the stayer cannot
   drift apart.
+- **Feishu progress indicator now appears for built-in commands that
+  inject into the agent run.** `/backlog pop` (the only built-in that
+  sets `append_body`) previously skipped the channels.rs watcher because
+  it was registered as a built-in command, leaving users with no live
+  status card even though the agent ran normally. Replaced the binary
+  "is the name a registered built-in?" probe with a per-command
+  `continues_to_agent` flag on `CommandInfo` (true for `/backlog`,
+  default false). `all_commands_with` propagates the flag for custom
+  commands — `shell` commands get `false` (no agent run), prompt
+  commands get `true`. Unknown slash names continue to spawn the
+  watcher via `unwrap_or(true)`, matching the previous behaviour for
+  typos and unknown commands.
+- **`/backlog push` preserves spaces in single-line descriptions.**
+  Typing `/backlog push This is a backlog issue` previously stored
+  the text as five separate lines (`This\nis\na\nbacklog\nissue`)
+  because the registry's `collect_subsequent_lines` mode pushed each
+  space-separated token into `args` as a separate element. The
+  registry now collapses the first-line tokens into a single
+  space-joined string at `args[1]` before collecting continuation
+  lines as `args[2..]`. So `/backlog push hello world` stores
+  `"hello world"`, `/backlog push\nline 1\nline 2` stores
+  `"line 1\nline 2"`, and the mixed form
+  `/backlog push first line\nsecond line` stores
+  `"first line\nsecond line"`. An empty placeholder at `args[1]`
+  preserves the existing "no description" error path when the user
+  pushes nothing.
 
 ### Removed
 

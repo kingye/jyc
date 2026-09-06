@@ -236,21 +236,19 @@ impl App {
     /// selection changes (initial auto-select + ↑/↓ navigation) and on
     /// each overview poll that may have replaced the topic list.
     ///
-    /// Backward-compat: older servers don't populate `TopicSummary.commands`
-    /// (serde defaults it to `vec![]`). When the topic-level list is empty
-    /// we fall back to the overview-level globals so the popup is never
-    /// silently empty in a mixed-version deployment.
+    /// `topic.commands` is the single source — the inspect server
+    /// computes it server-side and the TUI just consumes it. Older
+    /// servers (pre-PR-708) don't populate this field; we fall back to
+    /// the built-in list so the popup is never silently empty in a
+    /// mixed-version deployment.
     fn sync_commands_for_selection(&mut self) {
-        let state = self.state.as_ref();
         let topic_commands = self
             .table_state
             .selected()
-            .and_then(|i| state.and_then(|s| s.topics.get(i)))
+            .and_then(|i| self.state.as_ref().and_then(|s| s.topics.get(i)))
             .map(|t| t.commands.clone())
             .filter(|cmds| !cmds.is_empty());
-        self.chat.commands = topic_commands
-            .or_else(|| state.map(|s| s.commands.clone()))
-            .unwrap_or_default();
+        self.chat.commands = topic_commands.unwrap_or_else(jyc_core::command::all_commands);
     }
 
     fn handle_ws_event(&mut self, event: WsEvent) {
@@ -1976,7 +1974,6 @@ mod tests {
                 })
                 .collect(),
             stats: Default::default(),
-            commands: vec![],
             models: vec![],
         }
     }

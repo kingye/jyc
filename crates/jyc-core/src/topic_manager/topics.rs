@@ -59,6 +59,55 @@ impl TopicManager {
         None
     }
 
+    /// Record the pattern (agent name) for `topic_path`. The worker
+    /// calls this after every processed message so the in-memory map
+    /// is always the authoritative source for "what pattern does this
+    /// topic belong to". The inspect server's `list_topics` reads from
+    /// this map first via [`TopicManager::topic_pattern`], so the
+    /// dashboard popup and the worker's `/?` see the same answer
+    /// without having to read `.jyc/pattern` from disk.
+    ///
+    /// Empty `pattern_name` is ignored — non-agent topics
+    /// (`pattern_match.pattern_name == ""`) explicitly skip the write
+    /// to avoid overwriting an existing real pattern. See
+    /// `topic_manager/queue.rs` for the disk-write counterpart that
+    /// backs the cold-start seed.
+    pub async fn set_topic_pattern(&self, topic_path: &Path, pattern_name: &str) {
+        if pattern_name.is_empty() {
+            return;
+        }
+        self.topic_patterns
+            .lock()
+            .await
+            .insert(topic_path.to_path_buf(), pattern_name.to_string());
+    }
+
+    /// Return the pattern (agent name) for `topic_path`. Reads from
+    /// the in-memory map first; on a cold-start miss, falls back to
+    /// `.jyc/pattern` on disk and caches the result so subsequent
+    /// reads are fast. `None` if neither source has the topic.
+    pub async fn topic_pattern(&self, topic_path: &Path) -> Option<String> {
+        let cached = self.topic_patterns.lock().await.get(topic_path).cloned();
+        if let Some(p) = cached {
+            return Some(p);
+        }
+        // Cold-start fallback: read .jyc/pattern from disk and
+        // remember it so future reads skip the I/O.
+        let path = topic_path.join(".jyc").join("pattern");
+        let from_disk = tokio::fs::read_to_string(&path)
+            .await
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let Some(ref p) = from_disk {
+            self.topic_patterns
+                .lock()
+                .await
+                .insert(topic_path.to_path_buf(), p.clone());
+        }
+        from_disk
+    }
+
     /// Resolve display-relevant per-topic state: pattern, session token
     /// usage, mode override, and the model override chain. Shared by
     /// `list_topics()` and `topic_display_state()` so the dashboard and
@@ -84,12 +133,11 @@ impl TopicManager {
         Option<String>,
         Option<String>,
     ) {
-        // Read pattern from .jyc/pattern
-        let pattern = tokio::fs::read_to_string(topic_path.join(".jyc").join("pattern"))
-            .await
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+        // Read pattern via the in-memory cache (worker writes it on
+        // every processed message). Falls back to .jyc/pattern on
+        // disk for cold-start entries that haven't been touched
+        // this session.
+        let pattern = self.topic_pattern(topic_path).await;
 
         // Read session state
         let token_state = crate::session_state::read_token_state(topic_path).await;
@@ -771,5 +819,100 @@ mode = "agent"
         let state = tm.topic_display_state("no-such-topic").await;
         assert!(state.mode.is_none() && state.model.is_none());
         assert_eq!(state.context_pct(), None);
+    }
+
+    /// In-memory pattern cache must beat disk on every read after the
+    /// first write. Worker writes via `set_topic_pattern`; the
+    /// inspect server reads via `topic_pattern`. If the cache is
+    /// bypassed, disk can be stale or missing and the popup
+    /// (computed from the inspect server's view) silently loses
+    /// per-agent commands.
+    #[tokio::test]
+    async fn topic_pattern_in_memory_priority() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let topic_path = workspace.join("jyc");
+        tokio::fs::create_dir_all(topic_path.join(".jyc"))
+            .await
+            .unwrap();
+        // Disk says "old-pattern".
+        tokio::fs::write(topic_path.join(".jyc").join("pattern"), "old-pattern\n")
+            .await
+            .unwrap();
+
+        let tm = make_tm(&workspace);
+        // Worker writes "jyc" to the in-memory cache.
+        tm.set_topic_pattern(&topic_path, "jyc").await;
+        assert_eq!(tm.topic_pattern(&topic_path).await.as_deref(), Some("jyc"));
+    }
+
+    /// Cold-start path: when the in-memory cache is empty, fall
+    /// back to `.jyc/pattern` on disk and populate the cache so
+    /// the next read is fast and stable.
+    #[tokio::test]
+    async fn topic_pattern_disk_fallback_on_cold_start() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let topic_path = workspace.join("jyc");
+        tokio::fs::create_dir_all(topic_path.join(".jyc"))
+            .await
+            .unwrap();
+        tokio::fs::write(topic_path.join(".jyc").join("pattern"), "jyc\n")
+            .await
+            .unwrap();
+
+        let tm = make_tm(&workspace);
+        // First read: from disk.
+        assert_eq!(tm.topic_pattern(&topic_path).await.as_deref(), Some("jyc"));
+        // Disk fallback only triggers when the file exists; removing
+        // it now and re-reading must NOT return "jyc" — the cache
+        // should already have been populated by the first read.
+        tokio::fs::remove_file(topic_path.join(".jyc").join("pattern"))
+            .await
+            .unwrap();
+        assert_eq!(tm.topic_pattern(&topic_path).await.as_deref(), Some("jyc"));
+    }
+
+    /// `set_topic_pattern` with an empty name must NOT overwrite an
+    /// existing pattern. Injected messages (`jyc_send_to_topic`,
+    /// dashboard topic proxy) carry an empty `pattern_match.pattern_name`;
+    /// those must not erase a real agent's pattern.
+    #[tokio::test]
+    async fn set_topic_pattern_empty_does_not_overwrite() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let topic_path = workspace.join("jyc");
+        tokio::fs::create_dir_all(topic_path.join(".jyc"))
+            .await
+            .unwrap();
+
+        let tm = make_tm(&workspace);
+        tm.set_topic_pattern(&topic_path, "jyc").await;
+        assert_eq!(tm.topic_pattern(&topic_path).await.as_deref(), Some("jyc"));
+
+        tm.set_topic_pattern(&topic_path, "").await;
+        assert_eq!(
+            tm.topic_pattern(&topic_path).await.as_deref(),
+            Some("jyc"),
+            "empty pattern_name must not overwrite"
+        );
+    }
+
+    /// Worker clones (created via `worker_clone`) must share the
+    /// same in-memory pattern map as the parent TM. Otherwise a
+    /// worker-set pattern would never reach `list_topics`.
+    #[tokio::test]
+    async fn worker_clone_shares_pattern_cache() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        let topic_path = workspace.join("jyc");
+        tokio::fs::create_dir_all(topic_path.join(".jyc"))
+            .await
+            .unwrap();
+
+        let tm = make_tm(&workspace);
+        let worker_clone = tm.worker_clone();
+        worker_clone.set_topic_pattern(&topic_path, "jyc").await;
+        assert_eq!(tm.topic_pattern(&topic_path).await.as_deref(), Some("jyc"));
     }
 }

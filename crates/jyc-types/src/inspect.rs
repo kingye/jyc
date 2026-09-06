@@ -134,6 +134,18 @@ pub struct TopicSummary {
     /// as `None` and the section is simply omitted in the renderer.
     #[serde(default)]
     pub changed_files: Option<Vec<ChangedFileEntry>>,
+    /// Commands available in this topic: built-ins + globals +
+    /// per-agent commands (`[[agents.<pattern>.commands]]`).
+    ///
+    /// Per-agent wins on name collision, matching runtime dispatch
+    /// (`CommandRegistry::register` last-registered-wins). The dashboard
+    /// `/` command popup reads from this field instead of the global
+    /// `InspectOverview.commands` so it reflects what actually
+    /// dispatches when the user picks a topic.
+    /// `#[serde(default)]` so older server payloads still deserialize
+    /// (the popup falls back to the overview-level list in that case).
+    #[serde(default)]
+    pub commands: Vec<CommandInfo>,
     /// Accumulated cost (session + today). `None` when the active model
     /// has no configured `pricing`, so the row is omitted entirely
     /// rather than showing a misleading zero.
@@ -304,6 +316,10 @@ pub struct TopicInfo {
     /// rather than showing a misleading zero.
     #[serde(default)]
     pub cost: Option<TopicCost>,
+    /// Commands available in this topic. See `TopicSummary::commands`
+    /// for the full semantics.
+    #[serde(default)]
+    pub commands: Vec<CommandInfo>,
 }
 
 /// Severity level for an activity entry.
@@ -521,6 +537,7 @@ mod tests {
                 branch: None,
                 changed_files: None,
                 cost: None,
+                commands: vec![],
             }],
             stats: GlobalStats {
                 active_workers: 2,
@@ -689,11 +706,12 @@ mod tests {
             total_cache_hit_tokens: Some(8000),
             total_cache_creation_tokens: None,
             last_active_at: Some("2026-01-01T00:00:00Z".to_string()),
-            skills: vec!["dev-workflow".to_string()],
+            skills: vec![],
             topic_path: None,
             branch: None,
             changed_files: None,
             cost: None,
+            commands: vec![],
         };
         let json = serde_json::to_string(&summary).unwrap();
         let parsed: TopicSummary = serde_json::from_str(&json).unwrap();

@@ -406,6 +406,18 @@
   New tests cover both the registry→handler end-to-end path and the
   handler-level index parsing.
 
+### Fixed
+
+- **TUI `/` command popup and `/?` help now list per-agent commands**
+  (`[[agents.<name>.commands]]`) for the currently selected topic.
+  Previously the popup only showed built-ins + global `[[commands]]`, so
+  per-agent commands worked at runtime but were invisible in the UI.
+  Each `TopicSummary` / `TopicInfo` now carries its own command list
+  (built-ins + globals + per-agent for that topic's pattern; per-agent
+  wins on collision, matching `CommandRegistry::register` semantics).
+  The dashboard refreshes `chat.commands` whenever the user changes
+  topic selection.
+
 ### Removed
 
 - **Feishu Typing→DONE reaction chips.** The emoji reactions the pipe bot

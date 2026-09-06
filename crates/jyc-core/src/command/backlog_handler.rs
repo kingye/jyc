@@ -371,12 +371,13 @@ mode = "agent"
         let dir = fresh_topic();
         let h = BacklogCommandHandler::new();
 
-        // `/backlog push hello world` (single command line, no continuation):
-        // the registry collapses the tokens after `push` into a single
-        // first-line string, so the description is the user's literal input.
-        // Regression test for the user-reported issue where each token was
-        // joined with `\n` instead, rendering as multiple lines.
-        let r = run(&h, dir.path(), &["push", "hello", "world"]).await;
+        // This test calls the handler directly (bypassing the registry),
+        // so it passes args in the post-collapse shape: `args[1]` is the
+        // space-joined first-line string that the registry would have
+        // produced from `/backlog push hello world`. The collapse itself
+        // is covered by `test_collect_subsequent_lines_collapses_first_line`
+        // in `registry.rs`.
+        let r = run(&h, dir.path(), &["push", "hello world"]).await;
         assert!(r.success, "{:?}", r.error);
         assert_eq!(r.message, "Backlog: pushed item 1");
 

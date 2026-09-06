@@ -13,7 +13,7 @@ use crate::scoped_ws::ScopedWsHandler;
 use crate::topic_proxy::TopicProxyHandler;
 use jyc_core::activity_log_store::ActivityLogStore;
 use jyc_core::command::list_available_models;
-use jyc_core::command::{all_commands, all_commands_with};
+use jyc_core::command::{all_commands, all_commands_with, per_agent_commands};
 use jyc_core::metrics::SharedHealthStats;
 use jyc_core::topic_manager::TopicManager;
 use jyc_types::AppConfig;
@@ -250,7 +250,7 @@ impl InspectServer {
         // commands so the dashboard `/` popup reflects what actually
         // dispatches in that topic (built-ins + globals + per-agent for
         // the topic's pattern; per-agent wins on collision).
-        let (global_customs, agents) = snapshot_config_commands(context);
+        let cfg = context.config.as_ref().map(|c| c.load_full());
         let mut summaries: Vec<TopicSummary> = topics
             .into_iter()
             .map(|t| TopicSummary {
@@ -272,7 +272,10 @@ impl InspectServer {
                 branch: t.branch,
                 changed_files: t.changed_files,
                 cost: t.cost,
-                commands: commands_for_topic(t.pattern.as_deref(), &global_customs, &agents),
+                commands: commands_for_topic(
+                    t.pattern.as_deref(),
+                    cfg.as_deref().unwrap_or(&AppConfig::default()),
+                ),
             })
             .collect();
         // list_topics() sorts within each channel, but topics from multiple
@@ -334,11 +337,14 @@ impl InspectServer {
         // Attach per-topic commands so the dashboard `/` popup reflects
         // what actually dispatches in this topic (built-ins + globals +
         // per-agent for the topic's pattern; per-agent wins on collision).
-        let (global_customs, agents) = snapshot_config_commands(context);
+        let cfg = context.config.as_ref().map(|c| c.load_full());
         let topics: Vec<TopicInfo> = topics
             .into_iter()
             .map(|mut t| {
-                t.commands = commands_for_topic(t.pattern.as_deref(), &global_customs, &agents);
+                t.commands = commands_for_topic(
+                    t.pattern.as_deref(),
+                    cfg.as_deref().unwrap_or(&AppConfig::default()),
+                );
                 t
             })
             .collect();
@@ -441,37 +447,19 @@ pub(crate) fn build_channels(
     channels
 }
 
-/// Commands available in a topic: built-ins + globals +
-/// `[[agents.<pattern>.commands]]` for the topic's agent, with per-agent
-/// winning on collision (matching `CommandRegistry::register`). Used by
-/// both `build_overview_state` and `build_state` so the dashboard `/`
-/// popup reflects what actually dispatches at runtime.
-fn commands_for_topic(
-    pattern: Option<&str>,
-    globals: &[CustomCommand],
-    agents: &std::collections::HashMap<String, AgentConfig>,
-) -> Vec<CommandInfo> {
-    let per_agent: &[CustomCommand] = pattern
-        .and_then(|p| agents.get(p))
-        .map(|a| a.commands.as_slice())
-        .unwrap_or(&[]);
-    all_commands_with(globals, per_agent)
-}
-
-/// Snapshot the globals + agents maps out of the live config so the
-/// per-topic commands computation doesn't have to re-walk
-/// `Arc<AppConfig>` once per topic.
-fn snapshot_config_commands(
-    context: &InspectContext,
-) -> (
-    Vec<CustomCommand>,
-    std::collections::HashMap<String, AgentConfig>,
-) {
-    let cfg = context.config.as_ref().map(|c| c.load());
-    (
-        cfg.as_ref().map(|c| c.commands.clone()).unwrap_or_default(),
-        cfg.map(|c| c.agents.clone()).unwrap_or_default(),
-    )
+/// Build the dashboard-visible command list for one topic: built-ins
+/// + globals + `[[agents.<pattern>.commands]]` for the topic's
+/// pattern, with per-agent winning on collision (matching
+/// `CommandRegistry::register`). Used by both `build_overview_state`
+/// and `build_state` so the dashboard `/` popup reflects what
+/// actually dispatches at runtime. Per-agent lookup is the shared
+/// `jyc_core::command::per_agent_commands` helper — the same call the
+/// worker makes — guaranteeing the popup and `/?` agree.
+fn commands_for_topic(pattern: Option<&str>, cfg: &AppConfig) -> Vec<CommandInfo> {
+    let per_agent = pattern
+        .map(|p| per_agent_commands(cfg, p))
+        .unwrap_or_default();
+    all_commands_with(&cfg.commands, &per_agent)
 }
 
 /// Filter activity entries by `since` timestamp (RFC 3339 string).

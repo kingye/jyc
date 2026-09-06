@@ -155,6 +155,22 @@ pub fn all_commands_with(
     sorted
 }
 
+/// Single canonical lookup: given a pattern/agent name and the live
+/// `AppConfig`, return the per-agent custom commands for that pattern.
+/// Empty `Vec` when no such agent is defined.
+///
+/// Both the worker (used by `/?` help) and the inspect server (used by
+/// the `/` popup) call this so the answer is identical for identical
+/// inputs. `cfg.agents` is the single source for `[[agents.<name>.commands]]`;
+/// everything else (built-ins, globals, per-topic wiring) lives elsewhere
+/// and is composed via [`all_commands_with`].
+pub fn per_agent_commands(cfg: &jyc_types::AppConfig, pattern_name: &str) -> Vec<CustomCommand> {
+    cfg.agents
+        .get(pattern_name)
+        .map(|a| a.commands.clone())
+        .unwrap_or_default()
+}
+
 fn custom_to_info(c: &CustomCommand) -> CommandInfo {
     CommandInfo {
         // Match CustomCommandHandler::new()'s normalization so the popup shows
@@ -395,5 +411,36 @@ mod tests {
         let commands = all_commands_with(&[cmd], &[]);
         let entry = commands.iter().find(|c| c.name == "/gitlog").unwrap();
         assert!(!entry.continues_to_agent);
+    }
+
+    /// `per_agent_commands` is the single canonical lookup the worker
+    /// AND the inspect server share. If this test passes for one, it
+    /// must pass for both — by construction they go through the same
+    /// `cfg.agents.get(...)`.
+    #[test]
+    fn test_per_agent_commands_returns_agent_commands() {
+        use std::collections::HashMap;
+        let mut agents = HashMap::new();
+        agents.insert(
+            "jyc".to_string(),
+            jyc_types::AgentConfig {
+                commands: vec![custom("deploy", "self deploy")],
+                ..Default::default()
+            },
+        );
+        let cfg = jyc_types::AppConfig {
+            agents,
+            ..Default::default()
+        };
+        let got = per_agent_commands(&cfg, "jyc");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "deploy");
+    }
+
+    #[test]
+    fn test_per_agent_commands_unknown_pattern_returns_empty() {
+        let cfg = jyc_types::AppConfig::default();
+        assert!(per_agent_commands(&cfg, "does-not-exist").is_empty());
+        assert!(per_agent_commands(&cfg, "").is_empty());
     }
 }

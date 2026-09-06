@@ -3,6 +3,7 @@ use regex::Regex;
 
 use crate::channel::ChannelPattern;
 use crate::config::AppConfig;
+use crate::config::CustomCommand;
 use crate::config::agent::AgentConfig;
 
 /// A single validation error with context.
@@ -418,86 +419,28 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
         }
     }
 
-    // Custom commands
+    // Custom commands — global scope (fresh `seen` per scope; see
+    // `validate_custom_command` for cross-scope semantics).
     let mut seen_commands: Vec<String> = Vec::new();
     for (i, cmd) in config.commands.iter().enumerate() {
-        let prefix = format!("commands[{i}]");
+        validate_custom_command(
+            &format!("commands[{i}]"),
+            cmd,
+            &mut seen_commands,
+            &mut errors,
+        );
+    }
 
-        let name = cmd.name.trim();
-        if name.is_empty() {
-            errors.push(ValidationError {
-                path: format!("{prefix}.name"),
-                message: "must not be empty".into(),
-            });
-        } else if name.split_whitespace().count() > 1 {
-            errors.push(ValidationError {
-                path: format!("{prefix}.name"),
-                message: format!("must not contain whitespace (got '{name}')"),
-            });
-        } else if name.chars().any(char::is_uppercase) {
-            // Command lookup is case-insensitive (the registry lowercases the
-            // incoming line), so an uppercase name could never be matched.
-            // Fail loudly rather than silently registering a dead command.
-            errors.push(ValidationError {
-                path: format!("{prefix}.name"),
-                message: format!("must be lowercase (got '{name}')"),
-            });
-        } else {
-            // Compare the normalized form: `review` and `/review` both register
-            // as `/review` and would collide at registration time.
-            let slashed = format!("/{}", name.trim_start_matches('/'));
-            if crate::config::BUILTIN_COMMAND_NAMES.contains(&slashed.as_str()) {
-                errors.push(ValidationError {
-                    path: format!("{prefix}.name"),
-                    message: format!("'{slashed}' shadows a built-in command"),
-                });
-            }
-            if seen_commands.contains(&slashed) {
-                errors.push(ValidationError {
-                    path: format!("{prefix}.name"),
-                    message: format!("duplicate command name '{slashed}'"),
-                });
-            }
-            seen_commands.push(slashed);
-        }
-
-        if let Some(ref mode) = cmd.mode
-            && mode != "plan"
-            && mode != "build"
-        {
-            errors.push(ValidationError {
-                path: format!("{prefix}.mode"),
-                message: format!("must be 'plan' or 'build' (got '{mode}')"),
-            });
-        }
-
-        // Each `[[commands]]` entry is either prompt-injection or shell —
-        // never both, never neither. `shell` is the direct-execution flavor
-        // (no LLM, no tokens); `user_prompt` injects into the agent's prompt.
-        let has_prompt = cmd
-            .user_prompt
-            .as_deref()
-            .is_some_and(|s| !s.trim().is_empty());
-        match (has_prompt, cmd.shell.as_deref()) {
-            (true, Some(_)) => {
-                errors.push(ValidationError {
-                    path: format!("{prefix}.user_prompt"),
-                    message: "mutually exclusive with 'shell' — pick one flavor per command".into(),
-                });
-            }
-            (false, None) => {
-                errors.push(ValidationError {
-                    path: format!("{prefix}.user_prompt"),
-                    message: "must be set (or use 'shell' for direct execution)".into(),
-                });
-            }
-            (false, Some([])) => {
-                errors.push(ValidationError {
-                    path: format!("{prefix}.shell"),
-                    message: "must contain at least one element (the executable)".into(),
-                });
-            }
-            _ => {}
+    // Per-agent scope (each agent gets its own `seen`).
+    for (agent_name, agent) in &config.agents {
+        let mut seen: Vec<String> = Vec::new();
+        for (i, cmd) in agent.commands.iter().enumerate() {
+            validate_custom_command(
+                &format!("agents.{agent_name}.commands[{i}]"),
+                cmd,
+                &mut seen,
+                &mut errors,
+            );
         }
     }
 
@@ -823,5 +766,97 @@ pub fn validate_config_strict(config: &AppConfig) -> Result<()> {
         anyhow::bail!("Configuration validation failed:\n{msg}")
     }
 }
+
+/// Validate one `[[commands]]` entry (global or per-agent).
+///
+/// `seen` is a per-scope dedup list: the caller owns a fresh `Vec`
+/// for each scope (one for global, one per agent) so cross-scope
+/// same-name reuse is allowed — only same-name reuse within the
+/// scope is flagged.
+fn validate_custom_command(
+    prefix: &str,
+    cmd: &CustomCommand,
+    seen: &mut Vec<String>,
+    errors: &mut Vec<ValidationError>,
+) {
+    let name = cmd.name.trim();
+    if name.is_empty() {
+        errors.push(ValidationError {
+            path: format!("{prefix}.name"),
+            message: "must not be empty".into(),
+        });
+    } else if name.split_whitespace().count() > 1 {
+        errors.push(ValidationError {
+            path: format!("{prefix}.name"),
+            message: format!("must not contain whitespace (got '{name}')"),
+        });
+    } else if name.chars().any(char::is_uppercase) {
+        // Command lookup is case-insensitive (the registry lowercases
+        // the incoming line), so an uppercase name could never be
+        // matched. Fail loudly rather than silently registering a
+        // dead command.
+        errors.push(ValidationError {
+            path: format!("{prefix}.name"),
+            message: format!("must be lowercase (got '{name}')"),
+        });
+    } else {
+        // Compare the normalized form: `review` and `/review` both
+        // register as `/review` and would collide at registration time.
+        let slashed = format!("/{}", name.trim_start_matches('/'));
+        if crate::config::BUILTIN_COMMAND_NAMES.contains(&slashed.as_str()) {
+            errors.push(ValidationError {
+                path: format!("{prefix}.name"),
+                message: format!("'{slashed}' shadows a built-in command"),
+            });
+        }
+        if seen.contains(&slashed) {
+            errors.push(ValidationError {
+                path: format!("{prefix}.name"),
+                message: format!("duplicate command name '{slashed}'"),
+            });
+        }
+        seen.push(slashed);
+    }
+
+    if let Some(ref mode) = cmd.mode
+        && mode != "plan"
+        && mode != "build"
+    {
+        errors.push(ValidationError {
+            path: format!("{prefix}.mode"),
+            message: format!("must be 'plan' or 'build' (got '{mode}')"),
+        });
+    }
+
+    // Each entry is either prompt-injection or shell — never both,
+    // never neither. `shell` is the direct-execution flavor (no LLM,
+    // no tokens); `user_prompt` injects into the agent's prompt.
+    let has_prompt = cmd
+        .user_prompt
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty());
+    match (has_prompt, cmd.shell.as_deref()) {
+        (true, Some(_)) => {
+            errors.push(ValidationError {
+                path: format!("{prefix}.user_prompt"),
+                message: "mutually exclusive with 'shell' — pick one flavor per command".into(),
+            });
+        }
+        (false, None) => {
+            errors.push(ValidationError {
+                path: format!("{prefix}.user_prompt"),
+                message: "must be set (or use 'shell' for direct execution)".into(),
+            });
+        }
+        (false, Some([])) => {
+            errors.push(ValidationError {
+                path: format!("{prefix}.shell"),
+                message: "must contain at least one element (the executable)".into(),
+            });
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests;

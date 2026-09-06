@@ -1167,6 +1167,37 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # '… [truncated N bytes]'. Default: 2048.
 # context_strategy = { mode = "sliding_window", window = 10, note_window = 3, tool_result_cap = 2048 }
 # attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
+#
+# --- Per-agent `[[commands]]` ---
+#
+# Each agent can declare its own slash commands, scoped to topics routed
+# to that agent. Registered into the per-topic `CommandRegistry` in
+# addition to (not instead of) the top-level `[[commands]]`, so a
+# per-agent `/foo` only fires when the topic is routed to that agent.
+# Useful for agent-specific workflows that don't belong in every
+# other agent's prompt.
+#
+# Within one agent, names must be unique. Same names across scopes
+# (global vs this agent, this agent vs another agent) are allowed —
+# at runtime, `CommandRegistry::register` overwrites on collision with
+# a `tracing::warn`, so a per-agent command with the same name as a
+# global one wins for that agent's topics. Validation does NOT flag
+# cross-scope name reuse.
+#
+# [agents.jin]
+# [[agents.jin.commands]]
+# name = "design-doc"
+# description = "Draft a design doc for the current task."
+# user_prompt = "Draft a design doc covering motivation, design, trade-offs, and rollback for the current task."
+#
+# [[agents.jin.commands]]
+# name = "lint"
+# description = "Run clippy with the project's strict settings."
+# shell = ["sh", "-c", "cargo clippy --workspace --all-targets -- -D warnings"]
+#
+# When `/lint` is typed in a topic routed to jin, it runs the shell
+# command directly (no LLM, no tokens). In any other topic, `/lint`
+# is unknown unless defined globally or under that other agent.
 
 # --- Channel: WebSocket (LEGACY — deprecated) ---
 #

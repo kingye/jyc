@@ -151,6 +151,7 @@ impl TopicManager {
             cancel: self.cancel.clone(),
             worker_handles: Mutex::new(vec![]),
             topic_paths: self.topic_paths.clone(),
+            topic_patterns: self.topic_patterns.clone(),
         }
     }
 
@@ -233,7 +234,7 @@ impl TopicManager {
         let agent = topic_manager.agent.clone();
         let template_dirs = topic_manager.template_dirs.clone();
         let config = topic_manager.config.clone();
-        let tm = topic_manager;
+        let tm = topic_manager.clone();
         let tm_span = tracing::info_span!("tm", t = %topic_name);
 
         tokio::spawn(async move {
@@ -340,6 +341,15 @@ impl TopicManager {
                     if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
                         tracing::warn!(error = %e, "Failed to write pattern file");
                     }
+                    // Update the in-memory pattern cache so the
+                    // inspect server's list_topics sees the same
+                    // value without re-reading disk. Single source
+                    // of truth for "what pattern does this topic
+                    // belong to" — worker writes, inspect server
+                    // reads.
+                    topic_manager
+                        .set_topic_pattern(&topic_path, &item.pattern_match.pattern_name)
+                        .await;
                 }
                 // Persist the logical topic name so custom topic_path
                 // directories can be rediscovered after restart.

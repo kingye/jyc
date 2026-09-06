@@ -2,7 +2,7 @@ use arc_swap::ArcSwap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -92,6 +92,14 @@ pub struct TopicManager {
     // Custom topic paths (from pattern topic_path override), shared with
     // worker clones so list_topics() on the main TM sees paths from workers.
     pub(crate) topic_paths: Arc<Mutex<HashMap<String, PathBuf>>>,
+
+    // Authoritative source for "what pattern/agent does this topic belong
+    // to". Worker writes after every processed message; readers (incl.
+    // the inspect server's `list_topics`) read this first and fall back
+    // to `.jyc/pattern` on disk for cold-start entries that haven't been
+    // touched this session. Shared via Arc so worker clones (which are
+    // drop-in TMs) write to the same map the main TM reads from.
+    pub(crate) topic_patterns: Arc<RwLock<HashMap<PathBuf, String>>>,
 }
 
 #[allow(dead_code)]
@@ -172,6 +180,7 @@ impl TopicManager {
             cancel: cancel.child_token(),
             worker_handles: Mutex::new(Vec::new()),
             topic_paths: Arc::new(Mutex::new(HashMap::new())),
+            topic_patterns: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 

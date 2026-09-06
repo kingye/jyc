@@ -87,7 +87,32 @@ impl CommandRegistry {
                         // appended as additional args. Stops at the first
                         // blank line so a body that follows the command
                         // block still flows through to the agent.
+                        //
+                        // The first-line content (everything after the
+                        // subcommand on the command line) is collapsed into
+                        // a single string at `args[1]`. Without this, the
+                        // handler cannot distinguish command-line content
+                        // (e.g. `/backlog push This is a description`) from
+                        // continuation lines (e.g. `/backlog push\nline 1\nline 2`).
+                        // An empty placeholder is pushed at `args[1]` when
+                        // there is no first-line content, so the handler
+                        // can index `args[1]` uniformly.
                         if handler.collect_subsequent_lines() {
+                            match args.len() {
+                                0 => {
+                                    // No subcommand on the line — this
+                                    // shouldn't happen given the dispatch
+                                    // check at line 81, but stay defensive.
+                                }
+                                1 => {
+                                    args.push(String::new());
+                                }
+                                _ => {
+                                    let first_line = args[1..].join(" ");
+                                    args.truncate(1);
+                                    args.push(first_line);
+                                }
+                            }
                             while let Some(&next) = lines_iter.peek() {
                                 if next.trim().is_empty() {
                                     lines_iter.next(); // consume the blank separator
@@ -525,9 +550,11 @@ focus on error handling",
             .unwrap();
 
         assert_eq!(output.results.len(), 1);
+        // args[0] = subcommand, args[1] = "" (no first-line content), args[2..]
+        // = continuation lines.
         assert_eq!(
             output.results[0].message,
-            r#"args=["push", "line 1", "line 2", "line 3"]"#
+            r#"args=["push", "", "line 1", "line 2", "line 3"]"#
         );
         // Trailing body still flows through after the blank line.
         assert_eq!(output.cleaned_body, "body text");
@@ -545,7 +572,10 @@ focus on error handling",
             .await
             .unwrap();
 
-        assert_eq!(output.results[0].message, r#"args=["push", "only line"]"#);
+        assert_eq!(
+            output.results[0].message,
+            r#"args=["push", "", "only line"]"#
+        );
         assert!(output.body_empty);
     }
 
@@ -554,14 +584,59 @@ focus on error handling",
         let mut registry = CommandRegistry::new();
         registry.register(Box::new(MultiLineHandler));
 
-        // Blank line right after the command — nothing to collect.
+        // Blank line right after the command — nothing to collect, but
+        // args[1] is still pushed as an empty placeholder so the handler
+        // can index it uniformly.
         let body = "/backlog push\n\nlater body";
         let output = registry
             .process_commands(body, &test_context())
             .await
             .unwrap();
 
-        assert_eq!(output.results[0].message, r#"args=["push"]"#);
+        assert_eq!(output.results[0].message, r#"args=["push", ""]"#);
         assert_eq!(output.cleaned_body, "later body");
+    }
+
+    /// `/backlog push hello world` (single command line, no continuation):
+    /// the tokens after `push` should be collapsed into a single
+    /// first-line string at args[1], not left as separate elements.
+    /// This is the regression test for the user's reported issue:
+    /// previously each space-separated token became a separate `args`
+    /// element, so the description joined with `\n` rendered as five
+    /// separate lines.
+    #[tokio::test]
+    async fn test_collect_subsequent_lines_collapses_first_line() {
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(MultiLineHandler));
+
+        let body = "/backlog push This is a backlog issue";
+        let output = registry
+            .process_commands(body, &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            output.results[0].message,
+            r#"args=["push", "This is a backlog issue"]"#
+        );
+    }
+
+    /// Mixed form: tokens on the command line + continuation lines.
+    /// args[1] = space-joined first-line content; args[2..] = continuation.
+    #[tokio::test]
+    async fn test_collect_subsequent_lines_mixes_first_line_and_continuation() {
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(MultiLineHandler));
+
+        let body = "/backlog push first line\nsecond line\nthird line";
+        let output = registry
+            .process_commands(body, &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            output.results[0].message,
+            r#"args=["push", "first line", "second line", "third line"]"#
+        );
     }
 }

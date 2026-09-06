@@ -357,6 +357,20 @@
   commands get `true`. Unknown slash names continue to spawn the
   watcher via `unwrap_or(true)`, matching the previous behaviour for
   typos and unknown commands.
+- **`/backlog push` preserves spaces in single-line descriptions.**
+  Typing `/backlog push This is a backlog issue` previously stored
+  the text as five separate lines (`This\nis\na\nbacklog\nissue`)
+  because the registry's `collect_subsequent_lines` mode pushed each
+  space-separated token into `args` as a separate element. The
+  registry now collapses the first-line tokens into a single
+  space-joined string at `args[1]` before collecting continuation
+  lines as `args[2..]`. So `/backlog push hello world` stores
+  `"hello world"`, `/backlog push\nline 1\nline 2` stores
+  `"line 1\nline 2"`, and the mixed form
+  `/backlog push first line\nsecond line` stores
+  `"first line\nsecond line"`. An empty placeholder at `args[1]`
+  preserves the existing "no description" error path when the user
+  pushes nothing.
 
 ### Removed
 

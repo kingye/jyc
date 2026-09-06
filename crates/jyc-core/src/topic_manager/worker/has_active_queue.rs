@@ -1738,3 +1738,113 @@ mode = "agent"
 
     tm.shutdown().await;
 }
+
+#[cfg(test)]
+mod custom_command_registration {
+    use jyc_types::config::load_config_from_str;
+
+    use crate::command::registry::CommandRegistry;
+
+    /// Build an `AppConfig` from inline TOML so we exercise the real
+    /// `[[commands]]` / `[agents.<name>]` / `[[agents.<name>.commands]]`
+    /// deserialization path. `load_config_from_str` requires a complete
+    /// config (no defaults applied during deserialize), so we include
+    /// the `[ai]` section that production configs always carry.
+    fn cfg(globals: &[&str], per_agent: &[(&str, &[&str])]) -> jyc_types::AppConfig {
+        let mut toml = String::from("[ai]\nmode = \"agent\"\n\n");
+        for g in globals {
+            toml.push_str(&format!(
+                "[[commands]]\nname = \"{g}\"\nuser_prompt = \"{g}\"\n\n"
+            ));
+        }
+        for (agent_name, names) in per_agent {
+            toml.push_str(&format!(
+                "[agents.{agent_name}]\ntemplate = \"{agent_name}\"\n\n"
+            ));
+            for n in *names {
+                toml.push_str(&format!(
+                    "[[agents.{agent_name}.commands]]\nname = \"{n}\"\nuser_prompt = \"{n}\"\n\n"
+                ));
+            }
+        }
+        load_config_from_str(&toml).expect("test config is valid")
+    }
+
+    /// Sanity: helper produces a config with the expected commands.
+    #[test]
+    fn helper_produces_expected_commands() {
+        let cfg = cfg(&["g"], &[("jin", &["j"])]);
+        assert_eq!(cfg.commands.len(), 1);
+        assert_eq!(cfg.commands[0].name, "g");
+        assert_eq!(cfg.agents.len(), 1);
+        let jin = &cfg.agents["jin"];
+        assert_eq!(jin.commands.len(), 1);
+        assert_eq!(jin.commands[0].name, "j");
+    }
+
+    /// Agent topic gets global + its own per-agent commands, never the
+    /// per-agent commands of a different agent. Lookup uses `/name`
+    /// because `CustomCommandHandler::new` prepends a `/` to the
+    /// registered name (the slash that users type at invocation).
+    #[test]
+    fn registers_global_plus_routed_agent_only() {
+        let cfg = cfg(
+            &["global_foo"],
+            &[("jin", &["jin_only", "jin_bar"]), ("mail", &["mail_only"])],
+        );
+
+        let mut reg = CommandRegistry::new();
+        super::register_custom_commands(&cfg, "jin", &mut reg);
+        assert!(reg.get("/global_foo").is_some(), "global /foo visible");
+        assert!(reg.get("/jin_only").is_some(), "jin's /jin_only visible");
+        assert!(reg.get("/jin_bar").is_some(), "jin's /jin_bar visible");
+        assert!(
+            reg.get("/mail_only").is_none(),
+            "mail's /mail_only NOT visible to jin topic"
+        );
+    }
+
+    /// Non-agent topic (empty pattern_name) only sees global commands.
+    #[test]
+    fn registers_only_globals_for_non_agent_topic() {
+        let cfg = cfg(&["global_foo"], &[("jin", &["jin_only"])]);
+
+        let mut reg = CommandRegistry::new();
+        super::register_custom_commands(&cfg, "", &mut reg);
+        assert!(reg.get("/global_foo").is_some());
+        assert!(reg.get("/jin_only").is_none());
+    }
+
+    /// Per-agent `/foo` overwrites global `/foo` for that agent's topics
+    /// (last-registered-wins via `HashMap::insert` in `CommandRegistry::register`).
+    #[test]
+    fn per_agent_command_overwrites_global_with_same_name() {
+        let cfg = cfg(&["foo"], &[("jin", &["foo"])]);
+
+        let mut reg = CommandRegistry::new();
+        super::register_custom_commands(&cfg, "jin", &mut reg);
+        // Single collapsed entry — overwrite succeeded.
+        assert_eq!(reg.list().len(), 1, "same-name collision collapses to 1");
+        assert!(reg.get("/foo").is_some());
+
+        // Non-agent topic still sees the global version.
+        let mut reg = CommandRegistry::new();
+        super::register_custom_commands(&cfg, "", &mut reg);
+        assert_eq!(reg.list().len(), 1);
+        assert!(reg.get("/foo").is_some());
+    }
+
+    /// Unknown agent name (not in config.agents) behaves like a non-agent topic.
+    #[test]
+    fn unknown_agent_falls_back_to_globals_only() {
+        let cfg = cfg(&["global_foo"], &[("jin", &["jin_only"])]);
+
+        let mut reg = CommandRegistry::new();
+        super::register_custom_commands(&cfg, "nonexistent", &mut reg);
+        assert!(reg.get("/global_foo").is_some());
+        assert!(
+            reg.get("/jin_only").is_none(),
+            "per-agent commands do not leak to unrelated agent names"
+        );
+    }
+}

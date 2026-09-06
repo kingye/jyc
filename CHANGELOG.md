@@ -36,6 +36,16 @@
   prints a short usage block listing all subcommands and the `ls`
   alias, matching the convention of other slash commands. Storage path
   and persisted schema are unchanged.
+- **Per-agent `[[commands]]`.** Each `[agents.<name>]` can now declare
+  its own slash commands via `[[agents.<name>.commands]]`. They are
+  registered into the topic's `CommandRegistry` in addition to (not
+  instead of) the top-level `[[commands]]`, so they only fire when the
+  topic is routed to that agent. Useful for agent-specific workflows
+  that don't belong in every other agent's prompt. Within one agent
+  names must be unique; same names across scopes (global vs agent,
+  agent vs agent) are allowed — at runtime the per-agent command
+  overwrites the global one with a `tracing::warn` (last-registered
+  wins via `CommandRegistry::register`).
 
 ### Changed
 

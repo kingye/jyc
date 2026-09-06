@@ -77,7 +77,7 @@ impl TopicManager {
             return;
         }
         self.topic_patterns
-            .write()
+            .lock()
             .await
             .insert(topic_path.to_path_buf(), pattern_name.to_string());
     }
@@ -87,8 +87,9 @@ impl TopicManager {
     /// `.jyc/pattern` on disk and caches the result so subsequent
     /// reads are fast. `None` if neither source has the topic.
     pub async fn topic_pattern(&self, topic_path: &Path) -> Option<String> {
-        if let Some(p) = self.topic_patterns.read().await.get(topic_path) {
-            return Some(p.clone());
+        let cached = self.topic_patterns.lock().await.get(topic_path).cloned();
+        if let Some(p) = cached {
+            return Some(p);
         }
         // Cold-start fallback: read .jyc/pattern from disk and
         // remember it so future reads skip the I/O.
@@ -100,7 +101,7 @@ impl TopicManager {
             .filter(|s| !s.is_empty());
         if let Some(ref p) = from_disk {
             self.topic_patterns
-                .write()
+                .lock()
                 .await
                 .insert(topic_path.to_path_buf(), p.clone());
         }

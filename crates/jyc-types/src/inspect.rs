@@ -15,9 +15,6 @@ pub struct InspectState {
     pub topics: Vec<TopicInfo>,
     /// Aggregate statistics
     pub stats: GlobalStats,
-    /// Available commands (name + description), populated from server-side CommandRegistry
-    #[serde(default)]
-    pub commands: Vec<CommandInfo>,
     /// Available models (name only), populated from agent config providers
     #[serde(default)]
     pub models: Vec<ModelInfo>,
@@ -40,9 +37,6 @@ pub struct InspectOverview {
     pub topics: Vec<TopicSummary>,
     /// Aggregate statistics
     pub stats: GlobalStats,
-    /// Available commands (name + description), populated from server-side CommandRegistry
-    #[serde(default)]
-    pub commands: Vec<CommandInfo>,
     /// Available models (name only), populated from agent config providers
     #[serde(default)]
     pub models: Vec<ModelInfo>,
@@ -139,9 +133,9 @@ pub struct TopicSummary {
     ///
     /// Per-agent wins on name collision, matching runtime dispatch
     /// (`CommandRegistry::register` last-registered-wins). The dashboard
-    /// `/` command popup reads from this field instead of the global
-    /// `InspectOverview.commands` so it reflects what actually
-    /// dispatches when the user picks a topic.
+    /// `/` command popup reads from this field; it is the single source
+    /// of truth for "what commands does this topic have" — same answer
+    /// `/?` produces inside the topic.
     /// `#[serde(default)]` so older server payloads still deserialize
     /// (the popup falls back to the overview-level list in that case).
     #[serde(default)]
@@ -548,7 +542,6 @@ mod tests {
                 messages_processed: 150,
                 errors: 2,
             },
-            commands: vec![],
             models: vec![],
         };
 
@@ -731,7 +724,6 @@ mod tests {
             channels: vec![],
             topics: vec![],
             stats: GlobalStats::default(),
-            commands: vec![],
             models: vec![],
         };
         let json = serde_json::to_string(&overview).unwrap();

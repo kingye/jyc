@@ -24,6 +24,7 @@ use crate::command::info_handler::InfoCommandHandler;
 use crate::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
 use crate::command::model_handler::ModelCommandHandler;
 use crate::command::new_handler::NewCommandHandler;
+use crate::command::per_agent_commands;
 use crate::command::pin_handler::PinCommandHandler;
 use crate::command::registry::CommandRegistry;
 use crate::command::reset_handler::ResetCommandHandler;
@@ -648,14 +649,11 @@ pub(crate) fn register_custom_commands(
     for custom in &cfg.commands {
         command_registry.register(Box::new(CustomCommandHandler::new(custom.clone())));
     }
-    if let Some(agent) = cfg.agents.get(pattern_name) {
-        for custom in &agent.commands {
-            command_registry.register(Box::new(CustomCommandHandler::new(custom.clone())));
-        }
-        agent.commands.clone()
-    } else {
-        Vec::new()
+    let per_agent = per_agent_commands(cfg, pattern_name);
+    for custom in &per_agent {
+        command_registry.register(Box::new(CustomCommandHandler::new(custom.clone())));
     }
+    per_agent
 }
 #[cfg(test)]
 mod has_active_queue;

@@ -420,6 +420,12 @@
 
 ### Removed
 
+- **`InspectOverview.commands` and `InspectState.commands` fields.** These
+  overview-level command lists were only consumed by the TUI's `/` popup,
+  which now reads the per-topic `TopicSummary.commands` / `TopicInfo.commands`
+  field exclusively (the single source of truth, computed server-side).
+  Per-poll payload is slightly smaller; no other consumer was affected. (#710)
+
 - **Feishu Typing→DONE reaction chips.** The emoji reactions the pipe bot
   added to the user's message while processing are gone — the live status
   card (`⏳ 处理中…` → `✅ 完成 · Ns · 工具 M`) now covers both progress and

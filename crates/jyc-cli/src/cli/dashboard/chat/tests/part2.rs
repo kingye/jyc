@@ -116,6 +116,7 @@ fn explorer_move_clamps_and_saturates() {
                 skills: vec![],
                 topic_path: None,
                 cost: None,
+                commands: vec![],
             })
             .collect(),
         ..Default::default()
@@ -159,6 +160,7 @@ fn opening_explorer_snaps_selection_to_chat_topic() {
                 skills: vec![],
                 topic_path: None,
                 cost: None,
+                commands: vec![],
             })
             .collect(),
         ..Default::default()
@@ -201,6 +203,7 @@ fn opening_explorer_keeps_selection_when_chat_topic_not_in_list() {
             skills: vec![],
             topic_path: None,
             cost: None,
+            commands: vec![],
         }],
         ..Default::default()
     });
@@ -288,6 +291,7 @@ async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
                 skills: vec![],
                 topic_path: None,
                 cost: None,
+                commands: vec![],
             },
             jyc_types::TopicSummary {
                 name: "other".to_string(),
@@ -308,6 +312,7 @@ async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
                 skills: vec![],
                 topic_path: None,
                 cost: None,
+                commands: vec![],
             },
         ],
         ..Default::default()
@@ -462,6 +467,7 @@ fn explorer_selected_row_fills_full_width() {
             skills: vec![],
             topic_path: None,
             cost: None,
+            commands: vec![],
         }],
         ..Default::default()
     });
@@ -572,6 +578,7 @@ fn files_section_colors_uncommitted_paths_yellow() {
             skills: vec![],
             topic_path: None,
             cost: None,
+            commands: vec![],
         }],
         ..Default::default()
     });
@@ -739,6 +746,7 @@ fn info_scroll_is_clamped_after_render() {
             skills: vec![],
             topic_path: None,
             cost: None,
+            commands: vec![],
         }],
         ..Default::default()
     });

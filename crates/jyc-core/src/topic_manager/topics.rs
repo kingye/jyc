@@ -559,6 +559,9 @@ impl TopicManager {
                 branch: branch_for_topic_path(&topic_path),
                 changed_files: changed_files_for_topic_path(&topic_path),
                 cost,
+                // Filled by InspectServer from build_overview_state /
+                // build_state using the topic's pattern → per-agent commands.
+                commands: vec![],
             });
         }
 

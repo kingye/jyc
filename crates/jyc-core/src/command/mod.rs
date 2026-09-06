@@ -119,13 +119,36 @@ pub fn all_commands() -> Vec<CommandInfo> {
     ]
 }
 
-/// Returns built-in commands plus user-defined `[[commands]]` from config.
+/// Returns built-in commands plus user-defined globals (`[[commands]]`)
+/// and the topic's per-agent commands (`[[agents.<name>.commands]]`).
 ///
 /// Used by the `/?` help output and the dashboard command popup so both
 /// surfaces list custom commands alongside the built-ins.
-pub fn all_commands_with(custom: &[CustomCommand]) -> Vec<CommandInfo> {
-    let mut commands = all_commands();
-    commands.extend(custom.iter().map(|c| CommandInfo {
+///
+/// Per-agent wins on name collision (matches runtime semantics —
+/// `CommandRegistry::register` overwrites on collision with a `tracing::warn`).
+/// The popup must show the name the registry actually dispatches on.
+pub fn all_commands_with(
+    global: &[CustomCommand],
+    per_agent: &[CustomCommand],
+) -> Vec<CommandInfo> {
+    let mut by_name: std::collections::HashMap<String, CommandInfo> = all_commands()
+        .into_iter()
+        .map(|c| (c.name.clone(), c))
+        .collect();
+    for c in global {
+        let info = custom_to_info(c);
+        by_name.insert(info.name.clone(), info);
+    }
+    for c in per_agent {
+        let info = custom_to_info(c);
+        by_name.insert(info.name.clone(), info);
+    }
+    by_name.into_values().collect()
+}
+
+fn custom_to_info(c: &CustomCommand) -> CommandInfo {
+    CommandInfo {
         // Match CustomCommandHandler::new()'s normalization so the popup shows
         // the name the registry actually dispatches on.
         name: format!("/{}", c.name.trim().trim_start_matches('/').to_lowercase()),
@@ -138,8 +161,7 @@ pub fn all_commands_with(custom: &[CustomCommand]) -> Vec<CommandInfo> {
         // (no agent run, no `ProcessingStarted`); prompt commands inject
         // `user_prompt` via `append_body` and continue into the agent.
         continues_to_agent: c.shell.is_none(),
-    }));
-    commands
+    }
 }
 
 #[cfg(test)]
@@ -229,29 +251,28 @@ mod tests {
     #[test]
     fn test_all_commands_with_appends_custom() {
         let builtin_count = all_commands().len();
-        let commands = all_commands_with(&[custom("review", "Review the PR")]);
+        let commands = all_commands_with(&[custom("review", "Review the PR")], &[]);
 
         assert_eq!(commands.len(), builtin_count + 1);
-        let last = commands.last().unwrap();
-        assert_eq!(last.name, "/review");
-        assert_eq!(last.description, "Review the PR");
+        let entry = commands.iter().find(|c| c.name == "/review").unwrap();
+        assert_eq!(entry.description, "Review the PR");
     }
 
     #[test]
     fn test_all_commands_with_normalizes_slash() {
-        let commands = all_commands_with(&[custom("/review", "d")]);
+        let commands = all_commands_with(&[custom("/review", "d")], &[]);
         assert!(commands.iter().any(|c| c.name == "/review"));
         assert!(!commands.iter().any(|c| c.name == "//review"));
     }
 
     #[test]
     fn test_all_commands_with_empty_matches_builtin() {
-        assert_eq!(all_commands_with(&[]).len(), all_commands().len());
+        assert_eq!(all_commands_with(&[], &[]).len(), all_commands().len());
     }
 
     #[test]
     fn test_all_commands_with_falls_back_on_empty_description() {
-        let commands = all_commands_with(&[custom("review", "")]);
+        let commands = all_commands_with(&[custom("review", "")], &[]);
         let entry = commands.iter().find(|c| c.name == "/review").unwrap();
         assert_eq!(entry.description, "(no description)");
     }
@@ -260,9 +281,37 @@ mod tests {
     /// lowercase (see CustomCommandHandler::new).
     #[test]
     fn test_all_commands_with_lowercases_name() {
-        let commands = all_commands_with(&[custom("Review", "d")]);
+        let commands = all_commands_with(&[custom("Review", "d")], &[]);
         assert!(commands.iter().any(|c| c.name == "/review"));
         assert!(!commands.iter().any(|c| c.name == "/Review"));
+    }
+
+    /// Per-agent commands are merged alongside globals so the topic's
+    /// `/?` and command popup reflect what actually dispatches at runtime.
+    #[test]
+    fn test_all_commands_with_includes_per_agent() {
+        let builtin_count = all_commands().len();
+        let commands = all_commands_with(
+            &[custom("review", "global review")],
+            &[custom("deploy", "per-agent deploy")],
+        );
+        assert_eq!(commands.len(), builtin_count + 2);
+        assert!(commands.iter().any(|c| c.name == "/review"));
+        assert!(commands.iter().any(|c| c.name == "/deploy"));
+    }
+
+    /// Per-agent wins on name collision so the popup shows what the
+    /// registry dispatches on (matches `CommandRegistry::register`
+    /// overwrite semantics).
+    #[test]
+    fn test_all_commands_with_per_agent_overwrites_global() {
+        let commands = all_commands_with(
+            &[custom("review", "global")],
+            &[custom("review", "per-agent")],
+        );
+        let entries: Vec<&CommandInfo> = commands.iter().filter(|c| c.name == "/review").collect();
+        assert_eq!(entries.len(), 1, "duplicate /review");
+        assert_eq!(entries[0].description, "per-agent");
     }
 
     /// `channels.rs` uses `continues_to_agent` to decide whether to spawn a
@@ -288,7 +337,7 @@ mod tests {
     /// `append_body` and continue into the agent run.
     #[test]
     fn test_custom_prompt_command_continues_to_agent() {
-        let commands = all_commands_with(&[custom("review", "Review the PR")]);
+        let commands = all_commands_with(&[custom("review", "Review the PR")], &[]);
         let entry = commands.iter().find(|c| c.name == "/review").unwrap();
         assert!(entry.continues_to_agent);
     }
@@ -306,7 +355,7 @@ mod tests {
             user_prompt: None,
             shell: Some(vec!["git".into(), "log".into()]),
         };
-        let commands = all_commands_with(&[cmd]);
+        let commands = all_commands_with(&[cmd], &[]);
         let entry = commands.iter().find(|c| c.name == "/gitlog").unwrap();
         assert!(!entry.continues_to_agent);
     }

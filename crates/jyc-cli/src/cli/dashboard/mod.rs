@@ -208,6 +208,7 @@ impl App {
             None => 0,
         };
         self.table_state.select(Some(i));
+        self.sync_commands_for_selection();
     }
 
     fn prev_topic(&mut self) {
@@ -226,6 +227,30 @@ impl App {
             None => 0,
         };
         self.table_state.select(Some(i));
+        self.sync_commands_for_selection();
+    }
+
+    /// Refresh `chat.commands` to match the currently selected topic, so
+    /// the `/` popup shows built-ins + globals + per-agent commands for
+    /// the topic the user is looking at. Called whenever `table_state`'s
+    /// selection changes (initial auto-select + ↑/↓ navigation) and on
+    /// each overview poll that may have replaced the topic list.
+    ///
+    /// Backward-compat: older servers don't populate `TopicSummary.commands`
+    /// (serde defaults it to `vec![]`). When the topic-level list is empty
+    /// we fall back to the overview-level globals so the popup is never
+    /// silently empty in a mixed-version deployment.
+    fn sync_commands_for_selection(&mut self) {
+        let state = self.state.as_ref();
+        let topic_commands = self
+            .table_state
+            .selected()
+            .and_then(|i| state.and_then(|s| s.topics.get(i)))
+            .map(|t| t.commands.clone())
+            .filter(|cmds| !cmds.is_empty());
+        self.chat.commands = topic_commands
+            .or_else(|| state.map(|s| s.commands.clone()))
+            .unwrap_or_default();
     }
 
     fn handle_ws_event(&mut self, event: WsEvent) {
@@ -584,41 +609,46 @@ pub async fn run(
                         }
 
                         app.state = Some(overview);
-                        if let Some(ref s) = app.state {
-                            // Auto-select the first topic on initial load so the
-                            // activity pane is populated immediately via the existing
-                            // hydrate + ensure_overview_ws paths. The user can still
-                            // navigate to a different topic (↑/↓).
-                            if app.table_state.selected().is_none() && !s.topics.is_empty() {
-                                app.table_state.select(Some(0));
-                            }
-                            app.chat.commands = s.commands.clone();
-                            app.chat.models = s.models.clone();
+                        // Auto-select the first topic on initial load so the
+                        // activity pane is populated immediately via the existing
+                        // hydrate + ensure_overview_ws paths. The user can still
+                        // navigate to a different topic (↑/↓).
+                        if app.table_state.selected().is_none()
+                            && !app.state.as_ref().is_some_and(|s| s.topics.is_empty())
+                        {
+                            app.table_state.select(Some(0));
+                        }
+                        // Refresh chat.commands to reflect the (possibly new)
+                        // selected topic's built-ins + globals + per-agent
+                        // commands. Always sync — even when no auto-select
+                        // ran — so topic-list updates refresh the popup too.
+                        app.sync_commands_for_selection();
+                        if let Some(state) = app.state.as_ref() {
+                            app.chat.models = state.models.clone();
+                        }
 
-                            // Hydrate the live buffers when the table-selected
-                            // topic changes (so the overview's activity pane
-                            // shows recent entries without requiring the user
-                            // to open chat first). Skip if we're in chat mode
-                            // — the open() flow already triggered hydrate.
-                            if !app.chat.visible {
-                                let selected = app
-                                    .table_state
-                                    .selected()
-                                    .and_then(|idx| s.topics.get(idx))
-                                    .map(|t| (t.channel.clone(), t.name.clone()));
-                                if let Some((channel, topic)) = selected {
-                                    let key = (channel.clone(), topic.clone());
-                                    let needs_hydrate =
-                                        app.chat.last_hydrated_key.as_ref() != Some(&key);
-                                    if needs_hydrate {
-                                        app.chat.last_hydrated_key = Some(key);
-                                    }
-                                    let _ = s; // drop the immutable borrow on app.state
-                                    if needs_hydrate {
-                                        hydrate_live(&client, &mut app, &channel, &topic).await;
-                                    }
-                                    ensure_overview_ws(&mut app, &args.addr, &channel, &topic);
+                        // Hydrate the live buffers when the table-selected
+                        // topic changes (so the overview's activity pane
+                        // shows recent entries without requiring the user
+                        // to open chat first). Skip if we're in chat mode
+                        // — the open() flow already triggered hydrate.
+                        if !app.chat.visible {
+                            let selected = app
+                                .table_state
+                                .selected()
+                                .and_then(|idx| app.state.as_ref().and_then(|s| s.topics.get(idx)))
+                                .map(|t| (t.channel.clone(), t.name.clone()));
+                            if let Some((channel, topic)) = selected {
+                                let key = (channel.clone(), topic.clone());
+                                let needs_hydrate =
+                                    app.chat.last_hydrated_key.as_ref() != Some(&key);
+                                if needs_hydrate {
+                                    app.chat.last_hydrated_key = Some(key);
                                 }
+                                if needs_hydrate {
+                                    hydrate_live(&client, &mut app, &channel, &topic).await;
+                                }
+                                ensure_overview_ws(&mut app, &args.addr, &channel, &topic);
                             }
                         }
                         app.error = None;
@@ -1942,6 +1972,7 @@ mod tests {
                     skills: vec![],
                     topic_path: None,
                     cost: None,
+                    commands: vec![],
                 })
                 .collect(),
             stats: Default::default(),

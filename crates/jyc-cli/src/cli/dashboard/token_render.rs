@@ -159,6 +159,7 @@ mod tests {
             skills: vec![],
             topic_path: None,
             cost: None,
+            commands: vec![],
         }
     }
 

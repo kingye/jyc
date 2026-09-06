@@ -157,7 +157,11 @@ pub(crate) async fn process_message(
     // overwrites on collision with a `tracing::warn`, so a per-agent
     // command with the same name as a global one wins for that
     // agent's topics. Non-agent topics see only the global set.
-    register_custom_commands(
+    // `register_custom_commands` returns the per-agent slice it
+    // registered, so the cmd_context below doesn't have to do the same
+    // lookup a second time. Clone it so the inline-slash-command path
+    // (further down in this function) can reuse the same value.
+    let per_agent_commands = register_custom_commands(
         &config.load(),
         &item.pattern_match.pattern_name,
         &mut command_registry,
@@ -172,6 +176,7 @@ pub(crate) async fn process_message(
         agent: Some(agent.clone()),
         template_dirs: template_dirs.clone(),
         config_path: topic_manager.config_path.clone(),
+        per_agent_commands: per_agent_commands.clone(),
     };
 
     let cmd_output = command_registry
@@ -361,6 +366,7 @@ pub(crate) async fn process_message(
                             agent: Some(agent.clone()),
                             template_dirs: template_dirs.clone(),
                             config_path: topic_manager.config_path.clone(),
+                            per_agent_commands: per_agent_commands.clone(),
                         };
                         match command_registry.process_commands(trimmed, &cmd_ctx).await {
                             Ok(output) => {
@@ -624,7 +630,8 @@ pub(crate) async fn read_skills(topic_path: &Path) -> Vec<String> {
     }
 }
 
-/// Register user-defined slash commands into the topic's `CommandRegistry`.
+/// Register user-defined slash commands into the topic's `CommandRegistry`,
+/// and return the per-agent slice that was registered.
 ///
 /// Order: globals first, then per-agent commands for the agent this topic
 /// is routed to. `CommandRegistry::register` overwrites on collision with
@@ -632,12 +639,12 @@ pub(crate) async fn read_skills(topic_path: &Path) -> Vec<String> {
 /// global one wins for that agent's topics (and emits a visible warn at
 /// every topic start — the only signal that an overwrite happened).
 /// `pattern_name` is empty for non-agent topics; in that case only
-/// globals are registered.
+/// globals are registered and `Vec::new()` is returned.
 pub(crate) fn register_custom_commands(
     cfg: &jyc_types::AppConfig,
     pattern_name: &str,
     command_registry: &mut CommandRegistry,
-) {
+) -> Vec<jyc_types::CustomCommand> {
     for custom in &cfg.commands {
         command_registry.register(Box::new(CustomCommandHandler::new(custom.clone())));
     }
@@ -645,6 +652,9 @@ pub(crate) fn register_custom_commands(
         for custom in &agent.commands {
             command_registry.register(Box::new(CustomCommandHandler::new(custom.clone())));
         }
+        agent.commands.clone()
+    } else {
+        Vec::new()
     }
 }
 #[cfg(test)]

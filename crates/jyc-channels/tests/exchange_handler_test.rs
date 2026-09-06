@@ -56,6 +56,7 @@ fn test_context(topic_path: &Path, args: &[&str]) -> CommandContext {
         agent: None,
         template_dirs: PathBuf::from("/tmp/test/templates").into(),
         config_path: None,
+        per_agent_commands: vec![],
     }
 }
 

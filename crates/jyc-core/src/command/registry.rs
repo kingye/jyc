@@ -100,12 +100,14 @@ impl CommandRegistry {
                         if handler.collect_subsequent_lines() {
                             match args.len() {
                                 0 => {
-                                    // No subcommand on the line — this
-                                    // shouldn't happen given the dispatch
-                                    // check at line 81, but stay defensive.
-                                }
-                                1 => {
-                                    args.push(String::new());
+                                    // No subcommand on the command line.
+                                    // The handler should guard against this
+                                    // and return a "missing subcommand" error
+                                    // before indexing `args[0]` — see
+                                    // `BacklogCommandHandler::execute` for an
+                                    // example. We do NOT push a placeholder
+                                    // here because that would change `args[0]`
+                                    // and break subcommand dispatch.
                                 }
                                 _ => {
                                     let first_line = args[1..].join(" ");

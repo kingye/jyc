@@ -1520,17 +1520,16 @@ pub(crate) fn spawn_feishu_adapter(
 
             let options = jyc_types::InboundAdapterOptions {
                 on_message: Box::new(move |message| {
-                    let config_for_pipe = config_for_spawn.clone();
+                    let config_for_task = config_for_spawn.clone();
                     let topic_chat = topic_chat.clone();
                     let topic_starts = topic_starts.clone();
                     let progress_cards = progress_cards.clone();
                     let feishu_client = feishu_client.clone();
                     let channel_name_self = channel_name.clone();
                     let routers = routers.clone();
-                    let config_for_check = config_for_spawn.clone();
                     tokio::spawn(async move {
-                        let patterns = config_for_pipe
-                            .load()
+                        let cfg = config_for_task.load();
+                        let patterns = cfg
                             .channels
                             .get(&channel_name_self)
                             .and_then(|c| c.patterns.clone())
@@ -1595,7 +1594,7 @@ pub(crate) fn spawn_feishu_adapter(
                             .split_whitespace()
                             .next()
                             .unwrap_or("");
-                        let custom = config_for_check.load().commands.clone();
+                        let custom = cfg.commands.clone();
                         let continues_to_agent = jyc_core::command::all_commands_with(&custom)
                             .iter()
                             .find(|c| c.name == first_token)

@@ -163,7 +163,11 @@ impl CommandHandler for BacklogCommandHandler {
                 // - args[2..] = continuation lines, one element per line
                 let description = {
                     let first = args.get(1).map(|s| s.as_str()).unwrap_or("");
-                    let rest = args[2..].join("\n");
+                    // `args.get(2..)` returns `None` when args has fewer
+                    // than 2 elements (e.g. `/backlog push` with no
+                    // description); without this, `args[2..]` would panic
+                    // even though `args.get(1)` is safe.
+                    let rest = args.get(2..).map(|s| s.join("\n")).unwrap_or_default();
                     match (first.is_empty(), rest.is_empty()) {
                         (true, true) => String::new(),
                         (true, false) => rest,

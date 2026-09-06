@@ -22,7 +22,12 @@ pub use model_handler::list_available_models;
 
 use jyc_types::{CommandInfo, CustomCommand};
 
-/// Returns the static list of all built-in commands with descriptions.
+/// Returns the static list of built-in commands with descriptions.
+///
+/// This is the TUI's legacy fallback for older servers that don't
+/// populate `topic.commands` in the inspect API. The dashboard uses
+/// it to show at least the built-ins when the popup would otherwise
+/// be empty.
 ///
 /// IMPORTANT: This list must be kept in sync with the commands actually
 /// registered in `CommandRegistry` (see `topic_manager.rs`). If you add

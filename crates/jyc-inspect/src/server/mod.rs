@@ -13,7 +13,7 @@ use crate::scoped_ws::ScopedWsHandler;
 use crate::topic_proxy::TopicProxyHandler;
 use jyc_core::activity_log_store::ActivityLogStore;
 use jyc_core::command::list_available_models;
-use jyc_core::command::{all_commands, all_commands_with, per_agent_commands};
+use jyc_core::command::{all_commands_with, per_agent_commands};
 use jyc_core::metrics::SharedHealthStats;
 use jyc_core::topic_manager::TopicManager;
 use jyc_types::AppConfig;
@@ -293,11 +293,6 @@ impl InspectServer {
             channels,
             topics: summaries,
             stats,
-            commands: context
-                .config
-                .as_ref()
-                .map(|cfg| all_commands_with(&cfg.load().commands, &[]))
-                .unwrap_or_else(all_commands),
             models: context
                 .config
                 .as_ref()
@@ -355,11 +350,6 @@ impl InspectServer {
             channels,
             topics,
             stats,
-            commands: context
-                .config
-                .as_ref()
-                .map(|cfg| all_commands_with(&cfg.load().commands, &[]))
-                .unwrap_or_else(all_commands),
             models: context
                 .config
                 .as_ref()

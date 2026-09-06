@@ -371,6 +371,18 @@
   `"first line\nsecond line"`. An empty placeholder at `args[1]`
   preserves the existing "no description" error path when the user
   pushes nothing.
+- **`/backlog pop` regression: registry placeholder broke index parsing.**
+  The new args-builder that pushes an empty placeholder at `args[1]`
+  (see previous entry) inadvertently changed the index slot for `pop`
+  and `rm` from "absent" (None) to "present but empty" (Some("")).
+  `parse_n` then returned `Err("invalid index \"\"")` instead of
+  `Ok(None)`, so `/backlog pop` failed with a bogus index error even
+  though the spec is "`/backlog pop` defaults to popping item 1".
+  `parse_n` now treats both missing and empty slots as `Ok(None)` —
+  the natural "no value provided" semantics — so `pop` defaults to
+  item 1 again and `rm` returns the existing "missing index" error.
+  New tests cover both the registry→handler end-to-end path and the
+  handler-level index parsing.
 
 ### Removed
 

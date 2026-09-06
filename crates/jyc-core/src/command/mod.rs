@@ -128,6 +128,12 @@ pub fn all_commands() -> Vec<CommandInfo> {
 /// Per-agent wins on name collision (matches runtime semantics —
 /// `CommandRegistry::register` overwrites on collision with a `tracing::warn`).
 /// The popup must show the name the registry actually dispatches on.
+///
+/// Output is sorted by name so repeated calls return the same order. The
+/// TUI's `/` popup stores selection by index and re-filters against this
+/// list every render; if ordering were unstable (e.g., a `HashMap`-backed
+/// dedup), the overview poll (500 ms) would replace `app.chat.commands`
+/// with a freshly-shuffled vec and the popup would appear to flicker.
 pub fn all_commands_with(
     global: &[CustomCommand],
     per_agent: &[CustomCommand],
@@ -144,7 +150,9 @@ pub fn all_commands_with(
         let info = custom_to_info(c);
         by_name.insert(info.name.clone(), info);
     }
-    by_name.into_values().collect()
+    let mut sorted: Vec<CommandInfo> = by_name.into_values().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    sorted
 }
 
 fn custom_to_info(c: &CustomCommand) -> CommandInfo {
@@ -312,6 +320,35 @@ mod tests {
         let entries: Vec<&CommandInfo> = commands.iter().filter(|c| c.name == "/review").collect();
         assert_eq!(entries.len(), 1, "duplicate /review");
         assert_eq!(entries[0].description, "per-agent");
+    }
+
+    /// `all_commands_with` must return the same order on repeated calls.
+    /// The TUI `/` popup stores selection by index and re-filters this
+    /// list every render. If ordering were unstable (e.g., a `HashMap`-
+    /// backed dedup without a final sort), the overview poll (500 ms)
+    /// would replace `app.chat.commands` with a freshly-shuffled vec
+    /// and the popup would appear to flicker — selection jumps, list
+    /// reshuffles, navigation breaks. The fix sorts the final vec by
+    /// name; this test pins that contract.
+    #[test]
+    fn test_all_commands_with_is_stably_ordered() {
+        let a = all_commands_with(
+            &[custom("review", "r"), custom("audit", "a")],
+            &[custom("deploy", "d"), custom("backup", "b")],
+        );
+        let b = all_commands_with(
+            &[custom("review", "r"), custom("audit", "a")],
+            &[custom("deploy", "d"), custom("backup", "b")],
+        );
+        let names_a: Vec<&str> = a.iter().map(|c| c.name.as_str()).collect();
+        let names_b: Vec<&str> = b.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names_a, names_b,
+            "ordering must be deterministic across calls"
+        );
+        let mut sorted = names_a.clone();
+        sorted.sort();
+        assert_eq!(names_a, sorted, "output must be in ascending name order");
     }
 
     /// `channels.rs` uses `continues_to_agent` to decide whether to spawn a

@@ -32,66 +32,89 @@ pub fn all_commands() -> Vec<CommandInfo> {
         CommandInfo {
             name: "/model".into(),
             description: "Switch AI model for this topic".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/plan".into(),
             description: "Switch to plan mode (read-only)".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/build".into(),
             description: "Switch to build mode (full execution)".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/reset".into(),
             description: "Reset session, keep chat history".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/new".into(),
             description: "Reset session and clear chat history".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/close".into(),
             description: "Close and delete this topic (requires --confirm or -y)".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/template".into(),
             description: "Apply or re-apply topic template".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/cancel".into(),
             description: "Cancel current AI processing".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/?".into(),
             description: "Show available commands".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/pin".into(),
             description: "Pin this ad-hoc websocket topic to config.toml".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/unpin".into(),
             description: "Remove pinned topic configuration from config.toml".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/thinking".into(),
             description: "Show or hide AI thinking/reasoning content".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/exchange".into(),
             description: "Show shareable URLs for this topic's published files".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/context".into(),
             description: "View or change the context strategy / debug-dump wire payload".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/info".into(),
             description: "Show topic info (mode, model, tokens, cost, files)".into(),
+            ..Default::default()
         },
         CommandInfo {
             name: "/backlog".into(),
+            // `/backlog pop` injects the popped text into the agent's
+            // next turn via `append_body`, so it continues into an agent
+            // run and needs a progress indicator on piped channels
+            // (feishu). The other subcommands (`push`/`list`/`rm`) reply
+            // instantly — but the flag is set at the command level, not
+            // per-subcommand, because the channels.rs watcher spawns
+            // before dispatch and cannot inspect the subcommand.
             description: "Save and replay user messages (push|list|pop|rm)".into(),
+            continues_to_agent: true,
         },
     ]
 }
@@ -111,6 +134,10 @@ pub fn all_commands_with(custom: &[CustomCommand]) -> Vec<CommandInfo> {
         } else {
             c.description.clone()
         },
+        // `shell` commands run an argv directly and reply synchronously
+        // (no agent run, no `ProcessingStarted`); prompt commands inject
+        // `user_prompt` via `append_body` and continue into the agent.
+        continues_to_agent: c.shell.is_none(),
     }));
     commands
 }
@@ -236,5 +263,51 @@ mod tests {
         let commands = all_commands_with(&[custom("Review", "d")]);
         assert!(commands.iter().any(|c| c.name == "/review"));
         assert!(!commands.iter().any(|c| c.name == "/Review"));
+    }
+
+    /// `channels.rs` uses `continues_to_agent` to decide whether to spawn a
+    /// progress watcher on piped channels (feishu). Today only `/backlog`
+    /// continues into the agent (via `append_body` on `pop`); every other
+    /// built-in replies instantly. If this drifts, the watcher either
+    /// sleeps for nothing (false negative) or misses a real agent run
+    /// (false positive — user-visible bug).
+    #[test]
+    fn test_only_backlog_continues_to_agent_in_builtins() {
+        let commands = all_commands();
+        for c in &commands {
+            let expected = c.name == "/backlog";
+            assert_eq!(
+                c.continues_to_agent, expected,
+                "command {} has continues_to_agent={}, expected {}",
+                c.name, c.continues_to_agent, expected,
+            );
+        }
+    }
+
+    /// Prompt-injection custom commands inject `user_prompt` via
+    /// `append_body` and continue into the agent run.
+    #[test]
+    fn test_custom_prompt_command_continues_to_agent() {
+        let commands = all_commands_with(&[custom("review", "Review the PR")]);
+        let entry = commands.iter().find(|c| c.name == "/review").unwrap();
+        assert!(entry.continues_to_agent);
+    }
+
+    /// Shell custom commands reply synchronously with stdout/stderr and
+    /// never reach the agent — the progress watcher would sleep until
+    /// MAX_LIFETIME for nothing.
+    #[test]
+    fn test_custom_shell_command_does_not_continue_to_agent() {
+        let cmd = CustomCommand {
+            name: "gitlog".into(),
+            description: "git log".into(),
+            mode: None,
+            skills: None,
+            user_prompt: None,
+            shell: Some(vec!["git".into(), "log".into()]),
+        };
+        let commands = all_commands_with(&[cmd]);
+        let entry = commands.iter().find(|c| c.name == "/gitlog").unwrap();
+        assert!(!entry.continues_to_agent);
     }
 }

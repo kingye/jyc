@@ -6,10 +6,15 @@
 //! {"text":"..."}
 //! ```
 //!
-//! Each item's `text` is a free-form user message (may be multi-line — the
-//! registry collects continuation lines into one newline-separated string).
-//! Items are referenced by 1-based position, so `pop 2` removes the second
-//! entry and `rm 2` does the same without injecting into the next agent turn.
+//! Each item's `text` is a free-form user message. After the command
+//! name and subcommand, the registry collapses the rest of the
+//! command line into a single first-line string at `args[1]` (so
+//! `/backlog push hello world` stores "hello world"), and continuation
+//! lines (until the first blank line) become `args[2..]`. The push
+//! handler joins the first-line content and continuation lines with
+//! `\n` only when both are present. Items are referenced by 1-based
+//! position, so `pop 2` removes the second entry and `rm 2` does the
+//! same without injecting into the next agent turn.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -124,8 +129,9 @@ impl CommandHandler for BacklogCommandHandler {
     }
 
     /// `/backlog push` is followed by a free-form multi-line description.
-    /// The registry collects continuation lines into `args[1..]` and joins
-    /// them with `\n` when handling `push`.
+    /// After parsing, `args[1]` holds the space-joined first-line content
+    /// (empty string if none was provided) and `args[2..]` holds
+    /// continuation lines, one per element.
     fn collect_subsequent_lines(&self) -> bool {
         true
     }
@@ -151,10 +157,24 @@ impl CommandHandler for BacklogCommandHandler {
 
         match args[0].as_str() {
             "push" => {
-                // `args[1..]` are continuation lines collected by the registry,
-                // one line per element. Reassemble them with `\n` so multi-line
-                // descriptions survive the round-trip.
-                let description = args[1..].join("\n");
+                // After registry parsing:
+                // - args[0] = "push"
+                // - args[1] = space-joined first-line content (or "" if none)
+                // - args[2..] = continuation lines, one element per line
+                let description = {
+                    let first = args.get(1).map(|s| s.as_str()).unwrap_or("");
+                    // `args.get(2..)` returns `None` when args has fewer
+                    // than 2 elements (e.g. `/backlog push` with no
+                    // description); without this, `args[2..]` would panic
+                    // even though `args.get(1)` is safe.
+                    let rest = args.get(2..).map(|s| s.join("\n")).unwrap_or_default();
+                    match (first.is_empty(), rest.is_empty()) {
+                        (true, true) => String::new(),
+                        (true, false) => rest,
+                        (false, true) => first.to_string(),
+                        (false, false) => format!("{first}\n{rest}"),
+                    }
+                };
                 if description.trim().is_empty() {
                     return Ok(CommandResult {
                         success: false,
@@ -347,18 +367,17 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn push_joins_space_separated_tokens_with_newlines() {
+    async fn push_space_separated_command_line_joins_with_space() {
         let dir = fresh_topic();
         let h = BacklogCommandHandler::new();
 
-        // When all content tokens arrive on a single command line, the
-        // registry cannot tell them apart from continuation lines (it
-        // just pushes both into `args` as one element per token). The
-        // handler therefore joins them with `\n` for consistency with
-        // multi-line push. Users who want a single-line description
-        // across words can either use continuation lines or push one
-        // word at a time.
-        let r = run(&h, dir.path(), &["push", "hello", "world"]).await;
+        // This test calls the handler directly (bypassing the registry),
+        // so it passes args in the post-collapse shape: `args[1]` is the
+        // space-joined first-line string that the registry would have
+        // produced from `/backlog push hello world`. The collapse itself
+        // is covered by `test_collect_subsequent_lines_collapses_first_line`
+        // in `registry.rs`.
+        let r = run(&h, dir.path(), &["push", "hello world"]).await;
         assert!(r.success, "{:?}", r.error);
         assert_eq!(r.message, "Backlog: pushed item 1");
 
@@ -366,19 +385,20 @@ mode = "agent"
             BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
                 .unwrap();
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].text, "hello\nworld");
+        assert_eq!(items[0].text, "hello world");
     }
 
     #[tokio::test]
-    async fn push_multi_line_joins_continuation_args_with_newlines() {
+    async fn push_multi_line_continuation_lines_join_with_newlines() {
         let dir = fresh_topic();
         let h = BacklogCommandHandler::new();
 
-        // The registry collects each continuation line as a separate arg.
+        // Pure continuation form: args = ["push", "", "line one", ...]
+        // (the empty placeholder at args[1] means "no first-line content").
         let r = run(
             &h,
             dir.path(),
-            &["push", "line one", "line two", "line three"],
+            &["push", "", "line one", "line two", "line three"],
         )
         .await;
         assert!(r.success, "{:?}", r.error);
@@ -388,6 +408,29 @@ mode = "agent"
                 .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "line one\nline two\nline three");
+    }
+
+    #[tokio::test]
+    async fn push_first_line_plus_continuation_joins_with_newlines() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+
+        // Mixed form: first-line content on the command line, then
+        // continuation lines. The first-line stays space-joined; the
+        // boundary between first-line and continuation uses `\n`.
+        let r = run(
+            &h,
+            dir.path(),
+            &["push", "first line", "second line", "third line"],
+        )
+        .await;
+        assert!(r.success, "{:?}", r.error);
+
+        let items =
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+                .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, "first line\nsecond line\nthird line");
     }
 
     #[tokio::test]

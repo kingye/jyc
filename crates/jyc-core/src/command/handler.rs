@@ -101,10 +101,19 @@ pub trait CommandHandler: Send + Sync {
     /// Execute the command with the given context.
     async fn execute(&self, context: CommandContext) -> Result<CommandResult>;
 
-    /// If `true`, the registry collects subsequent non-blank lines into
-    /// `args[1..]` (one line per element) before dispatching to the
-    /// handler. Collection stops at the first blank line so a body that
-    /// follows the command block is still passed to the agent.
+    /// If `true`, the registry will:
+    ///
+    /// 1. Collapse all tokens after the subcommand on the command line
+    ///    into a single string at `args[1]` (space-joined). E.g.
+    ///    `/foo bar baz qux` becomes `args = ["bar", "baz qux"]`. This
+    ///    lets the handler distinguish command-line content from
+    ///    continuation lines.
+    /// 2. Push an empty placeholder at `args[1]` when there is no
+    ///    first-line content (`/foo` alone), so handlers can index
+    ///    `args[1]` uniformly.
+    /// 3. Collect continuation lines (non-blank lines after the command)
+    ///    as `args[2..]`, one element per line, stopping at the first
+    ///    blank line.
     ///
     /// **Caveat**: lines starting with `/` are also collected as
     /// description text — they are NOT dispatched as commands. Users
@@ -114,7 +123,8 @@ pub trait CommandHandler: Send + Sync {
     ///
     /// Used by commands whose first argument is free-form multi-line text
     /// (e.g. `/backlog push <description>`). Default `false` preserves
-    /// the existing single-line `args` semantics.
+    /// the existing single-line `args` semantics where each
+    /// space-separated token is a separate `args` element.
     fn collect_subsequent_lines(&self) -> bool {
         false
     }

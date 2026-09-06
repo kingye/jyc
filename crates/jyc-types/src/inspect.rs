@@ -412,12 +412,20 @@ pub struct GlobalStats {
 }
 
 /// Information about an available command (name + description).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CommandInfo {
     /// Command name including slash (e.g., "/model")
     pub name: String,
     /// Short description (e.g., "Switch AI model for this topic")
     pub description: String,
+    /// True if this command continues into an agent run (e.g. it injects
+    /// a prompt via `CommandResult::append_body`). False for instant-reply
+    /// commands that never reach the agent — those need no progress
+    /// indicator. `serde(default)` so old payloads without the field
+    /// deserialize as `false`, preserving the pre-field behaviour where
+    /// the channels.rs watcher skipped every registered command.
+    #[serde(default)]
+    pub continues_to_agent: bool,
 }
 
 /// Information about an available model (name only, for model picker UI).

@@ -1,126 +1,61 @@
-#!/bin/bash
-set -e
+#!/usr/bin/bash
+# JYC deploy: download nightly, swap binary in place, stop old daemon, start new.
+#
+# Self-bootstrapping: this script is designed to be invoked from inside the
+# running jyc (e.g., as a /deploy custom command). When `jyc stop` SIGTERMs
+# the parent (running jyc), this script keeps running because it's a separate
+# process; once the parent exits, we start the new jyc detached via nohup.
+#
+# Must be run from the directory holding the jyc binary (the symlink
+# /usr/local/bin/jyc should point here).
+set -euo pipefail
 
-# Ignore hangup signal — this script may outlive its parent process
-# (e.g., when jyc deploys itself via OpenCode).
-trap '' HUP
+LOGFILE="$PWD/jyc.log"
+PIDFILE="$PWD/jyc.pid"
+TARBALL_URL="https://github.com/kingye/jyc/releases/download/nightly/jyc-x86_64-unknown-linux-gnu.tar.gz"
 
-echo "=== JYC Deployment Script ==="
-
-# Source environment variables (for JYC_BINARY)
-if [ -f ~/.zshrc.local ]; then
-  set -a
-  source ~/.zshrc.local
-  set +a
-fi
-
-# Auto-detect: script is in the jyc repo directory
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-NEW_BINARY="${SCRIPT_DIR}/target/release/jyc"
-
-# Install path from JYC_BINARY env var (set in ~/.zshrc.local)
-INSTALL_BINARY="${JYC_BINARY}"
-
-if [ -z "$INSTALL_BINARY" ]; then
-    echo "ERROR: JYC_BINARY environment variable not set."
-    echo "Add 'export JYC_BINARY=/path/to/jyc' to ~/.zshrc.local"
-    exit 1
-fi
-
-# Detect whether systemctl --user is available
-has_systemd_user() {
-    systemctl --user daemon-reload 2>/dev/null
-}
-
-# PID file for nohup fallback
-PIDFILE="${JYC_WORKDIR:-.}/jyc.pid"
-LOGFILE="${JYC_WORKDIR:-.}/jyc.log"
-
-echo "Source binary: ${NEW_BINARY}"
-echo "Install target: ${INSTALL_BINARY}"
+echo "=== JYC Deployment ==="
+echo "Install path: $PWD"
 echo ""
 
-# Check if new binary exists
-if [ ! -f "${NEW_BINARY}" ]; then
-    echo "ERROR: New binary not found at ${NEW_BINARY}"
-    echo "Run 'cargo build --release' first"
-    exit 1
-fi
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
 
-echo "New binary found: ${NEW_BINARY}"
-NEW_VERSION=$("${NEW_BINARY}" --version 2>/dev/null || echo "unknown")
-echo "  Version: ${NEW_VERSION}"
-echo ""
+# 1. Download
+echo "Downloading nightly ..."
+curl -fsSL -o "$TMPDIR/jyc.tar.gz" "$TARBALL_URL"
 
-# Show version of installed binary (if exists)
-if [ -f "${INSTALL_BINARY}" ]; then
-    echo "Installed binary: ${INSTALL_BINARY}"
-    OLD_VERSION=$("${INSTALL_BINARY}" --version 2>/dev/null || echo "unknown")
-    echo "  Version: ${OLD_VERSION}"
-    echo ""
-fi
+# 2. Extract (overwrites ./jyc; /usr/local/bin/jyc symlink untouched)
+echo "Extracting ..."
+tar xzf "$TMPDIR/jyc.tar.gz" -C .
 
-# Wait for any pending reply to be delivered before stopping the service.
-# deploy.sh is launched via systemd-run (returns immediately), and the AI
-# sends a reply right after. This delay ensures the reply reaches the user.
-echo "Waiting 5 seconds for pending operations..."
-sleep 5
-
-# Stop service
-echo "Stopping jyc..."
-if has_systemd_user; then
-    if systemctl --user is-active --quiet jyc 2>/dev/null; then
-        systemctl --user stop jyc
-        echo "  Service stopped (systemd)"
-    else
-        echo "  Service not running (systemd)"
-    fi
+# 3. Stop existing daemon (SIGTERMs our parent; we survive because we're separate)
+echo "Stopping jyc ..."
+if [ -x /usr/local/bin/jyc ] && [ -f "$PIDFILE" ]; then
+  /usr/local/bin/jyc stop || echo "  (stop returned non-zero — continuing)"
 else
-    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-        kill "$(cat "$PIDFILE")"
-        sleep 1
-        echo "  Process stopped (nohup, PID $(cat "$PIDFILE"))"
-        rm -f "$PIDFILE"
-    else
-        echo "  Process not running (nohup)"
-    fi
+  echo "  (no PID file or no installed binary — skipping)"
 fi
-echo ""
 
-# Copy new binary
-echo "Copying new binary to ${INSTALL_BINARY}..."
-cp "${NEW_BINARY}" "${INSTALL_BINARY}"
-chmod +x "${INSTALL_BINARY}"
-echo "  Binary installed"
-echo ""
+# Wait for old PID file to disappear (= old jyc fully exited, socket released).
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  [ ! -f "$PIDFILE" ] && break
+  sleep 1
+done
 
-# Start service
-echo "Starting jyc..."
-if has_systemd_user; then
-    systemctl --user start jyc
-    sleep 2
-    if systemctl --user is-active --quiet jyc; then
-        echo "  Service started successfully (systemd)"
-    else
-        echo "  Service failed to start"
-        echo "  Check logs: journalctl --user -u jyc -n 50"
-        exit 1
-    fi
-    echo ""
-    echo "Service status:"
-    systemctl --user status jyc --no-pager | head -3
+# 4. Start new daemon detached. The new jyc writes its own PID file.
+echo "Starting jyc ..."
+nohup ./jyc serve --workdir "$PWD" >> "$LOGFILE" 2>&1 &
+NEW_PID=$!
+disown "$NEW_PID" 2>/dev/null || true
+
+sleep 2
+if kill -0 "$NEW_PID" 2>/dev/null; then
+  echo "  Started (PID $NEW_PID)"
 else
-    nohup "$SCRIPT_DIR/run-jyc.sh" > "$LOGFILE" 2>&1 &
-    echo $! > "$PIDFILE"
-    sleep 2
-    if kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
-        echo "  Process started (nohup, PID $(cat "$PIDFILE"))"
-    else
-        echo "  Process failed to start"
-        echo "  Check logs: $LOGFILE"
-        exit 1
-    fi
+  echo "  Failed to start — see $LOGFILE" >&2
+  exit 1
 fi
-echo ""
 
-echo "=== Deployment complete ==="
+echo ""
+echo "=== Done ==="

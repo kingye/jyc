@@ -22,12 +22,20 @@
   Storage: `<topic_path>/.jyc/backlog.jsonl` (JSONL, one item per line).
   Subcommands: `push <multi-line description>` appends a new item
   (continuation lines collected until blank line, then re-joined with
-  `\n`); `list` prints a numbered list (or `(empty)`); `pop [N]` removes
-  the N-th item (default 1) and injects its text into the next agent turn
-  as a user message via `append_body`; `rm <N>` removes the N-th item
+  `\n`); `list` (alias `ls`) prints a numbered list (or `(empty)`);
+  `pop [N]` removes the N-th item (default 1) and injects its text into
+  the next agent turn as a user message via `append_body`; `rm <N>`
+  removes the N-th item
   without injecting. Also teaches the command registry an opt-in
   `collect_subsequent_lines` mechanism so future commands can accept
   multi-line first arguments the same way.
+- **`/backlog` usability: `ls` alias + standalone help text.** Typing
+  `/backlog ls` now works as a shortcut for `/backlog list` (it
+  dispatches to the same arm via `match`). Typing `/backlog` with no
+  subcommand previously returned a `missing subcommand` error; it now
+  prints a short usage block listing all subcommands and the `ls`
+  alias, matching the convention of other slash commands. Storage path
+  and persisted schema are unchanged.
 
 ### Changed
 

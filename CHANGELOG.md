@@ -345,6 +345,18 @@
   `style_diff_line` helper that uses shared `DIFF_REMOVED_PREFIX` /
   `DIFF_ADDED_PREFIX` constants so the producer and the stayer cannot
   drift apart.
+- **Feishu progress indicator now appears for built-in commands that
+  inject into the agent run.** `/backlog pop` (the only built-in that
+  sets `append_body`) previously skipped the channels.rs watcher because
+  it was registered as a built-in command, leaving users with no live
+  status card even though the agent ran normally. Replaced the binary
+  "is the name a registered built-in?" probe with a per-command
+  `continues_to_agent` flag on `CommandInfo` (true for `/backlog`,
+  default false). `all_commands_with` propagates the flag for custom
+  commands — `shell` commands get `false` (no agent run), prompt
+  commands get `true`. Unknown slash names continue to spawn the
+  watcher via `unwrap_or(true)`, matching the previous behaviour for
+  typos and unknown commands.
 
 ### Removed
 

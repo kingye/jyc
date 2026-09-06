@@ -454,6 +454,7 @@ mod tests {
         CommandInfo {
             name: name.to_string(),
             description: format!("{name} description"),
+            ..Default::default()
         }
     }
 

@@ -1527,6 +1527,7 @@ pub(crate) fn spawn_feishu_adapter(
                     let feishu_client = feishu_client.clone();
                     let channel_name_self = channel_name.clone();
                     let routers = routers.clone();
+                    let config_for_check = config_for_spawn.clone();
                     tokio::spawn(async move {
                         let patterns = config_for_pipe
                             .load()
@@ -1571,18 +1572,21 @@ pub(crate) fn spawn_feishu_adapter(
                         // the topic's event bus. The footer timing is
                         // recorded unconditionally.
                         //
-                        // Skipped for *built-in* slash commands: they are
-                        // intercepted in the worker without an agent run,
-                        // so they never emit ProcessingStarted — the
-                        // watcher would sleep until MAX_LIFETIME and then
-                        // double-post alongside the next real message's
-                        // watcher. Built-in replies are instant; no status
-                        // card or ⏱ footer needed.
+                        // Skipped for commands that reply instantly and
+                        // never reach the agent: those would never emit
+                        // `ProcessingStarted`, so the watcher would sleep
+                        // until MAX_LIFETIME and then double-post
+                        // alongside the next real message's watcher.
                         //
-                        // Custom commands and unknown slash names are NOT
-                        // skipped: they inject a prompt and continue into
-                        // an agent run (ProcessingStarted is emitted), so
-                        // they need the card just like a plain message.
+                        // Spawned for commands that continue into an
+                        // agent run (e.g. `/backlog pop` injects the
+                        // popped text via `append_body`, custom prompt
+                        // commands inject `user_prompt`), and for unknown
+                        // slash names that fall through to the agent as a
+                        // plain prompt. Shell custom commands also reply
+                        // instantly and so are skipped — their flag is
+                        // set by `all_commands_with` based on
+                        // `CustomCommand::shell`.
                         let first_token = message
                             .content
                             .text
@@ -1591,10 +1595,17 @@ pub(crate) fn spawn_feishu_adapter(
                             .split_whitespace()
                             .next()
                             .unwrap_or("");
-                        let is_command = jyc_core::command::all_commands()
+                        let custom = config_for_check.load().commands.clone();
+                        let continues_to_agent = jyc_core::command::all_commands_with(&custom)
                             .iter()
-                            .any(|c| c.name == first_token);
-                        if !is_command && let Some(cid) = &chat_id {
+                            .find(|c| c.name == first_token)
+                            .map(|c| c.continues_to_agent)
+                            // Unknown slash name: assume the agent will run.
+                            // This covers typos (`/foo`) and unknown
+                            // commands that fall through to a normal
+                            // message — both reach the agent.
+                            .unwrap_or(true);
+                        if continues_to_agent && let Some(cid) = &chat_id {
                             let start = std::time::Instant::now();
                             // Event freshness cutoff for the watcher — taken
                             // here, before routing, so no event of this run

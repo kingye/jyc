@@ -6,6 +6,9 @@ members = ["crates/*"]
 version = "0.3.17"
 edition = "2024"
 
+[workspace.dependencies]
+tracing-appender = "0.2"
+
 [profile.dev]
 debug = 1
 opt-level = 1

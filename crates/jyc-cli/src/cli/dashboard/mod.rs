@@ -208,7 +208,6 @@ impl App {
             None => 0,
         };
         self.table_state.select(Some(i));
-        self.sync_commands_for_selection();
     }
 
     fn prev_topic(&mut self) {
@@ -227,37 +226,39 @@ impl App {
             None => 0,
         };
         self.table_state.select(Some(i));
-        self.sync_commands_for_selection();
     }
 
-    /// Refresh `chat.commands` to match the currently selected topic, so
-    /// the `/` popup shows built-ins + globals + per-agent commands for
-    /// the topic the user is looking at. Called whenever `table_state`'s
-    /// selection changes (initial auto-select + ↑/↓ navigation) and on
-    /// each overview poll that may have replaced the topic list.
+    /// Compute `chat.commands` from the chat topic (the topic the user is
+    /// typing into) and store it on `chat.commands` for the `/` popup.
+    /// Called once when the `/` popup is about to open — the popup is the
+    /// only reader, so we don't refresh on every poll cycle or every ↑/↓
+    /// (which would just churn the log without changing what the user sees).
     ///
     /// `topic.commands` is the single source — the inspect server
     /// computes it server-side and the TUI just consumes it. Older
     /// servers (pre-PR-708) don't populate this field; we fall back to
     /// the built-in list so the popup is never silently empty in a
     /// mixed-version deployment.
-    fn sync_commands_for_selection(&mut self) {
-        let selected_idx = self.table_state.selected();
-        let topic = selected_idx.and_then(|i| self.state.as_ref().and_then(|s| s.topics.get(i)));
+    fn refresh_chat_commands(&mut self) {
+        let chat_name = self.chat.topic.as_deref();
+        let topic = chat_name.and_then(|name| {
+            self.state
+                .as_ref()
+                .and_then(|s| s.topics.iter().find(|t| t.name == name))
+        });
         let topic_commands = topic
             .map(|t| t.commands.clone())
             .filter(|cmds| !cmds.is_empty());
         let used_fallback = topic_commands.is_none();
         let final_commands = topic_commands.unwrap_or_else(jyc_core::command::all_commands);
         tracing::info!(
-            selected_index = ?selected_idx,
             chat_topic = ?self.chat.topic,
             server_topic_name = ?topic.map(|t| t.name.clone()),
             server_topic_pattern = ?topic.and_then(|t| t.pattern.clone()),
             server_commands = ?topic.map(|t| t.commands.iter().map(|c| c.name.clone()).collect::<Vec<_>>()),
             used_fallback,
             popup_commands = ?final_commands.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
-            "tui sync_commands_for_selection"
+            "tui refresh_chat_commands"
         );
         self.chat.commands = final_commands;
     }
@@ -627,11 +628,10 @@ pub async fn run(
                         {
                             app.table_state.select(Some(0));
                         }
-                        // Refresh chat.commands to reflect the (possibly new)
-                        // selected topic's built-ins + globals + per-agent
-                        // commands. Always sync — even when no auto-select
-                        // ran — so topic-list updates refresh the popup too.
-                        app.sync_commands_for_selection();
+                        // chat.commands is refreshed on demand when the `/`
+                        // popup opens (see refresh_chat_commands); no need
+                        // to re-sync here just because the topic list may
+                        // have changed.
                         if let Some(state) = app.state.as_ref() {
                             app.chat.models = state.models.clone();
                         }
@@ -1989,6 +1989,53 @@ mod tests {
         }
     }
 
+    /// Build an overview whose `topics[i].commands` matches `cmds[i]` (or
+    /// `vec![]` if `i` is out of range). Used to seed per-topic commands in
+    /// `refresh_chat_commands` tests.
+    fn make_overview_with_topic_commands(
+        names: &[&str],
+        cmds: &[Vec<jyc_types::CommandInfo>],
+    ) -> jyc_types::InspectOverview {
+        use jyc_types::{ChannelInfo, InspectOverview, TopicStatus, TopicSummary};
+        InspectOverview {
+            uptime_secs: 0,
+            version: "test".to_string(),
+            channels: vec![ChannelInfo {
+                name: "chan".to_string(),
+                channel_type: "websocket".to_string(),
+                active_workers: 0,
+                max_concurrent: 0,
+            }],
+            topics: names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| TopicSummary {
+                    name: (*n).to_string(),
+                    channel: "chan".to_string(),
+                    pattern: Some((*n).to_string()),
+                    status: TopicStatus::Idle,
+                    model: None,
+                    mode: None,
+                    branch: None,
+                    changed_files: None,
+                    context_input_tokens: None,
+                    total_input_tokens: None,
+                    total_cache_hit_tokens: None,
+                    total_cache_creation_tokens: None,
+                    max_tokens: None,
+                    output_tokens: None,
+                    last_active_at: None,
+                    skills: vec![],
+                    topic_path: None,
+                    cost: None,
+                    commands: cmds.get(i).cloned().unwrap_or_default(),
+                })
+                .collect(),
+            stats: Default::default(),
+            models: vec![],
+        }
+    }
+
     #[tokio::test]
     async fn auto_select_first_topic_when_no_selection() {
         let mut app = make_test_app();
@@ -2040,6 +2087,118 @@ mod tests {
 
         // No topics -> no auto-select.
         assert!(app.table_state.selected().is_none());
+    }
+
+    // --- refresh_chat_commands uses chat.topic, not table_state.selected() ---
+
+    fn cmd(name: &str) -> jyc_types::CommandInfo {
+        jyc_types::CommandInfo {
+            name: name.to_string(),
+            description: String::new(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_chat_commands_picks_chat_topic_over_table_selection() {
+        let mut app = make_test_app();
+        // Chat is bound to the "jyc" topic (e.g. opened via ad-hoc CLI),
+        // but the topics list comes back with "dotfiles" first — exactly the
+        // shape that previously mis-routed the `/` popup to dotfiles's
+        // commands (the bug where `/deploy` was missing in jyc).
+        let dotfiles_cmds = vec![cmd("/dotfiles-only")];
+        let jyc_cmds = vec![cmd("/deploy")];
+        let jin_cmds = vec![cmd("/jin-only")];
+        app.chat.topic = Some("jyc".to_string());
+        app.state = Some(make_overview_with_topic_commands(
+            &["dotfiles", "jyc", "jin"],
+            &[dotfiles_cmds.clone(), jyc_cmds.clone(), jin_cmds.clone()],
+        ));
+        // Auto-select row 0 as the poll loop does — leaves the table
+        // highlighting dotfiles while chat is bound to jyc.
+        app.table_state.select(Some(0));
+
+        app.refresh_chat_commands();
+
+        // Must contain `/deploy` (jyc's command) and NOT `/dotfiles-only`.
+        assert!(
+            app.chat.commands.iter().any(|c| c.name == "/deploy"),
+            "chat.commands should include jyc's `/deploy`, got: {:?}",
+            app.chat
+                .commands
+                .iter()
+                .map(|c| &c.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !app.chat.commands.iter().any(|c| c.name == "/dotfiles-only"),
+            "chat.commands must not include `/dotfiles-only` (table row 0), got: {:?}",
+            app.chat
+                .commands
+                .iter()
+                .map(|c| &c.name)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_chat_commands_ignores_table_selection_change() {
+        let mut app = make_test_app();
+        let dotfiles_cmds = vec![cmd("/dotfiles-only")];
+        let jyc_cmds = vec![cmd("/deploy")];
+        app.chat.topic = Some("jyc".to_string());
+        app.state = Some(make_overview_with_topic_commands(
+            &["dotfiles", "jyc"],
+            &[dotfiles_cmds.clone(), jyc_cmds.clone()],
+        ));
+        app.table_state.select(Some(0));
+        app.refresh_chat_commands();
+        let after_first = app.chat.commands.clone();
+
+        // Navigate the table to row 1 (which now points at "jyc"). chat
+        // is still bound to "jyc", so commands should be unchanged.
+        app.table_state.select(Some(1));
+        app.refresh_chat_commands();
+        let after_second = app.chat.commands.clone();
+
+        assert_eq!(
+            after_first.iter().map(|c| &c.name).collect::<Vec<_>>(),
+            after_second.iter().map(|c| &c.name).collect::<Vec<_>>(),
+            "navigating the table must not change chat.commands when chat.topic is unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_chat_commands_falls_back_to_builtins_when_topic_unknown() {
+        let mut app = make_test_app();
+        // Chat bound to a topic not in state.topics (ad-hoc transient
+        // state). All topics have empty commands, so we fall back to
+        // jyc_core::command::all_commands().
+        app.chat.topic = Some("ghost".to_string());
+        app.state = Some(make_overview_with_topics(&["alpha", "beta"]));
+        app.refresh_chat_commands();
+        let builtins = jyc_core::command::all_commands();
+        assert_eq!(
+            app.chat.commands.len(),
+            builtins.len(),
+            "fallback should yield the full builtin list when chat.topic is not in state.topics"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_chat_commands_skips_topics_with_empty_command_list() {
+        // Defends the `filter(|cmds| !cmds.is_empty())` clause: if the
+        // server returned an empty list for chat.topic's row, we should
+        // fall back to builtins rather than leaving the popup empty.
+        let mut app = make_test_app();
+        app.chat.topic = Some("jyc".to_string());
+        app.state = Some(make_overview_with_topic_commands(
+            &["dotfiles", "jyc"],
+            &[vec![cmd("/dotfiles-only")], vec![]],
+        ));
+        app.refresh_chat_commands();
+        let builtins = jyc_core::command::all_commands();
+        assert_eq!(app.chat.commands.len(), builtins.len());
     }
 
     /// Regression: the dashboard **overview** Details panel fully encloses the

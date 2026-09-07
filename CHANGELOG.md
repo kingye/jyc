@@ -46,6 +46,12 @@
   agent vs agent) are allowed — at runtime the per-agent command
   overwrites the global one with a `tracing::warn` (last-registered
   wins via `CommandRegistry::register`).
+- **`--log-file [PATH]` global flag for tracing logs.** Use
+  `--log-file` to write logs to `<data_home>/jyc.log`, or
+  `--log-file PATH` for a custom path. Bare `jyc` defaults to
+  `jyc.log`; `jyc dashboard` / `jyc open` keep their implicit
+  `dashboard.log` for TUI clobbering protection. Without the flag,
+  tracing goes to stderr.
 
 ### Changed
 

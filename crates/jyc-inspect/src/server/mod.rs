@@ -332,6 +332,13 @@ impl InspectServer {
         // Attach per-topic commands so the dashboard `/` popup reflects
         // what actually dispatches in this topic (built-ins + globals +
         // per-agent for the topic's pattern; per-agent wins on collision).
+        // TODO(perf): `commands_for_topic` recomputes per topic on every
+        // ~500 ms overview poll, but the dashboard TUI only reads commands
+        // for its current chat topic. To stop the per-poll work: either
+        // memoize here keyed by (`cfg_ptr`, pattern) and clear on
+        // `AppConfig` reload, or drop the per-topic `commands` from the
+        // overview and expose `GET /api/commands?pattern=X` for the TUI
+        // to fetch lazily.
         let cfg = context.config.as_ref().map(|c| c.load_full());
         let topics: Vec<TopicInfo> = topics
             .into_iter()
@@ -449,15 +456,7 @@ fn commands_for_topic(pattern: Option<&str>, cfg: &AppConfig) -> Vec<CommandInfo
     let per_agent = pattern
         .map(|p| per_agent_commands(cfg, p))
         .unwrap_or_default();
-    let result = all_commands_with(&cfg.commands, &per_agent);
-    tracing::info!(
-        pattern = ?pattern,
-        agent_commands = ?per_agent.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
-        global_commands = ?cfg.commands.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
-        result = ?result.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
-        "inspect commands_for_topic"
-    );
-    result
+    all_commands_with(&cfg.commands, &per_agent)
 }
 
 /// Filter activity entries by `since` timestamp (RFC 3339 string).

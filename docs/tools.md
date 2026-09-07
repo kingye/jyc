@@ -434,8 +434,9 @@ resolved path arrives as `/private/var/folders/...`.
 
 A temp dir of `/` is ignored — every absolute path is inside the root, so
 honoring it would disable the boundary altogether. This matters because
-`env::temp_dir()` returns `$TMPDIR` unvalidated on Unix, and the systemd unit in
-`SYSTEMD.md` sources the operator's shell environment.
+`env::temp_dir()` returns `$TMPDIR` unvalidated on Unix, and jyc daemons
+typically inherit operator shell environment variables via their service
+unit file.
 
 Because the system temp dir is shared and world-writable, this also makes other
 processes' temp files readable. Use `access.read` / `access.write` for anything

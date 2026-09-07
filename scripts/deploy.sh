@@ -10,6 +10,11 @@
 # so it works whether invoked from the install dir, a topic workspace, or
 # anywhere else. The previous version assumed CWD = install dir, which only
 # held for the manual `cd /usr/local/bin && ./deploy.sh` invocation.
+#
+# Data dir: the install dir holds only the binary; runtime state (PID,
+# log, --workdir) lives in $JYC_DATA_DIR (default ~/.local/share/jyc, per
+# XDG Base Directory). Override with the JYC_DATA_DIR env var for tests
+# or non-standard layouts.
 set -euo pipefail
 
 JYC_BIN="$(command -v jyc)"
@@ -18,12 +23,14 @@ if [[ -z "$JYC_BIN" ]]; then
     exit 1
 fi
 INSTALL_DIR="$(dirname "$JYC_BIN")"
-LOGFILE="$INSTALL_DIR/jyc.log"
-PIDFILE="$INSTALL_DIR/jyc.pid"
+JYC_DATA_DIR="${JYC_DATA_DIR:-$HOME/.local/share/jyc}"
+LOGFILE="$JYC_DATA_DIR/jyc.log"
+PIDFILE="$JYC_DATA_DIR/jyc.pid"
 TARBALL_URL="https://github.com/kingye/jyc/releases/download/nightly/jyc-x86_64-unknown-linux-gnu.tar.gz"
 
 echo "=== JYC Deployment ==="
 echo "Install path: $INSTALL_DIR"
+echo "Data path:    $JYC_DATA_DIR"
 echo ""
 
 TMPDIR="$(mktemp -d)"
@@ -65,10 +72,14 @@ else
     echo "  (no PID file — skipping)"
 fi
 
-# 4. Start new daemon detached. The new jyc writes its own PID file
+# 4. Ensure data dir exists (jyc serve's PidFileGuard writes to it on
+# startup; tokio::fs::write fails silently if the parent dir is missing).
+mkdir -p "$JYC_DATA_DIR"
+
+# 5. Start new daemon detached. The new jyc writes its own PID file
 # within ~100ms of startup; the sleep+check below catches startup failures.
 echo "Starting jyc ..."
-nohup "$JYC_BIN" serve --workdir "$INSTALL_DIR" >> "$LOGFILE" 2>&1 &
+nohup "$JYC_BIN" serve --workdir "$JYC_DATA_DIR" >> "$LOGFILE" 2>&1 &
 NEW_PID=$!
 disown "$NEW_PID" 2>/dev/null || true
 

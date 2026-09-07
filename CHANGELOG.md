@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.3.17] - 2026-09-07
 
 ### Added
 
@@ -144,8 +144,6 @@
   Resolution shares the exact override chain with the dashboard via a
   lightweight `TopicManager::topic_display_state` accessor (no workspace
   scan, no git calls). (#678)
-
-### Changed
 
 - Feishu progress card: the live thinking tail is no longer appended as an
   open `💭 ...` markdown line (up to 1500 chars of noise on every refresh).
@@ -415,8 +413,6 @@
   item 1 again and `rm` returns the existing "missing index" error.
   New tests cover both the registry→handler end-to-end path and the
   handler-level index parsing.
-
-### Fixed
 
 - **TUI `/` command popup and `/?` help now list per-agent commands**
   (`[[agents.<name>.commands]]`) for the currently selected topic.

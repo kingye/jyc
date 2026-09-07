@@ -267,9 +267,16 @@ impl App {
         match event {
             WsEvent::Connected => {
                 self.chat.ws_connected = true;
-                // The WS protocol no longer carries `list_patterns` or
-                // `subscribe` commands — history is loaded via REST and
-                // topic scope comes from the URL. Nothing to do here.
+                // After (re)connect, the server-side inspect_broadcast is
+                // a fresh channel — the dedup state from the previous
+                // session would drop every incoming event until events
+                // catch up. Clear it and re-hydrate the current topic.
+                self.chat.last_seen_id.clear();
+                if let (Some(channel), Some(topic)) =
+                    (self.chat.channel.clone(), self.chat.topic.clone())
+                {
+                    self.pending_hydrate = Some((channel, topic));
+                }
             }
             WsEvent::Disconnected => {
                 self.chat.ws_connected = false;

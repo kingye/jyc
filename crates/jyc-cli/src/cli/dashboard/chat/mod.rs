@@ -737,6 +737,10 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         && app.chat.focus == ChatFocus::ChatPane
         && app.chat.text().trim().is_empty()
     {
+        // Compute commands for the chat topic just-in-time so the popup
+        // reflects the topic the user is typing into (not whichever row
+        // is highlighted in the table).
+        app.refresh_chat_commands();
         app.chat.leader = None;
         app.chat.command_popup = Some(CommandPopupState::new());
         return;

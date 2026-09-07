@@ -212,6 +212,16 @@
 
 ### Fixed
 
+- **`/` popup now shows commands for the topic you're chatting in.**
+  Previously `sync_commands_for_selection` read the highlighted row in the
+  topic table and used *that* topic's commands — so opening an ad-hoc topic
+  (e.g. `jyc dashboard open --topic jyc …`) whose name sorted below
+  another topic would render the wrong topic's slash commands in the popup
+  (e.g. `/deploy` from the `jyc` topic was missing because the table
+  highlighted `dotfiles`). The popup now resolves commands by `chat.topic`
+  (the topic the user is typing into), and commands are refreshed only
+  when the popup is about to open — not on every poll cycle — so the
+  popup is always correct and the log stays quiet.
 - **Custom shell commands now run in the topic's workspace**, not
   whichever directory jyc was launched from. Matches the agent's `bash`
   tool; use a wrapper script (`shell = ["./scripts/other.sh"]`) to

@@ -22,6 +22,15 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
+    /// Write tracing logs to a file instead of stderr.
+    ///
+    /// Without a value: <data_home>/jyc.log.
+    /// With a value: that path.
+    /// Default: stderr, except bare `jyc` → jyc.log and
+    /// dashboard/open → dashboard.log.
+    #[arg(long, global = true, num_args = 0..=1, value_name = "PATH")]
+    log_file: Option<Option<PathBuf>>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -87,10 +96,10 @@ enum Commands {
 /// `DisplayHelp` (we also catch `MissingSubcommand` for safety); we
 /// treat both as "no subcommand" only when `args.len() == 1` so that
 /// an explicit `jyc --help` still shows help.
-fn parse_cli() -> Cli {
+fn parse_cli() -> (Cli, bool) {
     let args: Vec<String> = std::env::args().collect();
     match Cli::try_parse_from(&args) {
-        Ok(c) => c,
+        Ok(c) => (c, false),
         Err(e)
             if args.len() == 1
                 && matches!(
@@ -102,7 +111,10 @@ fn parse_cli() -> Cli {
         {
             let mut new_args = args;
             new_args.push("open".to_string());
-            Cli::try_parse_from(new_args).unwrap_or_else(|_| e.exit())
+            (
+                Cli::try_parse_from(new_args).unwrap_or_else(|_| e.exit()),
+                true,
+            )
         }
         Err(e) => e.exit(),
     }
@@ -166,15 +178,19 @@ fn resolve_workdir(workdir: Option<&PathBuf>) -> Result<PathBuf> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = parse_cli();
+    let (cli, is_bare_jyc) = parse_cli();
 
-    // Route tracing logs to a file for subcommands that own the terminal
-    // (TUI), so log writes don't break the alternate-screen render.
-    // Lives in the platform data dir (next to jyc.log when workdir is the
-    // default) for easy post-mortem access.
-    let log_file = matches!(&cli.command, Commands::Dashboard(_) | Commands::Open { .. })
-        .then(|| jyc_utils::paths::data_home().map(|h| h.join("dashboard.log")))
-        .flatten();
+    // Log destination: --log-file [PATH] → jyc.log or PATH; bare `jyc` →
+    // jyc.log; dashboard/open → dashboard.log (TUI fix); else → stderr.
+    let log_file = match &cli.log_file {
+        Some(Some(path)) => Some(path.clone()),
+        Some(None) => jyc_utils::paths::data_home().map(|h| h.join("jyc.log")),
+        None if is_bare_jyc => jyc_utils::paths::data_home().map(|h| h.join("jyc.log")),
+        None if matches!(&cli.command, Commands::Dashboard(_) | Commands::Open { .. }) => {
+            jyc_utils::paths::data_home().map(|h| h.join("dashboard.log"))
+        }
+        None => None,
+    };
     init_tracing(cli.debug, cli.verbose, log_file.as_deref())?;
 
     let workdir = resolve_workdir(cli.workdir.as_ref())?;

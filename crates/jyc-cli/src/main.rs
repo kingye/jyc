@@ -2,7 +2,7 @@ mod cli;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, error::ErrorKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
 /// JYC — Channel-agnostic AI agent
@@ -108,7 +108,9 @@ fn parse_cli() -> Cli {
     }
 }
 
-fn init_tracing(debug: bool, verbose: bool) {
+fn init_tracing(debug: bool, verbose: bool, log_file: Option<&Path>) -> Result<()> {
+    use anyhow::Context;
+
     let filter = if verbose {
         "jyc=trace,jyc_agent=trace,async_imap=debug"
     } else if debug {
@@ -124,12 +126,27 @@ fn init_tracing(debug: bool, verbose: bool) {
         .with_target(false)
         .with_thread_ids(false);
 
-    // Skip tracing's timestamp when running under systemd (journal adds its own)
-    if std::env::var("JOURNAL_STREAM").is_ok() {
+    if let Some(path) = log_file {
+        // TUI subcommand: route logs to a file so they don't trample the
+        // alternate-screen rendering. Append, create-if-missing; ensure
+        // the parent dir exists so a fresh install doesn't fail.
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create log directory {}", parent.display()))?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .with_context(|| format!("Failed to open log file {}", path.display()))?;
+        base.with_writer(file).init();
+    } else if std::env::var("JOURNAL_STREAM").is_ok() {
+        // Skip tracing's timestamp when running under systemd (journal adds its own)
         base.without_time().init();
     } else {
         base.init();
     }
+    Ok(())
 }
 
 fn resolve_workdir(workdir: Option<&PathBuf>) -> Result<PathBuf> {
@@ -151,7 +168,14 @@ fn resolve_workdir(workdir: Option<&PathBuf>) -> Result<PathBuf> {
 async fn main() -> Result<()> {
     let cli = parse_cli();
 
-    init_tracing(cli.debug, cli.verbose);
+    // Route tracing logs to a file for subcommands that own the terminal
+    // (TUI), so log writes don't break the alternate-screen render.
+    // Lives in the platform data dir (next to jyc.log when workdir is the
+    // default) for easy post-mortem access.
+    let log_file = matches!(&cli.command, Commands::Dashboard(_) | Commands::Open { .. })
+        .then(|| jyc_utils::paths::data_home().map(|h| h.join("dashboard.log")))
+        .flatten();
+    init_tracing(cli.debug, cli.verbose, log_file.as_deref())?;
 
     let workdir = resolve_workdir(cli.workdir.as_ref())?;
 

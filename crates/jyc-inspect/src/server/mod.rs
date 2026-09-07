@@ -449,7 +449,15 @@ fn commands_for_topic(pattern: Option<&str>, cfg: &AppConfig) -> Vec<CommandInfo
     let per_agent = pattern
         .map(|p| per_agent_commands(cfg, p))
         .unwrap_or_default();
-    all_commands_with(&cfg.commands, &per_agent)
+    let result = all_commands_with(&cfg.commands, &per_agent);
+    tracing::info!(
+        pattern = ?pattern,
+        agent_commands = ?per_agent.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+        global_commands = ?cfg.commands.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+        result = ?result.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+        "inspect commands_for_topic"
+    );
+    result
 }
 
 /// Filter activity entries by `since` timestamp (RFC 3339 string).

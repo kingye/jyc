@@ -143,8 +143,6 @@ Steps performed by `scripts/deploy.sh`:
 5. Start the jyc service
 6. Verify service started successfully
 
-See the `jyc-deploy-bare` skill for AI-specific deployment instructions.
-
 ## Architecture
 
 - **systemd user service**: Process supervisor (built into Linux)

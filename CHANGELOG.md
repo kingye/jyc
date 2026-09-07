@@ -55,6 +55,14 @@
 
 ### Changed
 
+- **`--log-file` output is now daily-rotated.** The file the flag writes
+  to gains a date suffix — `jyc.log` becomes `jyc.log.2026-09-07`,
+  `dashboard.log` becomes `dashboard.log.2026-09-07`, with a fresh
+  file created at local midnight. Backed by `tracing_appender::rolling::daily`.
+  Old files are kept indefinitely (retention is a future PR; clean up
+  with `find ~/.local/share/jyc -name '*.log.*' -mtime +30 -delete` or
+  equivalent until then). Any tooling pointing at the literal `jyc.log`
+  / `dashboard.log` paths needs to be updated to the dated suffix.
 - **TUI progress indicator: `edit`/`write` tools unified under the
   `ctrl+p T` toggle.** Previously, `edit` and `write` tool entries
   rendered an always-on multi-line diff in the progress tail, independent

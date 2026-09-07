@@ -104,14 +104,13 @@ Merge/lookup rules:
 
 ## Deployment
 
-JYC supports two deployment modes:
+JYC ships with one first-class deployment mode:
 
 | Mode | Docs | Use Case |
 |------|------|----------|
-| **systemd** | [SYSTEMD.md](SYSTEMD.md) | Native Linux, minimal overhead |
 | **Docker** | [docker/README.md](docker/README.md) | Containerized, isolated environment |
 
-Both support automatic restarts and AI self-bootstrapping (the AI can rebuild and redeploy JYC from source).
+The Docker image supports automatic restarts and AI self-bootstrapping (the AI can rebuild and redeploy JYC from source).
 
 ## Supported Channels
 
@@ -609,5 +608,4 @@ This is useful for diagnosing reply delivery failures.
 | [docs/architecture/context.md](docs/architecture/context.md) | Context strategies, sliding window, history notes, token safety nets |
 | [IMPLEMENTATION.md](IMPLEMENTATION.md) | Implementation phases and progress |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
-| [SYSTEMD.md](SYSTEMD.md) | systemd deployment and service management |
 | [docker/README.md](docker/README.md) | Docker/Podman deployment |

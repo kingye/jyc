@@ -170,7 +170,7 @@ mode = "build"
 [[agents.jyc.commands]]
 name = "deploy"
 description = "self deploy"
-shell = ["bash", "./deploy.sh"]
+shell = ["bash", "./scripts/deploy.sh"]
 "#,
         )
         .unwrap();

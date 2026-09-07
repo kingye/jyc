@@ -3554,7 +3554,7 @@ Overseas Server (HK)                    Mainland China Server (Shanghai)
 
 - `INVOICE_DOWNLOAD_PROXY` — Set on overseas servers only. Not needed on mainland China.
   Example: `export INVOICE_DOWNLOAD_PROXY=http://150.158.50.252:8765`
-  Configured in `~/.zshrc.local` on the HK server (sourced by `deploy.sh`).
+  Configured in `~/.zshrc.local` on the HK server (sourced by `scripts/deploy.sh`).
 
 **Deployment scenarios:**
 

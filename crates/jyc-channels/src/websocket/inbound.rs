@@ -172,6 +172,12 @@ pub struct WebsocketInboundAdapter {
     /// alongside the per-channel `broadcast_tx` events. This enables live
     /// activity / thinking / processing updates for websocket-type channels.
     inspect_broadcast: Option<Arc<broadcast::Sender<String>>>,
+    /// Inspect-server shutdown signal. When the server begins graceful
+    /// shutdown, this token is cancelled and each connection's select loop
+    /// observes it, sends a Close frame, and returns — preventing axum's
+    /// `with_graceful_shutdown` from waiting forever on still-open WS
+    /// connections (which used to leave zombie `jyc serve` processes).
+    ws_shutdown: CancellationToken,
 }
 
 impl WebsocketInboundAdapter {
@@ -184,6 +190,7 @@ impl WebsocketInboundAdapter {
             workspace_dir: None,
             topic_manager: Arc::new(StdMutex::new(None)),
             inspect_broadcast: None,
+            ws_shutdown: CancellationToken::new(),
         }
     }
 
@@ -195,6 +202,14 @@ impl WebsocketInboundAdapter {
     /// Set the inspect-broadcast bus for live activity/thinking events.
     pub fn set_inspect_broadcast(&mut self, bus: Arc<broadcast::Sender<String>>) {
         self.inspect_broadcast = Some(bus);
+    }
+
+    /// Set the inspect-server shutdown signal. Connections receive this
+    /// token (cloned per-call) and use `select!` to detect shutdown and
+    /// send a Close frame before returning. Default is a fresh, never-fired
+    /// token (suitable for tests that don't exercise the shutdown path).
+    pub fn set_ws_shutdown(&mut self, token: CancellationToken) {
+        self.ws_shutdown = token;
     }
 
     /// Set the TopicManager for resolving custom `topic_path` overrides.
@@ -221,6 +236,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         let inspect_broadcast_rx = self.inspect_broadcast.as_ref().map(|s| s.subscribe());
         let channel_name = self.channel_name.clone();
         let on_message = self.on_message.clone();
+        let shutdown = self.ws_shutdown.clone();
 
         handle_connection_impl(
             ws,
@@ -230,6 +246,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
             inspect_broadcast_rx,
             on_message,
             scoped_topic,
+            shutdown,
         )
         .await
     }
@@ -285,6 +302,7 @@ impl InboundAdapter for WebsocketInboundAdapter {
 /// version: read text frames and parse `ClientMessage`; forward
 /// per-channel broadcast and inspect-broadcast events to the client
 /// (filtered for the current channel/topic); handle graceful close.
+#[allow(clippy::too_many_arguments)]
 async fn handle_connection_impl(
     ws: axum::extract::ws::WebSocket,
     addr: SocketAddr,
@@ -293,6 +311,7 @@ async fn handle_connection_impl(
     mut inspect_broadcast_rx: Option<broadcast::Receiver<String>>,
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
     scoped_topic: Option<&str>,
+    shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     use axum::extract::ws::Message;
 
@@ -443,6 +462,14 @@ async fn handle_connection_impl(
                         tracing::warn!(addr = %addr, dropped = %n, "Inspect broadcast lagged; events may have been lost");
                     }
                 }
+            }
+            // Server shutdown: the inspect server's cancel token has fired.
+            // Break out of the loop; the post-loop Close frame closes the
+            // connection cleanly, axum's connection task returns, and
+            // `with_graceful_shutdown` completes.
+            _ = shutdown.cancelled() => {
+                tracing::info!(addr = %addr, "Inspect server shutting down; closing WebSocket");
+                break;
             }
         }
     }

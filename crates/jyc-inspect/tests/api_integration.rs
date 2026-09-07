@@ -35,6 +35,7 @@ fn ctx_with_token(token: Option<&str>) -> Arc<InspectContext> {
         reload_callback: None,
         auth_token: token.map(String::from),
         inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(1).0),
+        ws_shutdown: tokio_util::sync::CancellationToken::new(),
     })
 }
 
@@ -302,6 +303,7 @@ template = "jyc"
         reload_callback: None,
         auth_token: Some("secret".to_string()),
         inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(1).0),
+        ws_shutdown: tokio_util::sync::CancellationToken::new(),
     });
     let addr = start_server(ctx).await;
 

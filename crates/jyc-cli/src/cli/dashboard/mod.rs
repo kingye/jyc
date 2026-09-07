@@ -242,13 +242,23 @@ impl App {
     /// the built-in list so the popup is never silently empty in a
     /// mixed-version deployment.
     fn sync_commands_for_selection(&mut self) {
-        let topic_commands = self
-            .table_state
-            .selected()
-            .and_then(|i| self.state.as_ref().and_then(|s| s.topics.get(i)))
+        let selected_idx = self.table_state.selected();
+        let topic = selected_idx.and_then(|i| self.state.as_ref().and_then(|s| s.topics.get(i)));
+        let topic_commands = topic
             .map(|t| t.commands.clone())
             .filter(|cmds| !cmds.is_empty());
-        self.chat.commands = topic_commands.unwrap_or_else(jyc_core::command::all_commands);
+        let used_fallback = topic_commands.is_none();
+        let final_commands = topic_commands.unwrap_or_else(jyc_core::command::all_commands);
+        tracing::info!(
+            selected_index = ?selected_idx,
+            topic_name = ?topic.map(|t| t.name.clone()),
+            topic_pattern = ?topic.and_then(|t| t.pattern.clone()),
+            server_commands = ?topic.map(|t| t.commands.iter().map(|c| c.name.clone()).collect::<Vec<_>>()),
+            used_fallback_to_all_commands = used_fallback,
+            popup_commands = ?final_commands.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+            "TUI sync_commands_for_selection"
+        );
+        self.chat.commands = final_commands;
     }
 
     fn handle_ws_event(&mut self, event: WsEvent) {

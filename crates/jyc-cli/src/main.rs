@@ -22,6 +22,14 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
+    /// Write tracing logs to a file instead of stderr.
+    ///
+    /// Without a value: <data_home>/jyc.log.
+    /// With a value: that path.
+    /// Default: stderr (except bare `jyc` and dashboard/open — see main()).
+    #[arg(long, global = true, num_args = 0..=1, value_name = "PATH")]
+    log_file: Option<Option<PathBuf>>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -168,13 +176,26 @@ fn resolve_workdir(workdir: Option<&PathBuf>) -> Result<PathBuf> {
 async fn main() -> Result<()> {
     let cli = parse_cli();
 
-    // Route tracing logs to a file for subcommands that own the terminal
-    // (TUI), so log writes don't break the alternate-screen render.
-    // Lives in the platform data dir (next to jyc.log when workdir is the
-    // default) for easy post-mortem access.
-    let log_file = matches!(&cli.command, Commands::Dashboard(_) | Commands::Open { .. })
-        .then(|| jyc_utils::paths::data_home().map(|h| h.join("dashboard.log")))
-        .flatten();
+    // Resolve tracing log destination.
+    // - `--log-file PATH`           → PATH
+    // - `--log-file`                → <data_home>/jyc.log
+    // - bare `jyc` (no subcommand)  → <data_home>/jyc.log
+    // - dashboard / open           → <data_home>/dashboard.log (TUI fix:
+    //                                 tracing writes don't clobber the
+    //                                 alternate-screen render)
+    // - everything else             → stderr
+    // Bare `jyc` is detected via `args.len() == 1` — parse_cli's own
+    // bare→open fallback uses the same condition.
+    let is_bare_jyc = std::env::args().len() == 1;
+    let log_file = if let Some(Some(path)) = &cli.log_file {
+        Some(path.clone())
+    } else if cli.log_file.is_some() || is_bare_jyc {
+        jyc_utils::paths::data_home().map(|h| h.join("jyc.log"))
+    } else if matches!(&cli.command, Commands::Dashboard(_) | Commands::Open { .. }) {
+        jyc_utils::paths::data_home().map(|h| h.join("dashboard.log"))
+    } else {
+        None
+    };
     init_tracing(cli.debug, cli.verbose, log_file.as_deref())?;
 
     let workdir = resolve_workdir(cli.workdir.as_ref())?;

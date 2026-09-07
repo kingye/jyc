@@ -139,19 +139,19 @@ fn init_tracing(debug: bool, verbose: bool, log_file: Option<&Path>) -> Result<(
         .with_thread_ids(false);
 
     if let Some(path) = log_file {
-        // TUI subcommand: route logs to a file so they don't trample the
-        // alternate-screen rendering. Append, create-if-missing; ensure
-        // the parent dir exists so a fresh install doesn't fail.
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create log directory {}", parent.display()))?;
-        }
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .with_context(|| format!("Failed to open log file {}", path.display()))?;
-        base.with_writer(file).init();
+        // Daily rotation: writes to `<parent>/<stem>.YYYY-MM-DD`, rolling at
+        // midnight local. Old files are kept indefinitely (retention is a
+        // future PR). The stem is extracted from the path so this works for
+        // both `jyc.log` (server) and `dashboard.log` (TUI).
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create log directory {}", parent.display()))?;
+        let stem = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("jyc.log");
+        let appender = tracing_appender::rolling::daily(parent, stem);
+        base.with_writer(appender).init();
     } else if std::env::var("JOURNAL_STREAM").is_ok() {
         // Skip tracing's timestamp when running under systemd (journal adds its own)
         base.without_time().init();

@@ -26,7 +26,8 @@ struct Cli {
     ///
     /// Without a value: <data_home>/jyc.log.
     /// With a value: that path.
-    /// Default: stderr (except bare `jyc` and dashboard/open — see main()).
+    /// Default: stderr, except bare `jyc` → jyc.log and
+    /// dashboard/open → dashboard.log.
     #[arg(long, global = true, num_args = 0..=1, value_name = "PATH")]
     log_file: Option<Option<PathBuf>>,
 
@@ -95,10 +96,10 @@ enum Commands {
 /// `DisplayHelp` (we also catch `MissingSubcommand` for safety); we
 /// treat both as "no subcommand" only when `args.len() == 1` so that
 /// an explicit `jyc --help` still shows help.
-fn parse_cli() -> Cli {
+fn parse_cli() -> (Cli, bool) {
     let args: Vec<String> = std::env::args().collect();
     match Cli::try_parse_from(&args) {
-        Ok(c) => c,
+        Ok(c) => (c, false),
         Err(e)
             if args.len() == 1
                 && matches!(
@@ -110,7 +111,10 @@ fn parse_cli() -> Cli {
         {
             let mut new_args = args;
             new_args.push("open".to_string());
-            Cli::try_parse_from(new_args).unwrap_or_else(|_| e.exit())
+            (
+                Cli::try_parse_from(new_args).unwrap_or_else(|_| e.exit()),
+                true,
+            )
         }
         Err(e) => e.exit(),
     }
@@ -174,27 +178,18 @@ fn resolve_workdir(workdir: Option<&PathBuf>) -> Result<PathBuf> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = parse_cli();
+    let (cli, is_bare_jyc) = parse_cli();
 
-    // Resolve tracing log destination.
-    // - `--log-file PATH`           → PATH
-    // - `--log-file`                → <data_home>/jyc.log
-    // - bare `jyc` (no subcommand)  → <data_home>/jyc.log
-    // - dashboard / open           → <data_home>/dashboard.log (TUI fix:
-    //                                 tracing writes don't clobber the
-    //                                 alternate-screen render)
-    // - everything else             → stderr
-    // Bare `jyc` is detected via `args.len() == 1` — parse_cli's own
-    // bare→open fallback uses the same condition.
-    let is_bare_jyc = std::env::args().len() == 1;
-    let log_file = if let Some(Some(path)) = &cli.log_file {
-        Some(path.clone())
-    } else if cli.log_file.is_some() || is_bare_jyc {
-        jyc_utils::paths::data_home().map(|h| h.join("jyc.log"))
-    } else if matches!(&cli.command, Commands::Dashboard(_) | Commands::Open { .. }) {
-        jyc_utils::paths::data_home().map(|h| h.join("dashboard.log"))
-    } else {
-        None
+    // Log destination: --log-file [PATH] → jyc.log or PATH; bare `jyc` →
+    // jyc.log; dashboard/open → dashboard.log (TUI fix); else → stderr.
+    let log_file = match &cli.log_file {
+        Some(Some(path)) => Some(path.clone()),
+        Some(None) => jyc_utils::paths::data_home().map(|h| h.join("jyc.log")),
+        None if is_bare_jyc => jyc_utils::paths::data_home().map(|h| h.join("jyc.log")),
+        None if matches!(&cli.command, Commands::Dashboard(_) | Commands::Open { .. }) => {
+            jyc_utils::paths::data_home().map(|h| h.join("dashboard.log"))
+        }
+        None => None,
     };
     init_tracing(cli.debug, cli.verbose, log_file.as_deref())?;
 

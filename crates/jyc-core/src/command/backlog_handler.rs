@@ -9,13 +9,15 @@
 //! Each item's `text` is a free-form user message. After the command
 //! name and subcommand, the registry collapses the rest of the
 //! command line into a single first-line string at `args[1]` (so
-//! `/backlog push hello world` stores "hello world"), and continuation
-//! lines (until the first blank line) become `args[2..]`. The push
+//! `/backlog push hello world` stores "hello world"), and every
+//! remaining line of the message (blank lines included — the command
+//! owns the rest of the message) becomes `args[2..]`. The push
 //! handler joins the first-line content and continuation lines with
-//! `\n` only when both are present. Items are referenced by 1-based
-//! position, so `pop 2` removes the second entry and `rm 2` does the
-//! same without injecting into the next agent turn; `set 2 <text>`
-//! replaces the second entry's text, and `get 2` shows it in full.
+//! `\n` only when both are present, trimming blank edges. Items are
+//! referenced by 1-based position, so `pop 2` removes the second
+//! entry and `rm 2` does the same without injecting into the next
+//! agent turn; `set 2 <text>` replaces the second entry's text, and
+//! `get 2` shows it in full.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,12 +35,14 @@ const BACKLOG_FILENAME: &str = "backlog.jsonl";
 /// subcommands and notes the `ls` alias for `list`.
 const BACKLOG_HELP: &str = "Backlog: save and replay user messages.\n\
 Usage:\n  \
-/backlog push <description>  Add an item (multi-line until blank line)\n  \
+/backlog push <description>  Add an item (rest of message = text)\n  \
 /backlog list (alias: ls)    List items, first line of each\n  \
 /backlog get <N>             Show item N's full text\n  \
 /backlog pop [N]             Remove item N (default 1) and inject text as next user message\n  \
 /backlog rm <N>              Remove item N without injecting\n  \
-/backlog set <N> <new text>  Replace item N's text (multi-line until blank line)\n\n\
+/backlog set <N> <new text>  Replace item N's text (rest of message = new text)\n\n\
+A multi-line item must arrive as ONE message: plain Enter sends each \
+line (TUI/feishu), so use Shift+Enter or paste.\n\n\
 Storage: <topic>/.jyc/backlog.jsonl";
 
 /// One persisted backlog item.
@@ -121,8 +125,9 @@ impl BacklogCommandHandler {
         Self::parse_index(raw).map(Some)
     }
 
-    /// Parse a 1-based index token. Shared by `pop`/`rm` (via `parse_n`)
-    /// and `set` (whose index is the token split out of `args[1]`).
+    /// Parse a 1-based index token. Shared by `pop`/`rm`/`get` (via
+    /// `parse_n`) and `set` (whose index is the token split out of
+    /// `args[1]`).
     fn parse_index(raw: &str) -> Result<usize, String> {
         let n: usize = raw
             .parse()
@@ -131,6 +136,23 @@ impl BacklogCommandHandler {
             return Err("index must be 1 or greater".to_string());
         }
         Ok(n)
+    }
+
+    /// Assemble item text from registry-parsed args: the collapsed
+    /// first-line content (`args[1]`) plus continuation lines
+    /// (`args[2..]`, one element per line) joined with newlines. Edge
+    /// blank lines (e.g. a message ending in a newline) are trimmed,
+    /// inner blank lines (paragraph breaks) are kept. Shared by `push`
+    /// and `set`.
+    fn join_text(first: &str, args: &[String]) -> String {
+        let rest = args.get(2..).map(|s| s.join("\n")).unwrap_or_default();
+        let joined = match (first.is_empty(), rest.is_empty()) {
+            (true, true) => String::new(),
+            (true, false) => rest,
+            (false, true) => first.to_string(),
+            (false, false) => format!("{first}\n{rest}"),
+        };
+        joined.trim().to_string()
     }
 }
 
@@ -183,20 +205,8 @@ impl CommandHandler for BacklogCommandHandler {
                 // - args[0] = "push"
                 // - args[1] = space-joined first-line content (or "" if none)
                 // - args[2..] = continuation lines, one element per line
-                let description = {
-                    let first = args.get(1).map(|s| s.as_str()).unwrap_or("");
-                    // `args.get(2..)` returns `None` when args has fewer
-                    // than 2 elements (e.g. `/backlog push` with no
-                    // description); without this, `args[2..]` would panic
-                    // even though `args.get(1)` is safe.
-                    let rest = args.get(2..).map(|s| s.join("\n")).unwrap_or_default();
-                    match (first.is_empty(), rest.is_empty()) {
-                        (true, true) => String::new(),
-                        (true, false) => rest,
-                        (false, true) => first.to_string(),
-                        (false, false) => format!("{first}\n{rest}"),
-                    }
-                };
+                let description =
+                    Self::join_text(args.get(1).map(|s| s.as_str()).unwrap_or(""), &args);
                 if description.trim().is_empty() {
                     return Ok(CommandResult {
                         success: false,
@@ -391,16 +401,7 @@ impl CommandHandler for BacklogCommandHandler {
                         });
                     }
                 };
-                let text = {
-                    // Same join rule as `push`.
-                    let rest = args.get(2..).map(|s| s.join("\n")).unwrap_or_default();
-                    match (first_line.is_empty(), rest.is_empty()) {
-                        (true, true) => String::new(),
-                        (true, false) => rest,
-                        (false, true) => first_line.to_string(),
-                        (false, false) => format!("{first_line}\n{rest}"),
-                    }
-                };
+                let text = Self::join_text(first_line, &args);
                 if text.trim().is_empty() {
                     return Ok(CommandResult {
                         success: false,
@@ -561,6 +562,24 @@ mode = "agent"
                 .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "first line\nsecond line\nthird line");
+    }
+
+    #[tokio::test]
+    async fn push_trims_blank_edges_and_keeps_paragraph_breaks() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+
+        // The registry now hands over the whole rest of the message, blank
+        // lines included: "" between the paragraphs is an inner paragraph
+        // break (kept), the trailing "" is an edge blank (trimmed).
+        let r = run(&h, dir.path(), &["push", "para one", "", "para two", ""]).await;
+        assert!(r.success, "{:?}", r.error);
+
+        let items =
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+                .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, "para one\n\npara two");
     }
 
     #[tokio::test]
@@ -843,6 +862,22 @@ mode = "agent"
             BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
                 .unwrap();
         assert_eq!(items[0].text, "first\nsecond");
+    }
+
+    #[tokio::test]
+    async fn set_trims_blank_edges_and_keeps_paragraph_breaks() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+        run(&h, dir.path(), &["push", "x"]).await;
+
+        // Same registry shape as the push blank-edges test: inner "" kept,
+        // trailing "" trimmed.
+        let r = run(&h, dir.path(), &["set", "1 para one", "", "para two", ""]).await;
+        assert!(r.success, "{:?}", r.error);
+        let items =
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+                .unwrap();
+        assert_eq!(items[0].text, "para one\n\npara two");
     }
 
     #[tokio::test]

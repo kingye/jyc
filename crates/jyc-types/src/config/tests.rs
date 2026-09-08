@@ -1483,12 +1483,17 @@ mod agent_extends_tests {
         .unwrap();
         assert!(cfg.agents.is_empty());
     }
+}
 
-    /// The `timeout` key deserializes for `[[commands]]` and resolves through
-    /// the single `shell_timeout()` accessor: set value wins, unset → 30s.
+/// Per-command `timeout` for shell-flavor `[[commands]]`: deserialization
+/// plus the single `shell_timeout()` resolver (override wins, unset → 30s).
+#[cfg(test)]
+mod shell_command_timeout_tests {
+    use super::*;
+
     #[test]
     fn shell_command_timeout_deserializes_and_resolves() {
-        let cfg = parse(
+        let cfg = load_config_from_str(
             r#"
             [ai]
             model = "test/model"

@@ -203,9 +203,9 @@ pub struct CustomCommand {
 
     /// Grace period in whole seconds before a shell command is killed.
     /// Shell flavor only — silently ignored on prompt-injection commands.
-    /// Unset → [`DEFAULT_SHELL_TIMEOUT_SECS`]. Resolve through
-    /// [`CustomCommand::shell_timeout`], never by reading this field's
-    /// default inline.
+    /// Unset → [`DEFAULT_SHELL_TIMEOUT_SECS`]; `0` means no grace (killed
+    /// immediately). Resolve through [`CustomCommand::shell_timeout`],
+    /// never by reading this field's default inline.
     #[serde(default)]
     pub timeout: Option<u64>,
 }

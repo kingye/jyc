@@ -206,8 +206,9 @@ impl CommandHandler for BacklogCommandHandler {
                 // - args[1] = space-joined first-line content (or "" if none)
                 // - args[2..] = continuation lines, one element per line
                 let description =
-                    Self::join_text(args.get(1).map(|s| s.as_str()).unwrap_or(""), &args);
-                if description.trim().is_empty() {
+                    Self::join_text(args.get(1).map(|s| s.as_str()).unwrap_or(""), args);
+                // `join_text` already trims, so an emptiness check suffices.
+                if description.is_empty() {
                     return Ok(CommandResult {
                         success: false,
                         message: "/backlog push: description required".to_string(),
@@ -401,8 +402,8 @@ impl CommandHandler for BacklogCommandHandler {
                         });
                     }
                 };
-                let text = Self::join_text(first_line, &args);
-                if text.trim().is_empty() {
+                let text = Self::join_text(first_line, args);
+                if text.is_empty() {
                     return Ok(CommandResult {
                         success: false,
                         message: "/backlog set: new text required".to_string(),
@@ -580,6 +581,29 @@ mode = "agent"
                 .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "para one\n\npara two");
+    }
+
+    #[tokio::test]
+    async fn push_blank_only_message_requires_description() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+
+        // Bare `/backlog push` and the registry shape of a push followed
+        // by only blank lines (`/backlog push\n\n`) both join+trim to an
+        // empty string — the guard fires instead of storing a blank item.
+        let r = run(&h, dir.path(), &["push", ""]).await;
+        assert!(!r.success);
+        assert!(r.message.contains("description required"));
+
+        let r = run(&h, dir.path(), &["push", "", "", ""]).await;
+        assert!(!r.success);
+        assert!(r.message.contains("description required"));
+        assert!(
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+                .unwrap()
+                .is_empty(),
+            "no blank item may be stored"
+        );
     }
 
     #[tokio::test]

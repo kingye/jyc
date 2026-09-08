@@ -23,6 +23,7 @@ use jyc_types::{InboundMessage, MessageContent, PatternMatch};
 use serde::Deserialize;
 use std::collections::HashMap;
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 use crate::server::WebsocketHandler;
 
@@ -66,6 +67,12 @@ pub struct TopicProxyHandler {
     topic: String,
     topic_managers: Arc<ArcSwap<Vec<Arc<TopicManager>>>>,
     inspect_broadcast: Arc<broadcast::Sender<String>>,
+    /// Inspect-server shutdown signal. When the server begins graceful
+    /// shutdown, this token is cancelled and each connection's select loop
+    /// observes it, sends a Close frame, and returns — preventing axum's
+    /// `with_graceful_shutdown` from waiting forever on still-open WS
+    /// connections.
+    ws_shutdown: CancellationToken,
 }
 
 impl TopicProxyHandler {
@@ -74,12 +81,14 @@ impl TopicProxyHandler {
         topic: String,
         topic_managers: Arc<ArcSwap<Vec<Arc<TopicManager>>>>,
         inspect_broadcast: Arc<broadcast::Sender<String>>,
+        ws_shutdown: CancellationToken,
     ) -> Self {
         Self {
             channel,
             topic,
             topic_managers,
             inspect_broadcast,
+            ws_shutdown,
         }
     }
 
@@ -261,6 +270,19 @@ impl WebsocketHandler for TopicProxyHandler {
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
+                }
+                // Server shutdown: send a Close frame so the client sees a
+                // clean disconnect and axum's connection task returns,
+                // allowing `with_graceful_shutdown` to complete.
+                _ = self.ws_shutdown.cancelled() => {
+                    tracing::info!(
+                        addr = %addr,
+                        channel = %channel,
+                        topic = %topic,
+                        "Inspect server shutting down; closing WebSocket"
+                    );
+                    let _ = write.send(axum::extract::ws::Message::Close(None)).await;
+                    break;
                 }
             }
         }

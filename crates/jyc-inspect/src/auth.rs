@@ -109,6 +109,7 @@ mod tests {
             reload_callback: None,
             auth_token: token.map(String::from),
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(1).0),
+            ws_shutdown: tokio_util::sync::CancellationToken::new(),
         })
     }
 

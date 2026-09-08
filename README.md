@@ -608,6 +608,5 @@ This is useful for diagnosing reply delivery failures.
 |----------|---------|
 | [DESIGN.md](DESIGN.md) | Architecture, data flow, component design, API reference |
 | [docs/architecture/context.md](docs/architecture/context.md) | Context strategies, sliding window, history notes, token safety nets |
-| [IMPLEMENTATION.md](IMPLEMENTATION.md) | Implementation phases and progress |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
 | [docker/README.md](docker/README.md) | Docker/Podman deployment |

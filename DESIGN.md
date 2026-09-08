@@ -2949,7 +2949,6 @@ Stats are accumulated in `Arc<Mutex<HealthStats>>`, queryable by the inspect ser
 jyc/
 ├── Cargo.toml
 ├── DESIGN.md
-├── IMPLEMENTATION.md
 ├── src/
 │   ├── main.rs                          # Entry point, clap CLI
 │   ├── cli/
@@ -3786,5 +3785,4 @@ max_jobs_per_topic = 10    # default: 10
 ## References
 
 - [SYSTEMD.md](SYSTEMD.md) - systemd service management for process supervision and self-bootstrapping
-- [IMPLEMENTATION.md](IMPLEMENTATION.md) - Implementation phases and progress
 - [CHANGELOG.md](CHANGELOG.md) - Version history and changes

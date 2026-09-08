@@ -12,6 +12,9 @@
   and DESIGN.md.
 - `GITHUB_CHANNEL.md` (repo root) — pre-pipe-era design doc, superseded by
   `docs/channels/github.md`.
+- Unused agent templates (`templates/`: gitee/github role templates,
+  `jyc-dev`, `jyc-review`, `frontend-designer`); only `invoice-processing`
+  is kept. The template mechanism itself is unchanged. (#732)
 
 ## [0.3.17] - 2026-09-07
 

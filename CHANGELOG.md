@@ -22,12 +22,14 @@
   Storage: `<topic_path>/.jyc/backlog.jsonl` (JSONL, one item per line).
   Subcommands: `push <multi-line description>` appends a new item
   (continuation lines collected until blank line, then re-joined with
-  `\n`); `list` (alias `ls`) prints a numbered list (or `(empty)`);
+  `\n`); `list` (alias `ls`) prints a numbered list showing the first
+  line of each item (or `(empty)`);
   `pop [N]` removes the N-th item (default 1) and injects its text into
   the next agent turn as a user message via `append_body`; `rm <N>`
   removes the N-th item
   without injecting; `set <N> <new text>` replaces the N-th item's text
-  in place (same multi-line continuation rules as `push`, no injection).
+  in place (same multi-line continuation rules as `push`, no injection);
+  `get <N>` shows the full text of the N-th item.
   Also teaches the command registry an opt-in
   `collect_subsequent_lines` mechanism so future commands can accept
   multi-line first arguments the same way.

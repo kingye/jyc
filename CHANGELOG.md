@@ -1,4 +1,4 @@
-## [Unreleased] — 0.3.18
+## [Unreleased]
 
 ### Added
 

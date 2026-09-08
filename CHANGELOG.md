@@ -232,6 +232,15 @@
   everything. Server stderr (panics, prints that bypass tracing) flows
   into the same file via the `--log-file` rotation-less append writer,
   so diagnostic capture no longer needs the separate plain file.
+- **`scripts/deploy.sh` now uses a layered shutdown** (`jyc stop` →
+  `pkill -f 'jyc serve'` → `sleep 3` → `pkill -9 -f 'jyc serve'`) before
+  starting the newly-deployed server. Previously the script only ran
+  `jyc stop`, which signals just the PID in `<workdir>/jyc.pid` — a
+  TUI-spawned `jyc serve` survived the deploy, leaving the old and new
+  servers running concurrently. The `pkill` step catches every
+  `jyc serve` by command-line pattern (same graceful SIGTERM),
+  `sleep 3` lets in-flight graceful shutdowns finish, and `pkill -9`
+  is a last-resort SIGKILL for any process that ignored SIGTERM.
 
 ### Fixed
 

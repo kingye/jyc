@@ -14,7 +14,7 @@
 //! handler joins the first-line content and continuation lines with
 //! `\n` only when both are present. Items are referenced by 1-based
 //! position, so `pop 2` removes the second entry and `rm 2` does the
-//! same without injecting into the next agent turn; `edit 2 <text>`
+//! same without injecting into the next agent turn; `set 2 <text>`
 //! replaces the second entry's text.
 
 use std::fs;
@@ -37,7 +37,7 @@ Usage:\n  \
 /backlog list (alias: ls)    List all items with 1-based index\n  \
 /backlog pop [N]             Remove item N (default 1) and inject text as next user message\n  \
 /backlog rm <N>              Remove item N without injecting\n  \
-/backlog edit <N> <new text> Replace item N's text (multi-line until blank line)\n\n\
+/backlog set <N> <new text>  Replace item N's text (multi-line until blank line)\n\n\
 Storage: <topic>/.jyc/backlog.jsonl";
 
 /// One persisted backlog item.
@@ -46,7 +46,7 @@ struct BacklogItem {
     text: String,
 }
 
-/// Handler for `/backlog push|list|pop|rm|edit`.
+/// Handler for `/backlog push|list|pop|rm|set`.
 pub struct BacklogCommandHandler;
 
 impl BacklogCommandHandler {
@@ -121,7 +121,7 @@ impl BacklogCommandHandler {
     }
 
     /// Parse a 1-based index token. Shared by `pop`/`rm` (via `parse_n`)
-    /// and `edit` (whose index is the token split out of `args[1]`).
+    /// and `set` (whose index is the token split out of `args[1]`).
     fn parse_index(raw: &str) -> Result<usize, String> {
         let n: usize = raw
             .parse()
@@ -146,7 +146,7 @@ impl CommandHandler for BacklogCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Save and replay user messages (push|list|pop|rm|edit)"
+        "Save and replay user messages (push|list|pop|rm|set)"
     }
 
     /// `/backlog push` is followed by a free-form multi-line description.
@@ -321,9 +321,9 @@ impl CommandHandler for BacklogCommandHandler {
                 })
             }
 
-            "edit" => {
+            "set" => {
                 // After registry parsing:
-                // - args[0] = "edit"
+                // - args[0] = "set"
                 // - args[1] = "<N> <space-joined first-line text>", just
                 //   "<N>", or "" — the index is the token before the first
                 //   whitespace, the remainder is the new text's first line
@@ -334,7 +334,7 @@ impl CommandHandler for BacklogCommandHandler {
                     None => (raw, ""),
                 };
                 let n = if idx_token.is_empty() {
-                    Err("missing index (usage: /backlog edit <N> <new text>)".to_string())
+                    Err("missing index (usage: /backlog set <N> <new text>)".to_string())
                 } else {
                     Self::parse_index(idx_token)
                 };
@@ -343,7 +343,7 @@ impl CommandHandler for BacklogCommandHandler {
                     Err(err) => {
                         return Ok(CommandResult {
                             success: false,
-                            message: format!("/backlog edit: {err}"),
+                            message: format!("/backlog set: {err}"),
                             error: Some(err),
                             append_body: None,
                         });
@@ -362,7 +362,7 @@ impl CommandHandler for BacklogCommandHandler {
                 if text.trim().is_empty() {
                     return Ok(CommandResult {
                         success: false,
-                        message: "/backlog edit: new text required".to_string(),
+                        message: "/backlog set: new text required".to_string(),
                         error: Some("empty text".to_string()),
                         append_body: None,
                     });
@@ -372,7 +372,7 @@ impl CommandHandler for BacklogCommandHandler {
                     let err = format!("index {n} out of range (backlog has {} items)", items.len());
                     return Ok(CommandResult {
                         success: false,
-                        message: format!("/backlog edit: {err}"),
+                        message: format!("/backlog set: {err}"),
                         error: Some(err),
                         append_body: None,
                     });
@@ -381,7 +381,7 @@ impl CommandHandler for BacklogCommandHandler {
                 Self::write_items(&path, &items)?;
                 Ok(CommandResult {
                     success: true,
-                    message: format!("Backlog: edited item {n}"),
+                    message: format!("Backlog: set item {n}"),
                     error: None,
                     append_body: None,
                 })
@@ -390,7 +390,7 @@ impl CommandHandler for BacklogCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/backlog: unknown subcommand {other:?} (expected push|list|pop|rm|edit)"
+                    "/backlog: unknown subcommand {other:?} (expected push|list|pop|rm|set)"
                 ),
                 error: Some(format!("unknown subcommand {other}")),
                 append_body: None,
@@ -697,17 +697,17 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn edit_single_line_replaces_item_text() {
+    async fn set_single_line_replaces_item_text() {
         let dir = fresh_topic();
         let h = BacklogCommandHandler::new();
         run(&h, dir.path(), &["push", "keep me"]).await;
         run(&h, dir.path(), &["push", "old text"]).await;
 
-        // Post-collapse shape for `/backlog edit 2 fix the typo`: the
+        // Post-collapse shape for `/backlog set 2 fix the typo`: the
         // index and the first-line text share args[1].
-        let r = run(&h, dir.path(), &["edit", "2 fix the typo"]).await;
+        let r = run(&h, dir.path(), &["set", "2 fix the typo"]).await;
         assert!(r.success, "{:?}", r.error);
-        assert_eq!(r.message, "Backlog: edited item 2");
+        assert_eq!(r.message, "Backlog: set item 2");
         assert!(r.append_body.is_none());
 
         let items =
@@ -718,13 +718,13 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn edit_continuation_lines_join_with_newlines() {
+    async fn set_continuation_lines_join_with_newlines() {
         let dir = fresh_topic();
         let h = BacklogCommandHandler::new();
         run(&h, dir.path(), &["push", "x"]).await;
 
-        // Pure continuation form for `/backlog edit 1` + two lines.
-        let r = run(&h, dir.path(), &["edit", "1", "line a", "line b"]).await;
+        // Pure continuation form for `/backlog set 1` + two lines.
+        let r = run(&h, dir.path(), &["set", "1", "line a", "line b"]).await;
         assert!(r.success, "{:?}", r.error);
         let items =
             BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
@@ -733,12 +733,12 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn edit_first_line_plus_continuation_joins_with_newlines() {
+    async fn set_first_line_plus_continuation_joins_with_newlines() {
         let dir = fresh_topic();
         let h = BacklogCommandHandler::new();
         run(&h, dir.path(), &["push", "x"]).await;
 
-        let r = run(&h, dir.path(), &["edit", "1 first", "second"]).await;
+        let r = run(&h, dir.path(), &["set", "1 first", "second"]).await;
         assert!(r.success, "{:?}", r.error);
         let items =
             BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
@@ -747,44 +747,44 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn edit_missing_index_returns_error() {
+    async fn set_missing_index_returns_error() {
         let dir = fresh_topic();
         let h = BacklogCommandHandler::new();
-        let r = run(&h, dir.path(), &["edit"]).await;
+        let r = run(&h, dir.path(), &["set"]).await;
         assert!(!r.success);
         assert!(r.message.contains("missing index"));
     }
 
     #[tokio::test]
-    async fn edit_invalid_index_returns_error() {
+    async fn set_invalid_index_returns_error() {
         let dir = fresh_topic();
         let h = BacklogCommandHandler::new();
         run(&h, dir.path(), &["push", "x"]).await;
-        let r = run(&h, dir.path(), &["edit", "abc some text"]).await;
+        let r = run(&h, dir.path(), &["set", "abc some text"]).await;
         assert!(!r.success);
         assert!(r.message.contains("invalid index"));
-        let r = run(&h, dir.path(), &["edit", "0 nope"]).await;
+        let r = run(&h, dir.path(), &["set", "0 nope"]).await;
         assert!(!r.success);
         assert!(r.message.contains("1 or greater"));
     }
 
     #[tokio::test]
-    async fn edit_out_of_range_returns_error() {
+    async fn set_out_of_range_returns_error() {
         let dir = fresh_topic();
         let h = BacklogCommandHandler::new();
         run(&h, dir.path(), &["push", "only"]).await;
-        let r = run(&h, dir.path(), &["edit", "9 new text"]).await;
+        let r = run(&h, dir.path(), &["set", "9 new text"]).await;
         assert!(!r.success);
         assert!(r.message.contains("out of range"));
     }
 
     #[tokio::test]
-    async fn edit_empty_text_returns_error_and_keeps_item() {
+    async fn set_empty_text_returns_error_and_keeps_item() {
         let dir = fresh_topic();
         let h = BacklogCommandHandler::new();
         run(&h, dir.path(), &["push", "keep"]).await;
 
-        let r = run(&h, dir.path(), &["edit", "1"]).await;
+        let r = run(&h, dir.path(), &["set", "1"]).await;
         assert!(!r.success);
         assert!(r.message.contains("new text required"));
         let items =
@@ -818,8 +818,8 @@ mode = "agent"
             "helper text should mention the `ls` alias"
         );
         assert!(
-            msg.contains("/backlog edit"),
-            "helper text should list the `edit` subcommand"
+            msg.contains("/backlog set"),
+            "helper text should list the `set` subcommand"
         );
         assert!(r.error.is_none());
         assert!(r.append_body.is_none());

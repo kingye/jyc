@@ -111,3 +111,91 @@ async fn test_websocket_adapter_start_and_handle() {
     // Wait for server to shut down
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
 }
+
+/// Verify that when the inspect server's shutdown token is cancelled, an
+/// open WebSocket connection is force-closed by the handler's `select!`
+/// arm — preventing axum's `with_graceful_shutdown` from waiting forever
+/// on the still-open connection (which used to leave zombie `jyc serve`
+/// processes after `/deploy`).
+#[tokio::test]
+async fn test_websocket_adapter_force_closes_on_shutdown() {
+    use jyc_types::InboundAdapter;
+
+    let (broadcast_tx, _broadcast_rx) = broadcast::channel(16);
+    let tmp = tempfile::TempDir::new().unwrap();
+    let storage = Arc::new(MessageStorage::new(tmp.path()));
+    let outbound = WebsocketOutboundAdapter::new(broadcast_tx, storage);
+
+    let shutdown = CancellationToken::new();
+    let mut inbound = WebsocketInboundAdapter::new("test_ws".to_string(), outbound.broadcast_tx());
+    inbound.set_ws_shutdown(shutdown.clone());
+    let inbound = Arc::new(inbound);
+
+    inbound
+        .start(
+            InboundAdapterOptions {
+                on_message: Box::new(|_| Ok(())),
+                on_topic_close: None,
+                on_close_event: None,
+                on_error: Box::new(|e| tracing::error!("{e}")),
+                attachment_config: None,
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let inbound_for_handler = inbound.clone();
+    let app = axum::Router::new().route(
+        "/ws",
+        axum::routing::get(move |ws: axum::extract::ws::WebSocketUpgrade| {
+            let inbound = inbound_for_handler.clone();
+            async move {
+                ws.on_upgrade(move |socket| async move {
+                    let sock_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+                    let _ = inbound.handle(socket, sock_addr, None).await;
+                })
+            }
+        }),
+    );
+    // axum::serve without with_graceful_shutdown runs forever (waits for
+    // listener error). Hook the shutdown token so axum returns when fired.
+    let shutdown_for_axum = shutdown.clone();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { shutdown_for_axum.cancelled().await })
+            .await
+            .unwrap();
+    });
+
+    // Connect a client and hold the connection open (don't send anything).
+    // When shutdown fires, drop the entire client stream so axum sees
+    // both halves of the TCP socket close at once. Without this, with_graceful_shutdown
+    // blocks indefinitely waiting for the open connection to drain.
+    let url = format!("ws://{}/ws", addr);
+    let client_stream = tokio_tungstenite::connect_async(&url).await.unwrap().0;
+    let shutdown_for_client = shutdown.clone();
+    let _client_guard = tokio::spawn(async move {
+        shutdown_for_client.cancelled().await;
+        drop(client_stream);
+    });
+
+    // Give the connection a moment to establish before cancelling.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Without the fix, axum waits forever on the still-open WS connection.
+    // With the fix, the handler's `select!` arm fires, breaks the loop, and
+    // the post-loop Close frame closes the server side. The client guard
+    // drops the client side. axum then sees both halves closed and exits.
+    shutdown.cancel();
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await;
+    assert!(
+        result.is_ok(),
+        "Server should exit within 5s of ws_shutdown cancellation, but timed out \
+         (axum was waiting on the still-open WebSocket connection)"
+    );
+}

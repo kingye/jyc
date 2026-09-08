@@ -36,6 +36,7 @@ fn ctx() -> Arc<InspectContext> {
         reload_callback: None,
         auth_token: Some("topsecret".into()),
         inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(1).0),
+        ws_shutdown: tokio_util::sync::CancellationToken::new(),
     })
 }
 
@@ -159,6 +160,7 @@ async fn ws_topic_route_propagates_scoped_topic() {
         reload_callback: None,
         auth_token: Some("topsecret".into()),
         inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(1).0),
+        ws_shutdown: tokio_util::sync::CancellationToken::new(),
     });
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

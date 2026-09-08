@@ -209,6 +209,13 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     // activity/thinking events to dashboard WebSocket clients.
     let inspect_broadcast: Arc<tokio::sync::broadcast::Sender<String>> =
         Arc::new(tokio::sync::broadcast::channel(256).0);
+    // Inspect-server shutdown signal. Shared with WS handlers (websocket
+    // inbound adapters and the topic-proxy) so each connection's `select!`
+    // loop can detect shutdown and send a Close frame, allowing axum's
+    // `with_graceful_shutdown` to complete instead of waiting forever on
+    // still-open WebSocket connections (which used to leave zombie
+    // `jyc serve` processes after `/deploy`).
+    let ws_shutdown = cancel.clone();
 
     for (channel_name, channel_config) in &config_snapshot.channels {
         let channel_type = channel_config.channel_type.as_str();
@@ -384,6 +391,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             WebsocketInboundAdapter::new(channel_name.to_string(), broadcast_tx.clone());
         handler.set_workspace_dir(workspace_dir.clone());
         handler.set_inspect_broadcast(inspect_broadcast.clone());
+        handler.set_ws_shutdown(ws_shutdown.clone());
         let handler = Arc::new(handler);
         ws_handler_for_channel.insert(channel_name.to_string(), handler.clone());
         websocket_handlers.push(handler);
@@ -606,6 +614,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             },
             inspect_broadcast: inspect_broadcast.clone(),
             auth_token: Some(auth_token),
+            ws_shutdown: cancel.clone(),
         });
 
         // Restore custom topic_path mappings from disk so topics with

@@ -437,6 +437,19 @@
   wins on collision, matching `CommandRegistry::register` semantics).
   The dashboard refreshes `chat.commands` whenever the user changes
   topic selection.
+- **`/deploy` no longer leaves zombie `jyc serve` processes.** Axum's
+  `with_graceful_shutdown` waits for open WebSocket connections to close
+  before letting the server exit; previously nothing force-closed those
+  connections, so each `/deploy` added another stuck process (the old
+  one held the TUI's TCP socket, the new one bound the port; messages
+  typed in the TUI went to the dying old server's `TopicManager` whose
+  cancel token was already fired → "Worker cancelled" log on every
+  message). WS handlers now subscribe to the inspect server's cancel
+  token via a new `ws_shutdown` field on `InspectContext` and add a
+  `select!` arm that sends a Close frame and returns on shutdown, so
+  `jyc stop` completes within seconds and the TUI reconnects cleanly.
+  Also fixes the TUI appearing "stuck" after `/deploy` (no
+  progress indicator, no replies until restart).
 
 ### Removed
 

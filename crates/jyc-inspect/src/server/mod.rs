@@ -125,6 +125,11 @@ pub struct InspectContext {
     /// `TopicProxyHandler` to forward activity/chat/thinking events to
     /// dashboard WebSocket clients. Capacity 256 (configured at creation).
     pub inspect_broadcast: Arc<tokio::sync::broadcast::Sender<String>>,
+    /// Inspect-server shutdown signal. Cloned into each WS handler so its
+    /// `select!` loop can detect shutdown and send a Close frame, allowing
+    /// axum's `with_graceful_shutdown` to complete instead of waiting
+    /// forever on still-open WS connections.
+    pub ws_shutdown: CancellationToken,
 }
 
 /// TCP-based inspect server.
@@ -199,6 +204,7 @@ impl InspectServer {
                     name,
                     context.topic_managers.clone(),
                     context.inspect_broadcast.clone(),
+                    context.ws_shutdown.clone(),
                 )))
             }
             WsRoute::Channel(name) => {
@@ -679,6 +685,7 @@ mod exchange_route_auth_tests {
             reload_callback: None,
             auth_token: token.map(String::from),
             inspect_broadcast: Arc::new(tokio::sync::broadcast::channel(1).0),
+            ws_shutdown: CancellationToken::new(),
         })
     }
 

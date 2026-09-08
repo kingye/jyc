@@ -583,21 +583,26 @@ focus on error handling",
     }
 
     #[tokio::test]
-    async fn test_collect_subsequent_lines_no_continuation() {
+    async fn test_collect_subsequent_lines_blank_immediately_owns_body() {
         let mut registry = CommandRegistry::new();
         registry.register(Box::new(MultiLineHandler));
 
-        // Blank line right after the command — nothing to collect, but
-        // args[1] is still pushed as an empty placeholder so the handler
-        // can index it uniformly.
+        // A blank line right after the command no longer separates the
+        // command from the body: the collecting command owns the rest of
+        // the message — the blank and `later body` both land in args
+        // (args[1] is the empty first-line placeholder), and nothing
+        // remains for the agent.
         let body = "/backlog push\n\nlater body";
         let output = registry
             .process_commands(body, &test_context())
             .await
             .unwrap();
 
-        assert_eq!(output.results[0].message, r#"args=["push", ""]"#);
-        assert_eq!(output.cleaned_body, "later body");
+        assert_eq!(
+            output.results[0].message,
+            r#"args=["push", "", "", "later body"]"#
+        );
+        assert!(output.body_empty);
     }
 
     /// `/backlog push hello world` (single command line, no continuation):

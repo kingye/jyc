@@ -48,7 +48,9 @@ impl CommandRegistry {
     /// content). Lines starting with `/` that match a registered handler are
     /// treated as commands. Empty lines between commands are skipped. The first
     /// non-empty, non-command line ends the command block — everything from
-    /// that line onward is the cleaned body.
+    /// that line onward is the cleaned body. Handlers that opt into
+    /// `collect_subsequent_lines` instead consume the rest of the message,
+    /// blank lines included, and leave no body.
     ///
     /// Returns executed results + cleaned body. TopicManager does NOT need
     /// to know about command line syntax.
@@ -83,10 +85,12 @@ impl CommandRegistry {
                             parts[1..].iter().map(|s| s.to_string()).collect();
 
                         // Commands that opt into continuation lines (e.g.
-                        // `/backlog push`) get subsequent non-blank lines
-                        // appended as additional args. Stops at the first
-                        // blank line so a body that follows the command
-                        // block still flows through to the agent.
+                        // `/backlog push`) get every remaining line of the
+                        // message appended as additional args — blank lines
+                        // included — so the command owns the rest of the
+                        // message. Paragraph breaks inside an item stay with
+                        // the item instead of leaking the tail into an agent
+                        // run.
                         //
                         // The first-line content (everything after the
                         // subcommand on the command line) is collapsed into
@@ -116,10 +120,6 @@ impl CommandRegistry {
                                 }
                             }
                             while let Some(&next) = lines_iter.peek() {
-                                if next.trim().is_empty() {
-                                    lines_iter.next(); // consume the blank separator
-                                    break;
-                                }
                                 args.push(next.to_string());
                                 lines_iter.next();
                             }
@@ -513,10 +513,10 @@ focus on error handling",
         assert_eq!(output.cleaned_body, "[args=] PROMPT");
     }
 
-    /// A handler that opts into collecting continuation lines. Subsequent
-    /// non-blank lines are appended to `args` (one line per arg), and the
-    /// registry stops at the first blank line so a body that follows can
-    /// still be passed to the agent.
+    /// A handler that opts into collecting continuation lines. Every
+    /// remaining line of the message is appended to `args` (one line per
+    /// arg, blank lines included) — the command owns the rest of the
+    /// message and nothing leaks into the cleaned body.
     struct MultiLineHandler;
 
     #[async_trait]
@@ -542,7 +542,7 @@ focus on error handling",
     }
 
     #[tokio::test]
-    async fn test_collect_subsequent_lines_stops_at_blank() {
+    async fn test_collect_subsequent_lines_owns_rest_of_message() {
         let mut registry = CommandRegistry::new();
         registry.register(Box::new(MultiLineHandler));
 
@@ -554,13 +554,13 @@ focus on error handling",
 
         assert_eq!(output.results.len(), 1);
         // args[0] = subcommand, args[1] = "" (no first-line content), args[2..]
-        // = continuation lines.
+        // = every remaining line, including the blank separator — the tail
+        // stays with the command instead of leaking into an agent run.
         assert_eq!(
             output.results[0].message,
-            r#"args=["push", "", "line 1", "line 2", "line 3"]"#
+            r#"args=["push", "", "line 1", "line 2", "line 3", "", "body text"]"#
         );
-        // Trailing body still flows through after the blank line.
-        assert_eq!(output.cleaned_body, "body text");
+        assert!(output.body_empty, "nothing may follow a collecting command");
     }
 
     #[tokio::test]
@@ -583,21 +583,26 @@ focus on error handling",
     }
 
     #[tokio::test]
-    async fn test_collect_subsequent_lines_no_continuation() {
+    async fn test_collect_subsequent_lines_blank_immediately_owns_body() {
         let mut registry = CommandRegistry::new();
         registry.register(Box::new(MultiLineHandler));
 
-        // Blank line right after the command — nothing to collect, but
-        // args[1] is still pushed as an empty placeholder so the handler
-        // can index it uniformly.
+        // A blank line right after the command no longer separates the
+        // command from the body: the collecting command owns the rest of
+        // the message — the blank and `later body` both land in args
+        // (args[1] is the empty first-line placeholder), and nothing
+        // remains for the agent.
         let body = "/backlog push\n\nlater body";
         let output = registry
             .process_commands(body, &test_context())
             .await
             .unwrap();
 
-        assert_eq!(output.results[0].message, r#"args=["push", ""]"#);
-        assert_eq!(output.cleaned_body, "later body");
+        assert_eq!(
+            output.results[0].message,
+            r#"args=["push", "", "", "later body"]"#
+        );
+        assert!(output.body_empty);
     }
 
     /// `/backlog push hello world` (single command line, no continuation):

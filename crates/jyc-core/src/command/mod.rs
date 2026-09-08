@@ -274,6 +274,7 @@ mod tests {
             skills: None,
             user_prompt: Some("do it".into()),
             shell: None,
+            timeout: None,
         }
     }
 
@@ -412,6 +413,7 @@ mod tests {
             skills: None,
             user_prompt: None,
             shell: Some(vec!["git".into(), "log".into()]),
+            timeout: None,
         };
         let commands = all_commands_with(&[cmd], &[]);
         let entry = commands.iter().find(|c| c.name == "/gitlog").unwrap();

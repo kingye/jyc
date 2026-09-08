@@ -196,10 +196,31 @@ pub struct CustomCommand {
     /// after the command on the same line are appended. Required for
     /// shell-only commands; must be unset when `user_prompt` is set.
     ///
-    /// ponytail: no per-command timeout / cwd / env knobs — wrap with a
-    /// script (`shell = ["./scripts/deploy.sh"]`) when those matter.
+    /// ponytail: no per-command cwd / env knobs — wrap with a script
+    /// (`shell = ["./scripts/deploy.sh"]`) when those matter.
     #[serde(default)]
     pub shell: Option<Vec<String>>,
+
+    /// Grace period in whole seconds before a shell command is killed.
+    /// Shell flavor only — silently ignored on prompt-injection commands.
+    /// Unset → [`DEFAULT_SHELL_TIMEOUT_SECS`]. Resolve through
+    /// [`CustomCommand::shell_timeout`], never by reading this field's
+    /// default inline.
+    #[serde(default)]
+    pub timeout: Option<u64>,
+}
+
+/// Default [`CustomCommand::timeout`] for shell-flavor `[[commands]]`
+/// entries, in seconds. Single source of truth — see
+/// [`CustomCommand::shell_timeout`].
+pub const DEFAULT_SHELL_TIMEOUT_SECS: u64 = 30;
+
+impl CustomCommand {
+    /// Resolve the shell execution timeout: the per-command `timeout`
+    /// (whole seconds) when set, else [`DEFAULT_SHELL_TIMEOUT_SECS`].
+    pub fn shell_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.timeout.unwrap_or(DEFAULT_SHELL_TIMEOUT_SECS))
+    }
 }
 
 /// Names of the built-in slash commands, including the leading slash.

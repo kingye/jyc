@@ -1483,4 +1483,31 @@ mod agent_extends_tests {
         .unwrap();
         assert!(cfg.agents.is_empty());
     }
+
+    /// The `timeout` key deserializes for `[[commands]]` and resolves through
+    /// the single `shell_timeout()` accessor: set value wins, unset → 30s.
+    #[test]
+    fn shell_command_timeout_deserializes_and_resolves() {
+        let cfg = parse(
+            r#"
+            [[commands]]
+            name = "deploy"
+            shell = ["./deploy.sh"]
+            timeout = 300
+
+            [[commands]]
+            name = "ls"
+            shell = ["ls"]
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.commands[0].shell_timeout(),
+            std::time::Duration::from_secs(300)
+        );
+        assert_eq!(
+            cfg.commands[1].shell_timeout(),
+            std::time::Duration::from_secs(30)
+        );
+    }
 }

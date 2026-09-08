@@ -59,6 +59,10 @@
 
 ### Changed
 
+- **`/new` and `/reset` now require `--force`.** A plain invocation no
+  longer destroys the session (`/new` also chat history and published
+  files) — it returns a warning showing the exact command to proceed
+  with, mirroring the existing `/close --confirm` guard.
 - **`--log-file` output is now daily-rotated.** The file the flag writes
   to gains a date suffix — `jyc.log` becomes `jyc.log.2026-09-07`,
   `dashboard.log` becomes `dashboard.log.2026-09-07`, with a fresh

@@ -7,7 +7,10 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 /// exchange-published files (+ token) for this topic.
 ///
 /// Usage:
-///   /new    Delete session state files and chat history; next AI prompt will start completely fresh
+///   /new --force    Delete session state files and chat history; next AI prompt will start completely fresh
+///
+/// Without `--force` the command only warns, so the destructive action
+/// cannot be triggered by an accidental send (mirrors `/close`).
 /// Delete all files matching a glob pattern. Returns count of deleted files.
 async fn delete_glob_files(pattern: &std::path::Path) -> u64 {
     let pattern_str = pattern.to_string_lossy().to_string();
@@ -44,6 +47,13 @@ async fn delete_glob_files(pattern: &std::path::Path) -> u64 {
 
 pub struct NewCommandHandler;
 
+impl NewCommandHandler {
+    /// Returns `true` if the args contain the explicit `--force` flag.
+    fn is_forced(args: &[String]) -> bool {
+        args.iter().any(|a| a == "--force")
+    }
+}
+
 #[async_trait]
 impl CommandHandler for NewCommandHandler {
     fn name(&self) -> &str {
@@ -51,10 +61,25 @@ impl CommandHandler for NewCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Reset session and clear chat history for this topic"
+        "Reset session and clear chat history (requires --force)"
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
+        // Require --force to prevent accidentally wiping the session and
+        // chat history. Plain /new returns a warning instead.
+        if !Self::is_forced(&context.args) {
+            return Ok(CommandResult {
+                success: true,
+                message: "⚠️  /new will PERMANENTLY delete this topic's session and chat \
+                         history. This cannot be undone.\n\
+                         \n\
+                         To proceed, send: /new --force"
+                    .into(),
+                error: None,
+                append_body: None,
+            });
+        }
+
         let agent_path = context.topic_path.join(".jyc/agent-session.json");
         let context_path = context.topic_path.join(".jyc/agent-context.json");
         let activity_path = context.topic_path.join(".jyc/activity.jsonl");
@@ -127,7 +152,9 @@ mod tests {
 
     fn test_context(topic_path: &Path) -> CommandContext {
         CommandContext {
-            args: vec![],
+            // Pass --force by default so the destructive-action tests
+            // exercise the real path; guard tests override `args`.
+            args: vec!["--force".to_string()],
             topic_path: topic_path.to_path_buf(),
             config: Arc::new(
                 jyc_types::load_config_from_str(
@@ -185,6 +212,27 @@ mode = "agent"
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_new_without_force_warns_and_keeps_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        setup_session(&tmp).await;
+        setup_chat_history(&tmp).await;
+
+        let handler = NewCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec![];
+
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(
+            result.message.contains("/new --force"),
+            "warning should tell the user how to proceed, got: {}",
+            result.message
+        );
+        assert!(tmp.path().join(".jyc/agent-session.json").exists());
+        assert!(tmp.path().join("chat_history_2026-06-25.jsonl").exists());
     }
 
     #[tokio::test]

@@ -51,12 +51,12 @@ pub fn all_commands() -> Vec<CommandInfo> {
         },
         CommandInfo {
             name: "/reset".into(),
-            description: "Reset session, keep chat history".into(),
+            description: "Reset session, keep chat history (requires --force)".into(),
             ..Default::default()
         },
         CommandInfo {
             name: "/new".into(),
-            description: "Reset session and clear chat history".into(),
+            description: "Reset session and clear chat history (requires --force)".into(),
             ..Default::default()
         },
         CommandInfo {

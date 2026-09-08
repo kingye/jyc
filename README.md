@@ -187,7 +187,7 @@ Send commands at the top of an email body. These commands work across all channe
 | `/model reset` | Reset to default model |
 | `/plan` | Switch to plan mode (read-only) |
 | `/build` | Switch to build mode (default) |
-| `/reset` | Clear AI session (start fresh conversation) |
+| `/reset` | Clear AI session (requires `--force`) |
 | `/exchange` | Show shareable URLs for this topic's published files |
 | `/exchange <file>` | Show the URL of one published file |
 | `/close` | Close topic and delete directory (requires `--confirm` or `-y`) |
@@ -594,7 +594,7 @@ This is useful for diagnosing reply delivery failures.
 - Verify the `[agent]` section in `config.toml` has valid API credentials
 
 **Session/context issues:**
-- Send `/reset` in an email to clear the AI session for that topic
+- Send `/reset --force` in an email to clear the AI session for that topic
 - Or manually delete `.jyc/agent-session.json` in the topic directory
 
 **Container-specific issues:**

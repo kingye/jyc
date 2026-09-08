@@ -6,8 +6,18 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 /// /reset command — reset agent session for this topic.
 ///
 /// Usage:
-///   /reset    Reset agent session with configurable compression
+///   /reset --force    Reset agent session with configurable compression
+///
+/// Without `--force` the command only warns, so the session cannot be
+/// reset by an accidental send (mirrors `/close`).
 pub struct ResetCommandHandler;
+
+impl ResetCommandHandler {
+    /// Returns `true` if the args contain the explicit `--force` flag.
+    fn is_forced(args: &[String]) -> bool {
+        args.iter().any(|a| a == "--force")
+    }
+}
 
 #[async_trait]
 impl CommandHandler for ResetCommandHandler {
@@ -16,10 +26,26 @@ impl CommandHandler for ResetCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Reset agent session for this topic"
+        "Reset agent session for this topic (requires --force)"
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
+        // Require --force before touching anything — including the
+        // exchange token rotation below, so a plain /reset cannot kill
+        // previously published links by accident.
+        if !Self::is_forced(&context.args) {
+            return Ok(CommandResult {
+                success: true,
+                message: "⚠️  /reset will clear this topic's agent session (chat history is \
+                         kept).\n\
+                         \n\
+                         To proceed, send: /reset --force"
+                    .into(),
+                error: None,
+                append_body: None,
+            });
+        }
+
         // Clear agent-published files and the exchange-access token: /reset must
         // kill previously shared links (token rotation forces regeneration on
         // the next publish). Done for both the agent and fallback branches.
@@ -84,7 +110,9 @@ mod tests {
 
     fn test_context(topic_path: &Path) -> CommandContext {
         CommandContext {
-            args: vec![],
+            // Pass --force by default so the reset tests exercise the real
+            // path; guard tests override `args`.
+            args: vec!["--force".to_string()],
             topic_path: topic_path.to_path_buf(),
             config: Arc::new(
                 jyc_types::load_config_from_str(
@@ -116,6 +144,33 @@ mode = "agent"
             config_path: None,
             per_agent_commands: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn test_reset_without_force_warns_and_keeps_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jyc_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let session = jyc_dir.join("agent-session.json");
+        tokio::fs::write(
+            &session,
+            r#"{"created_at":"2026-01-01","context_input_tokens":100,"total_output_tokens":50,"max_input_tokens":1000}"#,
+        )
+        .await
+        .unwrap();
+
+        let handler = ResetCommandHandler;
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec![];
+
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        assert!(
+            result.message.contains("/reset --force"),
+            "warning should tell the user how to proceed, got: {}",
+            result.message
+        );
+        assert!(session.exists(), "plain /reset must not touch the session");
     }
 
     #[tokio::test]

@@ -34,7 +34,7 @@ const BACKLOG_FILENAME: &str = "backlog.jsonl";
 const BACKLOG_HELP: &str = "Backlog: save and replay user messages.\n\
 Usage:\n  \
 /backlog push <description>  Add an item (multi-line until blank line)\n  \
-/backlog list (alias: ls)    List all items with 1-based index\n  \
+/backlog list (alias: ls)    List items, first line of each\n  \
 /backlog get <N>             Show item N's full text\n  \
 /backlog pop [N]             Remove item N (default 1) and inject text as next user message\n  \
 /backlog rm <N>              Remove item N without injecting\n  \
@@ -229,7 +229,9 @@ impl CommandHandler for BacklogCommandHandler {
                 }
                 let mut msg = String::new();
                 for (i, item) in items.iter().enumerate() {
-                    msg.push_str(&format!("{}. {}\n", i + 1, item.text));
+                    // First line only — `get <N>` shows the full text.
+                    let first = item.text.lines().next().unwrap_or_default();
+                    msg.push_str(&format!("{}. {}\n", i + 1, first));
                 }
                 let trimmed = msg.trim_end().to_string();
                 Ok(CommandResult {
@@ -584,7 +586,7 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn list_returns_numbered_items_with_multiline_text() {
+    async fn list_shows_first_line_of_each_item() {
         let dir = fresh_topic();
         let h = BacklogCommandHandler::new();
 
@@ -593,7 +595,12 @@ mode = "agent"
 
         let r = run(&h, dir.path(), &["list"]).await;
         assert!(r.success);
-        assert_eq!(r.message, "1. alpha\n2. beta\ncontinuation");
+        assert_eq!(r.message, "1. alpha\n2. beta");
+
+        // Truncation is display-only: the full text is intact and `get`
+        // can reach it.
+        let g = run(&h, dir.path(), &["get", "2"]).await;
+        assert_eq!(g.message, "beta\ncontinuation");
     }
 
     #[tokio::test]

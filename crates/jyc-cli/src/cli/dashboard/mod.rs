@@ -294,8 +294,9 @@ impl App {
 
 /// Auto-spawn `jyc serve` when it's not running, once per dashboard process.
 ///
-/// Writes `serve` logs to `<data_home>/jyc.log` so the user can review
-/// diagnostics. Only works for localhost addresses (the default).
+/// The spawned `serve` writes its tracing logs to `<workdir>/jyc.log`
+/// (same file as `/deploy`-started servers). Only works for localhost
+/// addresses (the default).
 async fn ensure_serve_running(addr: &str, workdir: &std::path::Path) -> Result<()> {
     // Only try to spawn once per dashboard session.
     static SPAWNED: AtomicBool = AtomicBool::new(false);
@@ -318,34 +319,26 @@ async fn ensure_serve_running(addr: &str, workdir: &std::path::Path) -> Result<(
         anyhow::bail!("Could not connect to {addr}. Start jyc serve manually.");
     }
 
-    // Determine log file path.
-    tokio::fs::create_dir_all(workdir)
-        .await
-        .with_context(|| format!("Failed to create workdir {}", workdir.display()))?;
-    let log_path = workdir.join("jyc.log");
-
-    // Open log file (create / truncate).
-    let log_file = std::fs::File::create(&log_path)
-        .with_context(|| format!("Failed to create log file {}", log_path.display()))?;
-    let log_dup = log_file
-        .try_clone()
-        .context("Failed to clone log file handle")?;
-
     // Spawn jyc serve as a background child process. Pass --workdir so the
     // auth token file is written to the same location the dashboard reads.
     // Skip --workdir when it's the platform default (data_home) so the
     // spawned serve uses the standard first-run provisioning path.
+    // Pass --log-file so the auto-spawned server writes to the same log
+    // file (`<workdir>/jyc.log`) as `/deploy`-started servers — no
+    // separate plain `jyc.log` from stderr capture.
+    tokio::fs::create_dir_all(workdir)
+        .await
+        .with_context(|| format!("Failed to create workdir {}", workdir.display()))?;
     let exe = std::env::current_exe().context("Could not determine jyc binary path")?;
     let default_workdir = jyc_utils::paths::data_home().unwrap_or_default();
+    let log_path = workdir.join("jyc.log");
     let mut cmd = Command::new(&exe);
     cmd.arg("serve");
     if workdir != default_workdir {
         cmd.arg("--workdir").arg(workdir);
     }
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(log_dup)
-        .stderr(log_file)
-        .kill_on_drop(true);
+    cmd.arg("--log-file").arg(&log_path);
+    cmd.stdin(std::process::Stdio::null()).kill_on_drop(true);
     let mut child = cmd
         .spawn()
         .with_context(|| format!("Failed to spawn {} serve", exe.display()))?;

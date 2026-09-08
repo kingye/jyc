@@ -222,6 +222,17 @@
   always matched by prompt-prefix content; the key only stops different
   workloads from evicting each other's entries.)
 
+- **Unified server logging across spawn origins.** `jyc serve --log-file`
+  and the TUI's auto-spawned `jyc serve` both write to the same
+  `<workdir>/jyc.log` (plain append-only, no rotation). Previously the
+  TUI captured the spawned server's stderr into a separate plain
+  `jyc.log` (truncated on TUI start), so a TUI-spawned server and a
+  `/deploy`-started server produced two distinct log files in the data
+  directory. Now both origins share one file — `tail -f jyc.log` follows
+  everything. Server stderr (panics, prints that bypass tracing) flows
+  into the same file via the `--log-file` rotation-less append writer,
+  so diagnostic capture no longer needs the separate plain file.
+
 ### Fixed
 
 - **`/` popup now shows commands for the topic you're chatting in.**
@@ -464,6 +475,18 @@
   card (`⏳ 处理中…` → `✅ 完成 · Ns · 工具 M`) now covers both progress and
   completion, and reaction chips (emoji + bot name) cluttered the user's
   message. The `⏱ 耗时 Ns` reply footer is unchanged. (#674)
+
+- **Daily `--log-file` rotation.** Reverted (added in this version, now
+  removed). Daily-rotated `jyc.log.YYYY-MM-DD` / `dashboard.log.YYYY-MM-DD`
+  files produced by `tracing_appender::rolling::daily` cluttered the
+  data dir and confused operators about which file to tail. Existing
+  dated files are orphaned — delete manually if desired. External
+  `logrotate` covers size-based rotation if needed.
+- **`tracing-appender` direct dependency.** The `rolling::daily` use
+  site was replaced with `std::fs::File` + `std::sync::Mutex` for plain
+  append-only writes, so the third-party crate is no longer needed.
+  Same behavior as the rolling writer minus the dated suffix; concurrent
+  threads still get serialized writes via the `Mutex`.
 
 ## [0.3.16] - 2026-08-25
 

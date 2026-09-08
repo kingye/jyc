@@ -161,7 +161,9 @@
 
 - The Feishu status card now also shows the topic's effective mode,
   model, and context-window usage — e.g. `⏳ 处理中 · 23s · 工具 2 ·
-  plan · kimi/k3-256k · 41%`. The segments refresh on every card update,
+  plan · kimi/k3-256k · 41%`; build mode shows `build` (the mode segment
+  is always concrete, never omitted). The segments refresh on every card
+  update,
   so a mid-run `/plan` or `/model` switch shows up within seconds. The
   percentage appears once the first LLM call has recorded token usage.
   Resolution shares the exact override chain with the dashboard via a

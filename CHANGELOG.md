@@ -14,8 +14,9 @@
   invokes the LLM — so **no tokens are spent**. User args typed after the
   command are appended as more argv elements (`/ls -la` → `["ls", "-la"]`).
   `shell` and `user_prompt` are mutually exclusive, validated at startup;
-  `mode`/`skills` are silently ignored on shell commands. Fixed limits:
-  30s timeout, 8 KiB output cap. Because any inbound channel can trigger
+  `mode`/`skills` are silently ignored on shell commands. Kill timeout
+  defaults to 30s, overridable per command with `timeout = <secs>`; output
+  cap fixed at 8 KiB. Because any inbound channel can trigger
   any registered command, treat `[[commands]]` as an operator-trust surface
   and only add shell commands you would accept any inbound sender invoking.
 - TUI chat: new leader command `ctrl+p T` ("toggle tool detail") expands

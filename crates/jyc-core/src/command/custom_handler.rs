@@ -16,19 +16,6 @@ use jyc_types::CustomCommand;
 /// enough for `cargo test`, `git log`, etc. to come through intact.
 const SHELL_MAX_OUTPUT_BYTES: usize = 8 * 1024;
 
-/// Hard ceiling on a single shell-command invocation. Anything still running
-/// after this is killed (the child process gets a `SIGKILL` via
-/// [`tokio::process::Child::start_kill`] in the timeout arm of
-/// [`CustomCommandHandler::execute_shell`]) and the result surfaces as
-/// `Error: timed out after 30s`.
-///
-/// ponytail: no per-command override — wrap with a script
-/// (`shell = ["./scripts/long.sh"]`) if you need a different ceiling.
-///
-/// `pub(crate)` so the timeout test can override it with a tight deadline
-/// rather than wait the full 30s per CI run.
-pub(crate) const SHELL_TIMEOUT_SECS: u64 = 30;
-
 /// Handler for a user-defined command declared in `config.toml` `[[commands]]`.
 ///
 /// Two flavors, selected by the config:
@@ -275,7 +262,7 @@ impl CommandHandler for CustomCommandHandler {
                     argv,
                     &context.args,
                     &context.topic_path,
-                    Duration::from_secs(SHELL_TIMEOUT_SECS),
+                    self.config.shell_timeout(),
                 )
                 .await;
         }
@@ -319,6 +306,7 @@ mod tests {
             skills: skills.map(|v| v.into_iter().map(|s| s.to_string()).collect()),
             user_prompt: Some("Review the diff and report findings.".into()),
             shell: None,
+            timeout: None,
         }
     }
 
@@ -330,6 +318,7 @@ mod tests {
             skills: None,
             user_prompt: None,
             shell: Some(argv.iter().map(|s| s.to_string()).collect()),
+            timeout: None,
         }
     }
 
@@ -707,6 +696,30 @@ mode = "agent"
         assert!(
             !finished.exists(),
             "child reached 'finished' after the timeout — it was NOT killed"
+        );
+    }
+
+    /// A per-command `timeout` set in `[[commands]]` must reach the executor
+    /// through the single `shell_timeout()` resolver: a 1s budget kills a
+    /// `sleep 3` and the error names the configured value (not the default).
+    #[tokio::test]
+    async fn shell_timeout_config_flows_through_execute() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut cmd = shell_cmd(&["sh", "-c", "sleep 3"]);
+        cmd.timeout = Some(1);
+        let handler = CustomCommandHandler::new(cmd);
+
+        let result = handler.execute(test_context(tmp.path())).await.unwrap();
+
+        assert!(!result.success);
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("timed out after 1s"),
+            "expected a 1s timeout error, got: {:?}",
+            result.error
         );
     }
 

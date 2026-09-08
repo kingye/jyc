@@ -104,6 +104,5 @@ and uses an in-process AI agent to generate replies.
 ## References
 - See DESIGN.md for architecture
 - See CHANGELOG.md for version history
-- See IMPLEMENTATION.md for implementation phases
 
 - jin AGENTS.md (约束来源参考): https://github.com/kingye/jin/blob/main/AGENTS.md

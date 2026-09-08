@@ -27,3 +27,9 @@ jyc-data
 *-mcps.toml
 **/__pycache__/
 .opencode/
+
+# Local runtime state when workdir == repo root
+/channels/
+/auth.token
+/nohup.out
+/jyc.log

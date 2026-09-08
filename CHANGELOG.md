@@ -1,3 +1,18 @@
+## [Unreleased]
+
+### Added
+
+- `docs/channels/github.md` — up-to-date GitHub channel reference (polled
+  events, label routing, `[Role]` echo guard, close events, skills).
+
+### Removed
+
+- `IMPLEMENTATION.md` — implementation-phase tracking is superseded by the
+  CHANGELOG and merged PR history; stale reference links dropped from README
+  and DESIGN.md.
+- `GITHUB_CHANNEL.md` (repo root) — pre-pipe-era design doc, superseded by
+  `docs/channels/github.md`.
+
 ## [0.3.17] - 2026-09-07
 
 ### Added

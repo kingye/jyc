@@ -653,7 +653,8 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # but ANY inbound channel (email, feishu, websocket) can trigger any
 # registered command. Treat `[[commands]]` as an operator-trust surface —
 # only add shell commands that you would accept any inbound sender invoking.
-# Timeout 30s and output cap 8 KiB are fixed (see README "Shell Commands").
+# Output cap 8 KiB is fixed; the 30s kill timeout is overridable per command
+# with `timeout = <secs>` (full details: README "Shell Commands").
 #
 # `shell` and `user_prompt` are mutually exclusive — one per command. `mode`
 # and `skills` are silently ignored on shell commands (they are an LLM
@@ -668,6 +669,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # name = "deploy"
 # description = "Deploy to staging"
 # shell = ["./scripts/deploy.sh"]  # user args appended: /deploy staging prod
+# timeout = 300                    # optional: seconds before kill (default 30)
 
 # --- MCP Servers ---
 # Named MCP server definitions are configured here and loaded by the agent at startup.

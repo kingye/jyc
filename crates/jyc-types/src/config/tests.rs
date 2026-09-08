@@ -1484,3 +1484,38 @@ mod agent_extends_tests {
         assert!(cfg.agents.is_empty());
     }
 }
+
+/// Per-command `timeout` for shell-flavor `[[commands]]`: deserialization
+/// plus the single `shell_timeout()` resolver (override wins, unset → 30s).
+#[cfg(test)]
+mod shell_command_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn shell_command_timeout_deserializes_and_resolves() {
+        let cfg = load_config_from_str(
+            r#"
+            [ai]
+            model = "test/model"
+
+            [[commands]]
+            name = "deploy"
+            shell = ["./deploy.sh"]
+            timeout = 300
+
+            [[commands]]
+            name = "ls"
+            shell = ["ls"]
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.commands[0].shell_timeout(),
+            std::time::Duration::from_secs(300)
+        );
+        assert_eq!(
+            cfg.commands[1].shell_timeout(),
+            std::time::Duration::from_secs(30)
+        );
+    }
+}

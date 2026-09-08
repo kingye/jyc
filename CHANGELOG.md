@@ -5,6 +5,11 @@
 - `docs/channels/github.md` — up-to-date GitHub channel reference (polled
   events, label routing, `[Role]` echo guard, close events, skills).
 
+### Changed
+
+- `jyc-podman-tunnel.sh` moved to `scripts/` alongside the other helper
+  scripts; usage comments and DESIGN.md reference updated.
+
 ### Removed
 
 - `IMPLEMENTATION.md` — implementation-phase tracking is superseded by the
@@ -15,6 +20,9 @@
 - Unused agent templates (`templates/`: gitee/github role templates,
   `jyc-dev`, `jyc-review`, `frontend-designer`); only `invoice-processing`
   is kept. The template mechanism itself is unchanged. (#732)
+- `jyc-ctl.sh` (repo root) — systemd/nohup service-control script; the
+  systemd deployment was dropped. The service runs via `jyc serve` and is
+  stopped via `jyc stop`. (#733)
 
 ## [0.3.17] - 2026-09-07
 

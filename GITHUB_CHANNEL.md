@@ -700,5 +700,4 @@ with `[Planner]` prefix. Reply to a PR → verify comment appears.
 ## References
 
 - [DESIGN.md](DESIGN.md) — JYC architecture
-- [IMPLEMENTATION.md](IMPLEMENTATION.md) — Implementation phases
 - [CHANGELOG.md](CHANGELOG.md) — Version history

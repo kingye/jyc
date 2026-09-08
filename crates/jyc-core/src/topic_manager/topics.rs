@@ -17,7 +17,9 @@ use super::worker::read_skills;
 /// `None` when the topic has no recorded state yet.
 #[derive(Debug, Default, Clone)]
 pub struct TopicDisplayState {
-    /// Effective mode ("plan"/"build") after the override chain.
+    /// Effective mode ("plan"/"build") after the override chain. Always
+    /// concrete: no override resolves to `"build"` (unknown topics are
+    /// `None`).
     pub mode: Option<String>,
     /// Effective model after the full override chain.
     pub model: Option<String>,
@@ -144,12 +146,17 @@ impl TopicManager {
 
         // Read mode first — needed to resolve mode-specific model overrides.
         // Chain: .jyc/mode-override > pattern mode from config > build default.
+        // `None` from the chain means build, so materialise it for display
+        // consumers (dashboard badges, Feishu status card) — they must be
+        // able to show `build`, not just `plan`. The model branches below
+        // treat `Some("build")` and `None` identically.
         let mode = crate::session_state::resolve_effective_mode(
             topic_path,
             &self.config.load(),
             &self.channel_name,
         )
-        .await;
+        .await
+        .or_else(|| Some("build".to_string()));
 
         // Read mode-specific override file first, fallback to legacy.
         let file_override = {
@@ -814,6 +821,18 @@ mode = "agent"
         let state = tm.topic_display_state("plan-615").await;
         assert_eq!(state.mode.as_deref(), Some("build"));
         assert_eq!(state.model.as_deref(), Some("deepseek/deepseek-chat"));
+
+        // No override file and no pattern-config mode → the display
+        // materialises the build default, so the status card can show
+        // `build` too — not only `plan`.
+        tokio::fs::remove_file(topic_path.join(".jyc").join("mode-override"))
+            .await
+            .unwrap();
+        tokio::fs::write(topic_path.join(".jyc").join("pattern"), "")
+            .await
+            .unwrap();
+        let state = tm.topic_display_state("plan-615").await;
+        assert_eq!(state.mode.as_deref(), Some("build"));
 
         // Unknown topic → all fields None (no directory, no state files).
         let state = tm.topic_display_state("no-such-topic").await;

@@ -15,7 +15,7 @@
 //! `\n` only when both are present. Items are referenced by 1-based
 //! position, so `pop 2` removes the second entry and `rm 2` does the
 //! same without injecting into the next agent turn; `set 2 <text>`
-//! replaces the second entry's text.
+//! replaces the second entry's text, and `get 2` shows it in full.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,6 +35,7 @@ const BACKLOG_HELP: &str = "Backlog: save and replay user messages.\n\
 Usage:\n  \
 /backlog push <description>  Add an item (multi-line until blank line)\n  \
 /backlog list (alias: ls)    List all items with 1-based index\n  \
+/backlog get <N>             Show item N's full text\n  \
 /backlog pop [N]             Remove item N (default 1) and inject text as next user message\n  \
 /backlog rm <N>              Remove item N without injecting\n  \
 /backlog set <N> <new text>  Replace item N's text (multi-line until blank line)\n\n\
@@ -46,7 +47,7 @@ struct BacklogItem {
     text: String,
 }
 
-/// Handler for `/backlog push|list|pop|rm|set`.
+/// Handler for `/backlog push|list|get|pop|rm|set`.
 pub struct BacklogCommandHandler;
 
 impl BacklogCommandHandler {
@@ -146,7 +147,7 @@ impl CommandHandler for BacklogCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Save and replay user messages (push|list|pop|rm|set)"
+        "Save and replay user messages (push|list|get|pop|rm|set)"
     }
 
     /// `/backlog push` is followed by a free-form multi-line description.
@@ -234,6 +235,45 @@ impl CommandHandler for BacklogCommandHandler {
                 Ok(CommandResult {
                     success: true,
                     message: trimmed,
+                    error: None,
+                    append_body: None,
+                })
+            }
+
+            "get" => {
+                let n = match Self::parse_n(args, 1).map_err(anyhow::Error::msg) {
+                    Ok(Some(n)) => n,
+                    Ok(None) => {
+                        let err = "missing index (usage: /backlog get <N>)".to_string();
+                        return Ok(CommandResult {
+                            success: false,
+                            message: format!("/backlog get: {err}"),
+                            error: Some(err),
+                            append_body: None,
+                        });
+                    }
+                    Err(e) => {
+                        return Ok(CommandResult {
+                            success: false,
+                            message: format!("/backlog get: {e}"),
+                            error: Some(e.to_string()),
+                            append_body: None,
+                        });
+                    }
+                };
+                let items = Self::read_items(&path)?;
+                if n > items.len() {
+                    let err = format!("index {n} out of range (backlog has {} items)", items.len());
+                    return Ok(CommandResult {
+                        success: false,
+                        message: format!("/backlog get: {err}"),
+                        error: Some(err),
+                        append_body: None,
+                    });
+                }
+                Ok(CommandResult {
+                    success: true,
+                    message: items[n - 1].text.clone(),
                     error: None,
                     append_body: None,
                 })
@@ -390,7 +430,7 @@ impl CommandHandler for BacklogCommandHandler {
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
-                    "/backlog: unknown subcommand {other:?} (expected push|list|pop|rm|set)"
+                    "/backlog: unknown subcommand {other:?} (expected push|list|get|pop|rm|set)"
                 ),
                 error: Some(format!("unknown subcommand {other}")),
                 append_body: None,
@@ -554,6 +594,58 @@ mode = "agent"
         let r = run(&h, dir.path(), &["list"]).await;
         assert!(r.success);
         assert_eq!(r.message, "1. alpha\n2. beta\ncontinuation");
+    }
+
+    #[tokio::test]
+    async fn get_shows_item_text_without_injecting() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+        run(&h, dir.path(), &["push", "alpha"]).await;
+
+        let r = run(&h, dir.path(), &["get", "1"]).await;
+        assert!(r.success);
+        assert_eq!(r.message, "alpha");
+        assert_eq!(r.append_body, None);
+    }
+
+    #[tokio::test]
+    async fn get_shows_multiline_text_verbatim() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+        run(&h, dir.path(), &["push", "beta", "continuation"]).await;
+
+        let r = run(&h, dir.path(), &["get", "1"]).await;
+        assert!(r.success);
+        assert_eq!(r.message, "beta\ncontinuation");
+    }
+
+    #[tokio::test]
+    async fn get_missing_index_returns_error() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+        let r = run(&h, dir.path(), &["get"]).await;
+        assert!(!r.success);
+        assert!(r.message.contains("missing index"));
+    }
+
+    #[tokio::test]
+    async fn get_invalid_index_returns_error() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+        let r = run(&h, dir.path(), &["get", "one"]).await;
+        assert!(!r.success);
+        assert!(r.message.contains("invalid index"));
+    }
+
+    #[tokio::test]
+    async fn get_out_of_range_returns_error() {
+        let dir = fresh_topic();
+        let h = BacklogCommandHandler::new();
+        run(&h, dir.path(), &["push", "alpha"]).await;
+
+        let r = run(&h, dir.path(), &["get", "2"]).await;
+        assert!(!r.success);
+        assert!(r.message.contains("out of range"));
     }
 
     #[tokio::test]
@@ -820,6 +912,10 @@ mode = "agent"
         assert!(
             msg.contains("/backlog set"),
             "helper text should list the `set` subcommand"
+        );
+        assert!(
+            msg.contains("/backlog get"),
+            "helper text should list the `get` subcommand"
         );
         assert!(r.error.is_none());
         assert!(r.append_body.is_none());

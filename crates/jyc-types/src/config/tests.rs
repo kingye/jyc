@@ -1490,6 +1490,9 @@ mod agent_extends_tests {
     fn shell_command_timeout_deserializes_and_resolves() {
         let cfg = parse(
             r#"
+            [ai]
+            model = "test/model"
+
             [[commands]]
             name = "deploy"
             shell = ["./deploy.sh"]

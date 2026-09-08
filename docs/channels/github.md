@@ -94,8 +94,10 @@ pipe = { agent = "jyc_git", topic = "review-pr-${msg.pr_number}" }
 ```
 
 Rule keys: `github_type`, `labels` (flat list = OR, nested lists = AND of
-ORs), `exclude_labels`, `assignees` (OR), `sender`. Patterns are evaluated in
-config order — the first match wins, so order matters for overlapping rules.
+ORs), `exclude_labels`, `assignees` (OR). Every pattern must declare a `role`
+— patterns without one never match. Reviewer-role patterns are evaluated
+first (leftover developer-phase labels can't shadow a `ready-for-review` PR);
+within each group, config order is preserved. The first match wins.
 
 ### Topic Placeholders
 
@@ -107,7 +109,7 @@ PR event carries only `pr_number` and an issue event only `issue_number`.
 Pattern-level `topic_prefix` yields `{prefix}-{github_number}` topics;
 without it the default is `{type}-{number}` (e.g. `pr-731`). The reviewer
 role additionally falls back to a legacy `review-pr-{N}` name when no prefix
-is configured (deprecated — a startup warning asks you to set
+is configured (deprecated — a match-time warning asks you to set
 `topic_prefix = "review-pr"` explicitly).
 
 ### Reply Relaying
@@ -125,8 +127,7 @@ no attachments.
 ### Close Events
 
 When an issue/PR is closed, the hub-side close handling resolves the topics
-mapped from pattern `topic` templates and the routing state and closes them
-(idle topics only; busy topics retry on a later cycle).
+mapped from pattern `topic` templates and the routing state and closes them.
 
 ### Initialization is a Skill
 

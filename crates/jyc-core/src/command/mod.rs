@@ -114,11 +114,11 @@ pub fn all_commands() -> Vec<CommandInfo> {
             // `/backlog pop` injects the popped text into the agent's
             // next turn via `append_body`, so it continues into an agent
             // run and needs a progress indicator on piped channels
-            // (feishu). The other subcommands (`push`/`list`/`rm`) reply
-            // instantly — but the flag is set at the command level, not
-            // per-subcommand, because the channels.rs watcher spawns
+            // (feishu). The other subcommands (`push`/`list`/`rm`/`edit`)
+            // reply instantly — but the flag is set at the command level,
+            // not per-subcommand, because the channels.rs watcher spawns
             // before dispatch and cannot inspect the subcommand.
-            description: "Save and replay user messages (push|list|pop|rm)".into(),
+            description: "Save and replay user messages (push|list|pop|rm|edit)".into(),
             continues_to_agent: true,
         },
     ]

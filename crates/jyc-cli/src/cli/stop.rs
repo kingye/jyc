@@ -8,6 +8,10 @@ pub struct StopArgs {
     /// Force stop (SIGKILL instead of SIGTERM)
     #[arg(long)]
     pub force: bool,
+    /// Grace period (seconds) to wait for the process to exit after
+    /// the signal. Defaults to 10.
+    #[arg(long)]
+    pub wait: Option<u64>,
 }
 
 /// Run the `jyc stop` command: read the PID file and send a signal.
@@ -53,8 +57,9 @@ pub async fn run(args: &StopArgs, workdir: &Path) -> Result<()> {
         anyhow::bail!("Failed to send {signal_name} to PID {pid}: {err}");
     }
 
-    // Wait for process to exit (poll every 200ms, up to 10s)
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    // Wait for process to exit (poll every 200ms, up to --wait seconds)
+    let wait_secs = args.wait.unwrap_or(10);
+    let deadline = std::time::Instant::now() + Duration::from_secs(wait_secs);
     let mut exited = false;
     while std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -73,9 +78,13 @@ pub async fn run(args: &StopArgs, workdir: &Path) -> Result<()> {
         Ok(())
     } else if !args.force {
         // Process didn't exit in time, suggest --force
-        tracing::warn!(pid, "Process did not exit after SIGTERM within 10s");
+        tracing::warn!(
+            pid,
+            wait_secs,
+            "Process did not exit after SIGTERM within the grace period"
+        );
         println!(
-            "jyc serve (PID {pid}) did not stop within 10 seconds after SIGTERM.\n\
+            "jyc serve (PID {pid}) did not stop within {wait_secs} seconds after SIGTERM.\n\
              Use `jyc stop --force` to force kill."
         );
         Ok(())
@@ -108,7 +117,10 @@ mod tests {
     #[tokio::test]
     async fn test_stop_missing_pid_file() {
         let tmp = TempDir::new().unwrap();
-        let args = StopArgs { force: false };
+        let args = StopArgs {
+            force: false,
+            wait: None,
+        };
         let err = run(&args, tmp.path()).await.unwrap_err().to_string();
         assert!(
             err.contains("Failed to read PID file"),
@@ -121,7 +133,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let pid_path = tmp.path().join("jyc.pid");
         tokio::fs::write(&pid_path, "not_a_number").await.unwrap();
-        let args = StopArgs { force: false };
+        let args = StopArgs {
+            force: false,
+            wait: None,
+        };
         let err = run(&args, tmp.path()).await.unwrap_err().to_string();
         assert!(
             err.contains("Invalid PID"),
@@ -138,7 +153,10 @@ mod tests {
         tokio::fs::write(&pid_path, "999999999").await.unwrap();
         assert!(pid_path.exists());
 
-        let args = StopArgs { force: false };
+        let args = StopArgs {
+            force: false,
+            wait: None,
+        };
         let err = run(&args, tmp.path()).await.unwrap_err().to_string();
         assert!(
             err.contains("stale PID"),
@@ -153,5 +171,20 @@ mod tests {
     fn test_pid_exists_returns_false_for_non_existent_pid() {
         // PID 999999999 should not exist on any typical system
         assert!(!pid_exists(999999999));
+    }
+
+    #[test]
+    fn stop_args_wait_flag_parsing() {
+        use clap::{Args, Command, FromArgMatches};
+        let m = StopArgs::augment_args(Command::new("stop"))
+            .try_get_matches_from(["stop"])
+            .unwrap();
+        let a = StopArgs::from_arg_matches(&m).unwrap();
+        assert_eq!(a.wait, None);
+        let m = StopArgs::augment_args(Command::new("stop"))
+            .try_get_matches_from(["stop", "--wait", "30"])
+            .unwrap();
+        let a = StopArgs::from_arg_matches(&m).unwrap();
+        assert_eq!(a.wait, Some(30));
     }
 }

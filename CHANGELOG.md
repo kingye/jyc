@@ -2,6 +2,11 @@
 
 ### Added
 
+- **`jyc stop --wait <secs>`** — configurable grace period. `jyc stop`
+  previously polled for exit for a fixed 10 seconds after sending SIGTERM
+  (or SIGKILL with `--force`) before reporting a stuck process. `--wait`
+  overrides that timeout in whole seconds (`jyc stop --wait 30`); the
+  default remains 10, and `--wait 0` reports immediately without waiting.
 - **Shell-only `[[commands]]` variant.** A `[[commands]]` entry can now run a
   direct shell command instead of injecting a prompt into the LLM. Set
   `shell` to an argv array (e.g. `shell = ["ls"]`); the handler runs it

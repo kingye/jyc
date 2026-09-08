@@ -254,6 +254,7 @@ shell = ["ls"]                       # /ls -la  →  runs ["ls", "-la"]
 name = "deploy"
 description = "Deploy to staging"
 shell = ["./scripts/deploy.sh"]      # /deploy staging prod  →  runs the script with those args
+timeout = 300                        # optional: wait 300s before killing (default 30s)
 ```
 
 On invocation the handler runs the argv via `tokio::process::Command` and
@@ -269,8 +270,9 @@ inbound sender invoking. The process inherits jyc's working directory; if you
 need a different cwd or environment, wrap with a script (`shell =
 ["./scripts/deploy.sh"]`).
 
-**Limits (fixed, not configurable per command):** timeout 30s, output cap 8 KiB.
-Use a wrapper script when those don't fit.
+**Limits:** the kill timeout defaults to **30s**, overridable per command
+with `timeout = <secs>` (whole seconds; ignored on prompt-flavor commands).
+The output cap is fixed at 8 KiB. Use a wrapper script when those don't fit.
 
 ### Topic-Specific Customization
 

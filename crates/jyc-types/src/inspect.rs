@@ -433,7 +433,7 @@ pub struct CommandInfo {
     /// commands that never reach the agent — those need no progress
     /// indicator. `serde(default)` so old payloads without the field
     /// deserialize as `false`, preserving the pre-field behaviour where
-    /// the channels.rs watcher skipped every registered command.
+    /// the channel adapter watcher skipped every registered command.
     #[serde(default)]
     pub continues_to_agent: bool,
 }

@@ -470,7 +470,7 @@ same pattern (with a streaming-reply twist for the WeCom passive reply window).
 │  FeishuMatcher (inbound.rs)                                  │
 │   • pattern rules: mentions / keywords / chat_name / sender  │
 │                                                              │
-│  Pipe wiring (jyc-cli serve/channels.rs)                     │
+│  Pipe wiring (jyc-cli serve/channels/)                       │
 │   • apply_pipe_retarget: rewrite channel/topic, resolve      │
 │     ${msg.chat_name}, record topic→chat_id mapping           │
 │   • route through the agent channel's own MessageRouter     │

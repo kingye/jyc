@@ -434,9 +434,11 @@ mode = "agent"
                 r#"
 [general]
 
+[channels.ws]
+type = "websocket"
+
 [[channels.ws.patterns]]
 name = "old"
-type = "websocket"
 topic_path = "{}"
 
 [agent]

@@ -187,7 +187,7 @@ If you rename the bot's display name in Feishu or change group names, new messag
 ## Architecture Overview
 
 Feishu is a **pipe-only channel** in the channels / agents / core+AI architecture
-(see [docs/architecture/overview.md](docs/architecture/overview.md)): it speaks the
+(see [docs/architecture/overview.md](../architecture/overview.md)): it speaks the
 Feishu protocol and pipes messages into an agent's websocket channel, which owns
 the topics, agents, and conversation state.
 

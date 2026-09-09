@@ -116,7 +116,7 @@ pub struct BillingLogStore;
 impl BillingLogStore {
     /// Path to the ledger file for a given `YYYY-MM-DD` date string.
     fn path_for_date(topic_path: &Path, date: &str) -> PathBuf {
-        jyc_dir(&topic_path).join(format!("bill-{date}.jsonl"))
+        jyc_dir(topic_path).join(format!("bill-{date}.jsonl"))
     }
 
     /// Todays date as `YYYY-MM-DD` in UTC.

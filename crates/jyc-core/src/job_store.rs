@@ -28,7 +28,7 @@ impl JobStore {
     ///
     /// The jobs directory (`.jyc/jobs/`) is created if it doesn't exist.
     pub async fn new(topic_path: &Path, max_jobs: usize) -> Result<Self> {
-        let jobs_dir = jyc_dir(&topic_path).join("jobs");
+        let jobs_dir = jyc_dir(topic_path).join("jobs");
         fs::create_dir_all(&jobs_dir)
             .await
             .with_context(|| format!("failed to create jobs directory: {}", jobs_dir.display()))?;

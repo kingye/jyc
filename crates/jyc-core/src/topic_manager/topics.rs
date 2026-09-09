@@ -96,7 +96,7 @@ impl TopicManager {
         }
         // Cold-start fallback: read .jyc/pattern from disk and
         // remember it so future reads skip the I/O.
-        let path = jyc_dir(&topic_path).join("pattern");
+        let path = jyc_dir(topic_path).join("pattern");
         let from_disk = tokio::fs::read_to_string(&path)
             .await
             .ok()
@@ -168,9 +168,9 @@ impl TopicManager {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
             }
-            let plan_path = jyc_dir(&topic_path).join("plan-model-override");
-            let build_path = jyc_dir(&topic_path).join("build-model-override");
-            let legacy_path = jyc_dir(&topic_path).join("model-override");
+            let plan_path = jyc_dir(topic_path).join("plan-model-override");
+            let build_path = jyc_dir(topic_path).join("build-model-override");
+            let legacy_path = jyc_dir(topic_path).join("model-override");
 
             let mode_specific = match mode.as_deref() {
                 Some("plan") => read_trimmed(&plan_path).await,

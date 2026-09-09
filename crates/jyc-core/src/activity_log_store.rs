@@ -16,7 +16,7 @@ pub struct ActivityLogStore;
 
 impl ActivityLogStore {
     fn jsonl_path(topic_path: &Path) -> std::path::PathBuf {
-        jyc_dir(&topic_path).join("activity.jsonl")
+        jyc_dir(topic_path).join("activity.jsonl")
     }
 
     /// Append an activity entry to the topic's JSONL log file.

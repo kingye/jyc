@@ -190,7 +190,7 @@ async fn serve_exchange_file(
     token: Option<&str>,
     rel_path: &str,
 ) -> Result<Response, ApiError> {
-    let jyc_dir = jyc_dir(&topic_path);
+    let jyc_dir = jyc_dir(topic_path);
 
     let expected = tokio::fs::read_to_string(jyc_dir.join(jyc_core::EXCHANGE_TOKEN_FILENAME))
         .await

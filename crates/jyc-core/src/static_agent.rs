@@ -63,7 +63,7 @@ impl AgentService for StaticAgentService {
     ) -> Result<()> {
         use jyc_types::channel::CompressionMode;
 
-        let jyc_dir = jyc_dir(&topic_path);
+        let jyc_dir = jyc_dir(topic_path);
         match config.mode {
             CompressionMode::None => {
                 tokio::fs::remove_file(jyc_dir.join("agent-context.json"))

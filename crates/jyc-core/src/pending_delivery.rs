@@ -83,7 +83,7 @@ pub async fn watch_pending_deliveries(
     event_bus: Option<TopicEventBusRef>,
     topic_name: &str,
 ) {
-    let jyc_dir = jyc_dir(&topic_path);
+    let jyc_dir = jyc_dir(topic_path);
     let signal_path = jyc_dir.join("reply-sent.flag");
     let reply_path = jyc_dir.join("reply.md");
 

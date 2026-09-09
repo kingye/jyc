@@ -236,7 +236,7 @@ impl JobScheduler {
         for (channel_name, tm) in tms.iter() {
             let custom_paths = tm.custom_topic_paths().await;
             for (topic_name, topic_path) in &custom_paths {
-                let jobs_dir = jyc_dir(&topic_path).join("jobs");
+                let jobs_dir = jyc_dir(topic_path).join("jobs");
                 if !jobs_dir.exists() {
                     continue;
                 }

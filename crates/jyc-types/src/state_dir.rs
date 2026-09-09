@@ -101,7 +101,7 @@ pub fn resolve_state_relative(topic_dir: impl AsRef<Path>, rel: &str) -> PathBuf
             .strip_prefix(".jyc")
             .map(|r| r.trim_start_matches('/'))
     }) {
-        let state = jyc_dir(&topic_dir);
+        let state = jyc_dir(topic_dir);
         if rest.is_empty() {
             state
         } else {

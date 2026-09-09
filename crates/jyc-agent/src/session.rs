@@ -90,7 +90,7 @@ pub struct SessionState {
 /// exactly as they were sent/received (preserves provider-specific fields like
 /// DeepSeek's reasoning_content).
 pub async fn save_raw_context(topic_path: &Path, raw_context: &[serde_json::Value]) {
-    let jyc_dir = jyc_dir(&topic_path);
+    let jyc_dir = jyc_dir(topic_path);
     tokio::fs::create_dir_all(&jyc_dir).await.ok();
     let path = jyc_dir.join(CONTEXT_FILE);
 
@@ -121,7 +121,7 @@ pub async fn save_raw_context(topic_path: &Path, raw_context: &[serde_json::Valu
 /// flag file is absent or malformed — the absence of the file is the
 /// default "off" state.
 pub async fn read_wire_payload_dump_enabled(topic_path: &Path) -> bool {
-    let path = jyc_dir(&topic_path).join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE);
+    let path = jyc_dir(topic_path).join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE);
     let Ok(bytes) = tokio::fs::read(&path).await else {
         return false;
     };
@@ -146,7 +146,7 @@ pub async fn append_wire_payload_dump(
     regions: &[u8],
     wire: &[serde_json::Value],
 ) {
-    let jyc_dir = jyc_dir(&topic_path);
+    let jyc_dir = jyc_dir(topic_path);
     if tokio::fs::create_dir_all(&jyc_dir).await.is_err() {
         return;
     }
@@ -190,7 +190,7 @@ pub async fn append_wire_payload_dump(
 ///
 /// If no session file exists (fresh or after reset), returns empty.
 pub async fn load_context(topic_path: &Path) -> (Vec<Message>, Vec<serde_json::Value>) {
-    let jyc_dir = jyc_dir(&topic_path);
+    let jyc_dir = jyc_dir(topic_path);
     let session_path = jyc_dir.join(SESSION_FILE);
     let context_path = jyc_dir.join(CONTEXT_FILE);
 
@@ -373,7 +373,7 @@ pub async fn ensure_session_file(
     context_window: Option<u64>,
     auto_reset_threshold: f64,
 ) {
-    let session_path = jyc_dir(&topic_path).join(SESSION_FILE);
+    let session_path = jyc_dir(topic_path).join(SESSION_FILE);
     if session_path.exists() {
         // Already there — never overwrite existing token data.
         return;
@@ -452,7 +452,7 @@ async fn persist_tokens_returning_state(
     auto_reset_threshold: f64,
     call_cost: f64,
 ) -> (std::path::PathBuf, SessionState) {
-    let session_path = jyc_dir(&topic_path).join(SESSION_FILE);
+    let session_path = jyc_dir(topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
 
     state.context_input_tokens = input_tokens;
@@ -491,7 +491,7 @@ pub async fn add_session_cost(topic_path: &Path, cost: f64) {
     if cost <= 0.0 {
         return;
     }
-    let session_path = jyc_dir(&topic_path).join(SESSION_FILE);
+    let session_path = jyc_dir(topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
     state.session_cost += cost;
     if state.created_at.is_empty() {
@@ -615,7 +615,7 @@ pub async fn maybe_reset_for_new_context(
     if new_max_input_tokens == 0 {
         return false;
     }
-    let session_path = jyc_dir(&topic_path).join(SESSION_FILE);
+    let session_path = jyc_dir(topic_path).join(SESSION_FILE);
     let state = load_session_state(&session_path).await;
     if state.context_input_tokens < new_max_input_tokens {
         return false;
@@ -662,7 +662,7 @@ pub async fn reset_session(
     provider: Option<&dyn crate::provider::Provider>,
     billing: Option<&BillingContext>,
 ) {
-    let jyc_dir = jyc_dir(&topic_path);
+    let jyc_dir = jyc_dir(topic_path);
 
     match config.mode {
         CompressionMode::None => {
@@ -715,7 +715,7 @@ async fn summarize_context(
     provider: &dyn crate::provider::Provider,
     billing: Option<&BillingContext>,
 ) {
-    let context_path = jyc_dir(&topic_path).join(CONTEXT_FILE);
+    let context_path = jyc_dir(topic_path).join(CONTEXT_FILE);
 
     if !context_path.exists() {
         return;
@@ -1524,7 +1524,7 @@ pub(crate) fn is_history_note(msg: &serde_json::Value) -> bool {
 ///
 /// `keep_pairs` controls how many user+assistant pairs to retain.
 async fn summarize_context_heuristic(topic_path: &Path, keep_pairs: usize) {
-    let context_path = jyc_dir(&topic_path).join(CONTEXT_FILE);
+    let context_path = jyc_dir(topic_path).join(CONTEXT_FILE);
 
     if !context_path.exists() {
         return;

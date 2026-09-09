@@ -43,7 +43,7 @@ impl TemplateDirs {
     /// Resolve a template by name, checking the topic-level (L3)
     /// `.jyc/templates/` directory first, then the configured layers.
     pub fn resolve_with_topic(&self, topic_path: &Path, name: &str) -> Option<PathBuf> {
-        let topic_level = jyc_dir(&topic_path).join("templates").join(name);
+        let topic_level = jyc_dir(topic_path).join("templates").join(name);
         if topic_level.is_dir() {
             return Some(topic_level);
         }

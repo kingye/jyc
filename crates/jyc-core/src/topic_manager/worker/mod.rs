@@ -619,7 +619,7 @@ pub(crate) async fn process_message(
 
 /// Read skills from topic's .jyc/skills.json file.
 pub(crate) async fn read_skills(topic_path: &Path) -> Vec<String> {
-    let skills_path = jyc_dir(&topic_path).join("skills.json");
+    let skills_path = jyc_dir(topic_path).join("skills.json");
     match tokio::fs::read_to_string(&skills_path).await {
         Ok(content) => serde_json::from_str::<Vec<String>>(&content).unwrap_or_default(),
         Err(_) => Vec::new(),

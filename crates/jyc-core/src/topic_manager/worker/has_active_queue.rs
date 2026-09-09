@@ -1183,9 +1183,9 @@ async fn test_restore_multi_topic_per_agent_layout() {
     let topic_a = agent_root.join("topic-a");
     let topic_b = agent_root.join("topic-b");
     for t in [&topic_a, &topic_b] {
-        tokio::fs::create_dir_all(jyc_dir(&t)).await.unwrap();
+        tokio::fs::create_dir_all(jyc_dir(t)).await.unwrap();
         tokio::fs::write(
-            jyc_dir(&t).join("topic-name"),
+            jyc_dir(t).join("topic-name"),
             t.file_name().unwrap().to_str().unwrap(),
         )
         .await

@@ -24,7 +24,7 @@ pub(crate) async fn initialize_topic_from_template(
     template_name: &str,
     template_dirs: &crate::template_dirs::TemplateDirs,
 ) -> Result<()> {
-    let jyc_dir = jyc_dir(&topic_path);
+    let jyc_dir = jyc_dir(topic_path);
     let template_marker = jyc_dir.join("template");
 
     if jyc_dir.exists() {

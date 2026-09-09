@@ -119,7 +119,7 @@ impl Tool for PublishFileTool {
             }
         };
 
-        let jyc_dir = jyc_dir(&ctx.working_dir);
+        let jyc_dir = jyc_dir(ctx.working_dir);
         let exchange_dir = jyc_dir.join(jyc_core::EXCHANGE_DIR_NAME);
         tokio::fs::create_dir_all(&exchange_dir)
             .await

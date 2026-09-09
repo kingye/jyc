@@ -32,7 +32,7 @@ impl TemplateCommandHandler {
     async fn execute_apply(&self, context: &CommandContext) -> Result<CommandResult> {
         let topic_path = &context.topic_path;
 
-        let pattern_file = jyc_dir(&topic_path).join("pattern");
+        let pattern_file = jyc_dir(topic_path).join("pattern");
         let pattern_name = if pattern_file.exists() {
             tokio::fs::read_to_string(&pattern_file)
                 .await?
@@ -102,7 +102,7 @@ impl TemplateCommandHandler {
     async fn execute_update(&self, context: &CommandContext) -> Result<CommandResult> {
         let topic_path = &context.topic_path;
 
-        let pattern_file = jyc_dir(&topic_path).join("pattern");
+        let pattern_file = jyc_dir(topic_path).join("pattern");
         let pattern_name = if pattern_file.exists() {
             tokio::fs::read_to_string(&pattern_file)
                 .await?

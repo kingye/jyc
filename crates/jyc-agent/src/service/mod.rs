@@ -214,8 +214,8 @@ impl AgentService for JycAgentService {
                 _ => "build", // default = build mode
             };
             let mode_specific_path =
-                jyc_dir(&topic_path).join(format!("{mode_suffix}-model-override"));
-            let legacy_path = jyc_dir(&topic_path).join("model-override");
+                jyc_dir(topic_path).join(format!("{mode_suffix}-model-override"));
+            let legacy_path = jyc_dir(topic_path).join("model-override");
             if mode_specific_path.exists() {
                 tokio::fs::read_to_string(&mode_specific_path)
                     .await

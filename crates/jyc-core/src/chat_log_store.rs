@@ -36,7 +36,7 @@ pub struct ChatLogStore {
 /// Tries `.jyc/` first (new location), falls back to topic root (legacy).
 /// Returns sorted paths (oldest first) and the directory they were found in.
 pub fn list_chat_history_files(topic_path: &Path) -> (Vec<PathBuf>, PathBuf) {
-    let new_dir = jyc_dir(&topic_path);
+    let new_dir = jyc_dir(topic_path);
     let files = read_chat_history_dir(&new_dir);
     if !files.is_empty() {
         return (files, new_dir);

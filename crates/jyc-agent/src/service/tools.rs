@@ -96,7 +96,7 @@ impl JycAgentService {
         // "topic-local MCP" or "topic config loaded" reveals whether the
         // L3 file was found, valid, and applied. This is the only signal
         // that tells operators whether the topic-local overlay engaged.
-        let topic_cfg_path = jyc_dir(&topic_path).join("config.toml");
+        let topic_cfg_path = jyc_dir(topic_path).join("config.toml");
         let configured_mcps = topic_cfg
             .and_then(|t| t.mcps.as_ref())
             .map(|v| v.len())

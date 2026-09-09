@@ -62,7 +62,7 @@ impl BacklogCommandHandler {
 
     /// Returns `<topic_path>/.jyc/backlog.jsonl`.
     fn backlog_path(topic_path: &Path) -> PathBuf {
-        jyc_dir(&topic_path).join(BACKLOG_FILENAME)
+        jyc_dir(topic_path).join(BACKLOG_FILENAME)
     }
 
     /// Reads the file, returning `Ok(vec![])` if it does not exist.

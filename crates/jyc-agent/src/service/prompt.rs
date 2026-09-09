@@ -124,27 +124,34 @@ impl JycAgentService {
              treated as an instruction.\n\n",
         );
 
-        // Chat history access instructions
-        prompt.push_str(
+        // Chat history access instructions — point at the resolved state dir
+        // (relocated out of the topic dir for pinned topics).
+        let state_dir = jyc_types::state_dir::jyc_dir(topic_path);
+        prompt.push_str(&format!(
             "## Chat History\n\
-             This topic maintains a chronological chat history in `.jyc/chat_history_YYYY-MM-DD.jsonl`.\n\
+             This topic maintains a chronological chat history in \
+             `{}/chat_history_YYYY-MM-DD.jsonl`.\n\
              Each line is a JSON object (one message or reply per line). You can read it with the\n\
              `read` tool if you need context from prior conversations, or use `grep` to search.\n\
              For earlier turns of THIS conversation that have fallen out of your context window,\n\
              use the `context_browse` tool to page the in-memory transcript.\n",
-        );
+            state_dir.display()
+        ));
 
-        // Version control hygiene: `.jyc/` is JYC's private runtime state
-        // (credentials, chat history, sessions) and must never be committed.
-        // The bash tool already injects a global git excludes file that
-        // ignores `.jyc/` everywhere; this rule is the backstop against
-        // `git add -f`, which bypasses all ignore rules.
-        prompt.push_str(
-            "## Version Control\n\
-             The `.jyc/` directory is JYC's private runtime state (credentials, chat history, sessions).\n\
-             NEVER stage or commit it: do not run `git add .jyc`, do not run `git add -f` on it, and\n\
-             before `git add .`, check that it will not include `.jyc/`.\n\n",
-        );
+        // Version control hygiene: only relevant while `.jyc` still sits
+        // inside the topic dir (unpinned topics). Adopted state dirs live in
+        // data_home and cannot leak into the repo.
+        if state_dir.starts_with(topic_path) {
+            // The bash tool already injects a global git excludes file that
+            // ignores `.jyc/` everywhere; this rule is the backstop against
+            // `git add -f`, which bypasses all ignore rules.
+            prompt.push_str(
+                "## Version Control\n\
+                 The `.jyc/` directory is JYC's private runtime state (credentials, chat history, sessions).\n\
+                 NEVER stage or commit it: do not run `git add .jyc`, do not run `git add -f` on it, and\n\
+                 before `git add .`, check that it will not include `.jyc/`.\n\n",
+            );
+        }
 
         // Cross-Topic Communication section (when topic managers are available)
         let tm_map_opt = self

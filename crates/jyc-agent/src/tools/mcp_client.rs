@@ -128,13 +128,25 @@ async fn connect_and_list_tools(
             for (k, v) in environment {
                 cmd.env(k, v);
             }
-            cmd.stdin(std::process::Stdio::piped());
-            cmd.stdout(std::process::Stdio::piped());
-            cmd.stderr(std::process::Stdio::inherit());
-
-            let transport = TokioChildProcess::new(cmd)
+            // Never inherit stderr: the child shares our terminal, and MCP
+            // servers print banners/errors there (e.g. chrome-devtools-mcp),
+            // which writes raw text over the TUI and corrupts the screen.
+            // Pipe it and drain into tracing instead.
+            let (transport, stderr) = TokioChildProcess::builder(cmd)
+                .stderr(std::process::Stdio::piped())
+                .spawn()
                 .map_err(|e| anyhow::anyhow!("failed to start MCP subprocess: {}", e))
-                .context("TokioChildProcess::new failed")?;
+                .context("TokioChildProcess spawn failed")?;
+            if let Some(stderr) = stderr {
+                let name = cfg.name.clone();
+                tokio::spawn(async move {
+                    use tokio::io::AsyncBufReadExt;
+                    let mut lines = tokio::io::BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        tracing::info!(target: "mcp", "[{}] {}", name, line);
+                    }
+                });
+            }
 
             serve_client((), transport)
                 .await

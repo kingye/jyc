@@ -31,6 +31,9 @@
   skill/attachment roots) are configured — it now enumerates exactly the roots
   the tool layer enforces, so agents stop refusing access they actually have.
   (#736)
+- TUI screen corruption when a local MCP server wrote to stderr (e.g. the
+  chrome-devtools-mcp startup banner): stderr is now piped and drained into
+  the log (target `mcp`) instead of being inherited by the terminal. (#738)
 
 ### Removed
 

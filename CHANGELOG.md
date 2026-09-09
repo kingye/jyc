@@ -4,6 +4,8 @@
 
 - `docs/channels/github.md` — up-to-date GitHub channel reference (polled
   events, label routing, `[Role]` echo guard, close events, skills).
+- `scripts/chrome-debug-mac.sh` — dev helper: kill all Chrome instances and
+  relaunch with remote debugging on port 9222 (macOS). (#737)
 
 ### Changed
 

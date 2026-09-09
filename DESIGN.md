@@ -424,6 +424,9 @@ registry lookup with a `<topic_dir>/.jyc` fallback.
   bootstraps config-less external subprocesses like `jyc mcp-reply-tool`);
   config pins additionally adopt from config — identical mappings,
   idempotent.
+- **Close.** `/close --force` on an adopted topic deletes the relocated
+  state dir and unregisters the mapping; the pinned topic dir (e.g. a repo)
+  is kept. Unregistered topics keep the legacy whole-dir deletion.
 - **Agent access.** When the state dir lies outside the topic dir it is
   appended to the agent's additional read/write roots (parity with the
   pre-refactor in-dir `.jyc`), and the system prompt's Chat History

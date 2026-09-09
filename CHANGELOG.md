@@ -16,6 +16,12 @@
   automatically on first adoption, and granted to the agent's file-access
   sandbox. Unpinned topics are unchanged (`<topic_dir>/.jyc` fallback). (#739)
 
+- `/close` now requires `--force` (mirroring `/new`); `-y`/`--confirm` no
+  longer bypass the guard. On a pinned/adopted topic it deletes the
+  relocated state dir and unregisters the mapping, keeping the topic dir
+  (e.g. a project checkout) intact; unregistered topics still delete the
+  whole dir.
+
 - `jyc-podman-tunnel.sh` moved to `scripts/` alongside the other helper
   scripts; usage comments and DESIGN.md reference updated.
 - `FEISHU.md` moved to `docs/channels/feishu.md`, joining the other
@@ -42,6 +48,14 @@
   chrome-devtools-mcp startup banner): stderr is now piped and drained into
   the log (as `[mcp:<server>] ...` lines) instead of being inherited by the
   terminal. (#738)
+- `/close` on a topic pinned to a project directory deleted that directory
+  and left the relocated state dir behind forever; it now preserves the
+  topic dir and removes the state.
+- `/pin` false-positived "already pinned" (success, no config write) when
+  the path appeared anywhere in the raw config text — including commented-
+  out legacy blocks. The check now parses the config: only real
+  `agents.*.topic_path` / legacy pattern `topic_path`/`thread_path` values
+  match, with tilde expansion (`~/x` pins are detected too).
 
 ### Removed
 

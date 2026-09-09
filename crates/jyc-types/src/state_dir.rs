@@ -62,8 +62,10 @@ pub fn derive_state_name(topic_dir: &Path) -> String {
     let s = topic_dir.to_string_lossy().replace('\\', "/");
     let s = s.trim_end_matches('/');
     // Escape first, then substitute separators: every `_` in the output came
-    // from either a doubled `__` or a `/`/`:` — the map stays injective and
-    // drive names read cleanly (`C:\x` -> `C_x`).
+    // from either a doubled `__` or a `/`/`:` — drive names still read
+    // cleanly (`C:\x` -> `C_x`). The one residual collision is a component
+    // ending in `_` adjacent to a separator (`/a_/b` vs `/a/_b` both give
+    // `_a___b`); such sibling pins would share one state dir.
     let s = s.replace('_', "__");
     let s = s.replace(':', "_");
     s.replace('/', "_")
@@ -81,6 +83,13 @@ pub fn register(topic_dir: &Path, state_dir: &Path) {
 pub fn registered_state(topic_dir: impl AsRef<Path>) -> Option<PathBuf> {
     let map = registry().read().unwrap_or_else(|e| e.into_inner());
     map.get(&normalize(topic_dir.as_ref())).cloned()
+}
+
+/// Remove the registration for `topic_dir` (used when a topic's state is
+/// destroyed, e.g. `/close` on a pinned topic). No-op if unregistered.
+pub fn unregister(topic_dir: impl AsRef<Path>) {
+    let mut map = registry().write().unwrap_or_else(|e| e.into_inner());
+    map.remove(&normalize(topic_dir.as_ref()));
 }
 
 /// Resolve the `.jyc` directory for a topic dir.
@@ -109,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn derive_state_name_escapes_underscores_injectively() {
+    fn derive_state_name_distinguishes_underscores_from_separators() {
         assert_eq!(derive_state_name(Path::new("/a/b_c")), "_a_b__c", "/a/b_c");
         assert_eq!(derive_state_name(Path::new("/a_b/c")), "_a__b_c", "/a_b/c");
     }
@@ -142,6 +151,19 @@ mod tests {
         let state = tmp.path().join("probe-reg-state");
         register(&topic, &state);
         assert_eq!(jyc_dir(&topic), state);
+    }
+
+    #[test]
+    fn unregister_clears_lookup() {
+        let tmp = tempdir().unwrap();
+        let topic = tmp.path().join("probe-unreg-topic");
+        let state = tmp.path().join("probe-unreg-state");
+        register(&topic, &state);
+        unregister(&topic);
+        assert!(registered_state(&topic).is_none());
+        assert_eq!(jyc_dir(&topic), topic.join(".jyc"));
+        // unregistering twice is a no-op
+        unregister(&topic);
     }
 
     #[test]

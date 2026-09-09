@@ -22,7 +22,6 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-//--- submodules ---
 mod email;
 mod feishu;
 mod gitee;
@@ -32,7 +31,6 @@ mod tests;
 mod wecom;
 mod wecom_bot;
 
-//--- re-exports for serve ---
 pub(crate) use email::spawn_email_adapter;
 pub(crate) use feishu::spawn_feishu_adapter;
 pub(crate) use gitee::spawn_gitee_adapter;

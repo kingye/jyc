@@ -1,16 +1,5 @@
 ## [Unreleased]
 
-### Changed
-
-- Split oversized modules for maintainability: `serve/channels.rs` (3.4k
-  lines) became per-channel submodules (`email`, `github`, `gitee`,
-  `feishu`, `wecom_bot`, `wecom`+`wecomkf`) with shared pipe/relay helpers
-  in `channels/mod.rs`; `agent_loop/mod.rs` (2.9k lines) shed its test
-  modules into sibling files. Pure moves — no behavior change. (#735)
-- CHANGELOG rotated: releases 0.3.13 and earlier archived verbatim to
-  `CHANGELOG-archive.md`; the working file keeps Unreleased plus the three
-  latest releases (0.3.15-0.3.17). (#735)
-
 ### Added
 
 - `docs/channels/github.md` — up-to-date GitHub channel reference (polled
@@ -22,6 +11,16 @@
   scripts; usage comments and DESIGN.md reference updated.
 - `FEISHU.md` moved to `docs/channels/feishu.md`, joining the other
   per-channel guides; internal doc link adjusted. (#734)
+
+
+- Split oversized modules for maintainability: `serve/channels.rs` (3.4k
+  lines) became per-channel submodules (`email`, `github`, `gitee`,
+  `feishu`, `wecom_bot`, `wecom`+`wecomkf`) with shared pipe/relay helpers
+  in `channels/mod.rs`; `agent_loop/mod.rs` (2.9k lines) shed its test
+  modules into sibling files. Pure moves — no behavior change. (#735)
+- CHANGELOG rotated: releases 0.3.13 and earlier archived verbatim to
+  `CHANGELOG-archive.md`; the working file keeps Unreleased plus the three
+  latest releases (0.3.15-0.3.17). (#735)
 
 ### Removed
 

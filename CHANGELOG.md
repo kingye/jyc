@@ -33,7 +33,8 @@
   (#736)
 - TUI screen corruption when a local MCP server wrote to stderr (e.g. the
   chrome-devtools-mcp startup banner): stderr is now piped and drained into
-  the log (target `mcp`) instead of being inherited by the terminal. (#738)
+  the log (as `[mcp:<server>] ...` lines) instead of being inherited by the
+  terminal. (#738)
 
 ### Removed
 

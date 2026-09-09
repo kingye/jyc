@@ -141,9 +141,24 @@ async fn connect_and_list_tools(
                 let name = cfg.name.clone();
                 tokio::spawn(async move {
                     use tokio::io::AsyncBufReadExt;
-                    let mut lines = tokio::io::BufReader::new(stderr).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        tracing::info!(target: "mcp", "[{}] {}", name, line);
+                    let mut reader = tokio::io::BufReader::new(stderr);
+                    let mut buf = Vec::new();
+                    // Byte-wise read_until: never aborts on invalid UTF-8. A
+                    // line-based loop that dies on a bad byte stops draining,
+                    // the pipe fills, and the server blocks on its next stderr
+                    // write. Default event target (jyc_agent::...) keeps these
+                    // visible under the `jyc_agent=info` filter directive.
+                    while reader
+                        .read_until(b'\n', &mut buf)
+                        .await
+                        .is_ok_and(|n| n > 0)
+                    {
+                        tracing::info!(
+                            "[mcp:{}] {}",
+                            name,
+                            String::from_utf8_lossy(&buf).trim_end()
+                        );
+                        buf.clear();
                     }
                 });
             }

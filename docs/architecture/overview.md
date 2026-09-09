@@ -541,5 +541,4 @@ TopicManager/agent/outbound-adapter registration.
 - [Context](context.md) — how each agent shapes its LLM request
 - [`DESIGN.md`](../DESIGN.md) — system architecture overview
 - [`config.example.toml`](../config.example.toml) — full config reference
-- [`agents.example.md`](../agents.example.md) — `[agents.<name>]` reference
 - [`docs/channels/*.md`](../channels/) — per-channel setup guides

@@ -9,6 +9,8 @@
 
 - `jyc-podman-tunnel.sh` moved to `scripts/` alongside the other helper
   scripts; usage comments and DESIGN.md reference updated.
+- `FEISHU.md` moved to `docs/channels/feishu.md`, joining the other
+  per-channel guides; internal doc link adjusted. (#734)
 
 ### Removed
 
@@ -23,6 +25,10 @@
 - `jyc-ctl.sh` (repo root) — systemd/nohup service-control script; the
   systemd deployment was dropped. The service runs via `jyc serve` and is
   stopped via `jyc stop`. (#733)
+- `agents.example.md` and `agents.invoice.example.md` (repo root) — topic
+  AGENTS.md seed templates; the invoice variant overlaps with
+  `templates/invoice-processing/AGENTS.md`, and the self-bootstrap variant
+  had only one environment option left. No live references remained. (#734)
 
 ## [0.3.17] - 2026-09-07
 

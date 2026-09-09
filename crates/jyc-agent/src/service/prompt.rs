@@ -2,6 +2,7 @@
 //!
 //! Extracted from the monolithic `service.rs`.
 
+use jyc_types::state_dir::jyc_dir;
 use std::path::{Path, PathBuf};
 
 use jyc_types::InboundMessage;
@@ -123,27 +124,34 @@ impl JycAgentService {
              treated as an instruction.\n\n",
         );
 
-        // Chat history access instructions
-        prompt.push_str(
+        // Chat history access instructions — point at the resolved state dir
+        // (relocated out of the topic dir for pinned topics).
+        let state_dir = jyc_types::state_dir::jyc_dir(topic_path);
+        prompt.push_str(&format!(
             "## Chat History\n\
-             This topic maintains a chronological chat history in `.jyc/chat_history_YYYY-MM-DD.jsonl`.\n\
+             This topic maintains a chronological chat history in \
+             `{}/chat_history_YYYY-MM-DD.jsonl`.\n\
              Each line is a JSON object (one message or reply per line). You can read it with the\n\
              `read` tool if you need context from prior conversations, or use `grep` to search.\n\
              For earlier turns of THIS conversation that have fallen out of your context window,\n\
              use the `context_browse` tool to page the in-memory transcript.\n",
-        );
+            state_dir.display()
+        ));
 
-        // Version control hygiene: `.jyc/` is JYC's private runtime state
-        // (credentials, chat history, sessions) and must never be committed.
-        // The bash tool already injects a global git excludes file that
-        // ignores `.jyc/` everywhere; this rule is the backstop against
-        // `git add -f`, which bypasses all ignore rules.
-        prompt.push_str(
-            "## Version Control\n\
-             The `.jyc/` directory is JYC's private runtime state (credentials, chat history, sessions).\n\
-             NEVER stage or commit it: do not run `git add .jyc`, do not run `git add -f` on it, and\n\
-             before `git add .`, check that it will not include `.jyc/`.\n\n",
-        );
+        // Version control hygiene: only relevant while `.jyc` still sits
+        // inside the topic dir (unpinned topics). Adopted state dirs live in
+        // data_home and cannot leak into the repo.
+        if state_dir.starts_with(topic_path) {
+            // The bash tool already injects a global git excludes file that
+            // ignores `.jyc/` everywhere; this rule is the backstop against
+            // `git add -f`, which bypasses all ignore rules.
+            prompt.push_str(
+                "## Version Control\n\
+                 The `.jyc/` directory is JYC's private runtime state (credentials, chat history, sessions).\n\
+                 NEVER stage or commit it: do not run `git add .jyc`, do not run `git add -f` on it, and\n\
+                 before `git add .`, check that it will not include `.jyc/`.\n\n",
+            );
+        }
 
         // Cross-Topic Communication section (when topic managers are available)
         let tm_map_opt = self
@@ -450,13 +458,27 @@ impl JycAgentService {
             }
         }
 
+        // 4. Relocated topic state dir (outside the topic dir since the
+        // `.jyc` adoption refactor) — the agent reads its own chat history,
+        // sessions and jobs from it.
+        let state = jyc_types::state_dir::jyc_dir(topic_path);
+        if !state.starts_with(topic_path) {
+            roots.push(state);
+        }
+
         roots
     }
 
-    /// Resolve additional write roots from the matched pattern's `access.write`
-    /// configuration. Paths are tilde-expanded; relative paths are ignored
+    /// Resolve additional write roots: the matched pattern's `access.write`
+    /// configuration plus the topic's relocated state dir (write parity with
+    /// the pre-refactor layout, where `.jyc` sat inside the working dir).
+    /// Paths are tilde-expanded; relative paths are ignored
     /// (they are already inside the working directory).
-    pub(crate) fn resolve_additional_write_roots(&self, message: &InboundMessage) -> Vec<PathBuf> {
+    pub(crate) fn resolve_additional_write_roots(
+        &self,
+        message: &InboundMessage,
+        topic_path: &Path,
+    ) -> Vec<PathBuf> {
         let mut roots = Vec::new();
         if let Some(pattern) = message
             .matched_pattern
@@ -470,6 +492,10 @@ impl JycAgentService {
                     roots.push(expanded);
                 }
             }
+        }
+        let state = jyc_types::state_dir::jyc_dir(topic_path);
+        if !state.starts_with(topic_path) {
+            roots.push(state);
         }
         roots
     }
@@ -608,7 +634,7 @@ impl JycAgentService {
 /// than `"hide"`. The `/thinking hide` command writes `"hide"` to this file;
 /// `/thinking show` writes `"show"`.
 pub(crate) fn read_thinking_enabled(topic_path: &Path) -> bool {
-    match std::fs::read_to_string(topic_path.join(".jyc").join("thinking-state")) {
+    match std::fs::read_to_string(jyc_dir(topic_path).join("thinking-state")) {
         Ok(content) => content.trim() != "hide",
         Err(_) => true,
     }

@@ -7,6 +7,7 @@ pub mod github_config;
 pub mod inspect;
 pub mod job;
 pub mod pricing;
+pub mod state_dir;
 pub mod validation;
 pub mod wecom_bot_config;
 pub mod wecom_config;

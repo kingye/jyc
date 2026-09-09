@@ -1126,7 +1126,12 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # Default workspace root: <data_home>/agents/<agent_name>/
 # (Linux/macOS: ~/.local/share/jyc/agents/<agent_name>/
 #  Windows:     %LOCALAPPDATA%\jyc\agents\<agent_name>\
-# Override with topic_path.
+# Override with topic_path. A pinned topic's runtime state (.jyc) is NOT
+# left in the pinned dir: it is adopted to <data_home>/agents/<name>/
+# automatically on first start (existing .jyc is moved out of the repo).
+# Ad-hoc pins without an agent key (e.g. dashboard `jyc open -p`) derive a
+# unique folder name from the absolute path: /home/u/proj -> agents/_home_u_proj
+# (underscores in the path are doubled, so the mapping cannot collide).
 #
 # Inheritance: an agent can reuse another agent's config with
 #   extends = "<base_agent_name>"
@@ -1220,7 +1225,9 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 
 # --- Per-Topic MCP Overrides (L3) ---
 #
-# Place a `<topic_path>/.jyc/config.toml` to add or replace MCPs for a
+# Place a `<topic_path>/.jyc/config.toml` (for adopted/pinned topics the
+# state dir: `<data_home>/agents/<name>/.jyc/config.toml`) to add or
+# replace MCPs for a
 # specific topic (e.g. one GitHub PR, one WeCom conversation). Layered on
 # top of the pattern → channel → global chain. The same `[ai] model`
 # overrides also live here.

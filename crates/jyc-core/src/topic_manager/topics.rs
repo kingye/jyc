@@ -2,6 +2,7 @@
 //!
 //! Extracted from the monolithic `topic_manager.rs`.
 
+use jyc_types::state_dir::jyc_dir;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -95,7 +96,7 @@ impl TopicManager {
         }
         // Cold-start fallback: read .jyc/pattern from disk and
         // remember it so future reads skip the I/O.
-        let path = topic_path.join(".jyc").join("pattern");
+        let path = jyc_dir(topic_path).join("pattern");
         let from_disk = tokio::fs::read_to_string(&path)
             .await
             .ok()
@@ -167,9 +168,9 @@ impl TopicManager {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
             }
-            let plan_path = topic_path.join(".jyc").join("plan-model-override");
-            let build_path = topic_path.join(".jyc").join("build-model-override");
-            let legacy_path = topic_path.join(".jyc").join("model-override");
+            let plan_path = jyc_dir(topic_path).join("plan-model-override");
+            let build_path = jyc_dir(topic_path).join("build-model-override");
+            let legacy_path = jyc_dir(topic_path).join("model-override");
 
             let mode_specific = match mode.as_deref() {
                 Some("plan") => read_trimmed(&plan_path).await,
@@ -255,11 +256,22 @@ impl TopicManager {
     /// instead of the default `<workspace>/<topic_name>/`. The directory
     /// is created if it does not already exist. `.jyc/topic-name` is also
     /// written so `list_topics` recognises the entry — without it, the
-    /// `path.join(".jyc").is_dir()` filter in `list_topics` drops the
+    /// `jyc_dir(&path).is_dir()` filter in `list_topics` drops the
     /// entry and `wait_for_topic` times out for fresh ad-hoc topics.
     pub async fn set_topic_path(&self, topic_name: &str, path: PathBuf) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&path).await?;
-        let jyc_dir = path.join(".jyc");
+        // Reuse an existing registration (config pins adopt at startup under
+        // their agent key); otherwise this runtime pin is ad-hoc and gets the
+        // path-derived state name.
+        if jyc_types::state_dir::registered_state(&path).is_none() {
+            let state = crate::topic_path::state_dir_for(
+                &crate::topic_path::state_root(&self.workdir),
+                &path,
+                None,
+            );
+            crate::topic_path::adopt_state_dir(&path, &state)?;
+        }
+        let jyc_dir = jyc_dir(&path);
         tokio::fs::create_dir_all(&jyc_dir).await?;
         tokio::fs::write(jyc_dir.join("topic-name"), topic_name)
             .await
@@ -334,7 +346,24 @@ impl TopicManager {
                 None if self.channel_name == "agents" => self.workspace_dir.join(&pattern.name),
                 None => continue,
             };
-            let jyc_dir = resolved.join(".jyc");
+            // Adopt the relocated state dir for explicit pins (idempotent;
+            // moves a legacy `<pin>/.jyc` out of the repo on first run).
+            if pattern.topic_path.is_some() {
+                let agent_key = (self.channel_name == "agents").then_some(pattern.name.as_str());
+                let state = crate::topic_path::state_dir_for(
+                    &crate::topic_path::state_root(&self.workdir),
+                    &resolved,
+                    agent_key,
+                );
+                if let Err(e) = crate::topic_path::adopt_state_dir(&resolved, &state) {
+                    tracing::warn!(
+                        error = %e,
+                        path = %resolved.display(),
+                        "Failed to adopt topic state dir; falling back to in-dir .jyc"
+                    );
+                }
+            }
+            let jyc_dir = jyc_dir(&resolved);
             // One-time migration for the topic → topic rename.
             crate::topic_path::migrate_topic_name_file(&jyc_dir);
             let topic_name_file = jyc_dir.join("topic-name");
@@ -412,7 +441,7 @@ impl TopicManager {
             if !path.is_dir() {
                 continue;
             }
-            let jyc_dir = path.join(".jyc");
+            let jyc_dir = jyc_dir(&path);
             if !jyc_dir.is_dir() {
                 continue;
             }
@@ -459,7 +488,7 @@ impl TopicManager {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
                 if path.is_dir()
-                    && path.join(".jyc").is_dir()
+                    && jyc_dir(&path).is_dir()
                     && let Some(name) = entry.file_name().to_str()
                 {
                     topic_names.push(name.to_string());
@@ -473,7 +502,7 @@ impl TopicManager {
         {
             let mut paths = self.topic_paths.lock().await;
             paths.retain(|name, path| {
-                let exists = path.join(".jyc").is_dir();
+                let exists = jyc_dir(&path).is_dir();
                 if !exists {
                     tracing::info!(
                         topic = %name,
@@ -520,7 +549,7 @@ impl TopicManager {
             let skills = read_skills(&topic_path).await;
 
             // Determine status
-            let status = if topic_path.join(".jyc").join("question-sent.flag").exists() {
+            let status = if jyc_dir(&topic_path).join("question-sent.flag").exists() {
                 TopicStatus::WaitingForAnswer
             } else if active_names.contains(&name) {
                 // Topic has an active queue — it's either processing or waiting for messages
@@ -531,7 +560,7 @@ impl TopicManager {
             };
 
             // Fallback: read .jyc directory mtime if no activity tracker data
-            let last_active_at = match tokio::fs::metadata(topic_path.join(".jyc")).await {
+            let last_active_at = match tokio::fs::metadata(jyc_dir(&topic_path)).await {
                 Ok(meta) => match meta.modified() {
                     Ok(mtime) => {
                         let dt: chrono::DateTime<chrono::Utc> = mtime.into();

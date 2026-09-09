@@ -19,6 +19,7 @@
 //! agent turn; `set 2 <text>` replaces the second entry's text, and
 //! `get 2` shows it in full.
 
+use jyc_types::state_dir::jyc_dir;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -61,7 +62,7 @@ impl BacklogCommandHandler {
 
     /// Returns `<topic_path>/.jyc/backlog.jsonl`.
     fn backlog_path(topic_path: &Path) -> PathBuf {
-        topic_path.join(".jyc").join(BACKLOG_FILENAME)
+        jyc_dir(topic_path).join(BACKLOG_FILENAME)
     }
 
     /// Reads the file, returning `Ok(vec![])` if it does not exist.

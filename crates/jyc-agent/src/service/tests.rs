@@ -1452,7 +1452,7 @@ async fn system_prompt_enumerates_configured_access_roots() {
     };
     let topic = Path::new("/tmp/test-topic");
     let reads = svc.resolve_additional_read_roots(&message, topic);
-    let writes = svc.resolve_additional_write_roots(&message);
+    let writes = svc.resolve_additional_write_roots(&message, topic);
     assert!(
         reads
             .iter()

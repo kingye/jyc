@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use jyc_types::state_dir::jyc_dir;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -35,7 +36,7 @@ pub struct ChatLogStore {
 /// Tries `.jyc/` first (new location), falls back to topic root (legacy).
 /// Returns sorted paths (oldest first) and the directory they were found in.
 pub fn list_chat_history_files(topic_path: &Path) -> (Vec<PathBuf>, PathBuf) {
-    let new_dir = topic_path.join(".jyc");
+    let new_dir = jyc_dir(topic_path);
     let files = read_chat_history_dir(&new_dir);
     if !files.is_empty() {
         return (files, new_dir);
@@ -134,9 +135,7 @@ impl ChatLogStore {
     /// Get the path for today's chat history file.
     /// New location: `.jyc/chat_history_YYYY-MM-DD.jsonl`
     fn get_today_file_path(&self) -> PathBuf {
-        self.topic_path
-            .join(".jyc")
-            .join(format!("chat_history_{}.jsonl", self.current_date))
+        jyc_dir(&self.topic_path).join(format!("chat_history_{}.jsonl", self.current_date))
     }
 
     /// Ensure the current file is open and ready for writing.

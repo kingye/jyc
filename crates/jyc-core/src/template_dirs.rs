@@ -8,6 +8,7 @@
 //! Higher levels win when a template with the same name exists in multiple
 //! levels.
 
+use jyc_types::state_dir::jyc_dir;
 use std::path::{Path, PathBuf};
 
 /// Ordered template directories, low → high priority.
@@ -42,7 +43,7 @@ impl TemplateDirs {
     /// Resolve a template by name, checking the topic-level (L3)
     /// `.jyc/templates/` directory first, then the configured layers.
     pub fn resolve_with_topic(&self, topic_path: &Path, name: &str) -> Option<PathBuf> {
-        let topic_level = topic_path.join(".jyc").join("templates").join(name);
+        let topic_level = jyc_dir(topic_path).join("templates").join(name);
         if topic_level.is_dir() {
             return Some(topic_level);
         }

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use jyc_types::state_dir::jyc_dir;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::session_state;
@@ -12,7 +13,7 @@ use crate::session_state;
 ///
 /// Shared by `/plan`, `/build`, and user-defined commands that declare a mode.
 pub async fn set_mode(context: &CommandContext, mode: &str) -> Result<()> {
-    let jyc_dir = context.topic_path.join(".jyc");
+    let jyc_dir = jyc_dir(&context.topic_path);
     let override_path = jyc_dir.join("mode-override");
 
     if mode == "plan" {

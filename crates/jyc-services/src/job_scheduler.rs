@@ -10,6 +10,7 @@ use anyhow::Result;
 use chrono::Utc;
 use jyc_core::job_store::JobStore;
 use jyc_core::topic_manager::TopicManager;
+use jyc_types::state_dir::jyc_dir;
 use jyc_types::{InboundMessage, MessageContent, PatternMatch};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -166,7 +167,7 @@ impl JobScheduler {
                     continue;
                 }
 
-                let jobs_dir = topic_path.join(".jyc").join("jobs");
+                let jobs_dir = jyc_dir(&topic_path).join("jobs");
                 if !jobs_dir.exists() {
                     continue;
                 }
@@ -235,7 +236,7 @@ impl JobScheduler {
         for (channel_name, tm) in tms.iter() {
             let custom_paths = tm.custom_topic_paths().await;
             for (topic_name, topic_path) in &custom_paths {
-                let jobs_dir = topic_path.join(".jyc").join("jobs");
+                let jobs_dir = jyc_dir(topic_path).join("jobs");
                 if !jobs_dir.exists() {
                     continue;
                 }
@@ -357,7 +358,7 @@ impl JobScheduler {
                     continue;
                 }
 
-                let jobs_dir = topic_path.join(".jyc").join("jobs");
+                let jobs_dir = jyc_dir(&topic_path).join("jobs");
                 if !jobs_dir.exists() {
                     continue;
                 }

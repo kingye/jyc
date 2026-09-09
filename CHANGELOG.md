@@ -9,6 +9,13 @@
 
 ### Changed
 
+- Topic state relocation: a pinned/ad-hoc topic's `.jyc` no longer lives
+  inside its working dir. It is adopted to
+  `<data_home>/agents/<name>/.jyc` (config-key agents keep their name,
+  ad-hoc pins get a path-derived `_`-prefixed name), migrated
+  automatically on first adoption, and granted to the agent's file-access
+  sandbox. Unpinned topics are unchanged (`<topic_dir>/.jyc` fallback). (#739)
+
 - `jyc-podman-tunnel.sh` moved to `scripts/` alongside the other helper
   scripts; usage comments and DESIGN.md reference updated.
 - `FEISHU.md` moved to `docs/channels/feishu.md`, joining the other

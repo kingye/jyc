@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use jyc_types::state_dir::jyc_dir;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tracing;
@@ -116,7 +117,7 @@ impl Tool for ReplyMessageTool {
         }
 
         let topic_path = ctx.working_dir;
-        let jyc_dir = topic_path.join(".jyc");
+        let jyc_dir = jyc_dir(topic_path);
         tokio::fs::create_dir_all(&jyc_dir).await.ok();
 
         // Validate attachments

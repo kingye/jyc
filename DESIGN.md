@@ -406,9 +406,12 @@ registry lookup with a `<topic_dir>/.jyc` fallback.
 - **Identity.** Config-key agents keep their `[agents.<key>]` name for the
   state dir — TOML keys are unique by construction. Pinned dirs without an
   agent key get a path-derived name: `_` is escaped to `__`, then `/` (and
-  Windows `:`) become `_`, and the leading `/` is kept as `_`. The mapping
-  is injective (`/a/b_c` → `_a_b__c` ≠ `_a__b_c` ← `/a_b/c`), and the `_`
-  prefix is a reserved namespace that cannot collide with config keys.
+  Windows `:`) become `_`, and the leading `/` is kept as `_`. Names around
+  separator boundaries stay distinct (`/a/b_c` → `_a_b__c` ≠ `_a__b_c` ←
+  `/a_b/c`); the only residual collision is a component ending in `_`
+  directly adjacent to one starting with `_` (`/a_/b` vs `/a/_b`), which
+  would make such sibling pins share one state dir. The `_` prefix is a
+  reserved namespace that cannot collide with config keys.
 - **Adoption & migration.** `topic_path::adopt_state_dir` registers the
   mapping and, on first adoption, moves a legacy `<topic_dir>/.jyc` out of
   the repo once (rename with cross-device copy fallback). Repos stay
@@ -417,8 +420,10 @@ registry lookup with a `<topic_dir>/.jyc` fallback.
   (`set_topic_path`, dashboard `open -p`) adopt immediately.
 - **Restore.** Each adopted state dir carries a `topic-path` breadcrumb.
   At startup `restore_state_registry` re-registers every
-  `<data_home>/agents/_*/.jyc/topic-path` before channels start;
-  config-key agents restore from config as before.
+  `<data_home>/agents/*/.jyc/topic-path` before channels start (also
+  bootstraps config-less external subprocesses like `jyc mcp-reply-tool`);
+  config pins additionally adopt from config — identical mappings,
+  idempotent.
 - **Agent access.** When the state dir lies outside the topic dir it is
   appended to the agent's additional read/write roots (parity with the
   pre-refactor in-dir `.jyc`), and the system prompt's Chat History

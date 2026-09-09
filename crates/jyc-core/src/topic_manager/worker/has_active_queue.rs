@@ -1029,6 +1029,28 @@ mode = "agent"
         "restore_custom_topic_paths should rediscover the topic"
     );
 
+    // User-visible guarantee: the pin's legacy `.jyc` left the repo dir and
+    // now lives in the adopted (path-derived) state dir under state_root.
+    assert!(
+        !custom_path.join(".jyc").exists(),
+        "legacy .jyc moved out of the pinned dir"
+    );
+    let state = jyc_dir(&custom_path);
+    assert_ne!(
+        state,
+        custom_path.join(".jyc"),
+        "topic should be registered"
+    );
+    assert!(
+        state.join("topic-name").exists(),
+        "state carried into adopted dir"
+    );
+    assert_eq!(
+        std::fs::read_to_string(state.join("topic-path")).unwrap(),
+        custom_path.to_string_lossy(),
+        "breadcrumb written"
+    );
+
     // list_topics should now include the restored topic
     let topics = tm.list_topics().await;
     let names: Vec<&str> = topics.iter().map(|t| t.name.as_str()).collect();

@@ -78,8 +78,9 @@ pub fn resolve_topic_path(path: &str, data_root: &Path) -> PathBuf {
 /// - Agent-keyed topic (config `[agents.<key>]` or the 1:1 "agents" channel):
 ///   `<agents_root>/<key>/.jyc` — config keys are unique by construction.
 /// - Ad-hoc topic (any other pinned dir): `<agents_root>/<derived>/.jyc` with
-///   the injective path-derived name from [`jyc_types::state_dir::derive_state_name`]
-///   (leading `_` keeps derived names out of the config-key namespace).
+///   the path-derived `_`-prefixed name from
+///   [`jyc_types::state_dir::derive_state_name`] (the prefix keeps derived
+///   names out of the config-key namespace).
 pub fn state_dir_for(agents_root: &Path, topic_dir: &Path, agent_key: Option<&str>) -> PathBuf {
     let name = match agent_key {
         Some(key) => key.to_string(),
@@ -141,7 +142,12 @@ pub fn adopt_state_dir(topic_dir: &Path, state_dir: &Path) -> std::io::Result<bo
             }
         }
         // Drop the now-empty old namespace folder (agents/<old-name>/).
-        if from_prev && let Some(src_parent) = src.parent() {
+        if from_prev
+            && let Some(src_parent) = src.parent()
+            && src_parent
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('_'))
+        {
             let _ = std::fs::remove_dir(src_parent);
         }
     }
@@ -174,21 +180,19 @@ fn copy_dir_all(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Re-register state dirs of previously adopted ad-hoc topics at startup.
+/// Re-register state dirs of previously adopted topics at startup.
 ///
-/// Scans `<agents_root>/_*/.jyc/topic-path` breadcrumbs (derived names only;
-/// config-key agents restore from config) and registers each live mapping.
-/// Returns the number of registrations restored.
+/// Scans every `<agents_root>/*/.jyc/topic-path` breadcrumb and registers
+/// each mapping — pure `jyc_dir` bootstrap for processes without config
+/// access (e.g. the external `jyc mcp-reply-tool`). Config-pin processes
+/// additionally adopt from config; re-registering an identical mapping is
+/// idempotent. Returns the number of registrations restored.
 pub fn restore_state_registry(agents_root: &Path) -> usize {
     let Ok(entries) = std::fs::read_dir(agents_root) else {
         return 0;
     };
     let mut restored = 0;
     for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with('_') {
-            continue;
-        }
         let state = entry.path().join(".jyc");
         let Ok(topic_path) = std::fs::read_to_string(state.join("topic-path")) else {
             continue;
@@ -320,6 +324,18 @@ mod tests {
 
         assert!(restore_state_registry(&root) >= 1);
         assert_eq!(jyc_types::state_dir::jyc_dir(&topic), state);
+
+        // Config-key state dirs with breadcrumbs are restored too (external
+        // processes have no config to lean on).
+        let key_topic = tmp.path().join("scanned-key-topic");
+        std::fs::create_dir_all(&key_topic).unwrap();
+        let key_state = root.join("agentkey").join(".jyc");
+        adopt_state_dir(&key_topic, &key_state).unwrap();
+        assert_eq!(
+            jyc_types::state_dir::registered_state(&key_topic),
+            Some(key_state.clone())
+        );
+        assert!(restore_state_registry(&root) >= 2);
         // missing agents root -> 0, no panic
         assert_eq!(restore_state_registry(&tmp.path().join("nowhere")), 0);
     }
@@ -345,6 +361,15 @@ mod tests {
             "empty old namespace folder removed"
         );
         assert_eq!(jyc_types::state_dir::jyc_dir(&topic), second);
+
+        // Carrying away from a CONFIG-KEY dir must NOT remove its parent:
+        // agents/<key>/ doubles as the agent's canonical topic dir.
+        let third = tmp.path().join("agents").join("_third").join(".jyc");
+        assert!(adopt_state_dir(&topic, &third).unwrap());
+        assert!(
+            second.parent().unwrap().exists(),
+            "config-key topic dir preserved after carry"
+        );
     }
 
     #[test]

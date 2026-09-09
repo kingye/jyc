@@ -47,8 +47,12 @@ fn normalize(dir: &Path) -> PathBuf {
 /// `_` is escaped to `__` first, then path separators (and Windows drive
 /// colons) become `_`. The leading `/` yields a leading `_`, which keeps
 /// derived names out of the config-key namespace (config keys starting
-/// with `_` are reserved). The escaping makes the mapping injective, so
-/// `/a/b_c` and `/a_b/c` cannot collide:
+/// with `_` are reserved). Underscores near separator boundaries are
+/// unambiguous (`/a/b_c` -> `_a_b__c` differs from `/a_b/c` -> `_a__b_c`);
+/// the only residual collision is a path component ending in `_` directly
+/// adjacent to one starting with `_` across a separator (`/a_/b` and
+/// `/a/_b` both -> `_a___b`), which would make two such sibling pins share
+/// one state dir:
 ///
 /// ```text
 /// /home/jiny/projects/test  -> _home_jiny_projects_test
@@ -89,30 +93,6 @@ pub fn jyc_dir(topic_dir: impl AsRef<Path>) -> PathBuf {
     map.get(&normalize(topic_dir))
         .cloned()
         .unwrap_or_else(|| topic_dir.join(".jyc"))
-}
-
-/// Resolve a config-relative path (e.g. `skills_dir = ".jyc/skills"`)
-/// against a topic dir, honoring the state-dir mapping.
-///
-/// Paths starting with `.jyc` resolve inside [`jyc_dir`]; everything else
-/// resolves inside `topic_dir` as before.
-pub fn resolve_state_relative(topic_dir: impl AsRef<Path>, rel: &str) -> PathBuf {
-    let topic_dir = topic_dir.as_ref();
-    let unified = rel.replace('\\', "/");
-    if let Some(rest) = unified.strip_prefix(".jyc/").or_else(|| {
-        unified
-            .strip_prefix(".jyc")
-            .map(|r| r.trim_start_matches('/'))
-    }) {
-        let state = jyc_dir(topic_dir);
-        if rest.is_empty() {
-            state
-        } else {
-            state.join(rest)
-        }
-    } else {
-        topic_dir.join(rel)
-    }
 }
 
 #[cfg(test)]
@@ -173,30 +153,5 @@ mod tests {
         // Lookup with an embedded "." must hit the same entry.
         let dotted = topic.join(".").join("");
         assert_eq!(jyc_dir(&dotted), state);
-    }
-
-    #[test]
-    fn resolve_state_relative_paths() {
-        let tmp = tempdir().unwrap();
-        let topic = tmp.path().join("probe-rel-topic");
-        let state = tmp.path().join("probe-rel-state");
-        register(&topic, &state);
-
-        assert_eq!(
-            resolve_state_relative(&topic, ".jyc/skills"),
-            state.join("skills")
-        );
-        assert_eq!(resolve_state_relative(&topic, ".jyc"), state);
-        // Plain relative paths stay under the topic dir.
-        assert_eq!(
-            resolve_state_relative(&topic, "src/main.rs"),
-            topic.join("src/main.rs")
-        );
-        // Unregistered topic: `.jyc/...` lands in the legacy location.
-        let other = tmp.path().join("probe-rel-other");
-        assert_eq!(
-            resolve_state_relative(&other, ".jyc/skills"),
-            other.join(".jyc").join("skills")
-        );
     }
 }

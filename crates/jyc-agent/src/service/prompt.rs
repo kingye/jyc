@@ -14,13 +14,18 @@ impl JycAgentService {
         &self,
         topic_path: &Path,
         matched_pattern: Option<&str>,
+        additional_read_roots: &[PathBuf],
+        additional_write_roots: &[PathBuf],
     ) -> String {
         let mut prompt = String::new();
 
-        // Security: directory boundaries
-        prompt.push_str(&format!(
-            "Your working directory is \"{}\". You MUST only read, write, and access files within this directory.\n\n",
-            topic_path.display()
+        // Security: directory boundaries — must describe exactly the roots the
+        // tool layer enforces (same Vec passed to AgentLoopConfig), otherwise
+        // the model refuses access that is actually permitted.
+        prompt.push_str(&Self::format_access_boundary(
+            topic_path,
+            additional_read_roots,
+            additional_write_roots,
         ));
 
         // Resolve skill filters: pattern > channel > none
@@ -332,11 +337,53 @@ impl JycAgentService {
         prompt
     }
 
-    /// Resolve the additional absolute read-roots for tools that enforce a
-    /// path boundary. Returns at most one root: the resolved attachment
-    /// save directory (per-pattern override beats global) when it points
-    /// outside `topic_path`. Relative values resolve inside `topic_path`
-    /// and need no widening.
+    /// Format the file-access boundary block that leads the system prompt.
+    ///
+    /// With no extra roots this returns the classic fixed sentence byte-for-byte.
+    /// With roots it enumerates them exactly as the tool layer enforces them, so
+    /// the model knows which outside-the-working-directory paths it may
+    /// legitimately use. Roots are deterministic per pattern, so the prompt
+    /// stays byte-stable across calls for a given agent either way.
+    pub(crate) fn format_access_boundary(
+        topic_path: &Path,
+        read_roots: &[PathBuf],
+        write_roots: &[PathBuf],
+    ) -> String {
+        if read_roots.is_empty() && write_roots.is_empty() {
+            return format!(
+                "Your working directory is \"{}\". You MUST only read, write, and access files within this directory.\n\n",
+                topic_path.display()
+            );
+        }
+        let mut s = format!("Your working directory is \"{}\".\n", topic_path.display());
+        s.push_str("File access boundaries (enforced by the tool layer):\n");
+        if !read_roots.is_empty() {
+            s.push_str(
+                "- You may read files within the working directory and these additional directories:\n",
+            );
+            for r in read_roots {
+                s.push_str(&format!("  - {}\n", r.display()));
+            }
+        }
+        if write_roots.is_empty() {
+            s.push_str("- You MUST only write files within the working directory.\n");
+        } else {
+            s.push_str("- You may write files within the working directory and these additional directories:\n");
+            for r in write_roots {
+                s.push_str(&format!("  - {}\n", r.display()));
+            }
+        }
+        s.push_str(
+            "- Never access files outside these locations; the tools will deny such attempts.\n\n",
+        );
+        s
+    }
+
+    /// Resolve the additional absolute read roots granted to this topic's agent:
+    /// the attachment save dir (when outside `topic_path`), external skill
+    /// directories, and the matched pattern's `access.read`/`access.write`
+    /// paths (write paths are readable too). Tilde-expanded; relative paths
+    /// resolve inside `topic_path` and need no widening.
     ///
     /// Reuses `jyc_core::attachment_storage::resolve_attachment_save_dir`
     /// so the agent's boundary rule never drifts from the channel adapters'

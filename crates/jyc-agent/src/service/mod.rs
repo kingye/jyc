@@ -328,9 +328,18 @@ impl AgentService for JycAgentService {
 
         // 4. Build prompts (image-injection gated by per-pattern flag and
         //    per-model `supports_images`)
+        // Resolve access roots first: the system prompt must describe exactly
+        // the boundaries the tool layer enforces (same Vecs, single source).
+        let additional_read_roots = self.resolve_additional_read_roots(message, topic_path);
+        let additional_write_roots = self.resolve_additional_write_roots(message);
         // 3a. Build system prompt (available channels, skills, AGENTS.md, etc.)
         let system_prompt = self
-            .build_system_prompt(topic_path, message.matched_pattern.as_deref())
+            .build_system_prompt(
+                topic_path,
+                message.matched_pattern.as_deref(),
+                &additional_read_roots,
+                &additional_write_roots,
+            )
             .await;
         tracing::debug!(
             topic = %topic_name,
@@ -471,8 +480,6 @@ impl AgentService for JycAgentService {
             "Loaded prior context"
         );
 
-        let additional_read_roots = self.resolve_additional_read_roots(message, topic_path);
-        let additional_write_roots = self.resolve_additional_write_roots(message);
         let topic_managers = self
             .topic_managers
             .lock()

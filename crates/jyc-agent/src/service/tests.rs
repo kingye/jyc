@@ -1381,3 +1381,102 @@ fn debug_print_pattern_mcps_resolution() {
             .await;
     });
 }
+
+#[test]
+fn access_boundary_without_extra_roots_is_the_classic_sentence() {
+    let s = JycAgentService::format_access_boundary(Path::new("/tmp/wd"), &[], &[]);
+    assert_eq!(
+        s,
+        "Your working directory is \"/tmp/wd\". You MUST only read, write, and access files within this directory.\n\n"
+    );
+}
+
+#[test]
+fn access_boundary_lists_configured_roots() {
+    let reads = vec![
+        PathBuf::from("/home/u/.cargo/registry/src"),
+        PathBuf::from("/data/attachments"),
+    ];
+    let writes = vec![PathBuf::from("/tmp/jyc-builds")];
+    let s = JycAgentService::format_access_boundary(Path::new("/tmp/wd"), &reads, &writes);
+    assert!(s.contains("/home/u/.cargo/registry/src"));
+    assert!(s.contains("/data/attachments"));
+    assert!(s.contains("/tmp/jyc-builds"));
+    assert!(s.contains(
+        "You may read files within the working directory and these additional directories:"
+    ));
+    assert!(s.contains(
+        "You may write files within the working directory and these additional directories:"
+    ));
+    // The blanket prohibition must be gone once any root is whitelisted.
+    assert!(!s.contains("You MUST only read, write, and access files within this directory"));
+}
+
+#[test]
+fn access_boundary_read_only_roots_keep_write_restricted() {
+    let reads = vec![PathBuf::from("/r")];
+    let s = JycAgentService::format_access_boundary(Path::new("/wd"), &reads, &[]);
+    assert!(s.contains("You MUST only write files within the working directory."));
+}
+
+#[tokio::test]
+async fn system_prompt_enumerates_configured_access_roots() {
+    let pattern = ChannelPattern {
+        name: "guarded".to_string(),
+        access: Some(jyc_types::AccessConfig {
+            read: vec!["/opt/shared-data".to_string()],
+            write: vec!["/tmp/jyc-builds".to_string()],
+        }),
+        ..ChannelPattern::default()
+    };
+    let svc = service_with_patterns(Some("provider/test"), vec![pattern]);
+    let message = InboundMessage {
+        id: "test-id".into(),
+        channel: "test".into(),
+        channel_uid: "uid".into(),
+        sender: "test-sender".into(),
+        sender_address: "test@example.com".into(),
+        recipients: vec![],
+        topic: "test".into(),
+        content: jyc_types::MessageContent {
+            text: Some("hello".into()),
+            ..Default::default()
+        },
+        timestamp: chrono::Utc::now(),
+        references: None,
+        reply_to_id: None,
+        external_id: None,
+        attachments: vec![],
+        metadata: Default::default(),
+        matched_pattern: Some("guarded".to_string()),
+    };
+    let topic = Path::new("/tmp/test-topic");
+    let reads = svc.resolve_additional_read_roots(&message, topic);
+    let writes = svc.resolve_additional_write_roots(&message);
+    assert!(
+        reads
+            .iter()
+            .any(|r| r == &PathBuf::from("/opt/shared-data"))
+    );
+    // Write paths are readable too, and appear in both lists.
+    assert!(
+        writes
+            .iter()
+            .any(|r| r == &PathBuf::from("/tmp/jyc-builds"))
+    );
+    let prompt = svc
+        .build_system_prompt(topic, message.matched_pattern.as_deref(), &reads, &writes)
+        .await;
+    assert!(
+        prompt.contains("/opt/shared-data"),
+        "system prompt must list configured read roots"
+    );
+    assert!(
+        prompt.contains("/tmp/jyc-builds"),
+        "system prompt must list configured write roots"
+    );
+    assert!(
+        !prompt.contains("You MUST only read, write, and access files within this directory"),
+        "blanket prohibition must not appear when roots are configured"
+    );
+}

@@ -43,7 +43,7 @@ fn test_config_swap() -> Arc<ArcSwap<AppConfig>> {
 }
 
 fn test_context(topic_path: &std::path::Path) -> CommandContext {
-    test_context_with_args(topic_path, &["--confirm"])
+    test_context_with_args(topic_path, &["--force"])
 }
 
 fn test_context_with_args(topic_path: &std::path::Path, args: &[&str]) -> CommandContext {
@@ -164,7 +164,7 @@ async fn test_close_command_invalid_topic_path() {
     let handler = CloseCommandHandler::new(topic_manager);
 
     let ctx = CommandContext {
-        args: vec!["--confirm".into()],
+        args: vec!["--force".into()],
         topic_path: PathBuf::from("/"),
         config: test_config(),
         channel: "test".into(),
@@ -220,8 +220,8 @@ async fn test_close_command_without_confirm_keeps_directory() {
         "warning path should be informational success"
     );
     assert!(
-        result.message.contains("/close -y"),
-        "message should mention the confirm syntax, got: {}",
+        result.message.contains("/close --force"),
+        "message should mention the --force syntax, got: {}",
         result.message
     );
     assert!(

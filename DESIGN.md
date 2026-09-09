@@ -3230,7 +3230,7 @@ INFO worker{channel=jiny283, topic=weather}: Worker finished
 | `/plan`        | Switch to plan mode (read-only, enforced by in-process agent)         | `/plan`                                            |
 | `/build`       | Switch to build mode (full execution, default)                | `/build`                                           |
 | `/reset`       | Clear the current in-process agent session (start fresh context)      | `/reset`                                           |
-| `/close`       | Close the current topic (deletes topic directory and state; requires `-y`/`--confirm`) | `/close -y`                                        |
+| `/close`       | Close the current topic (deletes topic directory and state; requires `--force`) | `/close --force`                                   |
 | `/template`    | Re-apply the pattern's topic template files                  | `/template`                                        |
 
 ### Command Handler Trait

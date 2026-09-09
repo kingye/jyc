@@ -262,7 +262,7 @@ impl TopicManager {
         tokio::fs::create_dir_all(&path).await?;
         let agent_key = (self.channel_name == "agents").then_some(topic_name);
         let state = crate::topic_path::state_dir_for(
-            &crate::topic_path::resolve_agents_workspace_root(&self.workdir),
+            &crate::topic_path::state_root(&self.workdir),
             &path,
             agent_key,
         );
@@ -347,7 +347,7 @@ impl TopicManager {
             if pattern.topic_path.is_some() {
                 let agent_key = (self.channel_name == "agents").then_some(pattern.name.as_str());
                 let state = crate::topic_path::state_dir_for(
-                    &crate::topic_path::resolve_agents_workspace_root(&self.workdir),
+                    &crate::topic_path::state_root(&self.workdir),
                     &resolved,
                     agent_key,
                 );

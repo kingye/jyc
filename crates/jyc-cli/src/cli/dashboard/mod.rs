@@ -936,11 +936,8 @@ fn derive_topic_name(path: &str, topic: Option<&str>) -> String {
 /// pre-flight guard over both candidate locations.
 fn check_existing_topic_name(path: &str, topic: &str, workdir: &std::path::Path) -> Result<()> {
     let p = std::path::Path::new(path);
-    let derived = jyc_core::topic_path::state_dir_for(
-        &jyc_core::topic_path::resolve_agents_workspace_root(workdir),
-        p,
-        None,
-    );
+    let derived =
+        jyc_core::topic_path::state_dir_for(&jyc_core::topic_path::state_root(workdir), p, None);
     for jyc_dir in [p.join(".jyc"), derived] {
         if !jyc_dir.is_dir() {
             continue;

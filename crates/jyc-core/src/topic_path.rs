@@ -36,6 +36,17 @@ pub fn resolve_agents_workspace_root(workdir: &Path) -> PathBuf {
     }
 }
 
+/// Root directory holding adopted topic state dirs: `<workdir>/agents/`.
+///
+/// Deliberately workdir-based (NOT [`resolve_agents_workspace_root`], which
+/// prefers the platform data home for topic *dirs*): adopted state belongs
+/// to the jyc instance that pinned it, so multi-instance setups and tests
+/// with an explicit `--workdir` stay isolated. With the default workdir
+/// (== `data_home()`) this coincides with `~/.local/share/jyc/agents/`.
+pub fn state_root(workdir: &Path) -> PathBuf {
+    workdir.join("agents")
+}
+
 /// Resolve a custom topic path from a pattern's `topic_path` config.
 ///
 /// - `~` is expanded to `$HOME`

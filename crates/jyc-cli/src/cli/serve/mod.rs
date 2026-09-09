@@ -51,9 +51,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     }
     // Re-register state dirs of previously adopted ad-hoc topics so every
     // `.jyc` lookup resolves before any channel/tmux work starts.
-    jyc_core::topic_path::restore_state_registry(
-        &jyc_core::topic_path::resolve_agents_workspace_root(workdir),
-    );
+    jyc_core::topic_path::restore_state_registry(&jyc_core::topic_path::state_root(workdir));
     let config = Arc::new(ArcSwap::from_pointee(config));
 
     // 3. Setup cancellation (Ctrl+C and SIGTERM)

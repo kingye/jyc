@@ -82,14 +82,17 @@ fn make_topic_manager(tmp: &TempDir, workspace: &Path) -> Arc<TopicManager> {
     ))
 }
 
-/// Seed a published file plus the token that guards it.
+/// Seed a published file plus the token that guards it — through the same
+/// state-dir resolver production uses (the topic's state may be adopted to
+/// data_home; pre-adoption seeds ride the migration move).
 async fn seed_published(topic_dir: &Path, name: &str, token: &str) {
-    let exchange = topic_dir.join(".jyc").join("exchange");
+    let jyc = jyc_types::state_dir::jyc_dir(topic_dir);
+    let exchange = jyc.join("exchange");
     tokio::fs::create_dir_all(&exchange).await.unwrap();
     tokio::fs::write(exchange.join(name), b"bytes")
         .await
         .unwrap();
-    tokio::fs::write(topic_dir.join(".jyc").join("exchange-token"), token)
+    tokio::fs::write(jyc.join("exchange-token"), token)
         .await
         .unwrap();
 }

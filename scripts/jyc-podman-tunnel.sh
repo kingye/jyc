@@ -5,8 +5,8 @@
 # the inspect server is directly accessible on localhost:9876.
 #
 # Usage:
-#   ./jyc-podman-tunnel        # start tunnel, then run jyc dashboard
-#   ./jyc-podman-tunnel stop   # kill existing tunnel
+#   ./scripts/jyc-podman-tunnel.sh        # start tunnel, then run jyc dashboard
+#   ./scripts/jyc-podman-tunnel.sh stop   # kill existing tunnel
 
 set -e
 

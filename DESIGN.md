@@ -2551,7 +2551,7 @@ bind = "127.0.0.1:9876"            # Default: 127.0.0.1:9876
                                     # `Authorization: Bearer <token>`.
 ```
 
-For Docker (Podman Machine on macOS), use `bind = "0.0.0.0:9876"` and the SSH tunnel script `jyc-podman-tunnel.sh`.
+For Docker (Podman Machine on macOS), use `bind = "0.0.0.0:9876"` and the SSH tunnel script `scripts/jyc-podman-tunnel.sh`.
 
 ### Protocol
 

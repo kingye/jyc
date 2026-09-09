@@ -1,4 +1,3 @@
-
 use super::event_test_helpers::drain_events;
 use super::*;
 use crate::provider::{EventStream, Provider};

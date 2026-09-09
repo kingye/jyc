@@ -1,4 +1,3 @@
-
 use jyc_core::topic_event::TopicEvent;
 
 /// Drain a receiver synchronously to a Vec, with a small grace timeout

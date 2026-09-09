@@ -1,4 +1,3 @@
-
 use super::*;
 use jyc_core::topic_event::TopicEvent;
 use jyc_core::topic_event_bus::{SimpleThreadEventBus, TopicEventBusRef};

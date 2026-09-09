@@ -128,13 +128,40 @@ async fn connect_and_list_tools(
             for (k, v) in environment {
                 cmd.env(k, v);
             }
-            cmd.stdin(std::process::Stdio::piped());
-            cmd.stdout(std::process::Stdio::piped());
-            cmd.stderr(std::process::Stdio::inherit());
-
-            let transport = TokioChildProcess::new(cmd)
+            // Never inherit stderr: the child shares our terminal, and MCP
+            // servers print banners/errors there (e.g. chrome-devtools-mcp),
+            // which writes raw text over the TUI and corrupts the screen.
+            // Pipe it and drain into tracing instead.
+            let (transport, stderr) = TokioChildProcess::builder(cmd)
+                .stderr(std::process::Stdio::piped())
+                .spawn()
                 .map_err(|e| anyhow::anyhow!("failed to start MCP subprocess: {}", e))
-                .context("TokioChildProcess::new failed")?;
+                .context("TokioChildProcess spawn failed")?;
+            if let Some(stderr) = stderr {
+                let name = cfg.name.clone();
+                tokio::spawn(async move {
+                    use tokio::io::AsyncBufReadExt;
+                    let mut reader = tokio::io::BufReader::new(stderr);
+                    let mut buf = Vec::new();
+                    // Byte-wise read_until: never aborts on invalid UTF-8. A
+                    // line-based loop that dies on a bad byte stops draining,
+                    // the pipe fills, and the server blocks on its next stderr
+                    // write. Default event target (jyc_agent::...) keeps these
+                    // visible under the `jyc_agent=info` filter directive.
+                    while reader
+                        .read_until(b'\n', &mut buf)
+                        .await
+                        .is_ok_and(|n| n > 0)
+                    {
+                        tracing::info!(
+                            "[mcp:{}] {}",
+                            name,
+                            String::from_utf8_lossy(&buf).trim_end()
+                        );
+                        buf.clear();
+                    }
+                });
+            }
 
             serve_client((), transport)
                 .await

@@ -72,23 +72,23 @@ impl TopicManager {
 
         // Pinned topic: relocated state is the topic's data; the dir is
         // user property. Remove the former, preserve the latter.
-        if let Some(state) = jyc_types::state_dir::registered_state(&topic_path) {
-            if state != topic_path.join(".jyc") {
-                if state.exists() {
-                    tokio::fs::remove_dir_all(&state)
-                        .await
-                        .context(format!("Failed to remove topic state dir: {:?}", state))?;
-                }
-                jyc_types::state_dir::unregister(&topic_path);
-                tracing::info!(
-                    topic = %topic_name,
-                    state = %state.display(),
-                    topic_dir = %topic_path.display(),
-                    "Topic state dir deleted; pinned topic dir preserved"
-                );
-                self.cleanup_topic_state(topic_name).await;
-                return Ok(());
+        if let Some(state) = jyc_types::state_dir::registered_state(&topic_path)
+            && state != topic_path.join(".jyc")
+        {
+            if state.exists() {
+                tokio::fs::remove_dir_all(&state)
+                    .await
+                    .context(format!("Failed to remove topic state dir: {:?}", state))?;
             }
+            jyc_types::state_dir::unregister(&topic_path);
+            tracing::info!(
+                topic = %topic_name,
+                state = %state.display(),
+                topic_dir = %topic_path.display(),
+                "Topic state dir deleted; pinned topic dir preserved"
+            );
+            self.cleanup_topic_state(topic_name).await;
+            return Ok(());
         }
 
         if topic_path.exists() {

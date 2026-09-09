@@ -5,6 +5,7 @@
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use jyc_types::state_dir::jyc_dir;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::{Mutex, mpsc};
@@ -212,10 +213,9 @@ impl AgentService for JycAgentService {
                 Some("plan") => "plan",
                 _ => "build", // default = build mode
             };
-            let mode_specific_path = topic_path
-                .join(".jyc")
-                .join(format!("{mode_suffix}-model-override"));
-            let legacy_path = topic_path.join(".jyc").join("model-override");
+            let mode_specific_path =
+                jyc_dir(&topic_path).join(format!("{mode_suffix}-model-override"));
+            let legacy_path = jyc_dir(&topic_path).join("model-override");
             if mode_specific_path.exists() {
                 tokio::fs::read_to_string(&mode_specific_path)
                     .await

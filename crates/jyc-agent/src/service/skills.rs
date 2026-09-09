@@ -3,6 +3,7 @@
 //! Extracted from the monolithic `service.rs`.
 
 use anyhow::{Context, Result};
+use jyc_types::state_dir::jyc_dir;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -185,7 +186,7 @@ impl JycAgentService {
 ///
 /// This allows the dashboard to read the skills list without re-scanning directories.
 pub(crate) fn persist_skill_names(topic_path: &Path, skill_names: &[&str]) -> Result<()> {
-    let jyc_dir = topic_path.join(".jyc");
+    let jyc_dir = jyc_dir(&topic_path);
     std::fs::create_dir_all(&jyc_dir)
         .with_context(|| format!("Failed to create .jyc dir: {}", jyc_dir.display()))?;
     let skills_path = jyc_dir.join("skills.json");

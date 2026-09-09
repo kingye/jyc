@@ -24,6 +24,7 @@
 //! Response shape: success returns `200` + JSON body. Errors use `ApiError`
 //! which carries an HTTP status and a `{"error": "..."}` JSON body.
 
+use jyc_types::state_dir::jyc_dir;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -189,7 +190,7 @@ async fn serve_exchange_file(
     token: Option<&str>,
     rel_path: &str,
 ) -> Result<Response, ApiError> {
-    let jyc_dir = topic_path.join(".jyc");
+    let jyc_dir = jyc_dir(&topic_path);
 
     let expected = tokio::fs::read_to_string(jyc_dir.join(jyc_core::EXCHANGE_TOKEN_FILENAME))
         .await

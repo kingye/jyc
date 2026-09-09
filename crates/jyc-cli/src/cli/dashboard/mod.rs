@@ -9,6 +9,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use jyc_core::duration::{DurationStyle, format_duration_secs};
+use jyc_types::state_dir::jyc_dir;
 use ratatui::{
     Frame, Terminal,
     layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
@@ -932,7 +933,7 @@ fn derive_topic_name(path: &str, topic: Option<&str>) -> String {
 /// differs from `topic`, returns an error to prevent diverging history and
 /// storage paths.
 fn check_existing_topic_name(path: &str, topic: &str) -> Result<()> {
-    let jyc_dir = PathBuf::from(path).join(".jyc");
+    let jyc_dir = PathBuf::from(path).join(".jyc"); // TODO(step3): honor state-dir relocation
     // One-time migration for the topic → topic rename.
     jyc_core::topic_path::migrate_topic_name_file(&jyc_dir);
     let topic_name_file = jyc_dir.join("topic-name");

@@ -2,6 +2,7 @@
 //!
 //! Extracted from the monolithic `topic_manager.rs`.
 
+use jyc_types::state_dir::jyc_dir;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -329,7 +330,7 @@ impl TopicManager {
                 // even when no template is configured. This is critical for
                 // custom topic_path directories to be rediscovered after
                 // restart (via .jyc/topic-name).
-                let jyc_dir = topic_path.join(".jyc");
+                let jyc_dir = jyc_dir(&topic_path);
                 if let Err(e) = tokio::fs::create_dir_all(&jyc_dir).await {
                     tracing::warn!(error = %e, "Failed to create .jyc directory");
                 }

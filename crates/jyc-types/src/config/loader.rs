@@ -2,6 +2,7 @@
 //!
 //! Extracted from the monolithic `config.rs`.
 
+use crate::state_dir::jyc_dir;
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::Deserialize;
@@ -74,7 +75,7 @@ pub struct TopicAiConfig {
 /// `Option<TopicConfig>` and swallows errors. `${VAR}` expansion runs
 /// on every string field (via [`parse_and_deserialize`]).
 pub fn load_topic_config(topic_path: &Path) -> Option<TopicConfig> {
-    let path = topic_path.join(".jyc").join("config.toml");
+    let path = jyc_dir(&topic_path).join("config.toml");
     let path_label = path.display().to_string();
     if !path.exists() {
         return None;

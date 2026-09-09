@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use jyc_types::state_dir::jyc_dir;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
@@ -100,7 +101,7 @@ impl CommandHandler for NewCommandHandler {
 
         // Clear exchange-published files and the exchange token, mirroring
         // /reset: /new starts fresh, so previously shared links must die.
-        let jyc_dir = context.topic_path.join(".jyc");
+        let jyc_dir = jyc_dir(&context.topic_path);
         tokio::fs::remove_dir_all(jyc_dir.join(crate::EXCHANGE_DIR_NAME))
             .await
             .ok();
@@ -112,7 +113,8 @@ impl CommandHandler for NewCommandHandler {
         let mut deleted_history = 0u64;
 
         // New location: .jyc/
-        let new_pattern = context.topic_path.join(".jyc").join("chat_history_*.jsonl");
+        let new_pattern =
+            jyc_types::state_dir::jyc_dir(&context.topic_path).join("chat_history_*.jsonl");
         deleted_history += delete_glob_files(&new_pattern).await;
 
         // Legacy location: topic root

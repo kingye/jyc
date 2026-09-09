@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use jyc_types::state_dir::jyc_dir;
 
 use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
 
@@ -49,7 +50,7 @@ impl CommandHandler for ContextCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let jyc_dir = context.topic_path.join(".jyc");
+        let jyc_dir = jyc_dir(&context.topic_path);
         let override_path = jyc_dir.join(crate::session_state::CONTEXT_STRATEGY_FILE);
 
         let matched_pattern = crate::session_state::read_pattern(&context.topic_path).await;

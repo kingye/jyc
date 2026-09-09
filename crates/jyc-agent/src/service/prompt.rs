@@ -2,6 +2,7 @@
 //!
 //! Extracted from the monolithic `service.rs`.
 
+use jyc_types::state_dir::jyc_dir;
 use std::path::{Path, PathBuf};
 
 use jyc_types::InboundMessage;
@@ -608,7 +609,7 @@ impl JycAgentService {
 /// than `"hide"`. The `/thinking hide` command writes `"hide"` to this file;
 /// `/thinking show` writes `"show"`.
 pub(crate) fn read_thinking_enabled(topic_path: &Path) -> bool {
-    match std::fs::read_to_string(topic_path.join(".jyc").join("thinking-state")) {
+    match std::fs::read_to_string(jyc_dir(&topic_path).join("thinking-state")) {
         Ok(content) => content.trim() != "hide",
         Err(_) => true,
     }

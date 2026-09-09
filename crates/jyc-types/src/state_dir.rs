@@ -57,8 +57,11 @@ fn normalize(dir: &Path) -> PathBuf {
 pub fn derive_state_name(topic_dir: &Path) -> String {
     let s = topic_dir.to_string_lossy().replace('\\', "/");
     let s = s.trim_end_matches('/');
-    let s = s.replace(':', "_");
+    // Escape first, then substitute separators: every `_` in the output came
+    // from either a doubled `__` or a `/`/`:` — the map stays injective and
+    // drive names read cleanly (`C:\x` -> `C_x`).
     let s = s.replace('_', "__");
+    let s = s.replace(':', "_");
     s.replace('/', "_")
 }
 

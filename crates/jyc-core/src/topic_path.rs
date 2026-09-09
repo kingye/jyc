@@ -69,11 +69,7 @@ pub fn resolve_topic_path(path: &str, data_root: &Path) -> PathBuf {
 /// - Ad-hoc topic (any other pinned dir): `<agents_root>/<derived>/.jyc` with
 ///   the injective path-derived name from [`jyc_types::state_dir::derive_state_name`]
 ///   (leading `_` keeps derived names out of the config-key namespace).
-pub fn state_dir_for(
-    agents_root: &Path,
-    topic_dir: &Path,
-    agent_key: Option<&str>,
-) -> PathBuf {
+pub fn state_dir_for(agents_root: &Path, topic_dir: &Path, agent_key: Option<&str>) -> PathBuf {
     let name = match agent_key {
         Some(key) => key.to_string(),
         None => jyc_types::state_dir::derive_state_name(topic_dir),
@@ -260,7 +256,10 @@ mod tests {
         std::fs::write(legacy.join("topic-name"), b"adopted").unwrap();
         let state = tmp.path().join("agents").join("_adopt");
 
-        assert!(adopt_state_dir(&topic, &state).unwrap(), "first adopt moves");
+        assert!(
+            adopt_state_dir(&topic, &state).unwrap(),
+            "first adopt moves"
+        );
         assert!(!legacy.exists(), "legacy .jyc removed from topic dir");
         assert!(state.join("topic-name").exists(), "state carried over");
         assert_eq!(
@@ -297,7 +296,10 @@ mod tests {
         let state = tmp.path().join("conflict-state");
         std::fs::create_dir_all(&state).unwrap();
         assert!(!adopt_state_dir(&topic, &state).unwrap());
-        assert!(topic.join(".jyc").exists(), "legacy kept when state already exists");
+        assert!(
+            topic.join(".jyc").exists(),
+            "legacy kept when state already exists"
+        );
     }
 
     // === resolve_workspace (used by cli/serve.rs) ===

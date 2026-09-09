@@ -934,11 +934,7 @@ fn derive_topic_name(path: &str, topic: Option<&str>) -> String {
 /// storage paths. Also honors the adopted state dir (path-derived name) —
 /// serve-side adoption at pin creation is authoritative; this is the CLI's
 /// pre-flight guard over both candidate locations.
-fn check_existing_topic_name(
-    path: &str,
-    topic: &str,
-    workdir: &std::path::Path,
-) -> Result<()> {
+fn check_existing_topic_name(path: &str, topic: &str, workdir: &std::path::Path) -> Result<()> {
     let p = std::path::Path::new(path);
     let derived = jyc_core::topic_path::state_dir_for(
         &jyc_core::topic_path::resolve_agents_workspace_root(workdir),
@@ -1862,7 +1858,8 @@ mod tests {
     fn check_existing_topic_name_succeeds_when_no_file() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().to_string_lossy().to_string();
-        check_existing_topic_name(&path, "any-topic", tmp.path()).expect("should pass when no file exists");
+        check_existing_topic_name(&path, "any-topic", tmp.path())
+            .expect("should pass when no file exists");
     }
 
     #[test]
@@ -1884,7 +1881,8 @@ mod tests {
         std::fs::write(jyc_dir.join("topic-name"), "existing").unwrap();
 
         let path = tmp.path().to_string_lossy().to_string();
-        let err = check_existing_topic_name(&path, "abc", tmp.path()).expect_err("should fail on mismatch");
+        let err = check_existing_topic_name(&path, "abc", tmp.path())
+            .expect_err("should fail on mismatch");
         let msg = err.to_string();
         assert!(
             msg.contains("existing"),
@@ -1904,7 +1902,8 @@ mod tests {
         std::fs::write(jyc_dir.join("topic-name"), "").unwrap();
 
         let path = tmp.path().to_string_lossy().to_string();
-        check_existing_topic_name(&path, "new-topic", tmp.path()).expect("should pass when file is empty");
+        check_existing_topic_name(&path, "new-topic", tmp.path())
+            .expect("should pass when file is empty");
     }
 
     fn make_test_app() -> App {

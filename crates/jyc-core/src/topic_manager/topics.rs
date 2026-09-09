@@ -345,8 +345,7 @@ impl TopicManager {
             // Adopt the relocated state dir for explicit pins (idempotent;
             // moves a legacy `<pin>/.jyc` out of the repo on first run).
             if pattern.topic_path.is_some() {
-                let agent_key =
-                    (self.channel_name == "agents").then_some(pattern.name.as_str());
+                let agent_key = (self.channel_name == "agents").then_some(pattern.name.as_str());
                 let state = crate::topic_path::state_dir_for(
                     &crate::topic_path::resolve_agents_workspace_root(&self.workdir),
                     &resolved,

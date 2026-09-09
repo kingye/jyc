@@ -14,6 +14,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use super::*;
+
 /// Spawn a pipe-only GitHub adapter: the poller inbound adapter plus one
 /// reply forwarder per distinct pipe target channel.
 ///
@@ -30,8 +32,6 @@ use tracing::Instrument;
 /// - Close events (issue/PR closed) use the hub registry's TopicManager to
 ///   close the routed topics in the hub workspace.
 #[allow(clippy::too_many_arguments)]
-use super::*;
-
 pub(crate) fn spawn_github_adapter(
     channel_config: &ChannelConfig,
     channel_name: String,

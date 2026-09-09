@@ -15,6 +15,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use super::*;
+
 /// Spawn a wecom (group bot callback) pipe-only adapter.
 ///
 /// Mirrors spawn_wecom_bot_adapter. Protocol only: webhook registration
@@ -22,8 +24,6 @@ use tracing::Instrument;
 /// reply forwarder per pipe target channel. No TopicManager / agent /
 /// orchestrator — the hub owns all of that.
 #[allow(clippy::too_many_arguments)]
-use super::*;
-
 pub(crate) fn spawn_wecom_adapter(
     channel_config: &ChannelConfig,
     channel_name: String,

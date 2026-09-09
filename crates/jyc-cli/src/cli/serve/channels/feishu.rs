@@ -15,6 +15,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use super::*;
+
 /// Spawn a pipe-only feishu adapter: the inbound adapter plus one reply
 /// forwarder per distinct pipe target channel.
 ///
@@ -23,8 +25,6 @@ use tracing::Instrument;
 /// topics live in the pipe target (hub) channel. See
 /// `docs/architecture/overview.md`.
 #[allow(clippy::too_many_arguments)]
-use super::*;
-
 pub(crate) fn spawn_feishu_adapter(
     channel_config: &ChannelConfig,
     channel_name: String,

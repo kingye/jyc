@@ -54,8 +54,8 @@
 - `/pin` false-positived "already pinned" (success, no config write) when
   the path appeared anywhere in the raw config text — including commented-
   out legacy blocks. The check now parses the config: only real
-  `agents.*.topic_path` / legacy pattern `topic_path`/`thread_path` values
-  match, with tilde expansion (`~/x` pins are detected too).
+  `agents.*.topic_path` / legacy pattern `topic_path` values match, with
+  tilde expansion (`~/x` pins are detected too).
 
 ### Removed
 

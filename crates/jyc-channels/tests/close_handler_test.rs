@@ -181,7 +181,7 @@ async fn test_close_command_invalid_topic_path() {
 }
 
 #[tokio::test]
-async fn test_close_command_without_confirm_keeps_directory() {
+async fn test_close_command_without_force_keeps_directory() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();

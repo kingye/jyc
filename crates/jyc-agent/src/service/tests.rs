@@ -1381,3 +1381,40 @@ fn debug_print_pattern_mcps_resolution() {
             .await;
     });
 }
+
+#[test]
+fn access_boundary_without_extra_roots_is_the_classic_sentence() {
+    let s = JycAgentService::format_access_boundary(Path::new("/tmp/wd"), &[], &[]);
+    assert_eq!(
+        s,
+        "Your working directory is \"/tmp/wd\". You MUST only read, write, and access files within this directory.\n\n"
+    );
+}
+
+#[test]
+fn access_boundary_lists_configured_roots() {
+    let reads = vec![
+        PathBuf::from("/home/u/.cargo/registry/src"),
+        PathBuf::from("/data/attachments"),
+    ];
+    let writes = vec![PathBuf::from("/tmp/jyc-builds")];
+    let s = JycAgentService::format_access_boundary(Path::new("/tmp/wd"), &reads, &writes);
+    assert!(s.contains("/home/u/.cargo/registry/src"));
+    assert!(s.contains("/data/attachments"));
+    assert!(s.contains("/tmp/jyc-builds"));
+    assert!(s.contains(
+        "You may read files within the working directory and these additional directories:"
+    ));
+    assert!(s.contains(
+        "You may write files within the working directory and these additional directories:"
+    ));
+    // The blanket prohibition must be gone once any root is whitelisted.
+    assert!(!s.contains("You MUST only read, write, and access files within this directory"));
+}
+
+#[test]
+fn access_boundary_read_only_roots_keep_write_restricted() {
+    let reads = vec![PathBuf::from("/r")];
+    let s = JycAgentService::format_access_boundary(Path::new("/wd"), &reads, &[]);
+    assert!(s.contains("You MUST only write files within the working directory."));
+}

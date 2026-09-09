@@ -22,6 +22,14 @@
   `CHANGELOG-archive.md`; the working file keeps Unreleased plus the three
   latest releases (0.3.15-0.3.17). (#735)
 
+### Fixed
+
+- System prompt no longer declares a blanket "MUST only access files within the
+  working directory" rule when per-pattern `access.read`/`access.write` (or
+  skill/attachment roots) are configured — it now enumerates exactly the roots
+  the tool layer enforces, so agents stop refusing access they actually have.
+  (#736)
+
 ### Removed
 
 - `IMPLEMENTATION.md` — implementation-phase tracking is superseded by the

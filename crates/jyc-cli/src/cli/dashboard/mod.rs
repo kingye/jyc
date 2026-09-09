@@ -9,7 +9,6 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use jyc_core::duration::{DurationStyle, format_duration_secs};
-use jyc_types::state_dir::jyc_dir;
 use ratatui::{
     Frame, Terminal,
     layout::{Alignment, Constraint, Direction, Layout, Position, Rect},

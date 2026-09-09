@@ -140,11 +140,9 @@ pub fn adopt_state_dir(topic_dir: &Path, state_dir: &Path) -> std::io::Result<bo
                 moved = true;
             }
         }
-        if from_prev {
-            if let Some(src_parent) = src.parent() {
-                // Drop the now-empty old namespace folder (agents/<old-name>/).
-                let _ = std::fs::remove_dir(src_parent);
-            }
+        // Drop the now-empty old namespace folder (agents/<old-name>/).
+        if from_prev && let Some(src_parent) = src.parent() {
+            let _ = std::fs::remove_dir(src_parent);
         }
     }
     std::fs::create_dir_all(state_dir)?;

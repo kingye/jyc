@@ -423,6 +423,11 @@ registry lookup with a `<topic_dir>/.jyc` fallback.
   appended to the agent's additional read/write roots (parity with the
   pre-refactor in-dir `.jyc`), and the system prompt's Chat History
   section shows the absolute path.
+- **External MCP subprocesses** start with an empty registry;
+  `jyc mcp-reply-tool` self-bootstraps it by scanning
+  `state_root(JYC_WORKDIR | data_home)` breadcrumbs. Custom `--workdir`
+  instances must pass `JYC_WORKDIR` in that server's `environment` for
+  relocated state to resolve.
 
 ## Image Input & Multimodal Support
 

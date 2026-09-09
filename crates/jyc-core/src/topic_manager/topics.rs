@@ -260,13 +260,17 @@ impl TopicManager {
     /// entry and `wait_for_topic` times out for fresh ad-hoc topics.
     pub async fn set_topic_path(&self, topic_name: &str, path: PathBuf) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&path).await?;
-        let agent_key = (self.channel_name == "agents").then_some(topic_name);
-        let state = crate::topic_path::state_dir_for(
-            &crate::topic_path::state_root(&self.workdir),
-            &path,
-            agent_key,
-        );
-        crate::topic_path::adopt_state_dir(&path, &state)?;
+        // Reuse an existing registration (config pins adopt at startup under
+        // their agent key); otherwise this runtime pin is ad-hoc and gets the
+        // path-derived state name.
+        if jyc_types::state_dir::registered_state(&path).is_none() {
+            let state = crate::topic_path::state_dir_for(
+                &crate::topic_path::state_root(&self.workdir),
+                &path,
+                None,
+            );
+            crate::topic_path::adopt_state_dir(&path, &state)?;
+        }
         let jyc_dir = jyc_dir(&path);
         tokio::fs::create_dir_all(&jyc_dir).await?;
         tokio::fs::write(jyc_dir.join("topic-name"), topic_name)

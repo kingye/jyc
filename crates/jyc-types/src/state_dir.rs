@@ -70,6 +70,12 @@ pub fn register(topic_dir: &Path, state_dir: &Path) {
     map.insert(normalize(topic_dir), normalize(state_dir));
 }
 
+/// Return the registered state dir for `topic_dir`, if any.
+pub fn registered_state(topic_dir: impl AsRef<Path>) -> Option<PathBuf> {
+    let map = registry().read().unwrap_or_else(|e| e.into_inner());
+    map.get(&normalize(topic_dir.as_ref())).cloned()
+}
+
 /// Resolve the `.jyc` directory for a topic dir.
 ///
 /// Returns the registered state dir if one exists, otherwise the legacy

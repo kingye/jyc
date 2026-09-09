@@ -97,28 +97,55 @@ pub fn state_dir_for(agents_root: &Path, topic_dir: &Path, agent_key: Option<&st
 ///
 /// Returns Ok(true) if state was physically moved.
 pub fn adopt_state_dir(topic_dir: &Path, state_dir: &Path) -> std::io::Result<bool> {
-    jyc_types::state_dir::register(topic_dir, state_dir);
     let legacy = topic_dir.join(".jyc");
+    let prev = jyc_types::state_dir::registered_state(topic_dir);
+    jyc_types::state_dir::register(topic_dir, state_dir);
     let mut moved = false;
-    if !state_dir.exists() && legacy.exists() {
+    // Pick what (if anything) must be relocated into `state_dir`.
+    let source = if state_dir.exists() {
+        if legacy.exists() {
+            tracing::warn!(
+                topic_dir = %topic_dir.display(),
+                state_dir = %state_dir.display(),
+                "Both legacy .jyc and adopted state dir exist; keeping adopted state"
+            );
+        }
+        None
+    } else if legacy.exists() {
+        Some(legacy.clone())
+    } else if let Some(prev) = prev.filter(|p| p != state_dir && p.is_dir()) {
+        // Re-pin carry: state was already adopted elsewhere (e.g. runtime
+        // ad-hoc name -> later config-key name, or the reverse).
+        tracing::info!(
+            topic_dir = %topic_dir.display(),
+            from = %prev.display(),
+            to = %state_dir.display(),
+            "Carrying topic state to newly adopted state dir"
+        );
+        Some(prev)
+    } else {
+        None
+    };
+    if let Some(src) = source {
+        let from_prev = src != legacy;
         if let Some(parent) = state_dir.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        match std::fs::rename(&legacy, state_dir) {
+        match std::fs::rename(&src, state_dir) {
             Ok(()) => moved = true,
             Err(_) => {
                 // Cross-device (or transient): copy then remove the source.
-                copy_dir_all(&legacy, state_dir)?;
-                let _ = std::fs::remove_dir_all(&legacy);
+                copy_dir_all(&src, state_dir)?;
+                let _ = std::fs::remove_dir_all(&src);
                 moved = true;
             }
         }
-    } else if state_dir.exists() && legacy.exists() {
-        tracing::warn!(
-            topic_dir = %topic_dir.display(),
-            state_dir = %state_dir.display(),
-            "Both legacy .jyc and adopted state dir exist; keeping adopted state"
-        );
+        if from_prev {
+            if let Some(src_parent) = src.parent() {
+                // Drop the now-empty old namespace folder (agents/<old-name>/).
+                let _ = std::fs::remove_dir(src_parent);
+            }
+        }
     }
     std::fs::create_dir_all(state_dir)?;
     std::fs::write(
@@ -297,6 +324,29 @@ mod tests {
         assert_eq!(jyc_types::state_dir::jyc_dir(&topic), state);
         // missing agents root -> 0, no panic
         assert_eq!(restore_state_registry(&tmp.path().join("nowhere")), 0);
+    }
+
+    #[test]
+    fn adopt_repin_carries_existing_state() {
+        let tmp = tempdir().unwrap();
+        let topic = tmp.path().join("repin-topic");
+        std::fs::create_dir_all(&topic).unwrap();
+        let first = tmp.path().join("agents").join("_first").join(".jyc");
+        adopt_state_dir(&topic, &first).unwrap();
+        std::fs::write(first.join("topic-name"), b"repin").unwrap();
+
+        let second = tmp.path().join("agents").join("key").join(".jyc");
+        assert!(
+            adopt_state_dir(&topic, &second).unwrap(),
+            "carry moves prior state"
+        );
+        assert!(second.join("topic-name").exists());
+        assert!(!first.exists(), "old state dir consumed");
+        assert!(
+            !first.parent().unwrap().exists(),
+            "empty old namespace folder removed"
+        );
+        assert_eq!(jyc_types::state_dir::jyc_dir(&topic), second);
     }
 
     #[test]

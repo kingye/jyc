@@ -451,13 +451,27 @@ impl JycAgentService {
             }
         }
 
+        // 4. Relocated topic state dir (outside the topic dir since the
+        // `.jyc` adoption refactor) — the agent reads its own chat history,
+        // sessions and jobs from it.
+        let state = jyc_types::state_dir::jyc_dir(topic_path);
+        if !state.starts_with(topic_path) {
+            roots.push(state);
+        }
+
         roots
     }
 
-    /// Resolve additional write roots from the matched pattern's `access.write`
-    /// configuration. Paths are tilde-expanded; relative paths are ignored
+    /// Resolve additional write roots: the matched pattern's `access.write`
+    /// configuration plus the topic's relocated state dir (write parity with
+    /// the pre-refactor layout, where `.jyc` sat inside the working dir).
+    /// Paths are tilde-expanded; relative paths are ignored
     /// (they are already inside the working directory).
-    pub(crate) fn resolve_additional_write_roots(&self, message: &InboundMessage) -> Vec<PathBuf> {
+    pub(crate) fn resolve_additional_write_roots(
+        &self,
+        message: &InboundMessage,
+        topic_path: &Path,
+    ) -> Vec<PathBuf> {
         let mut roots = Vec::new();
         if let Some(pattern) = message
             .matched_pattern
@@ -471,6 +485,10 @@ impl JycAgentService {
                     roots.push(expanded);
                 }
             }
+        }
+        let state = jyc_types::state_dir::jyc_dir(topic_path);
+        if !state.starts_with(topic_path) {
+            roots.push(state);
         }
         roots
     }

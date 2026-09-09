@@ -81,9 +81,10 @@ impl CommandHandler for NewCommandHandler {
             });
         }
 
-        let agent_path = context.topic_path.join(".jyc/agent-session.json");
-        let context_path = context.topic_path.join(".jyc/agent-context.json");
-        let activity_path = context.topic_path.join(".jyc/activity.jsonl");
+        let state = jyc_types::state_dir::jyc_dir(&context.topic_path);
+        let agent_path = state.join("agent-session.json");
+        let context_path = state.join("agent-context.json");
+        let activity_path = state.join("activity.jsonl");
 
         let mut deleted_session = false;
         if agent_path.exists() {

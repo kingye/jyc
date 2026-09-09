@@ -114,8 +114,8 @@ impl JycAgentService {
             paths.push(topic_path.join(".claude/skills"));
             // {topic_path}/.opencode/skills/
             paths.push(topic_path.join(".opencode/skills"));
-            // {topic_path}/.jyc/skills/
-            paths.push(topic_path.join(".jyc/skills"));
+            // {topic_path}/.jyc/skills/ (honors relocated state dir)
+            paths.push(jyc_types::state_dir::jyc_dir(topic_path).join("skills"));
 
             paths
         };

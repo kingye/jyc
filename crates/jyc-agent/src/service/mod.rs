@@ -331,7 +331,7 @@ impl AgentService for JycAgentService {
         // Resolve access roots first: the system prompt must describe exactly
         // the boundaries the tool layer enforces (same Vecs, single source).
         let additional_read_roots = self.resolve_additional_read_roots(message, topic_path);
-        let additional_write_roots = self.resolve_additional_write_roots(message);
+        let additional_write_roots = self.resolve_additional_write_roots(message, topic_path);
         // 3a. Build system prompt (available channels, skills, AGENTS.md, etc.)
         let system_prompt = self
             .build_system_prompt(

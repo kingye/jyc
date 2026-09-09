@@ -5,6 +5,7 @@
 //! Watches for `reply-sent.flag` + `reply.md` files and delivers immediately.
 
 use chrono::Utc;
+use jyc_types::state_dir::jyc_dir;
 use std::path::Path;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -82,7 +83,7 @@ pub async fn watch_pending_deliveries(
     event_bus: Option<TopicEventBusRef>,
     topic_name: &str,
 ) {
-    let jyc_dir = topic_path.join(".jyc");
+    let jyc_dir = jyc_dir(topic_path);
     let signal_path = jyc_dir.join("reply-sent.flag");
     let reply_path = jyc_dir.join("reply.md");
 

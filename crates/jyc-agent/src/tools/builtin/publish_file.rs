@@ -8,6 +8,7 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use jyc_types::state_dir::jyc_dir;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -118,7 +119,7 @@ impl Tool for PublishFileTool {
             }
         };
 
-        let jyc_dir = ctx.working_dir.join(".jyc");
+        let jyc_dir = jyc_dir(ctx.working_dir);
         let exchange_dir = jyc_dir.join(jyc_core::EXCHANGE_DIR_NAME);
         tokio::fs::create_dir_all(&exchange_dir)
             .await

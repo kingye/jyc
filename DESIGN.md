@@ -388,6 +388,52 @@ Email arrives
 - **reply-context.json** is a minimal routing token (5 fields) — all message metadata comes from chat log frontmatter
 - **Chat log entries** = exactly what the recipient receives (minus HTML formatting)
 
+## Topic State Directory (.jyc)
+
+Each topic keeps its runtime state (agent session, chat history, billing,
+jobs, exchange files, L3 topic config) in a `.jyc` directory resolved
+through `jyc_types::state_dir::jyc_dir(topic_dir)` — a process-global
+registry lookup with a `<topic_dir>/.jyc` fallback.
+
+| Topic kind | Topic dir | State dir |
+|---|---|---|
+| Channel workspace topic | `<workdir>/<channel>/workspace/<topic>/` | `<topic_dir>/.jyc` (fallback) |
+| Agent 1:1 topic, unpinned | `<data_home>/agents/<agent>/` | same (fallback = canonical) |
+| Agent 1:1 topic, pinned (`topic_path`) | the pinned dir (e.g. a repo) | `<data_home>/agents/<agent>/.jyc` |
+| Ad-hoc pinned topic (`jyc open -p`, non-agents pin) | the pinned dir | `<data_home>/agents/_<path-escaped>/.jyc` |
+| Dynamic pipe topic | `<data_home>/agents/<agent>/<topic>/` | `<topic_dir>/.jyc` (fallback) |
+
+- **Identity.** Config-key agents keep their `[agents.<key>]` name for the
+  state dir — TOML keys are unique by construction. Pinned dirs without an
+  agent key get a path-derived name: `_` is escaped to `__`, then `/` (and
+  Windows `:`) become `_`, and the leading `/` is kept as `_`. Names around
+  separator boundaries stay distinct (`/a/b_c` → `_a_b__c` ≠ `_a__b_c` ←
+  `/a_b/c`); the only residual collision is a component ending in `_`
+  directly adjacent to one starting with `_` (`/a_/b` vs `/a/_b`), which
+  would make such sibling pins share one state dir. The `_` prefix is a
+  reserved namespace that cannot collide with config keys.
+- **Adoption & migration.** `topic_path::adopt_state_dir` registers the
+  mapping and, on first adoption, moves a legacy `<topic_dir>/.jyc` out of
+  the repo once (rename with cross-device copy fallback). Repos stay
+  clean; the "never commit .jyc" hazard disappears. Config pins adopt at
+  startup inside `TopicManager::restore_custom_topic_paths`; runtime pins
+  (`set_topic_path`, dashboard `open -p`) adopt immediately.
+- **Restore.** Each adopted state dir carries a `topic-path` breadcrumb.
+  At startup `restore_state_registry` re-registers every
+  `<data_home>/agents/*/.jyc/topic-path` before channels start (also
+  bootstraps config-less external subprocesses like `jyc mcp-reply-tool`);
+  config pins additionally adopt from config — identical mappings,
+  idempotent.
+- **Agent access.** When the state dir lies outside the topic dir it is
+  appended to the agent's additional read/write roots (parity with the
+  pre-refactor in-dir `.jyc`), and the system prompt's Chat History
+  section shows the absolute path.
+- **External MCP subprocesses** start with an empty registry;
+  `jyc mcp-reply-tool` self-bootstraps it by scanning
+  `state_root(JYC_WORKDIR | data_home)` breadcrumbs. Custom `--workdir`
+  instances must pass `JYC_WORKDIR` in that server's `environment` for
+  relocated state to resolve.
+
 ## Image Input & Multimodal Support
 
 JYC supports vision-capable models through two complementary paths:

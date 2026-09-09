@@ -1,4 +1,5 @@
 use anyhow::{Result, bail};
+use jyc_types::state_dir::jyc_dir;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -41,7 +42,7 @@ pub struct ReplyContext {
 ///
 /// Called by agent service before sending the prompt.
 pub async fn save_reply_context(topic_path: &Path, ctx: &ReplyContext) -> Result<()> {
-    let jyc_dir = topic_path.join(".jyc");
+    let jyc_dir = jyc_dir(topic_path);
     tokio::fs::create_dir_all(&jyc_dir).await?;
 
     let path = jyc_dir.join(REPLY_CONTEXT_FILENAME);
@@ -60,7 +61,7 @@ pub async fn save_reply_context(topic_path: &Path, ctx: &ReplyContext) -> Result
 ///
 /// Called by the MCP reply tool from its cwd (= topic directory).
 pub async fn load_reply_context(topic_path: &Path) -> Result<ReplyContext> {
-    let path = topic_path.join(".jyc").join(REPLY_CONTEXT_FILENAME);
+    let path = jyc_dir(topic_path).join(REPLY_CONTEXT_FILENAME);
 
     if !path.exists() {
         bail!("reply-context.json not found in {}", topic_path.display());
@@ -86,7 +87,7 @@ pub async fn load_reply_context(topic_path: &Path) -> Result<ReplyContext> {
 /// support multiple replies in the same topic.
 #[allow(dead_code)]
 pub async fn cleanup_reply_context(topic_path: &Path) {
-    let path = topic_path.join(".jyc").join(REPLY_CONTEXT_FILENAME);
+    let path = jyc_dir(topic_path).join(REPLY_CONTEXT_FILENAME);
     if path.exists() {
         tokio::fs::remove_file(&path).await.ok();
     }

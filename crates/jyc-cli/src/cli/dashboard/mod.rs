@@ -808,7 +808,7 @@ pub async fn run_open(
     // If the directory was previously opened as a topic, the topic-name file
     // records the canonical name. Refuse to re-open it under a different name
     // to avoid diverging history and storage paths.
-    check_existing_topic_name(&path, &topic)?;
+    check_existing_topic_name(&path, &topic, workdir)?;
 
     // Resolve websocket channel using inspect state
     let client = match &token {
@@ -930,26 +930,35 @@ fn derive_topic_name(path: &str, topic: Option<&str>) -> String {
 ///
 /// If `<path>/.jyc/topic-name` exists and contains a non-empty name that
 /// differs from `topic`, returns an error to prevent diverging history and
-/// storage paths.
-fn check_existing_topic_name(path: &str, topic: &str) -> Result<()> {
-    let jyc_dir = PathBuf::from(path).join(".jyc");
-    // One-time migration for the topic → topic rename.
-    jyc_core::topic_path::migrate_topic_name_file(&jyc_dir);
-    let topic_name_file = jyc_dir.join("topic-name");
-    if topic_name_file.exists() {
-        let existing = std::fs::read_to_string(&topic_name_file)
-            .with_context(|| format!("failed to read {}", topic_name_file.display()))?;
-        let existing = existing.trim();
-        if !existing.is_empty() && existing != topic {
-            anyhow::bail!(
-                "directory '{}' is already registered as topic '{}'; \
-                 cannot open as '{}'. Use 'jyc open -t {} -p {}' instead",
-                path,
-                existing,
-                topic,
-                existing,
-                path
-            );
+/// storage paths. Also honors the adopted state dir (path-derived name) —
+/// serve-side adoption at pin creation is authoritative; this is the CLI's
+/// pre-flight guard over both candidate locations.
+fn check_existing_topic_name(path: &str, topic: &str, workdir: &std::path::Path) -> Result<()> {
+    let p = std::path::Path::new(path);
+    let derived =
+        jyc_core::topic_path::state_dir_for(&jyc_core::topic_path::state_root(workdir), p, None);
+    for jyc_dir in [p.join(".jyc"), derived] {
+        if !jyc_dir.is_dir() {
+            continue;
+        }
+        // One-time migration for the topic → topic rename.
+        jyc_core::topic_path::migrate_topic_name_file(&jyc_dir);
+        let topic_name_file = jyc_dir.join("topic-name");
+        if topic_name_file.exists() {
+            let existing = std::fs::read_to_string(&topic_name_file)
+                .with_context(|| format!("failed to read {}", topic_name_file.display()))?;
+            let existing = existing.trim();
+            if !existing.is_empty() && existing != topic {
+                anyhow::bail!(
+                    "directory '{}' is already registered as topic '{}'; \
+                     cannot open as '{}'. Use 'jyc open -t {} -p {}' instead",
+                    path,
+                    existing,
+                    topic,
+                    existing,
+                    path
+                );
+            }
         }
     }
     Ok(())
@@ -1845,7 +1854,8 @@ mod tests {
     fn check_existing_topic_name_succeeds_when_no_file() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().to_string_lossy().to_string();
-        check_existing_topic_name(&path, "any-topic").expect("should pass when no file exists");
+        check_existing_topic_name(&path, "any-topic", tmp.path())
+            .expect("should pass when no file exists");
     }
 
     #[test]
@@ -1856,7 +1866,7 @@ mod tests {
         std::fs::write(jyc_dir.join("topic-name"), "abc").unwrap();
 
         let path = tmp.path().to_string_lossy().to_string();
-        check_existing_topic_name(&path, "abc").expect("should pass when names match");
+        check_existing_topic_name(&path, "abc", tmp.path()).expect("should pass when names match");
     }
 
     #[test]
@@ -1867,7 +1877,8 @@ mod tests {
         std::fs::write(jyc_dir.join("topic-name"), "existing").unwrap();
 
         let path = tmp.path().to_string_lossy().to_string();
-        let err = check_existing_topic_name(&path, "abc").expect_err("should fail on mismatch");
+        let err = check_existing_topic_name(&path, "abc", tmp.path())
+            .expect_err("should fail on mismatch");
         let msg = err.to_string();
         assert!(
             msg.contains("existing"),
@@ -1887,7 +1898,8 @@ mod tests {
         std::fs::write(jyc_dir.join("topic-name"), "").unwrap();
 
         let path = tmp.path().to_string_lossy().to_string();
-        check_existing_topic_name(&path, "new-topic").expect("should pass when file is empty");
+        check_existing_topic_name(&path, "new-topic", tmp.path())
+            .expect("should pass when file is empty");
     }
 
     fn make_test_app() -> App {

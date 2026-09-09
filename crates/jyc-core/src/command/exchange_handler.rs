@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use jyc_types::state_dir::jyc_dir;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -61,7 +62,7 @@ impl CommandHandler for ExchangeCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let jyc_dir = context.topic_path.join(".jyc");
+        let jyc_dir = jyc_dir(&context.topic_path);
 
         // No token means nothing was ever published (or /reset killed the
         // links). Never mint one here.

@@ -1,5 +1,6 @@
 use jyc_types::AppConfig;
 use jyc_types::channel::{ContextStrategyConfig, ResetCompressionConfig};
+use jyc_types::state_dir::jyc_dir;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -65,7 +66,7 @@ pub async fn read_total_cache_creation_tokens(topic_path: &Path) -> Option<u64> 
 /// page-cached file is cheaper than threading a seventh element through
 /// every tuple consumer.
 pub async fn read_total_reasoning_tokens(topic_path: &Path) -> Option<u64> {
-    let agent_path = topic_path.join(".jyc").join("agent-session.json");
+    let agent_path = jyc_dir(topic_path).join("agent-session.json");
     let content = tokio::fs::read_to_string(&agent_path).await.ok()?;
     let state = serde_json::from_str::<AgentSessionState>(&content).ok()?;
     (state.total_reasoning_tokens > 0).then_some(state.total_reasoning_tokens)
@@ -82,7 +83,7 @@ pub async fn read_total_reasoning_tokens(topic_path: &Path) -> Option<u64> {
 /// through four existing helpers would be a much larger change than
 /// one extra read of an already page-cached file.
 pub async fn read_session_cost(topic_path: &Path) -> Option<f64> {
-    let agent_path = topic_path.join(".jyc").join("agent-session.json");
+    let agent_path = jyc_dir(topic_path).join("agent-session.json");
     let content = tokio::fs::read_to_string(&agent_path).await.ok()?;
     let state = serde_json::from_str::<AgentSessionState>(&content).ok()?;
     (state.session_cost > 0.0).then_some(state.session_cost)
@@ -109,7 +110,7 @@ pub async fn read_token_state(
     Option<u64>,
     Option<u64>,
 ) {
-    let agent_path = topic_path.join(".jyc").join("agent-session.json");
+    let agent_path = jyc_dir(topic_path).join("agent-session.json");
     let Ok(content) = tokio::fs::read_to_string(&agent_path).await else {
         return (None, None, None, None, None, None);
     };
@@ -161,7 +162,7 @@ struct AgentSessionState {
 
 /// Read the model override file if it exists.
 pub async fn read_model_override(topic_path: &Path) -> Option<String> {
-    let override_path = topic_path.join(".jyc").join("model-override");
+    let override_path = jyc_dir(topic_path).join("model-override");
     tokio::fs::read_to_string(override_path)
         .await
         .ok()
@@ -171,7 +172,7 @@ pub async fn read_model_override(topic_path: &Path) -> Option<String> {
 
 /// Read the mode override file if it exists.
 pub async fn read_mode_override(topic_path: &Path) -> Option<String> {
-    let override_path = topic_path.join(".jyc").join("mode-override");
+    let override_path = jyc_dir(topic_path).join("mode-override");
     tokio::fs::read_to_string(override_path)
         .await
         .ok()
@@ -181,7 +182,7 @@ pub async fn read_mode_override(topic_path: &Path) -> Option<String> {
 
 /// Read the matched pattern file if it exists.
 pub async fn read_pattern(topic_path: &Path) -> Option<String> {
-    let pattern_path = topic_path.join(".jyc").join("pattern");
+    let pattern_path = jyc_dir(topic_path).join("pattern");
     tokio::fs::read_to_string(pattern_path)
         .await
         .ok()
@@ -272,7 +273,7 @@ pub async fn resolve_active_context_window(
 /// Idempotently write `max_input_tokens` to `.jyc/agent-session.json`.
 /// No-op if the value would not change (avoids disk churn).
 pub async fn write_max_input_tokens(topic_path: &Path, new_max: u64) {
-    let session_path = topic_path.join(".jyc").join("agent-session.json");
+    let session_path = jyc_dir(topic_path).join("agent-session.json");
     let content = tokio::fs::read_to_string(&session_path)
         .await
         .unwrap_or_default();
@@ -310,10 +311,8 @@ async fn resolve_active_model(
             Some("plan") => "plan",
             _ => "build",
         };
-        let mode_specific = topic_path
-            .join(".jyc")
-            .join(format!("{mode_suffix}-model-override"));
-        let legacy = topic_path.join(".jyc").join("model-override");
+        let mode_specific = jyc_dir(topic_path).join(format!("{mode_suffix}-model-override"));
+        let legacy = jyc_dir(topic_path).join("model-override");
         let path = if mode_specific.exists() {
             Some(mode_specific)
         } else if legacy.exists() {
@@ -415,7 +414,7 @@ pub const WIRE_PAYLOAD_DUMP_MAX_LINES: usize = 50;
 /// certainly not what the user wants; we silently fall back to the
 /// configured default rather than persist a broken strategy.
 pub async fn read_context_strategy_override(topic_path: &Path) -> Option<ContextStrategyConfig> {
-    let path = topic_path.join(".jyc").join(CONTEXT_STRATEGY_FILE);
+    let path = jyc_dir(topic_path).join(CONTEXT_STRATEGY_FILE);
     let content = tokio::fs::read_to_string(&path).await.ok()?;
     let cfg: ContextStrategyConfig = serde_json::from_str(&content).ok()?;
     if cfg.window == 0 {

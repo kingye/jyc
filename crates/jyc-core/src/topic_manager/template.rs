@@ -4,6 +4,7 @@
 //! directory from a template and guards against template mismatch.
 
 use anyhow::{Context, Result};
+use jyc_types::state_dir::jyc_dir;
 use std::path::Path;
 
 use crate::template_utils::copy_template_files;
@@ -23,7 +24,7 @@ pub(crate) async fn initialize_topic_from_template(
     template_name: &str,
     template_dirs: &crate::template_dirs::TemplateDirs,
 ) -> Result<()> {
-    let jyc_dir = topic_path.join(".jyc");
+    let jyc_dir = jyc_dir(topic_path);
     let template_marker = jyc_dir.join("template");
 
     if jyc_dir.exists() {

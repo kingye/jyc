@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use jyc_types::JobConfig;
+use jyc_types::state_dir::jyc_dir;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -27,7 +28,7 @@ impl JobStore {
     ///
     /// The jobs directory (`.jyc/jobs/`) is created if it doesn't exist.
     pub async fn new(topic_path: &Path, max_jobs: usize) -> Result<Self> {
-        let jobs_dir = topic_path.join(".jyc").join("jobs");
+        let jobs_dir = jyc_dir(topic_path).join("jobs");
         fs::create_dir_all(&jobs_dir)
             .await
             .with_context(|| format!("failed to create jobs directory: {}", jobs_dir.display()))?;
@@ -40,7 +41,7 @@ impl JobStore {
 
     /// Return the path to the jobs directory.
     pub fn jobs_dir(&self) -> PathBuf {
-        self.topic_path.join(".jyc").join("jobs")
+        jyc_dir(&self.topic_path).join("jobs")
     }
 
     /// Return the path to the job file for the given ID.

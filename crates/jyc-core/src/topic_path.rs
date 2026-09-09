@@ -36,6 +36,17 @@ pub fn resolve_agents_workspace_root(workdir: &Path) -> PathBuf {
     }
 }
 
+/// Root directory holding adopted topic state dirs: `<workdir>/agents/`.
+///
+/// Deliberately workdir-based (NOT [`resolve_agents_workspace_root`], which
+/// prefers the platform data home for topic *dirs*): adopted state belongs
+/// to the jyc instance that pinned it, so multi-instance setups and tests
+/// with an explicit `--workdir` stay isolated. With the default workdir
+/// (== `data_home()`) this coincides with `~/.local/share/jyc/agents/`.
+pub fn state_root(workdir: &Path) -> PathBuf {
+    workdir.join("agents")
+}
+
 /// Resolve a custom topic path from a pattern's `topic_path` config.
 ///
 /// - `~` is expanded to `$HOME`
@@ -60,6 +71,147 @@ pub fn resolve_topic_path(path: &str, data_root: &Path) -> PathBuf {
             data_root.join(p)
         }
     }
+}
+
+/// Resolve the canonical state dir for a pinned/ad-hoc topic dir.
+///
+/// - Agent-keyed topic (config `[agents.<key>]` or the 1:1 "agents" channel):
+///   `<agents_root>/<key>/.jyc` — config keys are unique by construction.
+/// - Ad-hoc topic (any other pinned dir): `<agents_root>/<derived>/.jyc` with
+///   the path-derived `_`-prefixed name from
+///   [`jyc_types::state_dir::derive_state_name`] (the prefix keeps derived
+///   names out of the config-key namespace).
+pub fn state_dir_for(agents_root: &Path, topic_dir: &Path, agent_key: Option<&str>) -> PathBuf {
+    let name = match agent_key {
+        Some(key) => key.to_string(),
+        None => jyc_types::state_dir::derive_state_name(topic_dir),
+    };
+    agents_root.join(name).join(".jyc")
+}
+
+/// Adopt `state_dir` as the `.jyc` location for `topic_dir`.
+///
+/// Registers the mapping and, on first adoption, moves an existing
+/// `<topic_dir>/.jyc` into place (rename, cross-device copy fallback).
+/// Always (re)writes the `topic-path` breadcrumb inside the state dir so
+/// [`restore_state_registry`] can rebuild the mapping after a restart.
+///
+/// Returns Ok(true) if state was physically moved.
+pub fn adopt_state_dir(topic_dir: &Path, state_dir: &Path) -> std::io::Result<bool> {
+    let legacy = topic_dir.join(".jyc");
+    let prev = jyc_types::state_dir::registered_state(topic_dir);
+    jyc_types::state_dir::register(topic_dir, state_dir);
+    let mut moved = false;
+    // Pick what (if anything) must be relocated into `state_dir`.
+    let source = if state_dir.exists() {
+        if legacy.exists() {
+            tracing::warn!(
+                topic_dir = %topic_dir.display(),
+                state_dir = %state_dir.display(),
+                "Both legacy .jyc and adopted state dir exist; keeping adopted state"
+            );
+        }
+        None
+    } else if legacy.exists() {
+        Some(legacy.clone())
+    } else if let Some(prev) = prev.filter(|p| p != state_dir && p.is_dir()) {
+        // Re-pin carry: state was already adopted elsewhere (e.g. runtime
+        // ad-hoc name -> later config-key name, or the reverse).
+        tracing::info!(
+            topic_dir = %topic_dir.display(),
+            from = %prev.display(),
+            to = %state_dir.display(),
+            "Carrying topic state to newly adopted state dir"
+        );
+        Some(prev)
+    } else {
+        None
+    };
+    if let Some(src) = source {
+        let from_prev = src != legacy;
+        if let Some(parent) = state_dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match std::fs::rename(&src, state_dir) {
+            Ok(()) => moved = true,
+            Err(_) => {
+                // Cross-device (or transient): copy then remove the source.
+                copy_dir_all(&src, state_dir)?;
+                let _ = std::fs::remove_dir_all(&src);
+                moved = true;
+            }
+        }
+        // Drop the now-empty old namespace folder (agents/<old-name>/).
+        if from_prev
+            && let Some(src_parent) = src.parent()
+            && src_parent
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('_'))
+        {
+            let _ = std::fs::remove_dir(src_parent);
+        }
+    }
+    std::fs::create_dir_all(state_dir)?;
+    std::fs::write(
+        state_dir.join("topic-path"),
+        topic_dir.to_string_lossy().as_bytes(),
+    )?;
+    if moved {
+        tracing::info!(
+            topic_dir = %topic_dir.display(),
+            state_dir = %state_dir.display(),
+            "Adopted topic state dir: moved .jyc out of the topic dir"
+        );
+    }
+    Ok(moved)
+}
+
+fn copy_dir_all(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Re-register state dirs of previously adopted topics at startup.
+///
+/// Scans every `<agents_root>/*/.jyc/topic-path` breadcrumb and registers
+/// each mapping — pure `jyc_dir` bootstrap for processes without config
+/// access (e.g. the external `jyc mcp-reply-tool`). Config-pin processes
+/// additionally adopt from config; re-registering an identical mapping is
+/// idempotent. Returns the number of registrations restored.
+pub fn restore_state_registry(agents_root: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(agents_root) else {
+        return 0;
+    };
+    let mut restored = 0;
+    for entry in entries.flatten() {
+        let state = entry.path().join(".jyc");
+        let Ok(topic_path) = std::fs::read_to_string(state.join("topic-path")) else {
+            continue;
+        };
+        let topic_path = PathBuf::from(topic_path.trim());
+        if !topic_path.is_dir() {
+            tracing::warn!(
+                state_dir = %state.display(),
+                topic_dir = %topic_path.display(),
+                "Adopted topic dir no longer exists; state kept for history"
+            );
+        }
+        jyc_types::state_dir::register(&topic_path, &state);
+        restored += 1;
+    }
+    if restored > 0 {
+        tracing::info!(count = restored, "Restored topic state-dir registry");
+    }
+    restored
 }
 
 /// One-time migration for the `topic` → `topic` rename.
@@ -118,6 +270,120 @@ mod tests {
         msg.metadata
             .insert("chat_type".to_string(), serde_json::json!(chat_type));
         msg
+    }
+
+    // === state dir adoption ===
+
+    #[test]
+    fn state_dir_for_agent_key_vs_derived() {
+        let root = Path::new("/data/agents");
+        assert_eq!(
+            state_dir_for(root, Path::new("/home/u/proj"), Some("jyc")),
+            PathBuf::from("/data/agents/jyc/.jyc")
+        );
+        assert_eq!(
+            state_dir_for(root, Path::new("/home/u/proj"), None),
+            PathBuf::from("/data/agents/_home_u_proj/.jyc")
+        );
+    }
+
+    #[test]
+    fn adopt_state_dir_moves_registers_and_breadcrumbs() {
+        let tmp = tempdir().unwrap();
+        let topic = tmp.path().join("adopt-topic");
+        let legacy = topic.join(".jyc");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("topic-name"), b"adopted").unwrap();
+        let state = tmp.path().join("agents").join("_adopt");
+
+        assert!(
+            adopt_state_dir(&topic, &state).unwrap(),
+            "first adopt moves"
+        );
+        assert!(!legacy.exists(), "legacy .jyc removed from topic dir");
+        assert!(state.join("topic-name").exists(), "state carried over");
+        assert_eq!(
+            std::fs::read_to_string(state.join("topic-path")).unwrap(),
+            topic.to_string_lossy()
+        );
+        assert_eq!(jyc_types::state_dir::jyc_dir(&topic), state);
+
+        // second adopt is a no-op (registered, nothing to move)
+        assert!(!adopt_state_dir(&topic, &state).unwrap());
+        assert!(state.join("topic-name").exists());
+    }
+
+    #[test]
+    fn restore_state_registry_reregisters_from_breadcrumbs() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path().join("agents");
+        let topic = tmp.path().join("scanned-topic");
+        std::fs::create_dir_all(&topic).unwrap();
+        let state = root.join("_scanned").join(".jyc");
+        adopt_state_dir(&topic, &state).unwrap();
+
+        assert!(restore_state_registry(&root) >= 1);
+        assert_eq!(jyc_types::state_dir::jyc_dir(&topic), state);
+
+        // Config-key state dirs with breadcrumbs are restored too (external
+        // processes have no config to lean on).
+        let key_topic = tmp.path().join("scanned-key-topic");
+        std::fs::create_dir_all(&key_topic).unwrap();
+        let key_state = root.join("agentkey").join(".jyc");
+        adopt_state_dir(&key_topic, &key_state).unwrap();
+        assert_eq!(
+            jyc_types::state_dir::registered_state(&key_topic),
+            Some(key_state.clone())
+        );
+        assert!(restore_state_registry(&root) >= 2);
+        // missing agents root -> 0, no panic
+        assert_eq!(restore_state_registry(&tmp.path().join("nowhere")), 0);
+    }
+
+    #[test]
+    fn adopt_repin_carries_existing_state() {
+        let tmp = tempdir().unwrap();
+        let topic = tmp.path().join("repin-topic");
+        std::fs::create_dir_all(&topic).unwrap();
+        let first = tmp.path().join("agents").join("_first").join(".jyc");
+        adopt_state_dir(&topic, &first).unwrap();
+        std::fs::write(first.join("topic-name"), b"repin").unwrap();
+
+        let second = tmp.path().join("agents").join("key").join(".jyc");
+        assert!(
+            adopt_state_dir(&topic, &second).unwrap(),
+            "carry moves prior state"
+        );
+        assert!(second.join("topic-name").exists());
+        assert!(!first.exists(), "old state dir consumed");
+        assert!(
+            !first.parent().unwrap().exists(),
+            "empty old namespace folder removed"
+        );
+        assert_eq!(jyc_types::state_dir::jyc_dir(&topic), second);
+
+        // Carrying away from a CONFIG-KEY dir must NOT remove its parent:
+        // agents/<key>/ doubles as the agent's canonical topic dir.
+        let third = tmp.path().join("agents").join("_third").join(".jyc");
+        assert!(adopt_state_dir(&topic, &third).unwrap());
+        assert!(
+            second.parent().unwrap().exists(),
+            "config-key topic dir preserved after carry"
+        );
+    }
+
+    #[test]
+    fn adopt_keeps_state_when_both_dirs_exist() {
+        let tmp = tempdir().unwrap();
+        let topic = tmp.path().join("conflict-topic");
+        std::fs::create_dir_all(topic.join(".jyc")).unwrap();
+        let state = tmp.path().join("conflict-state");
+        std::fs::create_dir_all(&state).unwrap();
+        assert!(!adopt_state_dir(&topic, &state).unwrap());
+        assert!(
+            topic.join(".jyc").exists(),
+            "legacy kept when state already exists"
+        );
     }
 
     // === resolve_workspace (used by cli/serve.rs) ===

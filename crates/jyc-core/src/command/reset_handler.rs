@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use jyc_types::state_dir::jyc_dir;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
@@ -49,7 +50,7 @@ impl CommandHandler for ResetCommandHandler {
         // Clear agent-published files and the exchange-access token: /reset must
         // kill previously shared links (token rotation forces regeneration on
         // the next publish). Done for both the agent and fallback branches.
-        let jyc_dir = context.topic_path.join(".jyc");
+        let jyc_dir = jyc_dir(&context.topic_path);
         tokio::fs::remove_dir_all(jyc_dir.join(crate::EXCHANGE_DIR_NAME))
             .await
             .ok();

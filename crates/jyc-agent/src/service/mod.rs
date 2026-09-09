@@ -5,6 +5,7 @@
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use jyc_types::state_dir::jyc_dir;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::{Mutex, mpsc};
@@ -212,10 +213,9 @@ impl AgentService for JycAgentService {
                 Some("plan") => "plan",
                 _ => "build", // default = build mode
             };
-            let mode_specific_path = topic_path
-                .join(".jyc")
-                .join(format!("{mode_suffix}-model-override"));
-            let legacy_path = topic_path.join(".jyc").join("model-override");
+            let mode_specific_path =
+                jyc_dir(topic_path).join(format!("{mode_suffix}-model-override"));
+            let legacy_path = jyc_dir(topic_path).join("model-override");
             if mode_specific_path.exists() {
                 tokio::fs::read_to_string(&mode_specific_path)
                     .await
@@ -331,7 +331,7 @@ impl AgentService for JycAgentService {
         // Resolve access roots first: the system prompt must describe exactly
         // the boundaries the tool layer enforces (same Vecs, single source).
         let additional_read_roots = self.resolve_additional_read_roots(message, topic_path);
-        let additional_write_roots = self.resolve_additional_write_roots(message);
+        let additional_write_roots = self.resolve_additional_write_roots(message, topic_path);
         // 3a. Build system prompt (available channels, skills, AGENTS.md, etc.)
         let system_prompt = self
             .build_system_prompt(

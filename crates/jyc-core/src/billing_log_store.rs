@@ -19,6 +19,7 @@
 //! a financial record -- truncating it would destroy the totals it
 //! exists to produce.
 
+use jyc_types::state_dir::jyc_dir;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -115,7 +116,7 @@ pub struct BillingLogStore;
 impl BillingLogStore {
     /// Path to the ledger file for a given `YYYY-MM-DD` date string.
     fn path_for_date(topic_path: &Path, date: &str) -> PathBuf {
-        topic_path.join(".jyc").join(format!("bill-{date}.jsonl"))
+        jyc_dir(topic_path).join(format!("bill-{date}.jsonl"))
     }
 
     /// Todays date as `YYYY-MM-DD` in UTC.

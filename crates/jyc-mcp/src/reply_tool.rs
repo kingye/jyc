@@ -1,4 +1,5 @@
 use anyhow::Result;
+use jyc_types::state_dir::jyc_dir;
 use rmcp::{
     ServerHandler, ServiceExt,
     handler::server::wrapper::Parameters,
@@ -18,7 +19,7 @@ struct McpLogger {
 
 impl McpLogger {
     fn new(cwd: &Path) -> Self {
-        let jyc_dir = cwd.join(".jyc");
+        let jyc_dir = jyc_dir(cwd);
         std::fs::create_dir_all(&jyc_dir).ok();
         Self {
             path: jyc_dir.join("reply-tool.log"),
@@ -154,7 +155,7 @@ async fn handle_reply(
     // 5. Write reply.md so the background delivery watcher can deliver immediately
     //    (without waiting for the SSE stream to complete).
     //    The watcher checks for both reply-sent.flag and reply.md.
-    let jyc_dir = topic_path.join(".jyc");
+    let jyc_dir = jyc_dir(topic_path);
     tokio::fs::create_dir_all(&jyc_dir).await.ok();
     tokio::fs::write(jyc_dir.join("reply.md"), message)
         .await

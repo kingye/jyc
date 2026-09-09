@@ -339,10 +339,11 @@ impl JycAgentService {
 
     /// Format the file-access boundary block that leads the system prompt.
     ///
-    /// With no extra roots this returns the classic fixed sentence byte-for-byte
-    /// (keeps the common-case prefix cache stable). Otherwise it enumerates the
-    /// allowed roots exactly as the tool layer enforces them, so the model knows
-    /// which outside-the-working-directory paths it may legitimately use.
+    /// With no extra roots this returns the classic fixed sentence byte-for-byte.
+    /// With roots it enumerates them exactly as the tool layer enforces them, so
+    /// the model knows which outside-the-working-directory paths it may
+    /// legitimately use. Roots are deterministic per pattern, so the prompt
+    /// stays byte-stable across calls for a given agent either way.
     pub(crate) fn format_access_boundary(
         topic_path: &Path,
         read_roots: &[PathBuf],
@@ -356,11 +357,13 @@ impl JycAgentService {
         }
         let mut s = format!("Your working directory is \"{}\".\n", topic_path.display());
         s.push_str("File access boundaries (enforced by the tool layer):\n");
-        s.push_str(
-            "- You may read files within the working directory and these additional directories:\n",
-        );
-        for r in read_roots {
-            s.push_str(&format!("  - {}\n", r.display()));
+        if !read_roots.is_empty() {
+            s.push_str(
+                "- You may read files within the working directory and these additional directories:\n",
+            );
+            for r in read_roots {
+                s.push_str(&format!("  - {}\n", r.display()));
+            }
         }
         if write_roots.is_empty() {
             s.push_str("- You MUST only write files within the working directory.\n");

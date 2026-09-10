@@ -384,7 +384,12 @@ custom `topic_path` (e.g. a real project checkout) are skipped with an info
 log, and canonicalization blocks symlink escapes. Manual `/close` (with
 `--force`) goes through `close_topic`, which for adopted/pinned topics
 deletes only the relocated state dir (keeping the user-owned topic dir) and
-for unregistered topics deletes the whole topic dir.
+for unregistered topics deletes the whole topic dir. `jyc open` (bare `jyc`)
+attaches by *name*: the default topic name is the directory's folder name,
+so in a directory pinned by a config agent of the same key it opens that
+agent's topic and state; `-t <name>` selects a sibling co-pinned agent's
+topic, and an unknown `-t` creates a fresh ad-hoc topic with its own
+path-derived state.
 
 ```mermaid
 stateDiagram-v2

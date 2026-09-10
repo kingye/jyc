@@ -211,7 +211,7 @@ async fn test_has_active_queue_true_after_enqueue() {
 
     // Create a topic directory so list_topics finds it
     let topic_path = workspace.join("test-topic");
-    tokio::fs::create_dir_all(jyc_dir(&topic_path))
+    tokio::fs::create_dir_all(jyc_dir("", &topic_path))
         .await
         .unwrap();
 
@@ -317,7 +317,7 @@ async fn test_empty_pattern_name_does_not_clobber_pattern_file() {
         wait_for_history_lines(&topic_path, 1).await,
         "worker did not process the first message in time"
     );
-    let pattern_file = jyc_dir(&topic_path).join("pattern");
+    let pattern_file = jyc_dir("", &topic_path).join("pattern");
     assert_eq!(
         tokio::fs::read_to_string(&pattern_file).await.unwrap(),
         "jyc"
@@ -352,7 +352,7 @@ async fn test_empty_pattern_name_does_not_clobber_pattern_file() {
 /// (i.e. the worker processed `n` messages). ~2s timeout.
 async fn wait_for_history_lines(topic_path: &std::path::Path, n: usize) -> bool {
     for _ in 0..40 {
-        let (files, _) = crate::chat_log_store::list_chat_history_files(topic_path);
+        let (files, _) = crate::chat_log_store::list_chat_history_files("", topic_path);
         let mut count = 0;
         for f in files {
             if let Ok(content) = tokio::fs::read_to_string(&f).await {
@@ -456,7 +456,7 @@ async fn test_worker_respawn_after_cancel_keeps_event_bus() {
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
     let tm = make_test_tm(&workspace);
-    tokio::fs::create_dir_all(jyc_dir(workspace.join("test-topic")))
+    tokio::fs::create_dir_all(jyc_dir("", workspace.join("test-topic")))
         .await
         .unwrap();
 
@@ -645,7 +645,7 @@ async fn test_topic_meta_written_on_first_message() {
     let tm = make_test_tm(&workspace);
 
     let topic_path = workspace.join("test-topic");
-    tokio::fs::create_dir_all(jyc_dir(&topic_path))
+    tokio::fs::create_dir_all(jyc_dir("", &topic_path))
         .await
         .unwrap();
 
@@ -692,7 +692,7 @@ async fn test_topic_meta_written_on_first_message() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Check topic-meta.json was written
-    let meta_path = jyc_dir(&topic_path).join("topic-meta.json");
+    let meta_path = jyc_dir("", &topic_path).join("topic-meta.json");
     assert!(meta_path.exists(), "topic-meta.json should be written");
 
     let content = std::fs::read_to_string(&meta_path).unwrap();
@@ -713,12 +713,12 @@ async fn test_topic_meta_not_overwritten_on_second_message() {
     let tm = make_test_tm(&workspace);
 
     let topic_path = workspace.join("test-topic");
-    tokio::fs::create_dir_all(jyc_dir(&topic_path))
+    tokio::fs::create_dir_all(jyc_dir("", &topic_path))
         .await
         .unwrap();
 
     // Pre-write a topic-meta.json with a known value
-    let meta_path = jyc_dir(&topic_path).join("topic-meta.json");
+    let meta_path = jyc_dir("", &topic_path).join("topic-meta.json");
     std::fs::write(
         &meta_path,
         r#"{"channel_uid":"original-uid","metadata":{"github_number":99}}"#,
@@ -827,7 +827,7 @@ async fn test_topic_meta_not_written_for_dashboard_channel_uid() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // topic-meta.json must NOT be written for dashboard messages
-    let meta_path = jyc_dir(&topic_path).join("topic-meta.json");
+    let meta_path = jyc_dir("", &topic_path).join("topic-meta.json");
     assert!(
         !meta_path.exists(),
         "topic-meta.json should NOT be written for dashboard channel_uid"
@@ -921,11 +921,11 @@ async fn test_set_topic_path_creates_jyc_dir_and_appears_in_list() {
     // `.jyc/` and `.jyc/topic-name` are written by set_topic_path so
     // list_topics doesn't filter the entry out.
     assert!(
-        jyc_dir(&custom_path).is_dir(),
+        custom_path.join(".jyc").is_dir(),
         "set_topic_path must create .jyc/"
     );
     assert_eq!(
-        tokio::fs::read_to_string(jyc_dir(&custom_path).join("topic-name"))
+        tokio::fs::read_to_string(custom_path.join(".jyc").join("topic-name"))
             .await
             .unwrap()
             .trim(),
@@ -952,13 +952,16 @@ async fn test_restore_custom_topic_paths_from_disk() {
 
     // Custom topic path outside workspace
     let custom_path = tmp.path().join("external-project");
-    tokio::fs::create_dir_all(jyc_dir(&custom_path))
+    tokio::fs::create_dir_all(custom_path.join(".jyc"))
         .await
         .unwrap();
     // Simulate a previously initialized topic
-    tokio::fs::write(jyc_dir(&custom_path).join("topic-name"), "my-custom-topic")
-        .await
-        .unwrap();
+    tokio::fs::write(
+        custom_path.join(".jyc").join("topic-name"),
+        "my-custom-topic",
+    )
+    .await
+    .unwrap();
 
     // Config with topic_path override — channel name must match TM's channel_name
     let config_str = format!(
@@ -1035,7 +1038,7 @@ mode = "agent"
         !custom_path.join(".jyc").exists(),
         "legacy .jyc moved out of the pinned dir"
     );
-    let state = jyc_dir(&custom_path);
+    let state = jyc_dir("my-custom-topic", &custom_path);
     assert_ne!(
         state,
         custom_path.join(".jyc"),
@@ -1154,7 +1157,7 @@ async fn test_list_topics_cleans_stale_custom_path() {
 
     // Insert a custom path that doesn't exist on disk
     let ghost_path = tmp.path().join("deleted-topic");
-    tokio::fs::create_dir_all(jyc_dir(&ghost_path))
+    tokio::fs::create_dir_all(jyc_dir("", &ghost_path))
         .await
         .unwrap();
     tm.topic_paths
@@ -1205,9 +1208,9 @@ async fn test_restore_multi_topic_per_agent_layout() {
     let topic_a = agent_root.join("topic-a");
     let topic_b = agent_root.join("topic-b");
     for t in [&topic_a, &topic_b] {
-        tokio::fs::create_dir_all(jyc_dir(t)).await.unwrap();
+        tokio::fs::create_dir_all(jyc_dir("", t)).await.unwrap();
         tokio::fs::write(
-            jyc_dir(t).join("topic-name"),
+            jyc_dir("", t).join("topic-name"),
             t.file_name().unwrap().to_str().unwrap(),
         )
         .await
@@ -1296,8 +1299,10 @@ async fn test_restore_agent_default_root_without_topic_path() {
     let workspace = tmp.path().join("agents");
     let agent_root = workspace.join("planner");
     let topic = agent_root.join("plan-197");
-    tokio::fs::create_dir_all(jyc_dir(&topic)).await.unwrap();
-    tokio::fs::write(jyc_dir(&topic).join("topic-name"), "plan-197")
+    tokio::fs::create_dir_all(jyc_dir("", &topic))
+        .await
+        .unwrap();
+    tokio::fs::write(jyc_dir("", &topic).join("topic-name"), "plan-197")
         .await
         .unwrap();
 
@@ -1415,7 +1420,7 @@ async fn list_topics_currency_from_config_when_ledger_empty() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     let topic = workspace.join("t1");
-    std::fs::create_dir_all(jyc_dir(&topic)).unwrap();
+    std::fs::create_dir_all(jyc_dir("", &topic)).unwrap();
     // Session has spend; no bill-<today>.jsonl exists at all.
     std::fs::write(
         topic.join(".jyc/agent-session.json"),
@@ -1450,10 +1455,11 @@ async fn list_topics_preserves_mixed_currency_from_ledger() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     let topic = workspace.join("t1");
-    std::fs::create_dir_all(jyc_dir(&topic)).unwrap();
+    std::fs::create_dir_all(jyc_dir("", &topic)).unwrap();
 
     for (cost, currency) in [(1.0, "CNY"), (2.0, "USD")] {
         BillingLogStore::append(
+            "",
             &topic,
             &BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
@@ -1503,14 +1509,14 @@ async fn list_topics_populates_branch_from_dot_git_head() {
 
     // Topic "main-test" with a symbolic-ref HEAD pointing at main.
     let t1 = workspace.join("main-test");
-    std::fs::create_dir_all(jyc_dir(&t1)).unwrap();
+    std::fs::create_dir_all(jyc_dir("", &t1)).unwrap();
     std::fs::create_dir_all(t1.join(".git")).unwrap();
     std::fs::write(t1.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
 
     // Topic "detached-test" with a raw 40-char SHA — should appear
     // as "(detached)" rather than as `None`.
     let t2 = workspace.join("detached-test");
-    std::fs::create_dir_all(jyc_dir(&t2)).unwrap();
+    std::fs::create_dir_all(jyc_dir("", &t2)).unwrap();
     std::fs::create_dir_all(t2.join(".git")).unwrap();
     std::fs::write(
         t2.join(".git/HEAD"),
@@ -1521,7 +1527,7 @@ async fn list_topics_populates_branch_from_dot_git_head() {
     // Topic "no-git" — `.jyc` exists but no `.git/HEAD`. Branch
     // should be `None` (renderer skips the row).
     let t3 = workspace.join("no-git");
-    std::fs::create_dir_all(jyc_dir(&t3)).unwrap();
+    std::fs::create_dir_all(jyc_dir("", &t3)).unwrap();
 
     let tm = make_test_tm(&workspace);
     let topics = tm.list_topics().await;
@@ -1565,7 +1571,7 @@ async fn list_topics_populates_changed_files_from_git_diff() {
     // Topic "clean": real git repo on `main` with no commits ahead.
     // Expect `Some(vec![])`.
     let clean = workspace.join("clean");
-    std::fs::create_dir_all(jyc_dir(&clean)).unwrap();
+    std::fs::create_dir_all(jyc_dir("", &clean)).unwrap();
     let run = |args: &[&str]| {
         std::process::Command::new("git")
             .args(args)
@@ -1588,7 +1594,7 @@ async fn list_topics_populates_changed_files_from_git_diff() {
 
     // Topic "ahead": feature branch with one commit adding "x.rs".
     let ahead = workspace.join("ahead");
-    std::fs::create_dir_all(jyc_dir(&ahead)).unwrap();
+    std::fs::create_dir_all(jyc_dir("", &ahead)).unwrap();
     let run_ahead = |args: &[&str]| {
         std::process::Command::new("git")
             .args(args)
@@ -1624,7 +1630,7 @@ async fn list_topics_populates_changed_files_from_git_diff() {
 
     // Topic "no-git": no `.git` at all → `changed_files == None`.
     let no_git = workspace.join("no-git");
-    std::fs::create_dir_all(jyc_dir(&no_git)).unwrap();
+    std::fs::create_dir_all(jyc_dir("", &no_git)).unwrap();
 
     let tm = make_test_tm(&workspace);
     let topics = tm.list_topics().await;
@@ -1694,7 +1700,7 @@ mode = "agent"
     );
 
     let _topic_path = workspace.join("test-topic");
-    tokio::fs::create_dir_all(jyc_dir(&_topic_path))
+    tokio::fs::create_dir_all(jyc_dir("", &_topic_path))
         .await
         .unwrap();
 

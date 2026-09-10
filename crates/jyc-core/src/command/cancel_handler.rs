@@ -179,6 +179,7 @@ mode = "agent"
 
     fn test_context(topic_path: &std::path::Path) -> CommandContext {
         CommandContext {
+            topic_name: "test-topic".to_string(),
             args: vec![],
             topic_path: topic_path.to_path_buf(),
             config: Arc::new(

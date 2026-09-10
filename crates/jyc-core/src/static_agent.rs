@@ -58,12 +58,12 @@ impl AgentService for StaticAgentService {
     async fn reset_session(
         &self,
         topic_path: &Path,
-        _topic_name: &str,
+        topic_name: &str,
         config: &jyc_types::channel::ResetCompressionConfig,
     ) -> Result<()> {
         use jyc_types::channel::CompressionMode;
 
-        let jyc_dir = jyc_dir(topic_path);
+        let jyc_dir = jyc_dir(topic_name, topic_path);
         match config.mode {
             CompressionMode::None => {
                 tokio::fs::remove_file(jyc_dir.join("agent-context.json"))

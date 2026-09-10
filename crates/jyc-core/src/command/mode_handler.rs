@@ -13,7 +13,7 @@ use crate::session_state;
 ///
 /// Shared by `/plan`, `/build`, and user-defined commands that declare a mode.
 pub async fn set_mode(context: &CommandContext, mode: &str) -> Result<()> {
-    let jyc_dir = jyc_dir(&context.topic_path);
+    let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
     let override_path = jyc_dir.join("mode-override");
 
     if mode == "plan" {
@@ -89,6 +89,7 @@ impl CommandHandler for BuildCommandHandler {
 /// (the post-loop `update_tokens` will set it on the next turn).
 async fn refresh_max_input_tokens(context: &CommandContext) {
     let new_max = session_state::resolve_active_context_window(
+        &context.topic_name,
         &context.topic_path,
         &context.config,
         &context.channel,
@@ -96,7 +97,8 @@ async fn refresh_max_input_tokens(context: &CommandContext) {
     )
     .await;
     if let Some(new_max) = new_max {
-        session_state::write_max_input_tokens(&context.topic_path, new_max).await;
+        session_state::write_max_input_tokens(&context.topic_name, &context.topic_path, new_max)
+            .await;
     }
 }
 
@@ -108,6 +110,7 @@ mod tests {
 
     fn test_context(topic_path: &Path) -> CommandContext {
         CommandContext {
+            topic_name: "test-topic".to_string(),
             args: vec![],
             topic_path: topic_path.to_path_buf(),
             config: Arc::new(

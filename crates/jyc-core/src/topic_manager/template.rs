@@ -20,11 +20,12 @@ pub struct TemplateMismatch {
 }
 
 pub(crate) async fn initialize_topic_from_template(
+    topic_name: &str,
     topic_path: &Path,
     template_name: &str,
     template_dirs: &crate::template_dirs::TemplateDirs,
 ) -> Result<()> {
-    let jyc_dir = jyc_dir(topic_path);
+    let jyc_dir = jyc_dir(topic_name, topic_path);
     let template_marker = jyc_dir.join("template");
 
     if jyc_dir.exists() {
@@ -51,7 +52,9 @@ pub(crate) async fn initialize_topic_from_template(
         }
     }
 
-    let Some(template_src) = template_dirs.resolve_with_topic(topic_path, template_name) else {
+    let Some(template_src) =
+        template_dirs.resolve_with_topic(topic_name, topic_path, template_name)
+    else {
         tracing::warn!(
             template = %template_name,
             "Template directory does not exist in any templates layer"
@@ -92,9 +95,14 @@ mod template_init_tests {
         make_template(&template_dir, "github-planner", "PLANNER").await;
 
         let topic_path = workspace.join("issue-1");
-        initialize_topic_from_template(&topic_path, "github-planner", &template_dir.clone().into())
-            .await
-            .unwrap();
+        initialize_topic_from_template(
+            "tpl-test",
+            &topic_path,
+            "github-planner",
+            &template_dir.clone().into(),
+        )
+        .await
+        .unwrap();
 
         let marker = tokio::fs::read_to_string(topic_path.join(".jyc/template"))
             .await
@@ -117,14 +125,24 @@ mod template_init_tests {
         make_template(&template_dir, "github-planner", "PLANNER").await;
 
         let topic_path = workspace.join("issue-1");
-        initialize_topic_from_template(&topic_path, "github-planner", &template_dir.clone().into())
-            .await
-            .unwrap();
+        initialize_topic_from_template(
+            "tpl-test",
+            &topic_path,
+            "github-planner",
+            &template_dir.clone().into(),
+        )
+        .await
+        .unwrap();
 
         // Second call with the same template is a no-op.
-        initialize_topic_from_template(&topic_path, "github-planner", &template_dir.clone().into())
-            .await
-            .unwrap();
+        initialize_topic_from_template(
+            "tpl-test",
+            &topic_path,
+            "github-planner",
+            &template_dir.clone().into(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -139,6 +157,7 @@ mod template_init_tests {
         let topic_path = workspace.join("issue-1");
         // First, init with HLP.
         initialize_topic_from_template(
+            "tpl-test",
             &topic_path,
             "github-high-level-planner",
             &template_dir.clone().into(),
@@ -148,6 +167,7 @@ mod template_init_tests {
 
         // Then, request a different template for the same topic → must error.
         let err = initialize_topic_from_template(
+            "tpl-test",
             &topic_path,
             "github-planner",
             &template_dir.clone().into(),

@@ -115,8 +115,8 @@ pub struct BillingLogStore;
 
 impl BillingLogStore {
     /// Path to the ledger file for a given `YYYY-MM-DD` date string.
-    fn path_for_date(topic_path: &Path, date: &str) -> PathBuf {
-        jyc_dir(topic_path).join(format!("bill-{date}.jsonl"))
+    fn path_for_date(topic_name: &str, topic_path: &Path, date: &str) -> PathBuf {
+        jyc_dir(topic_name, topic_path).join(format!("bill-{date}.jsonl"))
     }
 
     /// Todays date as `YYYY-MM-DD` in UTC.
@@ -128,8 +128,8 @@ impl BillingLogStore {
     }
 
     /// Append one entry to todays ledger, creating `.jyc/` if needed.
-    pub fn append(topic_path: &Path, entry: &BillingEntry) -> anyhow::Result<()> {
-        let path = Self::path_for_date(topic_path, &Self::today());
+    pub fn append(topic_name: &str, topic_path: &Path, entry: &BillingEntry) -> anyhow::Result<()> {
+        let path = Self::path_for_date(topic_name, topic_path, &Self::today());
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -145,8 +145,8 @@ impl BillingLogStore {
     /// lines are skipped rather than failing the whole read, so a single
     /// truncated write (e.g. from a hard kill mid-append) cannot make a
     /// days costs unreadable.
-    pub fn load_date(topic_path: &Path, date: &str) -> Vec<BillingEntry> {
-        let path = Self::path_for_date(topic_path, date);
+    pub fn load_date(topic_name: &str, topic_path: &Path, date: &str) -> Vec<BillingEntry> {
+        let path = Self::path_for_date(topic_name, topic_path, date);
         let Ok(file) = File::open(&path) else {
             return Vec::new();
         };
@@ -164,13 +164,13 @@ impl BillingLogStore {
     /// entries span multiple currencies the amounts are still summed but
     /// the currency is reported as [`MIXED_CURRENCY`], since adding
     /// unlike units would otherwise be presented as a real figure.
-    pub fn today_total(topic_path: &Path) -> Option<(f64, String)> {
-        Self::date_total(topic_path, &Self::today())
+    pub fn today_total(topic_name: &str, topic_path: &Path) -> Option<(f64, String)> {
+        Self::date_total(topic_name, topic_path, &Self::today())
     }
 
     /// Total cost for a specific date, with its currency.
-    pub fn date_total(topic_path: &Path, date: &str) -> Option<(f64, String)> {
-        let entries = Self::load_date(topic_path, date);
+    pub fn date_total(topic_name: &str, topic_path: &Path, date: &str) -> Option<(f64, String)> {
+        let entries = Self::load_date(topic_name, topic_path, date);
         if entries.is_empty() {
             return None;
         }
@@ -222,7 +222,7 @@ mod tests {
             .join(format!("bill-{}.jsonl", BillingLogStore::today()));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, format!("{legacy}\n")).unwrap();
-        let loaded = BillingLogStore::load_date(dir.path(), &BillingLogStore::today());
+        let loaded = BillingLogStore::load_date("", dir.path(), &BillingLogStore::today());
         assert_eq!(loaded.len(), 1);
         let e = &loaded[0];
         assert_eq!(e.cost, 0.05);
@@ -244,8 +244,8 @@ mod tests {
         e.cache_hit_rate_per_million = 1.5;
         e.time_window = Some("16:30-00:30".to_string());
         e.utc_offset = "+08:00".to_string();
-        BillingLogStore::append(dir.path(), &e).unwrap();
-        let loaded = BillingLogStore::load_date(dir.path(), &BillingLogStore::today());
+        BillingLogStore::append("", dir.path(), &e).unwrap();
+        let loaded = BillingLogStore::load_date("", dir.path(), &BillingLogStore::today());
         assert_eq!(loaded[0], e);
     }
 
@@ -253,9 +253,9 @@ mod tests {
     fn append_then_read_round_trips() {
         let dir = tempdir().unwrap();
         let e = entry(0.05, "USD");
-        BillingLogStore::append(dir.path(), &e).unwrap();
+        BillingLogStore::append("", dir.path(), &e).unwrap();
 
-        let loaded = BillingLogStore::load_date(dir.path(), &BillingLogStore::today());
+        let loaded = BillingLogStore::load_date("", dir.path(), &BillingLogStore::today());
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0], e);
     }
@@ -265,7 +265,7 @@ mod tests {
     fn append_creates_jyc_dir() {
         let dir = tempdir().unwrap();
         let nested = dir.path().join("fresh-topic");
-        BillingLogStore::append(&nested, &entry(0.01, "USD")).unwrap();
+        BillingLogStore::append("", &nested, &entry(0.01, "USD")).unwrap();
         assert!(nested.join(".jyc").is_dir());
     }
 
@@ -273,9 +273,9 @@ mod tests {
     fn today_total_sums_all_entries() {
         let dir = tempdir().unwrap();
         for c in [0.01, 0.02, 0.03] {
-            BillingLogStore::append(dir.path(), &entry(c, "USD")).unwrap();
+            BillingLogStore::append("", dir.path(), &entry(c, "USD")).unwrap();
         }
-        let (total, currency) = BillingLogStore::today_total(dir.path()).unwrap();
+        let (total, currency) = BillingLogStore::today_total("", dir.path()).unwrap();
         assert!((total - 0.06).abs() < 1e-9, "got {total}");
         assert_eq!(currency, "USD");
     }
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn today_total_is_none_when_no_entries() {
         let dir = tempdir().unwrap();
-        assert!(BillingLogStore::today_total(dir.path()).is_none());
+        assert!(BillingLogStore::today_total("", dir.path()).is_none());
     }
 
     /// The core reason for date-stamped files: yesterdays spending must
@@ -296,20 +296,20 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".jyc")).unwrap();
 
         // Hand-write a ledger for a date that is definitely not today.
-        let yesterday = BillingLogStore::path_for_date(dir.path(), "2020-01-01");
+        let yesterday = BillingLogStore::path_for_date("", dir.path(), "2020-01-01");
         let old = serde_json::to_string(&entry(99.0, "USD")).unwrap();
         std::fs::write(&yesterday, format!("{old}\n")).unwrap();
 
         // Today is still empty...
-        assert!(BillingLogStore::today_total(dir.path()).is_none());
+        assert!(BillingLogStore::today_total("", dir.path()).is_none());
 
         // ...and after todays first entry, the old day is not included.
-        BillingLogStore::append(dir.path(), &entry(0.05, "USD")).unwrap();
-        let (total, _) = BillingLogStore::today_total(dir.path()).unwrap();
+        BillingLogStore::append("", dir.path(), &entry(0.05, "USD")).unwrap();
+        let (total, _) = BillingLogStore::today_total("", dir.path()).unwrap();
         assert!((total - 0.05).abs() < 1e-9, "got {total}");
 
         // The old day is still readable on its own.
-        let (old_total, _) = BillingLogStore::date_total(dir.path(), "2020-01-01").unwrap();
+        let (old_total, _) = BillingLogStore::date_total("", dir.path(), "2020-01-01").unwrap();
         assert!((old_total - 99.0).abs() < 1e-9);
     }
 
@@ -318,9 +318,9 @@ mod tests {
     #[test]
     fn mixed_currencies_are_flagged() {
         let dir = tempdir().unwrap();
-        BillingLogStore::append(dir.path(), &entry(1.0, "USD")).unwrap();
-        BillingLogStore::append(dir.path(), &entry(2.0, "CNY")).unwrap();
-        let (_, currency) = BillingLogStore::today_total(dir.path()).unwrap();
+        BillingLogStore::append("", dir.path(), &entry(1.0, "USD")).unwrap();
+        BillingLogStore::append("", dir.path(), &entry(2.0, "CNY")).unwrap();
+        let (_, currency) = BillingLogStore::today_total("", dir.path()).unwrap();
         assert_eq!(currency, MIXED_CURRENCY);
     }
 
@@ -329,14 +329,14 @@ mod tests {
     #[test]
     fn malformed_lines_are_skipped() {
         let dir = tempdir().unwrap();
-        BillingLogStore::append(dir.path(), &entry(0.10, "USD")).unwrap();
+        BillingLogStore::append("", dir.path(), &entry(0.10, "USD")).unwrap();
 
-        let path = BillingLogStore::path_for_date(dir.path(), &BillingLogStore::today());
+        let path = BillingLogStore::path_for_date("", dir.path(), &BillingLogStore::today());
         let mut f = OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(f, "not valid json").unwrap();
         drop(f);
 
-        let (total, _) = BillingLogStore::today_total(dir.path()).unwrap();
+        let (total, _) = BillingLogStore::today_total("", dir.path()).unwrap();
         assert!((total - 0.10).abs() < 1e-9, "valid entry must survive");
     }
 }

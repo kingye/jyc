@@ -12,6 +12,10 @@ pub struct CommandContext {
     pub args: Vec<String>,
     /// Path to the topic directory
     pub topic_path: PathBuf,
+    /// Topic name — the identity that state-dir resolution keys on
+    /// (`state_dir::jyc_dir`). Several agents may pin one `topic_path`,
+    /// so state access must never go through the dir alone.
+    pub topic_name: String,
     /// Application configuration
     pub config: Arc<AppConfig>,
     /// Channel name
@@ -41,6 +45,7 @@ impl Default for CommandContext {
         Self {
             args: vec![],
             topic_path: PathBuf::new(),
+            topic_name: String::new(),
             config: Arc::new(AppConfig::default()),
             channel: String::new(),
             channel_type: String::new(),

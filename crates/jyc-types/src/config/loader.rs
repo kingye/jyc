@@ -74,8 +74,8 @@ pub struct TopicAiConfig {
 /// Structurally mirrors [`load_config_from_str`] but returns
 /// `Option<TopicConfig>` and swallows errors. `${VAR}` expansion runs
 /// on every string field (via [`parse_and_deserialize`]).
-pub fn load_topic_config(topic_path: &Path) -> Option<TopicConfig> {
-    let path = jyc_dir(topic_path).join("config.toml");
+pub fn load_topic_config(topic_name: &str, topic_path: &Path) -> Option<TopicConfig> {
+    let path = jyc_dir(topic_name, topic_path).join("config.toml");
     let path_label = path.display().to_string();
     if !path.exists() {
         return None;

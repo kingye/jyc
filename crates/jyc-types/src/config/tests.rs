@@ -712,7 +712,7 @@ mode = "static"
     #[test]
     fn test_load_topic_config_missing_file() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(load_topic_config(tmp.path()).is_none());
+        assert!(load_topic_config("", tmp.path()).is_none());
     }
 
     /// `[agents.<name>]` table parses; behavior fields mirror the legacy
@@ -858,7 +858,7 @@ small_model = "provider/small-model"
         )
         .unwrap();
 
-        let cfg = load_topic_config(tmp.path()).unwrap();
+        let cfg = load_topic_config("", tmp.path()).unwrap();
         let agent = cfg.ai.unwrap();
         assert_eq!(agent.model.as_deref(), Some("provider/topic-model"));
         assert_eq!(agent.plan_model.as_deref(), Some("provider/plan-model"));
@@ -872,7 +872,7 @@ small_model = "provider/small-model"
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
         std::fs::write(jyc_dir.join("config.toml"), "not [valid toml").unwrap();
-        assert!(load_topic_config(tmp.path()).is_none());
+        assert!(load_topic_config("", tmp.path()).is_none());
     }
 
     #[test]
@@ -894,7 +894,7 @@ model = "anthropic/claude-opus-4-7"
         )
         .unwrap();
 
-        let cfg = load_topic_config(tmp.path()).unwrap();
+        let cfg = load_topic_config("", tmp.path()).unwrap();
         let mcps = cfg.mcps.expect("mcps field should be present");
         assert_eq!(mcps.len(), 1);
         assert_eq!(mcps[0].name, "local-only");
@@ -921,7 +921,7 @@ url = "https://example.com/mcp"
         )
         .unwrap();
 
-        let cfg = load_topic_config(tmp.path()).unwrap();
+        let cfg = load_topic_config("", tmp.path()).unwrap();
         assert!(cfg.mcps_replace);
         let mcps = cfg.mcps.unwrap();
         assert_eq!(mcps[0].name, "totally-different");
@@ -951,7 +951,7 @@ model = "${JYC_LOAD_THREAD_MODEL}"
         )
         .unwrap();
 
-        let cfg = load_topic_config(tmp.path()).unwrap();
+        let cfg = load_topic_config("", tmp.path()).unwrap();
         let agent = cfg.ai.unwrap();
         assert_eq!(
             agent.model.as_deref(),
@@ -989,7 +989,7 @@ TOKEN = "${JYC_LOAD_THREAD_MCP_TOKEN}"
         )
         .unwrap();
 
-        let cfg = load_topic_config(tmp.path()).unwrap();
+        let cfg = load_topic_config("", tmp.path()).unwrap();
         let mcps = cfg.mcps.expect("mcps field should be present");
         assert_eq!(mcps.len(), 1);
         match &mcps[0].kind {
@@ -1033,7 +1033,7 @@ model = "${JYC_LOAD_THREAD_DEFINITELY_UNSET}"
         )
         .unwrap();
 
-        let cfg = load_topic_config(tmp.path()).unwrap();
+        let cfg = load_topic_config("", tmp.path()).unwrap();
         let agent = cfg.ai.unwrap();
         assert_eq!(
             agent.model.as_deref(),

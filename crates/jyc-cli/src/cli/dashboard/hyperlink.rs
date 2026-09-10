@@ -83,10 +83,15 @@ impl<W: Write> HyperlinkBackend<W> {
             }
             queue!(self.writer, Print(cell.symbol()))?;
         }
-        Ok(())
+        // Trailing reset: each emission pass assumes the terminal's SGR
+        // state is fully reset at entry, so every pass must leave it reset
+        // for the next one (mirrors ratatui-crossterm's per-draw reset).
+        queue!(
+            self.writer,
+            SetColors(Colors::new(CrosstermColor::Reset, CrosstermColor::Reset)),
+            SetAttribute(CrosstermAttribute::Reset),
+        )
     }
-
-    /// Re-emits a full row with OSC 8 sequences around each URL span.
     /// Full-row emission keeps link boundaries correct for partial diffs.
     fn emit_link_row(&mut self, y: u16) -> io::Result<()> {
         let row = &self.grid[y as usize];
@@ -135,7 +140,11 @@ impl<W: Write> HyperlinkBackend<W> {
         if open_link.is_some() {
             self.writer.write_all(OSC8_CLOSE.as_bytes())?;
         }
-        Ok(())
+        queue!(
+            self.writer,
+            SetColors(Colors::new(CrosstermColor::Reset, CrosstermColor::Reset)),
+            SetAttribute(CrosstermAttribute::Reset),
+        )
     }
 }
 
@@ -153,15 +162,17 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
 
         // Rows whose shadow text contains a URL get a full-row re-emission;
         // everything else is emitted as a minimal diff like upstream.
+        // Classify per unique row, not per changed cell.
+        let changed_rows: BTreeSet<u16> = updates.iter().map(|(_, y, _)| *y).collect();
         let mut link_rows = BTreeSet::new();
-        for (_, y, _) in &updates {
+        for y in changed_rows {
             let has_url = self
                 .grid
-                .get(*y as usize)
+                .get(y as usize)
                 .map(|row| Self::row_text(row).contains("http"))
                 .unwrap_or(false);
             if has_url {
-                link_rows.insert(*y);
+                link_rows.insert(y);
             }
         }
 
@@ -173,13 +184,7 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
         for y in link_rows {
             self.emit_link_row(y)?;
         }
-
-        // Trailing reset, isomorphic with ratatui-crossterm's draw tail.
-        queue!(
-            self.writer,
-            SetColors(Colors::new(CrosstermColor::Reset, CrosstermColor::Reset)),
-            SetAttribute(CrosstermAttribute::Reset),
-        )
+        Ok(())
     }
 
     fn hide_cursor(&mut self) -> io::Result<()> {
@@ -514,6 +519,29 @@ mod tests {
         assert!(
             out.contains(&format!("{OSC8_CLOSE} end")),
             "output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn passes_reset_sgr_between_plain_and_link_rows() {
+        let mut backend = HyperlinkBackend::new(Vec::new());
+        // A styled plain cell leaves SGR non-default at the end of the
+        // plain pass; the link row must not inherit it.
+        let mut styled = Cell::default();
+        styled.set_symbol("a");
+        styled.fg = Color::Green;
+        styled.modifier = Modifier::BOLD;
+        let row = cells_for("go https://example.com");
+        let mut updates: Vec<(u16, u16, &Cell)> = vec![(0, 0, &styled)];
+        updates.extend(row.iter().enumerate().map(|(x, c)| (x as u16, 1u16, c)));
+        backend.draw(updates.into_iter()).unwrap();
+
+        let out = String::from_utf8(backend.writer.clone()).unwrap();
+        let ia = out.find('a').expect("plain cell printed");
+        let imv = out.find("\x1b[2;1H").expect("link row MoveTo(0,1)");
+        assert!(
+            out[ia..imv].contains("\x1b[0m"),
+            "link row must start from a reset SGR state: {out:?}"
         );
     }
 

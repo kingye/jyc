@@ -238,6 +238,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // Cache the message-area rect so mouse-wheel events can hit-test
     // against it from the input loop.
     app.chat.last_message_area = Some(chunks[0]);
+    // Register the message area as the OSC 8 link-scanning region: the
+    // backend clips URL detection to pane columns, so neighbouring pane
+    // text can never merge into a link target.
+    app.link_regions.borrow_mut().push(chunks[0]);
 
     // --- Messages area (markdown-rendered) ---
     // tui-markdown renders without wrapping, so messages are word-wrapped

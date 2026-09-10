@@ -12,9 +12,17 @@
 //! touching a URL row still re-emits the whole row — OSC 8 link boundaries
 //! must always cover the complete URL, otherwise previously linked cells
 //! would keep stale link state from earlier frames.
+//!
+//! Multi-pane layouts: a terminal row is a seamless concatenation of
+//! neighbouring panes, so scanning is clipped to pane rectangles registered
+//! by the renderer every frame ([`LinkRegions`], currently the chat message
+//! area). This keeps adjacent pane text out of link targets and lets wrap
+//! joins key off the pane's edges rather than the terminal row's.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::io::{self, Write};
+use std::rc::Rc;
 
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::style::{
@@ -25,25 +33,33 @@ use crossterm::terminal::{self, Clear};
 use crossterm::{execute, queue};
 use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::Cell;
-use ratatui::layout::{Position, Size};
+use ratatui::layout::{Position, Rect, Size};
 use ratatui::style::{Color, Modifier};
 
 /// OSC 8 hyperlink terminator (closes the current link).
 const OSC8_CLOSE: &str = "\x1b]8;;\x1b\\";
+
+/// Text-pane rectangles eligible for URL link detection. The renderer
+/// refreshes this every frame; panes outside these regions are never
+/// scanned, so neighbouring pane text can never leak into a link target.
+pub(crate) type LinkRegions = Rc<RefCell<Vec<Rect>>>;
 
 /// A crossterm-based [`Backend`] that wraps visible URLs in OSC 8 hyperlinks.
 pub(crate) struct HyperlinkBackend<W: Write> {
     writer: W,
     /// Shadow copy of the terminal grid, updated from the diff stream.
     grid: Vec<Vec<Cell>>,
+    /// Pane rectangles eligible for link scanning (see [`LinkRegions`]).
+    regions: LinkRegions,
 }
 
 impl<W: Write> HyperlinkBackend<W> {
-    /// Creates a backend writing to `writer`.
-    pub(crate) fn new(writer: W) -> Self {
+    /// Creates a backend writing to `writer`, scanning URLs inside `regions`.
+    pub(crate) fn new(writer: W, regions: LinkRegions) -> Self {
         Self {
             writer,
             grid: Vec::new(),
+            regions,
         }
     }
 
@@ -92,115 +108,131 @@ impl<W: Write> HyperlinkBackend<W> {
             SetAttribute(CrosstermAttribute::Reset),
         )
     }
-    /// A row needs full-row re-emission when it contains a URL span or
-    /// continues a URL wrapped from the row above.
-    fn is_link_row(&self, y: usize) -> bool {
-        let Some(row) = self.grid.get(y) else {
-            return false;
-        };
-        !find_url_spans(&Self::row_text(row)).is_empty() || self.row_starts_mid_url(y)
+    /// The slice of shadow-grid row `y` that falls inside `region`'s columns.
+    fn region_row<'a>(grid: &'a [Vec<Cell>], region: &Rect, y: usize) -> &'a [Cell] {
+        let Some(row) = grid.get(y) else { return &[] };
+        let x0 = (region.x as usize).min(row.len());
+        let x1 = (region.right() as usize).min(row.len());
+        &row[x0..x1]
     }
 
-    /// Link segments over a row: `(first_cell, end_cell_exclusive, full_url)`.
+    /// A row needs full-row re-emission when any registered pane region on
+    /// it contains a URL span or continues a URL wrapped from the row above.
+    fn is_link_row(&self, y: usize) -> bool {
+        self.regions.borrow().iter().any(|region| {
+            if y < region.y as usize || y >= region.bottom() as usize {
+                return false;
+            }
+            let slice = Self::region_row(&self.grid, region, y);
+            !find_url_spans(&Self::row_text(slice)).is_empty() || self.row_starts_mid_url(region, y)
+        })
+    }
+
+    /// Link segments over a row: `(first_cell, end_cell_exclusive, full_url)`
+    /// in absolute terminal columns.
     ///
-    /// URLs wrapped across terminal rows are reconstructed by joining
-    /// fragments: a URL span that reaches the row's last drawn cell continues
-    /// into the next row's leading run of URL characters (ratatui's word
-    /// wrap splits over-long words exactly at the width boundary).
-    /// Heuristic limitation: a line that *ends* with a complete URL followed
-    /// by a line that *starts* with URL characters is indistinguishable from
-    /// a wrap and gets joined.
+    /// Scanning is clipped to each registered pane region: a terminal row is
+    /// a seamless concatenation of neighbouring panes, so without clipping a
+    /// URL at a pane's right edge would merge with the next pane's text.
+    ///
+    /// URLs wrapped across rows are reconstructed by joining fragments: a
+    /// span that reaches the pane's right edge (the renderer hard-splits
+    /// over-long words exactly at the wrap width) continues into the next
+    /// row's leading run of URL characters. Heuristic limitation: a line
+    /// that *ends* with a complete URL followed by a line that *starts*
+    /// with URL characters is indistinguishable from a wrap and gets joined.
     fn link_segments(&self, y: usize) -> Vec<(usize, usize, String)> {
         let mut segments = Vec::new();
-        let Some(row) = self.grid.get(y) else {
-            return segments;
-        };
-        let text = Self::row_text(row);
-
-        // Continuation of a URL that wrapped from a previous row.
-        if self.row_starts_mid_url(y) {
-            let run = leading_url_run(&text);
-            segments.push((0, run.len(), self.reconstruct_url_at(y)));
-        }
-
-        for (start, end) in find_url_spans(&text) {
-            let cell_start = byte_to_cell(row, start);
-            let cell_end = byte_to_cell(row, end);
-            let mut url = text[start..end].to_string();
-            if cell_end == row.len() {
-                // The span touches the row's last drawn cell: the URL may
-                // continue on the following rows.
-                url = self.join_continuations(y + 1, url);
+        let regions = self.regions.borrow();
+        for region in regions.iter() {
+            if y < region.y as usize || y >= region.bottom() as usize {
+                continue;
             }
-            segments.push((cell_start, cell_end, url));
+            let slice = Self::region_row(&self.grid, region, y);
+            if slice.is_empty() {
+                continue;
+            }
+            let text = Self::row_text(slice);
+            let x0 = region.x as usize;
+
+            // Continuation of a URL that wrapped from a previous row.
+            if self.row_starts_mid_url(region, y) {
+                let run = leading_url_run(&text);
+                segments.push((x0, x0 + run.len(), self.reconstruct_url_at(region, y)));
+            }
+
+            for (start, end) in find_url_spans(&text) {
+                let cell_start = byte_to_cell(slice, start);
+                let cell_end = byte_to_cell(slice, end);
+                let mut url = text[start..end].to_string();
+                if cell_end == slice.len() && slice.len() == region.width as usize {
+                    // The span reaches the pane's right edge: the URL may
+                    // continue on the following rows.
+                    url = self.join_continuations(region, y + 1, url);
+                }
+                segments.push((x0 + cell_start, x0 + cell_end, url));
+            }
         }
         segments
     }
 
-    /// Row `y` begins inside a URL that wrapped from the row above.
-    fn row_starts_mid_url(&self, y: usize) -> bool {
-        if y == 0 || !self.row_ends_mid_url(y - 1) {
+    /// Row `y`'s region slice begins inside a URL that wrapped from above.
+    fn row_starts_mid_url(&self, region: &Rect, y: usize) -> bool {
+        if y == 0 || !self.row_ends_mid_url(region, y - 1) {
             return false;
         }
-        self.grid
-            .get(y)
-            .map(|row| !leading_url_run(&Self::row_text(row)).is_empty())
-            .unwrap_or(false)
+        !leading_url_run(&Self::row_text(Self::region_row(&self.grid, region, y))).is_empty()
     }
 
-    /// Row `y`'s last drawn cell is part of a URL that continues below.
-    fn row_ends_mid_url(&self, y: usize) -> bool {
-        let Some(row) = self.grid.get(y) else {
-            return false;
-        };
-        if row.is_empty() {
+    /// Row `y`'s region slice ends inside a URL that continues below.
+    fn row_ends_mid_url(&self, region: &Rect, y: usize) -> bool {
+        let slice = Self::region_row(&self.grid, region, y);
+        // A slice shorter than the pane is a line that ended mid-pane:
+        // no wrap. (A wrapped fragment fills every column to the edge.)
+        if slice.len() < region.width as usize {
             return false;
         }
-        let text = Self::row_text(row);
+        let text = Self::row_text(slice);
         if find_url_spans(&text)
             .iter()
-            .any(|&(_, end)| byte_to_cell(row, end) == row.len())
+            .any(|&(_, end)| byte_to_cell(slice, end) == slice.len())
         {
             return true;
         }
-        // A row fully consumed by a wrapped URL's middle fragment.
-        !text.is_empty() && text.chars().all(is_url_char) && self.row_starts_mid_url(y)
+        // A slice fully consumed by a wrapped URL's middle fragment.
+        !text.is_empty() && text.chars().all(is_url_char) && self.row_starts_mid_url(region, y)
     }
 
     /// Appends the leading URL runs of continuation rows to `url`.
-    fn join_continuations(&self, mut y: usize, mut url: String) -> String {
-        while self.row_starts_mid_url(y) {
-            let text = Self::row_text(&self.grid[y]);
+    fn join_continuations(&self, region: &Rect, mut y: usize, mut url: String) -> String {
+        while self.row_starts_mid_url(region, y) {
+            let text = Self::row_text(Self::region_row(&self.grid, region, y));
             let run = leading_url_run(&text);
             if run.is_empty() {
                 break;
             }
-            let covers_full_row = run.len() == text.len();
             url.push_str(run);
-            if !covers_full_row {
-                break;
-            }
             y += 1;
         }
         trim_trailing_punct(&url).to_string()
     }
 
     /// Rebuilds the full URL whose fragment leads continuation row `y`.
-    fn reconstruct_url_at(&self, y: usize) -> String {
+    fn reconstruct_url_at(&self, region: &Rect, y: usize) -> String {
         let mut head = y;
-        while self.row_starts_mid_url(head) {
+        while self.row_starts_mid_url(region, head) {
             head -= 1;
         }
-        let row = &self.grid[head];
-        let text = Self::row_text(row);
+        let slice = Self::region_row(&self.grid, region, head);
+        let text = Self::row_text(slice);
         // The URL on the head row that wraps downward: the last span whose
-        // end touches the row's last drawn cell.
+        // end touches the pane's right edge.
         let (start, end) = find_url_spans(&text)
             .into_iter()
             .rev()
-            .find(|&(_, end)| byte_to_cell(row, end) == row.len())
+            .find(|&(_, end)| byte_to_cell(slice, end) == slice.len())
             .unwrap_or((0, 0));
-        self.join_continuations(head + 1, text[start..end].to_string())
+        self.join_continuations(region, head + 1, text[start..end].to_string())
     }
 
     /// Full-row emission keeps link boundaries correct for partial diffs.
@@ -539,6 +571,12 @@ fn is_url_delimiter(ch: char) -> bool {
 mod tests {
     use super::*;
 
+    /// Backend over an in-memory writer with one top-left link region.
+    fn backend_with_region(w: u16, h: u16) -> HyperlinkBackend<Vec<u8>> {
+        let regions: LinkRegions = Rc::new(RefCell::new(vec![Rect::new(0, 0, w, h)]));
+        HyperlinkBackend::new(Vec::new(), regions)
+    }
+
     /// Builds a row of default-styled cells, one grapheme per cell.
     fn cells_for(text: &str) -> Vec<Cell> {
         text.chars()
@@ -612,7 +650,7 @@ mod tests {
 
     #[test]
     fn plain_row_emits_no_osc8() {
-        let mut backend = HyperlinkBackend::new(Vec::new());
+        let mut backend = backend_with_region(100, 100);
         draw_row(&mut backend, 0, "hello world");
         let out = String::from_utf8(backend.writer.clone()).unwrap();
         assert!(out.contains("hello world"));
@@ -621,7 +659,7 @@ mod tests {
 
     #[test]
     fn url_row_wraps_span_in_osc8() {
-        let mut backend = HyperlinkBackend::new(Vec::new());
+        let mut backend = backend_with_region(100, 100);
         draw_row(&mut backend, 3, "go https://example.com end");
         let out = String::from_utf8(backend.writer.clone()).unwrap();
         assert!(
@@ -649,9 +687,9 @@ mod tests {
 
     #[test]
     fn wrapped_url_across_two_rows_emits_full_url() {
-        let mut backend = HyperlinkBackend::new(Vec::new());
-        // Row 0 ends exactly at the URL fragment (ratatui splits over-long
-        // words at the width boundary); row 1 continues it.
+        // The pane is exactly as wide as row 0: the URL fragment fills it to
+        // the right edge, which is the wrap signal.
+        let mut backend = backend_with_region(26, 10);
         draw_rows(
             &mut backend,
             &["see https://example.com/ve", "ry-long-path tail"],
@@ -663,16 +701,19 @@ mod tests {
 
     #[test]
     fn wrapped_url_across_three_rows_emits_full_url() {
-        let mut backend = HyperlinkBackend::new(Vec::new());
-        draw_rows(&mut backend, &["see https://x", "middle", "tail end"]);
+        let mut backend = backend_with_region(13, 10);
+        draw_rows(
+            &mut backend,
+            &["see https://x", "aaaaaaaaaaaaa", "tail end"],
+        );
         let out = String::from_utf8(backend.writer.clone()).unwrap();
-        let open = "\x1b]8;;https://xmiddletail\x1b\\";
+        let open = "\x1b]8;;https://xaaaaaaaaaaaaatail\x1b\\";
         assert_eq!(out.matches(open).count(), 3, "output: {out:?}");
     }
 
     #[test]
     fn continuation_row_stays_linked_on_partial_diff() {
-        let mut backend = HyperlinkBackend::new(Vec::new());
+        let mut backend = backend_with_region(26, 10);
         draw_rows(
             &mut backend,
             &["see https://example.com/ve", "ry-long-path tail"],
@@ -695,7 +736,7 @@ mod tests {
 
     #[test]
     fn url_ending_at_row_edge_without_continuation_is_not_joined() {
-        let mut backend = HyperlinkBackend::new(Vec::new());
+        let mut backend = backend_with_region(14, 10);
         draw_rows(&mut backend, &["go https://a.b", " tail"]);
         let out = String::from_utf8(backend.writer.clone()).unwrap();
         assert!(out.contains("\x1b]8;;https://a.b\x1b\\"), "output: {out:?}");
@@ -703,8 +744,46 @@ mod tests {
     }
 
     #[test]
+    fn pane_boundary_does_not_leak_into_link_target() {
+        // Chat pane is 20 columns wide; the info pane's text occupies the
+        // same terminal rows starting at column 20. Without region clipping
+        // the row text concatenates both panes and the chat URL would swallow
+        // "Topic:".
+        let regions: LinkRegions = Rc::new(RefCell::new(vec![Rect::new(0, 0, 20, 10)]));
+        let mut backend = HyperlinkBackend::new(Vec::new(), regions);
+        draw_rows(
+            &mut backend,
+            &[
+                "see https://a.b/cdefTopic: agents",
+                "ghij rest           Branch: main",
+            ],
+        );
+        let out = String::from_utf8(backend.writer.clone()).unwrap();
+        let open = "\x1b]8;;https://a.b/cdefghij\x1b\\";
+        assert_eq!(out.matches(open).count(), 2, "output: {out:?}");
+        assert!(
+            !out.contains("\x1b]8;;https://a.b/cdefTopic"),
+            "output: {out:?}"
+        );
+    }
+
+    #[test]
+    fn region_with_x_offset_joins_from_region_left_edge() {
+        // Explorer occupies columns 0..10, the chat pane sits at 10..23.
+        let regions: LinkRegions = Rc::new(RefCell::new(vec![Rect::new(10, 0, 13, 10)]));
+        let mut backend = HyperlinkBackend::new(Vec::new(), regions);
+        draw_rows(
+            &mut backend,
+            &["EXPLORER  see https://x", "EXPLORER  tail end"],
+        );
+        let out = String::from_utf8(backend.writer.clone()).unwrap();
+        let open = "\x1b]8;;https://xtail\x1b\\";
+        assert_eq!(out.matches(open).count(), 2, "output: {out:?}");
+    }
+
+    #[test]
     fn partial_diff_reemits_full_row_with_intact_link() {
-        let mut backend = HyperlinkBackend::new(Vec::new());
+        let mut backend = backend_with_region(100, 100);
         draw_row(&mut backend, 0, "go https://example.com end");
         backend.writer.clear();
 
@@ -726,7 +805,7 @@ mod tests {
 
     #[test]
     fn passes_reset_sgr_between_plain_and_link_rows() {
-        let mut backend = HyperlinkBackend::new(Vec::new());
+        let mut backend = backend_with_region(100, 100);
         // A styled plain cell leaves SGR non-default at the end of the
         // plain pass; the link row must not inherit it.
         let mut styled = Cell::default();
@@ -749,7 +828,7 @@ mod tests {
 
     #[test]
     fn style_change_emits_reset_then_colors_and_attributes() {
-        let mut backend = HyperlinkBackend::new(Vec::new());
+        let mut backend = backend_with_region(100, 100);
         let mut a = Cell::default();
         a.set_symbol("a");
         let mut b = Cell::default();

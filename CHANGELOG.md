@@ -14,9 +14,12 @@
 
 ### Fixed
 
-- OSC 8 hyperlinks: a URL wrapped across terminal rows now resolves every
-  row fragment to the full URL (previously each fragment linked to its own
-  partial text, and continuation rows were not clickable at all).
+- OSC 8 hyperlinks: a URL wrapped across rows now resolves every row
+  fragment to the full URL (previously each fragment linked to its own
+  partial text, and continuation rows were not clickable at all). Link
+  detection is clipped to the chat message pane's rectangle, so text from
+  an adjacent pane (e.g. the topic info pane) can no longer leak into a
+  link target.
 
 ### Changed
 

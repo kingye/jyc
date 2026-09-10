@@ -847,6 +847,7 @@ mode = "agent"
         let repo = tmp.path().join("shared-repo");
         std::fs::create_dir_all(repo.join(".jyc")).unwrap();
         std::fs::write(repo.join(".jyc").join("marker"), "legacy").unwrap();
+        std::fs::write(repo.join(".jyc").join("topic-name"), "co-alpha").unwrap();
 
         let config_str = format!(
             r#"
@@ -872,7 +873,11 @@ mode = "agent"
 
         let paths = tm.custom_topic_paths().await;
         assert_eq!(paths.get("co-alpha"), Some(&repo), "alpha restored");
-        assert_eq!(paths.get("co-beta"), Some(&repo), "beta restored");
+        assert_eq!(
+            paths.get("co-beta"),
+            None,
+            "never-initialized sibling is not advertised until first use"
+        );
 
         let state_a = tmp.path().join("agents/co-alpha/.jyc");
         let state_b = tmp.path().join("agents/co-beta/.jyc");
@@ -887,13 +892,19 @@ mode = "agent"
             !state_b.join("marker").exists(),
             "sibling starts with clean isolated state"
         );
+        assert!(state_b.is_dir(), "sibling state dir provisioned");
+        assert_eq!(
+            jyc_types::state_dir::registered_state("co-beta"),
+            Some(state_b.clone())
+        );
         assert!(!repo.join(".jyc").exists(), "repo cleaned of state");
 
         // /close alpha: only alpha's state and registration die.
         tm.close_topic("co-alpha").await.unwrap();
         assert!(!state_a.exists(), "closed state deleted");
         assert!(jyc_types::state_dir::registered_state("co-alpha").is_none());
-        assert!(state_b.join("topic-name").exists(), "beta state untouched");
+        assert!(state_b.is_dir(), "beta state untouched");
+        assert!(jyc_types::state_dir::registered_state("co-beta").is_some());
         assert!(repo.exists(), "shared dir is user property, kept");
     }
 

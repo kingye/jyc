@@ -165,7 +165,14 @@ pub fn adopt_state_dir(
         state_dir.join("topic-path"),
         topic_dir.to_string_lossy().as_bytes(),
     )?;
-    std::fs::write(state_dir.join("topic-name"), topic_name.as_bytes())?;
+    // Restamp the identity breadcrumb only where one already exists (a
+    // carried legacy dir or a previously initialized topic). Never CREATE
+    // it: restore discovery keys on this file to tell "used topic" from a
+    // fresh empty pin, and `set_topic_path` writes it on first real open.
+    let name_file = state_dir.join("topic-name");
+    if name_file.exists() {
+        std::fs::write(&name_file, topic_name.as_bytes())?;
+    }
     if moved {
         tracing::info!(
             topic_dir = %topic_dir.display(),
@@ -361,7 +368,10 @@ mod tests {
         let state_b = state_dir_for(&root, &dir, Some("beta"));
 
         assert!(adopt_state_dir("alpha", &dir, &state_a).unwrap());
-        assert!(adopt_state_dir("beta", &dir, &state_b).unwrap());
+        assert!(
+            !adopt_state_dir("beta", &dir, &state_b).unwrap(),
+            "sibling has nothing to move"
+        );
 
         assert!(!legacy.exists(), "legacy taken by first adopter");
         assert!(state_a.join("session.json").exists(), "alpha inherited");
@@ -378,9 +388,19 @@ mod tests {
         assert!(jyc_types::state_dir::registered_state("alpha").is_none());
         assert_eq!(jyc("beta"), state_b);
 
-        // The breadcrumb scan re-registers both by name.
-        adopt_state_dir("alpha", &dir, &state_a).unwrap();
-        assert!(state_a.join("topic-name").exists());
+        // The breadcrumb scan recovers BOTH via the folder-name fallback:
+        // never-initialized dirs carry no topic-name file by design.
+        jyc_types::state_dir::unregister("alpha");
+        jyc_types::state_dir::unregister("beta");
+        assert!(super::restore_state_registry(&root) >= 2);
+        assert_eq!(
+            jyc_types::state_dir::registered_state("alpha"),
+            Some(jyc_types::state_dir::jyc_dir("alpha", &dir))
+        );
+        assert_eq!(
+            jyc_types::state_dir::registered_state("beta"),
+            Some(state_b.clone())
+        );
     }
 
     #[test]
@@ -391,6 +411,9 @@ mod tests {
         std::fs::create_dir_all(&topic).unwrap();
         let state = root.join("_scanned").join(".jyc");
         adopt_state_dir("scanned-name", &topic, &state).unwrap();
+        // An initialized topic carries the name breadcrumb (written by
+        // `set_topic_path`); seed it to exercise the scan's primary path.
+        std::fs::write(state.join("topic-name"), "scanned-name").unwrap();
 
         // Prove the scan (not the adopt) rebuilds the name-keyed mapping.
         jyc_types::state_dir::unregister("scanned-name");

@@ -920,12 +920,11 @@ async fn test_set_topic_path_creates_jyc_dir_and_appears_in_list() {
 
     // `.jyc/` and `.jyc/topic-name` are written by set_topic_path so
     // list_topics doesn't filter the entry out.
-    assert!(
-        custom_path.join(".jyc").is_dir(),
-        "set_topic_path must create .jyc/"
-    );
+    let state = jyc_types::state_dir::registered_state("projects")
+        .expect("set_topic_path adopts and registers a state dir");
+    assert!(state.is_dir(), "set_topic_path must create the state dir");
     assert_eq!(
-        tokio::fs::read_to_string(custom_path.join(".jyc").join("topic-name"))
+        tokio::fs::read_to_string(state.join("topic-name"))
             .await
             .unwrap()
             .trim(),

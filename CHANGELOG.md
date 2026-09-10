@@ -2,6 +2,9 @@
 
 ### Added
 
+- Dashboard TUI emits OSC 8 hyperlinks for URLs visible in chat — clickable
+  (modifier+click) even across wrapped lines; requires tmux ≥ 3.4 when
+  running inside tmux, degrades to plain text otherwise.
 - `docs/channels/github.md` — up-to-date GitHub channel reference (polled
   events, label routing, `[Role]` echo guard, close events, skills).
 - README: document how `jyc open` resolves the topic (folder name → topic

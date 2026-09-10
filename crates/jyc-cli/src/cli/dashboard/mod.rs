@@ -12,7 +12,6 @@ use jyc_core::duration::{DurationStyle, format_duration_secs};
 use ratatui::{
     Frame, Terminal,
     layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
-    prelude::CrosstermBackend,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
@@ -35,6 +34,7 @@ use jyc_types::{CommandInfo, InspectOverview, ModelInfo, Severity, TopicStatus};
 use super::command_popup::*;
 
 mod chat;
+mod hyperlink;
 mod leader;
 mod local_commands;
 mod token_render;
@@ -546,7 +546,7 @@ pub async fn run(
     // the terminal. Otherwise the backend's Drop flushes buffered escape
     // codes after LeaveAlternateScreen, corrupting line alignment.
     let result = {
-        let backend = CrosstermBackend::new(stdout());
+        let backend = hyperlink::HyperlinkBackend::new(stdout());
         let mut terminal = Terminal::new(backend)?;
 
         let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();

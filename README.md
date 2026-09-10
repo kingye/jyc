@@ -340,6 +340,13 @@ config topic creates a fresh ad-hoc topic with its own path-derived state;
 re-opening the same directory under a *different* ad-hoc name is refused to
 protect history (`topic-name` breadcrumb check).
 
+**Clickable links**: the TUI emits OSC 8 hyperlinks for `http(s)` URLs
+visible in chat, so they are clickable (ghostty/WezTerm/Kitty: hold
+⌘Cmd/Ctrl and click) even when wrapped across lines. Inside tmux this
+requires tmux ≥ 3.4 on the host running tmux (older versions silently drop
+the sequences — links degrade to plain text). ssh between your terminal and
+the host is transparent and needs nothing.
+
 ## MCP Tools
 
 JYC provides several MCP (Model Context Protocol) tools that the AI agent uses internally:

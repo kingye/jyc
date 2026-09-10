@@ -19,7 +19,7 @@ struct McpLogger {
 
 impl McpLogger {
     fn new(cwd: &Path) -> Self {
-        let jyc_dir = jyc_dir(cwd);
+        let jyc_dir = jyc_dir(&super::context::resolve_topic_name(), cwd);
         std::fs::create_dir_all(&jyc_dir).ok();
         Self {
             path: jyc_dir.join("reply-tool.log"),
@@ -127,7 +127,7 @@ async fn handle_reply(
     attachments: Option<&[String]>,
 ) -> Result<String> {
     // 1. Load reply context from disk (.jyc/reply-context.json)
-    let ctx = load_reply_context(cwd).await?;
+    let ctx = load_reply_context(&super::context::resolve_topic_name(), cwd).await?;
 
     logger.log(
         "INFO",
@@ -155,7 +155,7 @@ async fn handle_reply(
     // 5. Write reply.md so the background delivery watcher can deliver immediately
     //    (without waiting for the SSE stream to complete).
     //    The watcher checks for both reply-sent.flag and reply.md.
-    let jyc_dir = jyc_dir(topic_path);
+    let jyc_dir = jyc_dir(&super::context::resolve_topic_name(), topic_path);
     tokio::fs::create_dir_all(&jyc_dir).await.ok();
     tokio::fs::write(jyc_dir.join("reply.md"), message)
         .await

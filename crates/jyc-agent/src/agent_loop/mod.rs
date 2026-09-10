@@ -460,6 +460,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             // model, so on a default setup this bills at main-model rates.
             let summary_cost = bill_call(
                 pricing.as_ref(),
+                topic_name,
                 topic_path,
                 model_label,
                 jyc_core::billing_log_store::KIND_SUMMARY,
@@ -469,7 +470,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 summary_usage.cache_creation_tokens,
             );
             if summary_cost > 0.0 {
-                crate::session::add_session_cost(topic_path, summary_cost).await;
+                crate::session::add_session_cost(topic_name, topic_path, summary_cost).await;
             }
 
             // 2. Post the progress reply to the user via the reply tool.
@@ -542,8 +543,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // Optional debug dump: when the user runs `/context dump on`, append
         // one JSON line per LLM call to `<topic>/.jyc/wire-payload.jsonl`
         // (capped at 50 lines). Best-effort — failures are not fatal.
-        if crate::session::read_wire_payload_dump_enabled(topic_path).await {
+        if crate::session::read_wire_payload_dump_enabled(topic_name, topic_path).await {
             crate::session::append_wire_payload_dump(
+                topic_name,
                 topic_path,
                 total_iterations,
                 &context_strategy,
@@ -623,6 +625,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // mid-round model switch bills each call at its own rate.
         let call_cost = bill_call(
             pricing.as_ref(),
+            topic_name,
             topic_path,
             model_label,
             jyc_core::billing_log_store::KIND_CALL,
@@ -685,6 +688,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // trigger auto-reset — that decision belongs to the post-loop
         // `update_tokens` call in `service.rs`.
         crate::session::persist_tokens(
+            topic_name,
             topic_path,
             context_input_tokens,
             total_input_tokens,
@@ -1220,6 +1224,7 @@ struct CallUsage {
 #[allow(clippy::too_many_arguments)]
 fn bill_call(
     pricing: Option<&jyc_types::ModelPricing>,
+    topic_name: &str,
     topic_path: &Path,
     model_label: &str,
     kind: &str,
@@ -1261,7 +1266,9 @@ fn bill_call(
         time_window,
         utc_offset,
     };
-    if let Err(e) = jyc_core::billing_log_store::BillingLogStore::append(topic_path, &entry) {
+    if let Err(e) =
+        jyc_core::billing_log_store::BillingLogStore::append(topic_name, topic_path, &entry)
+    {
         tracing::warn!(error = %e, kind, "Failed to append billing entry");
     }
     cost

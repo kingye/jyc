@@ -164,7 +164,7 @@ impl ActivityTracker {
                     let topic_path = topic.topic_path.clone();
                     if let Some(ref path) = topic_path
                         && let Ok(entries) =
-                            ActivityLogStore::load_recent(path, MAX_ACTIVITY_ENTRIES)
+                            ActivityLogStore::load_recent(&topic.name, path, MAX_ACTIVITY_ENTRIES)
                         && !entries.is_empty()
                     {
                         let mut map = activity_map.lock().await;
@@ -310,7 +310,7 @@ impl ActivityTracker {
                                                                         let state = map
                                                                             .entry((channel_for_task.clone(), name.clone()))
                                                                             .or_default();
-                                                                        seed_next_id_from_disk(state, topic_path.as_deref());
+                                                                        seed_next_id_from_disk(state, &name, topic_path.as_deref());
                                                                         if !is_internal {
                                                                             // Assign monotonic per-topic id BEFORE persisting to
                                                                             // disk and pushing to the in-memory buffer, so the log
@@ -318,7 +318,7 @@ impl ActivityTracker {
                                                                             entry.id = state.next_id;
                                                                             state.next_id = state.next_id.wrapping_add(1);
                                                                             if let Some(ref path) = topic_path
-                                                                                && let Err(e) = ActivityLogStore::append(path, &entry)
+                                                                                && let Err(e) = ActivityLogStore::append(&name, path, &entry)
                                                                             {
                                                                                 tracing::warn!(error = %e, topic = %name, "Failed to persist activity entry");
                                                                             }

@@ -89,8 +89,12 @@ pub struct SessionState {
 /// Called after each agent_loop::run() completes. Stores the raw API messages
 /// exactly as they were sent/received (preserves provider-specific fields like
 /// DeepSeek's reasoning_content).
-pub async fn save_raw_context(topic_path: &Path, raw_context: &[serde_json::Value]) {
-    let jyc_dir = jyc_dir(topic_path);
+pub async fn save_raw_context(
+    topic_name: &str,
+    topic_path: &Path,
+    raw_context: &[serde_json::Value],
+) {
+    let jyc_dir = jyc_dir(topic_name, topic_path);
     tokio::fs::create_dir_all(&jyc_dir).await.ok();
     let path = jyc_dir.join(CONTEXT_FILE);
 
@@ -120,8 +124,9 @@ pub async fn save_raw_context(topic_path: &Path, raw_context: &[serde_json::Valu
 /// Read the on/off flag for wire-payload dumping. Returns false when the
 /// flag file is absent or malformed — the absence of the file is the
 /// default "off" state.
-pub async fn read_wire_payload_dump_enabled(topic_path: &Path) -> bool {
-    let path = jyc_dir(topic_path).join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE);
+pub async fn read_wire_payload_dump_enabled(topic_name: &str, topic_path: &Path) -> bool {
+    let path =
+        jyc_dir(topic_name, topic_path).join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE);
     let Ok(bytes) = tokio::fs::read(&path).await else {
         return false;
     };
@@ -140,13 +145,14 @@ pub async fn read_wire_payload_dump_enabled(topic_path: &Path) -> bool {
 /// topic — one iteration runs to completion before the next starts, so
 /// two appenders never race. If that ever changes, this needs a lock.
 pub async fn append_wire_payload_dump(
+    topic_name: &str,
     topic_path: &Path,
     iter: usize,
     strategy: &jyc_types::channel::ContextStrategyConfig,
     regions: &[u8],
     wire: &[serde_json::Value],
 ) {
-    let jyc_dir = jyc_dir(topic_path);
+    let jyc_dir = jyc_dir(topic_name, topic_path);
     if tokio::fs::create_dir_all(&jyc_dir).await.is_err() {
         return;
     }
@@ -189,8 +195,11 @@ pub async fn append_wire_payload_dump(
 /// - raw_context: for sending to the API (preserves provider-specific fields)
 ///
 /// If no session file exists (fresh or after reset), returns empty.
-pub async fn load_context(topic_path: &Path) -> (Vec<Message>, Vec<serde_json::Value>) {
-    let jyc_dir = jyc_dir(topic_path);
+pub async fn load_context(
+    topic_name: &str,
+    topic_path: &Path,
+) -> (Vec<Message>, Vec<serde_json::Value>) {
+    let jyc_dir = jyc_dir(topic_name, topic_path);
     let session_path = jyc_dir.join(SESSION_FILE);
     let context_path = jyc_dir.join(CONTEXT_FILE);
 
@@ -369,11 +378,12 @@ fn extract_text_content(content: &serde_json::Value) -> Option<String> {
 /// `max_input_tokens` is left at 0 (the post-loop `update_tokens` will
 /// fill it in on the next turn).
 pub async fn ensure_session_file(
+    topic_name: &str,
     topic_path: &Path,
     context_window: Option<u64>,
     auto_reset_threshold: f64,
 ) {
-    let session_path = jyc_dir(topic_path).join(SESSION_FILE);
+    let session_path = jyc_dir(topic_name, topic_path).join(SESSION_FILE);
     if session_path.exists() {
         // Already there — never overwrite existing token data.
         return;
@@ -410,6 +420,7 @@ pub async fn ensure_session_file(
 /// assigned). Pass `0.0` when the model has no configured pricing.
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_tokens(
+    topic_name: &str,
     topic_path: &Path,
     input_tokens: u64,
     total_input_tokens: u64,
@@ -422,6 +433,7 @@ pub async fn persist_tokens(
     call_cost: f64,
 ) {
     let _ = persist_tokens_returning_state(
+        topic_name,
         topic_path,
         input_tokens,
         total_input_tokens,
@@ -441,6 +453,7 @@ pub async fn persist_tokens(
 /// can inspect threshold-crossing without a second disk read.
 #[allow(clippy::too_many_arguments)]
 async fn persist_tokens_returning_state(
+    topic_name: &str,
     topic_path: &Path,
     input_tokens: u64,
     total_input_tokens: u64,
@@ -452,7 +465,7 @@ async fn persist_tokens_returning_state(
     auto_reset_threshold: f64,
     call_cost: f64,
 ) -> (std::path::PathBuf, SessionState) {
-    let session_path = jyc_dir(topic_path).join(SESSION_FILE);
+    let session_path = jyc_dir(topic_name, topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
 
     state.context_input_tokens = input_tokens;
@@ -487,11 +500,11 @@ async fn persist_tokens_returning_state(
 /// truthful.
 ///
 /// No-op when `cost` is zero (no pricing configured, or the call failed).
-pub async fn add_session_cost(topic_path: &Path, cost: f64) {
+pub async fn add_session_cost(topic_name: &str, topic_path: &Path, cost: f64) {
     if cost <= 0.0 {
         return;
     }
-    let session_path = jyc_dir(topic_path).join(SESSION_FILE);
+    let session_path = jyc_dir(topic_name, topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
     state.session_cost += cost;
     if state.created_at.is_empty() {
@@ -527,6 +540,7 @@ pub async fn add_session_cost(topic_path: &Path, cost: f64) {
 /// round.
 #[allow(clippy::too_many_arguments)]
 pub async fn update_tokens(
+    topic_name: &str,
     topic_path: &Path,
     input_tokens: u64,
     total_input_tokens: u64,
@@ -544,6 +558,7 @@ pub async fn update_tokens(
     // post-mutation values so the auto-reset check below doesn't need a
     // second disk read.
     let (_, state) = persist_tokens_returning_state(
+        topic_name,
         topic_path,
         input_tokens,
         total_input_tokens,
@@ -571,6 +586,7 @@ pub async fn update_tokens(
         );
 
         reset_session(
+            topic_name,
             topic_path,
             compression_config,
             Some(summary_provider),
@@ -583,6 +599,7 @@ pub async fn update_tokens(
         // starts clean. session_cost zeroes with them — it is scoped to
         // the session, and the durable ledger is bill-YYYY-MM-DD.jsonl.
         persist_tokens(
+            topic_name,
             topic_path,
             0,
             0,
@@ -606,6 +623,7 @@ pub async fn update_tokens(
 ///
 /// Returns `true` if the session was reset.
 pub async fn maybe_reset_for_new_context(
+    topic_name: &str,
     topic_path: &Path,
     new_max_input_tokens: u64,
     compression_config: &ResetCompressionConfig,
@@ -615,7 +633,7 @@ pub async fn maybe_reset_for_new_context(
     if new_max_input_tokens == 0 {
         return false;
     }
-    let session_path = jyc_dir(topic_path).join(SESSION_FILE);
+    let session_path = jyc_dir(topic_name, topic_path).join(SESSION_FILE);
     let state = load_session_state(&session_path).await;
     if state.context_input_tokens < new_max_input_tokens {
         return false;
@@ -626,7 +644,14 @@ pub async fn maybe_reset_for_new_context(
         mode = ?compression_config.mode,
         "Loaded session exceeds new context window; resetting before agent loop",
     );
-    reset_session(topic_path, compression_config, provider, billing).await;
+    reset_session(
+        topic_name,
+        topic_path,
+        compression_config,
+        provider,
+        billing,
+    )
+    .await;
     true
 }
 
@@ -657,12 +682,13 @@ pub struct BillingContext {
 ///
 /// `config.keep_pairs` controls how many user+assistant pairs to retain in heuristic mode.
 pub async fn reset_session(
+    topic_name: &str,
     topic_path: &Path,
     config: &ResetCompressionConfig,
     provider: Option<&dyn crate::provider::Provider>,
     billing: Option<&BillingContext>,
 ) {
-    let jyc_dir = jyc_dir(topic_path);
+    let jyc_dir = jyc_dir(topic_name, topic_path);
 
     match config.mode {
         CompressionMode::None => {
@@ -675,7 +701,7 @@ pub async fn reset_session(
         }
         CompressionMode::Heuristic => {
             // Heuristic compaction: keep last N pairs, then delete session
-            summarize_context_heuristic(topic_path, config.keep_pairs).await;
+            summarize_context_heuristic(topic_name, topic_path, config.keep_pairs).await;
             let session_path = jyc_dir.join(SESSION_FILE);
             tokio::fs::remove_file(&session_path).await.ok();
             tracing::info!("Agent session reset (heuristic compression)");
@@ -683,14 +709,14 @@ pub async fn reset_session(
         CompressionMode::Llm => {
             if let Some(p) = provider {
                 // LLM summary, then delete session
-                summarize_context(topic_path, p, billing).await;
+                summarize_context(topic_name, topic_path, p, billing).await;
             } else {
                 // No provider available — fallback to heuristic
                 tracing::warn!(
                     "LLM compression mode selected but no provider available, \
                      falling back to heuristic"
                 );
-                summarize_context_heuristic(topic_path, config.keep_pairs).await;
+                summarize_context_heuristic(topic_name, topic_path, config.keep_pairs).await;
             }
             let session_path = jyc_dir.join(SESSION_FILE);
             tokio::fs::remove_file(&session_path).await.ok();
@@ -711,11 +737,12 @@ pub async fn reset_session(
 /// (`[agent].small_model`); the caller is responsible for passing the right
 /// provider.
 async fn summarize_context(
+    topic_name: &str,
     topic_path: &Path,
     provider: &dyn crate::provider::Provider,
     billing: Option<&BillingContext>,
 ) {
-    let context_path = jyc_dir(topic_path).join(CONTEXT_FILE);
+    let context_path = jyc_dir(topic_name, topic_path).join(CONTEXT_FILE);
 
     if !context_path.exists() {
         return;
@@ -753,7 +780,7 @@ async fn summarize_context(
                 error = %e,
                 "LLM context summary failed, falling back to heuristic compaction"
             );
-            summarize_context_heuristic(topic_path, 3).await;
+            summarize_context_heuristic(topic_name, topic_path, 3).await;
             return;
         }
     };
@@ -807,7 +834,8 @@ async fn summarize_context(
                 time_window,
                 utc_offset,
             };
-            if let Err(e) = jyc_core::billing_log_store::BillingLogStore::append(topic_path, &entry)
+            if let Err(e) =
+                jyc_core::billing_log_store::BillingLogStore::append(topic_name, topic_path, &entry)
             {
                 tracing::warn!(error = %e, "Failed to append context-compression billing entry");
             }
@@ -1523,8 +1551,8 @@ pub(crate) fn is_history_note(msg: &serde_json::Value) -> bool {
 /// provider context).
 ///
 /// `keep_pairs` controls how many user+assistant pairs to retain.
-async fn summarize_context_heuristic(topic_path: &Path, keep_pairs: usize) {
-    let context_path = jyc_dir(topic_path).join(CONTEXT_FILE);
+async fn summarize_context_heuristic(topic_name: &str, topic_path: &Path, keep_pairs: usize) {
+    let context_path = jyc_dir(topic_name, topic_path).join(CONTEXT_FILE);
 
     if !context_path.exists() {
         return;
@@ -1593,10 +1621,12 @@ async fn save_session_state(path: &Path, state: &SessionState) {
 /// Reads from `.jyc/` first (new location), falls back to topic root (legacy).
 #[allow(dead_code)]
 async fn load_from_chat_history(
+    topic_name: &str,
     topic_path: &Path,
     cutoff: Option<&chrono::DateTime<chrono::Utc>>,
 ) -> Vec<Message> {
-    let (history_files, _dir) = jyc_core::chat_log_store::list_chat_history_files(topic_path);
+    let (history_files, _dir) =
+        jyc_core::chat_log_store::list_chat_history_files(topic_name, topic_path);
 
     let mut messages: Vec<Message> = Vec::new();
 
@@ -2219,7 +2249,7 @@ mod tests {
     async fn wire_payload_dump_flag_off_by_default() {
         let tmp = tempfile::TempDir::new().unwrap();
         assert!(
-            !super::read_wire_payload_dump_enabled(tmp.path()).await,
+            !super::read_wire_payload_dump_enabled("", tmp.path()).await,
             "no flag file → enabled=false"
         );
     }
@@ -2235,7 +2265,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(super::read_wire_payload_dump_enabled(tmp.path()).await);
+        assert!(super::read_wire_payload_dump_enabled("", tmp.path()).await);
 
         tokio::fs::write(
             jyc_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE),
@@ -2243,7 +2273,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!super::read_wire_payload_dump_enabled(tmp.path()).await);
+        assert!(!super::read_wire_payload_dump_enabled("", tmp.path()).await);
 
         // Malformed JSON must be tolerated as "off", not panic.
         tokio::fs::write(
@@ -2252,7 +2282,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!super::read_wire_payload_dump_enabled(tmp.path()).await);
+        assert!(!super::read_wire_payload_dump_enabled("", tmp.path()).await);
     }
 
     #[tokio::test]
@@ -2272,7 +2302,7 @@ mod tests {
         // Write WIRE_PAYLOAD_DUMP_MAX_LINES + 5 entries.
         let total = jyc_core::session_state::WIRE_PAYLOAD_DUMP_MAX_LINES + 5;
         for i in 0..total {
-            super::append_wire_payload_dump(tmp.path(), i, &cfg, &regions, &wire).await;
+            super::append_wire_payload_dump("", tmp.path(), i, &cfg, &regions, &wire).await;
         }
 
         let body = tokio::fs::read_to_string(
@@ -2321,7 +2351,7 @@ mod tests {
         };
         let empty_wire: Vec<serde_json::Value> = vec![];
         let empty_regions: Vec<u8> = vec![];
-        super::append_wire_payload_dump(tmp.path(), 0, &cfg, &empty_regions, &empty_wire).await;
+        super::append_wire_payload_dump("", tmp.path(), 0, &cfg, &empty_regions, &empty_wire).await;
 
         let body = tokio::fs::read_to_string(
             tmp.path()

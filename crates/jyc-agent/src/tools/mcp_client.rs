@@ -32,7 +32,11 @@ use crate::tools::{Tool, ToolContext, ToolOutput};
 /// Connects to each MCP server, calls `list_tools()`, and wraps each
 /// discovered tool as an `McpToolWrapper`. Failed connections are logged
 /// and skipped (graceful degradation).
-pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
+pub async fn load_mcp_tools(
+    cfgs: &[McpServerConfig],
+    topic_name: &str,
+    topic_path: &std::path::Path,
+) -> Vec<Box<dyn Tool>> {
     // One shared HTTP client for OAuth token fetches across all MCPs;
     // gives us connection pooling without a per-call builder.
     let http = reqwest::Client::new();
@@ -61,7 +65,7 @@ pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
             // the child handle.
             match tokio::time::timeout(
                 std::time::Duration::from_millis(timeout_ms),
-                connect_and_list_tools(&cfg, http),
+                connect_and_list_tools(&cfg, http, topic_name, topic_path),
             )
             .await
             {
@@ -115,6 +119,8 @@ pub async fn load_mcp_tools(cfgs: &[McpServerConfig]) -> Vec<Box<dyn Tool>> {
 async fn connect_and_list_tools(
     cfg: &McpServerConfig,
     http: &reqwest::Client,
+    topic_name: &str,
+    topic_path: &std::path::Path,
 ) -> Result<Vec<Box<dyn Tool>>> {
     let service: RunningService<RoleClient, ()> = match &cfg.kind {
         jyc_types::McpServerKind::Local {
@@ -128,6 +134,11 @@ async fn connect_and_list_tools(
             for (k, v) in environment {
                 cmd.env(k, v);
             }
+            // Topic identity for out-of-process `.jyc` resolution (see
+            // jyc-mcp `resolve_topic_dir`/`resolve_topic_name`). The runtime
+            // context always wins over any stale static config values.
+            cmd.env("JYC_TOPIC_NAME", topic_name);
+            cmd.env("JYC_THREAD_DIR", topic_path);
             // Never inherit stderr: the child shares our terminal, and MCP
             // servers print banners/errors there (e.g. chrome-devtools-mcp),
             // which writes raw text over the TUI and corrupts the screen.

@@ -179,18 +179,19 @@ pub async fn get_exchange_file(
     let topic_path = resolve_topic_path(&ctx, &channel, &topic)
         .await
         .map_err(|_| ApiError::forbidden("missing or invalid token"))?;
-    serve_exchange_file(&topic_path, q.token.as_deref(), &file_path).await
+    serve_exchange_file(&topic, &topic_path, q.token.as_deref(), &file_path).await
 }
 
 /// Token-check, then resolve and read a published file under
 /// `<topic>/.jyc/exchange/`, guarding against path traversal (including
 /// symlink escapes via canonicalization).
 async fn serve_exchange_file(
+    topic_name: &str,
     topic_path: &std::path::Path,
     token: Option<&str>,
     rel_path: &str,
 ) -> Result<Response, ApiError> {
-    let jyc_dir = jyc_dir(topic_path);
+    let jyc_dir = jyc_dir(topic_name, topic_path);
 
     let expected = tokio::fs::read_to_string(jyc_dir.join(jyc_core::EXCHANGE_TOKEN_FILENAME))
         .await
@@ -325,7 +326,7 @@ pub async fn get_topic_activity(
 ) -> Result<Json<Vec<ActivityEntry>>, ApiError> {
     let limit = q.limit.unwrap_or(180);
     let topic_path = resolve_topic_path(&ctx, &channel, &topic).await?;
-    let entries = ActivityLogStore::load_recent(&topic_path, limit)
+    let entries = ActivityLogStore::load_recent(&topic, &topic_path, limit)
         .map_err(|e| ApiError::internal(format!("failed to load activity: {e}")))?;
     let entries: Vec<ActivityEntry> = entries
         .into_iter()
@@ -342,7 +343,7 @@ pub async fn get_topic_chat(
 ) -> Result<Json<Vec<ChatMessageEntry>>, ApiError> {
     let limit = q.limit.unwrap_or(100);
     let topic_path = resolve_topic_path(&ctx, &channel, &topic).await?;
-    let mut entries = load_recent_chat_history(&topic_path, limit);
+    let mut entries = load_recent_chat_history(&topic, &topic_path, limit);
     entries = filter_chat_by_since(entries, q.since.as_deref());
     Ok(Json(entries))
 }
@@ -472,7 +473,7 @@ mod exchange_file_tests {
         let tmp = tempfile::tempdir().unwrap();
         seed(&tmp, "notes.txt", b"hello", Some("tok123"));
 
-        let res = serve_exchange_file(tmp.path(), Some("tok123"), "notes.txt")
+        let res = serve_exchange_file("t", tmp.path(), Some("tok123"), "notes.txt")
             .await
             .unwrap();
 
@@ -492,7 +493,7 @@ mod exchange_file_tests {
         let tmp = tempfile::tempdir().unwrap();
         seed(&tmp, "sub/a.json", b"{}", Some("t"));
 
-        let res = serve_exchange_file(tmp.path(), Some("t"), "sub/a.json")
+        let res = serve_exchange_file("t", tmp.path(), Some("t"), "sub/a.json")
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -507,12 +508,12 @@ mod exchange_file_tests {
         let tmp = tempfile::tempdir().unwrap();
         seed(&tmp, "f.txt", b"x", Some("right"));
 
-        let err = serve_exchange_file(tmp.path(), None, "f.txt")
+        let err = serve_exchange_file("t", tmp.path(), None, "f.txt")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::FORBIDDEN);
 
-        let err = serve_exchange_file(tmp.path(), Some("wrong"), "f.txt")
+        let err = serve_exchange_file("t", tmp.path(), Some("wrong"), "f.txt")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::FORBIDDEN);
@@ -523,7 +524,7 @@ mod exchange_file_tests {
         let tmp = tempfile::tempdir().unwrap();
         seed(&tmp, "f.txt", b"x", None);
 
-        let err = serve_exchange_file(tmp.path(), Some("any"), "f.txt")
+        let err = serve_exchange_file("t", tmp.path(), Some("any"), "f.txt")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::FORBIDDEN);
@@ -534,7 +535,7 @@ mod exchange_file_tests {
         let tmp = tempfile::tempdir().unwrap();
         seed(&tmp, "f.txt", b"x", Some("t"));
 
-        let err = serve_exchange_file(tmp.path(), Some("t"), "nope.txt")
+        let err = serve_exchange_file("t", tmp.path(), Some("t"), "nope.txt")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::NOT_FOUND);
@@ -545,7 +546,7 @@ mod exchange_file_tests {
         let tmp = tempfile::tempdir().unwrap();
         seed(&tmp, "f.txt", b"x", Some("t"));
 
-        let err = serve_exchange_file(tmp.path(), Some("t"), "../exchange-token")
+        let err = serve_exchange_file("t", tmp.path(), Some("t"), "../exchange-token")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
@@ -557,7 +558,7 @@ mod exchange_file_tests {
         seed(&tmp, "f.txt", b"x", Some("t"));
 
         // No directory listing: the base dir itself is not a file.
-        let err = serve_exchange_file(tmp.path(), Some("t"), "")
+        let err = serve_exchange_file("t", tmp.path(), Some("t"), "")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::NOT_FOUND);

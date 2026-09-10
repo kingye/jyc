@@ -63,7 +63,9 @@ pub struct TopicAiConfig {
     pub small_model: Option<String>,
 }
 
-/// Load topic-level overrides from `<topic_path>/.jyc/config.toml`.
+/// Load topic-level overrides from the topic's resolved state dir
+/// (`jyc_dir(topic_name, topic_path)/config.toml`; in-dir `.jyc` for
+/// unpinned topics).
 ///
 /// Returns `None` when the file does not exist, when it cannot be read
 /// (e.g. EACCES in remote deployments — the agent runs under a different

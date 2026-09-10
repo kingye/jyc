@@ -805,6 +805,98 @@ mode = "agent"
         ))
     }
 
+    // Builder for the synthesized-agents channel shape: raw patterns on a
+    // channel literally named "agents", so `restore_custom_topic_paths`
+    // derives per-agent state keys.
+    fn make_agents_tm(workspace: &std::path::Path, config_str: String) -> Arc<TopicManager> {
+        let storage = Arc::new(MessageStorage::new(workspace));
+        let cancel = CancellationToken::new();
+        let metrics_cancel = CancellationToken::new();
+        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
+        let config = Arc::new(arc_swap::ArcSwap::from_pointee(
+            jyc_types::load_config_from_str(&config_str).unwrap(),
+        ));
+        Arc::new(TopicManager::new_with_options(
+            1,
+            10,
+            storage,
+            Arc::new(NoopOutbound),
+            Arc::new(StaticAgentService::new("ok")),
+            cancel,
+            true,
+            workspace.join("templates"),
+            config,
+            "agents".to_string(),
+            "websocket".to_string(),
+            workspace.parent().unwrap_or(workspace).to_path_buf(),
+            workspace.to_path_buf(),
+            metrics,
+            None,
+        ))
+    }
+
+    // The refactor's core scenario: two agents pin the SAME `topic_path`.
+    // Each must get its own state dir; the legacy in-dir `.jyc` goes to
+    // the alphabetically-first adopter; `/close` on one leaves the
+    // sibling's state and the shared dir untouched.
+    #[tokio::test]
+    async fn co_pinned_agents_share_dir_with_isolated_state() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let repo = tmp.path().join("shared-repo");
+        std::fs::create_dir_all(repo.join(".jyc")).unwrap();
+        std::fs::write(repo.join(".jyc").join("marker"), "legacy").unwrap();
+
+        let config_str = format!(
+            r#"
+[general]
+[channels.agents]
+type = "websocket"
+[[channels.agents.patterns]]
+name = "co-alpha"
+topic_path = "{}"
+[[channels.agents.patterns]]
+name = "co-beta"
+topic_path = "{}"
+[agent]
+enabled = true
+mode = "agent"
+"#,
+            repo.display(),
+            repo.display()
+        );
+        let tm = make_agents_tm(&workspace, config_str);
+
+        tm.restore_custom_topic_paths().await;
+
+        let paths = tm.custom_topic_paths().await;
+        assert_eq!(paths.get("co-alpha"), Some(&repo), "alpha restored");
+        assert_eq!(paths.get("co-beta"), Some(&repo), "beta restored");
+
+        let state_a = tmp.path().join("agents/co-alpha/.jyc");
+        let state_b = tmp.path().join("agents/co-beta/.jyc");
+        assert_eq!(jyc_types::state_dir::jyc_dir("co-alpha", &repo), state_a);
+        assert_eq!(jyc_types::state_dir::jyc_dir("co-beta", &repo), state_b);
+        assert_ne!(state_a, state_b);
+        assert!(
+            state_a.join("marker").exists(),
+            "first (sorted) adopter inherits the legacy .jyc"
+        );
+        assert!(
+            !state_b.join("marker").exists(),
+            "sibling starts with clean isolated state"
+        );
+        assert!(!repo.join(".jyc").exists(), "repo cleaned of state");
+
+        // /close alpha: only alpha's state and registration die.
+        tm.close_topic("co-alpha").await.unwrap();
+        assert!(!state_a.exists(), "closed state deleted");
+        assert!(jyc_types::state_dir::registered_state("co-alpha").is_none());
+        assert!(state_b.join("topic-name").exists(), "beta state untouched");
+        assert!(repo.exists(), "shared dir is user property, kept");
+    }
+
     /// #615: a topic whose mode comes from pattern config (no
     /// `.jyc/mode-override` file) must display that mode and resolve the
     /// mode-specific model chain accordingly.

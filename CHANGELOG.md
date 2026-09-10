@@ -16,6 +16,13 @@
   automatically on first adoption, and granted to the agent's file-access
   sandbox. Unpinned topics are unchanged (`<topic_dir>/.jyc` fallback). (#739)
 
+- State resolution is keyed by topic **name**, not working dir: several
+  agents may pin the same `topic_path` (e.g. one repo shared by planner
+  and developer), each keeping an isolated
+  `<data_home>/agents/<name>/.jyc`; adoption order is deterministic and
+  `/close --force` only ever deletes the closed topic's own state. MCP
+  subprocesses get the identity via `JYC_TOPIC_NAME`. (#740)
+
 - `/close` now requires `--force` (mirroring `/new`); `-y`/`--confirm` no
   longer bypass the guard. On a pinned/adopted topic it deletes the
   relocated state dir and unregisters the mapping, keeping the topic dir

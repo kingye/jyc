@@ -329,6 +329,17 @@ jyc skills install [name]   # Install skill(s) (omit name = all)
 
 The `dashboard` command requires the `[inspect]` section to be enabled in config.
 
+**How `jyc open` picks the topic** (relevant when several agents share one
+directory via `topic_path`): topic identity is the *name*, not the
+directory. Bare `jyc` uses the folder name as the topic name, so in
+`~/projects/jyc` it attaches to topic `jyc` — i.e. the config agent whose
+key is `jyc`, with its own state at `agents/jyc/.jyc` (sessions, history,
+billing all isolated). To open a sibling agent co-pinned to the same repo,
+name it explicitly: `jyc -t jyc-reviewer`. A `-t` name that matches no
+config topic creates a fresh ad-hoc topic with its own path-derived state;
+re-opening the same directory under a *different* ad-hoc name is refused to
+protect history (`topic-name` breadcrumb check).
+
 ## MCP Tools
 
 JYC provides several MCP (Model Context Protocol) tools that the AI agent uses internally:

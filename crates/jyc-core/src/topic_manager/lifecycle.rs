@@ -58,12 +58,40 @@ impl TopicManager {
     /// Close and delete a topic's directory.
     ///
     /// This is channel-agnostic — all topics use the same cleanup logic.
-    /// Removes the topic directory from disk and cleans up in-memory state.
+    /// For adopted/pinned topics (a registered state dir outside the topic
+    /// dir), the *state dir* is deleted and unregistered while the topic
+    /// dir itself — typically a user-owned project checkout — is kept.
+    /// Unregistered topics keep the legacy behavior: the whole directory
+    /// (with its in-dir `.jyc`) is removed. In-memory state is cleaned up
+    /// in both cases.
     pub async fn close_topic(&self, topic_name: &str) -> Result<()> {
         let topic_path = self
             .topic_path(topic_name)
             .await
             .unwrap_or_else(|| self.storage.workspace().join(topic_name));
+
+        // Pinned topic: relocated state is the topic's data; the dir is
+        // user property. Remove the former, preserve the latter. The
+        // lookup is by *name*, so topics co-pinning the same dir never
+        // destroy each other's state. Name-keyed registrations always
+        // point outside the topic dir (adopt computes them under
+        // `state_root`), so no same-dir guard is needed.
+        if let Some(state) = jyc_types::state_dir::registered_state(topic_name) {
+            if state.exists() {
+                tokio::fs::remove_dir_all(&state)
+                    .await
+                    .context(format!("Failed to remove topic state dir: {:?}", state))?;
+            }
+            jyc_types::state_dir::unregister(topic_name);
+            tracing::info!(
+                topic = %topic_name,
+                state = %state.display(),
+                topic_dir = %topic_path.display(),
+                "Topic state dir deleted; pinned topic dir preserved"
+            );
+            self.cleanup_topic_state(topic_name).await;
+            return Ok(());
+        }
 
         if topic_path.exists() {
             // Check for symlinks (e.g., repo/) and remove them before remove_dir_all
@@ -376,6 +404,89 @@ mode = "agent"
         assert!(!closed);
         assert!(real.exists());
         assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    /// Pinned topic with a registered state dir: close deletes the state
+    /// dir and unregisters, but the topic dir (user-owned repo) survives.
+    #[tokio::test]
+    async fn close_pinned_topic_removes_state_keeps_dir() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let repo = tmp.path().join("probe-pin-repo");
+        let state = tmp.path().join("agents/probe-pin-app/.jyc");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join("chat.jsonl"), "{}").unwrap();
+        jyc_types::state_dir::register("probe-pin-app", &state);
+        // set_topic_path skips adoption when already registered
+        tm.set_topic_path("probe-pin-app", repo.clone())
+            .await
+            .unwrap();
+
+        tm.close_topic("probe-pin-app").await.unwrap();
+
+        assert!(
+            repo.join("main.rs").exists(),
+            "pinned topic dir must survive"
+        );
+        assert!(
+            !repo.join(".jyc").exists(),
+            "no state should be recreated in dir"
+        );
+        assert!(!state.exists(), "relocated state dir must be deleted");
+        assert!(jyc_types::state_dir::registered_state("probe-pin-app").is_none());
+        assert_eq!(
+            jyc_types::state_dir::jyc_dir("probe-pin-app", &repo),
+            repo.join(".jyc")
+        );
+    }
+
+    /// Two topics pinning the same dir: closing one deletes only its own
+    /// name-keyed state; the sibling's state and the shared dir survive.
+    #[tokio::test]
+    async fn close_co_pinned_topic_only_deletes_own_state() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let repo = tmp.path().join("probe-co-pin");
+        std::fs::create_dir_all(&repo).unwrap();
+        let state_a = tmp.path().join("agents/probe-co-a/.jyc");
+        let state_b = tmp.path().join("agents/probe-co-b/.jyc");
+        std::fs::create_dir_all(&state_a).unwrap();
+        std::fs::create_dir_all(&state_b).unwrap();
+        jyc_types::state_dir::register("probe-co-a", &state_a);
+        jyc_types::state_dir::register("probe-co-b", &state_b);
+        tm.set_topic_path("probe-co-a", repo.clone()).await.unwrap();
+
+        tm.close_topic("probe-co-a").await.unwrap();
+
+        assert!(!state_a.exists(), "closed topic's state gone");
+        assert!(state_b.exists(), "sibling state untouched");
+        assert!(repo.exists(), "shared topic dir untouched");
+        assert!(jyc_types::state_dir::registered_state("probe-co-b").is_some());
+    }
+
+    /// Unregistered topic dirs (workspace/dynamic) keep the legacy
+    /// behavior: everything is deleted.
+    #[tokio::test]
+    async fn close_unregistered_topic_deletes_dir() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let topic_dir = workspace.join("probe-plain-topic");
+        std::fs::create_dir_all(topic_dir.join(".jyc")).unwrap();
+        std::fs::write(topic_dir.join("f.txt"), "x").unwrap();
+
+        tm.close_topic("probe-plain-topic").await.unwrap();
+        assert!(!topic_dir.exists());
     }
 
     /// The agents root itself must never match (guard against catastrophic

@@ -10,8 +10,8 @@ pub const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
 
 /// Read input tokens from the agent session state file.
 /// Returns (current_tokens, max_tokens).
-pub async fn read_input_tokens(topic_path: &Path) -> (Option<u64>, Option<u64>) {
-    let (cur, max, _, _, _, _) = read_token_state(topic_path).await;
+pub async fn read_input_tokens(topic_name: &str, topic_path: &Path) -> (Option<u64>, Option<u64>) {
+    let (cur, max, _, _, _, _) = read_token_state(topic_name, topic_path).await;
     (cur, max)
 }
 
@@ -19,8 +19,8 @@ pub async fn read_input_tokens(topic_path: &Path) -> (Option<u64>, Option<u64>) 
 /// Returns `None` when the file is missing, malformed, or the value is zero.
 /// The session file already deserializes `total_output_tokens` — this just
 /// surfaces it. Output tokens accumulate across LLM calls in a round.
-pub async fn read_output_tokens(topic_path: &Path) -> Option<u64> {
-    let (_, _, out, _, _, _) = read_token_state(topic_path).await;
+pub async fn read_output_tokens(topic_name: &str, topic_path: &Path) -> Option<u64> {
+    let (_, _, out, _, _, _) = read_token_state(topic_name, topic_path).await;
     out
 }
 
@@ -28,8 +28,8 @@ pub async fn read_output_tokens(topic_path: &Path) -> Option<u64> {
 /// Returns `None` when the file is missing, malformed, or the value is zero.
 /// Distinct from `read_input_tokens` (which returns the current context
 /// size); this is the running sum across all LLM calls in the session.
-pub async fn read_total_input_tokens(topic_path: &Path) -> Option<u64> {
-    let (_, _, _, total, _, _) = read_token_state(topic_path).await;
+pub async fn read_total_input_tokens(topic_name: &str, topic_path: &Path) -> Option<u64> {
+    let (_, _, _, total, _, _) = read_token_state(topic_name, topic_path).await;
     total
 }
 
@@ -37,8 +37,8 @@ pub async fn read_total_input_tokens(topic_path: &Path) -> Option<u64> {
 /// file. Returns `None` when the file is missing, malformed, or the
 /// accumulated value is zero. Mirrors `read_total_input_tokens`; zero
 /// covers both "no calls yet" and "provider didn't surface cache hits".
-pub async fn read_total_cache_hit_tokens(topic_path: &Path) -> Option<u64> {
-    let (_, _, _, _, cache_hit, _) = read_token_state(topic_path).await;
+pub async fn read_total_cache_hit_tokens(topic_name: &str, topic_path: &Path) -> Option<u64> {
+    let (_, _, _, _, cache_hit, _) = read_token_state(topic_name, topic_path).await;
     cache_hit
 }
 
@@ -51,8 +51,8 @@ pub async fn read_total_cache_hit_tokens(topic_path: &Path) -> Option<u64> {
 /// Anthropic is the only provider that reports writes separately from
 /// reads; for every other vendor this is always `None` unless the
 /// caller actively fills it.
-pub async fn read_total_cache_creation_tokens(topic_path: &Path) -> Option<u64> {
-    let (_, _, _, _, _, cache_creation) = read_token_state(topic_path).await;
+pub async fn read_total_cache_creation_tokens(topic_name: &str, topic_path: &Path) -> Option<u64> {
+    let (_, _, _, _, _, cache_creation) = read_token_state(topic_name, topic_path).await;
     cache_creation
 }
 
@@ -65,8 +65,8 @@ pub async fn read_total_cache_creation_tokens(topic_path: &Path) -> Option<u64> 
 /// mirroring `read_session_cost`: one extra read of an already
 /// page-cached file is cheaper than threading a seventh element through
 /// every tuple consumer.
-pub async fn read_total_reasoning_tokens(topic_path: &Path) -> Option<u64> {
-    let agent_path = jyc_dir(topic_path).join("agent-session.json");
+pub async fn read_total_reasoning_tokens(topic_name: &str, topic_path: &Path) -> Option<u64> {
+    let agent_path = jyc_dir(topic_name, topic_path).join("agent-session.json");
     let content = tokio::fs::read_to_string(&agent_path).await.ok()?;
     let state = serde_json::from_str::<AgentSessionState>(&content).ok()?;
     (state.total_reasoning_tokens > 0).then_some(state.total_reasoning_tokens)
@@ -82,8 +82,8 @@ pub async fn read_total_reasoning_tokens(topic_path: &Path) -> Option<u64> {
 /// tuple: cost has a single caller, and References a sixth element
 /// through four existing helpers would be a much larger change than
 /// one extra read of an already page-cached file.
-pub async fn read_session_cost(topic_path: &Path) -> Option<f64> {
-    let agent_path = jyc_dir(topic_path).join("agent-session.json");
+pub async fn read_session_cost(topic_name: &str, topic_path: &Path) -> Option<f64> {
+    let agent_path = jyc_dir(topic_name, topic_path).join("agent-session.json");
     let content = tokio::fs::read_to_string(&agent_path).await.ok()?;
     let state = serde_json::from_str::<AgentSessionState>(&content).ok()?;
     (state.session_cost > 0.0).then_some(state.session_cost)
@@ -101,6 +101,7 @@ pub async fn read_session_cost(topic_path: &Path) -> Option<f64> {
 /// should use this rather than calling the single-purpose helpers above
 /// separately — saves one file open + JSON parse per call.
 pub async fn read_token_state(
+    topic_name: &str,
     topic_path: &Path,
 ) -> (
     Option<u64>,
@@ -110,7 +111,7 @@ pub async fn read_token_state(
     Option<u64>,
     Option<u64>,
 ) {
-    let agent_path = jyc_dir(topic_path).join("agent-session.json");
+    let agent_path = jyc_dir(topic_name, topic_path).join("agent-session.json");
     let Ok(content) = tokio::fs::read_to_string(&agent_path).await else {
         return (None, None, None, None, None, None);
     };
@@ -161,8 +162,8 @@ struct AgentSessionState {
 }
 
 /// Read the model override file if it exists.
-pub async fn read_model_override(topic_path: &Path) -> Option<String> {
-    let override_path = jyc_dir(topic_path).join("model-override");
+pub async fn read_model_override(topic_name: &str, topic_path: &Path) -> Option<String> {
+    let override_path = jyc_dir(topic_name, topic_path).join("model-override");
     tokio::fs::read_to_string(override_path)
         .await
         .ok()
@@ -171,8 +172,8 @@ pub async fn read_model_override(topic_path: &Path) -> Option<String> {
 }
 
 /// Read the mode override file if it exists.
-pub async fn read_mode_override(topic_path: &Path) -> Option<String> {
-    let override_path = jyc_dir(topic_path).join("mode-override");
+pub async fn read_mode_override(topic_name: &str, topic_path: &Path) -> Option<String> {
+    let override_path = jyc_dir(topic_name, topic_path).join("mode-override");
     tokio::fs::read_to_string(override_path)
         .await
         .ok()
@@ -181,8 +182,8 @@ pub async fn read_mode_override(topic_path: &Path) -> Option<String> {
 }
 
 /// Read the matched pattern file if it exists.
-pub async fn read_pattern(topic_path: &Path) -> Option<String> {
-    let pattern_path = jyc_dir(topic_path).join("pattern");
+pub async fn read_pattern(topic_name: &str, topic_path: &Path) -> Option<String> {
+    let pattern_path = jyc_dir(topic_name, topic_path).join("pattern");
     tokio::fs::read_to_string(pattern_path)
         .await
         .ok()
@@ -200,14 +201,15 @@ pub async fn read_pattern(topic_path: &Path) -> Option<String> {
 /// to `.jyc/mode-override`; that file remains reserved for explicit user
 /// overrides via `/mode`.
 pub async fn resolve_effective_mode(
+    topic_name: &str,
     topic_path: &Path,
     config: &AppConfig,
     channel_name: &str,
 ) -> Option<String> {
-    if let Some(mode) = read_mode_override(topic_path).await {
+    if let Some(mode) = read_mode_override(topic_name, topic_path).await {
         return Some(mode);
     }
-    let pattern_name = read_pattern(topic_path).await?;
+    let pattern_name = read_pattern(topic_name, topic_path).await?;
     config
         .channels
         .get(channel_name)?
@@ -260,20 +262,21 @@ pub fn resolve_reset_compression(
 /// Returns `None` if no model can be resolved (no config, no providers, etc.).
 /// Callers should treat `None` as a no-op.
 pub async fn resolve_active_context_window(
+    topic_name: &str,
     topic_path: &Path,
     config: &AppConfig,
     channel: &str,
     auto_reset_threshold: f64,
 ) -> Option<u64> {
-    let model_override = resolve_active_model(topic_path, config, channel).await?;
+    let model_override = resolve_active_model(topic_name, topic_path, config, channel).await?;
     let context_window = context_window_for_model(&model_override, config)?;
     Some((context_window as f64 * auto_reset_threshold) as u64)
 }
 
 /// Idempotently write `max_input_tokens` to `.jyc/agent-session.json`.
 /// No-op if the value would not change (avoids disk churn).
-pub async fn write_max_input_tokens(topic_path: &Path, new_max: u64) {
-    let session_path = jyc_dir(topic_path).join("agent-session.json");
+pub async fn write_max_input_tokens(topic_name: &str, topic_path: &Path, new_max: u64) {
+    let session_path = jyc_dir(topic_name, topic_path).join("agent-session.json");
     let content = tokio::fs::read_to_string(&session_path)
         .await
         .unwrap_or_default();
@@ -298,12 +301,13 @@ pub async fn write_max_input_tokens(topic_path: &Path, new_max: u64) {
 /// Resolve the active model string (`<provider>/<model-id>`) for this topic.
 /// Mirrors the chain in `jyc-agent::service::process()` (lines 1191-1263).
 async fn resolve_active_model(
+    topic_name: &str,
     topic_path: &Path,
     config: &AppConfig,
     channel: &str,
 ) -> Option<String> {
-    let mode_override = read_mode_override(topic_path).await;
-    let pattern_name = read_pattern(topic_path).await;
+    let mode_override = read_mode_override(topic_name, topic_path).await;
+    let pattern_name = read_pattern(topic_name, topic_path).await;
 
     // 1. Mode-specific file override
     let file_override = {
@@ -311,8 +315,9 @@ async fn resolve_active_model(
             Some("plan") => "plan",
             _ => "build",
         };
-        let mode_specific = jyc_dir(topic_path).join(format!("{mode_suffix}-model-override"));
-        let legacy = jyc_dir(topic_path).join("model-override");
+        let mode_specific =
+            jyc_dir(topic_name, topic_path).join(format!("{mode_suffix}-model-override"));
+        let legacy = jyc_dir(topic_name, topic_path).join("model-override");
         let path = if mode_specific.exists() {
             Some(mode_specific)
         } else if legacy.exists() {
@@ -333,7 +338,7 @@ async fn resolve_active_model(
     // 2. Topic config (`.jyc/config.toml`) — read once, then check both
     //    the mode-specific and the generic `model` field against the same
     //    loaded value (avoids re-reading the file in the common no-config case).
-    let topic_cfg = jyc_types::load_topic_config(topic_path).and_then(|c| c.ai);
+    let topic_cfg = jyc_types::load_topic_config(topic_name, topic_path).and_then(|c| c.ai);
     let topic_cfg_override = topic_cfg
         .as_ref()
         .and_then(|a| match mode_override.as_deref() {
@@ -413,8 +418,11 @@ pub const WIRE_PAYLOAD_DUMP_MAX_LINES: usize = 50;
 /// message (see `extract_user_assistant_pairs`), which is almost
 /// certainly not what the user wants; we silently fall back to the
 /// configured default rather than persist a broken strategy.
-pub async fn read_context_strategy_override(topic_path: &Path) -> Option<ContextStrategyConfig> {
-    let path = jyc_dir(topic_path).join(CONTEXT_STRATEGY_FILE);
+pub async fn read_context_strategy_override(
+    topic_name: &str,
+    topic_path: &Path,
+) -> Option<ContextStrategyConfig> {
+    let path = jyc_dir(topic_name, topic_path).join(CONTEXT_STRATEGY_FILE);
     let content = tokio::fs::read_to_string(&path).await.ok()?;
     let cfg: ContextStrategyConfig = serde_json::from_str(&content).ok()?;
     if cfg.window == 0 {
@@ -472,7 +480,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let (current, max) = read_input_tokens(tmp.path()).await;
+        let (current, max) = read_input_tokens("", tmp.path()).await;
         assert_eq!(current, Some(1000));
         assert_eq!(max, Some(2000));
     }
@@ -480,7 +488,7 @@ mod tests {
     #[tokio::test]
     async fn read_input_tokens_no_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let (current, max) = read_input_tokens(tmp.path()).await;
+        let (current, max) = read_input_tokens("", tmp.path()).await;
         assert_eq!(current, None);
         assert_eq!(max, None);
     }
@@ -496,7 +504,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let (current, max) = read_input_tokens(tmp.path()).await;
+        let (current, max) = read_input_tokens("", tmp.path()).await;
         assert_eq!(current, None);
         assert_eq!(max, None);
     }
@@ -509,7 +517,7 @@ mod tests {
         tokio::fs::write(jyc_dir.join("agent-session.json"), "not json")
             .await
             .unwrap();
-        let (current, max) = read_input_tokens(tmp.path()).await;
+        let (current, max) = read_input_tokens("", tmp.path()).await;
         assert_eq!(current, None);
         assert_eq!(max, None);
     }
@@ -525,13 +533,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(read_output_tokens(tmp.path()).await, Some(250));
+        assert_eq!(read_output_tokens("", tmp.path()).await, Some(250));
     }
 
     #[tokio::test]
     async fn read_output_tokens_no_file() {
         let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(read_output_tokens(tmp.path()).await, None);
+        assert_eq!(read_output_tokens("", tmp.path()).await, None);
     }
 
     #[tokio::test]
@@ -545,7 +553,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(read_output_tokens(tmp.path()).await, None);
+        assert_eq!(read_output_tokens("", tmp.path()).await, None);
     }
 
     #[tokio::test]
@@ -559,7 +567,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(read_total_input_tokens(tmp.path()).await, Some(4800));
+        assert_eq!(read_total_input_tokens("", tmp.path()).await, Some(4800));
     }
 
     #[tokio::test]
@@ -576,7 +584,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(read_total_input_tokens(tmp.path()).await, None);
+        assert_eq!(read_total_input_tokens("", tmp.path()).await, None);
     }
 
     #[tokio::test]
@@ -591,7 +599,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            read_token_state(tmp.path()).await,
+            read_token_state("", tmp.path()).await,
             (
                 Some(1500),
                 Some(10000),
@@ -618,7 +626,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            read_token_state(tmp.path()).await,
+            read_token_state("", tmp.path()).await,
             (Some(1500), Some(10000), Some(400), None, None, None)
         );
     }
@@ -627,7 +635,7 @@ mod tests {
     async fn read_token_state_no_file() {
         let tmp = tempfile::tempdir().unwrap();
         assert_eq!(
-            read_token_state(tmp.path()).await,
+            read_token_state("", tmp.path()).await,
             (None, None, None, None, None, None)
         );
     }
@@ -643,7 +651,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(read_total_cache_hit_tokens(tmp.path()).await, Some(4200));
+        assert_eq!(
+            read_total_cache_hit_tokens("", tmp.path()).await,
+            Some(4200)
+        );
     }
 
     #[tokio::test]
@@ -661,7 +672,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(read_total_cache_hit_tokens(tmp.path()).await, None);
+        assert_eq!(read_total_cache_hit_tokens("", tmp.path()).await, None);
     }
 
     #[tokio::test]
@@ -675,7 +686,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(read_total_cache_hit_tokens(tmp.path()).await, None);
+        assert_eq!(read_total_cache_hit_tokens("", tmp.path()).await, None);
     }
 
     #[tokio::test]
@@ -686,7 +697,7 @@ mod tests {
         tokio::fs::write(jyc_dir.join("model-override"), "anthropic/claude-3.5\n")
             .await
             .unwrap();
-        let result = read_model_override(tmp.path()).await;
+        let result = read_model_override("", tmp.path()).await;
         assert_eq!(result, Some("anthropic/claude-3.5".to_string()));
     }
 
@@ -698,14 +709,14 @@ mod tests {
         tokio::fs::write(jyc_dir.join("model-override"), "  \n")
             .await
             .unwrap();
-        let result = read_model_override(tmp.path()).await;
+        let result = read_model_override("", tmp.path()).await;
         assert_eq!(result, None);
     }
 
     #[tokio::test]
     async fn read_model_override_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = read_model_override(tmp.path()).await;
+        let result = read_model_override("", tmp.path()).await;
         assert_eq!(result, None);
     }
 
@@ -717,14 +728,14 @@ mod tests {
         tokio::fs::write(jyc_dir.join("mode-override"), "static\n")
             .await
             .unwrap();
-        let result = read_mode_override(tmp.path()).await;
+        let result = read_mode_override("", tmp.path()).await;
         assert_eq!(result, Some("static".to_string()));
     }
 
     #[tokio::test]
     async fn read_mode_override_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let result = read_mode_override(tmp.path()).await;
+        let result = read_mode_override("", tmp.path()).await;
         assert_eq!(result, None);
     }
 
@@ -772,7 +783,7 @@ mode = "agent"
             .await
             .unwrap();
         let config = config_with_pattern_mode("p1", Some("plan"));
-        let result = resolve_effective_mode(tmp.path(), &config, "c").await;
+        let result = resolve_effective_mode("", tmp.path(), &config, "c").await;
         assert_eq!(result, Some("build".to_string()));
     }
 
@@ -785,7 +796,7 @@ mode = "agent"
             .await
             .unwrap();
         let config = config_with_pattern_mode("p1", Some("plan"));
-        let result = resolve_effective_mode(tmp.path(), &config, "c").await;
+        let result = resolve_effective_mode("", tmp.path(), &config, "c").await;
         assert_eq!(result, Some("plan".to_string()));
     }
 
@@ -795,7 +806,7 @@ mode = "agent"
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         let config = config_with_pattern_mode("p1", Some("plan"));
-        let result = resolve_effective_mode(tmp.path(), &config, "c").await;
+        let result = resolve_effective_mode("", tmp.path(), &config, "c").await;
         assert_eq!(result, None);
     }
 
@@ -808,7 +819,7 @@ mode = "agent"
             .await
             .unwrap();
         let config = config_with_pattern_mode("p1", Some("plan"));
-        let result = resolve_effective_mode(tmp.path(), &config, "c").await;
+        let result = resolve_effective_mode("", tmp.path(), &config, "c").await;
         assert_eq!(result, None);
     }
 
@@ -821,7 +832,7 @@ mode = "agent"
             .await
             .unwrap();
         let config = config_with_pattern_mode("p1", None);
-        let result = resolve_effective_mode(tmp.path(), &config, "c").await;
+        let result = resolve_effective_mode("", tmp.path(), &config, "c").await;
         assert_eq!(result, None);
     }
 
@@ -834,7 +845,7 @@ mode = "agent"
             .await
             .unwrap();
         let config = config_with_pattern_mode("p1", Some("plan"));
-        let result = resolve_effective_mode(tmp.path(), &config, "other").await;
+        let result = resolve_effective_mode("", tmp.path(), &config, "other").await;
         assert_eq!(result, None);
     }
 
@@ -956,7 +967,7 @@ auto_reset_threshold = 0.95
     #[tokio::test]
     async fn write_max_input_tokens_creates_file_when_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        write_max_input_tokens(tmp.path(), 12345).await;
+        write_max_input_tokens("", tmp.path(), 12345).await;
         let content = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
             .unwrap();
@@ -975,7 +986,7 @@ auto_reset_threshold = 0.95
         )
         .await
         .unwrap();
-        write_max_input_tokens(tmp.path(), 250000).await;
+        write_max_input_tokens("", tmp.path(), 250000).await;
         let content = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
             .await
             .unwrap();
@@ -988,7 +999,7 @@ auto_reset_threshold = 0.95
     #[tokio::test]
     async fn write_max_input_tokens_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
-        write_max_input_tokens(tmp.path(), 12345).await;
+        write_max_input_tokens("", tmp.path(), 12345).await;
         let first_mtime = tokio::fs::metadata(tmp.path().join(".jyc/agent-session.json"))
             .await
             .unwrap()
@@ -996,7 +1007,7 @@ auto_reset_threshold = 0.95
             .unwrap();
         // Sleep a beat so mtime would change if we rewrote
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        write_max_input_tokens(tmp.path(), 12345).await;
+        write_max_input_tokens("", tmp.path(), 12345).await;
         let second_mtime = tokio::fs::metadata(tmp.path().join(".jyc/agent-session.json"))
             .await
             .unwrap()
@@ -1140,7 +1151,9 @@ mode = "agent"
         )
         .await
         .unwrap();
-        let cfg = read_context_strategy_override(tmp.path()).await.unwrap();
+        let cfg = read_context_strategy_override("", tmp.path())
+            .await
+            .unwrap();
         assert_eq!(cfg.mode, ContextStrategy::SlidingWindow);
         assert_eq!(cfg.window, 3);
         // Old override files without note_window still parse, picking up
@@ -1159,7 +1172,9 @@ mode = "agent"
         )
         .await
         .unwrap();
-        let cfg = read_context_strategy_override(tmp.path()).await.unwrap();
+        let cfg = read_context_strategy_override("", tmp.path())
+            .await
+            .unwrap();
         assert_eq!(cfg.window, 5);
         assert_eq!(cfg.note_window, Some(2));
     }
@@ -1167,7 +1182,11 @@ mode = "agent"
     #[tokio::test]
     async fn read_context_strategy_override_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(read_context_strategy_override(tmp.path()).await.is_none());
+        assert!(
+            read_context_strategy_override("", tmp.path())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1181,7 +1200,11 @@ mode = "agent"
         )
         .await
         .unwrap();
-        assert!(read_context_strategy_override(tmp.path()).await.is_none());
+        assert!(
+            read_context_strategy_override("", tmp.path())
+                .await
+                .is_none()
+        );
     }
 
     // ── tool_result_cap resolution ─────────────────────────────────────
@@ -1230,7 +1253,9 @@ mode = "agent"
         )
         .await
         .unwrap();
-        let cfg = read_context_strategy_override(tmp.path()).await.unwrap();
+        let cfg = read_context_strategy_override("", tmp.path())
+            .await
+            .unwrap();
         assert_eq!(cfg.tool_result_cap, Some(5000));
     }
 
@@ -1247,7 +1272,9 @@ mode = "agent"
         )
         .await
         .unwrap();
-        let cfg = read_context_strategy_override(tmp.path()).await.unwrap();
+        let cfg = read_context_strategy_override("", tmp.path())
+            .await
+            .unwrap();
         assert_eq!(cfg.tool_result_cap, Some(2048));
     }
 }

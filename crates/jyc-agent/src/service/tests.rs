@@ -787,7 +787,7 @@ command = ["./topic-mcp"]
         ..ChannelPattern::default()
     }];
     let svc = service_with_exclusion(patterns, None, None);
-    let topic_cfg = jyc_types::load_topic_config(tmp.path());
+    let topic_cfg = jyc_types::load_topic_config("", tmp.path());
     let registry = svc
         .build_tool_registry("test", tmp.path(), topic_cfg.as_ref(), false, Some("test"))
         .await;
@@ -819,6 +819,7 @@ fn discover_skills_include_filter_retains_only_matched() {
 
         let svc = service_with_skills(vec![], None, None);
         let skills = svc.discover_skills(
+            "",
             tmp.path(),
             Some(&["alpha".to_string(), "gamma".to_string()]),
             None,
@@ -848,7 +849,7 @@ fn discover_skills_exclude_filter_removes_matched() {
         }
 
         let svc = service_with_skills(vec![], None, None);
-        let skills = svc.discover_skills(tmp.path(), None, Some(&["beta".to_string()]));
+        let skills = svc.discover_skills("", tmp.path(), None, Some(&["beta".to_string()]));
 
         assert_eq!(skills.len(), 2);
         assert!(skills.iter().any(|s| s.name == "alpha"));
@@ -876,6 +877,7 @@ fn discover_skills_include_and_exclude_combined() {
         let svc = service_with_skills(vec![], None, None);
         // Include alpha, beta, gamma; then exclude beta
         let skills = svc.discover_skills(
+            "",
             tmp.path(),
             Some(&["alpha".to_string(), "beta".to_string(), "gamma".to_string()]),
             Some(&["beta".to_string()]),
@@ -906,7 +908,7 @@ fn channel_skills_applied_when_no_pattern_match() {
         }
 
         let svc = service_with_skills(vec![], Some(vec!["alpha".to_string()]), None);
-        let skills = svc.discover_skills(tmp.path(), svc.channel_skills.as_deref(), None);
+        let skills = svc.discover_skills("", tmp.path(), svc.channel_skills.as_deref(), None);
 
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "alpha");
@@ -943,7 +945,7 @@ fn pattern_skills_override_channel_skills() {
             .and_then(|p| p.skills.as_deref())
             .or(svc.channel_skills.as_deref());
 
-        let skills = svc.discover_skills(tmp.path(), include, None);
+        let skills = svc.discover_skills("", tmp.path(), include, None);
 
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "gamma");
@@ -997,7 +999,7 @@ fn channel_and_pattern_disabled_skills_merged() {
             Some(&exclude_list)
         };
 
-        let skills = svc.discover_skills(tmp.path(), None, exclude_slice);
+        let skills = svc.discover_skills("", tmp.path(), None, exclude_slice);
 
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "gamma");
@@ -1021,7 +1023,7 @@ fn no_filters_loads_all_skills() {
         }
 
         let svc = service_with_skills(vec![], None, None);
-        let skills = svc.discover_skills(tmp.path(), None, None);
+        let skills = svc.discover_skills("", tmp.path(), None, None);
 
         assert_eq!(skills.len(), 2);
     });
@@ -1465,7 +1467,13 @@ async fn system_prompt_enumerates_configured_access_roots() {
             .any(|r| r == &PathBuf::from("/tmp/jyc-builds"))
     );
     let prompt = svc
-        .build_system_prompt(topic, message.matched_pattern.as_deref(), &reads, &writes)
+        .build_system_prompt(
+            "",
+            topic,
+            message.matched_pattern.as_deref(),
+            &reads,
+            &writes,
+        )
         .await;
     assert!(
         prompt.contains("/opt/shared-data"),

@@ -15,12 +15,12 @@ impl CloseCommandHandler {
         Self { topic_manager }
     }
 
-    /// Returns `true` if the args contain an explicit confirmation flag.
+    /// Returns `true` if the args contain the explicit `--force` flag.
     ///
-    /// Accepted tokens: `--confirm`, `-y`. Plain `/close` (no args) returns
-    /// `false` so the handler can emit a warning instead of deleting.
-    fn is_confirmed(args: &[String]) -> bool {
-        args.iter().any(|a| a == "--confirm" || a == "-y")
+    /// Plain `/close` (no args) returns `false` so the handler can emit a
+    /// warning instead of deleting (mirrors `/new`).
+    fn is_forced(args: &[String]) -> bool {
+        args.iter().any(|a| a == "--force")
     }
 }
 
@@ -31,7 +31,7 @@ impl CommandHandler for CloseCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Close and delete this topic (requires --confirm or -y)"
+        "Close and delete this topic (requires --force)"
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
@@ -53,17 +53,16 @@ impl CommandHandler for CloseCommandHandler {
             });
         }
 
-        // Require explicit confirmation to prevent accidental topic deletion.
-        // Accept `--confirm` or `-y`. Plain `/close` returns a warning instead
-        // of performing the destructive action.
-        if !Self::is_confirmed(&context.args) {
+        // Require --force to prevent accidental topic deletion. Plain
+        // `/close` returns a warning instead of the destructive action.
+        if !Self::is_forced(&context.args) {
             return Ok(CommandResult {
                 success: true,
                 message: format!(
                     "⚠️  /close will PERMANENTLY delete topic '{topic_name}' and all its data \
                      (chat history, AI session, attachments). This cannot be undone.\n\
                      \n\
-                     To proceed, send: /close -y  (or /close --confirm)"
+                     To proceed, send: /close --force"
                 ),
                 error: None,
                 append_body: None,
@@ -99,33 +98,26 @@ mod tests {
     }
 
     #[test]
-    fn is_confirmed_accepts_long_flag() {
-        assert!(CloseCommandHandler::is_confirmed(&args(&["--confirm"])));
+    fn is_forced_accepts_force_flag() {
+        assert!(CloseCommandHandler::is_forced(&args(&["--force"])));
     }
 
     #[test]
-    fn is_confirmed_accepts_short_flag() {
-        assert!(CloseCommandHandler::is_confirmed(&args(&["-y"])));
+    fn is_forced_rejects_old_confirm_tokens() {
+        // `-y`/`--confirm` no longer bypass the guard — only `--force`.
+        assert!(!CloseCommandHandler::is_forced(&args(&["-y"])));
+        assert!(!CloseCommandHandler::is_forced(&args(&["--confirm"])));
+        assert!(!CloseCommandHandler::is_forced(&args(&["--yes"])));
+        assert!(!CloseCommandHandler::is_forced(&args(&["--foo"])));
     }
 
     #[test]
-    fn is_confirmed_rejects_empty_args() {
-        assert!(!CloseCommandHandler::is_confirmed(&args(&[])));
+    fn is_forced_rejects_empty_args() {
+        assert!(!CloseCommandHandler::is_forced(&args(&[])));
     }
 
     #[test]
-    fn is_confirmed_rejects_unknown_flag() {
-        assert!(!CloseCommandHandler::is_confirmed(&args(&["--yes"])));
-        assert!(!CloseCommandHandler::is_confirmed(&args(&["--foo"])));
-    }
-
-    #[test]
-    fn is_confirmed_accepts_flag_mixed_with_unknown_args() {
-        // "-y" present wins, even mixed with unknowns
-        assert!(CloseCommandHandler::is_confirmed(&args(&["--foo", "-y"])));
-        assert!(CloseCommandHandler::is_confirmed(&args(&[
-            "--confirm",
-            "extra-junk"
-        ])));
+    fn is_forced_accepts_flag_mixed_with_unknown_args() {
+        assert!(CloseCommandHandler::is_forced(&args(&["--foo", "--force"])));
     }
 }

@@ -43,11 +43,12 @@ fn test_config_swap() -> Arc<ArcSwap<AppConfig>> {
 }
 
 fn test_context(topic_path: &std::path::Path) -> CommandContext {
-    test_context_with_args(topic_path, &["--confirm"])
+    test_context_with_args(topic_path, &["--force"])
 }
 
 fn test_context_with_args(topic_path: &std::path::Path, args: &[&str]) -> CommandContext {
     CommandContext {
+        topic_name: "test-topic".to_string(),
         args: args.iter().map(|s| s.to_string()).collect(),
         topic_path: topic_path.to_path_buf(),
         config: test_config(),
@@ -164,7 +165,8 @@ async fn test_close_command_invalid_topic_path() {
     let handler = CloseCommandHandler::new(topic_manager);
 
     let ctx = CommandContext {
-        args: vec!["--confirm".into()],
+        topic_name: "test-topic".to_string(),
+        args: vec!["--force".into()],
         topic_path: PathBuf::from("/"),
         config: test_config(),
         channel: "test".into(),
@@ -181,7 +183,7 @@ async fn test_close_command_invalid_topic_path() {
 }
 
 #[tokio::test]
-async fn test_close_command_without_confirm_keeps_directory() {
+async fn test_close_command_without_force_keeps_directory() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -220,8 +222,8 @@ async fn test_close_command_without_confirm_keeps_directory() {
         "warning path should be informational success"
     );
     assert!(
-        result.message.contains("/close -y"),
-        "message should mention the confirm syntax, got: {}",
+        result.message.contains("/close --force"),
+        "message should mention the --force syntax, got: {}",
         result.message
     );
     assert!(

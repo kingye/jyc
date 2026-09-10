@@ -15,16 +15,20 @@ const ROTATION_THRESHOLD: f64 = 1.5;
 pub struct ActivityLogStore;
 
 impl ActivityLogStore {
-    fn jsonl_path(topic_path: &Path) -> std::path::PathBuf {
-        jyc_dir(topic_path).join("activity.jsonl")
+    fn jsonl_path(topic_name: &str, topic_path: &Path) -> std::path::PathBuf {
+        jyc_dir(topic_name, topic_path).join("activity.jsonl")
     }
 
     /// Append an activity entry to the topic's JSONL log file.
     ///
     /// Creates the `.jyc/` directory if it doesn't exist. After writing,
     /// checks whether lazy rotation is needed (1.5x threshold).
-    pub fn append(topic_path: &Path, entry: &ActivityEntry) -> anyhow::Result<()> {
-        let path = Self::jsonl_path(topic_path);
+    pub fn append(
+        topic_name: &str,
+        topic_path: &Path,
+        entry: &ActivityEntry,
+    ) -> anyhow::Result<()> {
+        let path = Self::jsonl_path(topic_name, topic_path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -37,7 +41,7 @@ impl ActivityLogStore {
         let approx_lines = (metadata.len() / 80).max(1);
         if approx_lines as f64 > DEFAULT_MAX_ENTRIES as f64 * ROTATION_THRESHOLD {
             drop(file);
-            Self::rotate_if_needed(topic_path)?;
+            Self::rotate_if_needed(topic_name, topic_path)?;
         }
         Ok(())
     }
@@ -47,10 +51,11 @@ impl ActivityLogStore {
     /// Returns up to `max_entries` entries in chronological order (oldest first).
     /// Returns an empty vec if the file doesn't exist or has no valid entries.
     pub fn load_recent(
+        topic_name: &str,
         topic_path: &Path,
         max_entries: usize,
     ) -> anyhow::Result<Vec<ActivityEntry>> {
-        let path = Self::jsonl_path(topic_path);
+        let path = Self::jsonl_path(topic_name, topic_path);
         if !path.exists() {
             return Ok(Vec::new());
         }
@@ -68,12 +73,16 @@ impl ActivityLogStore {
     ///
     /// Keeps only the most recent `DEFAULT_MAX_ENTRIES` lines,
     /// rewriting the file in place.
-    pub fn rotate_if_needed(topic_path: &Path) -> anyhow::Result<()> {
-        Self::rotate_if_needed_with_max(topic_path, DEFAULT_MAX_ENTRIES)
+    pub fn rotate_if_needed(topic_name: &str, topic_path: &Path) -> anyhow::Result<()> {
+        Self::rotate_if_needed_with_max(topic_name, topic_path, DEFAULT_MAX_ENTRIES)
     }
 
-    fn rotate_if_needed_with_max(topic_path: &Path, max_entries: usize) -> anyhow::Result<()> {
-        let path = Self::jsonl_path(topic_path);
+    fn rotate_if_needed_with_max(
+        topic_name: &str,
+        topic_path: &Path,
+        max_entries: usize,
+    ) -> anyhow::Result<()> {
+        let path = Self::jsonl_path(topic_name, topic_path);
         if !path.exists() {
             return Ok(());
         }
@@ -115,10 +124,10 @@ mod tests {
 
         for i in 0..5 {
             let entry = make_entry(&format!("entry {i}"));
-            ActivityLogStore::append(&topic_path, &entry).unwrap();
+            ActivityLogStore::append("", &topic_path, &entry).unwrap();
         }
 
-        let loaded = ActivityLogStore::load_recent(&topic_path, 3).unwrap();
+        let loaded = ActivityLogStore::load_recent("", &topic_path, 3).unwrap();
         assert_eq!(loaded.len(), 3);
         assert!(loaded[0].text.contains("entry 2"));
         assert!(loaded[1].text.contains("entry 3"));
@@ -129,7 +138,7 @@ mod tests {
     fn test_load_empty_file() {
         let dir = tempdir().unwrap();
         let topic_path = dir.path().join("no-such-topic");
-        let loaded = ActivityLogStore::load_recent(&topic_path, 10).unwrap();
+        let loaded = ActivityLogStore::load_recent("", &topic_path, 10).unwrap();
         assert!(loaded.is_empty());
     }
 
@@ -141,11 +150,11 @@ mod tests {
 
         for i in 0..300 {
             let entry = make_entry(&format!("entry {i}"));
-            ActivityLogStore::append(&topic_path, &entry).unwrap();
+            ActivityLogStore::append("", &topic_path, &entry).unwrap();
         }
 
-        ActivityLogStore::rotate_if_needed_with_max(&topic_path, 200).unwrap();
-        let loaded = ActivityLogStore::load_recent(&topic_path, 1000).unwrap();
+        ActivityLogStore::rotate_if_needed_with_max("", &topic_path, 200).unwrap();
+        let loaded = ActivityLogStore::load_recent("", &topic_path, 1000).unwrap();
         assert_eq!(loaded.len(), 200);
         assert!(loaded[0].text.contains("entry 100"));
     }

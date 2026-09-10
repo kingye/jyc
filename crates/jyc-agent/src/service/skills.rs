@@ -78,6 +78,7 @@ impl JycAgentService {
     /// - `exclude`: if set, skills whose names appear in this list are removed
     pub fn discover_skills(
         &self,
+        topic_name: &str,
         topic_path: &Path,
         include: Option<&[String]>,
         exclude: Option<&[String]>,
@@ -115,7 +116,7 @@ impl JycAgentService {
             // {topic_path}/.opencode/skills/
             paths.push(topic_path.join(".opencode/skills"));
             // {topic_path}/.jyc/skills/ (honors relocated state dir)
-            paths.push(jyc_types::state_dir::jyc_dir(topic_path).join("skills"));
+            paths.push(jyc_types::state_dir::jyc_dir(topic_name, topic_path).join("skills"));
 
             paths
         };
@@ -185,8 +186,12 @@ impl JycAgentService {
 /// Persist skill names to the topic's .jyc/skills.json file.
 ///
 /// This allows the dashboard to read the skills list without re-scanning directories.
-pub(crate) fn persist_skill_names(topic_path: &Path, skill_names: &[&str]) -> Result<()> {
-    let jyc_dir = jyc_dir(topic_path);
+pub(crate) fn persist_skill_names(
+    topic_name: &str,
+    topic_path: &Path,
+    skill_names: &[&str],
+) -> Result<()> {
+    let jyc_dir = jyc_dir(topic_name, topic_path);
     std::fs::create_dir_all(&jyc_dir)
         .with_context(|| format!("Failed to create .jyc dir: {}", jyc_dir.display()))?;
     let skills_path = jyc_dir.join("skills.json");

@@ -75,28 +75,36 @@ impl TopicManager {
     /// to avoid overwriting an existing real pattern. See
     /// `topic_manager/queue.rs` for the disk-write counterpart that
     /// backs the cold-start seed.
-    pub async fn set_topic_pattern(&self, topic_path: &Path, pattern_name: &str) {
+    pub async fn set_topic_pattern(&self, topic_name: &str, pattern_name: &str) {
         if pattern_name.is_empty() {
             return;
         }
         self.topic_patterns
             .lock()
             .await
-            .insert(topic_path.to_path_buf(), pattern_name.to_string());
+            .insert(topic_name.to_string(), pattern_name.to_string());
     }
 
-    /// Return the pattern (agent name) for `topic_path`. Reads from
-    /// the in-memory map first; on a cold-start miss, falls back to
-    /// `.jyc/pattern` on disk and caches the result so subsequent
-    /// reads are fast. `None` if neither source has the topic.
-    pub async fn topic_pattern(&self, topic_path: &Path) -> Option<String> {
-        let cached = self.topic_patterns.lock().await.get(topic_path).cloned();
+    /// Return the pattern (agent name) for `topic_name`, keyed by the
+    /// topic's identity so topics co-pinning one dir don't shadow each
+    /// other. Reads from the in-memory cache first; on a cold-start miss,
+    /// falls back to `.jyc/pattern` on disk and caches the result so
+    /// subsequent reads are fast. `None` if neither source has the topic.
+    /// (For a config pin not yet in the topic_paths map the disk probe
+    /// reads its workspace default and misses — expected for never-used
+    /// pins; the worker's per-message write converges it.)
+    pub async fn topic_pattern(&self, topic_name: &str) -> Option<String> {
+        let cached = self.topic_patterns.lock().await.get(topic_name).cloned();
         if let Some(p) = cached {
             return Some(p);
         }
         // Cold-start fallback: read .jyc/pattern from disk and
         // remember it so future reads skip the I/O.
-        let path = jyc_dir(topic_path).join("pattern");
+        let topic_path = match self.topic_path(topic_name).await {
+            Some(p) => p,
+            None => self.workspace_dir.join(topic_name),
+        };
+        let path = jyc_dir(topic_name, &topic_path).join("pattern");
         let from_disk = tokio::fs::read_to_string(&path)
             .await
             .ok()
@@ -106,7 +114,7 @@ impl TopicManager {
             self.topic_patterns
                 .lock()
                 .await
-                .insert(topic_path.to_path_buf(), p.clone());
+                .insert(topic_name.to_string(), p.clone());
         }
         from_disk
     }
@@ -122,6 +130,7 @@ impl TopicManager {
     #[allow(clippy::type_complexity)]
     async fn resolve_display_state(
         &self,
+        topic_name: &str,
         topic_path: &Path,
     ) -> (
         Option<String>,
@@ -140,10 +149,10 @@ impl TopicManager {
         // every processed message). Falls back to .jyc/pattern on
         // disk for cold-start entries that haven't been touched
         // this session.
-        let pattern = self.topic_pattern(topic_path).await;
+        let pattern = self.topic_pattern(topic_name).await;
 
         // Read session state
-        let token_state = crate::session_state::read_token_state(topic_path).await;
+        let token_state = crate::session_state::read_token_state(topic_name, topic_path).await;
 
         // Read mode first — needed to resolve mode-specific model overrides.
         // Chain: .jyc/mode-override > pattern mode from config > build default.
@@ -152,6 +161,7 @@ impl TopicManager {
         // able to show `build`, not just `plan`. The model branches below
         // treat `Some("build")` and `None` identically.
         let mode = crate::session_state::resolve_effective_mode(
+            topic_name,
             topic_path,
             &self.config.load(),
             &self.channel_name,
@@ -168,9 +178,9 @@ impl TopicManager {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
             }
-            let plan_path = jyc_dir(topic_path).join("plan-model-override");
-            let build_path = jyc_dir(topic_path).join("build-model-override");
-            let legacy_path = jyc_dir(topic_path).join("model-override");
+            let plan_path = jyc_dir(topic_name, topic_path).join("plan-model-override");
+            let build_path = jyc_dir(topic_name, topic_path).join("build-model-override");
+            let legacy_path = jyc_dir(topic_name, topic_path).join("model-override");
 
             let mode_specific = match mode.as_deref() {
                 Some("plan") => read_trimmed(&plan_path).await,
@@ -234,7 +244,8 @@ impl TopicManager {
         let Some(topic_path) = self.topic_path(topic_name).await else {
             return TopicDisplayState::default();
         };
-        let (_pattern, token_state, mode, model) = self.resolve_display_state(&topic_path).await;
+        let (_pattern, token_state, mode, model) =
+            self.resolve_display_state(topic_name, &topic_path).await;
         let (input_tokens, max_tokens, ..) = token_state;
         TopicDisplayState {
             mode,
@@ -261,17 +272,17 @@ impl TopicManager {
     pub async fn set_topic_path(&self, topic_name: &str, path: PathBuf) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&path).await?;
         // Reuse an existing registration (config pins adopt at startup under
-        // their agent key); otherwise this runtime pin is ad-hoc and gets the
-        // path-derived state name.
-        if jyc_types::state_dir::registered_state(&path).is_none() {
+        // their topic name); otherwise this runtime pin is ad-hoc and gets
+        // the path-derived state name.
+        if jyc_types::state_dir::registered_state(topic_name).is_none() {
             let state = crate::topic_path::state_dir_for(
                 &crate::topic_path::state_root(&self.workdir),
                 &path,
                 None,
             );
-            crate::topic_path::adopt_state_dir(&path, &state)?;
+            crate::topic_path::adopt_state_dir(topic_name, &path, &state)?;
         }
-        let jyc_dir = jyc_dir(&path);
+        let jyc_dir = jyc_dir(topic_name, &path);
         tokio::fs::create_dir_all(&jyc_dir).await?;
         tokio::fs::write(jyc_dir.join("topic-name"), topic_name)
             .await
@@ -335,6 +346,11 @@ impl TopicManager {
         let Some(patterns) = &channel_cfg.patterns else {
             return;
         };
+        // Deterministic iteration: when several pins share one directory the
+        // first (alphabetically) pattern adopts the legacy in-dir `.jyc`,
+        // so restarts can't flip which topic inherits it.
+        let mut patterns: Vec<&jyc_types::ChannelPattern> = patterns.iter().collect();
+        patterns.sort_by_key(|p| p.name.clone());
         for pattern in patterns {
             // A pinned `topic_path` holds exactly one topic (the self-named
             // one); an agent's default root holds one subdirectory per
@@ -346,24 +362,42 @@ impl TopicManager {
                 None if self.channel_name == "agents" => self.workspace_dir.join(&pattern.name),
                 None => continue,
             };
-            // Adopt the relocated state dir for explicit pins (idempotent;
-            // moves a legacy `<pin>/.jyc` out of the repo on first run).
-            if pattern.topic_path.is_some() {
+            // Adopt the relocated state dir for explicit pins, keyed by the
+            // topic's identity: an existing `topic-name` breadcrumb wins
+            // over the pattern-derived name (adopt re-stamps both the file
+            // and the name-keyed registration).
+            let pin_name = pattern.topic_name.as_deref().unwrap_or(&pattern.name);
+            let jyc_name = if pattern.topic_path.is_some() {
                 let agent_key = (self.channel_name == "agents").then_some(pattern.name.as_str());
                 let state = crate::topic_path::state_dir_for(
                     &crate::topic_path::state_root(&self.workdir),
                     &resolved,
                     agent_key,
                 );
-                if let Err(e) = crate::topic_path::adopt_state_dir(&resolved, &state) {
+                // Identity order: candidate state dir, then the legacy
+                // in-dir `.jyc` about to be carried (its `topic-name` is
+                // the source of truth), then the pattern-derived name.
+                let breadcrumb = |dir: &std::path::Path| {
+                    std::fs::read_to_string(dir.join("topic-name"))
+                        .ok()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                };
+                let name = breadcrumb(&state)
+                    .or_else(|| breadcrumb(&resolved.join(".jyc")))
+                    .unwrap_or_else(|| pin_name.to_string());
+                if let Err(e) = crate::topic_path::adopt_state_dir(&name, &resolved, &state) {
                     tracing::warn!(
                         error = %e,
                         path = %resolved.display(),
                         "Failed to adopt topic state dir; falling back to in-dir .jyc"
                     );
                 }
-            }
-            let jyc_dir = jyc_dir(&resolved);
+                name
+            } else {
+                pin_name.to_string()
+            };
+            let jyc_dir = jyc_dir(&jyc_name, &resolved);
             // One-time migration for the topic → topic rename.
             crate::topic_path::migrate_topic_name_file(&jyc_dir);
             let topic_name_file = jyc_dir.join("topic-name");
@@ -441,7 +475,11 @@ impl TopicManager {
             if !path.is_dir() {
                 continue;
             }
-            let jyc_dir = jyc_dir(&path);
+            let dir_name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let jyc_dir = jyc_dir(&dir_name, &path);
             if !jyc_dir.is_dir() {
                 continue;
             }
@@ -488,7 +526,9 @@ impl TopicManager {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
                 if path.is_dir()
-                    && jyc_dir(&path).is_dir()
+                    && path
+                        .file_name()
+                        .is_some_and(|n| jyc_dir(&n.to_string_lossy(), &path).is_dir())
                     && let Some(name) = entry.file_name().to_str()
                 {
                     topic_names.push(name.to_string());
@@ -502,7 +542,7 @@ impl TopicManager {
         {
             let mut paths = self.topic_paths.lock().await;
             paths.retain(|name, path| {
-                let exists = jyc_dir(&path).is_dir();
+                let exists = jyc_dir(name.as_str(), path.as_path()).is_dir();
                 if !exists {
                     tracing::info!(
                         topic = %name,
@@ -535,7 +575,8 @@ impl TopicManager {
             // Resolve display state (pattern, mode, model, token usage) —
             // shared with `topic_display_state()` so consumers can never
             // drift apart.
-            let (pattern, token_state, mode, model) = self.resolve_display_state(&topic_path).await;
+            let (pattern, token_state, mode, model) =
+                self.resolve_display_state(&name, &topic_path).await;
             let (
                 input_tokens,
                 max_tokens,
@@ -546,10 +587,13 @@ impl TopicManager {
             ) = token_state;
 
             // Read skills from .jyc/skills.json
-            let skills = read_skills(&topic_path).await;
+            let skills = read_skills(&name, &topic_path).await;
 
             // Determine status
-            let status = if jyc_dir(&topic_path).join("question-sent.flag").exists() {
+            let status = if jyc_dir(&name, &topic_path)
+                .join("question-sent.flag")
+                .exists()
+            {
                 TopicStatus::WaitingForAnswer
             } else if active_names.contains(&name) {
                 // Topic has an active queue — it's either processing or waiting for messages
@@ -560,7 +604,7 @@ impl TopicManager {
             };
 
             // Fallback: read .jyc directory mtime if no activity tracker data
-            let last_active_at = match tokio::fs::metadata(jyc_dir(&topic_path)).await {
+            let last_active_at = match tokio::fs::metadata(jyc_dir(&name, &topic_path)).await {
                 Ok(meta) => match meta.modified() {
                     Ok(mtime) => {
                         let dt: chrono::DateTime<chrono::Utc> = mtime.into();
@@ -576,8 +620,9 @@ impl TopicManager {
             // absent when the model has no configured pricing, in which case
             // `cost` stays `None` and the dashboard omits the row.
             let cost = {
-                let session = read_session_cost(&topic_path).await;
-                let today = crate::billing_log_store::BillingLogStore::today_total(&topic_path);
+                let session = read_session_cost(&name, &topic_path).await;
+                let today =
+                    crate::billing_log_store::BillingLogStore::today_total(&name, &topic_path);
                 match (session, today) {
                     (None, None) => None,
                     (session, today) => {
@@ -618,7 +663,7 @@ impl TopicManager {
             };
 
             topics.push(TopicInfo {
-                name,
+                name: name.clone(),
                 channel: self.channel_name.clone(),
                 pattern,
                 status,
@@ -631,6 +676,7 @@ impl TopicManager {
                 total_cache_hit_tokens,
                 total_cache_creation_tokens,
                 total_reasoning_tokens: crate::session_state::read_total_reasoning_tokens(
+                    &name,
                     &topic_path,
                 )
                 .await,
@@ -762,6 +808,109 @@ mode = "agent"
         ))
     }
 
+    // Builder for the synthesized-agents channel shape: raw patterns on a
+    // channel literally named "agents", so `restore_custom_topic_paths`
+    // derives per-agent state keys.
+    fn make_agents_tm(workspace: &std::path::Path, config_str: String) -> Arc<TopicManager> {
+        let storage = Arc::new(MessageStorage::new(workspace));
+        let cancel = CancellationToken::new();
+        let metrics_cancel = CancellationToken::new();
+        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
+        let config = Arc::new(arc_swap::ArcSwap::from_pointee(
+            jyc_types::load_config_from_str(&config_str).unwrap(),
+        ));
+        Arc::new(TopicManager::new_with_options(
+            1,
+            10,
+            storage,
+            Arc::new(NoopOutbound),
+            Arc::new(StaticAgentService::new("ok")),
+            cancel,
+            true,
+            workspace.join("templates"),
+            config,
+            "agents".to_string(),
+            "websocket".to_string(),
+            workspace.parent().unwrap_or(workspace).to_path_buf(),
+            workspace.to_path_buf(),
+            metrics,
+            None,
+        ))
+    }
+
+    // The refactor's core scenario: two agents pin the SAME `topic_path`.
+    // Each must get its own state dir; the legacy in-dir `.jyc` goes to
+    // the alphabetically-first adopter; `/close` on one leaves the
+    // sibling's state and the shared dir untouched.
+    #[tokio::test]
+    async fn co_pinned_agents_share_dir_with_isolated_state() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let repo = tmp.path().join("shared-repo");
+        std::fs::create_dir_all(repo.join(".jyc")).unwrap();
+        std::fs::write(repo.join(".jyc").join("marker"), "legacy").unwrap();
+        std::fs::write(repo.join(".jyc").join("topic-name"), "co-alpha").unwrap();
+
+        let config_str = format!(
+            r#"
+[general]
+[channels.agents]
+type = "websocket"
+[[channels.agents.patterns]]
+name = "co-alpha"
+topic_path = "{}"
+[[channels.agents.patterns]]
+name = "co-beta"
+topic_path = "{}"
+[agent]
+enabled = true
+mode = "agent"
+"#,
+            repo.display(),
+            repo.display()
+        );
+        let tm = make_agents_tm(&workspace, config_str);
+
+        tm.restore_custom_topic_paths().await;
+
+        let paths = tm.custom_topic_paths().await;
+        assert_eq!(paths.get("co-alpha"), Some(&repo), "alpha restored");
+        assert_eq!(
+            paths.get("co-beta"),
+            None,
+            "never-initialized sibling is not advertised until first use"
+        );
+
+        let state_a = tmp.path().join("agents/co-alpha/.jyc");
+        let state_b = tmp.path().join("agents/co-beta/.jyc");
+        assert_eq!(jyc_types::state_dir::jyc_dir("co-alpha", &repo), state_a);
+        assert_eq!(jyc_types::state_dir::jyc_dir("co-beta", &repo), state_b);
+        assert_ne!(state_a, state_b);
+        assert!(
+            state_a.join("marker").exists(),
+            "first (sorted) adopter inherits the legacy .jyc"
+        );
+        assert!(
+            !state_b.join("marker").exists(),
+            "sibling starts with clean isolated state"
+        );
+        assert!(state_b.is_dir(), "sibling state dir provisioned");
+        assert_eq!(
+            jyc_types::state_dir::registered_state("co-beta"),
+            Some(state_b.clone())
+        );
+        assert!(!repo.join(".jyc").exists(), "repo cleaned of state");
+
+        // /close alpha: only alpha's state and registration die.
+        tm.close_topic("co-alpha").await.unwrap();
+        assert!(!state_a.exists(), "closed state deleted");
+        assert!(jyc_types::state_dir::registered_state("co-alpha").is_none());
+        assert!(state_b.is_dir(), "beta state untouched");
+        assert!(jyc_types::state_dir::registered_state("co-beta").is_some());
+        assert!(repo.exists(), "shared dir is user property, kept");
+    }
+
     /// #615: a topic whose mode comes from pattern config (no
     /// `.jyc/mode-override` file) must display that mode and resolve the
     /// mode-specific model chain accordingly.
@@ -890,8 +1039,8 @@ mode = "agent"
 
         let tm = make_tm(&workspace);
         // Worker writes "jyc" to the in-memory cache.
-        tm.set_topic_pattern(&topic_path, "jyc").await;
-        assert_eq!(tm.topic_pattern(&topic_path).await.as_deref(), Some("jyc"));
+        tm.set_topic_pattern("jyc", "jyc").await;
+        assert_eq!(tm.topic_pattern("jyc").await.as_deref(), Some("jyc"));
     }
 
     /// Cold-start path: when the in-memory cache is empty, fall
@@ -911,14 +1060,14 @@ mode = "agent"
 
         let tm = make_tm(&workspace);
         // First read: from disk.
-        assert_eq!(tm.topic_pattern(&topic_path).await.as_deref(), Some("jyc"));
+        assert_eq!(tm.topic_pattern("jyc").await.as_deref(), Some("jyc"));
         // Disk fallback only triggers when the file exists; removing
         // it now and re-reading must NOT return "jyc" — the cache
         // should already have been populated by the first read.
         tokio::fs::remove_file(topic_path.join(".jyc").join("pattern"))
             .await
             .unwrap();
-        assert_eq!(tm.topic_pattern(&topic_path).await.as_deref(), Some("jyc"));
+        assert_eq!(tm.topic_pattern("jyc").await.as_deref(), Some("jyc"));
     }
 
     /// `set_topic_pattern` with an empty name must NOT overwrite an
@@ -935,12 +1084,12 @@ mode = "agent"
             .unwrap();
 
         let tm = make_tm(&workspace);
-        tm.set_topic_pattern(&topic_path, "jyc").await;
-        assert_eq!(tm.topic_pattern(&topic_path).await.as_deref(), Some("jyc"));
+        tm.set_topic_pattern("jyc", "jyc").await;
+        assert_eq!(tm.topic_pattern("jyc").await.as_deref(), Some("jyc"));
 
-        tm.set_topic_pattern(&topic_path, "").await;
+        tm.set_topic_pattern("jyc", "").await;
         assert_eq!(
-            tm.topic_pattern(&topic_path).await.as_deref(),
+            tm.topic_pattern("jyc").await.as_deref(),
             Some("jyc"),
             "empty pattern_name must not overwrite"
         );
@@ -960,7 +1109,7 @@ mode = "agent"
 
         let tm = make_tm(&workspace);
         let worker_clone = tm.worker_clone();
-        worker_clone.set_topic_pattern(&topic_path, "jyc").await;
-        assert_eq!(tm.topic_pattern(&topic_path).await.as_deref(), Some("jyc"));
+        worker_clone.set_topic_pattern("jyc", "jyc").await;
+        assert_eq!(tm.topic_pattern("jyc").await.as_deref(), Some("jyc"));
     }
 }

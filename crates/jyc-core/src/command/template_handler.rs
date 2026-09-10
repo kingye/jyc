@@ -32,7 +32,7 @@ impl TemplateCommandHandler {
     async fn execute_apply(&self, context: &CommandContext) -> Result<CommandResult> {
         let topic_path = &context.topic_path;
 
-        let pattern_file = jyc_dir(topic_path).join("pattern");
+        let pattern_file = jyc_dir(&context.topic_name, topic_path).join("pattern");
         let pattern_name = if pattern_file.exists() {
             tokio::fs::read_to_string(&pattern_file)
                 .await?
@@ -70,10 +70,11 @@ impl TemplateCommandHandler {
             }
         };
 
-        let Some(template_src) = context
-            .template_dirs
-            .resolve_with_topic(&context.topic_path, &template_name)
-        else {
+        let Some(template_src) = context.template_dirs.resolve_with_topic(
+            &context.topic_name,
+            &context.topic_path,
+            &template_name,
+        ) else {
             return Ok(CommandResult {
                 success: false,
                 message: format!(
@@ -102,7 +103,7 @@ impl TemplateCommandHandler {
     async fn execute_update(&self, context: &CommandContext) -> Result<CommandResult> {
         let topic_path = &context.topic_path;
 
-        let pattern_file = jyc_dir(topic_path).join("pattern");
+        let pattern_file = jyc_dir(&context.topic_name, topic_path).join("pattern");
         let pattern_name = if pattern_file.exists() {
             tokio::fs::read_to_string(&pattern_file)
                 .await?
@@ -157,10 +158,11 @@ impl TemplateCommandHandler {
             }
         };
 
-        let Some(template_src) = context
-            .template_dirs
-            .resolve_with_topic(&context.topic_path, &template_name)
-        else {
+        let Some(template_src) = context.template_dirs.resolve_with_topic(
+            &context.topic_name,
+            &context.topic_path,
+            &template_name,
+        ) else {
             return Ok(CommandResult {
                 success: false,
                 message: format!(
@@ -194,6 +196,7 @@ mod tests {
 
     fn test_context(tmp_dir: &Path) -> CommandContext {
         CommandContext {
+            topic_name: "test-topic".to_string(),
             args: vec![],
             topic_path: tmp_dir.to_path_buf(),
             config: Arc::new(

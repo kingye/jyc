@@ -328,6 +328,7 @@ mod tests {
 
     fn test_context_with_args(topic_path: &Path, args: Vec<&str>) -> CommandContext {
         CommandContext {
+            topic_name: "test-topic".to_string(),
             args: args.into_iter().map(|s| s.to_string()).collect(),
             topic_path: topic_path.to_path_buf(),
             config: Arc::new(

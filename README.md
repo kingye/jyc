@@ -190,7 +190,7 @@ Send commands at the top of an email body. These commands work across all channe
 | `/reset` | Clear AI session (requires `--force`) |
 | `/exchange` | Show shareable URLs for this topic's published files |
 | `/exchange <file>` | Show the URL of one published file |
-| `/close` | Close topic and delete directory (requires `--confirm` or `-y`) |
+| `/close` | Close topic and delete directory (requires `--force`) |
 | `/template` | Apply template files to topic (skip existing) |
 | `/template update` | Re-apply template, overwrite existing files |
 | `/context` | Show the context management strategy (`full` / `sliding_window`) |

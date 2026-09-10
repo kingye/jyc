@@ -296,6 +296,7 @@ impl TopicManager {
                     let topic_path = topic_path.clone();
 
                     match initialize_topic_from_template(
+                        &item.topic_name,
                         &topic_path,
                         template_name,
                         &template_dirs,
@@ -330,7 +331,7 @@ impl TopicManager {
                 // even when no template is configured. This is critical for
                 // custom topic_path directories to be rediscovered after
                 // restart (via .jyc/topic-name).
-                let jyc_dir = jyc_dir(&topic_path);
+                let jyc_dir = jyc_dir(&item.topic_name, &topic_path);
                 if let Err(e) = tokio::fs::create_dir_all(&jyc_dir).await {
                     tracing::warn!(error = %e, "Failed to create .jyc directory");
                 }
@@ -349,7 +350,7 @@ impl TopicManager {
                     // belong to" — worker writes, inspect server
                     // reads.
                     topic_manager
-                        .set_topic_pattern(&topic_path, &item.pattern_match.pattern_name)
+                        .set_topic_pattern(&item.topic_name, &item.pattern_match.pattern_name)
                         .await;
                 }
                 // Persist the logical topic name so custom topic_path

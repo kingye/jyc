@@ -17,8 +17,10 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
 };
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
+use std::cell::RefCell;
 use std::io::stdout;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -127,6 +129,10 @@ struct App {
 
     /// Chat pane state (WebSocket topic chat for any channel type).
     chat: ChatState,
+
+    /// Text-pane rectangles eligible for OSC 8 link detection, refreshed by
+    /// the renderer every frame and shared with the terminal backend.
+    link_regions: hyperlink::LinkRegions,
 }
 
 impl App {
@@ -155,6 +161,7 @@ impl App {
             overview_ws_rx,
             overview_ws_target: None,
             chat: ChatState::new(ws_rx),
+            link_regions: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -546,11 +553,13 @@ pub async fn run(
     // the terminal. Otherwise the backend's Drop flushes buffered escape
     // codes after LeaveAlternateScreen, corrupting line alignment.
     let result = {
-        let backend = hyperlink::HyperlinkBackend::new(stdout());
+        let link_regions: hyperlink::LinkRegions = Rc::new(RefCell::new(Vec::new()));
+        let backend = hyperlink::HyperlinkBackend::new(stdout(), link_regions.clone());
         let mut terminal = Terminal::new(backend)?;
 
         let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         let mut app = App::new(ws_rx, token);
+        app.link_regions = link_regions;
         let mut mouse_frag_filter = MouseFragmentFilter::default();
         let poll_interval = Duration::from_millis(500);
         let mut last_poll = std::time::Instant::now() - poll_interval; // Force immediate poll
@@ -1210,6 +1219,9 @@ fn toggle_mouse_capture(app: &mut App) {
 
 fn ui(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+
+    // Link regions are re-registered by the active screen's renderer.
+    app.link_regions.borrow_mut().clear();
 
     if app.chat.visible {
         ui_chat_mode(frame, area, app);

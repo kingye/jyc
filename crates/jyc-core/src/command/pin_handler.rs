@@ -45,19 +45,23 @@ impl CommandHandler for PinCommandHandler {
             }
         };
 
-        // Check if already pinned by reading the config file for the
-        // adhoc path. Applies to both the new [agents.<name>] form and
-        // the legacy [[channels.x.patterns]] form.
-        let raw = tokio::fs::read_to_string(&ctx.config_path)
-            .await
-            .unwrap_or_default();
-        let escaped = ctx.adhoc_path.to_string_lossy().replace('\\', "\\\\");
-        if raw.contains(&escaped) {
+        // Check if already pinned by parsing the config file (not a raw
+        // substring match, which false-positived on comments). Applies to
+        // both the new [agents.<name>] form and the legacy
+        // [[channels.x.patterns]] form.
+        if let Some(location) = pin_common::find_existing_pin(
+            &ctx.config_path,
+            &ctx.adhoc_path,
+            self.topic_manager.data_root(),
+        )
+        .await
+        {
             return Ok(CommandResult {
                 success: true,
                 message: format!(
-                    "Topic '{}' is already pinned to agent '{}'.",
-                    ctx.topic_name, ctx.topic_name
+                    "Topic '{}' is already pinned via {} — no change written.\n\
+                     Unpin first (/unpin) or pick a different directory.",
+                    ctx.topic_name, location
                 ),
                 error: None,
                 append_body: None,

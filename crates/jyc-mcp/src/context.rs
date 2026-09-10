@@ -41,8 +41,12 @@ pub struct ReplyContext {
 /// Save reply context to `.jyc/reply-context.json` in the topic directory.
 ///
 /// Called by agent service before sending the prompt.
-pub async fn save_reply_context(topic_path: &Path, ctx: &ReplyContext) -> Result<()> {
-    let jyc_dir = jyc_dir(topic_path);
+pub async fn save_reply_context(
+    topic_name: &str,
+    topic_path: &Path,
+    ctx: &ReplyContext,
+) -> Result<()> {
+    let jyc_dir = jyc_dir(topic_name, topic_path);
     tokio::fs::create_dir_all(&jyc_dir).await?;
 
     let path = jyc_dir.join(REPLY_CONTEXT_FILENAME);
@@ -60,8 +64,8 @@ pub async fn save_reply_context(topic_path: &Path, ctx: &ReplyContext) -> Result
 /// Load reply context from `.jyc/reply-context.json` in the given directory.
 ///
 /// Called by the MCP reply tool from its cwd (= topic directory).
-pub async fn load_reply_context(topic_path: &Path) -> Result<ReplyContext> {
-    let path = jyc_dir(topic_path).join(REPLY_CONTEXT_FILENAME);
+pub async fn load_reply_context(topic_name: &str, topic_path: &Path) -> Result<ReplyContext> {
+    let path = jyc_dir(topic_name, topic_path).join(REPLY_CONTEXT_FILENAME);
 
     if !path.exists() {
         bail!("reply-context.json not found in {}", topic_path.display());
@@ -86,8 +90,8 @@ pub async fn load_reply_context(topic_path: &Path) -> Result<ReplyContext> {
 /// Note: Not called during normal operation; context persists to
 /// support multiple replies in the same topic.
 #[allow(dead_code)]
-pub async fn cleanup_reply_context(topic_path: &Path) {
-    let path = jyc_dir(topic_path).join(REPLY_CONTEXT_FILENAME);
+pub async fn cleanup_reply_context(topic_name: &str, topic_path: &Path) {
+    let path = jyc_dir(topic_name, topic_path).join(REPLY_CONTEXT_FILENAME);
     if path.exists() {
         tokio::fs::remove_file(&path).await.ok();
     }
@@ -99,6 +103,18 @@ pub async fn cleanup_reply_context(topic_path: &Path) {
 /// Falls back to `std::env::current_dir()` for backward compatibility.
 /// Returns an empty PathBuf only if both fail (should never happen in practice).
 pub fn resolve_topic_dir() -> PathBuf {
+    topic_dir_from_env()
+}
+
+/// Topic NAME for out-of-process `.jyc` lookups — the state registry keys
+/// on the name, so co-pinned topics resolve their own state dir. Set by
+/// the agent's MCP client at spawn (`JYC_TOPIC_NAME`); empty means
+/// unregistered (legacy `<cwd>/.jyc` fallback).
+pub fn resolve_topic_name() -> String {
+    std::env::var("JYC_TOPIC_NAME").unwrap_or_default()
+}
+
+fn topic_dir_from_env() -> PathBuf {
     if let Ok(dir) = std::env::var("JYC_THREAD_DIR")
         && !dir.is_empty()
     {
@@ -124,8 +140,8 @@ mod tests {
             created_at: "2026-03-27T10:00:00Z".to_string(),
         };
 
-        save_reply_context(tmp.path(), &ctx).await.unwrap();
-        let loaded = load_reply_context(tmp.path()).await.unwrap();
+        save_reply_context("t", tmp.path(), &ctx).await.unwrap();
+        let loaded = load_reply_context("t", tmp.path()).await.unwrap();
 
         assert_eq!(loaded.channel, "jiny283");
         assert_eq!(loaded.topic_name, "weather");
@@ -138,7 +154,7 @@ mod tests {
     #[tokio::test]
     async fn test_load_missing_file() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(load_reply_context(tmp.path()).await.is_err());
+        assert!(load_reply_context("t", tmp.path()).await.is_err());
     }
 
     #[tokio::test]
@@ -154,10 +170,10 @@ mod tests {
             created_at: "now".to_string(),
         };
 
-        save_reply_context(tmp.path(), &ctx).await.unwrap();
+        save_reply_context("t", tmp.path(), &ctx).await.unwrap();
         assert!(tmp.path().join(".jyc/reply-context.json").exists());
 
-        cleanup_reply_context(tmp.path()).await;
+        cleanup_reply_context("t", tmp.path()).await;
         assert!(!tmp.path().join(".jyc/reply-context.json").exists());
     }
 
@@ -170,6 +186,6 @@ mod tests {
             jyc_dir.join("reply-context.json"),
             r#"{"channel":"","topicName":"t","incomingMessageDir":"d","uid":"1","createdAt":"now"}"#,
         ).await.unwrap();
-        assert!(load_reply_context(tmp.path()).await.is_err());
+        assert!(load_reply_context("t", tmp.path()).await.is_err());
     }
 }

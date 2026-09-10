@@ -392,8 +392,10 @@ Email arrives
 
 Each topic keeps its runtime state (agent session, chat history, billing,
 jobs, exchange files, L3 topic config) in a `.jyc` directory resolved
-through `jyc_types::state_dir::jyc_dir(topic_dir)` — a process-global
-registry lookup with a `<topic_dir>/.jyc` fallback.
+through `jyc_types::state_dir::jyc_dir(topic_name, topic_dir)` — a process-global
+registry keyed by **topic name** (the identity that distinguishes topics)
+with a `<topic_dir>/.jyc` fallback. Keying by name is what lets several
+agents pin the same directory while each keeps its own state dir.
 
 | Topic kind | Topic dir | State dir |
 |---|---|---|
@@ -403,27 +405,45 @@ registry lookup with a `<topic_dir>/.jyc` fallback.
 | Ad-hoc pinned topic (`jyc open -p`, non-agents pin) | the pinned dir | `<data_home>/agents/_<path-escaped>/.jyc` |
 | Dynamic pipe topic | `<data_home>/agents/<agent>/<topic>/` | `<topic_dir>/.jyc` (fallback) |
 
-- **Identity.** Config-key agents keep their `[agents.<key>]` name for the
-  state dir — TOML keys are unique by construction. Pinned dirs without an
-  agent key get a path-derived name: `_` is escaped to `__`, then `/` (and
+Multiple agent rows may pin the same topic dir (e.g. one repo shared by
+`jyc` and `jyc_git_planner`); they still get one state dir per topic name.
+
+- **Identity.** Registrations key on the topic *name*. Config-key agents keep
+  their `[agents.<key>]` name for the state dir — TOML keys are unique by
+  construction. Pinned dirs without an agent key get a path-derived name:
+  `_` is escaped to `__`, then `/` (and
   Windows `:`) become `_`, and the leading `/` is kept as `_`. Names around
   separator boundaries stay distinct (`/a/b_c` → `_a_b__c` ≠ `_a__b_c` ←
   `/a_b/c`); the only residual collision is a component ending in `_`
   directly adjacent to one starting with `_` (`/a_/b` vs `/a/_b`), which
   would make such sibling pins share one state dir. The `_` prefix is a
   reserved namespace that cannot collide with config keys.
-- **Adoption & migration.** `topic_path::adopt_state_dir` registers the
-  mapping and, on first adoption, moves a legacy `<topic_dir>/.jyc` out of
-  the repo once (rename with cross-device copy fallback). Repos stay
+- **Adoption & migration.** `topic_path::adopt_state_dir(topic_name,
+  topic_dir, state_dir)` registers the name→state mapping and, on first
+  adoption, moves a legacy `<topic_dir>/.jyc` into place once (rename with
+  cross-device copy fallback). When several pins share one dir, adoption
+  runs in sorted pattern order and the first adopter inherits the legacy
+  state; siblings start clean (no ping-pong). Repos stay
   clean; the "never commit .jyc" hazard disappears. Config pins adopt at
   startup inside `TopicManager::restore_custom_topic_paths`; runtime pins
   (`set_topic_path`, dashboard `open -p`) adopt immediately.
-- **Restore.** Each adopted state dir carries a `topic-path` breadcrumb.
-  At startup `restore_state_registry` re-registers every
-  `<data_home>/agents/*/.jyc/topic-path` before channels start (also
-  bootstraps config-less external subprocesses like `jyc mcp-reply-tool`);
-  config pins additionally adopt from config — identical mappings,
-  idempotent.
+- **Restore.** Each adopted state dir carries `topic-name` and
+  `topic-path` breadcrumbs. At startup `restore_state_registry` scans
+  `<data_home>/agents/*/.jyc` and re-registers each mapping by the
+  `topic-name` breadcrumb (falling back to the folder name for
+  config-key dirs predating the breadcrumb; derived `_` dirs with no
+  breadcrumb are skipped — they are re-adopted deterministically when the
+  dir is re-opened). Runs before channels start and also bootstraps
+  config-less external subprocesses like `jyc mcp-reply-tool` (which
+  receive the topic name via `JYC_TOPIC_NAME` at spawn); config pins
+  additionally adopt from config — identical mappings, idempotent.
+- **Close.** `/close --force` on an adopted topic deletes the state dir
+  registered for that topic *name* and unregisters it; the pinned topic dir
+  (e.g. a repo) is kept, and a sibling topic co-pinning the same dir keeps
+  its own state. Unregistered topics keep the legacy whole-dir deletion.
+  Ad-hoc pins (no config key) derive their state name from the dir, so two
+  runtime topics opening one dir intentionally share — and closing either
+  destroys — that single state: "the dir is the topic".
 - **Agent access.** When the state dir lies outside the topic dir it is
   appended to the agent's additional read/write roots (parity with the
   pre-refactor in-dir `.jyc`), and the system prompt's Chat History
@@ -3230,7 +3250,7 @@ INFO worker{channel=jiny283, topic=weather}: Worker finished
 | `/plan`        | Switch to plan mode (read-only, enforced by in-process agent)         | `/plan`                                            |
 | `/build`       | Switch to build mode (full execution, default)                | `/build`                                           |
 | `/reset`       | Clear the current in-process agent session (start fresh context)      | `/reset`                                           |
-| `/close`       | Close the current topic (deletes topic directory and state; requires `-y`/`--confirm`) | `/close -y`                                        |
+| `/close`       | Close the current topic (deletes topic directory and state; requires `--force`) | `/close --force`                                   |
 | `/template`    | Re-apply the pattern's topic template files                  | `/template`                                        |
 
 ### Command Handler Trait

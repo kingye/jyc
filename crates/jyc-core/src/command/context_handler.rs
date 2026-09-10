@@ -50,10 +50,11 @@ impl CommandHandler for ContextCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let jyc_dir = jyc_dir(&context.topic_path);
+        let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
         let override_path = jyc_dir.join(crate::session_state::CONTEXT_STRATEGY_FILE);
 
-        let matched_pattern = crate::session_state::read_pattern(&context.topic_path).await;
+        let matched_pattern =
+            crate::session_state::read_pattern(&context.topic_name, &context.topic_path).await;
         let configured = crate::session_state::resolve_context_strategy(
             &context.config,
             &context.channel,
@@ -62,8 +63,11 @@ impl CommandHandler for ContextCommandHandler {
 
         // No args → show current strategy (runtime override takes priority).
         if context.args.is_empty() {
-            let runtime =
-                crate::session_state::read_context_strategy_override(&context.topic_path).await;
+            let runtime = crate::session_state::read_context_strategy_override(
+                &context.topic_name,
+                &context.topic_path,
+            )
+            .await;
             let (label, source) = match &runtime {
                 Some(cs) => (describe_strategy(cs), "override"),
                 None => (describe_strategy(&configured), "default"),
@@ -319,6 +323,7 @@ mod tests {
 
     fn test_context(topic_path: &Path) -> CommandContext {
         CommandContext {
+            topic_name: "test-topic".to_string(),
             args: vec![],
             topic_path: topic_path.to_path_buf(),
             config: Arc::new(

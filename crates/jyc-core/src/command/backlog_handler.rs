@@ -61,8 +61,8 @@ impl BacklogCommandHandler {
     }
 
     /// Returns `<topic_path>/.jyc/backlog.jsonl`.
-    fn backlog_path(topic_path: &Path) -> PathBuf {
-        jyc_dir(topic_path).join(BACKLOG_FILENAME)
+    fn backlog_path(topic_name: &str, topic_path: &Path) -> PathBuf {
+        jyc_dir(topic_name, topic_path).join(BACKLOG_FILENAME)
     }
 
     /// Reads the file, returning `Ok(vec![])` if it does not exist.
@@ -189,7 +189,7 @@ impl CommandHandler for BacklogCommandHandler {
         // simultaneous push/pop is extremely unlikely. If races are ever
         // observed, add `fs2` file locking around the read-modify-write.
         let args = &context.args;
-        let path = Self::backlog_path(&context.topic_path);
+        let path = Self::backlog_path(&context.topic_name, &context.topic_path);
 
         if args.is_empty() {
             return Ok(CommandResult {
@@ -454,6 +454,7 @@ mod tests {
     /// Build a `CommandContext` pointing at the given temp dir as the topic path.
     fn ctx_for(path: &Path) -> CommandContext {
         CommandContext {
+            topic_name: "test-topic".to_string(),
             args: vec![],
             topic_path: path.to_path_buf(),
             config: Arc::new(
@@ -515,7 +516,7 @@ mode = "agent"
         assert_eq!(r.message, "Backlog: pushed item 1");
 
         let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "hello world");
@@ -537,7 +538,7 @@ mode = "agent"
         assert!(r.success, "{:?}", r.error);
 
         let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "line one\nline two\nline three");
@@ -560,7 +561,7 @@ mode = "agent"
         assert!(r.success, "{:?}", r.error);
 
         let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "first line\nsecond line\nthird line");
@@ -578,7 +579,7 @@ mode = "agent"
         assert!(r.success, "{:?}", r.error);
 
         let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "para one\n\npara two");
@@ -600,7 +601,7 @@ mode = "agent"
         assert!(!r.success);
         assert!(r.message.contains("description required"));
         assert!(
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap()
                 .is_empty(),
             "no blank item may be stored"
@@ -616,7 +617,7 @@ mode = "agent"
         assert!(!r.success);
         assert!(r.error.unwrap().contains("empty description"));
         // Nothing should be persisted.
-        assert!(!BacklogCommandHandler::backlog_path(dir.path()).exists());
+        assert!(!BacklogCommandHandler::backlog_path("", dir.path()).exists());
     }
 
     #[tokio::test]
@@ -713,7 +714,7 @@ mode = "agent"
         assert_eq!(r.append_body.as_deref(), Some("first"));
 
         let remaining =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].text, "second");
@@ -771,7 +772,7 @@ mode = "agent"
         assert_eq!(r.append_body.as_deref(), Some("b"));
 
         let remaining =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap();
         assert_eq!(
             remaining
@@ -795,7 +796,7 @@ mode = "agent"
 
         // File unchanged.
         let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap();
         assert_eq!(items.len(), 1);
     }
@@ -814,7 +815,7 @@ mode = "agent"
         assert!(r.append_body.is_none());
 
         let remaining =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].text, "y");
@@ -854,7 +855,7 @@ mode = "agent"
         assert!(r.append_body.is_none());
 
         let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap();
         assert_eq!(items[0].text, "keep me");
         assert_eq!(items[1].text, "fix the typo");
@@ -870,7 +871,7 @@ mode = "agent"
         let r = run(&h, dir.path(), &["set", "1", "line a", "line b"]).await;
         assert!(r.success, "{:?}", r.error);
         let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap();
         assert_eq!(items[0].text, "line a\nline b");
     }
@@ -884,7 +885,7 @@ mode = "agent"
         let r = run(&h, dir.path(), &["set", "1 first", "second"]).await;
         assert!(r.success, "{:?}", r.error);
         let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap();
         assert_eq!(items[0].text, "first\nsecond");
     }
@@ -900,7 +901,7 @@ mode = "agent"
         let r = run(&h, dir.path(), &["set", "1 para one", "", "para two", ""]).await;
         assert!(r.success, "{:?}", r.error);
         let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap();
         assert_eq!(items[0].text, "para one\n\npara two");
     }
@@ -947,7 +948,7 @@ mode = "agent"
         assert!(!r.success);
         assert!(r.message.contains("new text required"));
         let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(dir.path()))
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
                 .unwrap();
         assert_eq!(items[0].text, "keep");
     }
@@ -1047,7 +1048,7 @@ mode = "agent"
 
         run(&h, dir.path(), &["push", "x"]).await;
 
-        let path = BacklogCommandHandler::backlog_path(dir.path());
+        let path = BacklogCommandHandler::backlog_path("", dir.path());
         assert!(path.exists(), "backlog.jsonl should exist after push");
         let tmp = path.with_extension("jsonl.tmp");
         assert!(
@@ -1063,7 +1064,7 @@ mode = "agent"
         let h = BacklogCommandHandler::new();
 
         // Pre-plant a stale tmp from a previous interrupted write.
-        let path = BacklogCommandHandler::backlog_path(dir.path());
+        let path = BacklogCommandHandler::backlog_path("", dir.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let tmp = path.with_extension("jsonl.tmp");
         std::fs::write(&tmp, b"stale garbage\n").unwrap();

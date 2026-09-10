@@ -62,7 +62,7 @@ impl CommandHandler for ExchangeCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let jyc_dir = jyc_dir(&context.topic_path);
+        let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
 
         // No token means nothing was ever published (or /reset killed the
         // links). Never mint one here.

@@ -49,6 +49,7 @@ base_url = "https://jyc.example.com"
 fn test_context(topic_path: &Path, args: &[&str]) -> CommandContext {
     CommandContext {
         args: args.iter().map(|s| s.to_string()).collect(),
+        topic_name: "test-topic".to_string(),
         topic_path: topic_path.to_path_buf(),
         config: test_config(),
         channel: "test".into(),
@@ -86,7 +87,7 @@ fn make_topic_manager(tmp: &TempDir, workspace: &Path) -> Arc<TopicManager> {
 /// state-dir resolver production uses (the topic's state may be adopted to
 /// data_home; pre-adoption seeds ride the migration move).
 async fn seed_published(topic_dir: &Path, name: &str, token: &str) {
-    let jyc = jyc_types::state_dir::jyc_dir(topic_dir);
+    let jyc = jyc_types::state_dir::jyc_dir("", topic_dir);
     let exchange = jyc.join("exchange");
     tokio::fs::create_dir_all(&exchange).await.unwrap();
     tokio::fs::write(exchange.join(name), b"bytes")

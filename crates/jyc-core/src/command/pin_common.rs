@@ -48,6 +48,43 @@ pub async fn build_pin_context(
     })
 }
 
+/// If the config file on disk already pins `adhoc_path`, return a
+/// human-readable description of where it is pinned.
+///
+/// Parses the config through the same loader pipeline as startup, so
+/// `extends`-inherited pins count, `~`/relative forms resolve identically,
+/// and comments or unrelated strings cannot false-positive (the previous
+/// raw-substring check reported "already pinned" for a path that only
+/// appeared inside a commented-out block).
+pub async fn find_existing_pin(
+    config_path: &std::path::Path,
+    adhoc_path: &std::path::Path,
+    data_root: &std::path::Path,
+) -> Option<String> {
+    let raw = tokio::fs::read_to_string(config_path).await.ok()?;
+    let cfg = jyc_types::load_config_from_str(&raw).ok()?;
+    for (name, agent) in &cfg.agents {
+        if let Some(tp) = &agent.topic_path
+            && crate::topic_path::resolve_topic_path(tp, data_root) == adhoc_path
+        {
+            return Some(format!("[agents.{name}] topic_path"));
+        }
+    }
+    for (channel, ch) in &cfg.channels {
+        for pat in ch.patterns.iter().flatten() {
+            if let Some(tp) = &pat.topic_path
+                && crate::topic_path::resolve_topic_path(tp, data_root) == adhoc_path
+            {
+                return Some(format!(
+                    "[[channels.{channel}.patterns]] topic_path (pattern '{}')",
+                    pat.name
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// Append a new `[agents.<agent_name>]` section to the config file on disk,
 /// pinning the ad-hoc topic so it survives a `jyc serve` restart.
 ///
@@ -342,5 +379,103 @@ topic_path = "{}"
         let content = tokio::fs::read_to_string(&config_path).await.unwrap();
         assert!(!content.contains("project-a"));
         assert!(content.contains("project-b"));
+    }
+
+    #[tokio::test]
+    async fn find_existing_pin_ignores_comments_finds_real_pins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        let pinned = tmp.path().join("projects").join("real");
+        let commented = tmp.path().join("projects").join("ghost");
+        tokio::fs::write(
+            &config_path,
+            format!(
+                r#"
+[general]
+
+# [[channels.local_dev.patterns]]
+# name = "ghost"
+# thread_path = "{}"
+
+[agents.other]
+topic_path = "{}"
+
+[agent]
+enabled = true
+mode = "agent"
+"#,
+                commented.display(),
+                pinned.display()
+            ),
+        )
+        .await
+        .unwrap();
+
+        // A path that only appears in a comment is NOT a pin.
+        assert!(
+            find_existing_pin(&config_path, &commented, tmp.path())
+                .await
+                .is_none(),
+            "commented-out path must not count as pinned"
+        );
+        // A real agents pin IS found, with its location.
+        let loc = find_existing_pin(&config_path, &pinned, tmp.path()).await;
+        assert_eq!(loc.as_deref(), Some("[agents.other] topic_path"));
+    }
+
+    #[tokio::test]
+    async fn find_existing_pin_resolves_tilde_and_legacy_patterns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        let legacy = tmp.path().join("legacy-pin");
+        tokio::fs::write(
+            &config_path,
+            format!(
+                r#"
+[general]
+
+[channels.ws]
+type = "websocket"
+
+[[channels.ws.patterns]]
+name = "old"
+topic_path = "{}"
+
+[agent]
+enabled = true
+mode = "agent"
+"#,
+                legacy.display()
+            ),
+        )
+        .await
+        .unwrap();
+        let loc = find_existing_pin(&config_path, &legacy, tmp.path()).await;
+        assert!(
+            loc.as_deref()
+                .is_some_and(|l| l.contains("channels.ws.patterns") && l.contains("'old'")),
+            "legacy pattern pin should be found, got {loc:?}"
+        );
+        // Tilde form resolves through HOME and matches too.
+        tokio::fs::write(
+            &config_path,
+            r#"
+[general]
+
+[agents.tildy]
+topic_path = "~/probe-pin-home"
+
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        )
+        .await
+        .unwrap();
+        if let Some(home) = std::env::var_os("HOME") {
+            let want = std::path::PathBuf::from(home).join("probe-pin-home");
+            let loc = find_existing_pin(&config_path, &want, tmp.path()).await;
+            assert_eq!(loc.as_deref(), Some("[agents.tildy] topic_path"));
+        }
     }
 }

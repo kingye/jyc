@@ -142,7 +142,7 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         // Persist reply to chat log for history loading
         if let Err(e) = self
             .storage
-            .store_reply(topic_path, reply_text, _message_dir)
+            .store_reply(topic, topic_path, reply_text, _message_dir)
             .await
         {
             tracing::warn!(error = %e, "Failed to store WebSocket reply to chat log");

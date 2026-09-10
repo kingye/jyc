@@ -167,15 +167,15 @@ impl JobScheduler {
                     continue;
                 }
 
-                let jobs_dir = jyc_dir(&topic_path).join("jobs");
-                if !jobs_dir.exists() {
-                    continue;
-                }
-
                 let topic_name = match topic_path.file_name().and_then(|n| n.to_str()) {
                     Some(name) => name.to_string(),
                     None => continue,
                 };
+
+                let jobs_dir = jyc_dir(&topic_name, &topic_path).join("jobs");
+                if !jobs_dir.exists() {
+                    continue;
+                }
 
                 // Extract channel_name from workspace directory structure:
                 // <workdir>/<channel_name>/workspace/<topic_name>/
@@ -189,17 +189,18 @@ impl JobScheduler {
                 };
 
                 // Build scoped JobStore for this topic
-                let store = match JobStore::new(&topic_path, self.max_jobs_per_topic).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!(
-                            topic = %topic_name,
-                            error = %e,
-                            "Failed to open job store for topic"
-                        );
-                        continue;
-                    }
-                };
+                let store =
+                    match JobStore::new(&topic_name, &topic_path, self.max_jobs_per_topic).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::warn!(
+                                topic = %topic_name,
+                                error = %e,
+                                "Failed to open job store for topic"
+                            );
+                            continue;
+                        }
+                    };
 
                 let jobs = match store.list().await {
                     Ok(jobs) => jobs,
@@ -236,11 +237,13 @@ impl JobScheduler {
         for (channel_name, tm) in tms.iter() {
             let custom_paths = tm.custom_topic_paths().await;
             for (topic_name, topic_path) in &custom_paths {
-                let jobs_dir = jyc_dir(topic_path).join("jobs");
+                let jobs_dir = jyc_dir(topic_name, topic_path).join("jobs");
                 if !jobs_dir.exists() {
                     continue;
                 }
-                let store = match JobStore::new(topic_path, self.max_jobs_per_topic).await {
+                let store = match JobStore::new(topic_name, topic_path, self.max_jobs_per_topic)
+                    .await
+                {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::warn!(topic = %topic_name, error = %e, "Failed to open job store for custom-path topic");
@@ -358,15 +361,19 @@ impl JobScheduler {
                     continue;
                 }
 
-                let jobs_dir = jyc_dir(&topic_path).join("jobs");
+                let Some(topic_name) = topic_path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                let jobs_dir = jyc_dir(topic_name, &topic_path).join("jobs");
                 if !jobs_dir.exists() {
                     continue;
                 }
 
-                let store = match JobStore::new(&topic_path, self.max_jobs_per_topic).await {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
+                let store =
+                    match JobStore::new(topic_name, &topic_path, self.max_jobs_per_topic).await {
+                        Ok(s) => s,
+                        Err(_) => continue,
+                    };
 
                 let jobs = match store.list().await {
                     Ok(jobs) => jobs,
@@ -417,7 +424,7 @@ mod tests {
     ) {
         let topic_path = workspace.join(topic_name);
         tokio::fs::create_dir_all(&topic_path).await.unwrap();
-        let store = JobStore::new(&topic_path, 10).await.unwrap();
+        let store = JobStore::new("", &topic_path, 10).await.unwrap();
         for job in jobs {
             store.create(&job).await.unwrap();
         }
@@ -552,7 +559,7 @@ mod tests {
 
         // Due job in topic-1: fire_job fails (no TM), so it stays unchanged
         let topic1_path = tmp.path().join("workspace/topic-1");
-        let store1 = JobStore::new(&topic1_path, 10).await.unwrap();
+        let store1 = JobStore::new("", &topic1_path, 10).await.unwrap();
         let updated_due = store1.get(&due_id).await.unwrap().unwrap();
         assert!(
             updated_due.enabled,
@@ -565,7 +572,7 @@ mod tests {
 
         // Future job in topic-2: untouched
         let topic2_path = tmp.path().join("workspace/topic-2");
-        let store2 = JobStore::new(&topic2_path, 10).await.unwrap();
+        let store2 = JobStore::new("", &topic2_path, 10).await.unwrap();
         let updated_future = store2.get(&future_id).await.unwrap().unwrap();
         assert!(updated_future.enabled, "Future job should remain enabled");
         assert!(
@@ -575,7 +582,7 @@ mod tests {
 
         // Disabled job in topic-3: untouched
         let topic3_path = tmp.path().join("workspace/topic-3");
-        let store3 = JobStore::new(&topic3_path, 10).await.unwrap();
+        let store3 = JobStore::new("", &topic3_path, 10).await.unwrap();
         let updated_disabled = store3.get(&disabled_id).await.unwrap().unwrap();
         assert!(
             !updated_disabled.enabled,
@@ -623,14 +630,14 @@ mod tests {
         scheduler.run_cycle().await;
 
         // A's due job should have been discovered (but fire_job fails)
-        let store_a = JobStore::new(&tmp.path().join("channel-a/workspace/topic-a1"), 10)
+        let store_a = JobStore::new("", &tmp.path().join("channel-a/workspace/topic-a1"), 10)
             .await
             .unwrap();
         let a_job = store_a.get(&due_id_a).await.unwrap().unwrap();
         assert!(a_job.enabled, "A's job stays enabled (no TM)");
 
         // B's future job should be untouched
-        let store_b = JobStore::new(&tmp.path().join("channel-b/workspace/topic-b1"), 10)
+        let store_b = JobStore::new("", &tmp.path().join("channel-b/workspace/topic-b1"), 10)
             .await
             .unwrap();
         let b_job = store_b.get(&future_id_b).await.unwrap().unwrap();

@@ -17,6 +17,8 @@ use tokio::fs;
 /// providing atomic per-file operations.
 #[derive(Clone)]
 pub struct JobStore {
+    /// Topic identity this store resolves state for.
+    topic_name: String,
     /// Topic directory path. Jobs are stored at `{.jyc/jobs/<id>.json`.
     topic_path: PathBuf,
     /// Maximum number of jobs allowed per topic.
@@ -27,13 +29,14 @@ impl JobStore {
     /// Create a new JobStore for the given topic path.
     ///
     /// The jobs directory (`.jyc/jobs/`) is created if it doesn't exist.
-    pub async fn new(topic_path: &Path, max_jobs: usize) -> Result<Self> {
-        let jobs_dir = jyc_dir(topic_path).join("jobs");
+    pub async fn new(topic_name: &str, topic_path: &Path, max_jobs: usize) -> Result<Self> {
+        let jobs_dir = jyc_dir(topic_name, topic_path).join("jobs");
         fs::create_dir_all(&jobs_dir)
             .await
             .with_context(|| format!("failed to create jobs directory: {}", jobs_dir.display()))?;
 
         Ok(Self {
+            topic_name: topic_name.to_string(),
             topic_path: topic_path.to_path_buf(),
             max_jobs,
         })
@@ -41,7 +44,7 @@ impl JobStore {
 
     /// Return the path to the jobs directory.
     pub fn jobs_dir(&self) -> PathBuf {
-        jyc_dir(&self.topic_path).join("jobs")
+        jyc_dir(&self.topic_name, &self.topic_path).join("jobs")
     }
 
     /// Return the path to the job file for the given ID.
@@ -196,7 +199,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_and_get() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path(), 10).await.unwrap();
+        let store = JobStore::new("", tmp.path(), 10).await.unwrap();
         let job = sample_job("job-1");
 
         store.create(&job).await.unwrap();
@@ -208,7 +211,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_duplicate_fails() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path(), 10).await.unwrap();
+        let store = JobStore::new("", tmp.path(), 10).await.unwrap();
         let job = sample_job("job-1");
 
         store.create(&job).await.unwrap();
@@ -219,7 +222,7 @@ mod tests {
     #[tokio::test]
     async fn test_update() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path(), 10).await.unwrap();
+        let store = JobStore::new("", tmp.path(), 10).await.unwrap();
         let mut job = sample_job("job-1");
         store.create(&job).await.unwrap();
 
@@ -233,7 +236,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_nonexistent_fails() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path(), 10).await.unwrap();
+        let store = JobStore::new("", tmp.path(), 10).await.unwrap();
         let job = sample_job("nonexistent");
         let result = store.update(&job).await;
         assert!(result.is_err());
@@ -242,7 +245,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path(), 10).await.unwrap();
+        let store = JobStore::new("", tmp.path(), 10).await.unwrap();
         let job = sample_job("job-1");
         store.create(&job).await.unwrap();
 
@@ -256,7 +259,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_nonexistent_returns_false() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path(), 10).await.unwrap();
+        let store = JobStore::new("", tmp.path(), 10).await.unwrap();
         let deleted = store.delete("nonexistent").await.unwrap();
         assert!(!deleted);
     }
@@ -264,7 +267,7 @@ mod tests {
     #[tokio::test]
     async fn test_list() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path(), 10).await.unwrap();
+        let store = JobStore::new("", tmp.path(), 10).await.unwrap();
 
         let job1 = sample_job("job-1");
         let job2 = sample_job("job-2");
@@ -278,7 +281,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_empty() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path(), 10).await.unwrap();
+        let store = JobStore::new("", tmp.path(), 10).await.unwrap();
         let jobs = store.list().await.unwrap();
         assert!(jobs.is_empty());
     }
@@ -286,7 +289,7 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_creates_new() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path(), 10).await.unwrap();
+        let store = JobStore::new("", tmp.path(), 10).await.unwrap();
         let job = sample_job("job-1");
 
         store.upsert(&job).await.unwrap();
@@ -296,7 +299,7 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_updates_existing() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path(), 10).await.unwrap();
+        let store = JobStore::new("", tmp.path(), 10).await.unwrap();
         let mut job = sample_job("job-1");
         store.upsert(&job).await.unwrap();
 
@@ -310,7 +313,7 @@ mod tests {
     #[tokio::test]
     async fn test_max_jobs_limit() {
         let tmp = tempdir().unwrap();
-        let store = JobStore::new(tmp.path(), 2).await.unwrap();
+        let store = JobStore::new("", tmp.path(), 2).await.unwrap();
 
         let job1 = sample_job("job-1");
         let job2 = sample_job("job-2");

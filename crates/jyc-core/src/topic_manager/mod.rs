@@ -103,7 +103,7 @@ pub struct TopicManager {
     // and writes here are infrequent (one per processed message, one
     // per overview poll), so the read-parallelism of `RwLock` is not
     // worth the extra type complexity.
-    pub(crate) topic_patterns: Arc<Mutex<HashMap<PathBuf, String>>>,
+    pub(crate) topic_patterns: Arc<Mutex<HashMap<String, String>>>,
 }
 
 #[allow(dead_code)]

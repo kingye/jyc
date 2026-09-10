@@ -240,6 +240,7 @@ mod tests {
 
     fn test_context() -> CommandContext {
         CommandContext {
+            topic_name: "test-topic".to_string(),
             args: vec![],
             topic_path: PathBuf::from("/tmp/test"),
             config: Arc::new(

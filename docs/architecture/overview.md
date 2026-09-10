@@ -382,7 +382,9 @@ every piped topic for that chat. **All** auto-close paths funnel into
 under the agents workspace root (`<data_home>/agents/`) — topics pinned to a
 custom `topic_path` (e.g. a real project checkout) are skipped with an info
 log, and canonicalization blocks symlink escapes. Manual `/close` (with
-`--confirm`) still uses the unguarded `close_topic`.
+`--force`) goes through `close_topic`, which for adopted/pinned topics
+deletes only the relocated state dir (keeping the user-owned topic dir) and
+for unregistered topics deletes the whole topic dir.
 
 ```mermaid
 stateDiagram-v2

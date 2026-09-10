@@ -110,7 +110,7 @@ impl TopicProxyHandler {
         let Some(topic_path) = tm.topic_path(&self.topic).await else {
             return TopicMeta::default();
         };
-        let meta_path: PathBuf = jyc_dir(&topic_path).join("topic-meta.json");
+        let meta_path: PathBuf = jyc_dir(&self.topic, &topic_path).join("topic-meta.json");
         let Ok(content) = tokio::fs::read_to_string(&meta_path).await else {
             return TopicMeta::default();
         };

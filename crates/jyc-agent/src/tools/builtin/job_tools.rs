@@ -19,7 +19,12 @@ const DEFAULT_MAX_JOBS: usize = 10;
 
 /// Helper to create a per-topic JobStore from the working directory.
 async fn store_from_ctx(ctx: &ToolContext<'_>) -> Result<JobStore> {
-    JobStore::new(ctx.working_dir, DEFAULT_MAX_JOBS).await
+    JobStore::new(
+        ctx.current_topic.as_deref().unwrap_or(""),
+        ctx.working_dir,
+        DEFAULT_MAX_JOBS,
+    )
+    .await
 }
 
 /// List all scheduled jobs in the current topic.

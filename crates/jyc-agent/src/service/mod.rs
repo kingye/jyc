@@ -191,10 +191,11 @@ impl AgentService for JycAgentService {
         // 0b. Load topic-level (L3) `<topic>/.jyc/config.toml` once and
         //     share the result with both the [agent] model-resolution block
         //     below and `build_tool_registry` — avoids a duplicate disk read.
-        let topic_cfg = jyc_types::load_topic_config(topic_path);
+        let topic_cfg = jyc_types::load_topic_config(topic_name, topic_path);
 
         // 1. Read mode override for this topic (used to select mode-specific model)
-        let mode_override = jyc_core::session_state::read_mode_override(topic_path).await;
+        let mode_override =
+            jyc_core::session_state::read_mode_override(topic_name, topic_path).await;
 
         // 1b. Model resolution priority:
         //     For plan/build mode:
@@ -214,8 +215,8 @@ impl AgentService for JycAgentService {
                 _ => "build", // default = build mode
             };
             let mode_specific_path =
-                jyc_dir(topic_path).join(format!("{mode_suffix}-model-override"));
-            let legacy_path = jyc_dir(topic_path).join("model-override");
+                jyc_dir(topic_name, topic_path).join(format!("{mode_suffix}-model-override"));
+            let legacy_path = jyc_dir(topic_name, topic_path).join("model-override");
             if mode_specific_path.exists() {
                 tokio::fs::read_to_string(&mode_specific_path)
                     .await
@@ -335,6 +336,7 @@ impl AgentService for JycAgentService {
         // 3a. Build system prompt (available channels, skills, AGENTS.md, etc.)
         let system_prompt = self
             .build_system_prompt(
+                topic_name,
                 topic_path,
                 message.matched_pattern.as_deref(),
                 &additional_read_roots,
@@ -352,7 +354,8 @@ impl AgentService for JycAgentService {
             prompt = %system_prompt,
             "Full system prompt (enable RUST_LOG=trace to see)"
         );
-        let current_mode = jyc_core::session_state::read_mode_override(topic_path).await;
+        let current_mode =
+            jyc_core::session_state::read_mode_override(topic_name, topic_path).await;
         // Mode resolution chain: .jyc/mode-override file > pattern.mode > default "build"
         let current_mode = current_mode.or_else(|| pattern.and_then(|p| p.mode.clone()));
         let user_blocks =
@@ -427,15 +430,16 @@ impl AgentService for JycAgentService {
         // (`.jyc/context-strategy.json` written by `/context`) wins over
         // configured defaults (matched pattern > first pattern > global
         // [ai] > full/window=10).
-        let context_strategy = jyc_core::session_state::read_context_strategy_override(topic_path)
-            .await
-            .unwrap_or_else(|| {
-                jyc_core::session_state::resolve_context_strategy(
-                    &self.config.load(),
-                    &self.channel_name,
-                    message.matched_pattern.as_deref(),
-                )
-            });
+        let context_strategy =
+            jyc_core::session_state::read_context_strategy_override(topic_name, topic_path)
+                .await
+                .unwrap_or_else(|| {
+                    jyc_core::session_state::resolve_context_strategy(
+                        &self.config.load(),
+                        &self.channel_name,
+                        message.matched_pattern.as_deref(),
+                    )
+                });
 
         // Pre-loop pre-check: if the active model has a smaller context
         // window than the loaded session, reset the session BEFORE the
@@ -445,6 +449,7 @@ impl AgentService for JycAgentService {
         if let Some(cw) = context_window {
             let new_max = (cw as f64 * auto_reset_threshold) as u64;
             session::maybe_reset_for_new_context(
+                topic_name,
                 topic_path,
                 new_max,
                 &compression_config,
@@ -464,7 +469,8 @@ impl AgentService for JycAgentService {
         // sends message" and "first LLM response arrives + persist_tokens
         // writes". The helper is a no-op when the file already exists, so
         // existing token data is preserved.
-        session::ensure_session_file(topic_path, context_window, auto_reset_threshold).await;
+        session::ensure_session_file(topic_name, topic_path, context_window, auto_reset_threshold)
+            .await;
 
         // Load session and prior raw context AFTER the pre-loop pre-check
         // above: if the pre-check just reset the session (e.g. the active
@@ -472,7 +478,8 @@ impl AgentService for JycAgentService {
         // freshly compacted agent-context.json — not the stale pre-reset
         // contents, which would be sent verbatim on the first LLM call and
         // immediately re-inflate the wire context.
-        let (prior_history, prior_raw_context) = session::load_context(topic_path).await;
+        let (prior_history, prior_raw_context) =
+            session::load_context(topic_name, topic_path).await;
 
         tracing::debug!(
             prior_messages = prior_history.len(),
@@ -512,7 +519,7 @@ impl AgentService for JycAgentService {
             outbounds,
             context_window,
             auto_reset_threshold,
-            thinking_enabled: read_thinking_enabled(topic_path),
+            thinking_enabled: read_thinking_enabled(topic_name, topic_path),
             pricing,
             model_label: model_str,
             context_strategy,
@@ -532,7 +539,7 @@ impl AgentService for JycAgentService {
         );
 
         // 8. Save raw context (preserves provider-specific fields for round-tripping)
-        session::save_raw_context(topic_path, &result.raw_context).await;
+        session::save_raw_context(topic_name, topic_path, &result.raw_context).await;
 
         // 9. Update session token tracking
         // Provider used for the between-message context-reset summary (when
@@ -544,6 +551,7 @@ impl AgentService for JycAgentService {
             .map(|p| p as &dyn provider::Provider)
             .unwrap_or(provider.as_ref());
         session::update_tokens(
+            topic_name,
             topic_path,
             result.input_tokens,
             result.total_input_tokens,
@@ -628,6 +636,7 @@ impl AgentService for JycAgentService {
         });
 
         session::reset_session(
+            topic_name,
             topic_path,
             &resolved_config,
             provider.as_deref().map(|p| p as &dyn provider::Provider),

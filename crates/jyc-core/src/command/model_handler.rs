@@ -49,7 +49,7 @@ impl CommandHandler for ModelCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let jyc_dir = jyc_dir(&context.topic_path);
+        let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
         tokio::fs::create_dir_all(&jyc_dir).await?;
 
         let providers = &context.config.ai.providers;
@@ -59,6 +59,7 @@ impl CommandHandler for ModelCommandHandler {
         // matching the agent runtime so the written override file actually
         // takes effect for pattern-mode topics.
         let current_mode = crate::session_state::resolve_effective_mode(
+            &context.topic_name,
             &context.topic_path,
             &context.config,
             &context.channel,
@@ -166,6 +167,7 @@ impl CommandHandler for ModelCommandHandler {
 
                     // Update `max_input_tokens` for the newly-active model.
                     if let Some(new_max) = session_state::resolve_active_context_window(
+                        &context.topic_name,
                         &context.topic_path,
                         &context.config,
                         &context.channel,
@@ -173,7 +175,12 @@ impl CommandHandler for ModelCommandHandler {
                     )
                     .await
                     {
-                        session_state::write_max_input_tokens(&context.topic_path, new_max).await;
+                        session_state::write_max_input_tokens(
+                            &context.topic_name,
+                            &context.topic_path,
+                            new_max,
+                        )
+                        .await;
                     }
 
                     Ok(CommandResult {
@@ -204,6 +211,7 @@ mod tests {
 
     fn test_context(topic_path: &Path) -> CommandContext {
         CommandContext {
+            topic_name: "test-topic".to_string(),
             args: vec![],
             topic_path: topic_path.to_path_buf(),
             config: Arc::new(
@@ -275,6 +283,7 @@ context_window = 200000
     async fn test_list_models_empty_providers() {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = CommandContext {
+            topic_name: "test-topic".to_string(),
             args: vec![],
             topic_path: tmp.path().to_path_buf(),
             config: Arc::new(

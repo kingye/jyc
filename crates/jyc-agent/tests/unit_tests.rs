@@ -274,7 +274,7 @@ mod session {
     #[tokio::test]
     async fn load_context_returns_empty_when_no_session_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let (messages, raw_context) = session::load_context(tmp.path()).await;
+        let (messages, raw_context) = session::load_context("", tmp.path()).await;
         assert!(messages.is_empty());
         assert!(raw_context.is_empty());
     }
@@ -296,10 +296,10 @@ mod session {
             serde_json::json!({"role": "user", "content": "hello"}),
             serde_json::json!({"role": "assistant", "content": "Hi there!"}),
         ];
-        session::save_raw_context(tmp.path(), &context).await;
+        session::save_raw_context("", tmp.path(), &context).await;
 
         // Load it back
-        let (messages, raw_context) = session::load_context(tmp.path()).await;
+        let (messages, raw_context) = session::load_context("", tmp.path()).await;
         assert_eq!(raw_context.len(), 2);
         assert_eq!(messages.len(), 2);
     }
@@ -330,7 +330,7 @@ mod session {
         .unwrap();
 
         // Load — should filter out the invalid message
-        let (messages, raw_context) = session::load_context(tmp.path()).await;
+        let (messages, raw_context) = session::load_context("", tmp.path()).await;
         assert_eq!(raw_context.len(), 2); // user + valid assistant
         assert_eq!(messages.len(), 2);
     }
@@ -360,7 +360,7 @@ mod session {
         .unwrap();
 
         // Load — should return empty (no valid assistant messages)
-        let (messages, raw_context) = session::load_context(tmp.path()).await;
+        let (messages, raw_context) = session::load_context("", tmp.path()).await;
         assert!(messages.is_empty());
         assert!(raw_context.is_empty());
     }
@@ -372,6 +372,7 @@ mod session {
 
         assert!(!jyc_dir.join("agent-session.json").exists());
         session::update_tokens(
+            "",
             tmp.path(),
             1000,
             1000,
@@ -411,6 +412,7 @@ mod session {
 
         // First call
         session::update_tokens(
+            "",
             tmp.path(),
             1000,
             1000,
@@ -429,6 +431,7 @@ mod session {
         // running total after call 2 is 100 + 150 = 250, which is what
         // gets passed in (not just the per-call delta of 150).
         session::update_tokens(
+            "",
             tmp.path(),
             2000,
             2000,
@@ -472,7 +475,7 @@ mod session {
             mode: CompressionMode::Heuristic,
             keep_pairs: 3,
         };
-        session::reset_session(tmp.path(), &config, None, None).await;
+        session::reset_session("", tmp.path(), &config, None, None).await;
 
         assert!(!jyc_dir.join("agent-session.json").exists());
         // Context should be summarized (empty in this case = deleted)
@@ -504,6 +507,7 @@ mod session {
             keep_pairs: 3,
         };
         session::update_tokens(
+            "",
             tmp.path(),
             6000, // still over 1000 → auto-reset fires
             6000,
@@ -560,6 +564,7 @@ mod session {
             keep_pairs: 3,
         };
         let reset = session::maybe_reset_for_new_context(
+            "",
             tmp.path(),
             250_000, // new max for build model (256k * ~0.95 ≈ 243k; 250k close enough)
             &config,
@@ -596,7 +601,8 @@ mod session {
 
         let config = ResetCompressionConfig::default();
         let reset =
-            session::maybe_reset_for_new_context(tmp.path(), 250_000, &config, None, None).await;
+            session::maybe_reset_for_new_context("", tmp.path(), 250_000, &config, None, None)
+                .await;
         assert!(!reset, "should not have triggered reset");
 
         // Both files unchanged
@@ -626,6 +632,7 @@ mod session {
         .unwrap();
 
         let reset = session::maybe_reset_for_new_context(
+            "",
             tmp.path(),
             0,
             &ResetCompressionConfig::default(),
@@ -681,10 +688,11 @@ mod session {
 
         // The exact sequence service/mod.rs runs per message.
         let reset =
-            session::maybe_reset_for_new_context(tmp.path(), 250_000, &config, None, None).await;
+            session::maybe_reset_for_new_context("", tmp.path(), 250_000, &config, None, None)
+                .await;
         assert!(reset, "pre-check should have triggered reset");
-        session::ensure_session_file(tmp.path(), Some(256_000), 0.95).await;
-        let (_history, raw) = session::load_context(tmp.path()).await;
+        session::ensure_session_file("", tmp.path(), Some(256_000), 0.95).await;
+        let (_history, raw) = session::load_context("", tmp.path()).await;
 
         // Heuristic keep_pairs=1 → only the last user+assistant pair survives.
         let texts: Vec<&str> = raw
@@ -713,6 +721,7 @@ mod session {
 
         // Call persist_tokens with input well above the 95% threshold.
         session::persist_tokens(
+            "",
             tmp.path(),
             100_000,
             100_000,
@@ -754,9 +763,9 @@ mod session {
         // Simulate three LLM calls with per-call output 100, 150, 80.
         // agent_loop accumulates locally: 100, 250, 330. Each running
         // total is passed into persist_tokens.
-        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, 0, 0, None, 0.95, 0.0).await;
-        session::persist_tokens(tmp.path(), 1500, 1500, 250, 0, 0, 0, None, 0.95, 0.0).await;
-        session::persist_tokens(tmp.path(), 2000, 2000, 330, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens("", tmp.path(), 1000, 1000, 100, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens("", tmp.path(), 1500, 1500, 250, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens("", tmp.path(), 2000, 2000, 330, 0, 0, 0, None, 0.95, 0.0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -780,9 +789,9 @@ mod session {
         // 1000, 2000, 3000 — agent_loop sums them to running totals of
         // 1000, 3000, 6000 and passes each running total to persist_tokens.
         // The on-disk value reflects the latest passed-in sum (= 6000).
-        session::persist_tokens(tmp.path(), 1000, 1000, 0, 0, 0, 0, None, 0.95, 0.0).await;
-        session::persist_tokens(tmp.path(), 2000, 3000, 0, 0, 0, 0, None, 0.95, 0.0).await;
-        session::persist_tokens(tmp.path(), 3000, 6000, 0, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens("", tmp.path(), 1000, 1000, 0, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens("", tmp.path(), 2000, 3000, 0, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens("", tmp.path(), 3000, 6000, 0, 0, 0, 0, None, 0.95, 0.0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -814,6 +823,7 @@ mod session {
             total_output_tokens += per_call_output;
 
             session::persist_tokens(
+                "",
                 tmp.path(),
                 context_input_tokens,
                 total_input_tokens,
@@ -848,9 +858,9 @@ mod session {
     async fn session_cost_accumulates_across_calls() {
         let tmp = tempfile::tempdir().unwrap();
 
-        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, 0, 0, None, 0.95, 0.25).await;
-        session::persist_tokens(tmp.path(), 1500, 2500, 200, 0, 0, 0, None, 0.95, 0.10).await;
-        session::persist_tokens(tmp.path(), 2000, 4500, 300, 0, 0, 0, None, 0.95, 0.05).await;
+        session::persist_tokens("", tmp.path(), 1000, 1000, 100, 0, 0, 0, None, 0.95, 0.25).await;
+        session::persist_tokens("", tmp.path(), 1500, 2500, 200, 0, 0, 0, None, 0.95, 0.10).await;
+        session::persist_tokens("", tmp.path(), 2000, 4500, 300, 0, 0, 0, None, 0.95, 0.05).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -868,8 +878,8 @@ mod session {
     async fn zero_call_cost_preserves_existing_session_cost() {
         let tmp = tempfile::tempdir().unwrap();
 
-        session::persist_tokens(tmp.path(), 1000, 1000, 100, 0, 0, 0, None, 0.95, 0.75).await;
-        session::persist_tokens(tmp.path(), 1500, 2500, 200, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens("", tmp.path(), 1000, 1000, 100, 0, 0, 0, None, 0.95, 0.75).await;
+        session::persist_tokens("", tmp.path(), 1500, 2500, 200, 0, 0, 0, None, 0.95, 0.0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -898,7 +908,7 @@ mod session {
         .unwrap();
 
         // Adding cost to a legacy file starts from 0.0.
-        session::persist_tokens(tmp.path(), 600, 1100, 90, 0, 0, 0, None, 0.95, 0.30).await;
+        session::persist_tokens("", tmp.path(), 600, 1100, 90, 0, 0, 0, None, 0.95, 0.30).await;
 
         let session = tokio::fs::read_to_string(jyc.join("agent-session.json"))
             .await
@@ -921,7 +931,7 @@ mod session {
 
         assert!(!session_path.exists());
 
-        session::ensure_session_file(tmp.path(), Some(100_000), 0.95).await;
+        session::ensure_session_file("", tmp.path(), Some(100_000), 0.95).await;
 
         assert!(session_path.exists());
 
@@ -955,7 +965,7 @@ mod session {
 
         // Even with a different context_window / threshold, the file must
         // remain untouched.
-        session::ensure_session_file(tmp.path(), Some(999_999), 0.5).await;
+        session::ensure_session_file("", tmp.path(), Some(999_999), 0.5).await;
 
         let after = tokio::fs::read_to_string(&session_path).await.unwrap();
         assert_eq!(after, original);
@@ -971,7 +981,7 @@ mod session {
 
         assert!(!session_path.exists());
 
-        session::ensure_session_file(tmp.path(), None, 0.95).await;
+        session::ensure_session_file("", tmp.path(), None, 0.95).await;
 
         assert!(session_path.exists());
 
@@ -1980,7 +1990,7 @@ mod skills {
         let tmp = tempfile::tempdir().unwrap();
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills(tmp.path(), None, None);
+            let skills = svc.discover_skills("", tmp.path(), None, None);
             assert!(skills.is_empty());
         });
     }
@@ -1999,7 +2009,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills(tmp.path(), None, None);
+            let skills = svc.discover_skills("", tmp.path(), None, None);
             assert_eq!(skills.len(), 1);
             assert_eq!(skills[0].name, "test-skill");
             assert_eq!(skills[0].description, "A test skill");
@@ -2015,7 +2025,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills(tmp.path(), None, None);
+            let skills = svc.discover_skills("", tmp.path(), None, None);
             assert!(skills.is_empty());
         });
     }
@@ -2039,7 +2049,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills(tmp.path(), None, None);
+            let skills = svc.discover_skills("", tmp.path(), None, None);
             assert_eq!(skills.len(), 1);
             assert_eq!(skills[0].name, "good-skill");
         });
@@ -2068,7 +2078,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills(tmp.path(), None, None);
+            let skills = svc.discover_skills("", tmp.path(), None, None);
             assert_eq!(skills.len(), 1);
             // Should take the .jyc version (higher priority)
             assert_eq!(skills[0].description, "From JYC (overrides)");
@@ -2098,7 +2108,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills(tmp.path(), None, None);
+            let skills = svc.discover_skills("", tmp.path(), None, None);
             assert_eq!(skills.len(), 2);
             let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
             assert!(names.contains(&"skill-one"));
@@ -2221,6 +2231,7 @@ mod billing_integration {
         let p = pricing();
         let cost = compute_cost(&p, input, output, cache_hit);
         BillingLogStore::append(
+            "",
             topic_path,
             &BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
@@ -2241,6 +2252,7 @@ mod billing_integration {
         )
         .unwrap();
         jyc_agent::session::persist_tokens(
+            "",
             topic_path,
             input,
             input,
@@ -2270,12 +2282,15 @@ mod billing_integration {
         }
 
         // Ledger: one line per call.
-        let entries =
-            BillingLogStore::load_date(path, &chrono::Utc::now().format("%Y-%m-%d").to_string());
+        let entries = BillingLogStore::load_date(
+            "",
+            path,
+            &chrono::Utc::now().format("%Y-%m-%d").to_string(),
+        );
         assert_eq!(entries.len(), 3, "one ledger line per LLM call");
 
         // Ledger total and session_cost agree with the computed sum.
-        let (ledger_total, currency) = BillingLogStore::today_total(path).unwrap();
+        let (ledger_total, currency) = BillingLogStore::today_total("", path).unwrap();
         assert!(
             (ledger_total - expected).abs() < 1e-9,
             "ledger {ledger_total} vs {expected}"
@@ -2312,7 +2327,8 @@ mod billing_integration {
         tokio::fs::remove_file(path.join(".jyc/agent-session.json"))
             .await
             .unwrap();
-        jyc_agent::session::persist_tokens(path, 0, 0, 0, 0, 0, 0, Some(200_000), 0.95, 0.0).await;
+        jyc_agent::session::persist_tokens("", path, 0, 0, 0, 0, 0, 0, Some(200_000), 0.95, 0.0)
+            .await;
 
         let after: serde_json::Value = serde_json::from_str(
             &tokio::fs::read_to_string(path.join(".jyc/agent-session.json"))
@@ -2327,7 +2343,7 @@ mod billing_integration {
         );
 
         // ...but the ledger still has the spend.
-        let (ledger_total, _) = BillingLogStore::today_total(path).unwrap();
+        let (ledger_total, _) = BillingLogStore::today_total("", path).unwrap();
         assert!(
             (ledger_total - first).abs() < 1e-9,
             "ledger must survive the reset: {ledger_total} vs {first}"
@@ -2351,6 +2367,7 @@ mod billing_integration {
         // ...and one summary call, billed the way the agent loop does it.
         let summary_cost = jyc_types::pricing::compute_cost(&p, 40_000, 300, 0);
         BillingLogStore::append(
+            "",
             path,
             &BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
@@ -2370,10 +2387,13 @@ mod billing_integration {
             },
         )
         .unwrap();
-        jyc_agent::session::add_session_cost(path, summary_cost).await;
+        jyc_agent::session::add_session_cost("", path, summary_cost).await;
 
-        let entries =
-            BillingLogStore::load_date(path, &chrono::Utc::now().format("%Y-%m-%d").to_string());
+        let entries = BillingLogStore::load_date(
+            "",
+            path,
+            &chrono::Utc::now().format("%Y-%m-%d").to_string(),
+        );
         assert_eq!(entries.len(), 2, "both the call and the summary are billed");
 
         let kinds: Vec<&str> = entries.iter().map(|e| e.kind.as_str()).collect();
@@ -2388,7 +2408,7 @@ mod billing_integration {
         );
 
         // today_total covers both kinds; session_cost includes the summary.
-        let (today, _) = BillingLogStore::today_total(path).unwrap();
+        let (today, _) = BillingLogStore::today_total("", path).unwrap();
         let expected: f64 = entries.iter().map(|e| e.cost).sum();
         assert!((today - expected).abs() < 1e-9);
 
@@ -2442,6 +2462,7 @@ mod billing_integration {
         let (cost, rates) = compute_cost_split_with_rates(&p, 1000, 100, 0, 0);
         let (time_window, utc_offset) = rates.source.billing_fields();
         BillingLogStore::append(
+            "",
             path,
             &BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
@@ -2462,8 +2483,11 @@ mod billing_integration {
         )
         .unwrap();
 
-        let entries =
-            BillingLogStore::load_date(path, &chrono::Utc::now().format("%Y-%m-%d").to_string());
+        let entries = BillingLogStore::load_date(
+            "",
+            path,
+            &chrono::Utc::now().format("%Y-%m-%d").to_string(),
+        );
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
         // Window rates persisted, not the flat ones.
@@ -2492,7 +2516,7 @@ mod billing_integration {
         )
         .unwrap();
 
-        jyc_agent::session::add_session_cost(path, 0.25).await;
+        jyc_agent::session::add_session_cost("", path, 0.25).await;
 
         let after: serde_json::Value = serde_json::from_str(
             &tokio::fs::read_to_string(path.join(".jyc/agent-session.json"))
@@ -2521,9 +2545,9 @@ mod billing_integration {
     async fn zero_cost_summary_writes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path();
-        jyc_agent::session::add_session_cost(path, 0.0).await;
+        jyc_agent::session::add_session_cost("", path, 0.0).await;
         assert!(
-            BillingLogStore::today_total(path).is_none(),
+            BillingLogStore::today_total("", path).is_none(),
             "no ledger entry for a zero-cost call"
         );
     }

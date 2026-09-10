@@ -42,8 +42,13 @@ impl TemplateDirs {
 
     /// Resolve a template by name, checking the topic-level (L3)
     /// `.jyc/templates/` directory first, then the configured layers.
-    pub fn resolve_with_topic(&self, topic_path: &Path, name: &str) -> Option<PathBuf> {
-        let topic_level = jyc_dir(topic_path).join("templates").join(name);
+    pub fn resolve_with_topic(
+        &self,
+        topic_name: &str,
+        topic_path: &Path,
+        name: &str,
+    ) -> Option<PathBuf> {
+        let topic_level = jyc_dir(topic_name, topic_path).join("templates").join(name);
         if topic_level.is_dir() {
             return Some(topic_level);
         }
@@ -104,18 +109,18 @@ mod tests {
         let dirs = TemplateDirs::single(workdir.clone());
         // Topic level wins over workdir
         assert_eq!(
-            dirs.resolve_with_topic(&topic, "alpha"),
+            dirs.resolve_with_topic("", &topic, "alpha"),
             Some(topic.join(".jyc/templates/alpha"))
         );
         // Only at topic level
         assert_eq!(
-            dirs.resolve_with_topic(&topic, "gamma"),
+            dirs.resolve_with_topic("", &topic, "gamma"),
             Some(topic.join(".jyc/templates/gamma"))
         );
         // Only at workdir level
         make_template(&workdir, "beta");
         assert_eq!(
-            dirs.resolve_with_topic(&topic, "beta"),
+            dirs.resolve_with_topic("", &topic, "beta"),
             Some(workdir.join("beta"))
         );
     }

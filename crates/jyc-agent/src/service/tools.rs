@@ -96,7 +96,7 @@ impl JycAgentService {
         // "topic-local MCP" or "topic config loaded" reveals whether the
         // L3 file was found, valid, and applied. This is the only signal
         // that tells operators whether the topic-local overlay engaged.
-        let topic_cfg_path = jyc_dir(topic_path).join("config.toml");
+        let topic_cfg_path = jyc_dir(topic_name, topic_path).join("config.toml");
         let configured_mcps = topic_cfg
             .and_then(|t| t.mcps.as_ref())
             .map(|v| v.len())
@@ -280,7 +280,8 @@ impl JycAgentService {
             .map(|(c, _)| c.clone())
             .collect();
         if !configs.is_empty() {
-            let mcp_tools = crate::tools::mcp_client::load_mcp_tools(&configs).await;
+            let mcp_tools =
+                crate::tools::mcp_client::load_mcp_tools(&configs, topic_name, topic_path).await;
             for tool in mcp_tools {
                 // Skip tools matching disabled_server_tools (server/tool format)
                 let source = tool.source();

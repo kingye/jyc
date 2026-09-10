@@ -50,7 +50,7 @@ impl CommandHandler for ResetCommandHandler {
         // Clear agent-published files and the exchange-access token: /reset must
         // kill previously shared links (token rotation forces regeneration on
         // the next publish). Done for both the agent and fallback branches.
-        let jyc_dir = jyc_dir(&context.topic_path);
+        let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
         tokio::fs::remove_dir_all(jyc_dir.join(crate::EXCHANGE_DIR_NAME))
             .await
             .ok();
@@ -63,7 +63,8 @@ impl CommandHandler for ResetCommandHandler {
         // when the topic was created). Falls back to first pattern if the
         // pattern file is missing, then to global [agent].reset_compression,
         // then to the default (Heuristic).
-        let matched_pattern = crate::session_state::read_pattern(&context.topic_path).await;
+        let matched_pattern =
+            crate::session_state::read_pattern(&context.topic_name, &context.topic_path).await;
         let reset_config = crate::session_state::resolve_reset_compression(
             &context.config,
             &context.channel,
@@ -111,6 +112,7 @@ mod tests {
 
     fn test_context(topic_path: &Path) -> CommandContext {
         CommandContext {
+            topic_name: "test-topic".to_string(),
             // Pass --force by default so the reset tests exercise the real
             // path; guard tests override `args`.
             args: vec!["--force".to_string()],

@@ -61,7 +61,7 @@ pub fn all_commands() -> Vec<CommandInfo> {
         },
         CommandInfo {
             name: "/close".into(),
-            description: "Close and delete this topic (requires --confirm or -y)".into(),
+            description: "Close and delete this topic (requires --force)".into(),
             ..Default::default()
         },
         CommandInfo {

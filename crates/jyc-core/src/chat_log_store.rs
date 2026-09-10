@@ -25,6 +25,7 @@ pub struct ReplyMetadata {
 
 /// Chat log store for a single topic.
 pub struct ChatLogStore {
+    topic_name: String,
     topic_path: PathBuf,
     current_file: RwLock<Option<File>>,
     current_date: String,
@@ -35,8 +36,8 @@ pub struct ChatLogStore {
 ///
 /// Tries `.jyc/` first (new location), falls back to topic root (legacy).
 /// Returns sorted paths (oldest first) and the directory they were found in.
-pub fn list_chat_history_files(topic_path: &Path) -> (Vec<PathBuf>, PathBuf) {
-    let new_dir = jyc_dir(topic_path);
+pub fn list_chat_history_files(topic_name: &str, topic_path: &Path) -> (Vec<PathBuf>, PathBuf) {
+    let new_dir = jyc_dir(topic_name, topic_path);
     let files = read_chat_history_dir(&new_dir);
     if !files.is_empty() {
         return (files, new_dir);
@@ -68,12 +69,16 @@ fn read_chat_history_dir(dir: &Path) -> Vec<PathBuf> {
 /// Reads `chat_history_*.jsonl` files (`.jyc/` first, falls back to topic root),
 /// parses each line, and returns up to `max_messages` most recent entries.
 /// Entries are mapped: `"received"` → sender `"user"`, `"reply"` → sender `"ai"`.
-pub fn load_recent_chat_history(topic_path: &Path, max_messages: usize) -> Vec<ChatMessageEntry> {
+pub fn load_recent_chat_history(
+    topic_name: &str,
+    topic_path: &Path,
+    max_messages: usize,
+) -> Vec<ChatMessageEntry> {
     if !topic_path.exists() {
         return vec![];
     }
 
-    let (mut files, _dir) = list_chat_history_files(topic_path);
+    let (mut files, _dir) = list_chat_history_files(topic_name, topic_path);
     files.sort_by(|a, b| b.cmp(a)); // newest first
 
     let mut entries = Vec::new();
@@ -121,10 +126,11 @@ pub fn load_recent_chat_history(topic_path: &Path, max_messages: usize) -> Vec<C
 
 impl ChatLogStore {
     /// Create a new chat log store for the given topic.
-    pub fn new(topic_path: &Path) -> Self {
+    pub fn new(topic_name: &str, topic_path: &Path) -> Self {
         let current_date = Utc::now().format("%Y-%m-%d").to_string();
 
         Self {
+            topic_name: topic_name.to_string(),
             topic_path: topic_path.to_path_buf(),
             current_file: RwLock::new(None),
             current_date,
@@ -135,7 +141,8 @@ impl ChatLogStore {
     /// Get the path for today's chat history file.
     /// New location: `.jyc/chat_history_YYYY-MM-DD.jsonl`
     fn get_today_file_path(&self) -> PathBuf {
-        jyc_dir(&self.topic_path).join(format!("chat_history_{}.jsonl", self.current_date))
+        jyc_dir(&self.topic_name, &self.topic_path)
+            .join(format!("chat_history_{}.jsonl", self.current_date))
     }
 
     /// Ensure the current file is open and ready for writing.
@@ -325,7 +332,7 @@ mod tests {
     #[test]
     fn test_chat_log_store_creation() {
         let temp_dir = tempdir().unwrap();
-        let store = ChatLogStore::new(temp_dir.path());
+        let store = ChatLogStore::new("", temp_dir.path());
 
         assert_eq!(store.topic_path, temp_dir.path());
         assert!(store.current_file.read().unwrap().is_none());
@@ -334,7 +341,7 @@ mod tests {
     #[test]
     fn test_append_message() {
         let temp_dir = tempdir().unwrap();
-        let mut store = ChatLogStore::new(temp_dir.path());
+        let mut store = ChatLogStore::new("", temp_dir.path());
 
         let message = create_test_message();
         let result = store.append_message(&message, true);
@@ -362,7 +369,7 @@ mod tests {
     #[test]
     fn test_append_reply() {
         let temp_dir = tempdir().unwrap();
-        let mut store = ChatLogStore::new(temp_dir.path());
+        let mut store = ChatLogStore::new("", temp_dir.path());
 
         let metadata = ReplyMetadata {
             sender: "jyc-bot".to_string(),
@@ -390,7 +397,7 @@ mod tests {
     #[test]
     fn test_multiple_appends() {
         let temp_dir = tempdir().unwrap();
-        let mut store = ChatLogStore::new(temp_dir.path());
+        let mut store = ChatLogStore::new("", temp_dir.path());
 
         let message = create_test_message();
         store.append_message(&message, true).unwrap();
@@ -441,7 +448,7 @@ mod tests {
     #[test]
     fn test_load_recent_chat_history_empty_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let entries = load_recent_chat_history(tmp.path(), 100);
+        let entries = load_recent_chat_history("", tmp.path(), 100);
         assert!(entries.is_empty());
     }
 
@@ -456,7 +463,7 @@ mod tests {
         )
         .unwrap();
 
-        let entries = load_recent_chat_history(tmp.path(), 100);
+        let entries = load_recent_chat_history("", tmp.path(), 100);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].sender, "user");
         assert_eq!(entries[0].text, "hello");
@@ -473,7 +480,7 @@ mod tests {
         )
         .unwrap();
 
-        let entries = load_recent_chat_history(tmp.path(), 100);
+        let entries = load_recent_chat_history("", tmp.path(), 100);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].sender, "ai");
         assert_eq!(entries[0].text, "AI reply");
@@ -494,7 +501,7 @@ mod tests {
         }
         std::fs::write(jyc_dir.join("chat_history_2026-07-22.jsonl"), lines).unwrap();
 
-        let entries = load_recent_chat_history(tmp.path(), 3);
+        let entries = load_recent_chat_history("", tmp.path(), 3);
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].text, "msg 7");
         assert_eq!(entries[2].text, "msg 9");
@@ -517,7 +524,7 @@ mod tests {
         )
         .unwrap();
 
-        let entries = load_recent_chat_history(tmp.path(), 100);
+        let entries = load_recent_chat_history("", tmp.path(), 100);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].text, "hello");
         assert_eq!(entries[1].text, "world");

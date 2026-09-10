@@ -484,7 +484,11 @@ pub fn filter_by_since(mut entries: Vec<ActivityEntry>, since: Option<&str>) -> 
 /// across monitor restarts. If the in-memory buffer already has historical
 /// entries loaded from disk, use their max id; otherwise read the last entry
 /// from `.jyc/activity.jsonl`. Falls back to 1 when no history exists.
-pub(crate) fn seed_next_id_from_disk(state: &mut TopicActivityState, topic_path: Option<&Path>) {
+pub(crate) fn seed_next_id_from_disk(
+    state: &mut TopicActivityState,
+    topic_name: &str,
+    topic_path: Option<&Path>,
+) {
     if state.next_id != 0 {
         return;
     }
@@ -494,7 +498,7 @@ pub(crate) fn seed_next_id_from_disk(state: &mut TopicActivityState, topic_path:
         return;
     }
     if let Some(path) = topic_path
-        && let Ok(last) = ActivityLogStore::load_recent(path, 1)
+        && let Ok(last) = ActivityLogStore::load_recent(topic_name, path, 1)
         && let Some(max_entry) = last.iter().max_by_key(|e| e.id)
     {
         state.next_id = max_entry.id + 1;
@@ -610,7 +614,7 @@ mod next_id_tests {
     #[test]
     fn seed_next_id_from_empty_state_starts_at_one() {
         let mut state = TopicActivityState::default();
-        seed_next_id_from_disk(&mut state, None);
+        seed_next_id_from_disk(&mut state, "", None);
         assert_eq!(state.next_id, 1);
     }
 
@@ -624,7 +628,7 @@ mod next_id_tests {
             severity: Severity::Info,
             is_internal: false,
         });
-        seed_next_id_from_disk(&mut state, None);
+        seed_next_id_from_disk(&mut state, "", None);
         assert_eq!(state.next_id, 43);
     }
 
@@ -647,7 +651,7 @@ mod next_id_tests {
         )
         .unwrap();
         let mut state = TopicActivityState::default();
-        seed_next_id_from_disk(&mut state, Some(&topic_path));
+        seed_next_id_from_disk(&mut state, "", Some(&topic_path));
         assert_eq!(state.next_id, 8);
     }
 
@@ -657,7 +661,7 @@ mod next_id_tests {
             next_id: 99,
             ..Default::default()
         };
-        seed_next_id_from_disk(&mut state, None);
+        seed_next_id_from_disk(&mut state, "", None);
         assert_eq!(state.next_id, 99);
     }
 }

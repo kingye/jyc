@@ -84,7 +84,7 @@ pub(crate) async fn process_message(
     // can restore it when constructing a synthetic InboundMessage.
     // Without this, the proxy's InboundMessage has empty metadata and
     // channel-specific reply routing fails (e.g., github_number missing → 404).
-    let topic_meta_path = jyc_dir(&store_result.topic_path).join("topic-meta.json");
+    let topic_meta_path = jyc_dir(topic_name, &store_result.topic_path).join("topic-meta.json");
     if !topic_meta_path.exists() && item.message.channel_uid != "dashboard" {
         let meta = serde_json::json!({
             "channel_uid": item.message.channel_uid,
@@ -93,7 +93,7 @@ pub(crate) async fn process_message(
             "metadata": item.message.metadata,
         });
         if let Ok(json) = serde_json::to_string_pretty(&meta) {
-            let _ = tokio::fs::create_dir_all(jyc_dir(&store_result.topic_path)).await;
+            let _ = tokio::fs::create_dir_all(jyc_dir(topic_name, &store_result.topic_path)).await;
             if let Err(e) = tokio::fs::write(&topic_meta_path, json).await {
                 tracing::warn!(error = %e, "Failed to write topic-meta.json");
             } else {
@@ -170,6 +170,7 @@ pub(crate) async fn process_message(
     );
 
     let cmd_context = CommandContext {
+        topic_name: topic_name.to_string(),
         args: vec![],
         topic_path: store_result.topic_path.clone(),
         config: config.load_full(),
@@ -250,10 +251,11 @@ pub(crate) async fn process_message(
     // If the AI previously asked a question via the ask_user MCP tool,
     // the next user message is the answer — route it to the answer file
     // instead of creating a new AI prompt.
-    let question_flag = jyc_dir(&store_result.topic_path).join("question-sent.flag");
+    let question_flag = jyc_dir(topic_name, &store_result.topic_path).join("question-sent.flag");
     if question_flag.exists() {
         tracing::info!("Topic is waiting for question answer, routing response");
-        let answer_file = jyc_dir(&store_result.topic_path).join("question-answer.json");
+        let answer_file =
+            jyc_dir(topic_name, &store_result.topic_path).join("question-answer.json");
         let answer = serde_json::json!({
             "answer": cleaned_body.trim(),
             "sender": message.sender_address,
@@ -355,6 +357,7 @@ pub(crate) async fn process_message(
                         );
                         let cmd_ctx = CommandContext {
                             args: vec![],
+                            topic_name: topic_name.to_string(),
                             topic_path: store_result.topic_path.clone(),
                             config: config.load_full(),
                             channel: qi.message.channel.clone(),
@@ -506,7 +509,7 @@ pub(crate) async fn process_message(
     if result.reply_sent_by_tool {
         // Check if the background delivery watcher already delivered the reply.
         // The watcher deletes reply-sent.flag after successful delivery.
-        let signal_path = jyc_dir(&store_result.topic_path).join("reply-sent.flag");
+        let signal_path = jyc_dir(topic_name, &store_result.topic_path).join("reply-sent.flag");
         if !signal_path.exists() {
             tracing::info!(
                 "Reply already delivered (direct adapter delivery or background watcher), \
@@ -525,7 +528,7 @@ pub(crate) async fn process_message(
                 Some(t) => Some(t),
                 None => {
                     // Fallback: read from .jyc/reply.md (written by question tool or other MCP tools)
-                    let reply_md = jyc_dir(&store_result.topic_path).join("reply.md");
+                    let reply_md = jyc_dir(topic_name, &store_result.topic_path).join("reply.md");
                     if reply_md.exists() {
                         tokio::fs::read_to_string(&reply_md)
                             .await
@@ -562,7 +565,7 @@ pub(crate) async fn process_message(
                     .await;
                 // Clean up signal files after successful delivery to prevent re-delivery on restart
                 tokio::fs::remove_file(&signal_path).await.ok();
-                let reply_md_path = jyc_dir(&store_result.topic_path).join("reply.md");
+                let reply_md_path = jyc_dir(topic_name, &store_result.topic_path).join("reply.md");
                 tokio::fs::remove_file(&reply_md_path).await.ok();
                 if result.reply_auto_delivered {
                     topic_manager.metrics.reply_by_auto(topic_name);
@@ -618,8 +621,8 @@ pub(crate) async fn process_message(
 }
 
 /// Read skills from topic's .jyc/skills.json file.
-pub(crate) async fn read_skills(topic_path: &Path) -> Vec<String> {
-    let skills_path = jyc_dir(topic_path).join("skills.json");
+pub(crate) async fn read_skills(topic_name: &str, topic_path: &Path) -> Vec<String> {
+    let skills_path = jyc_dir(topic_name, topic_path).join("skills.json");
     match tokio::fs::read_to_string(&skills_path).await {
         Ok(content) => serde_json::from_str::<Vec<String>>(&content).unwrap_or_default(),
         Err(_) => Vec::new(),

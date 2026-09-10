@@ -90,6 +90,9 @@ impl TopicManager {
     /// other. Reads from the in-memory cache first; on a cold-start miss,
     /// falls back to `.jyc/pattern` on disk and caches the result so
     /// subsequent reads are fast. `None` if neither source has the topic.
+    /// (For a config pin not yet in the topic_paths map the disk probe
+    /// reads its workspace default and misses — expected for never-used
+    /// pins; the worker's per-message write converges it.)
     pub async fn topic_pattern(&self, topic_name: &str) -> Option<String> {
         let cached = self.topic_patterns.lock().await.get(topic_name).cloned();
         if let Some(p) = cached {

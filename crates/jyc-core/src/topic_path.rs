@@ -94,12 +94,14 @@ pub fn state_dir_for(agents_root: &Path, topic_dir: &Path, agent_key: Option<&st
 ///
 /// Registers the name→state mapping and, on first adoption, moves an
 /// existing `<topic_dir>/.jyc` into place (rename, cross-device copy
-/// fallback). Always (re)writes the `topic-path` and `topic-name`
-/// breadcrumbs inside the state dir so [`restore_state_registry`] can
-/// rebuild the name-keyed mapping after a restart — including for
-/// processes without config access (subprocesses), where several agents
-/// may share one `topic_dir`: the registration then depends on the name,
-/// never on the dir.
+/// fallback). Always (re)writes the `topic-path` breadcrumb; `topic-name`
+/// is restamped only where one already exists (carried legacy dir or
+/// previously initialized topic) — restore discovery keys on that file to
+/// tell a used topic from a fresh empty pin, so it is never created here.
+/// [`restore_state_registry`] rebuilds the name-keyed mapping after a
+/// restart even in processes without config access (subprocesses), where
+/// several agents may share one `topic_dir`: registrations depend on the
+/// name, never on the dir.
 ///
 /// Returns Ok(true) if state was physically moved.
 pub fn adopt_state_dir(

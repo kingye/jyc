@@ -441,6 +441,9 @@ Multiple agent rows may pin the same topic dir (e.g. one repo shared by
   registered for that topic *name* and unregisters it; the pinned topic dir
   (e.g. a repo) is kept, and a sibling topic co-pinning the same dir keeps
   its own state. Unregistered topics keep the legacy whole-dir deletion.
+  Ad-hoc pins (no config key) derive their state name from the dir, so two
+  runtime topics opening one dir intentionally share — and closing either
+  destroys — that single state: "the dir is the topic".
 - **Agent access.** When the state dir lies outside the topic dir it is
   appended to the agent's additional read/write roots (parity with the
   pre-refactor in-dir `.jyc`), and the system prompt's Chat History

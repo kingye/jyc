@@ -135,10 +135,14 @@ async fn connect_and_list_tools(
                 cmd.env(k, v);
             }
             // Topic identity for out-of-process `.jyc` resolution (see
-            // jyc-mcp `resolve_topic_dir`/`resolve_topic_name`). The runtime
-            // context always wins over any stale static config values.
+            // jyc-mcp `resolve_topic_dir`/`resolve_topic_name`).
+            // JYC_TOPIC_NAME is jyc-internal and always injected;
+            // JYC_THREAD_DIR is only defaulted — a server's static
+            // `environment` config keeps precedence if it sets one.
             cmd.env("JYC_TOPIC_NAME", topic_name);
-            cmd.env("JYC_THREAD_DIR", topic_path);
+            if !environment.contains_key("JYC_THREAD_DIR") {
+                cmd.env("JYC_THREAD_DIR", topic_path);
+            }
             // Never inherit stderr: the child shares our terminal, and MCP
             // servers print banners/errors there (e.g. chrome-devtools-mcp),
             // which writes raw text over the TUI and corrupts the screen.

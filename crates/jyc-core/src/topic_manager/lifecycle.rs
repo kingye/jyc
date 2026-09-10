@@ -73,10 +73,10 @@ impl TopicManager {
         // Pinned topic: relocated state is the topic's data; the dir is
         // user property. Remove the former, preserve the latter. The
         // lookup is by *name*, so topics co-pinning the same dir never
-        // destroy each other's state.
-        if let Some(state) = jyc_types::state_dir::registered_state(topic_name)
-            && state != topic_path.join(".jyc")
-        {
+        // destroy each other's state. Name-keyed registrations always
+        // point outside the topic dir (adopt computes them under
+        // `state_root`), so no same-dir guard is needed.
+        if let Some(state) = jyc_types::state_dir::registered_state(topic_name) {
             if state.exists() {
                 tokio::fs::remove_dir_all(&state)
                     .await

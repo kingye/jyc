@@ -92,26 +92,127 @@ impl<W: Write> HyperlinkBackend<W> {
             SetAttribute(CrosstermAttribute::Reset),
         )
     }
+    /// A row needs full-row re-emission when it contains a URL span or
+    /// continues a URL wrapped from the row above.
+    fn is_link_row(&self, y: usize) -> bool {
+        let Some(row) = self.grid.get(y) else {
+            return false;
+        };
+        !find_url_spans(&Self::row_text(row)).is_empty() || self.row_starts_mid_url(y)
+    }
+
+    /// Link segments over a row: `(first_cell, end_cell_exclusive, full_url)`.
+    ///
+    /// URLs wrapped across terminal rows are reconstructed by joining
+    /// fragments: a URL span that reaches the row's last drawn cell continues
+    /// into the next row's leading run of URL characters (ratatui's word
+    /// wrap splits over-long words exactly at the width boundary).
+    /// Heuristic limitation: a line that *ends* with a complete URL followed
+    /// by a line that *starts* with URL characters is indistinguishable from
+    /// a wrap and gets joined.
+    fn link_segments(&self, y: usize) -> Vec<(usize, usize, String)> {
+        let mut segments = Vec::new();
+        let Some(row) = self.grid.get(y) else {
+            return segments;
+        };
+        let text = Self::row_text(row);
+
+        // Continuation of a URL that wrapped from a previous row.
+        if self.row_starts_mid_url(y) {
+            let run = leading_url_run(&text);
+            segments.push((0, run.len(), self.reconstruct_url_at(y)));
+        }
+
+        for (start, end) in find_url_spans(&text) {
+            let cell_start = byte_to_cell(row, start);
+            let cell_end = byte_to_cell(row, end);
+            let mut url = text[start..end].to_string();
+            if cell_end == row.len() {
+                // The span touches the row's last drawn cell: the URL may
+                // continue on the following rows.
+                url = self.join_continuations(y + 1, url);
+            }
+            segments.push((cell_start, cell_end, url));
+        }
+        segments
+    }
+
+    /// Row `y` begins inside a URL that wrapped from the row above.
+    fn row_starts_mid_url(&self, y: usize) -> bool {
+        if y == 0 || !self.row_ends_mid_url(y - 1) {
+            return false;
+        }
+        self.grid
+            .get(y)
+            .map(|row| !leading_url_run(&Self::row_text(row)).is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Row `y`'s last drawn cell is part of a URL that continues below.
+    fn row_ends_mid_url(&self, y: usize) -> bool {
+        let Some(row) = self.grid.get(y) else {
+            return false;
+        };
+        if row.is_empty() {
+            return false;
+        }
+        let text = Self::row_text(row);
+        if find_url_spans(&text)
+            .iter()
+            .any(|&(_, end)| byte_to_cell(row, end) == row.len())
+        {
+            return true;
+        }
+        // A row fully consumed by a wrapped URL's middle fragment.
+        !text.is_empty() && text.chars().all(is_url_char) && self.row_starts_mid_url(y)
+    }
+
+    /// Appends the leading URL runs of continuation rows to `url`.
+    fn join_continuations(&self, mut y: usize, mut url: String) -> String {
+        while self.row_starts_mid_url(y) {
+            let text = Self::row_text(&self.grid[y]);
+            let run = leading_url_run(&text);
+            if run.is_empty() {
+                break;
+            }
+            let covers_full_row = run.len() == text.len();
+            url.push_str(run);
+            if !covers_full_row {
+                break;
+            }
+            y += 1;
+        }
+        trim_trailing_punct(&url).to_string()
+    }
+
+    /// Rebuilds the full URL whose fragment leads continuation row `y`.
+    fn reconstruct_url_at(&self, y: usize) -> String {
+        let mut head = y;
+        while self.row_starts_mid_url(head) {
+            head -= 1;
+        }
+        let row = &self.grid[head];
+        let text = Self::row_text(row);
+        // The URL on the head row that wraps downward: the last span whose
+        // end touches the row's last drawn cell.
+        let (start, end) = find_url_spans(&text)
+            .into_iter()
+            .rev()
+            .find(|&(_, end)| byte_to_cell(row, end) == row.len())
+            .unwrap_or((0, 0));
+        self.join_continuations(head + 1, text[start..end].to_string())
+    }
+
     /// Full-row emission keeps link boundaries correct for partial diffs.
     fn emit_link_row(&mut self, y: u16) -> io::Result<()> {
+        let segments = self.link_segments(y as usize);
         let row = &self.grid[y as usize];
-        let text = Self::row_text(row);
-        let spans = find_url_spans(&text);
 
-        // Map each column to the URL span covering it (byte-offset based;
-        // empty-symbol continuation cells never intersect ASCII URL spans).
+        // Map each column to the link segment covering it.
         let mut link_at: Vec<Option<usize>> = vec![None; row.len()];
-        let mut byte_pos = 0usize;
-        for (x, cell) in row.iter().enumerate() {
-            let start = byte_pos;
-            byte_pos += cell.symbol().len();
-            if start == byte_pos {
-                continue;
-            }
-            for (i, &(s, e)) in spans.iter().enumerate() {
-                if start < e && byte_pos > s {
-                    link_at[x] = Some(i);
-                }
+        for (i, &(start, end, _)) in segments.iter().enumerate() {
+            for slot in link_at.iter_mut().take(end.min(row.len())).skip(start) {
+                *slot = Some(i);
             }
         }
 
@@ -125,8 +226,7 @@ impl<W: Write> HyperlinkBackend<W> {
                     self.writer.write_all(OSC8_CLOSE.as_bytes())?;
                 }
                 if let Some(i) = link {
-                    let (s, e) = spans[i];
-                    write!(self.writer, "\x1b]8;;{}\x1b\\", &text[s..e])?;
+                    write!(self.writer, "\x1b]8;;{}\x1b\\", segments[i].2)?;
                 }
                 open_link = link;
             }
@@ -166,12 +266,7 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
         let changed_rows: BTreeSet<u16> = updates.iter().map(|(_, y, _)| *y).collect();
         let mut link_rows = BTreeSet::new();
         for y in changed_rows {
-            let has_url = self
-                .grid
-                .get(y as usize)
-                .map(|row| Self::row_text(row).contains("http"))
-                .unwrap_or(false);
-            if has_url {
+            if self.is_link_row(y as usize) {
                 link_rows.insert(y);
             }
         }
@@ -318,6 +413,47 @@ fn to_crossterm(color: Color) -> CrosstermColor {
     }
 }
 
+/// Strips trailing prose punctuation that is rarely part of an intended URL.
+fn trim_trailing_punct(span: &str) -> &str {
+    let mut span = span;
+    while span.ends_with(['.', ',', ';', ':', '!', '?']) {
+        let last = span.chars().next_back().expect("non-empty span");
+        span = &span[..span.len() - last.len_utf8()];
+    }
+    span
+}
+
+/// Characters that can appear inside a (non-percent-encoded) URL fragment:
+/// ASCII, excluding whitespace and bracketing punctuation. Continuation
+/// runs are deliberately stricter than in-span characters: a CJK character
+/// at the start of the next row is prose, not part of a wrapped URL.
+fn is_url_char(c: char) -> bool {
+    c.is_ascii() && !is_url_delimiter(c)
+}
+
+/// Leading run of URL characters at the start of `text`.
+fn leading_url_run(text: &str) -> &str {
+    let end = text
+        .char_indices()
+        .find(|&(_, c)| !is_url_char(c))
+        .map(|(i, _)| i)
+        .unwrap_or(text.len());
+    &text[..end]
+}
+
+/// Maps a byte offset in the row text to the cell index whose symbol starts
+/// there (a span end maps to the cell just past it, i.e. an exclusive end).
+fn byte_to_cell(row: &[Cell], byte: usize) -> usize {
+    let mut pos = 0;
+    for (x, cell) in row.iter().enumerate() {
+        if pos >= byte {
+            return x;
+        }
+        pos += cell.symbol().len();
+    }
+    row.len()
+}
+
 /// Finds `http(s)` URL spans in `text`, returned as byte ranges.
 ///
 /// A match must not be preceded by an ASCII alphanumeric (guards against
@@ -348,11 +484,7 @@ fn find_url_spans(text: &str) -> Vec<(usize, usize)> {
                         break;
                     }
                 }
-                let mut span = &text[start..end];
-                while span.ends_with(['.', ',', ';', ':', '!', '?']) {
-                    let last = span.chars().next_back().expect("non-empty span");
-                    span = &span[..span.len() - last.len_utf8()];
-                }
+                let span = trim_trailing_punct(&text[start..end]);
                 if span.len() > p.len() {
                     spans.push((start, start + span.len()));
                 }
@@ -498,6 +630,76 @@ mod tests {
         );
         // Row starts with a cursor move to column 0 of row 3.
         assert!(out.contains("\x1b[4;1H"), "output: {out:?}");
+    }
+
+    /// Draws rows of text as one frame of row-major cell updates.
+    fn draw_rows(backend: &mut HyperlinkBackend<Vec<u8>>, rows: &[&str]) {
+        let cells: Vec<Vec<Cell>> = rows.iter().map(|r| cells_for(r)).collect();
+        let updates: Vec<(u16, u16, &Cell)> = cells
+            .iter()
+            .enumerate()
+            .flat_map(|(y, row)| {
+                row.iter()
+                    .enumerate()
+                    .map(move |(x, c)| (x as u16, y as u16, c))
+            })
+            .collect();
+        backend.draw(updates.into_iter()).unwrap();
+    }
+
+    #[test]
+    fn wrapped_url_across_two_rows_emits_full_url() {
+        let mut backend = HyperlinkBackend::new(Vec::new());
+        // Row 0 ends exactly at the URL fragment (ratatui splits over-long
+        // words at the width boundary); row 1 continues it.
+        draw_rows(
+            &mut backend,
+            &["see https://example.com/ve", "ry-long-path tail"],
+        );
+        let out = String::from_utf8(backend.writer.clone()).unwrap();
+        let open = "\x1b]8;;https://example.com/very-long-path\x1b\\";
+        assert_eq!(out.matches(open).count(), 2, "output: {out:?}");
+    }
+
+    #[test]
+    fn wrapped_url_across_three_rows_emits_full_url() {
+        let mut backend = HyperlinkBackend::new(Vec::new());
+        draw_rows(&mut backend, &["see https://x", "middle", "tail end"]);
+        let out = String::from_utf8(backend.writer.clone()).unwrap();
+        let open = "\x1b]8;;https://xmiddletail\x1b\\";
+        assert_eq!(out.matches(open).count(), 3, "output: {out:?}");
+    }
+
+    #[test]
+    fn continuation_row_stays_linked_on_partial_diff() {
+        let mut backend = HyperlinkBackend::new(Vec::new());
+        draw_rows(
+            &mut backend,
+            &["see https://example.com/ve", "ry-long-path tail"],
+        );
+        backend.writer.clear();
+
+        // Only the continuation row changes in the next frame.
+        let row = cells_for("ry-long-path TAIL");
+        let updates: Vec<(u16, u16, &Cell)> = row
+            .iter()
+            .enumerate()
+            .map(|(x, c)| (x as u16, 1u16, c))
+            .collect();
+        backend.draw(updates.into_iter()).unwrap();
+
+        let out = String::from_utf8(backend.writer.clone()).unwrap();
+        let open = "\x1b]8;;https://example.com/very-long-path\x1b\\";
+        assert_eq!(out.matches(open).count(), 1, "output: {out:?}");
+    }
+
+    #[test]
+    fn url_ending_at_row_edge_without_continuation_is_not_joined() {
+        let mut backend = HyperlinkBackend::new(Vec::new());
+        draw_rows(&mut backend, &["go https://a.b", " tail"]);
+        let out = String::from_utf8(backend.writer.clone()).unwrap();
+        assert!(out.contains("\x1b]8;;https://a.b\x1b\\"), "output: {out:?}");
+        assert!(!out.contains("https://a.btail"), "output: {out:?}");
     }
 
     #[test]

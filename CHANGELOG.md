@@ -12,6 +12,12 @@
 - `scripts/chrome-debug-mac.sh` — dev helper: kill all Chrome instances and
   relaunch with remote debugging on port 9222 (macOS). (#737)
 
+### Fixed
+
+- OSC 8 hyperlinks: a URL wrapped across terminal rows now resolves every
+  row fragment to the full URL (previously each fragment linked to its own
+  partial text, and continuation rows were not clickable at all).
+
 ### Changed
 
 - Topic state relocation: a pinned/ad-hoc topic's `.jyc` no longer lives

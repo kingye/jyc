@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+### Fixed
+
+- Dashboard TUI rendering corruption around URL-containing chat messages:
+  `HyperlinkBackend`'s full-row re-emission is now clipped to the current
+  terminal width — after a shrink-resize the shadow grid could hold longer
+  rows, and emitting them auto-wrapped and physically scrolled the screen,
+  desyncing ratatui's diff baseline (interleaved old/new text while
+  scrolling); re-enabling mouse capture now also forces a full repaint,
+  since the terminal's own scrollback could move content while capture was
+  off.
+
 ### Added
 
 - `/grant` / `/ungrant` commands: grant the topic's agent filesystem access

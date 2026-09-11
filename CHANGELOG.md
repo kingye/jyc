@@ -3,13 +3,15 @@
 ### Fixed
 
 - Dashboard TUI rendering corruption around URL-containing chat messages:
-  `HyperlinkBackend`'s full-row re-emission is now clipped to the current
-  terminal width — after a shrink-resize the shadow grid could hold longer
-  rows, and emitting them auto-wrapped and physically scrolled the screen,
-  desyncing ratatui's diff baseline (interleaved old/new text while
-  scrolling); re-enabling mouse capture now also forces a full repaint,
-  since the terminal's own scrollback could move content while capture was
-  off.
+  `HyperlinkBackend`'s link-row re-emission is now clipped to the URL pane's
+  rect instead of re-printing the full terminal row — re-printing other
+  panes' cells trusted the terminal's width table to match ratatui's for
+  content the app did not lay out (sidebar icons, borders), and any
+  mismatch desynced the cursor, with auto-wrap physically scrolling the
+  screen (interleaved old/new text, worse while scrolling); the emission is
+  additionally clipped to the current terminal width, and re-enabling mouse
+  capture forces a full repaint since the terminal's own scrollback could
+  move content while capture was off.
 
 ### Added
 

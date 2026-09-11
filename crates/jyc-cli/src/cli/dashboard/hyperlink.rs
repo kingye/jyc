@@ -51,7 +51,7 @@ pub(crate) struct HyperlinkBackend<W: Write> {
     grid: Vec<Vec<Cell>>,
     /// Pane rectangles eligible for link scanning (see [`LinkRegions`]).
     regions: LinkRegions,
-    /// Test hook: overrides the terminal width used to clip full-row
+    /// Test hook: overrides the terminal width used to clip region-span
     /// re-emissions (real terminals report via `size()`; tests have no
     /// tty). `None` in production.
     width_override: Option<u16>,
@@ -68,7 +68,7 @@ impl<W: Write> HyperlinkBackend<W> {
         }
     }
 
-    /// Current terminal width for clipping full-row re-emissions. Falls
+    /// Current terminal width for clipping region-span re-emissions. Falls
     /// back to `u16::MAX` (no clipping) when the size ioctl fails, e.g.
     /// when stdout is not a tty.
     fn current_width(&self) -> u16 {
@@ -131,7 +131,7 @@ impl<W: Write> HyperlinkBackend<W> {
         &row[x0..x1]
     }
 
-    /// A row needs full-row re-emission when any registered pane region on
+    /// A row needs link re-emission when any registered pane region on
     /// it contains a URL span or continues a URL wrapped from the row above.
     fn is_link_row(&self, y: usize) -> bool {
         self.regions.borrow().iter().any(|region| {
@@ -141,6 +141,16 @@ impl<W: Write> HyperlinkBackend<W> {
             let slice = Self::region_row(&self.grid, region, y);
             !find_url_spans(&Self::row_text(slice)).is_empty() || self.row_starts_mid_url(region, y)
         })
+    }
+
+    /// Whether cell (x, y) falls inside any registered link region. Cells
+    /// outside regions on a link row are painted by the plain diff pass;
+    /// cells inside are covered by the region re-emission.
+    fn in_any_region(&self, x: u16, y: u16) -> bool {
+        self.regions
+            .borrow()
+            .iter()
+            .any(|r| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
     }
 
     /// Link segments over a row: `(first_cell, end_cell_exclusive, full_url)`
@@ -250,51 +260,61 @@ impl<W: Write> HyperlinkBackend<W> {
         self.join_continuations(region, head + 1, text[start..end].to_string())
     }
 
-    /// Full-row emission keeps link boundaries correct for partial diffs.
+    /// Re-emits the cells of every link region covering row `y`, inserting
+    /// OSC 8 sequences around URL spans. Region-span re-emission keeps link
+    /// boundaries correct for partial diffs.
+    ///
+    /// Emission is clipped to each region's rect — never the full terminal
+    /// row. Re-printing other panes' cells would trust the terminal's width
+    /// table to match ratatui's for content we did not lay out (sidebar
+    /// icons, borders); any width mismatch desyncs the cursor, and the
+    /// resulting auto-wrap can physically scroll the screen — desyncing
+    /// ratatui's diff baseline from the real display, which shows up as
+    /// interleaved old/new text while scrolling.
     fn emit_link_row(&mut self, y: u16) -> io::Result<()> {
         let segments = self.link_segments(y as usize);
-        let row = &self.grid[y as usize];
-
-        // Never emit past the terminal's current width: the shadow grid
-        // can hold longer rows left over from before a shrink-resize, and
-        // printing those extra cells would auto-wrap and physically scroll
-        // the screen — desyncing ratatui's diff baseline (its previous
-        // buffer) from the real display, which shows up as interleaved
-        // old/new text while scrolling.
+        // Never emit past the terminal's current width either: the shadow
+        // grid can hold longer rows left over from before a shrink-resize.
         let width = self.current_width() as usize;
-        let cells = row.len().min(width);
-
-        // Map each column to the link segment covering it.
-        let mut link_at: Vec<Option<usize>> = vec![None; row.len()];
-        for (i, &(start, end, _)) in segments.iter().enumerate() {
-            for slot in link_at.iter_mut().take(end.min(row.len())).skip(start) {
-                *slot = Some(i);
-            }
-        }
-
-        queue!(self.writer, MoveTo(0, y))?;
+        let row_len = self.grid[y as usize].len();
         let mut current = (Color::Reset, Color::Reset, Modifier::empty());
-        let mut open_link: Option<usize> = None;
-        for (x, cell) in row.iter().take(cells).enumerate() {
-            let link = link_at[x];
-            if link != open_link {
-                if open_link.is_some() {
-                    self.writer.write_all(OSC8_CLOSE.as_bytes())?;
-                }
-                if let Some(i) = link {
-                    write!(self.writer, "\x1b]8;;{}\x1b\\", segments[i].2)?;
-                }
-                open_link = link;
+
+        let regions = self.regions.borrow();
+        for region in regions.iter() {
+            if y < region.y || y >= region.y + region.height {
+                continue;
             }
-            let style = (cell.fg, cell.bg, cell.modifier);
-            if style != current {
-                queue_style(&mut self.writer, current, style)?;
-                current = style;
+            let x0 = region.x as usize;
+            let end = (x0 + region.width as usize).min(row_len).min(width);
+            if x0 >= end {
+                continue;
             }
-            queue!(self.writer, Print(cell.symbol()))?;
-        }
-        if open_link.is_some() {
-            self.writer.write_all(OSC8_CLOSE.as_bytes())?;
+            queue!(self.writer, MoveTo(region.x, y))?;
+            let mut open_link: Option<usize> = None;
+            for (x, cell) in self.grid[y as usize].iter().enumerate().take(end).skip(x0) {
+                let link = segments
+                    .iter()
+                    .position(|&(start, seg_end, _)| x >= start && x < seg_end);
+                if link != open_link {
+                    if open_link.is_some() {
+                        self.writer.write_all(OSC8_CLOSE.as_bytes())?;
+                    }
+                    if let Some(i) = link {
+                        write!(self.writer, "\x1b]8;;{}\x1b\\", segments[i].2)?;
+                    }
+                    open_link = link;
+                }
+                let style = (cell.fg, cell.bg, cell.modifier);
+                if style != current {
+                    queue_style(&mut self.writer, current, style)?;
+                    current = style;
+                }
+                queue!(self.writer, Print(cell.symbol()))?;
+            }
+            // Never leak an open link past the region span.
+            if open_link.is_some() {
+                self.writer.write_all(OSC8_CLOSE.as_bytes())?;
+            }
         }
         queue!(
             self.writer,
@@ -316,8 +336,10 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
             self.set_cell(*x, *y, cell);
         }
 
-        // Rows whose shadow text contains a URL get a full-row re-emission;
-        // everything else is emitted as a minimal diff like upstream.
+        // Rows whose shadow text contains a URL get their region spans
+        // re-emitted with OSC 8 sequences; everything else is emitted as a
+        // minimal diff like upstream — including cells outside any link
+        // region on link rows (other panes' content is never re-emitted).
         // Classify per unique row, not per changed cell.
         let changed_rows: BTreeSet<u16> = updates.iter().map(|(_, y, _)| *y).collect();
         let mut link_rows = BTreeSet::new();
@@ -329,7 +351,7 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
 
         let plain: Vec<(u16, u16, Cell)> = updates
             .into_iter()
-            .filter(|(_, y, _)| !link_rows.contains(y))
+            .filter(|(x, y, _)| !link_rows.contains(y) || !self.in_any_region(*x, *y))
             .collect();
         self.emit_plain_cells(&plain)?;
         for y in link_rows {
@@ -898,5 +920,23 @@ mod tests {
         );
         // The OSC 8 payload still carries the full link target.
         assert!(clipped.contains("\x1b]8;;https://x.co\x1b\\"));
+    }
+
+    #[test]
+    fn emit_link_row_confined_to_link_region() {
+        // Region covers cols 5..22; ZZZZ markers sit outside on both sides.
+        let regions: LinkRegions = Rc::new(RefCell::new(vec![Rect::new(5, 0, 17, 1)]));
+        let mut backend = HyperlinkBackend::new(Vec::new(), regions);
+        draw_row(&mut backend, 0, "ZZZZ see https://a.co end ZZZZ");
+        let out = String::from_utf8(backend.writer).unwrap();
+        assert!(
+            out.contains("ZZZZ"),
+            "plain pass still paints changed cells outside regions: {out:?}"
+        );
+        assert!(out.contains("\x1b]8;;https://a.co\x1b\\"), "{out:?}");
+        assert!(
+            out.contains("\x1b[1;6H"),
+            "link re-emission starts at region.x (col 6), never column 0: {out:?}"
+        );
     }
 }

@@ -572,6 +572,30 @@ impl Default for AiConfig {
 ///                                       (defaults to cache_hit_per_million)
 /// ```
 ///
+/// How a model is paid for. `metered` (default) = pay-as-you-go API
+/// billing, where ledger cost is real spend. `subscription` = a flat-fee
+/// coding plan, where the configured token rates only express a
+/// notional, API-equivalent value — no real money changes hands per call.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BillingMode {
+    /// Pay-as-you-go; ledger cost is real spend.
+    #[default]
+    Metered,
+    /// Flat-fee plan; ledger cost is a notional API-equivalent value.
+    Subscription,
+}
+
+impl BillingMode {
+    /// Ledger-shaped label (`BillingEntry.billing`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Metered => "metered",
+            Self::Subscription => "subscription",
+        }
+    }
+}
+
 /// `input_tokens` is the provider-reported prompt size, which *includes*
 /// tokens served from the prompt cache. Subtracting the two cache buckets
 /// leaves the portion billed at the full input rate; the cached portions
@@ -605,6 +629,17 @@ pub struct ModelPricing {
     /// jyc never converts between currencies, so a provider billing in
     /// USD must say so explicitly.
     pub currency: Option<String>,
+    /// `metered` (default) or `subscription`. Copied into every ledger
+    /// entry at write time so `/bill` can separate real spend from
+    /// notional subscription value.
+    #[serde(default)]
+    pub billing: BillingMode,
+    /// Flat monthly fee for `billing = "subscription"` plans, in
+    /// `currency`. Enables the `/bill` utilization line (notional value
+    /// vs fee, prorated to the report scope). Omit to report notional
+    /// cost only. Ignored for metered models.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monthly_fee: Option<f64>,
     /// Time-of-day rate overrides. Each window supplies its own rates for
     /// the hours between `start` and `end`; the flat fields above act as
     /// the default for any time outside every window. First matching

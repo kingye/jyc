@@ -73,6 +73,12 @@ pub struct BillingEntry {
     /// field existed still deserialize.
     #[serde(default = "default_kind")]
     pub kind: String,
+    /// `metered` (real spend) or `subscription` (notional API-equivalent
+    /// value), copied from `ModelPricing.billing` at write time.
+    /// Defaults to `metered` so ledgers written before this field
+    /// existed load unchanged.
+    #[serde(default = "default_billing_metered")]
+    pub billing: String,
     /// Input rate per million tokens actually applied to this call —
     /// either the flat rate or the window rate, frozen at billing time.
     /// `serde(default)` so old ledger lines (which never wrote the
@@ -108,6 +114,10 @@ pub const KIND_SUMMARY: &str = "summary";
 
 fn default_kind() -> String {
     KIND_CALL.to_string()
+}
+
+fn default_billing_metered() -> String {
+    "metered".to_string()
 }
 
 /// Append-only billing ledger, one file per UTC day per topic.
@@ -233,6 +243,7 @@ mod tests {
             cost,
             currency: currency.to_string(),
             kind: KIND_CALL.to_string(),
+            billing: "metered".into(),
             input_rate_per_million: 0.0,
             output_rate_per_million: 0.0,
             cache_hit_rate_per_million: 0.0,

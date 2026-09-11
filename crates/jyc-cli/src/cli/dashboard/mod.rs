@@ -113,6 +113,14 @@ struct App {
     /// working inside tmux.
     mouse_capture_enabled: bool,
 
+    /// One-shot flag: the render loop calls `terminal.clear()` before the
+    /// next draw, rebuilding ratatui's diff baseline. Set when the real
+    /// screen may have changed out-of-band — e.g. while mouse capture was
+    /// off, the wheel scrolls the terminal's own scrollback (or tmux
+    /// copy-mode), moving content without ratatui knowing; the following
+    /// diff repaint would ghost-mix old and new frames.
+    needs_full_redraw: bool,
+
     /// Open leader-key popup on the dashboard screen (dashboard + shared
     /// commands). Triggered by `Ctrl+P`.
     leader: Option<leader::Leader>,
@@ -155,6 +163,7 @@ impl App {
             pending_new_chat: false,
             pending_reload_config: false,
             mouse_capture_enabled: true,
+            needs_full_redraw: false,
             leader: None,
             token,
             overview_ws_tx: Some(overview_ws_cmd_tx),
@@ -717,6 +726,10 @@ pub async fn run(
             }
 
             // Draw
+            if app.needs_full_redraw {
+                app.needs_full_redraw = false;
+                terminal.clear()?;
+            }
             terminal.draw(|f| ui(f, &mut app))?;
 
             // Handle input: block up to 50ms for the first event, then
@@ -1209,6 +1222,13 @@ fn toggle_mouse_capture(app: &mut App) {
         app.mouse_capture_enabled = !on;
         app.set_status(format!("Mouse capture toggle failed: {e}"));
     } else {
+        if on {
+            // While capture was off, scrolling went to the terminal's own
+            // scrollback — the real screen no longer matches ratatui's
+            // previous buffer. Repaint everything once (same pattern as
+            // the editor-suspend resume, which also `terminal.clear()`s).
+            app.needs_full_redraw = true;
+        }
         app.set_status(if on {
             "Mouse capture: on".to_string()
         } else {

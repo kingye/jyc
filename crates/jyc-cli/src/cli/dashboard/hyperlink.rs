@@ -51,6 +51,10 @@ pub(crate) struct HyperlinkBackend<W: Write> {
     grid: Vec<Vec<Cell>>,
     /// Pane rectangles eligible for link scanning (see [`LinkRegions`]).
     regions: LinkRegions,
+    /// Test hook: overrides the terminal width used to clip full-row
+    /// re-emissions (real terminals report via `size()`; tests have no
+    /// tty). `None` in production.
+    width_override: Option<u16>,
 }
 
 impl<W: Write> HyperlinkBackend<W> {
@@ -60,7 +64,18 @@ impl<W: Write> HyperlinkBackend<W> {
             writer,
             grid: Vec::new(),
             regions,
+            width_override: None,
         }
+    }
+
+    /// Current terminal width for clipping full-row re-emissions. Falls
+    /// back to `u16::MAX` (no clipping) when the size ioctl fails, e.g.
+    /// when stdout is not a tty.
+    fn current_width(&self) -> u16 {
+        if let Some(w) = self.width_override {
+            return w;
+        }
+        self.size().map(|s| s.width).unwrap_or(u16::MAX)
     }
 
     /// Stores a cell in the shadow grid, growing it as needed.
@@ -240,6 +255,15 @@ impl<W: Write> HyperlinkBackend<W> {
         let segments = self.link_segments(y as usize);
         let row = &self.grid[y as usize];
 
+        // Never emit past the terminal's current width: the shadow grid
+        // can hold longer rows left over from before a shrink-resize, and
+        // printing those extra cells would auto-wrap and physically scroll
+        // the screen — desyncing ratatui's diff baseline (its previous
+        // buffer) from the real display, which shows up as interleaved
+        // old/new text while scrolling.
+        let width = self.current_width() as usize;
+        let cells = row.len().min(width);
+
         // Map each column to the link segment covering it.
         let mut link_at: Vec<Option<usize>> = vec![None; row.len()];
         for (i, &(start, end, _)) in segments.iter().enumerate() {
@@ -251,7 +275,7 @@ impl<W: Write> HyperlinkBackend<W> {
         queue!(self.writer, MoveTo(0, y))?;
         let mut current = (Color::Reset, Color::Reset, Modifier::empty());
         let mut open_link: Option<usize> = None;
-        for (x, cell) in row.iter().enumerate() {
+        for (x, cell) in row.iter().take(cells).enumerate() {
             let link = link_at[x];
             if link != open_link {
                 if open_link.is_some() {
@@ -847,5 +871,32 @@ mod tests {
             ia < ireset && ireset < ibold && ibold < ib,
             "output: {out:?}"
         );
+    }
+
+    #[test]
+    fn link_row_reemission_is_clipped_to_terminal_width() {
+        // Simulate a shrink-resize: the shadow grid keeps a row longer
+        // than the current terminal width. Re-emitting it past the width
+        // would auto-wrap and physically scroll the screen, desyncing
+        // ratatui's diff baseline (interleaved old/new text on scroll).
+        let mut backend = backend_with_region(100, 100);
+        // URL ends at col 14; the plain tail is what clipping must drop.
+        let text = "go https://x.co NOW then a long tail of plain text xyz";
+        draw_row(&mut backend, 0, text);
+        let full = String::from_utf8(backend.writer.clone()).unwrap();
+        assert!(full.contains("xyz"), "uncapped emission: {full:?}");
+
+        // Terminal shrank to 20 columns; the row is redrawn (e.g. scroll).
+        backend.width_override = Some(20);
+        backend.writer.clear();
+        draw_row(&mut backend, 0, text);
+        let clipped = String::from_utf8(backend.writer.clone()).unwrap();
+        assert!(clipped.contains("NOW"), "visible head kept: {clipped:?}");
+        assert!(
+            !clipped.contains("long tail") && !clipped.contains("xyz"),
+            "cells past the terminal width must not be emitted: {clipped:?}"
+        );
+        // The OSC 8 payload still carries the full link target.
+        assert!(clipped.contains("\x1b]8;;https://x.co\x1b\\"));
     }
 }

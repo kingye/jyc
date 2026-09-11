@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{NaiveDate, Utc};
-use jyc_types::config::BillingMode;
+use jyc_types::config::{BillingMode, DEFAULT_CURRENCY};
 use jyc_types::{AppConfig, format_amount};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
@@ -120,24 +120,29 @@ fn parse_scope(args: &[String]) -> Result<Scope, String> {
     }
 }
 
-/// `model_label` → `(monthly_fee, currency)` for every configured
-/// subscription model. Aliases whose `model_id` differs from the config
-/// key never reach the ledger (pricing lookup would already have failed
-/// at billing time), so scanning config keys matches ledger labels
-/// exactly.
+/// Provider name → `(monthly_fee, currency)` for every configured
+/// subscription provider. The fee is provider-level: a flat-fee coding
+/// plan covers every model under the provider, so `/bill` compares one
+/// fee against the provider's combined notional value. Fee currency comes
+/// from the provider-level `pricing.currency` (default
+/// [`DEFAULT_CURRENCY`]).
 fn collect_subscription_fees(config: &AppConfig) -> BTreeMap<String, (f64, String)> {
     let mut fees = BTreeMap::new();
     for (provider_name, provider) in &config.ai.providers {
-        for (model_key, model) in &provider.models {
-            if let Some(pricing) = &model.pricing
-                && pricing.billing == BillingMode::Subscription
-                && let Some(fee) = pricing.monthly_fee
-            {
-                fees.insert(
-                    format!("{provider_name}/{model_key}"),
-                    (fee, pricing.currency_label().to_string()),
-                );
-            }
+        if provider.billing == BillingMode::Subscription
+            && let Some(fee) = provider.monthly_fee
+        {
+            fees.insert(
+                provider_name.clone(),
+                (
+                    fee,
+                    provider
+                        .pricing
+                        .as_ref()
+                        .map(|p| p.currency_label().to_string())
+                        .unwrap_or_else(|| DEFAULT_CURRENCY.to_string()),
+                ),
+            );
         }
     }
     fees
@@ -243,12 +248,12 @@ impl BillRow {
 /// is the section order the report wants.
 type BillTable = BTreeMap<(String, String, String), BTreeMap<String, BillRow>>;
 
-/// Aggregate every matching ledger entry. Also returns the day span of
-/// subscription entries (for prorating the monthly fee in `All` scope).
-fn aggregate(dirs: &[(String, PathBuf)], date_prefix: &str) -> (BillTable, Option<i64>) {
+/// Aggregate every matching ledger entry. Also returns, per subscription
+/// provider, the day span of its entries (for prorating the monthly fee
+/// in `All` scope).
+fn aggregate(dirs: &[(String, PathBuf)], date_prefix: &str) -> (BillTable, BTreeMap<String, i64>) {
     let mut table: BillTable = BTreeMap::new();
-    let mut sub_min: Option<NaiveDate> = None;
-    let mut sub_max: Option<NaiveDate> = None;
+    let mut sub_spans: BTreeMap<String, (NaiveDate, NaiveDate)> = BTreeMap::new();
     for (label, dir) in dirs {
         for entry in BillingLogStore::load_matching(dir, date_prefix) {
             let (provider, model) = entry
@@ -256,28 +261,33 @@ fn aggregate(dirs: &[(String, PathBuf)], date_prefix: &str) -> (BillTable, Optio
                 .split_once('/')
                 .map(|(p, m)| (p.to_string(), m.to_string()))
                 .unwrap_or_else(|| ("other".to_string(), entry.model.clone()));
-            table
-                .entry((entry.billing.clone(), provider, model))
-                .or_default()
-                .entry(label.clone())
-                .or_default()
-                .add(&entry);
             // `get(..10)` not `ts[..10]`: a corrupted ledger line whose
             // first bytes are multi-byte UTF-8 must not panic the handler.
             if entry.billing == BillingMode::Subscription.as_str()
                 && let Ok(date) =
                     NaiveDate::parse_from_str(entry.ts.get(..10).unwrap_or(&entry.ts), "%Y-%m-%d")
             {
-                sub_min = Some(sub_min.map_or(date, |m: NaiveDate| m.min(date)));
-                sub_max = Some(sub_max.map_or(date, |m: NaiveDate| m.max(date)));
+                sub_spans
+                    .entry(provider.clone())
+                    .and_modify(|(min, max)| {
+                        *min = (*min).min(date);
+                        *max = (*max).max(date);
+                    })
+                    .or_insert((date, date));
             }
+            table
+                .entry((entry.billing.clone(), provider, model))
+                .or_default()
+                .entry(label.clone())
+                .or_default()
+                .add(&entry);
         }
     }
-    let span = match (sub_min, sub_max) {
-        (Some(min), Some(max)) => Some((max - min).num_days() + 1),
-        _ => None,
-    };
-    (table, span)
+    let spans = sub_spans
+        .into_iter()
+        .map(|(p, (min, max))| (p, (max - min).num_days() + 1))
+        .collect();
+    (table, spans)
 }
 
 fn format_costs(costs: &BTreeMap<String, f64>) -> String {
@@ -293,7 +303,7 @@ fn render_report(
     scope: &Scope,
     fees: &BTreeMap<String, (f64, String)>,
 ) -> String {
-    let (table, sub_span) = aggregate(dirs, &scope.prefix());
+    let (table, sub_spans) = aggregate(dirs, &scope.prefix());
     let mut out = format!("## Bill — {}\n", scope.label());
     if table.is_empty() {
         out.push_str("\nNo billing entries found.\n");
@@ -302,7 +312,6 @@ fn render_report(
     let has_subscription = table
         .keys()
         .any(|(billing, _, _)| billing == BillingMode::Subscription.as_str());
-    let days = scope.days(sub_span);
 
     for mode in [
         BillingMode::Metered.as_str(),
@@ -323,8 +332,8 @@ fn render_report(
             });
         }
         let mut section_total = BillRow::default();
-        // (provider, model) → notional total, for subscription fee lines.
-        let mut model_totals: BTreeMap<(String, String), BillRow> = BTreeMap::new();
+        // provider → notional total, for subscription fee lines.
+        let mut provider_totals: BTreeMap<String, BillRow> = BTreeMap::new();
         for provider in providers {
             let mut provider_total = BillRow::default();
             out.push_str(&format!(
@@ -346,12 +355,10 @@ fn render_report(
                         format_costs(&row.costs)
                     ));
                     provider_total.calls += row.calls;
-                    let model_total = model_totals
-                        .entry((provider.clone(), model.clone()))
-                        .or_default();
+                    let fee_total = provider_totals.entry(provider.clone()).or_default();
                     for (currency, amount) in &row.costs {
                         *provider_total.costs.entry(currency.clone()).or_default() += amount;
-                        *model_total.costs.entry(currency.clone()).or_default() += amount;
+                        *fee_total.costs.entry(currency.clone()).or_default() += amount;
                     }
                 }
             }
@@ -366,11 +373,11 @@ fn render_report(
             }
         }
         if mode == BillingMode::Subscription.as_str() {
-            for ((provider, model), row) in &model_totals {
-                let model_label = format!("{provider}/{model}");
-                let Some((fee, currency)) = fees.get(&model_label) else {
+            for (provider, row) in &provider_totals {
+                let Some((fee, currency)) = fees.get(provider) else {
                     continue;
                 };
+                let days = scope.days(sub_spans.get(provider).copied());
                 let prorated = fee / 30.0 * days;
                 let notional = row.costs.get(currency).copied().unwrap_or(0.0);
                 let utilization = if prorated > 0.0 {
@@ -379,12 +386,12 @@ fn render_report(
                     0.0
                 };
                 out.push_str(&format!(
-                    "\n{model_label}: 月费 {} · 本期摊 {} · 利用率 {utilization:.0}%",
+                    "\n{provider}: 月费 {} · 本期摊 {} · 利用率 {utilization:.0}%",
                     format_amount(*fee, currency),
                     format_amount(prorated, currency),
                 ));
             }
-            if !model_totals.is_empty() {
+            if !provider_totals.is_empty() {
                 out.push('\n');
             }
         }
@@ -568,7 +575,7 @@ mod tests {
             ],
         );
         let dirs = vec![("agents/jyc".to_string(), dir)];
-        let fees = BTreeMap::from([("glm/glm-4.6".to_string(), (49.0, "CNY".to_string()))]);
+        let fees = BTreeMap::from([("glm".to_string(), (49.0, "CNY".to_string()))]);
         // Month scope: September has 30 days, so the fee is not prorated.
         let report = render_report(&dirs, &Scope::Month(2026, 9), &fees);
 
@@ -589,7 +596,7 @@ mod tests {
         );
         // 30 / 49 ≈ 61% utilization against the full-month fee.
         assert!(
-            report.contains("glm/glm-4.6: 月费 ¥49.0000 · 本期摊 ¥49.0000 · 利用率 61%"),
+            report.contains("glm: 月费 ¥49.0000 · 本期摊 ¥49.0000 · 利用率 61%"),
             "{report}"
         );
         // With sections, there is no combined grand total mixing real
@@ -608,13 +615,67 @@ mod tests {
             &[entry("glm/glm-4.6", 4.9, "CNY", "subscription")],
         );
         let dirs = vec![("t".to_string(), dir)];
-        let fees = BTreeMap::from([("glm/glm-4.6".to_string(), (49.0, "CNY".to_string()))]);
+        let fees = BTreeMap::from([("glm".to_string(), (49.0, "CNY".to_string()))]);
         let report = render_report(&dirs, &Scope::Today, &fees);
         // 4.9 / (49/30 × 1) = 300%.
         assert!(
-            report.contains("glm/glm-4.6: 月费 ¥49.0000 · 本期摊 ¥1.6333 · 利用率 300%"),
+            report.contains("glm: 月费 ¥49.0000 · 本期摊 ¥1.6333 · 利用率 300%"),
             "{report}"
         );
+    }
+
+    /// A flat-fee plan covers every model under the provider: two models
+    /// of the same subscription provider aggregate into ONE fee line
+    /// whose notional is their combined cost.
+    #[test]
+    fn subscription_fee_aggregates_all_models_under_provider() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("t/.jyc");
+        write_ledger(
+            &dir,
+            "2026-09-10",
+            &[
+                entry("kimi/k2", 20.0, "CNY", "subscription"),
+                entry("kimi/k3", 10.0, "CNY", "subscription"),
+            ],
+        );
+        let dirs = vec![("t".to_string(), dir)];
+        let fees = BTreeMap::from([("kimi".to_string(), (30.0, "CNY".to_string()))]);
+        let report = render_report(&dirs, &Scope::Month(2026, 9), &fees);
+        // (20 + 10) / 30 = 100% utilization on one shared fee line.
+        assert!(
+            report.contains("kimi: 月费 ¥30.0000 · 本期摊 ¥30.0000 · 利用率 100%"),
+            "{report}"
+        );
+        assert!(!report.contains("kimi/k2: 月费"), "{report}");
+        assert!(!report.contains("kimi/k3: 月费"), "{report}");
+    }
+
+    /// Fees come from provider-level `billing`/`monthly_fee`, with the
+    /// currency taken from the provider-level pricing block.
+    #[test]
+    fn subscription_fees_collected_per_provider() {
+        let cfg: AppConfig = toml::from_str(
+            r#"
+            [agent]
+            [agent.providers.kimi]
+            type = "anthropic"
+            billing = "subscription"
+            monthly_fee = 25.0
+            pricing = { input_per_million = 2.0, output_per_million = 8.0, currency = "USD" }
+            [agent.providers.kimi.models.k2]
+            [agent.providers.kimi.models.k3]
+            [agent.providers.deepseek]
+            type = "openai-compatible"
+            [agent.providers.kimi2]
+            type = "anthropic"
+            billing = "subscription"
+        "#,
+        )
+        .unwrap();
+        let fees = collect_subscription_fees(&cfg);
+        assert_eq!(fees.len(), 1);
+        assert_eq!(fees.get("kimi"), Some(&(25.0, "USD".to_string())));
     }
 
     #[test]

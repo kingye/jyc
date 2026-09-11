@@ -40,6 +40,8 @@ mod integration_tests {
                 user_agent: None,
                 cache_ttl: None,
                 pricing: None,
+                billing: Default::default(),
+                monthly_fee: None,
                 models: HashMap::new(),
             },
         );
@@ -84,6 +86,8 @@ mod integration_tests {
                 user_agent: None,
                 cache_ttl: None,
                 pricing: None,
+                billing: Default::default(),
+                monthly_fee: None,
                 models: HashMap::new(),
             },
         );
@@ -126,6 +130,7 @@ mod integration_tests {
             auto_reset_threshold: 0.95,
             thinking_enabled: true,
             pricing: None,
+            billing_mode: Default::default(),
             model_label: "",
             context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
             reply_target: None,

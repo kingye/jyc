@@ -183,6 +183,38 @@ impl BillingLogStore {
         };
         Some((total, currency))
     }
+
+    /// Load entries from every ledger file in `state_dir` whose date
+    /// starts with `date_prefix` (`"2026-09-11"` = one day, `"2026-09"`
+    /// = one month, `""` = all time).
+    ///
+    /// Works on a bare state dir (no topic-name resolution) so callers
+    /// that discover state dirs by walking the filesystem can read them
+    /// directly. Malformed files/lines are skipped, per `load_date`.
+    pub fn load_matching(state_dir: &Path, date_prefix: &str) -> Vec<BillingEntry> {
+        let file_prefix = format!("bill-{date_prefix}");
+        let mut entries = Vec::new();
+        let Ok(read_dir) = std::fs::read_dir(state_dir) else {
+            return entries;
+        };
+        for file in read_dir.map_while(Result::ok) {
+            let name = file.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if !name.starts_with(&file_prefix) || !name.ends_with(".jsonl") {
+                continue;
+            }
+            let Ok(file) = File::open(file.path()) else {
+                continue;
+            };
+            entries.extend(
+                BufReader::new(file)
+                    .lines()
+                    .map_while(Result::ok)
+                    .filter_map(|line| serde_json::from_str::<BillingEntry>(&line).ok()),
+            );
+        }
+        entries
+    }
 }
 
 #[cfg(test)]

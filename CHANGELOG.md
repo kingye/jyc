@@ -3,13 +3,18 @@
 ### Fixed
 
 - Dashboard TUI rendering corruption around URL-containing chat messages:
-  `HyperlinkBackend`'s full-row re-emission is now clipped to the current
-  terminal width — after a shrink-resize the shadow grid could hold longer
-  rows, and emitting them auto-wrapped and physically scrolled the screen,
-  desyncing ratatui's diff baseline (interleaved old/new text while
-  scrolling); re-enabling mouse capture now also forces a full repaint,
-  since the terminal's own scrollback could move content while capture was
-  off.
+  `HyperlinkBackend`'s link-row re-emission printed every cell in the row,
+  including the continuation cells of wide chars — which hold a space
+  symbol in ratatui's buffer. The wide char already advanced the cursor
+  past that column, so each printed continuation space shifted the rest of
+  the row right by one cell; on CJK/emoji-heavy rows the cumulative shift
+  overflowed the row, physically scrolling the screen and desyncing
+  ratatui's diff baseline (interleaved old/new text and ghost fragments,
+  worse while scrolling). Verified with a real-terminal replay harness
+  (tmux 3.5a pane + `capture-pane`) that reproduces the corruption and
+  confirms the fix. Re-enabling mouse capture now also forces a full
+  repaint, since the terminal's own scrollback could move content while
+  capture was off.
 
 ### Added
 

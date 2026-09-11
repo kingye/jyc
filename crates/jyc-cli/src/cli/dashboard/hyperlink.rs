@@ -35,6 +35,7 @@ use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Rect, Size};
 use ratatui::style::{Color, Modifier};
+use unicode_width::UnicodeWidthStr;
 
 /// OSC 8 hyperlink terminator (closes the current link).
 const OSC8_CLOSE: &str = "\x1b]8;;\x1b\\";
@@ -51,10 +52,10 @@ pub(crate) struct HyperlinkBackend<W: Write> {
     grid: Vec<Vec<Cell>>,
     /// Pane rectangles eligible for link scanning (see [`LinkRegions`]).
     regions: LinkRegions,
-    /// Test hook: overrides the terminal width used to clip full-row
-    /// re-emissions (real terminals report via `size()`; tests have no
-    /// tty). `None` in production.
-    width_override: Option<u16>,
+    /// Test hook: overrides the terminal size reported by `size()` and used
+    /// to clip region-span re-emissions (real terminals report via ioctl;
+    /// tests have no tty). `None` in production.
+    size_override: Option<Size>,
 }
 
 impl<W: Write> HyperlinkBackend<W> {
@@ -64,17 +65,14 @@ impl<W: Write> HyperlinkBackend<W> {
             writer,
             grid: Vec::new(),
             regions,
-            width_override: None,
+            size_override: None,
         }
     }
 
-    /// Current terminal width for clipping full-row re-emissions. Falls
+    /// Current terminal width for clipping region-span re-emissions. Falls
     /// back to `u16::MAX` (no clipping) when the size ioctl fails, e.g.
     /// when stdout is not a tty.
     fn current_width(&self) -> u16 {
-        if let Some(w) = self.width_override {
-            return w;
-        }
         self.size().map(|s| s.width).unwrap_or(u16::MAX)
     }
 
@@ -131,7 +129,7 @@ impl<W: Write> HyperlinkBackend<W> {
         &row[x0..x1]
     }
 
-    /// A row needs full-row re-emission when any registered pane region on
+    /// A row needs link re-emission when any registered pane region on
     /// it contains a URL span or continues a URL wrapped from the row above.
     fn is_link_row(&self, y: usize) -> bool {
         self.regions.borrow().iter().any(|region| {
@@ -141,6 +139,16 @@ impl<W: Write> HyperlinkBackend<W> {
             let slice = Self::region_row(&self.grid, region, y);
             !find_url_spans(&Self::row_text(slice)).is_empty() || self.row_starts_mid_url(region, y)
         })
+    }
+
+    /// Whether cell (x, y) falls inside any registered link region. Cells
+    /// outside regions on a link row are painted by the plain diff pass;
+    /// cells inside are covered by the region re-emission.
+    fn in_any_region(&self, x: u16, y: u16) -> bool {
+        self.regions
+            .borrow()
+            .iter()
+            .any(|r| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
     }
 
     /// Link segments over a row: `(first_cell, end_cell_exclusive, full_url)`
@@ -250,51 +258,80 @@ impl<W: Write> HyperlinkBackend<W> {
         self.join_continuations(region, head + 1, text[start..end].to_string())
     }
 
-    /// Full-row emission keeps link boundaries correct for partial diffs.
+    /// Re-emits the cells of every link region covering row `y`, inserting
+    /// OSC 8 sequences around URL spans. Region-span re-emission keeps link
+    /// boundaries correct for partial diffs.
+    ///
+    /// Emission is clipped to each region's rect — never the full terminal
+    /// row — and to the terminal's current width (the shadow grid can hold
+    /// longer rows left over from before a shrink-resize).
+    ///
+    /// Continuation cells of wide chars (a space symbol in ratatui's
+    /// buffer) are skipped: the wide char already advanced the cursor past
+    /// their column, so printing the space would shift the rest of the row
+    /// right by one cell per wide char — overflowing the row, physically
+    /// scrolling the screen, and desyncing ratatui's diff baseline from
+    /// the real display (ratatui's own diff skips continuation cells for
+    /// the same reason).
     fn emit_link_row(&mut self, y: u16) -> io::Result<()> {
         let segments = self.link_segments(y as usize);
-        let row = &self.grid[y as usize];
-
-        // Never emit past the terminal's current width: the shadow grid
-        // can hold longer rows left over from before a shrink-resize, and
-        // printing those extra cells would auto-wrap and physically scroll
-        // the screen — desyncing ratatui's diff baseline (its previous
-        // buffer) from the real display, which shows up as interleaved
-        // old/new text while scrolling.
+        // Never emit past the terminal's current width either: the shadow
+        // grid can hold longer rows left over from before a shrink-resize.
         let width = self.current_width() as usize;
-        let cells = row.len().min(width);
-
-        // Map each column to the link segment covering it.
-        let mut link_at: Vec<Option<usize>> = vec![None; row.len()];
-        for (i, &(start, end, _)) in segments.iter().enumerate() {
-            for slot in link_at.iter_mut().take(end.min(row.len())).skip(start) {
-                *slot = Some(i);
-            }
-        }
-
-        queue!(self.writer, MoveTo(0, y))?;
+        let row_len = self.grid[y as usize].len();
         let mut current = (Color::Reset, Color::Reset, Modifier::empty());
-        let mut open_link: Option<usize> = None;
-        for (x, cell) in row.iter().take(cells).enumerate() {
-            let link = link_at[x];
-            if link != open_link {
-                if open_link.is_some() {
-                    self.writer.write_all(OSC8_CLOSE.as_bytes())?;
-                }
-                if let Some(i) = link {
-                    write!(self.writer, "\x1b]8;;{}\x1b\\", segments[i].2)?;
-                }
-                open_link = link;
+
+        let regions = self.regions.borrow();
+        for region in regions.iter() {
+            if y < region.y || y >= region.y + region.height {
+                continue;
             }
-            let style = (cell.fg, cell.bg, cell.modifier);
-            if style != current {
-                queue_style(&mut self.writer, current, style)?;
-                current = style;
+            let x0 = region.x as usize;
+            let end = (x0 + region.width as usize).min(row_len).min(width);
+            if x0 >= end {
+                continue;
             }
-            queue!(self.writer, Print(cell.symbol()))?;
-        }
-        if open_link.is_some() {
-            self.writer.write_all(OSC8_CLOSE.as_bytes())?;
+            queue!(self.writer, MoveTo(region.x, y))?;
+            let mut open_link: Option<usize> = None;
+            let mut skip_continuation = false;
+            for (x, cell) in self.grid[y as usize].iter().enumerate().take(end).skip(x0) {
+                // Continuation cells of wide chars hold a space symbol and
+                // must not be printed: the wide char already advanced the
+                // cursor past their column, so printing the space would
+                // shift the rest of the row right by one cell per wide
+                // char, overflowing the row and physically scrolling the
+                // screen. (ratatui's own diff skips continuation cells for
+                // the same reason.)
+                if skip_continuation {
+                    skip_continuation = false;
+                    continue;
+                }
+                if UnicodeWidthStr::width(cell.symbol()) > 1 {
+                    skip_continuation = true;
+                }
+                let link = segments
+                    .iter()
+                    .position(|&(start, seg_end, _)| x >= start && x < seg_end);
+                if link != open_link {
+                    if open_link.is_some() {
+                        self.writer.write_all(OSC8_CLOSE.as_bytes())?;
+                    }
+                    if let Some(i) = link {
+                        write!(self.writer, "\x1b]8;;{}\x1b\\", segments[i].2)?;
+                    }
+                    open_link = link;
+                }
+                let style = (cell.fg, cell.bg, cell.modifier);
+                if style != current {
+                    queue_style(&mut self.writer, current, style)?;
+                    current = style;
+                }
+                queue!(self.writer, Print(cell.symbol()))?;
+            }
+            // Never leak an open link past the region span.
+            if open_link.is_some() {
+                self.writer.write_all(OSC8_CLOSE.as_bytes())?;
+            }
         }
         queue!(
             self.writer,
@@ -316,8 +353,10 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
             self.set_cell(*x, *y, cell);
         }
 
-        // Rows whose shadow text contains a URL get a full-row re-emission;
-        // everything else is emitted as a minimal diff like upstream.
+        // Rows whose shadow text contains a URL get their region spans
+        // re-emitted with OSC 8 sequences; everything else is emitted as a
+        // minimal diff like upstream — including cells outside any link
+        // region on link rows (other panes' content is never re-emitted).
         // Classify per unique row, not per changed cell.
         let changed_rows: BTreeSet<u16> = updates.iter().map(|(_, y, _)| *y).collect();
         let mut link_rows = BTreeSet::new();
@@ -329,7 +368,7 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
 
         let plain: Vec<(u16, u16, Cell)> = updates
             .into_iter()
-            .filter(|(_, y, _)| !link_rows.contains(y))
+            .filter(|(x, y, _)| !link_rows.contains(y) || !self.in_any_region(*x, *y))
             .collect();
         self.emit_plain_cells(&plain)?;
         for y in link_rows {
@@ -379,6 +418,9 @@ impl<W: Write> Backend for HyperlinkBackend<W> {
     }
 
     fn size(&self) -> io::Result<Size> {
+        if let Some(size) = self.size_override {
+            return Ok(size);
+        }
         let (width, height) = terminal::size()?;
         Ok(Size { width, height })
     }
@@ -887,7 +929,7 @@ mod tests {
         assert!(full.contains("xyz"), "uncapped emission: {full:?}");
 
         // Terminal shrank to 20 columns; the row is redrawn (e.g. scroll).
-        backend.width_override = Some(20);
+        backend.size_override = Some(Size::new(20, 50));
         backend.writer.clear();
         draw_row(&mut backend, 0, text);
         let clipped = String::from_utf8(backend.writer.clone()).unwrap();
@@ -898,5 +940,175 @@ mod tests {
         );
         // The OSC 8 payload still carries the full link target.
         assert!(clipped.contains("\x1b]8;;https://x.co\x1b\\"));
+    }
+
+    /// Debug harness: writes a realistic multi-frame byte stream (sidebar +
+    /// chat with URLs, CJK and emoji + info pane, scrolling) to
+    /// /tmp/hyperlink_frames.bin plus the expected final screen text to
+    /// /tmp/hyperlink_expected.txt, for replay through a real terminal
+    /// multiplexer:
+    ///
+    /// ```sh
+    /// cargo test -p jyc-cli dump_hyperlink_frames -- --ignored
+    /// tmux new-session -d -s repro -x 120 -y 40 \
+    ///   'cat /tmp/hyperlink_frames.bin; sleep 600'
+    /// tmux capture-pane -p -t repro > /tmp/hyperlink_captured.txt
+    /// diff /tmp/hyperlink_expected.txt /tmp/hyperlink_captured.txt
+    /// ```
+    #[test]
+    #[ignore = "debug harness: dumps a byte stream for real-terminal replay"]
+    fn dump_hyperlink_frames() {
+        use ratatui::{
+            Terminal,
+            backend::TestBackend,
+            style::Style,
+            text::{Line, Span},
+            widgets::{Block, Borders, Paragraph, Wrap},
+        };
+
+        const W: u16 = 120;
+        const H: u16 = 40;
+
+        let chat_pool = [
+            "AI: ✅ PR #750 (https://github.com/kingye/jyc/pull/750)：CI 全绿（5m19s），可合并。",
+            "机制：链接行重发从第 0 列打印整个终端行——包括同一行上其他 pane 的单元格（侧边栏、边框）。",
+            "普通行只发 diff 变化的单元格，所以这个雷只在每帧都整行重发的链接行上必爆。",
+            "两个链接：https://example.com/alpha 和 https://example.com/beta 在同一行。",
+            "行尾刚好是链接 https://github.com/kingye/jyc/pull/748",
+            "📊📈 emoji 行：🦀🚀✨ mixed 12345",
+            "—— 分隔与标点：（）；，。：、「」【】",
+            "plain ascii line with no urls at all",
+        ];
+        let chat_lines: Vec<Line> = (0..56)
+            .map(|i| Line::from(chat_pool[i % chat_pool.len()].to_string()))
+            .collect();
+
+        let regions: LinkRegions = Rc::new(RefCell::new(Vec::new()));
+        let backend = HyperlinkBackend {
+            writer: Vec::new(),
+            grid: Vec::new(),
+            regions: Rc::clone(&regions),
+            size_override: Some(Size::new(W, H)),
+        };
+        let mut term = Terminal::new(backend).unwrap();
+
+        let render = |frame: &mut ratatui::Frame, offset: u16, regions: &LinkRegions| {
+            let sidebar = Rect::new(0, 0, 20, H);
+            let chat = Rect::new(21, 0, 68, 36);
+            let input = Rect::new(21, 37, 68, 3);
+            let info = Rect::new(90, 0, 30, H);
+            frame.render_widget(
+                Block::default().borders(Borders::ALL).title("Topics"),
+                sidebar,
+            );
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from("🔵 jyc"),
+                    Line::from("⚪ agents"),
+                    Line::from("上海天气"),
+                    Line::from("英国旅行2026"),
+                    Line::from("mail-bot"),
+                ]),
+                Rect::new(1, 1, 18, H - 2),
+            );
+            regions.borrow_mut().clear();
+            regions.borrow_mut().push(chat);
+            frame.render_widget(
+                Paragraph::new(chat_lines.clone())
+                    .wrap(Wrap { trim: false })
+                    .scroll((offset, 0)),
+                chat,
+            );
+            frame.render_widget(Block::default().borders(Borders::ALL).title("Info"), info);
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from("Model: kimi/k3-256k"),
+                    Line::from("Tokens: 111780 / 249036 (44%)"),
+                    Line::from("Cache hits: 2302720"),
+                    Line::from("Output: 19452"),
+                ]),
+                Rect::new(91, 1, 28, 10),
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled("╰─ build > _", Style::default())),
+                input,
+            );
+        };
+
+        // Enter the alternate screen like the real dashboard.
+        term.backend_mut().writer.extend_from_slice(b"\x1b[?1049h");
+        for offset in 0..14u16 {
+            let regs = Rc::clone(&regions);
+            term.draw(|f| render(f, offset, &regs)).unwrap();
+        }
+
+        // Expected final screen: render the last frame into a TestBackend.
+        let mut expected = Terminal::new(TestBackend::new(W, H)).unwrap();
+        let regs: LinkRegions = Rc::new(RefCell::new(Vec::new()));
+        expected.draw(|f| render(f, 13, &regs)).unwrap();
+        let buf = expected.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..H {
+            let mut line = String::new();
+            for x in 0..W {
+                line.push_str(buf[(x, y)].symbol());
+            }
+            text.push_str(line.trim_end());
+            text.push('\n');
+        }
+
+        std::fs::write("/tmp/hyperlink_frames.bin", &term.backend().writer).unwrap();
+        std::fs::write("/tmp/hyperlink_expected.txt", text).unwrap();
+    }
+
+    #[test]
+    fn emit_link_row_confined_to_link_region() {
+        // Region covers cols 5..22; ZZZZ markers sit outside on both sides.
+        let regions: LinkRegions = Rc::new(RefCell::new(vec![Rect::new(5, 0, 17, 1)]));
+        let mut backend = HyperlinkBackend::new(Vec::new(), regions);
+        draw_row(&mut backend, 0, "ZZZZ see https://a.co end ZZZZ");
+        let out = String::from_utf8(backend.writer).unwrap();
+        assert!(
+            out.contains("ZZZZ"),
+            "plain pass still paints changed cells outside regions: {out:?}"
+        );
+        assert!(out.contains("\x1b]8;;https://a.co\x1b\\"), "{out:?}");
+        assert!(
+            out.contains("\x1b[1;6H"),
+            "link re-emission starts at region.x (col 6), never column 0: {out:?}"
+        );
+    }
+
+    #[test]
+    fn emit_link_row_skips_wide_char_continuation_cells() {
+        // Cells: A B 全 cont C D — the continuation cell holds a space
+        // symbol that must not be printed, or every subsequent cell on the
+        // row shifts right by one (verified against real tmux 3.5a).
+        let mut backend = backend_with_region(100, 2);
+        let mut cells = Vec::new();
+        for c in "AB全CD https://x.co".chars() {
+            let mut cell = Cell::default();
+            cell.set_symbol(&c.to_string());
+            cells.push(cell);
+            if unicode_width::UnicodeWidthChar::width(c) == Some(2) {
+                // The cell after a wide char is its continuation.
+                cells.push(Cell::default());
+            }
+        }
+        let updates: Vec<(u16, u16, &Cell)> = cells
+            .iter()
+            .enumerate()
+            .map(|(x, c)| (x as u16, 0, c))
+            .collect();
+        backend.draw(updates.into_iter()).unwrap();
+        let out = String::from_utf8(backend.writer).unwrap();
+        assert!(
+            out.contains("AB全CD"),
+            "continuation cell must not be printed: {out:?}"
+        );
+        assert!(
+            !out.contains("AB全 CD"),
+            "continuation space leaked into the byte stream: {out:?}"
+        );
     }
 }

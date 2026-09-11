@@ -37,11 +37,13 @@
   per-provider subtotals and a grand total. Scopes: `/bill` (today),
   `/bill YYYY-MM` (one month), `/bill all` (all time). Works on every
   channel.
-- Subscription-plan billing: `pricing` accepts `billing = "subscription"`
-  and `monthly_fee`. Ledger entries from such models are tagged
+- Subscription-plan billing: providers accept `billing = "subscription"`
+  and `monthly_fee` (provider-level — a flat-fee coding plan covers every
+  model under the provider). Ledger entries from such providers are tagged
   `subscription` (cost = notional API-equivalent value, not real spend);
-  `/bill` renders them in a separate section with a per-model utilization
-  line (notional value vs the monthly fee prorated to the report scope).
+  `/bill` renders them in a separate section with a per-provider
+  utilization line (the provider's combined notional value across all its
+  models vs the monthly fee prorated to the report scope).
 
 ### Fixed
 

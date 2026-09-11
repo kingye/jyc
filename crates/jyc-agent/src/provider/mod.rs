@@ -1266,6 +1266,8 @@ mod model_id_tests {
                 user_agent: None,
                 cache_ttl: None,
                 pricing: None,
+                billing: Default::default(),
+                monthly_fee: None,
                 models,
             },
         );
@@ -1358,6 +1360,8 @@ mod params_placeholder_tests {
                 user_agent: None,
                 cache_ttl: None,
                 pricing: None,
+                billing: Default::default(),
+                monthly_fee: None,
                 models,
             },
         );

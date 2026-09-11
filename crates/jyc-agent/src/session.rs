@@ -664,6 +664,9 @@ pub async fn maybe_reset_for_new_context(
 pub struct BillingContext {
     /// Rates for the active model.
     pub pricing: jyc_types::ModelPricing,
+    /// How the provider is paid for (metered/subscription). Provider-level:
+    /// a subscription plan covers every model under the provider.
+    pub billing: jyc_types::config::BillingMode,
     /// `"provider/model"` label recorded on the ledger entry.
     pub model_label: String,
 }
@@ -828,7 +831,7 @@ async fn summarize_context(
                 cost,
                 currency: b.pricing.currency_label().to_string(),
                 kind: jyc_core::billing_log_store::KIND_SUMMARY.to_string(),
-                billing: b.pricing.billing.as_str().to_string(),
+                billing: b.billing.as_str().to_string(),
                 input_rate_per_million: rates.input_per_million,
                 output_rate_per_million: rates.output_per_million,
                 cache_hit_rate_per_million: rates.cache_hit_per_million,

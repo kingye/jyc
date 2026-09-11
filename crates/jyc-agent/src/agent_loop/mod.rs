@@ -136,6 +136,9 @@ pub struct AgentLoopConfig<'a> {
     /// configured `pricing`, in which case no cost is computed and nothing
     /// is written to the ledger.
     pub pricing: Option<jyc_types::ModelPricing>,
+    /// How the active model's provider is paid for. Provider-level: a
+    /// subscription plan covers every model under the provider.
+    pub billing_mode: jyc_types::config::BillingMode,
     /// Model identifier (`"provider/model"`) recorded on each ledger entry.
     /// Only used for billing, so an empty string is harmless when
     /// `pricing` is `None`.
@@ -283,6 +286,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         auto_reset_threshold,
         thinking_enabled,
         pricing,
+        billing_mode,
         model_label,
         context_strategy,
         reply_target,
@@ -460,6 +464,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             // model, so on a default setup this bills at main-model rates.
             let summary_cost = bill_call(
                 pricing.as_ref(),
+                billing_mode,
                 topic_name,
                 topic_path,
                 model_label,
@@ -625,6 +630,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // mid-round model switch bills each call at its own rate.
         let call_cost = bill_call(
             pricing.as_ref(),
+            billing_mode,
             topic_name,
             topic_path,
             model_label,
@@ -1224,6 +1230,7 @@ struct CallUsage {
 #[allow(clippy::too_many_arguments)]
 fn bill_call(
     pricing: Option<&jyc_types::ModelPricing>,
+    billing: jyc_types::config::BillingMode,
     topic_name: &str,
     topic_path: &Path,
     model_label: &str,
@@ -1260,7 +1267,7 @@ fn bill_call(
         cost,
         currency: p.currency_label().to_string(),
         kind: kind.to_string(),
-        billing: p.billing.as_str().to_string(),
+        billing: billing.as_str().to_string(),
         input_rate_per_million: rates.input_per_million,
         output_rate_per_million: rates.output_per_million,
         cache_hit_rate_per_million: rates.cache_hit_per_million,

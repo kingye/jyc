@@ -574,10 +574,11 @@ impl Default for AiConfig {
 ///                                       (defaults to cache_hit_per_million)
 /// ```
 ///
-/// How a model is paid for. `metered` (default) = pay-as-you-go API
+/// How a provider is paid for. `metered` (default) = pay-as-you-go API
 /// billing, where ledger cost is real spend. `subscription` = a flat-fee
-/// coding plan, where the configured token rates only express a
-/// notional, API-equivalent value — no real money changes hands per call.
+/// coding plan covering every model under the provider, where the
+/// configured token rates only express a notional, API-equivalent value
+/// — no real money changes hands per call.
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum BillingMode {
@@ -631,19 +632,6 @@ pub struct ModelPricing {
     /// jyc never converts between currencies, so a provider billing in
     /// USD must say so explicitly.
     pub currency: Option<String>,
-    /// `metered` (default) or `subscription`. Copied into every ledger
-    /// entry at write time so `/bill` can separate real spend from
-    /// notional subscription value.
-    #[serde(default)]
-    pub billing: BillingMode,
-    /// Flat monthly fee for `billing = "subscription"` plans, in
-    /// `currency`. Enables the `/bill` utilization line (notional value
-    /// vs fee, prorated to the report scope). Omit to report notional
-    /// cost only. Ignored for metered models. Set this **per model**:
-    /// `/bill` does not scan provider-level pricing for fees (one shared
-    /// fee cannot be attributed to individual models).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub monthly_fee: Option<f64>,
     /// Time-of-day rate overrides. Each window supplies its own rates for
     /// the hours between `start` and `end`; the flat fields above act as
     /// the default for any time outside every window. First matching
@@ -786,6 +774,20 @@ pub struct ProviderDef {
     /// Per-model `ModelDef.pricing` overrides this. When neither is set,
     /// no cost is computed and the dashboard omits the cost row.
     pub pricing: Option<ModelPricing>,
+    /// `metered` (default) or `subscription`. Copied into every ledger
+    /// entry at write time so `/bill` can separate real spend from
+    /// notional subscription value. Provider-level because a flat-fee
+    /// coding plan covers every model under the provider.
+    #[serde(default)]
+    pub billing: BillingMode,
+    /// Flat monthly fee for `billing = "subscription"` plans, in the
+    /// provider `pricing.currency` ([`DEFAULT_CURRENCY`] when unset).
+    /// Enables the `/bill` utilization line: the combined notional value
+    /// of all models under this provider vs the fee, prorated to the
+    /// report scope. Omit to report notional cost only. Ignored for
+    /// metered providers.
+    #[serde(default)]
+    pub monthly_fee: Option<f64>,
     /// Per-model context window overrides
     #[serde(default)]
     pub models: std::collections::HashMap<String, ModelDef>,

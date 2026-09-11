@@ -14,7 +14,7 @@
 
 use chrono::{DateTime, Datelike, FixedOffset, NaiveTime, Utc, Weekday};
 
-use crate::config::{AppConfig, ModelPricing};
+use crate::config::{AppConfig, BillingMode, ModelPricing};
 
 /// Tokens in one million — the denominator for every configured rate.
 const TOKENS_PER_MILLION: f64 = 1_000_000.0;
@@ -339,6 +339,19 @@ pub fn lookup_pricing(config: &AppConfig, model: &str) -> Option<ModelPricing> {
         .or_else(|| provider.pricing.clone())
 }
 
+/// Resolve the billing mode for a `"provider/model"` identifier.
+///
+/// The mode is provider-level: a subscription (flat-fee coding plan)
+/// covers every model under the provider. Returns `Metered` for a
+/// malformed identifier or an unknown provider.
+pub fn lookup_billing_mode(config: &AppConfig, model: &str) -> BillingMode {
+    model
+        .split_once('/')
+        .and_then(|(p, _)| config.ai.providers.get(p))
+        .map(|p| p.billing)
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,8 +373,6 @@ mod tests {
             currency: None,
             time_windows: Vec::new(),
             utc_offset: None,
-            billing: BillingMode::Metered,
-            monthly_fee: None,
             long_context: None,
         }
     }
@@ -377,8 +388,6 @@ mod tests {
             currency: None,
             time_windows: Vec::new(),
             utc_offset: None,
-            billing: BillingMode::Metered,
-            monthly_fee: None,
             long_context: None,
         }
     }
@@ -524,6 +533,44 @@ mod tests {
             assert!(lookup_pricing(&cfg, "claude-opus-4-7").is_none());
             assert!(lookup_pricing(&cfg, "").is_none());
         }
+
+        /// Billing mode resolves from the provider, independent of which
+        /// model is used; unknown/malformed identifiers are metered.
+        #[test]
+        fn billing_mode_is_provider_level() {
+            let cfg = config_from(
+                r#"
+                [agent]
+                [agent.providers.kimi]
+                type = "anthropic"
+                billing = "subscription"
+                [agent.providers.kimi.models.k2]
+                [agent.providers.kimi.models.k3]
+            "#,
+            );
+            assert_eq!(
+                lookup_billing_mode(&cfg, "kimi/k2"),
+                BillingMode::Subscription
+            );
+            assert_eq!(
+                lookup_billing_mode(&cfg, "kimi/k3"),
+                BillingMode::Subscription
+            );
+            assert_eq!(
+                lookup_billing_mode(&cfg, "kimi/unlisted"),
+                BillingMode::Subscription
+            );
+            let cfg = config_from(BOTH_LEVELS);
+            assert_eq!(
+                lookup_billing_mode(&cfg, "anthropic/claude-opus-4-7"),
+                BillingMode::Metered
+            );
+            assert_eq!(
+                lookup_billing_mode(&cfg, "nonexistent/model"),
+                BillingMode::Metered
+            );
+            assert_eq!(lookup_billing_mode(&cfg, "bare"), BillingMode::Metered);
+        }
     }
 
     mod split_pricing {
@@ -617,8 +664,6 @@ mod tests {
                 currency: None,
                 time_windows: Vec::new(),
                 utc_offset: None,
-                billing: BillingMode::Metered,
-                monthly_fee: None,
                 long_context: None,
             };
             assert_eq!(compute_cost_split(&p, 0, 0, 0, 0), 0.0);
@@ -669,8 +714,6 @@ mod tests {
                     window("16:30", "00:30", 1.5, 6.0),
                 ],
                 utc_offset: None,
-                billing: BillingMode::Metered,
-                monthly_fee: None,
                 long_context: None,
             }
         }
@@ -789,8 +832,6 @@ mod tests {
                     cache_creation_per_million: Some(0.5),
                 }],
                 utc_offset: None,
-                billing: BillingMode::Metered,
-                monthly_fee: None,
                 long_context: None,
             };
             // 100 input, all cached-read → 100 * 0.25 / 1e6.
@@ -925,8 +966,6 @@ mod tests {
                     cache_creation_per_million: None,
                 }],
                 utc_offset: None,
-                billing: BillingMode::Metered,
-                monthly_fee: None,
                 long_context: None,
             }
         }
@@ -1038,8 +1077,6 @@ mod tests {
         /// at >272K input tokens with every rate elevated.
         fn gpt56_pricing() -> ModelPricing {
             ModelPricing {
-                billing: BillingMode::Metered,
-                monthly_fee: None,
                 long_context: Some(LongContextPricing {
                     threshold: 272_000,
                     input_per_million: 6.77,
@@ -1087,8 +1124,6 @@ mod tests {
         #[test]
         fn long_tier_unset_cache_rates_inherit_or_collapse() {
             let p = ModelPricing {
-                billing: BillingMode::Metered,
-                monthly_fee: None,
                 long_context: Some(LongContextPricing {
                     threshold: 100,
                     input_per_million: 10.0,
@@ -1113,8 +1148,6 @@ mod tests {
         #[test]
         fn long_tier_overrides_matching_window() {
             let p = ModelPricing {
-                billing: BillingMode::Metered,
-                monthly_fee: None,
                 long_context: Some(LongContextPricing {
                     threshold: 100,
                     input_per_million: 10.0,

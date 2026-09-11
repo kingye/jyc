@@ -348,8 +348,6 @@ mod tests {
             currency: None,
             time_windows: Vec::new(),
             utc_offset: None,
-            billing: jyc_types::config::BillingMode::Metered,
-            monthly_fee: None,
             long_context: None,
         };
         let usage = json!({

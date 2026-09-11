@@ -410,10 +410,12 @@ impl AgentService for JycAgentService {
         // `providers` is untouched by `derive_agent_config` (it only overrides
         // model/small_model), so the global config is the right source.
         let pricing = jyc_types::pricing::lookup_pricing(&self.config.load(), model_str);
+        let billing_mode = jyc_types::pricing::lookup_billing_mode(&self.config.load(), model_str);
         // Same rates, in the shape the reset path needs so context-compression
         // calls land in the ledger too.
         let billing_ctx = pricing.as_ref().map(|p| session::BillingContext {
             pricing: p.clone(),
+            billing: billing_mode,
             model_label: model_str.to_string(),
         });
 
@@ -521,6 +523,7 @@ impl AgentService for JycAgentService {
             auto_reset_threshold,
             thinking_enabled: read_thinking_enabled(topic_name, topic_path),
             pricing,
+            billing_mode,
             model_label: model_str,
             context_strategy,
             reply_target: Some(crate::tools::ReplyTarget {
@@ -630,6 +633,7 @@ impl AgentService for JycAgentService {
             jyc_types::pricing::lookup_pricing(&self.config.load(), m).map(|p| {
                 session::BillingContext {
                     pricing: p,
+                    billing: jyc_types::pricing::lookup_billing_mode(&self.config.load(), m),
                     model_label: m.to_string(),
                 }
             })

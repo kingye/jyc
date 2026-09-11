@@ -427,7 +427,19 @@ system_prompt = "You are an AI assistant. Respond professionally and concisely."
 # `input_per_million` for providers that bill cache hits at the full
 # input rate. `cache_creation_per_million` is optional (defaults to
 # `cache_hit_per_million`) — Anthropic is the only provider that
-# distinguishes cache writes from reads. A CNY-priced provider, for example:
+# distinguishes cache writes from reads.
+#
+# Subscription plans (flat-fee coding plans): add `billing = "subscription"`
+# and `monthly_fee` to a model's pricing. Token rates then express the
+# notional, API-equivalent value — ledger cost is not real spend. `/bill`
+# reports such models in a separate "Subscription" section with a
+# utilization line (notional value vs fee, the fee prorated to the report
+# scope at 1/30 per day), e.g. whether a ¥49/month plan paid for itself:
+#
+# [ai.providers.glm.models.glm-4.6]
+# pricing = { input_per_million = 2.0, output_per_million = 8.0, currency = "CNY", billing = "subscription", monthly_fee = 49.0 }
+#
+# A CNY-priced metered provider, for example:
 #
 # [ai.providers.my_cn_provider]
 # type = "openai-compatible"

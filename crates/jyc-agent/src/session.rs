@@ -828,6 +828,7 @@ async fn summarize_context(
                 cost,
                 currency: b.pricing.currency_label().to_string(),
                 kind: jyc_core::billing_log_store::KIND_SUMMARY.to_string(),
+                billing: b.pricing.billing.as_str().to_string(),
                 input_rate_per_million: rates.input_per_million,
                 output_rate_per_million: rates.output_per_million,
                 cache_hit_rate_per_million: rates.cache_hit_per_million,

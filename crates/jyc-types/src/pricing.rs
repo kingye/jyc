@@ -342,6 +342,7 @@ pub fn lookup_pricing(config: &AppConfig, model: &str) -> Option<ModelPricing> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::BillingMode;
     use chrono::TimeZone;
 
     /// Build a UTC `DateTime` at a chosen wall-clock time — lets window
@@ -359,6 +360,8 @@ mod tests {
             currency: None,
             time_windows: Vec::new(),
             utc_offset: None,
+            billing: BillingMode::Metered,
+            monthly_fee: None,
             long_context: None,
         }
     }
@@ -374,6 +377,8 @@ mod tests {
             currency: None,
             time_windows: Vec::new(),
             utc_offset: None,
+            billing: BillingMode::Metered,
+            monthly_fee: None,
             long_context: None,
         }
     }
@@ -612,6 +617,8 @@ mod tests {
                 currency: None,
                 time_windows: Vec::new(),
                 utc_offset: None,
+                billing: BillingMode::Metered,
+                monthly_fee: None,
                 long_context: None,
             };
             assert_eq!(compute_cost_split(&p, 0, 0, 0, 0), 0.0);
@@ -662,6 +669,8 @@ mod tests {
                     window("16:30", "00:30", 1.5, 6.0),
                 ],
                 utc_offset: None,
+                billing: BillingMode::Metered,
+                monthly_fee: None,
                 long_context: None,
             }
         }
@@ -780,6 +789,8 @@ mod tests {
                     cache_creation_per_million: Some(0.5),
                 }],
                 utc_offset: None,
+                billing: BillingMode::Metered,
+                monthly_fee: None,
                 long_context: None,
             };
             // 100 input, all cached-read → 100 * 0.25 / 1e6.
@@ -914,6 +925,8 @@ mod tests {
                     cache_creation_per_million: None,
                 }],
                 utc_offset: None,
+                billing: BillingMode::Metered,
+                monthly_fee: None,
                 long_context: None,
             }
         }
@@ -1025,6 +1038,8 @@ mod tests {
         /// at >272K input tokens with every rate elevated.
         fn gpt56_pricing() -> ModelPricing {
             ModelPricing {
+                billing: BillingMode::Metered,
+                monthly_fee: None,
                 long_context: Some(LongContextPricing {
                     threshold: 272_000,
                     input_per_million: 6.77,
@@ -1072,6 +1087,8 @@ mod tests {
         #[test]
         fn long_tier_unset_cache_rates_inherit_or_collapse() {
             let p = ModelPricing {
+                billing: BillingMode::Metered,
+                monthly_fee: None,
                 long_context: Some(LongContextPricing {
                     threshold: 100,
                     input_per_million: 10.0,
@@ -1096,6 +1113,8 @@ mod tests {
         #[test]
         fn long_tier_overrides_matching_window() {
             let p = ModelPricing {
+                billing: BillingMode::Metered,
+                monthly_fee: None,
                 long_context: Some(LongContextPricing {
                     threshold: 100,
                     input_per_million: 10.0,

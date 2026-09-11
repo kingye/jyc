@@ -227,6 +227,7 @@ mod tests {
             "/context",
             "/info",
             "/backlog",
+            "/usage",
         ] {
             assert!(
                 names.contains(expected),
@@ -235,7 +236,7 @@ mod tests {
         }
         assert_eq!(
             commands.len(),
-            16,
+            17,
             "all_commands() count changed. Update this test if intentional."
         );
     }

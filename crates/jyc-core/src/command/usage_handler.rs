@@ -350,8 +350,9 @@ mod tests {
             report.contains("**deepseek subtotal: 1 calls, ¥0.5000**"),
             "{report}"
         );
+        // Currencies iterate in BTreeMap (alphabetical) order: CNY < USD.
         assert!(
-            report.contains("**Total: 4 calls, $3.2500 + ¥0.5000**"),
+            report.contains("**Total: 4 calls, ¥0.5000 + $3.2500**"),
             "{report}"
         );
         assert!(

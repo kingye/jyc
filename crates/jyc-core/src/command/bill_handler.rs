@@ -129,15 +129,14 @@ fn collect_subscription_fees(config: &AppConfig) -> BTreeMap<String, (f64, Strin
     let mut fees = BTreeMap::new();
     for (provider_name, provider) in &config.ai.providers {
         for (model_key, model) in &provider.models {
-            if let Some(pricing) = &model.pricing {
-                if pricing.billing == BillingMode::Subscription {
-                    if let Some(fee) = pricing.monthly_fee {
-                        fees.insert(
-                            format!("{provider_name}/{model_key}"),
-                            (fee, pricing.currency_label().to_string()),
-                        );
-                    }
-                }
+            if let Some(pricing) = &model.pricing
+                && pricing.billing == BillingMode::Subscription
+                && let Some(fee) = pricing.monthly_fee
+            {
+                fees.insert(
+                    format!("{provider_name}/{model_key}"),
+                    (fee, pricing.currency_label().to_string()),
+                );
             }
         }
     }
@@ -263,13 +262,12 @@ fn aggregate(dirs: &[(String, PathBuf)], date_prefix: &str) -> (BillTable, Optio
                 .entry(label.clone())
                 .or_default()
                 .add(&entry);
-            if entry.billing == "subscription" {
-                if let Ok(date) =
+            if entry.billing == "subscription"
+                && let Ok(date) =
                     NaiveDate::parse_from_str(&entry.ts[..10.min(entry.ts.len())], "%Y-%m-%d")
-                {
-                    sub_min = Some(sub_min.map_or(date, |m: NaiveDate| m.min(date)));
-                    sub_max = Some(sub_max.map_or(date, |m: NaiveDate| m.max(date)));
-                }
+            {
+                sub_min = Some(sub_min.map_or(date, |m: NaiveDate| m.min(date)));
+                sub_max = Some(sub_max.map_or(date, |m: NaiveDate| m.max(date)));
             }
         }
     }

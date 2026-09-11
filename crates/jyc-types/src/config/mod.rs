@@ -246,6 +246,8 @@ pub const BUILTIN_COMMAND_NAMES: &[&str] = &[
     "/info",
     "/backlog",
     "/bill",
+    "/grant",
+    "/ungrant",
 ];
 
 /// General application settings.

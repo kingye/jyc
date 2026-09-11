@@ -2,6 +2,11 @@
 
 ### Added
 
+- `/grant` / `/ungrant` commands: grant the topic's agent filesystem access
+  to a path at runtime (read-only by default, `-w` for read+write, `-p` to
+  persist into `[agents.<topic>] access` in `config.toml`); temporary grants
+  live until `/ungrant` or restart and are consulted when each turn builds
+  its tool context
 - Dashboard TUI emits OSC 8 hyperlinks for URLs visible in chat — clickable
   (modifier+click) even across wrapped lines; requires tmux ≥ 3.4 when
   running inside tmux, degrades to plain text otherwise.

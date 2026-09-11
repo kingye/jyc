@@ -20,6 +20,7 @@ use crate::command::close_handler::CloseCommandHandler;
 use crate::command::context_handler::ContextCommandHandler;
 use crate::command::custom_handler::CustomCommandHandler;
 use crate::command::exchange_handler::ExchangeCommandHandler;
+use crate::command::grant_handler::{GrantCommandHandler, UngrantCommandHandler};
 use crate::command::handler::CommandContext;
 use crate::command::help_handler::HelpCommandHandler;
 use crate::command::info_handler::InfoCommandHandler;
@@ -154,6 +155,8 @@ pub(crate) async fn process_message(
     command_registry.register(Box::new(InfoCommandHandler::new(topic_manager.clone())));
     command_registry.register(Box::new(BacklogCommandHandler::new()));
     command_registry.register(Box::new(BillCommandHandler));
+    command_registry.register(Box::new(GrantCommandHandler));
+    command_registry.register(Box::new(UngrantCommandHandler));
 
     // User-defined commands: global `[[commands]]` first, then
     // `[[agents.<name>.commands]]` for the agent the topic is routed

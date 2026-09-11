@@ -467,6 +467,14 @@ impl JycAgentService {
             roots.push(state);
         }
 
+        // 5. Runtime grants from /grant (temporary, topic-scoped). Write
+        // grants are readable too.
+        for g in jyc_types::access_grants::grants_for(&message.topic) {
+            if !g.path.starts_with(topic_path) {
+                roots.push(g.path);
+            }
+        }
+
         roots
     }
 
@@ -497,6 +505,12 @@ impl JycAgentService {
         let state = jyc_types::state_dir::jyc_dir(&message.topic, topic_path);
         if !state.starts_with(topic_path) {
             roots.push(state);
+        }
+        // Runtime grants from /grant -w (temporary, topic-scoped).
+        for g in jyc_types::access_grants::grants_for(&message.topic) {
+            if g.write && !g.path.starts_with(topic_path) {
+                roots.push(g.path);
+            }
         }
         roots
     }

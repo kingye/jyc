@@ -1,4 +1,4 @@
-//! /usage command — cross-topic usage/cost report.
+//! /bill command — cross-topic usage/cost report.
 //!
 //! Aggregates every topic's billing ledger (`bill-*.jsonl`, written by
 //! `BillingLogStore`) and renders one markdown report grouped by
@@ -16,12 +16,12 @@ use jyc_types::format_amount;
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::billing_log_store::BillingLogStore;
 
-pub struct UsageCommandHandler;
+pub struct BillCommandHandler;
 
 #[async_trait]
-impl CommandHandler for UsageCommandHandler {
+impl CommandHandler for BillCommandHandler {
     fn name(&self) -> &str {
-        "/usage"
+        "/bill"
     }
 
     fn description(&self) -> &str {
@@ -61,7 +61,7 @@ fn parse_scope(args: &[String]) -> Result<(String, String), String> {
         Some("all") => Ok((String::new(), "all time".to_string())),
         Some(month) if is_year_month(month) => Ok((month.to_string(), month.to_string())),
         Some(other) => Err(format!(
-            "/usage: unknown scope '{other}' — use /usage, /usage YYYY-MM, or /usage all"
+            "/bill: unknown scope '{other}' — use /bill, /bill YYYY-MM, or /bill all"
         )),
     }
 }
@@ -140,7 +140,7 @@ fn walk_state_dirs(
 
 /// Aggregated counters for one (provider, model, topic) bucket.
 #[derive(Default)]
-struct UsageRow {
+struct BillRow {
     calls: u64,
     input: u64,
     output: u64,
@@ -149,7 +149,7 @@ struct UsageRow {
     costs: BTreeMap<String, f64>,
 }
 
-impl UsageRow {
+impl BillRow {
     fn add(&mut self, entry: &crate::billing_log_store::BillingEntry) {
         self.calls += 1;
         self.input += entry.input_tokens;
@@ -162,10 +162,10 @@ impl UsageRow {
 }
 
 /// provider → model → topic → counters. BTreeMaps keep the report sorted.
-type UsageTable = BTreeMap<String, BTreeMap<String, BTreeMap<String, UsageRow>>>;
+type BillTable = BTreeMap<String, BTreeMap<String, BTreeMap<String, BillRow>>>;
 
-fn aggregate(dirs: &[(String, PathBuf)], date_prefix: &str) -> UsageTable {
-    let mut table: UsageTable = BTreeMap::new();
+fn aggregate(dirs: &[(String, PathBuf)], date_prefix: &str) -> BillTable {
+    let mut table: BillTable = BTreeMap::new();
     for (label, dir) in dirs {
         for entry in BillingLogStore::load_matching(dir, date_prefix) {
             let (provider, model) = entry
@@ -196,14 +196,14 @@ fn format_costs(costs: &BTreeMap<String, f64>) -> String {
 
 fn render_report(dirs: &[(String, PathBuf)], date_prefix: &str, label: &str) -> String {
     let table = aggregate(dirs, date_prefix);
-    let mut out = format!("## Usage — {label}\n");
+    let mut out = format!("## Bill — {label}\n");
     if table.is_empty() {
         out.push_str("\nNo billing entries found.\n");
         return out;
     }
-    let mut total = UsageRow::default();
+    let mut total = BillRow::default();
     for (provider, models) in &table {
-        let mut provider_total = UsageRow::default();
+        let mut provider_total = BillRow::default();
         out.push_str(&format!(
             "\n**{provider}**\n\
              | model | topic | calls | input | output | cache | cost |\n\
@@ -329,7 +329,7 @@ mod tests {
         ];
         let report = render_report(&dirs, "2026-09", "2026-09");
 
-        assert!(report.contains("## Usage — 2026-09"), "{report}");
+        assert!(report.contains("## Bill — 2026-09"), "{report}");
         assert!(
             report.contains("| claude-opus-4 | agents/jyc | 2 | 200 | 20 | 100 | $3.0000 |"),
             "{report}"

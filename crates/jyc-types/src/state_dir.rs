@@ -92,7 +92,7 @@ pub fn registered_state(topic_name: &str) -> Option<PathBuf> {
 
 /// Snapshot of every registered `(topic_name, state_dir)` pair.
 ///
-/// Used by cross-topic aggregation (e.g. `/usage`) to find state dirs
+/// Used by cross-topic aggregation (e.g. `/bill`) to find state dirs
 /// that live outside `data_home` (pinned topics).
 pub fn registered_topics() -> Vec<(String, PathBuf)> {
     let map = registry().read().unwrap_or_else(|e| e.into_inner());

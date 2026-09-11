@@ -11,10 +11,10 @@
   name → name-keyed state), incl. co-pinned agents sharing one directory.
 - `scripts/chrome-debug-mac.sh` — dev helper: kill all Chrome instances and
   relaunch with remote debugging on port 9222 (macOS). (#737)
-- New `/usage` built-in command: aggregates every topic's billing ledger
+- New `/bill` built-in command: aggregates every topic's billing ledger
   into a usage/cost report grouped by provider → model → topic, with
-  per-provider subtotals and a grand total. Scopes: `/usage` (today),
-  `/usage YYYY-MM` (one month), `/usage all` (all time). Works on every
+  per-provider subtotals and a grand total. Scopes: `/bill` (today),
+  `/bill YYYY-MM` (one month), `/bill all` (all time). Works on every
   channel.
 
 ### Fixed

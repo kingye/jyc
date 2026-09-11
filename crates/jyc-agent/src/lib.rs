@@ -131,6 +131,7 @@ mod integration_tests {
             thinking_enabled: true,
             pricing: None,
             billing_mode: Default::default(),
+            billing_dir: None,
             model_label: "",
             context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
             reply_target: None,

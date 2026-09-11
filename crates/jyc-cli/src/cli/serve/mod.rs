@@ -52,6 +52,16 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     // Re-register state dirs of previously adopted ad-hoc topics so every
     // `.jyc` lookup resolves before any channel/tmux work starts.
     jyc_core::topic_path::restore_state_registry(&jyc_core::topic_path::state_root(workdir));
+    // Fold legacy per-topic billing ledgers into the central ledger before
+    // any channel starts billing new calls (registry must be restored
+    // first so pinned topics' ledgers are found too).
+    let migrated = jyc_core::billing_log_store::BillingLogStore::migrate_legacy_ledgers();
+    if migrated > 0 {
+        tracing::info!(
+            migrated,
+            "Migrated legacy per-topic billing ledgers into the central ledger"
+        );
+    }
     let config = Arc::new(ArcSwap::from_pointee(config));
 
     // 3. Setup cancellation (Ctrl+C and SIGTERM)

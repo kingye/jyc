@@ -104,6 +104,11 @@ pub struct TopicManager {
     // per overview poll), so the read-parallelism of `RwLock` is not
     // worth the extra type complexity.
     pub(crate) topic_patterns: Arc<Mutex<HashMap<String, String>>>,
+
+    /// Test/override hook for the central billing ledger directory.
+    /// When unset, `billing_dir()` falls back to
+    /// `BillingLogStore::billing_dir()` (`<data_home>/billing`).
+    billing_dir_override: std::sync::OnceLock<PathBuf>,
 }
 
 #[allow(dead_code)]
@@ -185,6 +190,7 @@ impl TopicManager {
             worker_handles: Mutex::new(Vec::new()),
             topic_paths: Arc::new(Mutex::new(HashMap::new())),
             topic_patterns: Arc::new(Mutex::new(HashMap::new())),
+            billing_dir_override: std::sync::OnceLock::new(),
         }
     }
 
@@ -212,6 +218,20 @@ impl TopicManager {
     /// Return the workdir (data root) for this channel.
     pub fn data_root(&self) -> &Path {
         &self.workdir
+    }
+
+    /// Override the central billing ledger directory (tests).
+    pub fn set_billing_dir(&self, dir: PathBuf) {
+        let _ = self.billing_dir_override.set(dir);
+    }
+
+    /// Central billing ledger directory: the override when set, else
+    /// `<data_home>/billing` (`None` when no data home is resolvable).
+    pub(crate) fn billing_dir(&self) -> Option<PathBuf> {
+        self.billing_dir_override
+            .get()
+            .cloned()
+            .or_else(crate::billing_log_store::BillingLogStore::billing_dir)
     }
 
     /// Return this channel's workspace directory (the parent of its

@@ -1,12 +1,14 @@
 //! /bill command — cross-topic usage/cost report.
 //!
-//! Aggregates every topic's billing ledger (`bill-*.jsonl`, written by
-//! `BillingLogStore`) and renders one markdown report grouped by
-//! provider → model → topic, so it works on every channel (the reply is
-//! a normal command result, not TUI-only UI).
+//! Aggregates the central billing ledger (`<data_home>/billing/
+//! bill-*.jsonl`, written by `BillingLogStore`) and renders one
+//! markdown report grouped by provider → model → topic, so it works on
+//! every channel (the reply is a normal command result, not TUI-only
+//! UI). The ledger survives topic deletion, so closed topics still
+//! contribute their historical cost.
 
-use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
+use std::path::Path;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -40,10 +42,14 @@ impl CommandHandler for BillCommandHandler {
                 });
             }
         };
-        let dirs = discover_state_dirs();
+        let billing_dir = BillingLogStore::billing_dir();
         Ok(CommandResult {
             success: true,
-            message: render_report(&dirs, &scope, &collect_subscription_fees(&context.config)),
+            message: render_report(
+                billing_dir.as_deref(),
+                &scope,
+                &collect_subscription_fees(&context.config),
+            ),
             ..Default::default()
         })
     }
@@ -157,69 +163,6 @@ fn is_year_month(s: &str) -> bool {
         && (1..=12).contains(&s[5..].parse::<u8>().unwrap_or(0))
 }
 
-/// Find every topic state dir that may hold billing ledgers.
-///
-/// Two sources, unioned (dedup by path):
-/// - the state-dir registry: real topic names, covers pinned topics whose
-///   `.jyc` lives outside `data_home`
-/// - a recursive walk of `data_home`: covers ledgers of topics the current
-///   process has not touched since startup (the registry only knows live
-///   ones); labels derive from the path relative to `data_home`
-///   (e.g. `agents/jyc`)
-fn discover_state_dirs() -> Vec<(String, PathBuf)> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for (name, dir) in jyc_types::state_dir::registered_topics() {
-        if seen.insert(dir.clone()) {
-            out.push((name, dir));
-        }
-    }
-    if let Some(home) = jyc_utils::paths::data_home() {
-        walk_state_dirs(&home, &home, 0, &mut seen, &mut out);
-    }
-    out
-}
-
-fn walk_state_dirs(
-    dir: &Path,
-    home: &Path,
-    depth: u8,
-    seen: &mut HashSet<PathBuf>,
-    out: &mut Vec<(String, PathBuf)>,
-) {
-    // State dirs sit at `data_home/<channel>/<topic>/.jyc`; six levels of
-    // headroom cover nested custom layouts without risking a deep crawl.
-    if depth > 6 {
-        return;
-    }
-    let Ok(read_dir) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in read_dir.map_while(Result::ok) {
-        // file_type does not follow symlinks: no symlink-loop guard needed.
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-        let path = entry.path();
-        if entry.file_name() == ".jyc" {
-            if seen.insert(path.clone()) {
-                let label = path
-                    .parent()
-                    .and_then(|p| p.strip_prefix(home).ok())
-                    .map(|rel| rel.to_string_lossy().to_string())
-                    .filter(|rel| !rel.is_empty())
-                    .unwrap_or_else(|| path.display().to_string());
-                out.push((label, path));
-            }
-        } else {
-            walk_state_dirs(&path, home, depth + 1, seen, out);
-        }
-    }
-}
-
 /// Aggregated counters for one (provider, model, topic) bucket.
 #[derive(Default)]
 struct BillRow {
@@ -248,40 +191,46 @@ impl BillRow {
 /// is the section order the report wants.
 type BillTable = BTreeMap<(String, String, String), BTreeMap<String, BillRow>>;
 
-/// Aggregate every matching ledger entry. Also returns, per subscription
-/// provider, the day span of its entries (for prorating the monthly fee
-/// in `All` scope).
-fn aggregate(dirs: &[(String, PathBuf)], date_prefix: &str) -> (BillTable, BTreeMap<String, i64>) {
+/// Aggregate every matching ledger entry from the central ledger.
+/// Also returns, per subscription provider, the day span of its
+/// entries (for prorating the monthly fee in `All` scope).
+fn aggregate(billing_dir: Option<&Path>, date_prefix: &str) -> (BillTable, BTreeMap<String, i64>) {
     let mut table: BillTable = BTreeMap::new();
     let mut sub_spans: BTreeMap<String, (NaiveDate, NaiveDate)> = BTreeMap::new();
-    for (label, dir) in dirs {
-        for entry in BillingLogStore::load_matching(dir, date_prefix) {
-            let (provider, model) = entry
-                .model
-                .split_once('/')
-                .map(|(p, m)| (p.to_string(), m.to_string()))
-                .unwrap_or_else(|| ("other".to_string(), entry.model.clone()));
-            // `get(..10)` not `ts[..10]`: a corrupted ledger line whose
-            // first bytes are multi-byte UTF-8 must not panic the handler.
-            if entry.billing == BillingMode::Subscription.as_str()
-                && let Ok(date) =
-                    NaiveDate::parse_from_str(entry.ts.get(..10).unwrap_or(&entry.ts), "%Y-%m-%d")
-            {
-                sub_spans
-                    .entry(provider.clone())
-                    .and_modify(|(min, max)| {
-                        *min = (*min).min(date);
-                        *max = (*max).max(date);
-                    })
-                    .or_insert((date, date));
-            }
-            table
-                .entry((entry.billing.clone(), provider, model))
-                .or_default()
-                .entry(label.clone())
-                .or_default()
-                .add(&entry);
+    let entries = billing_dir
+        .map(|d| BillingLogStore::load_matching(d, date_prefix))
+        .unwrap_or_default();
+    for entry in entries {
+        // Entries without a topic label predate the central ledger and
+        // were never migrated; they cannot be grouped into the report.
+        if entry.topic.is_empty() {
+            continue;
         }
+        let (provider, model) = entry
+            .model
+            .split_once('/')
+            .map(|(p, m)| (p.to_string(), m.to_string()))
+            .unwrap_or_else(|| ("other".to_string(), entry.model.clone()));
+        // `get(..10)` not `ts[..10]`: a corrupted ledger line whose
+        // first bytes are multi-byte UTF-8 must not panic the handler.
+        if entry.billing == BillingMode::Subscription.as_str()
+            && let Ok(date) =
+                NaiveDate::parse_from_str(entry.ts.get(..10).unwrap_or(&entry.ts), "%Y-%m-%d")
+        {
+            sub_spans
+                .entry(provider.clone())
+                .and_modify(|(min, max)| {
+                    *min = (*min).min(date);
+                    *max = (*max).max(date);
+                })
+                .or_insert((date, date));
+        }
+        table
+            .entry((entry.billing.clone(), provider, model))
+            .or_default()
+            .entry(entry.topic.clone())
+            .or_default()
+            .add(&entry);
     }
     let spans = sub_spans
         .into_iter()
@@ -299,11 +248,11 @@ fn format_costs(costs: &BTreeMap<String, f64>) -> String {
 }
 
 fn render_report(
-    dirs: &[(String, PathBuf)],
+    billing_dir: Option<&Path>,
     scope: &Scope,
     fees: &BTreeMap<String, (f64, String)>,
 ) -> String {
-    let (table, sub_spans) = aggregate(dirs, &scope.prefix());
+    let (table, sub_spans) = aggregate(billing_dir, &scope.prefix());
     let mut out = format!("## Bill — {}\n", scope.label());
     if table.is_empty() {
         out.push_str("\nNo billing entries found.\n");
@@ -423,9 +372,10 @@ mod tests {
     use crate::billing_log_store::BillingEntry;
     use tempfile::TempDir;
 
-    fn entry(model: &str, cost: f64, currency: &str, billing: &str) -> BillingEntry {
+    fn entry(topic: &str, model: &str, cost: f64, currency: &str, billing: &str) -> BillingEntry {
         BillingEntry {
             ts: "2026-09-11T00:00:00Z".into(),
+            topic: topic.into(),
             model: model.into(),
             input_tokens: 100,
             output_tokens: 10,
@@ -443,18 +393,18 @@ mod tests {
         }
     }
 
-    fn metered(model: &str, cost: f64, currency: &str) -> BillingEntry {
-        entry(model, cost, currency, "metered")
+    fn metered(topic: &str, model: &str, cost: f64, currency: &str) -> BillingEntry {
+        entry(topic, model, cost, currency, "metered")
     }
 
-    fn write_ledger(state_dir: &Path, date: &str, entries: &[BillingEntry]) {
-        std::fs::create_dir_all(state_dir).unwrap();
+    fn write_ledger(billing_dir: &Path, date: &str, entries: &[BillingEntry]) {
+        std::fs::create_dir_all(billing_dir).unwrap();
         let body = entries
             .iter()
             .map(|e| serde_json::to_string(e).unwrap())
             .collect::<Vec<_>>()
             .join("\n");
-        std::fs::write(state_dir.join(format!("bill-{date}.jsonl")), body).unwrap();
+        std::fs::write(billing_dir.join(format!("bill-{date}.jsonl")), body).unwrap();
     }
 
     #[test]
@@ -484,34 +434,25 @@ mod tests {
     #[test]
     fn report_groups_by_provider_model_topic() {
         let tmp = TempDir::new().unwrap();
-        let dir_a = tmp.path().join("agents/jyc/.jyc");
-        let dir_b = tmp.path().join("agents/invoice/.jyc");
+        let dir = tmp.path();
         write_ledger(
-            &dir_a,
+            dir,
             "2026-09-10",
             &[
-                metered("anthropic/claude-opus-4", 1.0, "USD"),
-                metered("anthropic/claude-opus-4", 2.0, "USD"),
-                metered("deepseek/deepseek-chat", 0.5, "CNY"),
+                metered("agents/jyc", "anthropic/claude-opus-4", 1.0, "USD"),
+                metered("agents/jyc", "anthropic/claude-opus-4", 2.0, "USD"),
+                metered("agents/jyc", "deepseek/deepseek-chat", 0.5, "CNY"),
+                metered("agents/invoice", "anthropic/claude-opus-4", 0.25, "USD"),
             ],
-        );
-        write_ledger(
-            &dir_b,
-            "2026-09-10",
-            &[metered("anthropic/claude-opus-4", 0.25, "USD")],
         );
         // Out-of-scope day must be excluded by the month/day prefix.
         write_ledger(
-            &dir_a,
+            dir,
             "2026-08-31",
-            &[metered("anthropic/claude-opus-4", 9.0, "USD")],
+            &[metered("agents/jyc", "anthropic/claude-opus-4", 9.0, "USD")],
         );
 
-        let dirs = vec![
-            ("agents/jyc".to_string(), dir_a),
-            ("agents/invoice".to_string(), dir_b),
-        ];
-        let report = render_report(&dirs, &Scope::Month(2026, 9), &BTreeMap::new());
+        let report = render_report(Some(dir), &Scope::Month(2026, 9), &BTreeMap::new());
 
         assert!(report.contains("## Bill — 2026-09"), "{report}");
         assert!(
@@ -548,36 +489,53 @@ mod tests {
     #[test]
     fn report_all_scope_includes_every_date() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("t/.jyc");
-        write_ledger(&dir, "2026-01-05", &[metered("p/m", 1.0, "USD")]);
-        write_ledger(&dir, "2026-09-10", &[metered("p/m", 2.0, "USD")]);
-        let dirs = vec![("t".to_string(), dir)];
-        assert!(render_report(&dirs, &Scope::All, &BTreeMap::new()).contains("$3.0000"));
-        assert!(render_report(&dirs, &Scope::Month(2026, 9), &BTreeMap::new()).contains("$2.0000"));
+        let dir = tmp.path();
+        write_ledger(dir, "2026-01-05", &[metered("t", "p/m", 1.0, "USD")]);
+        write_ledger(dir, "2026-09-10", &[metered("t", "p/m", 2.0, "USD")]);
+        assert!(render_report(Some(dir), &Scope::All, &BTreeMap::new()).contains("$3.0000"));
+        assert!(
+            render_report(Some(dir), &Scope::Month(2026, 9), &BTreeMap::new()).contains("$2.0000")
+        );
     }
 
     #[test]
     fn report_empty_when_no_entries() {
-        let report = render_report(&[], &Scope::All, &BTreeMap::new());
+        let report = render_report(None, &Scope::All, &BTreeMap::new());
         assert!(report.contains("No billing entries found."), "{report}");
+    }
+
+    /// Ledger lines written before the central ledger carry no topic
+    /// label; unmigrated strays must be skipped, not panic the report.
+    #[test]
+    fn unlabelled_entries_are_skipped() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut unlabelled = metered("t", "p/m", 5.0, "USD");
+        unlabelled.topic.clear();
+        write_ledger(
+            dir,
+            "2026-09-10",
+            &[unlabelled, metered("t", "p/m", 1.0, "USD")],
+        );
+        let report = render_report(Some(dir), &Scope::All, &BTreeMap::new());
+        assert!(report.contains("**Total: 1 calls, $1.0000**"), "{report}");
     }
 
     #[test]
     fn subscription_entries_split_into_own_section_with_utilization() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("agents/jyc/.jyc");
+        let dir = tmp.path();
         write_ledger(
-            &dir,
+            dir,
             "2026-09-10",
             &[
-                metered("deepseek/deepseek-chat", 0.5, "CNY"),
-                entry("glm/glm-4.6", 30.0, "CNY", "subscription"),
+                metered("agents/jyc", "deepseek/deepseek-chat", 0.5, "CNY"),
+                entry("agents/jyc", "glm/glm-4.6", 30.0, "CNY", "subscription"),
             ],
         );
-        let dirs = vec![("agents/jyc".to_string(), dir)];
         let fees = BTreeMap::from([("glm".to_string(), (49.0, "CNY".to_string()))]);
         // Month scope: September has 30 days, so the fee is not prorated.
-        let report = render_report(&dirs, &Scope::Month(2026, 9), &fees);
+        let report = render_report(Some(dir), &Scope::Month(2026, 9), &fees);
 
         assert!(report.contains("### Metered（真实支出）"), "{report}");
         assert!(report.contains("### Subscription（影子成本）"), "{report}");
@@ -607,16 +565,15 @@ mod tests {
     #[test]
     fn subscription_fee_line_prorates_for_today_scope() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("t/.jyc");
+        let dir = tmp.path();
         let today = Utc::now().format("%Y-%m-%d").to_string();
         write_ledger(
-            &dir,
+            dir,
             &today,
-            &[entry("glm/glm-4.6", 4.9, "CNY", "subscription")],
+            &[entry("t", "glm/glm-4.6", 4.9, "CNY", "subscription")],
         );
-        let dirs = vec![("t".to_string(), dir)];
         let fees = BTreeMap::from([("glm".to_string(), (49.0, "CNY".to_string()))]);
-        let report = render_report(&dirs, &Scope::Today, &fees);
+        let report = render_report(Some(dir), &Scope::Today, &fees);
         // 4.9 / (49/30 × 1) = 300%.
         assert!(
             report.contains("glm: 月费 ¥49.0000 · 本期摊 ¥1.6333 · 利用率 300%"),
@@ -630,18 +587,17 @@ mod tests {
     #[test]
     fn subscription_fee_aggregates_all_models_under_provider() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("t/.jyc");
+        let dir = tmp.path();
         write_ledger(
-            &dir,
+            dir,
             "2026-09-10",
             &[
-                entry("kimi/k2", 20.0, "CNY", "subscription"),
-                entry("kimi/k3", 10.0, "CNY", "subscription"),
+                entry("t", "kimi/k2", 20.0, "CNY", "subscription"),
+                entry("t", "kimi/k3", 10.0, "CNY", "subscription"),
             ],
         );
-        let dirs = vec![("t".to_string(), dir)];
         let fees = BTreeMap::from([("kimi".to_string(), (30.0, "CNY".to_string()))]);
-        let report = render_report(&dirs, &Scope::Month(2026, 9), &fees);
+        let report = render_report(Some(dir), &Scope::Month(2026, 9), &fees);
         // (20 + 10) / 30 = 100% utilization on one shared fee line.
         assert!(
             report.contains("kimi: 月费 ¥30.0000 · 本期摊 ¥30.0000 · 利用率 100%"),
@@ -681,14 +637,13 @@ mod tests {
     #[test]
     fn subscription_without_monthly_fee_omits_fee_line() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("t/.jyc");
+        let dir = tmp.path();
         write_ledger(
-            &dir,
+            dir,
             "2026-09-10",
-            &[entry("glm/glm-4.6", 1.0, "CNY", "subscription")],
+            &[entry("t", "glm/glm-4.6", 1.0, "CNY", "subscription")],
         );
-        let dirs = vec![("t".to_string(), dir)];
-        let report = render_report(&dirs, &Scope::Month(2026, 9), &BTreeMap::new());
+        let report = render_report(Some(dir), &Scope::Month(2026, 9), &BTreeMap::new());
         assert!(report.contains("### Subscription（影子成本）"), "{report}");
         assert!(!report.contains("月费"), "{report}");
     }
@@ -696,26 +651,10 @@ mod tests {
     #[test]
     fn metered_only_report_keeps_flat_layout() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("t/.jyc");
-        write_ledger(&dir, "2026-09-10", &[metered("p/m", 1.0, "USD")]);
-        let dirs = vec![("t".to_string(), dir)];
-        let report = render_report(&dirs, &Scope::Month(2026, 9), &BTreeMap::new());
+        let dir = tmp.path();
+        write_ledger(dir, "2026-09-10", &[metered("t", "p/m", 1.0, "USD")]);
+        let report = render_report(Some(dir), &Scope::Month(2026, 9), &BTreeMap::new());
         assert!(!report.contains("### Metered"), "{report}");
         assert!(report.contains("**Total: 1 calls, $1.0000**"), "{report}");
-    }
-
-    #[test]
-    fn walk_labels_state_dirs_relative_to_home() {
-        let tmp = TempDir::new().unwrap();
-        let home = tmp.path();
-        std::fs::create_dir_all(home.join("agents/jyc/.jyc")).unwrap();
-        std::fs::create_dir_all(home.join("agents/nested/topic/.jyc")).unwrap();
-        std::fs::create_dir_all(home.join("agents/no-state")).unwrap();
-        let mut seen = HashSet::new();
-        let mut out = Vec::new();
-        walk_state_dirs(home, home, 0, &mut seen, &mut out);
-        let mut labels: Vec<&str> = out.iter().map(|(l, _)| l.as_str()).collect();
-        labels.sort_unstable(); // read_dir order is filesystem-dependent
-        assert_eq!(labels, vec!["agents/jyc", "agents/nested/topic"]);
     }
 }

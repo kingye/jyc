@@ -416,6 +416,7 @@ impl AgentService for JycAgentService {
         let billing_ctx = pricing.as_ref().map(|p| session::BillingContext {
             pricing: p.clone(),
             billing: billing_mode,
+            billing_dir: jyc_core::billing_log_store::BillingLogStore::billing_dir(),
             model_label: model_str.to_string(),
         });
 
@@ -524,6 +525,7 @@ impl AgentService for JycAgentService {
             thinking_enabled: read_thinking_enabled(topic_name, topic_path),
             pricing,
             billing_mode,
+            billing_dir: jyc_core::billing_log_store::BillingLogStore::billing_dir(),
             model_label: model_str,
             context_strategy,
             reply_target: Some(crate::tools::ReplyTarget {
@@ -634,6 +636,7 @@ impl AgentService for JycAgentService {
                 session::BillingContext {
                     pricing: p,
                     billing: jyc_types::pricing::lookup_billing_mode(&self.config.load(), m),
+                    billing_dir: jyc_core::billing_log_store::BillingLogStore::billing_dir(),
                     model_label: m.to_string(),
                 }
             })

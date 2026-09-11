@@ -1,4 +1,5 @@
 pub mod backlog_handler;
+pub mod bill_handler;
 pub mod cancel_handler;
 pub mod close_handler;
 pub mod context_handler;
@@ -17,7 +18,6 @@ pub mod reset_handler;
 pub mod template_handler;
 pub mod thinking_handler;
 pub mod unpin_handler;
-pub mod usage_handler;
 
 pub use model_handler::list_available_models;
 
@@ -123,7 +123,7 @@ pub fn all_commands() -> Vec<CommandInfo> {
             continues_to_agent: true,
         },
         CommandInfo {
-            name: "/usage".into(),
+            name: "/bill".into(),
             description: "Usage/cost across topics (today | YYYY-MM | all)".into(),
             ..Default::default()
         },
@@ -227,7 +227,7 @@ mod tests {
             "/context",
             "/info",
             "/backlog",
-            "/usage",
+            "/bill",
         ] {
             assert!(
                 names.contains(expected),

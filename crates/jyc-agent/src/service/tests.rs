@@ -309,6 +309,8 @@ fn reload_picks_up_new_model_context_window_without_restart() {
                         user_agent: None,
                         cache_ttl: None,
                         pricing: None,
+                        billing: Default::default(),
+                        monthly_fee: None,
                         models: HashMap::new(),
                     },
                 );

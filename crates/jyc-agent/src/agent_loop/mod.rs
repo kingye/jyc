@@ -298,7 +298,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
     // Topic label stamped on every billing entry this loop writes.
     let billing_label =
-        jyc_core::billing_log_store::BillingLogStore::label_for(&topic_name, &topic_path);
+        jyc_core::billing_log_store::BillingLogStore::label_for(topic_name, topic_path);
 
     // Provider used for the cycle-boundary progress summary. Falls back to
     // the main provider when `small_model` is unconfigured or its provider

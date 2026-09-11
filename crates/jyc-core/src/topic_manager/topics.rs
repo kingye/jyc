@@ -563,6 +563,9 @@ impl TopicManager {
 
         let mut topics = Vec::with_capacity(topic_names.len());
 
+        // Resolved once: the central billing dir does not change per topic.
+        let billing_dir = self.billing_dir();
+
         for name in topic_names {
             // Check for custom topic_path from pattern override first
             let paths = self.topic_paths.lock().await;
@@ -622,7 +625,6 @@ impl TopicManager {
             // dashboard omits the row.
             let cost = {
                 let session = read_session_cost(&name, &topic_path).await;
-                let billing_dir = self.billing_dir();
                 let today = billing_dir.as_deref().and_then(|dir| {
                     crate::billing_log_store::BillingLogStore::today_total(
                         dir,

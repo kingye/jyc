@@ -90,6 +90,15 @@ pub fn registered_state(topic_name: &str) -> Option<PathBuf> {
     map.get(topic_name).cloned()
 }
 
+/// Snapshot of every registered `(topic_name, state_dir)` pair.
+///
+/// Used by cross-topic aggregation (e.g. `/usage`) to find state dirs
+/// that live outside `data_home` (pinned topics).
+pub fn registered_topics() -> Vec<(String, PathBuf)> {
+    let map = registry().read().unwrap_or_else(|e| e.into_inner());
+    map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+}
+
 /// Remove the registration for `topic_name` (used when a topic's state is
 /// destroyed, e.g. `/close` on a pinned topic). No-op if unregistered.
 pub fn unregister(topic_name: &str) {

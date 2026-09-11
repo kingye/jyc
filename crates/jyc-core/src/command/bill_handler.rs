@@ -262,9 +262,11 @@ fn aggregate(dirs: &[(String, PathBuf)], date_prefix: &str) -> (BillTable, Optio
                 .entry(label.clone())
                 .or_default()
                 .add(&entry);
-            if entry.billing == "subscription"
+            // `get(..10)` not `ts[..10]`: a corrupted ledger line whose
+            // first bytes are multi-byte UTF-8 must not panic the handler.
+            if entry.billing == BillingMode::Subscription.as_str()
                 && let Ok(date) =
-                    NaiveDate::parse_from_str(&entry.ts[..10.min(entry.ts.len())], "%Y-%m-%d")
+                    NaiveDate::parse_from_str(entry.ts.get(..10).unwrap_or(&entry.ts), "%Y-%m-%d")
             {
                 sub_min = Some(sub_min.map_or(date, |m: NaiveDate| m.min(date)));
                 sub_max = Some(sub_max.map_or(date, |m: NaiveDate| m.max(date)));
@@ -299,10 +301,13 @@ fn render_report(
     }
     let has_subscription = table
         .keys()
-        .any(|(billing, _, _)| billing == "subscription");
+        .any(|(billing, _, _)| billing == BillingMode::Subscription.as_str());
     let days = scope.days(sub_span);
 
-    for mode in ["metered", "subscription"] {
+    for mode in [
+        BillingMode::Metered.as_str(),
+        BillingMode::Subscription.as_str(),
+    ] {
         let providers: std::collections::BTreeSet<&String> = table
             .keys()
             .filter(|(billing, _, _)| billing == mode)
@@ -313,7 +318,7 @@ fn render_report(
         }
         if has_subscription {
             out.push_str(match mode {
-                "metered" => "\n### Metered（真实支出）\n",
+                m if m == BillingMode::Metered.as_str() => "\n### Metered（真实支出）\n",
                 _ => "\n### Subscription（影子成本）\n",
             });
         }
@@ -360,7 +365,7 @@ fn render_report(
                 *section_total.costs.entry(currency.clone()).or_default() += amount;
             }
         }
-        if mode == "subscription" {
+        if mode == BillingMode::Subscription.as_str() {
             for ((provider, model), row) in &model_totals {
                 let model_label = format!("{provider}/{model}");
                 let Some((fee, currency)) = fees.get(&model_label) else {
@@ -386,7 +391,7 @@ fn render_report(
         if has_subscription {
             out.push_str(&format!(
                 "\n**{}: {} calls, {}**\n",
-                if mode == "metered" {
+                if mode == BillingMode::Metered.as_str() {
                     "Metered total"
                 } else {
                     "Subscription notional total"

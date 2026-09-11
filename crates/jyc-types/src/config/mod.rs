@@ -637,7 +637,9 @@ pub struct ModelPricing {
     /// Flat monthly fee for `billing = "subscription"` plans, in
     /// `currency`. Enables the `/bill` utilization line (notional value
     /// vs fee, prorated to the report scope). Omit to report notional
-    /// cost only. Ignored for metered models.
+    /// cost only. Ignored for metered models. Set this **per model**:
+    /// `/bill` does not scan provider-level pricing for fees (one shared
+    /// fee cannot be attributed to individual models).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monthly_fee: Option<f64>,
     /// Time-of-day rate overrides. Each window supplies its own rates for

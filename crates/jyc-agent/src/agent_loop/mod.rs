@@ -139,6 +139,9 @@ pub struct AgentLoopConfig<'a> {
     /// How the active model's provider is paid for. Provider-level: a
     /// subscription plan covers every model under the provider.
     pub billing_mode: jyc_types::config::BillingMode,
+    /// Central billing ledger directory (`<data_home>/billing`), resolved
+    /// once at construction. `None` drops billing writes with a warning.
+    pub billing_dir: Option<std::path::PathBuf>,
     /// Model identifier (`"provider/model"`) recorded on each ledger entry.
     /// Only used for billing, so an empty string is harmless when
     /// `pricing` is `None`.
@@ -287,10 +290,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         thinking_enabled,
         pricing,
         billing_mode,
+        billing_dir,
         model_label,
         context_strategy,
         reply_target,
     } = config;
+
+    // Topic label stamped on every billing entry this loop writes.
+    let billing_label =
+        jyc_core::billing_log_store::BillingLogStore::label_for(topic_name, topic_path);
 
     // Provider used for the cycle-boundary progress summary. Falls back to
     // the main provider when `small_model` is unconfigured or its provider
@@ -465,8 +473,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let summary_cost = bill_call(
                 pricing.as_ref(),
                 billing_mode,
-                topic_name,
-                topic_path,
+                billing_dir.as_deref(),
+                &billing_label,
                 model_label,
                 jyc_core::billing_log_store::KIND_SUMMARY,
                 summary_usage.input_tokens,
@@ -631,8 +639,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         let call_cost = bill_call(
             pricing.as_ref(),
             billing_mode,
-            topic_name,
-            topic_path,
+            billing_dir.as_deref(),
+            &billing_label,
             model_label,
             jyc_core::billing_log_store::KIND_CALL,
             response.input_tokens,
@@ -1231,8 +1239,8 @@ struct CallUsage {
 fn bill_call(
     pricing: Option<&jyc_types::ModelPricing>,
     billing: jyc_types::config::BillingMode,
-    topic_name: &str,
-    topic_path: &Path,
+    billing_dir: Option<&Path>,
+    topic_label: &str,
     model_label: &str,
     kind: &str,
     input_tokens: u64,
@@ -1259,6 +1267,7 @@ fn bill_call(
     let (time_window, utc_offset) = rates.source.billing_fields();
     let entry = jyc_core::billing_log_store::BillingEntry {
         ts: Utc::now().to_rfc3339(),
+        topic: topic_label.to_string(),
         model: model_label.to_string(),
         input_tokens,
         output_tokens,
@@ -1274,10 +1283,13 @@ fn bill_call(
         time_window,
         utc_offset,
     };
-    if let Err(e) =
-        jyc_core::billing_log_store::BillingLogStore::append(topic_name, topic_path, &entry)
-    {
-        tracing::warn!(error = %e, kind, "Failed to append billing entry");
+    match billing_dir {
+        Some(dir) => {
+            if let Err(e) = jyc_core::billing_log_store::BillingLogStore::append(dir, &entry) {
+                tracing::warn!(error = %e, kind, "Failed to append billing entry");
+            }
+        }
+        None => tracing::warn!(kind, "No data home resolvable; dropping billing entry"),
     }
     cost
 }

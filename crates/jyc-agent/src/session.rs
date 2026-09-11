@@ -669,6 +669,9 @@ pub struct BillingContext {
     pub billing: jyc_types::config::BillingMode,
     /// `"provider/model"` label recorded on the ledger entry.
     pub model_label: String,
+    /// Central billing ledger directory (`<data_home>/billing`).
+    /// `None` drops billing writes with a warning.
+    pub billing_dir: Option<std::path::PathBuf>,
 }
 
 // ─── Reset ───────────────────────────────────────────────────────────
@@ -823,6 +826,9 @@ async fn summarize_context(
             let (time_window, utc_offset) = rates.source.billing_fields();
             let entry = jyc_core::billing_log_store::BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
+                topic: jyc_core::billing_log_store::BillingLogStore::label_for(
+                    topic_name, topic_path,
+                ),
                 model: b.model_label.clone(),
                 input_tokens,
                 output_tokens,
@@ -838,10 +844,19 @@ async fn summarize_context(
                 time_window,
                 utc_offset,
             };
-            if let Err(e) =
-                jyc_core::billing_log_store::BillingLogStore::append(topic_name, topic_path, &entry)
-            {
-                tracing::warn!(error = %e, "Failed to append context-compression billing entry");
+            match &b.billing_dir {
+                Some(dir) => {
+                    if let Err(e) =
+                        jyc_core::billing_log_store::BillingLogStore::append(dir, &entry)
+                    {
+                        tracing::warn!(error = %e, "Failed to append context-compression billing entry");
+                    }
+                }
+                None => {
+                    tracing::warn!(
+                        "No data home resolvable; dropping context-compression billing entry"
+                    )
+                }
             }
         }
     }

@@ -1455,13 +1455,16 @@ async fn list_topics_preserves_mixed_currency_from_ledger() {
     let workspace = tmp.path().join("workspace");
     let topic = workspace.join("t1");
     std::fs::create_dir_all(jyc_dir("", &topic)).unwrap();
+    let billing_dir = tmp.path().join("billing");
 
     for (cost, currency) in [(1.0, "CNY"), (2.0, "USD")] {
         BillingLogStore::append(
-            "",
-            &topic,
+            &billing_dir,
             &BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
+                // label_for() falls back to the bare topic name for
+                // paths outside data_home, as in this tempdir test.
+                topic: "t1".to_string(),
                 model: "cnprov/m1".to_string(),
                 input_tokens: 100,
                 output_tokens: 10,
@@ -1482,6 +1485,7 @@ async fn list_topics_preserves_mixed_currency_from_ledger() {
     }
 
     let tm = make_priced_tm(&workspace);
+    tm.set_billing_dir(billing_dir);
     let topics = tm.list_topics().await;
     let t = topics
         .iter()

@@ -32,6 +32,7 @@ use crate::command::reset_handler::ResetCommandHandler;
 use crate::command::template_handler::TemplateCommandHandler;
 use crate::command::thinking_handler::ThinkingCommandHandler;
 use crate::command::unpin_handler::UnpinCommandHandler;
+use crate::command::usage_handler::UsageCommandHandler;
 use crate::message_storage::{MessageStorage, StoreResult};
 use crate::pending_delivery::{read_signal_attachments, watch_pending_deliveries};
 use jyc_types::{OutboundAdapter, QueueItem};
@@ -152,6 +153,7 @@ pub(crate) async fn process_message(
     command_registry.register(Box::new(ContextCommandHandler));
     command_registry.register(Box::new(InfoCommandHandler::new(topic_manager.clone())));
     command_registry.register(Box::new(BacklogCommandHandler::new()));
+    command_registry.register(Box::new(UsageCommandHandler));
 
     // User-defined commands: global `[[commands]]` first, then
     // `[[agents.<name>.commands]]` for the agent the topic is routed

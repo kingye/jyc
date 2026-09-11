@@ -17,6 +17,7 @@ pub mod reset_handler;
 pub mod template_handler;
 pub mod thinking_handler;
 pub mod unpin_handler;
+pub mod usage_handler;
 
 pub use model_handler::list_available_models;
 
@@ -121,6 +122,11 @@ pub fn all_commands() -> Vec<CommandInfo> {
             description: "Save and replay user messages (push|list|get|pop|rm|set)".into(),
             continues_to_agent: true,
         },
+        CommandInfo {
+            name: "/usage".into(),
+            description: "Usage/cost across topics (today | YYYY-MM | all)".into(),
+            ..Default::default()
+        },
     ]
 }
 
@@ -221,6 +227,7 @@ mod tests {
             "/context",
             "/info",
             "/backlog",
+            "/usage",
         ] {
             assert!(
                 names.contains(expected),
@@ -229,7 +236,7 @@ mod tests {
         }
         assert_eq!(
             commands.len(),
-            16,
+            17,
             "all_commands() count changed. Update this test if intentional."
         );
     }

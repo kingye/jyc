@@ -1260,6 +1260,7 @@ fn bill_call(
         cost,
         currency: p.currency_label().to_string(),
         kind: kind.to_string(),
+        billing: p.billing.as_str().to_string(),
         input_rate_per_million: rates.input_per_million,
         output_rate_per_million: rates.output_per_million,
         cache_hit_rate_per_million: rates.cache_hit_per_million,

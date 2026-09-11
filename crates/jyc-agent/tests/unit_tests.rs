@@ -2202,7 +2202,7 @@ mod skills {
 /// loop makes per response.
 mod billing_integration {
     use jyc_core::billing_log_store::{BillingEntry, BillingLogStore};
-    use jyc_types::config::ModelPricing;
+    use jyc_types::config::{BillingMode, ModelPricing};
     use jyc_types::pricing::compute_cost;
 
     fn pricing() -> ModelPricing {
@@ -2217,6 +2217,8 @@ mod billing_integration {
             currency: Some("USD".to_string()),
             time_windows: Vec::new(),
             utc_offset: None,
+            billing: BillingMode::Metered,
+            monthly_fee: None,
             long_context: None,
         }
     }
@@ -2236,6 +2238,7 @@ mod billing_integration {
             &BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
                 model: "anthropic/claude-opus-4-7".to_string(),
+                billing: "metered".into(),
                 input_tokens: input,
                 output_tokens: output,
                 cache_hit_tokens: cache_hit,
@@ -2372,6 +2375,7 @@ mod billing_integration {
             &BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
                 model: "anthropic/claude-opus-4-7".to_string(),
+                billing: "metered".into(),
                 input_tokens: 40_000,
                 output_tokens: 300,
                 cache_hit_tokens: 0,
@@ -2456,6 +2460,8 @@ mod billing_integration {
                 cache_creation_per_million: None,
             }],
             utc_offset: None,
+            billing: BillingMode::Metered,
+            monthly_fee: None,
             long_context: None,
         };
 
@@ -2467,6 +2473,7 @@ mod billing_integration {
             &BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
                 model: "anthropic/claude-opus-4-7".to_string(),
+                billing: "metered".into(),
                 input_tokens: 1000,
                 output_tokens: 100,
                 cache_hit_tokens: 0,

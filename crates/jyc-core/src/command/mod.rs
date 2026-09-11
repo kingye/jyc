@@ -5,6 +5,7 @@ pub mod close_handler;
 pub mod context_handler;
 pub mod custom_handler;
 pub mod exchange_handler;
+pub mod grant_handler;
 pub mod handler;
 pub mod help_handler;
 pub mod info_handler;
@@ -127,6 +128,18 @@ pub fn all_commands() -> Vec<CommandInfo> {
             description: "Usage/cost across topics (today | YYYY-MM | all)".into(),
             ..Default::default()
         },
+        CommandInfo {
+            name: "/grant".into(),
+            description:
+                "Grant agent access to a path (read-only, until restart; -w write, -p persist)"
+                    .into(),
+            ..Default::default()
+        },
+        CommandInfo {
+            name: "/ungrant".into(),
+            description: "Revoke a runtime access grant".into(),
+            ..Default::default()
+        },
     ]
 }
 
@@ -228,6 +241,8 @@ mod tests {
             "/info",
             "/backlog",
             "/bill",
+            "/grant",
+            "/ungrant",
         ] {
             assert!(
                 names.contains(expected),
@@ -236,7 +251,7 @@ mod tests {
         }
         assert_eq!(
             commands.len(),
-            17,
+            19,
             "all_commands() count changed. Update this test if intentional."
         );
     }

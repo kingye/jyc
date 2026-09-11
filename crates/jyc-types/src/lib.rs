@@ -1,3 +1,4 @@
+pub mod access_grants;
 pub mod agent;
 pub mod channel;
 pub mod config;

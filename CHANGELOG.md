@@ -18,6 +18,14 @@
 
 ### Added
 
+- Central billing ledger: per-call billing entries now append to
+  `<data_home>/billing/bill-YYYY-MM-DD.jsonl` (each entry tagged with its
+  topic label) instead of the per-topic `.jyc/` directory, which
+  `close_topic` deletes — cost history now survives topic close/auto-close,
+  so `/bill` and the dashboard keep reporting closed topics' spend. A
+  startup migration folds existing per-topic `.jyc/bill-*.jsonl` files into
+  the central ledger, stamping entries with the topic label derived from
+  their state dir
 - `/grant` / `/ungrant` commands: grant the topic's agent filesystem access
   to a path at runtime (read-only by default, `-w` for read+write, `-p` to
   persist into `[agents.<topic>] access` in `config.toml`); temporary grants

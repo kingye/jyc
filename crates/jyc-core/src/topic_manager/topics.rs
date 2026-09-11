@@ -616,13 +616,19 @@ impl TopicManager {
             };
 
             // Resolve accumulated cost: session-scoped from the session
-            // file, today's durable total from the billing ledger. Both are
-            // absent when the model has no configured pricing, in which case
-            // `cost` stays `None` and the dashboard omits the row.
+            // file, today's durable total from the central billing
+            // ledger. Both are absent when the model has no configured
+            // pricing, in which case `cost` stays `None` and the
+            // dashboard omits the row.
             let cost = {
                 let session = read_session_cost(&name, &topic_path).await;
-                let today =
-                    crate::billing_log_store::BillingLogStore::today_total(&name, &topic_path);
+                let billing_dir = self.billing_dir();
+                let today = billing_dir.as_deref().and_then(|dir| {
+                    crate::billing_log_store::BillingLogStore::today_total(
+                        dir,
+                        &crate::billing_log_store::BillingLogStore::label_for(&name, &topic_path),
+                    )
+                });
                 match (session, today) {
                     (None, None) => None,
                     (session, today) => {

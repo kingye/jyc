@@ -2231,10 +2231,10 @@ mod billing_integration {
         let p = pricing();
         let cost = compute_cost(&p, input, output, cache_hit);
         BillingLogStore::append(
-            "",
             topic_path,
             &BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
+                topic: "t".to_string(),
                 model: "anthropic/claude-opus-4-7".to_string(),
                 billing: "metered".into(),
                 input_tokens: input,
@@ -2283,15 +2283,12 @@ mod billing_integration {
         }
 
         // Ledger: one line per call.
-        let entries = BillingLogStore::load_date(
-            "",
-            path,
-            &chrono::Utc::now().format("%Y-%m-%d").to_string(),
-        );
+        let entries =
+            BillingLogStore::load_date(path, &chrono::Utc::now().format("%Y-%m-%d").to_string());
         assert_eq!(entries.len(), 3, "one ledger line per LLM call");
 
         // Ledger total and session_cost agree with the computed sum.
-        let (ledger_total, currency) = BillingLogStore::today_total("", path).unwrap();
+        let (ledger_total, currency) = BillingLogStore::today_total(path, "t").unwrap();
         assert!(
             (ledger_total - expected).abs() < 1e-9,
             "ledger {ledger_total} vs {expected}"
@@ -2344,7 +2341,7 @@ mod billing_integration {
         );
 
         // ...but the ledger still has the spend.
-        let (ledger_total, _) = BillingLogStore::today_total("", path).unwrap();
+        let (ledger_total, _) = BillingLogStore::today_total(path, "t").unwrap();
         assert!(
             (ledger_total - first).abs() < 1e-9,
             "ledger must survive the reset: {ledger_total} vs {first}"
@@ -2368,10 +2365,10 @@ mod billing_integration {
         // ...and one summary call, billed the way the agent loop does it.
         let summary_cost = jyc_types::pricing::compute_cost(&p, 40_000, 300, 0);
         BillingLogStore::append(
-            "",
             path,
             &BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
+                topic: "t".to_string(),
                 model: "anthropic/claude-opus-4-7".to_string(),
                 billing: "metered".into(),
                 input_tokens: 40_000,
@@ -2391,11 +2388,8 @@ mod billing_integration {
         .unwrap();
         jyc_agent::session::add_session_cost("", path, summary_cost).await;
 
-        let entries = BillingLogStore::load_date(
-            "",
-            path,
-            &chrono::Utc::now().format("%Y-%m-%d").to_string(),
-        );
+        let entries =
+            BillingLogStore::load_date(path, &chrono::Utc::now().format("%Y-%m-%d").to_string());
         assert_eq!(entries.len(), 2, "both the call and the summary are billed");
 
         let kinds: Vec<&str> = entries.iter().map(|e| e.kind.as_str()).collect();
@@ -2410,7 +2404,7 @@ mod billing_integration {
         );
 
         // today_total covers both kinds; session_cost includes the summary.
-        let (today, _) = BillingLogStore::today_total("", path).unwrap();
+        let (today, _) = BillingLogStore::today_total(path, "t").unwrap();
         let expected: f64 = entries.iter().map(|e| e.cost).sum();
         assert!((today - expected).abs() < 1e-9);
 
@@ -2464,10 +2458,10 @@ mod billing_integration {
         let (cost, rates) = compute_cost_split_with_rates(&p, 1000, 100, 0, 0);
         let (time_window, utc_offset) = rates.source.billing_fields();
         BillingLogStore::append(
-            "",
             path,
             &BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
+                topic: "t".to_string(),
                 model: "anthropic/claude-opus-4-7".to_string(),
                 billing: "metered".into(),
                 input_tokens: 1000,
@@ -2486,11 +2480,8 @@ mod billing_integration {
         )
         .unwrap();
 
-        let entries = BillingLogStore::load_date(
-            "",
-            path,
-            &chrono::Utc::now().format("%Y-%m-%d").to_string(),
-        );
+        let entries =
+            BillingLogStore::load_date(path, &chrono::Utc::now().format("%Y-%m-%d").to_string());
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
         // Window rates persisted, not the flat ones.
@@ -2550,7 +2541,7 @@ mod billing_integration {
         let path = tmp.path();
         jyc_agent::session::add_session_cost("", path, 0.0).await;
         assert!(
-            BillingLogStore::today_total("", path).is_none(),
+            BillingLogStore::today_total(path, "t").is_none(),
             "no ledger entry for a zero-cost call"
         );
     }

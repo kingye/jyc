@@ -153,6 +153,9 @@ impl TopicManager {
             worker_handles: Mutex::new(vec![]),
             topic_paths: self.topic_paths.clone(),
             topic_patterns: self.topic_patterns.clone(),
+            // Workers never read the billing dir (only list_topics does,
+            // on the main TM), so a fresh unset cell is fine here.
+            billing_dir_override: std::sync::OnceLock::new(),
         }
     }
 

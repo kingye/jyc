@@ -1,43 +1,4 @@
-## [Unreleased]
-
-### Removed
-
-- Completed one-time migrations retired: legacy per-topic billing ledger
-  folding (all state is in the central `<data_home>/billing/` ledger),
-  in-topic `.jyc` state-dir adoption (a leftover in-topic `.jyc` now only
-  logs a warning), the github/gitee state-dir rename, and the
-  `.jyc/thread-name` → `.jyc/topic-name` rename. Deployments that never
-  ran an intermediate release may need a manual move.
-
-### Changed
-
-- Feishu message cards upgraded to card JSON 2.0: the 2.0 rich-text
-  component renders CommonMark natively — GFM tables (including `/bill`
-  output, with built-in pagination), `#` headings and `>` quotes that
-  card JSON 1.0 showed as literal text. The previous 1.0 workarounds
-  (table-component splitting, code-fence rendering) are removed; the only
-  remaining transform is fencing ASCII box-drawing art (e.g. tree
-  diagrams) and splitting messages past the 4-tables-per-component limit.
-  Requires Feishu client 7.20+ (older clients show an upgrade prompt).
-- Dashboard TUI chat screen: the topic explorer pane no longer has a
-  title or top border, and both the explorer and topic info panes get
-  one row of top padding so content does not hug the pane top.
-
-### Fixed
-
-- Dashboard TUI rendering corruption around URL-containing chat messages:
-  `HyperlinkBackend`'s link-row re-emission printed every cell in the row,
-  including the continuation cells of wide chars — which hold a space
-  symbol in ratatui's buffer. The wide char already advanced the cursor
-  past that column, so each printed continuation space shifted the rest of
-  the row right by one cell; on CJK/emoji-heavy rows the cumulative shift
-  overflowed the row, physically scrolling the screen and desyncing
-  ratatui's diff baseline (interleaved old/new text and ghost fragments,
-  worse while scrolling). Verified with a real-terminal replay harness
-  (tmux 3.5a pane + `capture-pane`) that reproduces the corruption and
-  confirms the fix. Re-enabling mouse capture now also forces a full
-  repaint, since the terminal's own scrollback could move content while
-  capture was off.
+## [0.3.18] - 2026-09-12
 
 ### Added
 
@@ -45,10 +6,7 @@
   `<data_home>/billing/bill-YYYY-MM-DD.jsonl` (each entry tagged with its
   topic label) instead of the per-topic `.jyc/` directory, which
   `close_topic` deletes — cost history now survives topic close/auto-close,
-  so `/bill` and the dashboard keep reporting closed topics' spend. A
-  startup migration folds existing per-topic `.jyc/bill-*.jsonl` files into
-  the central ledger, stamping entries with the topic label derived from
-  their state dir
+  so `/bill` and the dashboard keep reporting closed topics' spend.
 - `/grant` / `/ungrant` commands: grant the topic's agent filesystem access
   to a path at runtime (read-only by default, `-w` for read+write, `-p` to
   persist into `[agents.<topic>] access` in `config.toml`); temporary grants
@@ -76,43 +34,41 @@
   utilization line (the provider's combined notional value across all its
   models vs the monthly fee prorated to the report scope).
 
-### Fixed
-
-- OSC 8 hyperlinks: a URL wrapped across rows now resolves every row
-  fragment to the full URL (previously each fragment linked to its own
-  partial text, and continuation rows were not clickable at all). Link
-  detection is clipped to the chat message pane's rectangle, so text from
-  an adjacent pane (e.g. the topic info pane) can no longer leak into a
-  link target.
-
 ### Changed
 
+- Feishu message cards upgraded to card JSON 2.0: the 2.0 rich-text
+  component renders CommonMark natively — GFM tables (including `/bill`
+  output, with built-in pagination), `#` headings and `>` quotes that
+  card JSON 1.0 showed as literal text. The previous 1.0 workarounds
+  (table-component splitting, code-fence rendering) are removed; the only
+  remaining transform is fencing ASCII box-drawing art (e.g. tree
+  diagrams) and splitting messages past the 4-tables-per-component limit.
+  Requires Feishu client 7.20+ (older clients show an upgrade prompt).
+  (#755)
+- Dashboard TUI chat screen: the topic explorer pane no longer has a
+  title or top border, and both the explorer and topic info panes get
+  one row of top padding so content does not hug the pane top. (#756)
 - Topic state relocation: a pinned/ad-hoc topic's `.jyc` no longer lives
   inside its working dir. It is adopted to
   `<data_home>/agents/<name>/.jyc` (config-key agents keep their name,
-  ad-hoc pins get a path-derived `_`-prefixed name), migrated
-  automatically on first adoption, and granted to the agent's file-access
-  sandbox. Unpinned topics are unchanged (`<topic_dir>/.jyc` fallback). (#739)
-
+  ad-hoc pins get a path-derived `_`-prefixed name) and granted to the
+  agent's file-access sandbox. Unpinned topics are unchanged
+  (`<topic_dir>/.jyc` fallback). (#739)
 - State resolution is keyed by topic **name**, not working dir: several
   agents may pin the same `topic_path` (e.g. one repo shared by planner
   and developer), each keeping an isolated
   `<data_home>/agents/<name>/.jyc`; adoption order is deterministic and
   `/close --force` only ever deletes the closed topic's own state. MCP
   subprocesses get the identity via `JYC_TOPIC_NAME`. (#740)
-
 - `/close` now requires `--force` (mirroring `/new`); `-y`/`--confirm` no
   longer bypass the guard. On a pinned/adopted topic it deletes the
   relocated state dir and unregisters the mapping, keeping the topic dir
   (e.g. a project checkout) intact; unregistered topics still delete the
   whole dir.
-
 - `jyc-podman-tunnel.sh` moved to `scripts/` alongside the other helper
   scripts; usage comments and DESIGN.md reference updated.
 - `FEISHU.md` moved to `docs/channels/feishu.md`, joining the other
   per-channel guides; internal doc link adjusted. (#734)
-
-
 - Split oversized modules for maintainability: `serve/channels.rs` (3.4k
   lines) became per-channel submodules (`email`, `github`, `gitee`,
   `feishu`, `wecom_bot`, `wecom`+`wecomkf`) with shared pipe/relay helpers
@@ -120,10 +76,29 @@
   modules into sibling files. Pure moves — no behavior change. (#735)
 - CHANGELOG rotated: releases 0.3.13 and earlier archived verbatim to
   `CHANGELOG-archive.md`; the working file keeps Unreleased plus the three
-  latest releases (0.3.15-0.3.17). (#735)
+  latest releases. (#735)
 
 ### Fixed
 
+- Dashboard TUI rendering corruption around URL-containing chat messages:
+  `HyperlinkBackend`'s link-row re-emission printed every cell in the row,
+  including the continuation cells of wide chars — which hold a space
+  symbol in ratatui's buffer. The wide char already advanced the cursor
+  past that column, so each printed continuation space shifted the rest of
+  the row right by one cell; on CJK/emoji-heavy rows the cumulative shift
+  overflowed the row, physically scrolling the screen and desyncing
+  ratatui's diff baseline (interleaved old/new text and ghost fragments,
+  worse while scrolling). Verified with a real-terminal replay harness
+  (tmux 3.5a pane + `capture-pane`) that reproduces the corruption and
+  confirms the fix. Re-enabling mouse capture now also forces a full
+  repaint, since the terminal's own scrollback could move content while
+  capture was off. (#754)
+- OSC 8 hyperlinks: a URL wrapped across rows now resolves every row
+  fragment to the full URL (previously each fragment linked to its own
+  partial text, and continuation rows were not clickable at all). Link
+  detection is clipped to the chat message pane's rectangle, so text from
+  an adjacent pane (e.g. the topic info pane) can no longer leak into a
+  link target.
 - System prompt no longer declares a blanket "MUST only access files within the
   working directory" rule when per-pattern `access.read`/`access.write` (or
   skill/attachment roots) are configured — it now enumerates exactly the roots
@@ -144,6 +119,13 @@
 
 ### Removed
 
+- One-time migrations retired (#757): the github/gitee `.github` state-dir
+  rename, the in-topic `.jyc` state adoption, and the `.jyc/thread-name`
+  → `.jyc/topic-name` rename all ran in earlier releases and are gone.
+  **Upgrade note:** per-topic `.jyc/bill-*.jsonl` ledgers written by
+  releases ≤ 0.3.17 are NOT folded into the new central billing ledger —
+  historical spend stays in the topic state dirs and is skipped by `/bill`
+  unless moved manually.
 - `IMPLEMENTATION.md` — implementation-phase tracking is superseded by the
   CHANGELOG and merged PR history; stale reference links dropped from README
   and DESIGN.md.

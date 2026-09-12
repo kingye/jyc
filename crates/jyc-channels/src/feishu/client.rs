@@ -141,23 +141,15 @@ impl FeishuClient {
     ///
     /// Uses Feishu's `"interactive"` message type which supports markdown
     /// formatting (bold, italic, code, lists, links) natively in the card UI.
-    /// Feishu card markdown supports neither GFM tables nor reliable
-    /// whitespace preservation, so tables (markdown or ASCII box-drawing)
-    /// are re-rendered as fenced code blocks first — see [`fence_tables`].
+    /// Feishu card markdown renders GFM tables as raw pipe text, so
+    /// tables become native card table components first — see
+    /// [`build_card_content`].
     pub async fn send_text_message(
         &self,
         chat_id: &str,
         text: &str,
     ) -> Result<FeishuMessageResult> {
-        let text = fence_tables(text);
-        let card_content = serde_json::json!({
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": text
-                }
-            ]
-        });
+        let card_content = build_card_content(text);
         self.send_message(chat_id, "interactive", &card_content.to_string())
             .await
     }
@@ -780,19 +772,18 @@ mod tests {
     }
 }
 
-/// Re-render tables as fenced code blocks for Feishu's card markdown.
-///
-/// Feishu card markdown supports neither GFM tables (they render as raw
-/// pipe text — `/bill` output is one) nor reliable whitespace
-/// preservation (ASCII box-drawing art in agent replies, e.g. tree
-/// diagrams, loses alignment). Wrapping them in code fences keeps them
-/// readable: Feishu renders code blocks in a monospace font, so columns
-/// stay aligned. GFM tables are re-aligned by display width (CJK-aware);
-/// box-drawing blocks are fenced verbatim. Content already inside a code
-/// fence is left untouched.
-fn fence_tables(text: &str) -> String {
+/// Feishu card markdown renders GFM tables as raw pipe text, so tables
+/// become native Feishu card table components: text is split into
+/// alternating markdown and table segments (see [`build_card_content`]).
+/// Box-drawing ASCII art (tree diagrams, box sketches) has no card
+/// equivalent and is fenced in a code block — monospace preserves its
+/// alignment on desktop (mobile Feishu wraps long code lines; accepted,
+/// such art is usually narrow). Content already inside a code fence is
+/// left untouched.
+fn split_segments(text: &str) -> Vec<Segment> {
     let lines: Vec<&str> = text.lines().collect();
-    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut segments = Vec::new();
+    let mut md: Vec<&str> = Vec::new();
     let mut in_fence = false;
     let mut i = 0;
     while i < lines.len() {
@@ -800,7 +791,7 @@ fn fence_tables(text: &str) -> String {
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") {
             in_fence = !in_fence;
-            out.push(line.to_string());
+            md.push(line);
             i += 1;
             continue;
         }
@@ -809,7 +800,11 @@ fn fence_tables(text: &str) -> String {
             while end < lines.len() && is_table_line(lines[end]) {
                 end += 1;
             }
-            out.push(render_gfm_table(&lines[i..end]));
+            if !md.is_empty() {
+                segments.push(Segment::Markdown(md.join("\n")));
+                md.clear();
+            }
+            segments.push(Segment::Table(parse_gfm_table(&lines[i..end])));
             i = end;
             continue;
         }
@@ -818,21 +813,69 @@ fn fence_tables(text: &str) -> String {
             while end < lines.len() && is_box_line(lines[end].trim_start()) {
                 end += 1;
             }
-            // Require a run: a single stray box char is prose, not a table.
+            // Require a run: a single stray box char is prose, not art.
             if end - i >= 2 {
-                out.push("```".to_string());
-                out.extend(lines[i..end].iter().map(ToString::to_string));
-                out.push("```".to_string());
+                md.push("```");
+                md.extend_from_slice(&lines[i..end]);
+                md.push("```");
             } else {
-                out.push(line.to_string());
+                md.push(line);
             }
             i = end;
             continue;
         }
-        out.push(line.to_string());
+        md.push(line);
         i += 1;
     }
-    out.join("\n")
+    if !md.is_empty() {
+        segments.push(Segment::Markdown(md.join("\n")));
+    }
+    segments
+}
+
+/// A parsed GFM table: header cells, per-column alignment from the
+/// separator row, and data rows.
+struct GfmTable {
+    headers: Vec<String>,
+    aligns: Vec<Align>,
+    rows: Vec<Vec<String>>,
+}
+
+/// Horizontal cell alignment, from the `:` markers of a GFM separator cell.
+#[derive(Clone, Copy)]
+enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+/// Text split around the GFM tables it contains.
+enum Segment {
+    Markdown(String),
+    Table(GfmTable),
+}
+
+/// Parse a GFM table block (header row, separator row, data rows).
+fn parse_gfm_table(block: &[&str]) -> GfmTable {
+    fn cells(line: &str) -> Vec<String> {
+        line.trim()
+            .trim_matches('|')
+            .split('|')
+            .map(|c| c.trim().to_string())
+            .collect()
+    }
+    GfmTable {
+        headers: cells(block[0]),
+        aligns: cells(block[1])
+            .iter()
+            .map(|c| match (c.starts_with(':'), c.ends_with(':')) {
+                (true, true) => Align::Center,
+                (false, true) => Align::Right,
+                _ => Align::Left,
+            })
+            .collect(),
+        rows: block[2..].iter().map(|l| cells(l)).collect(),
+    }
 }
 
 /// A (trimmed) line belonging to a GFM table block.
@@ -860,33 +903,108 @@ fn is_box_line(trimmed: &str) -> bool {
         .is_some_and(|c| matches!(c, '┌' | '├' | '│' | '└'))
 }
 
-/// Render a GFM table block as a display-width-aligned plain-text table
-/// inside a fenced code block (separator row dropped).
-fn render_gfm_table(block: &[&str]) -> String {
-    use unicode_width::UnicodeWidthStr;
-    let rows: Vec<Vec<&str>> = block
+/// Build a Feishu card table component (card JSON 1.0, client V7.4+).
+fn table_element(table: &GfmTable) -> serde_json::Value {
+    let columns: Vec<_> = table
+        .headers
         .iter()
-        .filter(|l| !is_separator_row(l))
-        .map(|l| {
-            l.trim()
-                .trim_matches('|')
-                .split('|')
-                .map(str::trim)
-                .collect()
+        .enumerate()
+        .map(|(j, name)| {
+            serde_json::json!({
+                "name": format!("c{j}"),
+                "display_name": name,
+                "data_type": "text",
+                "horizontal_align": match table.aligns.get(j) {
+                    Some(Align::Right) => "right",
+                    Some(Align::Center) => "center",
+                    _ => "left",
+                },
+                "width": "auto",
+            })
         })
         .collect();
-    let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let mut widths = vec![0usize; cols];
-    for row in &rows {
+    let rows: Vec<_> = table
+        .rows
+        .iter()
+        .map(|row| {
+            let mut cells = serde_json::Map::new();
+            for (j, _) in table.headers.iter().enumerate() {
+                cells.insert(
+                    format!("c{j}"),
+                    serde_json::Value::String(row.get(j).cloned().unwrap_or_default()),
+                );
+            }
+            serde_json::Value::Object(cells)
+        })
+        .collect();
+    serde_json::json!({
+        "tag": "table",
+        "page_size": 10,
+        "row_height": "low",
+        "header_style": { "background_style": "grey" },
+        "columns": columns,
+        "rows": rows,
+    })
+}
+
+/// Feishu allows at most 5 table components per card and 50 columns per
+/// table; tables past either limit degrade to a fenced text table.
+const MAX_TABLE_ELEMENTS: usize = 5;
+const MAX_TABLE_COLUMNS: usize = 50;
+
+/// Build interactive-card content for a markdown text: GFM tables become
+/// native table components (mobile-responsive, unlike code blocks), the
+/// rest stays markdown.
+fn build_card_content(text: &str) -> serde_json::Value {
+    let mut elements = Vec::new();
+    let mut tables = 0;
+    for segment in split_segments(text) {
+        let element = match segment {
+            Segment::Markdown(md) if md.trim().is_empty() => continue,
+            Segment::Markdown(md) => serde_json::json!({ "tag": "markdown", "content": md }),
+            Segment::Table(t)
+                if tables < MAX_TABLE_ELEMENTS && t.headers.len() <= MAX_TABLE_COLUMNS =>
+            {
+                tables += 1;
+                table_element(&t)
+            }
+            Segment::Table(t) => {
+                serde_json::json!({ "tag": "markdown", "content": render_gfm_table(&t) })
+            }
+        };
+        elements.push(element);
+    }
+    if elements.is_empty() {
+        elements.push(serde_json::json!({ "tag": "markdown", "content": text }));
+    }
+    serde_json::json!({ "elements": elements })
+}
+
+/// Render a parsed table as a display-width-aligned plain-text table
+/// inside a fenced code block — the degradation path for Feishu's table
+/// component limits.
+fn render_gfm_table(table: &GfmTable) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let mut widths: Vec<usize> = table
+        .headers
+        .iter()
+        .map(|h| UnicodeWidthStr::width(h.as_str()))
+        .collect();
+    for row in &table.rows {
         for (j, cell) in row.iter().enumerate() {
-            widths[j] = widths[j].max(UnicodeWidthStr::width(*cell));
+            if let Some(w) = widths.get_mut(j) {
+                *w = (*w).max(UnicodeWidthStr::width(cell.as_str()));
+            }
         }
     }
     let mut out = String::from("```\n");
-    for row in &rows {
+    let mut rows = Vec::with_capacity(table.rows.len() + 1);
+    rows.push(&table.headers);
+    rows.extend(&table.rows);
+    for row in rows {
         out.push('|');
         for (j, w) in widths.iter().enumerate() {
-            let cell = row.get(j).copied().unwrap_or("");
+            let cell = row.get(j).map(String::as_str).unwrap_or("");
             out.push(' ');
             out.push_str(cell);
             out.push_str(&" ".repeat(w - UnicodeWidthStr::width(cell)));
@@ -899,45 +1017,75 @@ fn render_gfm_table(block: &[&str]) -> String {
 }
 
 #[cfg(test)]
-mod fence_tables_tests {
-    use super::fence_tables;
-    use unicode_width::UnicodeWidthStr;
+mod card_content_tests {
+    use super::build_card_content;
 
     #[test]
-    fn gfm_table_becomes_aligned_code_block() {
-        let input = "before\n| 模型 | calls |\n|------|-------|\n| kimi-for-coding | 3 |\n| deepseek | 1 |\nafter";
-        let out = fence_tables(input);
-        let expected = "before\n```\n| 模型            | calls |\n| kimi-for-coding | 3     |\n| deepseek        | 1     |\n```\nafter";
-        assert_eq!(out, expected);
-        // Every rendered row has the same display width (CJK-aware).
-        let rows: Vec<&str> = out.lines().filter(|l| l.starts_with("| ")).collect();
-        assert_eq!(rows.len(), 3);
-        let w = UnicodeWidthStr::width(rows[0]);
-        assert!(rows.iter().all(|r| UnicodeWidthStr::width(*r) == w));
+    fn gfm_table_becomes_native_table_element() {
+        let text = "before\n| 模型 | calls |\n|:-----|------:|\n| kimi | 3 |\nafter";
+        let card = build_card_content(text);
+        let els = card["elements"].as_array().unwrap();
+        assert_eq!(els.len(), 3);
+        assert_eq!(els[0]["tag"], "markdown");
+        assert_eq!(els[0]["content"], "before");
+        assert_eq!(els[1]["tag"], "table");
+        assert_eq!(els[1]["page_size"], 10);
+        assert_eq!(els[1]["columns"][0]["display_name"], "模型");
+        assert_eq!(els[1]["columns"][0]["horizontal_align"], "left");
+        assert_eq!(els[1]["columns"][1]["display_name"], "calls");
+        assert_eq!(els[1]["columns"][1]["horizontal_align"], "right");
+        assert_eq!(els[1]["rows"][0]["c0"], "kimi");
+        assert_eq!(els[1]["rows"][0]["c1"], "3");
+        assert_eq!(els[2]["tag"], "markdown");
+        assert_eq!(els[2]["content"], "after");
     }
 
     #[test]
-    fn box_drawing_table_is_fenced_verbatim() {
-        let input = "header\n┌──┬──┐\n│ a│ b│\n└──┴──┘\nfooter";
-        let out = fence_tables(input);
-        assert_eq!(out, "header\n```\n┌──┬──┐\n│ a│ b│\n└──┴──┘\n```\nfooter");
+    fn sixth_table_degrades_to_fenced_text() {
+        let one = "| a |\n|---|\n| 1 |";
+        let text = [one; 6].join("\n\n");
+        let card = build_card_content(&text);
+        let els = card["elements"].as_array().unwrap();
+        let tables = els.iter().filter(|e| e["tag"] == "table").count();
+        assert_eq!(tables, 5);
+        let last = els.last().unwrap();
+        assert_eq!(last["tag"], "markdown");
+        assert!(last["content"].as_str().unwrap().starts_with("```\n| a |"));
     }
 
     #[test]
-    fn single_stray_box_line_is_untouched() {
-        let input = "note │ see above\nplain line";
-        assert_eq!(fence_tables(input), input);
+    fn row_cells_shorter_than_headers_are_padded_empty() {
+        let card = build_card_content("| a | b |\n|---|---|\n| 1 |");
+        assert_eq!(card["elements"][0]["rows"][0]["c1"], "");
     }
 
     #[test]
-    fn table_inside_code_fence_is_untouched() {
-        let input = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```";
-        assert_eq!(fence_tables(input), input);
+    fn box_art_stays_fenced_in_markdown() {
+        let text = "header\n┌──┬──┐\n│ a│ b│\n└──┴──┘\nfooter";
+        let card = build_card_content(text);
+        let els = card["elements"].as_array().unwrap();
+        assert_eq!(els.len(), 1);
+        assert_eq!(
+            els[0]["content"],
+            "header\n```\n┌──┬──┐\n│ a│ b│\n└──┴──┘\n```\nfooter"
+        );
     }
 
     #[test]
-    fn plain_text_is_unchanged() {
-        let input = "no tables here\njust | one pipe\nand a single ─ dash";
-        assert_eq!(fence_tables(input), input);
+    fn table_inside_existing_fence_is_untouched() {
+        let text = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```";
+        let card = build_card_content(text);
+        let els = card["elements"].as_array().unwrap();
+        assert_eq!(els.len(), 1);
+        assert_eq!(els[0]["content"], text);
+    }
+
+    #[test]
+    fn plain_text_passes_through_as_single_markdown_element() {
+        let card = build_card_content("just | one pipe\nand a stray ─ dash");
+        let els = card["elements"].as_array().unwrap();
+        assert_eq!(els.len(), 1);
+        assert_eq!(els[0]["tag"], "markdown");
+        assert_eq!(els[0]["content"], "just | one pipe\nand a stray ─ dash");
     }
 }

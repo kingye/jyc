@@ -1125,10 +1125,12 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(Color::DarkGray)
     };
     // Only the right edge (against the chat pane) gets a border — no
-    // title, no top edge: the topic list starts flush at the top.
+    // title, no top edge — with one row of top padding so the topic
+    // list breathes a little.
     let block = Block::default()
         .borders(Borders::RIGHT)
-        .border_style(border_style);
+        .border_style(border_style)
+        .padding(Padding::top(1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1236,11 +1238,15 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     // Chat screen: the title and top border are removed, leaving only the
     // left border to separate the pane from the chat content.
     let mut block = if app.chat.phase == ChatPhase::Chatting {
-        Block::default().borders(Borders::LEFT)
+        // One row of top padding so the content does not hug the pane top.
+        Block::default()
+            .borders(Borders::LEFT)
+            .padding(Padding::top(1))
     } else {
         Block::default()
             .title("── Topic Info ")
             .borders(Borders::TOP | Borders::LEFT)
+            .padding(Padding::top(1))
     };
     if focused {
         block = block.border_style(

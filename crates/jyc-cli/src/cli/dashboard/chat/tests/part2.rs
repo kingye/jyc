@@ -482,10 +482,11 @@ fn explorer_selected_row_fills_full_width() {
         .expect("draw");
 
     let buffer = terminal.backend().buffer().clone();
-    // The pane has no title or top border, so the selected row sits at
-    // y=0. Every cell across it must have the cyan selection background.
+    // The pane has no title or top border but one row of top padding,
+    // so the selected row sits at y=1. Every cell across it must have
+    // the cyan selection background.
     for x in 1..(width - 1) {
-        let cell = &buffer[(x, 0)];
+        let cell = &buffer[(x, 1)];
         assert_eq!(
             cell.bg,
             Color::Cyan,

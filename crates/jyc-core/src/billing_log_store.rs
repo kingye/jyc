@@ -10,8 +10,6 @@
 //! The ledger is central, not per-topic, because topic directories are
 //! deleted when a topic closes (`close_topic`); a per-topic ledger
 //! would silently destroy the cost history it exists to keep.
-//! `migrate_legacy_ledgers` folds the old per-topic `.jyc/bill-*.jsonl`
-//! files into the central ledger at startup.
 //!
 //! Why date-stamped files rather than one `bill.jsonl`: the dashboard
 //! polls twice per second, and each poll needs todays total. A single
@@ -31,7 +29,6 @@
 //! these small lines; readers skip a torn line rather than failing
 //! (see `load_date`).
 
-use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -55,9 +52,8 @@ pub struct BillingEntry {
     /// RFC 3339 timestamp (UTC) of when the call completed.
     pub ts: String,
     /// Topic label (`channel/topic`, e.g. `"agents/jyc"`) that produced
-    /// this call. `serde(default)` so lines written before the central
-    /// ledger (which were grouped by file location instead) still
-    /// deserialize; `migrate_legacy_ledgers` backfills the label.
+    /// this call. `serde(default)` so legacy lines without the field
+    /// still deserialize (they are skipped by the report).
     #[serde(default)]
     pub topic: String,
     /// Model identifier as `"provider/model"`.
@@ -263,144 +259,10 @@ impl BillingLogStore {
         }
         entries
     }
-
-    /// One-shot startup migration: fold legacy per-topic ledgers
-    /// (`<state_dir>/bill-*.jsonl`, written before the central ledger)
-    /// into the central files, stamping every entry with the topic
-    /// label derived from its state dir. Resolves `data_home`
-    /// internally; failures are logged and swallowed so a migration
-    /// problem never blocks startup.
-    pub fn migrate_legacy_ledgers() -> u64 {
-        let Some(home) = jyc_utils::paths::data_home() else {
-            return 0;
-        };
-        match Self::migrate_legacy_ledgers_under(&home) {
-            Ok(n) => n,
-            Err(e) => {
-                tracing::warn!(error = %e, "Legacy billing ledger migration failed");
-                0
-            }
-        }
-    }
-
-    /// Testable core of [`Self::migrate_legacy_ledgers`] with an
-    /// explicit data home. Returns the number of legacy files migrated.
-    ///
-    /// Each source file is appended to the central file of the same
-    /// date and then deleted. A crash between the two re-migrates those
-    /// lines on the next boot (duplicate rows) — accepted: the ledger
-    /// is an analytics record, not accounting. Files whose lines are
-    /// all unparseable are left in place.
-    pub fn migrate_legacy_ledgers_under(home: &Path) -> anyhow::Result<u64> {
-        let central = home.join("billing");
-        let mut migrated = 0u64;
-        for (label, state_dir) in discover_state_dirs(home) {
-            let Ok(read_dir) = std::fs::read_dir(&state_dir) else {
-                continue;
-            };
-            for file in read_dir.map_while(Result::ok) {
-                let name = file.file_name();
-                let Some(name) = name.to_str().map(str::to_owned) else {
-                    continue;
-                };
-                if !name.starts_with("bill-") || !name.ends_with(".jsonl") {
-                    continue;
-                }
-                let src = file.path();
-                let Ok(f) = File::open(&src) else { continue };
-                let mut entries: Vec<BillingEntry> = BufReader::new(f)
-                    .lines()
-                    .map_while(Result::ok)
-                    .filter_map(|line| serde_json::from_str(&line).ok())
-                    .collect();
-                if entries.is_empty() {
-                    continue;
-                }
-                for e in &mut entries {
-                    if e.topic.is_empty() {
-                        e.topic = label.clone();
-                    }
-                }
-                std::fs::create_dir_all(&central)?;
-                let mut out = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(central.join(&name))?;
-                for e in &entries {
-                    writeln!(out, "{}", serde_json::to_string(e)?)?;
-                }
-                out.flush()?;
-                drop(out);
-                std::fs::remove_file(&src)?;
-                migrated += 1;
-            }
-        }
-        Ok(migrated)
-    }
-}
-
-/// Find every topic state dir that may hold legacy per-topic ledgers.
-///
-/// Two sources, unioned (dedup by path):
-/// - the state-dir registry: real topic names, covers pinned topics whose
-///   `.jyc` lives outside `data_home`
-/// - a recursive walk of `data_home`: covers ledgers of topics the current
-///   process has not touched since startup (the registry only knows live
-///   ones); labels derive from the path relative to `data_home`
-///   (e.g. `agents/jyc`)
-fn discover_state_dirs(home: &Path) -> Vec<(String, PathBuf)> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for (name, dir) in jyc_types::state_dir::registered_topics() {
-        if seen.insert(dir.clone()) {
-            out.push((name, dir));
-        }
-    }
-    walk_state_dirs(home, home, 0, &mut seen, &mut out);
-    out
-}
-
-fn walk_state_dirs(
-    dir: &Path,
-    home: &Path,
-    depth: u8,
-    seen: &mut HashSet<PathBuf>,
-    out: &mut Vec<(String, PathBuf)>,
-) {
-    // State dirs sit at `data_home/<channel>/<topic>/.jyc`; six levels of
-    // headroom cover nested custom layouts without risking a deep crawl.
-    if depth > 6 {
-        return;
-    }
-    let Ok(read_dir) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in read_dir.map_while(Result::ok) {
-        // file_type does not follow symlinks: no symlink-loop guard needed.
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-        let path = entry.path();
-        if entry.file_name() == ".jyc" {
-            if seen.insert(path.clone()) {
-                let label = path
-                    .parent()
-                    .and_then(|p| p.strip_prefix(home).ok())
-                    .map(|rel| rel.to_string_lossy().to_string())
-                    .filter(|rel| !rel.is_empty())
-                    .unwrap_or_else(|| path.display().to_string());
-                out.push((label, path));
-            }
-        } else {
-            walk_state_dirs(&path, home, depth + 1, seen, out);
-        }
-    }
 }
 
 #[cfg(test)]
+
 mod tests {
     use super::*;
     use tempfile::tempdir;
@@ -560,45 +422,5 @@ mod tests {
 
         let (total, _) = BillingLogStore::today_total(dir.path(), "chan/t").unwrap();
         assert!((total - 0.10).abs() < 1e-9, "valid entry must survive");
-    }
-
-    /// Migration folds a legacy per-topic ledger into the central dir,
-    /// stamping entries with the label derived from the state dir's
-    /// path relative to data home.
-    #[test]
-    fn migration_moves_legacy_ledgers_into_central() {
-        let home = tempdir().unwrap();
-        let state = home.path().join("agents/jyc/.jyc");
-        std::fs::create_dir_all(&state).unwrap();
-        // Legacy line: no `topic` field at all.
-        let legacy = r#"{"ts":"2026-09-01T00:00:00Z","model":"kimi/k3","input_tokens":1,"output_tokens":2,"cache_hit_tokens":0,"cost":0.5,"currency":"CNY"}"#;
-        std::fs::write(state.join("bill-2026-09-01.jsonl"), format!("{legacy}\n")).unwrap();
-
-        let migrated = BillingLogStore::migrate_legacy_ledgers_under(home.path()).unwrap();
-        assert_eq!(migrated, 1);
-
-        // Source is gone; the central file carries the labelled entry.
-        assert!(!state.join("bill-2026-09-01.jsonl").exists());
-        let central = BillingLogStore::load_date(&home.path().join("billing"), "2026-09-01");
-        assert_eq!(central.len(), 1);
-        assert_eq!(central[0].topic, "agents/jyc");
-        assert_eq!(central[0].cost, 0.5);
-    }
-
-    /// Second boot finds nothing to migrate and must not duplicate the
-    /// entries the first boot already moved.
-    #[test]
-    fn migration_is_noop_when_nothing_to_migrate() {
-        let home = tempdir().unwrap();
-        let state = home.path().join("agents/jyc/.jyc");
-        std::fs::create_dir_all(&state).unwrap();
-        let legacy = r#"{"ts":"2026-09-01T00:00:00Z","model":"kimi/k3","input_tokens":1,"output_tokens":2,"cache_hit_tokens":0,"cost":0.5,"currency":"CNY"}"#;
-        std::fs::write(state.join("bill-2026-09-01.jsonl"), format!("{legacy}\n")).unwrap();
-
-        BillingLogStore::migrate_legacy_ledgers_under(home.path()).unwrap();
-        let again = BillingLogStore::migrate_legacy_ledgers_under(home.path()).unwrap();
-        assert_eq!(again, 0);
-        let central = BillingLogStore::load_date(&home.path().join("billing"), "2026-09-01");
-        assert_eq!(central.len(), 1, "no duplicated rows on second run");
     }
 }

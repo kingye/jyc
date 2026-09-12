@@ -2,8 +2,8 @@
 //! WebSocket topic chat (all channel types via `/ws/<channel>/<topic>`).
 
 use super::token_render::{
-    input_token_pct, push_cache_creation_span, push_cache_hit_span, push_cost_span,
-    push_output_span, push_tokens_span, push_total_input_span,
+    input_token_pct, push_cache_creation_span, push_cache_hit_span, push_cache_utilization_span,
+    push_cost_span, push_output_span, push_tokens_span, push_total_input_span,
 };
 use super::*;
 use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
@@ -1325,6 +1325,13 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         push_cache_creation_span(&mut cache_creation_spans, t);
         if !cache_creation_spans.is_empty() {
             out.push(Line::from(cache_creation_spans));
+        }
+        // Cache util row — cache hits as a share of total input.
+        // Omitted when the provider reports no cache data.
+        let mut cache_util_spans = Vec::with_capacity(2);
+        push_cache_utilization_span(&mut cache_util_spans, t);
+        if !cache_util_spans.is_empty() {
+            out.push(Line::from(cache_util_spans));
         }
         // Cost row — session-scoped spend plus today's durable total.
         // Omitted entirely when the model has no configured pricing.

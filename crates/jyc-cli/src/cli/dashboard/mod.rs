@@ -963,8 +963,6 @@ fn check_existing_topic_name(path: &str, topic: &str, workdir: &std::path::Path)
         if !jyc_dir.is_dir() {
             continue;
         }
-        // One-time migration for the topic → topic rename.
-        jyc_core::topic_path::migrate_topic_name_file(&jyc_dir);
         let topic_name_file = jyc_dir.join("topic-name");
         if topic_name_file.exists() {
             let existing = std::fs::read_to_string(&topic_name_file)

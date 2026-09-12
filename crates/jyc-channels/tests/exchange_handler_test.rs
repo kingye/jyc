@@ -84,8 +84,8 @@ fn make_topic_manager(tmp: &TempDir, workspace: &Path) -> Arc<TopicManager> {
 }
 
 /// Seed a published file plus the token that guards it — through the same
-/// state-dir resolver production uses (the topic's state may be adopted to
-/// data_home; pre-adoption seeds ride the migration move).
+/// state-dir resolver production uses (the topic's state may be adopted
+/// to data_home when the topic has been registered).
 async fn seed_published(topic_dir: &Path, name: &str, token: &str) {
     let jyc = jyc_types::state_dir::jyc_dir("", topic_dir);
     let exchange = jyc.join("exchange");

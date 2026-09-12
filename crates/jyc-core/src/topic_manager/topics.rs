@@ -346,9 +346,8 @@ impl TopicManager {
         let Some(patterns) = &channel_cfg.patterns else {
             return;
         };
-        // Deterministic iteration: when several pins share one directory the
-        // first (alphabetically) pattern adopts the legacy in-dir `.jyc`,
-        // so restarts can't flip which topic inherits it.
+        // Deterministic iteration: keep the restore order stable across
+        // restarts when several pins share one directory.
         let mut patterns: Vec<&jyc_types::ChannelPattern> = patterns.iter().collect();
         patterns.sort_by_key(|p| p.name.clone());
         for pattern in patterns {
@@ -374,17 +373,13 @@ impl TopicManager {
                     &resolved,
                     agent_key,
                 );
-                // Identity order: candidate state dir, then the legacy
-                // in-dir `.jyc` about to be carried (its `topic-name` is
-                // the source of truth), then the pattern-derived name.
-                let breadcrumb = |dir: &std::path::Path| {
-                    std::fs::read_to_string(dir.join("topic-name"))
-                        .ok()
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                };
-                let name = breadcrumb(&state)
-                    .or_else(|| breadcrumb(&resolved.join(".jyc")))
+                // Identity order: the candidate state dir's `topic-name`
+                // breadcrumb (a previously used topic), then the
+                // pattern-derived name.
+                let name = std::fs::read_to_string(state.join("topic-name"))
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| pin_name.to_string());
                 if let Err(e) = crate::topic_path::adopt_state_dir(&name, &resolved, &state) {
                     tracing::warn!(
@@ -398,8 +393,6 @@ impl TopicManager {
                 pin_name.to_string()
             };
             let jyc_dir = jyc_dir(&jyc_name, &resolved);
-            // One-time migration for the topic → topic rename.
-            crate::topic_path::migrate_topic_name_file(&jyc_dir);
             let topic_name_file = jyc_dir.join("topic-name");
             match tokio::fs::read_to_string(&topic_name_file).await {
                 Ok(name) => {
@@ -483,7 +476,6 @@ impl TopicManager {
             if !jyc_dir.is_dir() {
                 continue;
             }
-            crate::topic_path::migrate_topic_name_file(&jyc_dir);
             let topic_name_file = jyc_dir.join("topic-name");
             match tokio::fs::read_to_string(&topic_name_file).await {
                 Ok(name) => {
@@ -847,18 +839,23 @@ mode = "agent"
     }
 
     // The refactor's core scenario: two agents pin the SAME `topic_path`.
-    // Each must get its own state dir; the legacy in-dir `.jyc` goes to
-    // the alphabetically-first adopter; `/close` on one leaves the
-    // sibling's state and the shared dir untouched.
+    // Each gets its own state dir; a previously used topic (identity
+    // breadcrumb in its adopted state dir) is advertised on restore;
+    // `/close` on one leaves the sibling's state and the shared dir
+    // untouched.
     #[tokio::test]
     async fn co_pinned_agents_share_dir_with_isolated_state() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("ws");
         std::fs::create_dir_all(&workspace).unwrap();
         let repo = tmp.path().join("shared-repo");
-        std::fs::create_dir_all(repo.join(".jyc")).unwrap();
-        std::fs::write(repo.join(".jyc").join("marker"), "legacy").unwrap();
-        std::fs::write(repo.join(".jyc").join("topic-name"), "co-alpha").unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        // alpha was used before the restart: its adopted state dir
+        // carries the identity breadcrumb; beta was never opened.
+        let state_a = tmp.path().join("agents/co-alpha/.jyc");
+        std::fs::create_dir_all(&state_a).unwrap();
+        std::fs::write(state_a.join("topic-name"), "co-alpha").unwrap();
+        std::fs::write(state_a.join("marker"), "used").unwrap();
 
         let config_str = format!(
             r#"
@@ -890,14 +887,13 @@ mode = "agent"
             "never-initialized sibling is not advertised until first use"
         );
 
-        let state_a = tmp.path().join("agents/co-alpha/.jyc");
         let state_b = tmp.path().join("agents/co-beta/.jyc");
         assert_eq!(jyc_types::state_dir::jyc_dir("co-alpha", &repo), state_a);
         assert_eq!(jyc_types::state_dir::jyc_dir("co-beta", &repo), state_b);
         assert_ne!(state_a, state_b);
         assert!(
             state_a.join("marker").exists(),
-            "first (sorted) adopter inherits the legacy .jyc"
+            "previously used state survives restore"
         );
         assert!(
             !state_b.join("marker").exists(),
@@ -908,7 +904,6 @@ mode = "agent"
             jyc_types::state_dir::registered_state("co-beta"),
             Some(state_b.clone())
         );
-        assert!(!repo.join(".jyc").exists(), "repo cleaned of state");
 
         // /close alpha: only alpha's state and registration die.
         tm.close_topic("co-alpha").await.unwrap();

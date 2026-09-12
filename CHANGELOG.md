@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+### Removed
+
+- Completed one-time migrations retired: legacy per-topic billing ledger
+  folding (all state is in the central `<data_home>/billing/` ledger),
+  in-topic `.jyc` state-dir adoption (a leftover in-topic `.jyc` now only
+  logs a warning), the github/gitee state-dir rename, and the
+  `.jyc/thread-name` → `.jyc/topic-name` rename. Deployments that never
+  ran an intermediate release may need a manual move.
+
 ### Changed
 
 - Feishu message cards upgraded to card JSON 2.0: the 2.0 rich-text

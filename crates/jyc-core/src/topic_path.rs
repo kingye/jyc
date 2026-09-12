@@ -92,12 +92,13 @@ pub fn state_dir_for(agents_root: &Path, topic_dir: &Path, agent_key: Option<&st
 /// Adopt `state_dir` as the `.jyc` location of topic `topic_name`, whose
 /// topic dir is `topic_dir`.
 ///
-/// Registers the name→state mapping and, on first adoption, moves an
-/// existing `<topic_dir>/.jyc` into place (rename, cross-device copy
-/// fallback). Always (re)writes the `topic-path` breadcrumb; `topic-name`
-/// is restamped only where one already exists (carried legacy dir or
-/// previously initialized topic) — restore discovery keys on that file to
-/// tell a used topic from a fresh empty pin, so it is never created here.
+/// Registers the name→state mapping and, when the topic was previously
+/// adopted under a different state dir (re-pin), carries that state into
+/// place (rename, cross-device copy fallback). Always (re)writes the
+/// `topic-path` breadcrumb; `topic-name` is restamped only where one
+/// already exists (carried state or a previously initialized topic) —
+/// restore discovery keys on that file to tell a used topic from a fresh
+/// empty pin, so it is never created here.
 /// [`restore_state_registry`] rebuilds the name-keyed mapping after a
 /// restart even in processes without config access (subprocesses), where
 /// several agents may share one `topic_dir`: registrations depend on the
@@ -110,24 +111,23 @@ pub fn adopt_state_dir(
     state_dir: &Path,
 ) -> std::io::Result<bool> {
     let legacy = topic_dir.join(".jyc");
+    if legacy.exists() {
+        // Pre-adoption in-dir state is no longer migrated (all
+        // deployments moved long ago); warn instead of silently
+        // dropping it.
+        tracing::warn!(
+            path = %legacy.display(),
+            "Legacy in-topic .jyc found; it is no longer migrated — move or delete it manually"
+        );
+    }
     let prev = jyc_types::state_dir::registered_state(topic_name);
     jyc_types::state_dir::register(topic_name, state_dir);
     let mut moved = false;
-    // Pick what (if anything) must be relocated into `state_dir`.
+    // Re-pin carry: state was already adopted elsewhere (e.g. runtime
+    // ad-hoc name -> later config-key name, or the reverse).
     let source = if state_dir.exists() {
-        if legacy.exists() {
-            tracing::warn!(
-                topic_dir = %topic_dir.display(),
-                state_dir = %state_dir.display(),
-                "Both legacy .jyc and adopted state dir exist; keeping adopted state"
-            );
-        }
         None
-    } else if legacy.exists() {
-        Some(legacy.clone())
     } else if let Some(prev) = prev.filter(|p| p != state_dir && p.is_dir()) {
-        // Re-pin carry: state was already adopted elsewhere (e.g. runtime
-        // ad-hoc name -> later config-key name, or the reverse).
         tracing::info!(
             topic_dir = %topic_dir.display(),
             from = %prev.display(),
@@ -139,7 +139,6 @@ pub fn adopt_state_dir(
         None
     };
     if let Some(src) = source {
-        let from_prev = src != legacy;
         if let Some(parent) = state_dir.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -153,8 +152,7 @@ pub fn adopt_state_dir(
             }
         }
         // Drop the now-empty old namespace folder (agents/<old-name>/).
-        if from_prev
-            && let Some(src_parent) = src.parent()
+        if let Some(src_parent) = src.parent()
             && src_parent
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().starts_with('_'))
@@ -168,19 +166,12 @@ pub fn adopt_state_dir(
         topic_dir.to_string_lossy().as_bytes(),
     )?;
     // Restamp the identity breadcrumb only where one already exists (a
-    // carried legacy dir or a previously initialized topic). Never CREATE
+    // carried re-pin dir or a previously initialized topic). Never CREATE
     // it: restore discovery keys on this file to tell "used topic" from a
     // fresh empty pin, and `set_topic_path` writes it on first real open.
     let name_file = state_dir.join("topic-name");
     if name_file.exists() {
         std::fs::write(&name_file, topic_name.as_bytes())?;
-    }
-    if moved {
-        tracing::info!(
-            topic_dir = %topic_dir.display(),
-            state_dir = %state_dir.display(),
-            "Adopted topic state dir: moved .jyc out of the topic dir"
-        );
     }
     Ok(moved)
 }
@@ -252,26 +243,6 @@ pub fn restore_state_registry(agents_root: &Path) -> usize {
     restored
 }
 
-/// One-time migration for the `topic` → `topic` rename.
-///
-/// Pre-rename topic directories carry a `.jyc/thread-name` file. If a
-/// directory has that legacy file but no `.jyc/topic-name`, rename it so
-/// existing topics keep their identity across restarts.
-///
-/// NOTE: the legacy filename must stay "thread-name" here — this is the
-/// pre-rename on-disk name, not the (renamed) current concept.
-pub fn migrate_topic_name_file(jyc_dir: &Path) {
-    let old = jyc_dir.join("thread-name");
-    let new = jyc_dir.join("topic-name");
-    if !new.exists() && old.exists() {
-        if let Ok(name) = std::fs::read_to_string(&old) {
-            let _ = std::fs::write(&new, name);
-            tracing::info!(path = %jyc_dir.display(), "Migrated legacy .jyc/thread-name to .jyc/topic-name");
-        }
-        let _ = std::fs::remove_file(&old);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,61 +297,44 @@ mod tests {
     }
 
     #[test]
-    fn adopt_state_dir_moves_registers_and_breadcrumbs() {
+    fn adopt_state_dir_registers_and_breadcrumbs() {
         let tmp = tempdir().unwrap();
         let topic = tmp.path().join("adopt-topic");
-        let legacy = topic.join(".jyc");
-        std::fs::create_dir_all(&legacy).unwrap();
-        std::fs::write(legacy.join("topic-name"), b"adopted").unwrap();
+        std::fs::create_dir_all(&topic).unwrap();
         let state = tmp.path().join("agents").join("_adopt");
 
         assert!(
-            adopt_state_dir("adopt-name", &topic, &state).unwrap(),
-            "first adopt moves"
+            !adopt_state_dir("adopt-name", &topic, &state).unwrap(),
+            "fresh adopt has nothing to move"
         );
-        assert!(!legacy.exists(), "legacy .jyc removed from topic dir");
-        assert!(state.join("topic-name").exists(), "state carried over");
         assert_eq!(
             std::fs::read_to_string(state.join("topic-path")).unwrap(),
             topic.to_string_lossy()
         );
-        assert_eq!(
-            std::fs::read_to_string(state.join("topic-name")).unwrap(),
-            "adopt-name",
-            "adopt stamps the topic-name breadcrumb"
+        assert!(
+            !state.join("topic-name").exists(),
+            "topic-name is never created by adopt"
         );
         assert_eq!(jyc_types::state_dir::jyc_dir("adopt-name", &topic), state);
 
         // second adopt is a no-op (registered, nothing to move)
         assert!(!adopt_state_dir("adopt-name", &topic, &state).unwrap());
-        assert!(state.join("topic-name").exists());
     }
 
     #[test]
     fn co_pinned_dirs_keep_isolated_state() {
-        // Two topics pinning ONE dir: each name keeps its own state dir;
-        // the legacy in-dir .jyc goes to the first adopter only.
+        // Two topics pinning ONE dir: each name keeps its own state dir.
         let tmp = tempdir().unwrap();
         let dir = tmp.path().join("copin");
-        let legacy = dir.join(".jyc");
-        std::fs::create_dir_all(&legacy).unwrap();
-        std::fs::write(legacy.join("session.json"), b"shared history").unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
         let root = tmp.path().join("agents");
         let state_a = state_dir_for(&root, &dir, Some("alpha"));
         let state_b = state_dir_for(&root, &dir, Some("beta"));
 
-        assert!(adopt_state_dir("alpha", &dir, &state_a).unwrap());
-        assert!(
-            !adopt_state_dir("beta", &dir, &state_b).unwrap(),
-            "sibling has nothing to move"
-        );
+        assert!(!adopt_state_dir("alpha", &dir, &state_a).unwrap());
+        assert!(!adopt_state_dir("beta", &dir, &state_b).unwrap());
 
-        assert!(!legacy.exists(), "legacy taken by first adopter");
-        assert!(state_a.join("session.json").exists(), "alpha inherited");
-        assert!(
-            !state_b.join("session.json").exists(),
-            "beta starts clean, no ping-pong"
-        );
+        assert_ne!(state_a, state_b, "each topic gets its own state dir");
         let jyc = |n: &str| jyc_types::state_dir::jyc_dir(n, &dir);
         assert_eq!(jyc("alpha"), state_a);
         assert_eq!(jyc("beta"), state_b);
@@ -491,16 +445,18 @@ mod tests {
     }
 
     #[test]
-    fn adopt_keeps_state_when_both_dirs_exist() {
+    fn adopt_ignores_legacy_in_dir_state() {
+        // A pre-adoption .jyc still sitting in the topic dir is left
+        // alone (warned about), never moved or merged.
         let tmp = tempdir().unwrap();
         let topic = tmp.path().join("conflict-topic");
         std::fs::create_dir_all(topic.join(".jyc")).unwrap();
         let state = tmp.path().join("conflict-state");
-        std::fs::create_dir_all(&state).unwrap();
         assert!(!adopt_state_dir("conflict-name", &topic, &state).unwrap());
+        assert!(topic.join(".jyc").exists(), "legacy dir left in place");
         assert!(
-            topic.join(".jyc").exists(),
-            "legacy kept when state already exists"
+            !state.join("topic-name").exists(),
+            "nothing carried out of the legacy dir"
         );
     }
 

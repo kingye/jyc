@@ -57,22 +57,6 @@ pub(crate) fn spawn_github_adapter(
     warn_on_bad_pipe_patterns("github", &channel_name, channel_config);
 
     // State (dedup, cursor) lives under <workdir>/channels/<channel>/.github/.
-    // One-time rename migration from the old location.
-    let old_state_dir = workdir.join(&channel_name).join(".github");
-    let new_state_dir = workdir.join("channels").join(&channel_name).join(".github");
-    if old_state_dir.exists() && !new_state_dir.exists() {
-        if let Some(parent) = new_state_dir.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Err(e) = std::fs::rename(&old_state_dir, &new_state_dir) {
-            tracing::warn!(
-                from = %old_state_dir.display(),
-                to = %new_state_dir.display(),
-                error = %e,
-                "github state dir migration failed (dedup will start fresh)"
-            );
-        }
-    }
 
     // Build the client before spawning: an unusable token (invalid header bytes)
     // must fail startup, not panic a detached task and leave a silently dead channel.

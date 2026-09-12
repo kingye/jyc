@@ -1,17 +1,18 @@
 ## [Unreleased]
 
+### Changed
+
+- Feishu message cards upgraded to card JSON 2.0: the 2.0 rich-text
+  component renders CommonMark natively — GFM tables (including `/bill`
+  output, with built-in pagination), `#` headings and `>` quotes that
+  card JSON 1.0 showed as literal text. The previous 1.0 workarounds
+  (table-component splitting, code-fence rendering) are removed; the only
+  remaining transform is fencing ASCII box-drawing art (e.g. tree
+  diagrams) and splitting messages past the 4-tables-per-component limit.
+  Requires Feishu client 7.20+ (older clients show an upgrade prompt).
+
 ### Fixed
 
-- Feishu table rendering: GFM markdown tables (including `/bill` output)
-  in messages sent to Feishu become native Feishu card table components
-  (column alignment preserved from the GFM separator row), and ASCII
-  box-drawing art (e.g. tree diagrams in agent replies) is re-rendered as
-  fenced code blocks — Feishu card markdown supports neither GFM tables
-  nor whitespace preservation, and mobile Feishu does not scroll code
-  blocks horizontally, so tables collapsed or wrapped on mobile. Tables
-  past Feishu's limits (5 per card, 50 columns) degrade to fenced,
-  display-width-aligned text (CJK-aware). The transform lives in the
-  Feishu client only; all other modules stay channel-agnostic.
 - Dashboard TUI rendering corruption around URL-containing chat messages:
   `HyperlinkBackend`'s link-row re-emission printed every cell in the row,
   including the continuation cells of wide chars — which hold a space

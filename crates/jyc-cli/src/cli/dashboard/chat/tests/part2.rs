@@ -482,9 +482,9 @@ fn explorer_selected_row_fills_full_width() {
         .expect("draw");
 
     let buffer = terminal.backend().buffer().clone();
-    // Selected row sits at the top of the inner area (y=1 once the
-    // title/border row is taken into account). Every cell across it
-    // must have the cyan selection background.
+    // The pane has no title or top border but one row of top padding,
+    // so the selected row sits at y=1. Every cell across it must have
+    // the cyan selection background.
     for x in 1..(width - 1) {
         let cell = &buffer[(x, 1)];
         assert_eq!(
@@ -494,16 +494,6 @@ fn explorer_selected_row_fills_full_width() {
             cell.bg
         );
     }
-
-    // Title row (y=0) must start with the `──` prefix followed by the
-    // title text. This guards against regressions in the title format.
-    let title_row: String = (0..width)
-        .map(|x| buffer[(x, 0)].symbol().to_string())
-        .collect();
-    assert!(
-        title_row.starts_with("── Topics"),
-        "explorer title row should start with `── Topics`, got: {title_row:?}"
-    );
 }
 
 /// Regression: the Files section must color `uncommitted: true`

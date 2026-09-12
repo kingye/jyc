@@ -14,7 +14,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap},
+    widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, TableState, Wrap},
 };
 use ratatui_textarea::{CursorMove, TextArea, WrapMode};
 use std::cell::RefCell;

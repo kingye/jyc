@@ -2,9 +2,8 @@
 # Tag and push a release from the current workspace.
 #
 # Usage:
-#   ./scripts/tag-release.sh                   # auto-derive version from Cargo.toml
-#   ./scripts/tag-release.sh 0.3.17            # explicit version (v prefix optional)
-#   ./scripts/tag-release.sh 0.3.17 release    # explicit version + branch (default: main)
+#   ./scripts/tag-release.sh    # no arguments; version comes from Cargo.toml,
+#                                # branch is always main
 #
 # Pre-conditions (script enforces):
 #   - Working tree clean (no uncommitted or untracked changes).
@@ -25,27 +24,25 @@
 
 set -euo pipefail
 
-# Resolve repo root from this script's own location so the script works
-# regardless of the caller's working directory.
+# Resolve repo root from this script's own location (scripts/ sits directly
+# under the repo root) so the script works regardless of the caller's cwd.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
-REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
+REPO_ROOT="$(dirname -- "$SCRIPT_DIR")"
 cd "$REPO_ROOT"
 
 log() { printf '\033[1;34m[tag-release]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[tag-release]\033[0m %s\n' "$*" >&2; exit 1; }
 
-# --- Argument parsing ---------------------------------------------------------
+# --- Version resolution -------------------------------------------------------
 
-VERSION="${1:-}"
-BRANCH="${2:-main}"
+[[ $# -eq 0 ]] || die "this script takes no arguments; the version is read from Cargo.toml"
 
-if [[ -z "$VERSION" ]]; then
-    VERSION="$(awk '/^version =/{ gsub(/.*"|"/, ""); print; exit }' Cargo.toml)"
-fi
-[[ -n "$VERSION" ]] || die "could not determine version (pass it as first arg, e.g. $0 0.3.17)"
+BRANCH="main"
 
-# release.yml triggers on "v*" tags, so the pushed tag must be v-prefixed;
-# normalize here so both "0.3.17" and "v0.3.17" produce the tag "v0.3.17".
+VERSION="$(awk '/^version =/{ gsub(/.*"|"/, ""); print; exit }' Cargo.toml)"
+[[ -n "$VERSION" ]] || die "could not determine version from Cargo.toml"
+
+# release.yml triggers on "v*" tags, so the pushed tag must be v-prefixed.
 VERSION="${VERSION#v}"
 if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
     die "version '$VERSION' is not a valid semver string"

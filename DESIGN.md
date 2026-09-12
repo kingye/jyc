@@ -418,12 +418,11 @@ Multiple agent rows may pin the same topic dir (e.g. one repo shared by
   directly adjacent to one starting with `_` (`/a_/b` vs `/a/_b`), which
   would make such sibling pins share one state dir. The `_` prefix is a
   reserved namespace that cannot collide with config keys.
-- **Adoption & migration.** `topic_path::adopt_state_dir(topic_name,
-  topic_dir, state_dir)` registers the name→state mapping and, on first
-  adoption, moves a legacy `<topic_dir>/.jyc` into place once (rename with
-  cross-device copy fallback). When several pins share one dir, adoption
-  runs in sorted pattern order and the first adopter inherits the legacy
-  state; siblings start clean (no ping-pong). Repos stay
+- **Adoption.** `topic_path::adopt_state_dir(topic_name,
+  topic_dir, state_dir)` registers the name→state mapping and, on a
+  re-pin (previously adopted under a different state dir), carries that
+  state into place (rename with cross-device copy fallback). Sibling pins
+  of one dir each start with their own clean state (no ping-pong). Repos stay
   clean; the "never commit .jyc" hazard disappears. Config pins adopt at
   startup inside `TopicManager::restore_custom_topic_paths`; runtime pins
   (`set_topic_path`, dashboard `open -p`) adopt immediately.

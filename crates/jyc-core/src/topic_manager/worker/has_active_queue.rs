@@ -951,16 +951,18 @@ async fn test_restore_custom_topic_paths_from_disk() {
 
     // Custom topic path outside workspace
     let custom_path = tmp.path().join("external-project");
-    tokio::fs::create_dir_all(custom_path.join(".jyc"))
+    tokio::fs::create_dir_all(&custom_path).await.unwrap();
+    // Simulate a previously initialized topic: its adopted state dir
+    // carries the identity breadcrumb.
+    let adopted_state = crate::topic_path::state_dir_for(
+        &crate::topic_path::state_root(tmp.path()),
+        &custom_path,
+        None,
+    );
+    tokio::fs::create_dir_all(&adopted_state).await.unwrap();
+    tokio::fs::write(adopted_state.join("topic-name"), "my-custom-topic")
         .await
         .unwrap();
-    // Simulate a previously initialized topic
-    tokio::fs::write(
-        custom_path.join(".jyc").join("topic-name"),
-        "my-custom-topic",
-    )
-    .await
-    .unwrap();
 
     // Config with topic_path override — channel name must match TM's channel_name
     let config_str = format!(
@@ -1031,24 +1033,15 @@ mode = "agent"
         "restore_custom_topic_paths should rediscover the topic"
     );
 
-    // User-visible guarantee: the pin's legacy `.jyc` left the repo dir and
-    // now lives in the adopted (path-derived) state dir under state_root.
+    // The pin is registered to its adopted (path-derived) state dir under
+    // state_root; the repo dir stays clean.
+    assert_eq!(jyc_dir("my-custom-topic", &custom_path), adopted_state);
     assert!(
-        !custom_path.join(".jyc").exists(),
-        "legacy .jyc moved out of the pinned dir"
-    );
-    let state = jyc_dir("my-custom-topic", &custom_path);
-    assert_ne!(
-        state,
-        custom_path.join(".jyc"),
-        "topic should be registered"
-    );
-    assert!(
-        state.join("topic-name").exists(),
-        "state carried into adopted dir"
+        adopted_state.join("topic-name").exists(),
+        "identity breadcrumb intact"
     );
     assert_eq!(
-        std::fs::read_to_string(state.join("topic-path")).unwrap(),
+        std::fs::read_to_string(adopted_state.join("topic-path")).unwrap(),
         custom_path.to_string_lossy(),
         "breadcrumb written"
     );

@@ -2,6 +2,14 @@
 
 ### Fixed
 
+- Feishu table rendering: GFM markdown tables (including `/bill` output)
+  and ASCII box-drawing art (e.g. tree diagrams in agent replies) in
+  messages sent to Feishu are re-rendered as fenced code blocks before
+  sending — Feishu card markdown supports neither GFM tables nor
+  whitespace preservation, so tables collapsed into raw pipe text and
+  ASCII art lost alignment. GFM tables are re-aligned by display width
+  (CJK-aware). The transform lives in the Feishu client only; all other
+  modules stay channel-agnostic.
 - Dashboard TUI rendering corruption around URL-containing chat messages:
   `HyperlinkBackend`'s link-row re-emission printed every cell in the row,
   including the continuation cells of wide chars — which hold a space

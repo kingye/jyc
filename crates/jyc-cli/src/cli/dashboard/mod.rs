@@ -1526,6 +1526,10 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         status_line.push(Span::raw(token_render::STATUS_SEP));
         token_render::push_cache_hit_span(&mut status_line, selected);
     }
+    if token_render::cache_util_pct(selected).is_some() {
+        status_line.push(Span::raw(token_render::STATUS_SEP));
+        token_render::push_cache_utilization_span(&mut status_line, selected);
+    }
     if selected.total_cache_creation_tokens.is_some() {
         status_line.push(Span::raw(token_render::STATUS_SEP));
         token_render::push_cache_creation_span(&mut status_line, selected);

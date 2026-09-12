@@ -1043,7 +1043,7 @@ mod card_content_tests {
     #[test]
     fn sixth_table_degrades_to_fenced_text() {
         let one = "| a |\n|---|\n| 1 |";
-        let text = vec![one; 6].join("\n\n");
+        let text = [one; 6].join("\n\n");
         let card = build_card_content(&text);
         let els = card["elements"].as_array().unwrap();
         let tables = els.iter().filter(|e| e["tag"] == "table").count();

@@ -1246,7 +1246,6 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         Block::default()
             .title("── Topic Info ")
             .borders(Borders::TOP | Borders::LEFT)
-            .padding(Padding::top(1))
     };
     if focused {
         block = block.border_style(

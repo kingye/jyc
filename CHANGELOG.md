@@ -5,7 +5,7 @@
 - Cache utilization display: the dashboard topic info pane / status line
   show a `Cache util: N%` row (cache-hit tokens ÷ total input tokens),
   and the `/bill` report gains a per-row `cache util` column. Hidden for
-  providers that report no cache data.
+  providers that report no cache data. (#761)
 
 ## [0.3.18] - 2026-09-12
 

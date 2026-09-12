@@ -393,8 +393,6 @@ impl TopicManager {
                 pin_name.to_string()
             };
             let jyc_dir = jyc_dir(&jyc_name, &resolved);
-            // One-time migration for the topic → topic rename.
-            crate::topic_path::migrate_topic_name_file(&jyc_dir);
             let topic_name_file = jyc_dir.join("topic-name");
             match tokio::fs::read_to_string(&topic_name_file).await {
                 Ok(name) => {
@@ -478,7 +476,6 @@ impl TopicManager {
             if !jyc_dir.is_dir() {
                 continue;
             }
-            crate::topic_path::migrate_topic_name_file(&jyc_dir);
             let topic_name_file = jyc_dir.join("topic-name");
             match tokio::fs::read_to_string(&topic_name_file).await {
                 Ok(name) => {

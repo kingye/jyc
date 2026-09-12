@@ -262,7 +262,6 @@ impl BillingLogStore {
 }
 
 #[cfg(test)]
-
 mod tests {
     use super::*;
     use tempfile::tempdir;

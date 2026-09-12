@@ -10,6 +10,9 @@
   remaining transform is fencing ASCII box-drawing art (e.g. tree
   diagrams) and splitting messages past the 4-tables-per-component limit.
   Requires Feishu client 7.20+ (older clients show an upgrade prompt).
+- Dashboard TUI chat screen: the topic explorer pane no longer has a
+  title or top border — the topic list starts flush at the top, only the
+  divider against the chat pane remains.
 
 ### Fixed
 

@@ -1124,13 +1124,10 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    // The right edge (against the chat pane) gets a vertical border, and the
-    // top edge carries the title inline with the top border so the title
-    // row acts as a separator between the heading and the topic list
-    // below.
+    // Only the right edge (against the chat pane) gets a border — no
+    // title, no top edge: the topic list starts flush at the top.
     let block = Block::default()
-        .title("── Topics ")
-        .borders(Borders::TOP | Borders::RIGHT)
+        .borders(Borders::RIGHT)
         .border_style(border_style);
     let inner = block.inner(area);
     frame.render_widget(block, area);

@@ -783,12 +783,13 @@ mod tests {
 /// Re-render tables as fenced code blocks for Feishu's card markdown.
 ///
 /// Feishu card markdown supports neither GFM tables (they render as raw
-/// pipe text) nor reliable whitespace preservation (ASCII box-drawing
-/// tables like `/bill` output collapse). Wrapping them in code fences
-/// keeps them readable: Feishu renders code blocks in a monospace font,
-/// so columns stay aligned. GFM tables are re-aligned by display width
-/// (CJK-aware); box-drawing tables are fenced verbatim. Content already
-/// inside a code fence is left untouched.
+/// pipe text — `/bill` output is one) nor reliable whitespace
+/// preservation (ASCII box-drawing art in agent replies, e.g. tree
+/// diagrams, loses alignment). Wrapping them in code fences keeps them
+/// readable: Feishu renders code blocks in a monospace font, so columns
+/// stay aligned. GFM tables are re-aligned by display width (CJK-aware);
+/// box-drawing blocks are fenced verbatim. Content already inside a code
+/// fence is left untouched.
 fn fence_tables(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
@@ -851,7 +852,7 @@ fn is_gfm_table_start(lines: &[&str], i: usize) -> bool {
     i + 1 < lines.len() && is_table_line(lines[i]) && is_separator_row(lines[i + 1])
 }
 
-/// A box-drawing table row (`/bill` output) opens with a box char.
+/// A box-drawing art row (tree diagrams, box sketches) opens with a box char.
 fn is_box_line(trimmed: &str) -> bool {
     trimmed
         .chars()

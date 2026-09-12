@@ -141,11 +141,15 @@ impl FeishuClient {
     ///
     /// Uses Feishu's `"interactive"` message type which supports markdown
     /// formatting (bold, italic, code, lists, links) natively in the card UI.
+    /// Feishu card markdown supports neither GFM tables nor reliable
+    /// whitespace preservation, so tables (markdown or ASCII box-drawing)
+    /// are re-rendered as fenced code blocks first — see [`fence_tables`].
     pub async fn send_text_message(
         &self,
         chat_id: &str,
         text: &str,
     ) -> Result<FeishuMessageResult> {
+        let text = fence_tables(text);
         let card_content = serde_json::json!({
             "elements": [
                 {
@@ -773,5 +777,166 @@ mod tests {
 
         let cloned = result.clone();
         assert_eq!(cloned.message_id, result.message_id);
+    }
+}
+
+/// Re-render tables as fenced code blocks for Feishu's card markdown.
+///
+/// Feishu card markdown supports neither GFM tables (they render as raw
+/// pipe text) nor reliable whitespace preservation (ASCII box-drawing
+/// tables like `/bill` output collapse). Wrapping them in code fences
+/// keeps them readable: Feishu renders code blocks in a monospace font,
+/// so columns stay aligned. GFM tables are re-aligned by display width
+/// (CJK-aware); box-drawing tables are fenced verbatim. Content already
+/// inside a code fence is left untouched.
+fn fence_tables(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut in_fence = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            out.push(line.to_string());
+            i += 1;
+            continue;
+        }
+        if !in_fence && is_gfm_table_start(&lines, i) {
+            let mut end = i;
+            while end < lines.len() && is_table_line(lines[end]) {
+                end += 1;
+            }
+            out.push(render_gfm_table(&lines[i..end]));
+            i = end;
+            continue;
+        }
+        if !in_fence && is_box_line(trimmed) {
+            let mut end = i;
+            while end < lines.len() && is_box_line(lines[end].trim_start()) {
+                end += 1;
+            }
+            // Require a run: a single stray box char is prose, not a table.
+            if end - i >= 2 {
+                out.push("```".to_string());
+                out.extend(lines[i..end].iter().map(ToString::to_string));
+                out.push("```".to_string());
+            } else {
+                out.push(line.to_string());
+            }
+            i = end;
+            continue;
+        }
+        out.push(line.to_string());
+        i += 1;
+    }
+    out.join("\n")
+}
+
+/// A (trimmed) line belonging to a GFM table block.
+fn is_table_line(line: &str) -> bool {
+    line.trim().starts_with('|')
+}
+
+/// The `|---|---|` separator row of a GFM table.
+fn is_separator_row(line: &str) -> bool {
+    let t = line.trim();
+    is_table_line(t) && t.contains('-') && t.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '))
+}
+
+/// A GFM table block starts at `i` when a header row is immediately
+/// followed by the separator row.
+fn is_gfm_table_start(lines: &[&str], i: usize) -> bool {
+    i + 1 < lines.len() && is_table_line(lines[i]) && is_separator_row(lines[i + 1])
+}
+
+/// A box-drawing table row (`/bill` output) opens with a box char.
+fn is_box_line(trimmed: &str) -> bool {
+    trimmed
+        .chars()
+        .next()
+        .is_some_and(|c| matches!(c, '┌' | '├' | '│' | '└'))
+}
+
+/// Render a GFM table block as a display-width-aligned plain-text table
+/// inside a fenced code block (separator row dropped).
+fn render_gfm_table(block: &[&str]) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let rows: Vec<Vec<&str>> = block
+        .iter()
+        .filter(|l| !is_separator_row(l))
+        .map(|l| {
+            l.trim()
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect()
+        })
+        .collect();
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let mut widths = vec![0usize; cols];
+    for row in &rows {
+        for (j, cell) in row.iter().enumerate() {
+            widths[j] = widths[j].max(UnicodeWidthStr::width(*cell));
+        }
+    }
+    let mut out = String::from("```\n");
+    for row in &rows {
+        out.push('|');
+        for (j, w) in widths.iter().enumerate() {
+            let cell = row.get(j).copied().unwrap_or("");
+            out.push(' ');
+            out.push_str(cell);
+            out.push_str(&" ".repeat(w - UnicodeWidthStr::width(cell)));
+            out.push_str(" |");
+        }
+        out.push('\n');
+    }
+    out.push_str("```");
+    out
+}
+
+#[cfg(test)]
+mod fence_tables_tests {
+    use super::fence_tables;
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn gfm_table_becomes_aligned_code_block() {
+        let input = "before\n| 模型 | calls |\n|------|-------|\n| kimi-for-coding | 3 |\n| deepseek | 1 |\nafter";
+        let out = fence_tables(input);
+        let expected = "before\n```\n| 模型            | calls |\n| kimi-for-coding | 3     |\n| deepseek        | 1     |\n```\nafter";
+        assert_eq!(out, expected);
+        // Every rendered row has the same display width (CJK-aware).
+        let rows: Vec<&str> = out.lines().filter(|l| l.starts_with("| ")).collect();
+        assert_eq!(rows.len(), 3);
+        let w = UnicodeWidthStr::width(rows[0]);
+        assert!(rows.iter().all(|r| UnicodeWidthStr::width(*r) == w));
+    }
+
+    #[test]
+    fn box_drawing_table_is_fenced_verbatim() {
+        let input = "header\n┌──┬──┐\n│ a│ b│\n└──┴──┘\nfooter";
+        let out = fence_tables(input);
+        assert_eq!(out, "header\n```\n┌──┬──┐\n│ a│ b│\n└──┴──┘\n```\nfooter");
+    }
+
+    #[test]
+    fn single_stray_box_line_is_untouched() {
+        let input = "note │ see above\nplain line";
+        assert_eq!(fence_tables(input), input);
+    }
+
+    #[test]
+    fn table_inside_code_fence_is_untouched() {
+        let input = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```";
+        assert_eq!(fence_tables(input), input);
+    }
+
+    #[test]
+    fn plain_text_is_unchanged() {
+        let input = "no tables here\njust | one pipe\nand a single ─ dash";
+        assert_eq!(fence_tables(input), input);
     }
 }

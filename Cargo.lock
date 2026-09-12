@@ -1908,6 +1908,7 @@ dependencies = [
  "toml",
  "tower",
  "tracing",
+ "unicode-width",
  "url",
  "uuid",
  "wiremock",

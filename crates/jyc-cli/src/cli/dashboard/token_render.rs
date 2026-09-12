@@ -100,6 +100,39 @@ pub(super) fn push_cache_creation_span(spans: &mut Vec<Span>, t: &TopicSummary) 
     }
 }
 
+/// Compute the cache-utilization percentage for a topic: cache-hit
+/// tokens as a share of total input tokens (`total_input_tokens`
+/// already includes the cache-hit portion, so it is the correct
+/// denominator). Returns `None` when either bound is missing or `total`
+/// is zero. Uses checked arithmetic to avoid wrapping when `hit` is
+/// very large.
+pub(super) fn cache_util_pct(t: &TopicSummary) -> Option<u32> {
+    match (t.total_cache_hit_tokens, t.total_input_tokens) {
+        (Some(hit), Some(total)) if total > 0 => Some(
+            hit.checked_mul(100)
+                .and_then(|v| v.checked_div(total))
+                .unwrap_or(0) as u32,
+        ),
+        _ => None,
+    }
+}
+
+/// Append the "Cache util: Z%" row to `spans`. Pushes nothing when
+/// cache-hit or total-input data is missing (e.g. providers without
+/// prompt caching), so such topics show no row rather than a
+/// misleading 0%. Sits next to [`push_cache_hit_span`] /
+/// [`push_cache_creation_span`] in the chat info pane and dashboard
+/// topic info area.
+pub(super) fn push_cache_utilization_span(spans: &mut Vec<Span>, t: &TopicSummary) {
+    if let Some(pct) = cache_util_pct(t) {
+        spans.push(Span::styled(
+            "Cache util: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(format!("{pct}%")));
+    }
+}
+
 /// Append the "Cost: $X session · $Y today" row to `spans`. Pushes
 /// nothing when the topic has no cost data (model without configured
 /// `pricing`), so an unpriced topic shows no row at all rather than a
@@ -355,5 +388,41 @@ mod tests {
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, "Cache create: ");
         assert_eq!(spans[1].content, "1280");
+    }
+
+    #[test]
+    fn cache_util_pct_basic() {
+        let t = summary_with(None, None, None, Some(720), Some(640), None);
+        assert_eq!(cache_util_pct(&t), Some(88));
+    }
+
+    #[test]
+    fn cache_util_pct_zero_total_returns_none() {
+        let t = summary_with(None, None, None, Some(0), Some(0), None);
+        assert_eq!(cache_util_pct(&t), None);
+    }
+
+    #[test]
+    fn cache_util_pct_missing_hit_returns_none() {
+        let t = summary_with(None, None, None, Some(720), None, None);
+        assert_eq!(cache_util_pct(&t), None);
+    }
+
+    #[test]
+    fn push_cache_utilization_span_omits_when_missing() {
+        let t = summary_with(None, None, None, None, None, None);
+        let mut spans = Vec::new();
+        push_cache_utilization_span(&mut spans, &t);
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn push_cache_utilization_span_writes_label_and_value() {
+        let t = summary_with(None, None, None, Some(720), Some(640), None);
+        let mut spans = Vec::new();
+        push_cache_utilization_span(&mut spans, &t);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content, "Cache util: ");
+        assert_eq!(spans[1].content, "88%");
     }
 }

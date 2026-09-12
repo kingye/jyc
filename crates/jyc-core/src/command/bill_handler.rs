@@ -170,6 +170,9 @@ struct BillRow {
     input: u64,
     output: u64,
     cache: u64,
+    /// Cache-hit tokens only (a subset of `input`, which already
+    /// includes them) — the numerator of the cache-utilization column.
+    cache_hit: u64,
     /// Cost per currency (providers may bill in different currencies).
     costs: BTreeMap<String, f64>,
 }
@@ -182,7 +185,17 @@ impl BillRow {
         // One cache column keeps the table narrow; the ledger keeps the
         // read/creation split for auditing.
         self.cache += entry.cache_hit_tokens + entry.cache_creation_tokens;
+        self.cache_hit += entry.cache_hit_tokens;
         *self.costs.entry(entry.currency.clone()).or_default() += entry.cost;
+    }
+
+    /// Cache hits as a percentage of total input. 0 when no input was
+    /// recorded; checked arithmetic guards the `*100` against wrapping.
+    fn cache_util_pct(&self) -> u64 {
+        self.cache_hit
+            .checked_mul(100)
+            .and_then(|v| v.checked_div(self.input))
+            .unwrap_or(0)
     }
 }
 
@@ -287,8 +300,8 @@ fn render_report(
             let mut provider_total = BillRow::default();
             out.push_str(&format!(
                 "\n**{provider}**\n\
-                 | model | topic | calls | input | output | cache | cost |\n\
-                 |-------|-------|------:|------:|-------:|------:|-----:|\n"
+                 | model | topic | calls | input | output | cache | cache util | cost |\n\
+                 |-------|-------|------:|------:|-------:|------:|-----------:|-----:|\n"
             ));
             for ((billing, row_provider, model), topics) in &table {
                 if billing != mode || row_provider != provider {
@@ -296,11 +309,12 @@ fn render_report(
                 }
                 for (topic, row) in topics {
                     out.push_str(&format!(
-                        "| {model} | {topic} | {} | {} | {} | {} | {} |\n",
+                        "| {model} | {topic} | {} | {} | {} | {} | {}% | {} |\n",
                         row.calls,
                         row.input,
                         row.output,
                         row.cache,
+                        row.cache_util_pct(),
                         format_costs(&row.costs)
                     ));
                     provider_total.calls += row.calls;
@@ -456,7 +470,7 @@ mod tests {
 
         assert!(report.contains("## Bill — 2026-09"), "{report}");
         assert!(
-            report.contains("| claude-opus-4 | agents/jyc | 2 | 200 | 20 | 100 | $3.0000 |"),
+            report.contains("| claude-opus-4 | agents/jyc | 2 | 200 | 20 | 100 | 50% | $3.0000 |"),
             "{report}"
         );
         assert!(
@@ -656,5 +670,23 @@ mod tests {
         let report = render_report(Some(dir), &Scope::Month(2026, 9), &BTreeMap::new());
         assert!(!report.contains("### Metered"), "{report}");
         assert!(report.contains("**Total: 1 calls, $1.0000**"), "{report}");
+    }
+
+    /// The cache-util column divides by total input; a zero-input row
+    /// (output-only call) must render 0%, not panic.
+    #[test]
+    fn cache_util_handles_zero_input() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut zero_input = metered("t", "p/m", 1.0, "USD");
+        zero_input.input_tokens = 0;
+        zero_input.cache_hit_tokens = 0;
+        zero_input.output_tokens = 10;
+        write_ledger(dir, "2026-09-10", &[zero_input]);
+        let report = render_report(Some(dir), &Scope::All, &BTreeMap::new());
+        assert!(
+            report.contains("| m | t | 1 | 0 | 10 | 0 | 0% |"),
+            "{report}"
+        );
     }
 }

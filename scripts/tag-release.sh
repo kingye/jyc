@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./scripts/tag-release.sh                   # auto-derive version from Cargo.toml
-#   ./scripts/tag-release.sh 0.3.17            # explicit version
+#   ./scripts/tag-release.sh 0.3.17            # explicit version (v prefix optional)
 #   ./scripts/tag-release.sh 0.3.17 release    # explicit version + branch (default: main)
 #
 # Pre-conditions (script enforces):
@@ -44,11 +44,15 @@ if [[ -z "$VERSION" ]]; then
 fi
 [[ -n "$VERSION" ]] || die "could not determine version (pass it as first arg, e.g. $0 0.3.17)"
 
+# release.yml triggers on "v*" tags, so the pushed tag must be v-prefixed;
+# normalize here so both "0.3.17" and "v0.3.17" produce the tag "v0.3.17".
+VERSION="${VERSION#v}"
 if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
     die "version '$VERSION' is not a valid semver string"
 fi
+TAG="v$VERSION"
 
-log "version: $VERSION"
+log "version: $VERSION (tag: $TAG)"
 log "branch:  $BRANCH"
 log "repo:    $REPO_ROOT"
 
@@ -58,12 +62,12 @@ if [[ -n "$(git status --porcelain)" ]]; then
     die "working tree is dirty; commit or stash first"
 fi
 
-if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
-    die "tag $VERSION already exists locally; delete it first if you really mean to retag"
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+    die "tag $TAG already exists locally; delete it first if you really mean to retag"
 fi
 
-if git ls-remote --tags origin "refs/tags/$VERSION" 2>/dev/null | grep -q "$VERSION"; then
-    die "tag $VERSION already exists on origin"
+if git ls-remote --tags origin "refs/tags/$TAG" 2>/dev/null | grep -q "$TAG"; then
+    die "tag $TAG already exists on origin"
 fi
 
 if ! git show-ref --verify --quiet "refs/heads/$BRANCH"; then
@@ -93,10 +97,10 @@ fi
 
 # --- Tag and push -------------------------------------------------------------
 
-log "creating tag $VERSION"
-git tag -a "$VERSION" -m "Release $VERSION"
+log "creating tag $TAG"
+git tag -a "$TAG" -m "Release $TAG"
 
-log "pushing tag $VERSION to origin"
-git push origin "refs/tags/$VERSION"
+log "pushing tag $TAG to origin"
+git push origin "refs/tags/$TAG"
 
-log "done — release workflow should pick up tag $VERSION shortly"
+log "done — release workflow should pick up tag $TAG shortly"

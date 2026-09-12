@@ -39,7 +39,7 @@ die() { printf '\033[1;31m[tag-release]\033[0m %s\n' "$*" >&2; exit 1; }
 
 BRANCH="main"
 
-VERSION="$(awk '/^version =/{ gsub(/.*"|"/, ""); print; exit }' Cargo.toml)"
+VERSION="$(awk -F'"' '/^version =/{print $2; exit}' Cargo.toml)"
 [[ -n "$VERSION" ]] || die "could not determine version from Cargo.toml"
 
 # release.yml triggers on "v*" tags, so the pushed tag must be v-prefixed.

@@ -194,7 +194,7 @@ fn validate_mcp_defined(context: &CommandContext, server: &str) -> Option<String
     }
     names.sort_unstable();
     names.dedup();
-    if names.iter().any(|n| *n == server) {
+    if names.contains(&server) {
         None
     } else {
         Some(format!(
@@ -353,7 +353,7 @@ command = ["true"]
             "---\nname: ztest-skill\ndescription: d\n---\nbody",
         )
         .unwrap();
-        let mut context = ctx(tmp.path().to_path_buf());
+        let context = ctx(tmp.path().to_path_buf());
         // Unique miss-name so HOME-dir pollution cannot flip it.
         assert!(validate_skill_exists(&context, "zz-absent-skill-9k7").is_some());
         assert!(validate_skill_exists(&context, "ztest-skill").is_none());

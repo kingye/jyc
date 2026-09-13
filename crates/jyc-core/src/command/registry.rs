@@ -45,12 +45,13 @@ impl CommandRegistry {
     /// Parse, execute, and strip commands from message body in a single pass.
     ///
     /// Commands must appear at the top of the body (before any non-command
-    /// content). Lines starting with `/` that match a registered handler are
-    /// treated as commands. Empty lines between commands are skipped. The first
-    /// non-empty, non-command line ends the command block — everything from
-    /// that line onward is the cleaned body. Handlers that opt into
-    /// `collect_subsequent_lines` instead consume the rest of the message,
-    /// blank lines included, and leave no body.
+    /// content). Lines starting with `/` are treated as commands: a registered
+    /// handler is executed; an unregistered name produces an "Unknown command"
+    /// error result and its line is dropped from the body. Empty lines between
+    /// commands are skipped. The first non-empty, non-`/` line ends the command
+    /// block — everything from that line onward is the cleaned body. Handlers
+    /// that opt into `collect_subsequent_lines` instead consume the rest of the
+    /// message, blank lines included, and leave no body.
     ///
     /// Returns executed results + cleaned body. TopicManager does NOT need
     /// to know about command line syntax.
@@ -168,11 +169,23 @@ impl CommandRegistry {
                         }
                         continue; // Command consumed, don't add to body
                     }
-                    // Unknown command starting with / — not a registered command,
-                    // treat as start of message body
+
+                    // Unknown `/` command: report the error and drop this
+                    // line from the body; the rest of the message continues
+                    // as body text as usual.
+                    results.push(CommandResult {
+                        success: false,
+                        message: String::new(),
+                        error: Some(format!(
+                            "Unknown command `{cmd_name}`. Type `/?` for the command list."
+                        )),
+                        append_body: None,
+                    });
+                    in_command_block = false;
+                    continue;
                 }
 
-                // First non-empty, non-command line → end the command block
+                // First non-empty, non-`/` line → end the command block
                 in_command_block = false;
                 body_lines.push(line);
             } else {
@@ -345,21 +358,38 @@ mode = "agent"
     }
 
     #[tokio::test]
-    async fn test_unknown_command_is_body() {
+    async fn test_unknown_command_errors() {
         let mut registry = CommandRegistry::new();
         registry.register(Box::new(TestHandler {
             name: "/model".into(),
         }));
 
-        // /unknown is not registered, so it's treated as body start
+        // /unknown is not registered: it produces an error result and its
+        // line is dropped; the remaining lines become the body.
         let body = "/unknown stuff\nmore body";
         let output = registry
             .process_commands(body, &test_context())
             .await
             .unwrap();
 
-        assert!(output.results.is_empty());
-        assert_eq!(output.cleaned_body, "/unknown stuff\nmore body");
+        assert_eq!(output.results.len(), 1);
+        assert!(!output.results[0].success);
+        let err = output.results[0].error.as_deref().unwrap();
+        assert!(err.contains("Unknown command `/unknown`"), "{err}");
+        assert_eq!(output.cleaned_body, "more body");
+    }
+
+    #[tokio::test]
+    async fn test_unknown_command_alone_replies_only() {
+        let registry = CommandRegistry::new();
+        let output = registry
+            .process_commands("/blabla", &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(output.results.len(), 1);
+        assert!(!output.results[0].success);
+        assert!(output.cleaned_body.trim().is_empty());
     }
 
     /// A handler that injects text into the body via `append_body`.

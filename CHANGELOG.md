@@ -16,6 +16,10 @@
 - Config key `disabled_mcp_servers` renamed to `disabled_mcps` at
   channel, pattern, and agent level; the old key is still accepted via
   a serde alias. (#762)
+- Unknown slash commands (a top-of-message line starting with `/` that
+  matches no registered command) now reply with an "Unknown command"
+  error instead of silently passing through to the agent as message
+  text. (#763)
 
 ## [0.3.18] - 2026-09-12
 

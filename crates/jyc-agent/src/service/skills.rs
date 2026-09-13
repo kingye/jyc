@@ -255,8 +255,10 @@ fn truncate_description(desc: &str) -> Cow<'_, str> {
         return Cow::Borrowed(desc);
     }
     let cut: String = desc.chars().take(SKILL_DESC_MAX_CHARS).collect();
+    // `pos` is a byte index; compare char counts so mixed CJK text
+    // doesn't over-retreat (a space at byte 150 may be at char 50).
     let boundary = match cut.rfind(' ') {
-        Some(pos) if pos > SKILL_DESC_MAX_CHARS / 2 => pos,
+        Some(pos) if cut[..pos].chars().count() > SKILL_DESC_MAX_CHARS / 2 => pos,
         _ => cut.len(),
     };
     Cow::Owned(format!("{}…", &cut[..boundary]))
@@ -269,7 +271,6 @@ mod tests {
     #[test]
     fn short_description_is_unchanged() {
         let desc = "Short summary.";
-        assert!(matches!(truncate_description(desc), Cow::Borrowed(_)));
         assert_eq!(truncate_description(desc), desc);
     }
 

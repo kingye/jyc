@@ -979,7 +979,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # disabled_tools = ["jyc_send_message"]
 # #
 # # # Channel-level: disable entire MCP servers
-# # disabled_mcp_servers = ["invoice"]
+# # disabled_mcps = ["invoice"]
 # #
 # # [[channels.my_hub.patterns]]
 # # name = "safe_mode"
@@ -987,7 +987,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # #
 # # # Pattern-level: additional tools disabled (merged with channel-level)
 # # disabled_tools = ["bash", "write"]
-# # disabled_mcp_servers = ["invoice"]
+# # disabled_mcps = ["invoice"]
 # #
 # # # Backward-compatible alias (merged with disabled_tools)
 # # disabled_builtin_tools = ["bash"]

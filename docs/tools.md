@@ -342,13 +342,13 @@ Tools can be disabled at channel and pattern levels.
 type = "email"
 # Disable tools for ALL patterns in this channel
 disabled_tools = ["bash", "write"]
-disabled_mcp_servers = ["my-mcp-server"]
+disabled_mcps = ["my-mcp-server"]
 
 [[channels.email.patterns]]
 name = "readonly"
 # Additional exclusions merged with channel-level (additive)
 disabled_tools = ["edit"]
-disabled_mcp_servers = []
+disabled_mcps = []
 ```
 
 ### Fields
@@ -356,7 +356,7 @@ disabled_mcp_servers = []
 | Field | Scope | Description |
 |-------|-------|-------------|
 | `disabled_tools` | Channel / Pattern | List of tool names to remove. Matches built-in tools, MCP bridge tools, and external MCP tools by registration name. **External MCP tools can also be targeted as `server_name/tool_name` for precise exclusion when multiple servers provide the same tool name.** |
-| `disabled_mcp_servers` | Channel / Pattern | List of MCP server names to skip during tool loading. |
+| `disabled_mcps` | Channel / Pattern | List of MCP server names to skip during tool loading. **Renamed from `disabled_mcp_servers`; the old key is still accepted.** |
 | `disabled_builtin_tools` | Pattern only | **Backward-compatible alias.** Merged into `disabled_tools` for built-in tool names. |
 
 ### Merge Behavior
@@ -365,7 +365,7 @@ Channel-level and pattern-level exclusions are **additive** (merged, not overrid
 
 ```
 Effective disabled_tools = channel.disabled_tools ∪ pattern.disabled_tools
-Effective disabled_mcp_servers = channel.disabled_mcp_servers ∪ pattern.disabled_mcp_servers
+Effective disabled_mcps = channel.disabled_mcps ∪ pattern.disabled_mcps
 ```
 
 **Validation:** Empty string entries in exclusion lists are rejected at config load time.
@@ -399,7 +399,7 @@ disabled_tools = ["jin_public_mcp/product_list"]
 ```toml
 [[channels.email.patterns]]
 name = "no-external"
-disabled_mcp_servers = ["*"]  # Disables all external MCP servers
+disabled_mcps = ["*"]  # Disables all external MCP servers
 ```
 
 ---
@@ -506,7 +506,7 @@ build_tool_registry()
   ├─ Register jyc_publish_file (base URL from [inspect] base_url)
   ├─ Register MCP bridge tools: jyc_reply_message, jyc_send_message
   ├─ Register jyc_send_to_topic (when cross-channel topic_managers available)
-  ├─ Load external MCP tools (filtered by disabled_mcp_servers)
+  ├─ Load external MCP tools (filtered by disabled_mcps)
   └─ Apply exclusions: remove tools matching disabled_tools
 ```
 

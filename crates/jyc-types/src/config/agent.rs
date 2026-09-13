@@ -102,8 +102,11 @@ pub struct AgentConfig {
 
     /// Per-agent MCP servers to disable.
     /// Server names match `McpServerConfig.name`.
-    #[serde(default)]
-    pub disabled_mcp_servers: Option<Vec<String>>,
+    ///
+    /// Renamed from `disabled_mcp_servers`; the old key is still accepted
+    /// via the serde alias.
+    #[serde(default, alias = "disabled_mcp_servers")]
+    pub disabled_mcps: Option<Vec<String>>,
 
     /// Per-agent skills whitelist.
     /// When set, only skills whose names appear in this list are loaded.
@@ -191,7 +194,7 @@ impl AgentConfig {
         pattern.mcps = self.mcps.clone();
         pattern.disabled_tools = self.disabled_tools.clone();
         pattern.disabled_builtin_tools = self.disabled_builtin_tools.clone();
-        pattern.disabled_mcp_servers = self.disabled_mcp_servers.clone();
+        pattern.disabled_mcps = self.disabled_mcps.clone();
         pattern.skills = self.skills.clone();
         pattern.disabled_skills = self.disabled_skills.clone();
         pattern.reset_compression = self.reset_compression.clone();

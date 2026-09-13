@@ -120,7 +120,7 @@ fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {
             skills: None,
             disabled_skills: None,
             disabled_tools: None,
-            disabled_mcp_servers: None,
+            disabled_mcps: None,
             mcps: None,
         },
     );

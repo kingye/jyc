@@ -435,9 +435,12 @@ pub struct ChannelPattern {
     /// skipped during tool loading even if they appear in global `[[mcps]]`,
     /// channel `mcps`, or pattern `mcps`.
     ///
-    /// Merged with channel-level `disabled_mcp_servers`.
-    #[serde(default)]
-    pub disabled_mcp_servers: Option<Vec<String>>,
+    /// Merged with channel-level `disabled_mcps`.
+    ///
+    /// Renamed from `disabled_mcp_servers`; the old key is still accepted
+    /// via the serde alias.
+    #[serde(default, alias = "disabled_mcp_servers")]
+    pub disabled_mcps: Option<Vec<String>>,
 
     /// Per-pattern skills whitelist.
     ///
@@ -663,7 +666,7 @@ impl Default for ChannelPattern {
             mcps: None,
             disabled_tools: None,
             disabled_builtin_tools: None,
-            disabled_mcp_servers: None,
+            disabled_mcps: None,
             skills: None,
             disabled_skills: None,
             reset_compression: None,

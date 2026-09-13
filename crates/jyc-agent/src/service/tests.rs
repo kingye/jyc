@@ -87,12 +87,12 @@ fn service_with_patterns(
 fn service_with_exclusion(
     patterns: Vec<ChannelPattern>,
     channel_disabled_tools: Option<Vec<String>>,
-    channel_disabled_mcp_servers: Option<Vec<String>>,
+    channel_disabled_mcps: Option<Vec<String>>,
 ) -> JycAgentService {
     service_with_full_exclusion(
         patterns,
         channel_disabled_tools,
-        channel_disabled_mcp_servers,
+        channel_disabled_mcps,
         None,
     )
 }
@@ -101,14 +101,14 @@ fn service_with_exclusion(
 fn service_with_full_exclusion(
     patterns: Vec<ChannelPattern>,
     channel_disabled_tools: Option<Vec<String>>,
-    channel_disabled_mcp_servers: Option<Vec<String>>,
+    channel_disabled_mcps: Option<Vec<String>>,
     channel_mcp_configs: Option<Vec<McpServerConfig>>,
 ) -> JycAgentService {
     let channel = ChannelConfig {
         patterns: Some(patterns.clone()),
         disabled_tools: channel_disabled_tools,
         mcps: channel_mcp_configs,
-        disabled_mcp_servers: channel_disabled_mcp_servers,
+        disabled_mcps: channel_disabled_mcps,
         ..Default::default()
     };
     let mut channels = HashMap::new();
@@ -404,7 +404,7 @@ fn derive_agent_config_applies_channel_overrides() {
         footer: None,
         mcps: None,
         disabled_tools: None,
-        disabled_mcp_servers: None,
+        disabled_mcps: None,
         skills: None,
         disabled_skills: None,
     };
@@ -545,13 +545,13 @@ async fn channel_and_pattern_disabled_tools_merged() {
 }
 
 #[tokio::test]
-async fn disabled_mcp_servers_skips_matching_server() {
+async fn disabled_mcps_skips_matching_server() {
     // We can't easily test external MCP loading, but we can verify that
-    // disabled_mcp_servers does not cause a panic and that the registry
+    // disabled_mcps does not cause a panic and that the registry
     // is built correctly when no MCPs are configured.
     let patterns = vec![ChannelPattern {
         name: "test".to_string(),
-        disabled_mcp_servers: Some(vec!["invoice".to_string()]),
+        disabled_mcps: Some(vec!["invoice".to_string()]),
         ..ChannelPattern::default()
     }];
     let svc = service_with_exclusion(patterns, None, Some(vec!["other".to_string()]));
@@ -590,7 +590,7 @@ async fn empty_disabled_tools_disables_nothing() {
     let patterns = vec![ChannelPattern {
         name: "test".to_string(),
         disabled_tools: Some(vec![]),
-        disabled_mcp_servers: Some(vec![]),
+        disabled_mcps: Some(vec![]),
         ..ChannelPattern::default()
     }];
     let svc = service_with_exclusion(patterns, Some(vec![]), Some(vec![]));
@@ -633,12 +633,12 @@ async fn disabled_tools_deduplicates_between_channel_and_pattern() {
 }
 
 #[tokio::test]
-async fn disabled_mcp_servers_filters_channel_configs() {
-    // Verify that disabled_mcp_servers actually filters channel-level MCP configs
+async fn disabled_mcps_filters_channel_configs() {
+    // Verify that disabled_mcps actually filters channel-level MCP configs
     // so that load_mcp_tools is not called for disabled servers.
     let patterns = vec![ChannelPattern {
         name: "test".to_string(),
-        disabled_mcp_servers: Some(vec!["skip_me".to_string()]),
+        disabled_mcps: Some(vec!["skip_me".to_string()]),
         ..ChannelPattern::default()
     }];
     let channel_mcps = Some(vec![McpServerConfig {

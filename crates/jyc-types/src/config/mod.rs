@@ -357,10 +357,13 @@ pub struct ChannelConfig {
     /// Channel-level MCP servers to disable for all patterns in this channel.
     ///
     /// Server names match `McpServerConfig.name`. Merged with pattern-level
-    /// `disabled_mcp_servers`. Servers listed here are skipped during tool
+    /// `disabled_mcps`. Servers listed here are skipped during tool
     /// loading even if they appear in global `[[mcps]]` or channel `mcps`.
-    #[serde(default)]
-    pub disabled_mcp_servers: Option<Vec<String>>,
+    ///
+    /// Renamed from `disabled_mcp_servers`; the old key is still accepted
+    /// via the serde alias.
+    #[serde(default, alias = "disabled_mcp_servers")]
+    pub disabled_mcps: Option<Vec<String>>,
 
     /// Channel-level skills whitelist.
     ///

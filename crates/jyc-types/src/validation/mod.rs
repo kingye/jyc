@@ -280,7 +280,7 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
             }
         }
 
-        // Validate channel-level disabled_tools / disabled_mcp_servers
+        // Validate channel-level disabled_tools / disabled_mcps
         if let Some(ref tools) = channel.disabled_tools {
             for (i, name) in tools.iter().enumerate() {
                 if name.is_empty() {
@@ -291,11 +291,11 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                 }
             }
         }
-        if let Some(ref servers) = channel.disabled_mcp_servers {
+        if let Some(ref servers) = channel.disabled_mcps {
             for (i, name) in servers.iter().enumerate() {
                 if name.is_empty() {
                     errors.push(ValidationError {
-                        path: format!("{prefix}.disabled_mcp_servers[{i}]"),
+                        path: format!("{prefix}.disabled_mcps[{i}]"),
                         message: "MCP server name must not be empty".into(),
                     });
                 }
@@ -565,7 +565,7 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
         validate_inbound_attachment_config(&format!("{prefix}.attachments"), att, errors);
     }
 
-    // Validate per-pattern disabled_tools / disabled_mcp_servers
+    // Validate per-pattern disabled_tools / disabled_mcps
     if let Some(ref tools) = pattern.disabled_tools {
         for (i, name) in tools.iter().enumerate() {
             if name.is_empty() {
@@ -576,11 +576,11 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
             }
         }
     }
-    if let Some(ref servers) = pattern.disabled_mcp_servers {
+    if let Some(ref servers) = pattern.disabled_mcps {
         for (i, name) in servers.iter().enumerate() {
             if name.is_empty() {
                 errors.push(ValidationError {
-                    path: format!("{prefix}.disabled_mcp_servers[{i}]"),
+                    path: format!("{prefix}.disabled_mcps[{i}]"),
                     message: "MCP server name must not be empty".into(),
                 });
             }

@@ -760,12 +760,12 @@ mode = "agent"
 }
 
 #[test]
-fn test_disabled_mcp_servers_empty_entry_fails() {
+fn test_disabled_mcps_empty_entry_fails() {
     let toml = r#"
 [general]
 [channels.work]
 type = "email"
-disabled_mcp_servers = ["invoice", ""]
+disabled_mcps = ["invoice", ""]
 
 [channels.work.inbound]
 host = "h"
@@ -784,9 +784,11 @@ mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
     let errors = validate_config(&config);
-    assert!(errors.iter().any(|e| {
-        e.path.contains("disabled_mcp_servers") && e.message.contains("must not be empty")
-    }));
+    assert!(
+        errors.iter().any(|e| {
+            e.path.contains("disabled_mcps") && e.message.contains("must not be empty")
+        })
+    );
 }
 
 #[test]
@@ -796,7 +798,7 @@ fn test_disabled_tools_valid_passes() {
 [channels.work]
 type = "email"
 disabled_tools = ["bash", "jyc_send_message"]
-disabled_mcp_servers = ["invoice"]
+disabled_mcps = ["invoice"]
 
 [channels.work.inbound]
 host = "h"
@@ -812,7 +814,7 @@ password = "p"
 [[channels.work.patterns]]
 name = "p1"
 disabled_tools = ["write"]
-disabled_mcp_servers = ["other"]
+disabled_mcps = ["other"]
 
 [channels.work.patterns.rules]
 
@@ -823,9 +825,9 @@ mode = "agent"
     let config = load_config_from_str(toml).unwrap();
     let errors = validate_config(&config);
     assert!(
-        errors.iter().all(|e| {
-            !e.path.contains("disabled_tools") && !e.path.contains("disabled_mcp_servers")
-        }),
+        errors
+            .iter()
+            .all(|e| { !e.path.contains("disabled_tools") && !e.path.contains("disabled_mcps") }),
         "expected no disabled_tools/mcp_servers errors, got: {:?}",
         errors
     );

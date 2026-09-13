@@ -81,7 +81,7 @@ impl JycAgentService {
         let patterns: Vec<ChannelPattern> =
             live_ch.and_then(|c| c.patterns.clone()).unwrap_or_default();
         let channel_mcp_configs = live_ch.and_then(|c| c.mcps.clone());
-        let channel_disabled_mcp_servers = live_ch.and_then(|c| c.disabled_mcp_servers.clone());
+        let channel_disabled_mcps = live_ch.and_then(|c| c.disabled_mcps.clone());
         let channel_disabled_tools = live_ch.and_then(|c| c.disabled_tools.clone());
         let mcp_configs: Vec<McpServerConfig> = live_cfg.mcps.clone();
         // Release the ArcSwap guard before any `.await` below.
@@ -135,16 +135,16 @@ impl JycAgentService {
             }
         }
 
-        // --- MCP server exclusion (disabled_mcp_servers) ---
+        // --- MCP server exclusion (disabled_mcps) ---
         // Merge channel-level + pattern-level disabled MCP servers
-        let disabled_mcp_servers: Vec<&str> = {
+        let disabled_mcps: Vec<&str> = {
             let mut set = Vec::new();
-            if let Some(ref servers) = channel_disabled_mcp_servers {
+            if let Some(ref servers) = channel_disabled_mcps {
                 for s in servers {
                     set.push(s.as_str());
                 }
             }
-            if let Some(servers) = matched_pattern.and_then(|p| p.disabled_mcp_servers.as_ref()) {
+            if let Some(servers) = matched_pattern.and_then(|p| p.disabled_mcps.as_ref()) {
                 for s in servers {
                     if !set.contains(&s.as_str()) {
                         set.push(s.as_str());
@@ -190,11 +190,11 @@ impl JycAgentService {
             .collect();
 
         // Filter out disabled MCP servers before loading
-        filtered_mcp_configs.retain(|(c, _)| !disabled_mcp_servers.contains(&c.name.as_str()));
+        filtered_mcp_configs.retain(|(c, _)| !disabled_mcps.contains(&c.name.as_str()));
 
-        if !disabled_mcp_servers.is_empty() {
+        if !disabled_mcps.is_empty() {
             tracing::debug!(
-                disabled = ?disabled_mcp_servers,
+                disabled = ?disabled_mcps,
                 "MCP servers disabled by config"
             );
         }
@@ -269,7 +269,7 @@ impl JycAgentService {
             tracing::debug!(
                 channel = %self.channel_name,
                 topic = %topic_name,
-                disabled = ?disabled_mcp_servers,
+                disabled = ?disabled_mcps,
                 "No MCP servers resolved for topic"
             );
         }

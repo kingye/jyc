@@ -46,7 +46,7 @@ enabled = true
 [agents.{AGENT_NAME}]
 model = "deepseek/deepseek-v4-flash"
 disabled_tools = ["edit"]
-disabled_mcp_servers = ["invoice"]
+disabled_mcps = ["invoice"]
 template = "issue-sales-order"
 
 [agents.{AGENT_NAME}.access]
@@ -119,4 +119,21 @@ fn synthesize_agent_pattern_carries_mcps() {
         jyc_types::McpServerKind::Remote { .. } => {}
         other => panic!("expected Remote variant, got {other:?}"),
     }
+}
+
+#[test]
+fn legacy_disabled_mcp_servers_key_still_parses_via_alias() {
+    // Backward compatibility: the pre-rename key `disabled_mcp_servers`
+    // must deserialize into the renamed `disabled_mcps` field.
+    let legacy = user_config().replace(
+        "disabled_mcps = [\"invoice\"]",
+        "disabled_mcp_servers = [\"invoice\"]",
+    );
+    assert!(legacy.contains("disabled_mcp_servers"));
+    let config = load_config_from_str(&legacy).expect("legacy key must parse");
+    let agent = parsed_agent(&config);
+    assert_eq!(
+        agent.disabled_mcps.as_deref(),
+        Some(&["invoice".to_string()][..])
+    );
 }

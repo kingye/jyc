@@ -356,7 +356,7 @@ disabled_mcps = []
 | Field | Scope | Description |
 |-------|-------|-------------|
 | `disabled_tools` | Channel / Pattern | List of tool names to remove. Matches built-in tools, MCP bridge tools, and external MCP tools by registration name. **External MCP tools can also be targeted as `server_name/tool_name` for precise exclusion when multiple servers provide the same tool name.** |
-| `disabled_mcps` | Channel / Pattern | List of MCP server names to skip during tool loading. |
+| `disabled_mcps` | Channel / Pattern | List of MCP server names to skip during tool loading. **Renamed from `disabled_mcp_servers`; the old key is still accepted.** |
 | `disabled_builtin_tools` | Pattern only | **Backward-compatible alias.** Merged into `disabled_tools` for built-in tool names. |
 
 ### Merge Behavior

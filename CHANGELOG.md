@@ -11,10 +11,11 @@
 
 - Skill descriptions injected into the system prompt are truncated at
   200 characters (word-boundary, trailing `…`), cutting ~1-2K input
-  tokens per LLM call; the full SKILL.md body is still loaded on demand.
-- Config keys `disabled_mcp_servers` renamed to `disabled_mcps` at both
-  channel and agent level; the old key is still accepted via a serde
-  alias.
+  tokens per LLM call; the full SKILL.md body is still loaded on
+  demand. (#762)
+- Config key `disabled_mcp_servers` renamed to `disabled_mcps` at
+  channel, pattern, and agent level; the old key is still accepted via
+  a serde alias. (#762)
 
 ## [0.3.18] - 2026-09-12
 

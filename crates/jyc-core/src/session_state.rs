@@ -253,8 +253,18 @@ pub async fn read_toggle_override(
     file: &str,
 ) -> Option<ToggleOverride> {
     let path = jyc_dir(topic_name, topic_path).join(file);
-    let content = tokio::fs::read_to_string(path).await.ok()?;
-    serde_json::from_str(&content).ok()
+    let content = tokio::fs::read_to_string(&path).await.ok()?;
+    match serde_json::from_str(&content) {
+        Ok(ovr) => Some(ovr),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Corrupt toggle override, ignoring"
+            );
+            None
+        }
+    }
 }
 
 /// Read the `/skill` override for a topic.

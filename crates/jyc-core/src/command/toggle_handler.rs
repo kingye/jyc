@@ -22,8 +22,10 @@ pub struct ToggleCommandHandler {
     noun: &'static str,
     /// Override file name inside the topic `.jyc/` dir.
     file: &'static str,
-    /// Validate that a name may be force-enabled; `Some(msg)` rejects it.
-    validate_on: fn(&CommandContext, &str) -> Option<String>,
+    /// Whether the name exists today — used only to hint the user after a
+    /// successful write; the toggle itself is always persisted (an unknown
+    /// name is a harmless no-op that may materialize later).
+    known: fn(&CommandContext, &str) -> bool,
 }
 
 impl ToggleCommandHandler {
@@ -33,7 +35,7 @@ impl ToggleCommandHandler {
             name: "/skill",
             noun: "skill",
             file: SKILL_OVERRIDE_FILE,
-            validate_on: validate_skill_exists,
+            known: skill_known,
         }
     }
 
@@ -43,7 +45,7 @@ impl ToggleCommandHandler {
             name: "/mcp",
             noun: "MCP server",
             file: MCP_OVERRIDE_FILE,
-            validate_on: validate_mcp_defined,
+            known: mcp_known,
         }
     }
 }
@@ -85,15 +87,18 @@ impl CommandHandler for ToggleCommandHandler {
                 let Some(target) = context.args.get(1) else {
                     return Err(anyhow::anyhow!("missing <name>. {usage}"));
                 };
-                if sub == "on"
-                    && let Some(err) = (self.validate_on)(&context, target)
-                {
-                    return Ok(fail(err));
-                }
                 ovr.set(target, sub == "on");
                 write_toggle_override(topic_name, topic_path, self.file, &ovr).await?;
+                let hint = if (self.known)(&context, target) {
+                    String::new()
+                } else {
+                    format!(
+                        " — note: no `{target}` among current {}s yet, double-check the name (`{} reset` to undo)",
+                        self.noun, self.name
+                    )
+                };
                 Ok(ok(format!(
-                    "{}: {} `{target}` forced {} for this topic — takes effect from the next message",
+                    "{}: {} `{target}` forced {} for this topic — takes effect from the next message{hint}",
                     self.name, self.noun, sub
                 )))
             }
@@ -118,22 +123,13 @@ fn ok(message: String) -> CommandResult {
     }
 }
 
-fn fail(error: String) -> CommandResult {
-    CommandResult {
-        success: false,
-        message: String::new(),
-        error: Some(error),
-        append_body: None,
-    }
-}
-
-/// Reject forcing on a skill whose `SKILL.md` is not discoverable under the
-/// same roots `discover_skills` scans (minus the process workdir root, which
-/// only ever holds the built-in repo skills — all also present in the global
-/// dir). `off` is never validated: un-disabling a typo is a harmless no-op.
-fn validate_skill_exists(context: &CommandContext, skill: &str) -> Option<String> {
+/// Whether a skill is discoverable right now. Mirrors the roots
+/// `discover_skills` scans, minus the process workdir root (its repo skills
+/// ship in the global dir too). A false negative only loses a hint — the
+/// toggle is still written, so it works once the skill materializes.
+fn skill_known(context: &CommandContext, skill: &str) -> bool {
     if skill.is_empty() || skill.contains('/') || skill.contains("..") {
-        return Some(format!("invalid skill name `{skill}`"));
+        return false;
     }
     let topic_path = &context.topic_path;
     let mut roots: Vec<PathBuf> = Vec::new();
@@ -154,58 +150,49 @@ fn validate_skill_exists(context: &CommandContext, skill: &str) -> Option<String
         roots.push(topic_path.join(rel));
     }
     roots.push(jyc_types::state_dir::jyc_dir(&context.topic_name, topic_path).join("skills"));
-    // Per-agent skill dirs are configured via `skills = [...]` whitelists over
-    // these same roots, so a name found here may still be off-config — forcing
-    // it on via the override is exactly the point of the command.
-    if roots
+    roots
         .iter()
         .any(|r| r.join(skill).join("SKILL.md").is_file())
-    {
-        None
-    } else {
-        Some(format!(
-            "unknown skill `{skill}` (no SKILL.md under scanned skill dirs)"
-        ))
-    }
 }
 
-/// Reject forcing on an MCP server that no config layer defines — enabling a
-/// nonexistent server would silently do nothing. `off` is never validated.
-fn validate_mcp_defined(context: &CommandContext, server: &str) -> Option<String> {
+/// Whether any config layer (global / channel / pattern / agent / L3 topic
+/// overlay) defines this MCP server. Same layers `disabled_mcps` merges from,
+/// so an `on` hint stays honest for topic-local servers.
+fn mcp_known(context: &CommandContext, server: &str) -> bool {
     let cfg = &context.config;
-    let mut names: Vec<&str> = Vec::new();
-    names.extend(cfg.mcps.iter().map(|m| m.name.as_str()));
+    let hit = |mcps: &[jyc_types::McpServerConfig]| mcps.iter().any(|m| m.name == server);
+    if hit(&cfg.mcps) {
+        return true;
+    }
     for ch in cfg.channels.values() {
-        if let Some(mcps) = &ch.mcps {
-            names.extend(mcps.iter().map(|m| m.name.as_str()));
+        if let Some(mcps) = &ch.mcps
+            && hit(mcps)
+        {
+            return true;
         }
         if let Some(patterns) = &ch.patterns {
             for p in patterns {
-                if let Some(mcps) = &p.mcps {
-                    names.extend(mcps.iter().map(|m| m.name.as_str()));
+                if let Some(mcps) = &p.mcps
+                    && hit(mcps)
+                {
+                    return true;
                 }
             }
         }
     }
     for agent in cfg.agents.values() {
-        if let Some(mcps) = &agent.mcps {
-            names.extend(mcps.iter().map(|m| m.name.as_str()));
+        if let Some(mcps) = &agent.mcps
+            && hit(mcps)
+        {
+            return true;
         }
     }
-    names.sort_unstable();
-    names.dedup();
-    if names.contains(&server) {
-        None
-    } else {
-        Some(format!(
-            "unknown MCP server `{server}` (defined: {})",
-            if names.is_empty() {
-                "none".to_string()
-            } else {
-                names.join(", ")
-            }
-        ))
+    if let Some(topic_cfg) = jyc_types::load_topic_config(&context.topic_name, &context.topic_path)
+        && let Some(mcps) = &topic_cfg.mcps
+    {
+        return hit(mcps);
     }
+    false
 }
 
 #[cfg(test)]
@@ -223,9 +210,9 @@ mod tests {
         }
     }
 
-    /// Trivial validator: everything exists.
-    fn allow_all(_: &CommandContext, _: &str) -> Option<String> {
-        None
+    /// Trivial predicate: everything exists.
+    fn allow_all(_: &CommandContext, _: &str) -> bool {
+        true
     }
 
     fn handler(file: &'static str) -> ToggleCommandHandler {
@@ -233,8 +220,18 @@ mod tests {
             name: "/test",
             noun: "thing",
             file,
-            validate_on: allow_all,
+            known: allow_all,
         }
+    }
+
+    async fn try_run(
+        h: &ToggleCommandHandler,
+        args: &[&str],
+        context: &CommandContext,
+    ) -> Result<CommandResult> {
+        let mut c = context.clone();
+        c.args = args.iter().map(|s| s.to_string()).collect();
+        h.execute(c).await
     }
 
     async fn run(
@@ -242,9 +239,7 @@ mod tests {
         args: &[&str],
         context: &CommandContext,
     ) -> CommandResult {
-        let mut c = context.clone();
-        c.args = args.iter().map(|s| s.to_string()).collect();
-        h.execute(c).await.unwrap()
+        try_run(h, args, context).await.unwrap()
     }
 
     #[tokio::test]
@@ -278,18 +273,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn on_rejected_by_validator() {
+    async fn unknown_name_gets_hint_but_toggle_persists() {
         let tmp = TempDir::new().unwrap();
         let context = ctx(tmp.path().to_path_buf());
         let h = ToggleCommandHandler {
             name: "/test",
             noun: "thing",
             file: MCP_OVERRIDE_FILE,
-            validate_on: |_, name| Some(format!("nope: {name}")),
+            known: |_, _| false,
         };
         let r = run(&h, &["on", "x"], &context).await;
-        assert!(!r.success);
-        assert_eq!(r.error.as_deref(), Some("nope: x"));
+        assert!(r.success);
+        assert!(r.message.contains("double-check the name"), "{}", r.message);
+        // The toggle is still written — harmless until the name materializes.
+        let ovr = read_toggle_override("t", tmp.path(), MCP_OVERRIDE_FILE)
+            .await
+            .unwrap();
+        assert_eq!(ovr.on, vec!["x".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn missing_name_and_unknown_subcommand_error() {
+        let tmp = TempDir::new().unwrap();
+        let context = ctx(tmp.path().to_path_buf());
+        let h = handler(MCP_OVERRIDE_FILE);
+        let e = try_run(&h, &["on"], &context).await.unwrap_err();
+        assert!(e.to_string().contains("missing <name>"), "{e}");
+        let e = try_run(&h, &["frobnicate", "x"], &context)
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("unknown subcommand"), "{e}");
+        // Neither wrote anything.
         assert!(
             read_toggle_override("t", tmp.path(), MCP_OVERRIDE_FILE)
                 .await
@@ -319,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn mcp_validator_against_config() {
+    fn mcp_known_covers_all_layers() {
         let config = jyc_types::load_config_from_str(
             r#"
 [ai]
@@ -336,16 +350,25 @@ command = ["true"]
 "#,
         )
         .unwrap();
-        let mut context = ctx(PathBuf::new());
+        // A topic L3 overlay server (`.jyc/config.toml`) must count as known too.
+        let tmp = TempDir::new().unwrap();
+        let dir = jyc_types::state_dir::jyc_dir("t", tmp.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "[[mcps]]\nname = \"l3_srv\"\ntype = \"local\"\ncommand = [\"true\"]\n",
+        )
+        .unwrap();
+        let mut context = ctx(tmp.path().to_path_buf());
         context.config = Arc::new(config);
-        assert!(validate_mcp_defined(&context, "global_srv").is_none());
-        assert!(validate_mcp_defined(&context, "agent_srv").is_none());
-        let err = validate_mcp_defined(&context, "ghost").unwrap();
-        assert!(err.contains("agent_srv, global_srv"), "{err}");
+        assert!(mcp_known(&context, "global_srv"));
+        assert!(mcp_known(&context, "agent_srv"));
+        assert!(mcp_known(&context, "l3_srv"));
+        assert!(!mcp_known(&context, "ghost"));
     }
 
     #[test]
-    fn skill_validator_finds_topic_dir_skill() {
+    fn skill_known_finds_topic_dir_skill() {
         let tmp = TempDir::new().unwrap();
         let skill_dir = tmp.path().join(".claude/skills/ztest-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
@@ -356,8 +379,8 @@ command = ["true"]
         .unwrap();
         let context = ctx(tmp.path().to_path_buf());
         // Unique miss-name so HOME-dir pollution cannot flip it.
-        assert!(validate_skill_exists(&context, "zz-absent-skill-9k7").is_some());
-        assert!(validate_skill_exists(&context, "ztest-skill").is_none());
-        assert!(validate_skill_exists(&context, "../escape").is_some());
+        assert!(!skill_known(&context, "zz-absent-skill-9k7"));
+        assert!(skill_known(&context, "ztest-skill"));
+        assert!(!skill_known(&context, "../escape"));
     }
 }

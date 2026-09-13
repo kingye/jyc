@@ -39,30 +39,13 @@ and uses an in-process AI agent to generate replies.
 - 使用连字符（`-`）分隔单词，禁止大写字母
 
 ### PR 前检查清单
-提交 PR 前在本地确认以下事项：
-
-> **所有自动化检查由 CI 运行**。`.github/workflows/ci.yml` 在每个 push 到 `main` 和每个非草稿 PR 上自动执行：
-> - `cargo fmt -- --check`（格式化）
-> - `cargo clippy --workspace --all-targets -- -D warnings`（静态检查；同时编译所有 target，等价于 `cargo check` / `cargo build`）
-> - `cargo llvm-cov --workspace --all-targets`（运行所有测试并生成覆盖率报告，附带 60% 阈值检查）
->
-> **提交 PR 前本地运行 `cargo check` 和 `cargo fmt -- --check`**（两者都快、不编译：`cargo check` 是编译信号，`cargo fmt -- --check` 是格式检查，开发循环中先跑它们确认）。**禁止在本地运行慢速命令** `cargo build`、`cargo test`、`cargo clippy`、`cargo llvm-cov`——开发机资源受限，本地跑它们既慢又浪费资源。完整验证以 CI 结果为准：push 到 PR 后 CI 自动运行，失败再修复重推。`cargo check` 会顺带刷新 `Cargo.lock`，改依赖时把它一起提交。
-
-1. **文档确认** — 根据变更类型检查是否需要更新相关文档（参见「文档约定」章节）
+- 本地只跑 `cargo check` 和 `cargo fmt -- --check`；**禁止**本地运行 `cargo build` / `cargo test` / `cargo clippy` / `cargo llvm-cov`（开发机资源受限，完整验证以 CI 为准）
+- CI（`.github/workflows/ci.yml`）自动执行：fmt、clippy -D warnings、llvm-cov（60% 阈值）
+- 改依赖时提交 `cargo check` 顺带刷新的 `Cargo.lock`
+- 按「文档约定」检查是否需更新相关文档
 
 ### 提交信息格式
-遵循 [Conventional Commits](https://www.conventionalcommits.org/) 格式：
-
-| 类型 | 用途 |
-|------|------|
-| `feat:` | 新功能 |
-| `fix:` | 错误修复 |
-| `refactor:` | 重构（无功能变更） |
-| `docs:` | 文档变更 |
-| `test:` | 测试相关 |
-| `chore:` | 构建、CI、依赖等杂务 |
-
-示例：`feat: add IMAP idle support for real-time email monitoring`
+遵循 [Conventional Commits](https://www.conventionalcommits.org/)：`feat:` / `fix:` / `refactor:` / `docs:` / `test:` / `chore:`（示例：`feat: add IMAP idle support for real-time email monitoring`）
 
 ## 文档约定
 
@@ -86,14 +69,7 @@ and uses an in-process AI agent to generate replies.
 | Agent 行为规则变更 | `AGENTS.md` |
 
 ### CHANGELOG 格式约束
-遵循 [Keep a Changelog](https://keepachangelog.com/) 规范，按以下顺序组织：
-
-1. **Added** — 新增功能
-2. **Changed** — 已变更的功能
-3. **Fixed** — 已修复的 bug
-4. **Removed** — 已移除的功能
-
-每项使用 `-` 列表，格式：`- {简短描述} (#{issue/PR 编号})`
+遵循 [Keep a Changelog](https://keepachangelog.com/) 规范，按 **Added / Changed / Fixed / Removed** 顺序组织，每项格式：`- {简短描述} (#{issue/PR 编号})`
 
 ## Agent Behavior Rules
 

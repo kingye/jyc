@@ -2,6 +2,11 @@
 
 ### Added
 
+- `/skill on|off|reset <name>` and `/mcp on|off|reset <name>` slash commands:
+  toggle one skill or MCP server on/off for a single topic at runtime
+  (persisted in `.jyc/*-override.json` until reset; takes effect from the next
+  message). (`on` un-disables config-level `disabled_mcps` / joins the skill
+  whitelist; `off` force-disables even if whitelisted). (#764)
 - Cache utilization display: the dashboard topic info pane / status line
   show a `Cache util: N%` row (cache-hit tokens ÷ total input tokens),
   and the `/bill` report gains a per-row `cache util` column. Hidden for

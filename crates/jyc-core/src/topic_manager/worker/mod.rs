@@ -152,6 +152,12 @@ pub(crate) async fn process_message(
     command_registry.register(Box::new(ThinkingCommandHandler));
     command_registry.register(Box::new(ExchangeCommandHandler::new(topic_manager.clone())));
     command_registry.register(Box::new(ContextCommandHandler));
+    command_registry.register(Box::new(
+        crate::command::toggle_handler::ToggleCommandHandler::skill(),
+    ));
+    command_registry.register(Box::new(
+        crate::command::toggle_handler::ToggleCommandHandler::mcp(),
+    ));
     command_registry.register(Box::new(InfoCommandHandler::new(topic_manager.clone())));
     command_registry.register(Box::new(BacklogCommandHandler::new()));
     command_registry.register(Box::new(BillCommandHandler));

@@ -249,6 +249,8 @@ mod tests {
             "/thinking",
             "/exchange",
             "/context",
+            "/skill",
+            "/mcp",
             "/info",
             "/backlog",
             "/bill",
@@ -262,7 +264,7 @@ mod tests {
         }
         assert_eq!(
             commands.len(),
-            19,
+            21,
             "all_commands() count changed. Update this test if intentional."
         );
     }

@@ -322,6 +322,7 @@ mod tests {
     fn mcp_validator_against_config() {
         let config = jyc_types::load_config_from_str(
             r#"
+[ai]
 [[mcps]]
 name = "global_srv"
 type = "local"

@@ -180,6 +180,11 @@ The channel-agnostic architecture makes it easy to add new channels by implement
 
 Send commands at the top of an email body. These commands work across all channels (Email, Feishu, GitHub).
 
+Any line starting with `/` at the top of a message is parsed as a command. An
+unregistered name gets an "Unknown command" reply instead of reaching the agent;
+to send a literal path (e.g. `/home/jiny/x`) put it in quotes or below the first
+body line.
+
 | Command | Description |
 |---------|-------------|
 | `/model <id>` | Switch AI model for this topic |

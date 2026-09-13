@@ -63,7 +63,7 @@ attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
 | `model` / `plan_model` / `build_model` / `small_model` | Model overrides |
 | `mode` | Initial mode for topics: `"plan"` or `"build"` |
 | `mcps` | MCP servers (overrides global `[[mcps]]` for topics of this agent) |
-| `disabled_tools` / `disabled_builtin_tools` / `disabled_mcp_servers` | Tool/MCP gating |
+| `disabled_tools` / `disabled_builtin_tools` / `disabled_mcps` | Tool/MCP gating |
 | `reset_compression` | Session-reset compression (`{ mode, keep_pairs }`) |
 | `auto_reset_threshold` | Auto-reset threshold as fraction of context window |
 | `attachments` | Inbound attachment config (allowed extensions, max size, etc.) |

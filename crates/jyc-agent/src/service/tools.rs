@@ -331,13 +331,15 @@ impl JycAgentService {
     /// (subprocess spawn + handshake + `list_tools()` for each
     /// server, even when run in parallel), and historically this ran
     /// on every inbound message. To avoid that, we cache the result
-    /// keyed by `(topic, current_config_snapshot_ptr)`:
+    /// keyed by `(topic, current_config_snapshot_ptr, mcp_override_mtime)`:
     ///
-    /// - **Same `topic` + same config snapshot** → return a clone of
-    ///   the cached `Arc<ToolRegistry>` (no I/O).
+    /// - **Same `topic` + same config snapshot + same override mtime** →
+    ///   return a clone of the cached `Arc<ToolRegistry>` (no I/O).
     /// - **Different config snapshot** (e.g. after `config.toml`
     ///   reload via `ArcSwap::store`) → the pointer changes, the
     ///   lookup misses, and we rebuild and re-cache.
+    /// - **`/mcp` toggle** rewrites `.jyc/mcp-override.json` → its mtime
+    ///   changes → the lookup misses even though no config was reloaded.
     /// - **Different topic** → separate cache entry; topic-level
     ///   (`L3`) `.jyc/config.toml` MCP overlays require it.
     pub(crate) async fn get_or_build_tool_registry(
@@ -349,7 +351,11 @@ impl JycAgentService {
         matched_pattern_name: Option<&str>,
     ) -> Arc<ToolRegistry> {
         let config_ptr = Arc::as_ptr(&self.config.load()) as usize;
-        let key = (topic_name.to_string(), config_ptr);
+        let key = (
+            topic_name.to_string(),
+            config_ptr,
+            mcp_override_stamp(topic_name, topic_path),
+        );
 
         // Fast path: cache hit with a previously-successful build.
         if let Some(arc) = self.registry_cache.lock().await.get(&key).cloned() {
@@ -367,7 +373,13 @@ impl JycAgentService {
             )
             .await;
         let arc = Arc::new(built);
-        self.registry_cache.lock().await.insert(key, arc.clone());
+        let mut cache = self.registry_cache.lock().await;
+        // Keep one entry per topic: evict registries left behind by older
+        // config snapshots or superseded `/mcp` overrides, so repeated
+        // toggles don't accumulate live entries (and their MCP clients).
+        cache.retain(|k, _| k.0 != topic_name);
+        cache.insert(key, arc.clone());
+        drop(cache);
         arc
     }
 
@@ -396,5 +408,48 @@ impl JycAgentService {
     /// Get event bus for a topic.
     pub(crate) async fn get_event_bus(&self, topic_name: &str) -> Option<TopicEventBusRef> {
         self.event_buses.lock().await.get(topic_name).cloned()
+    }
+}
+
+/// Modification time (ns since the Unix epoch) of the topic's
+/// `mcp-override.json`, or `0` when the file is absent or unreadable.
+///
+/// Part of the tool-registry cache key: a `/mcp` toggle rewrites the
+/// override file without touching the config snapshot, so this stamp is
+/// what makes [`JycAgentService::get_or_build_tool_registry`] miss the
+/// cache and rebuild on the next message.
+fn mcp_override_stamp(topic_name: &str, topic_path: &Path) -> u128 {
+    let path = jyc_dir(topic_name, topic_path).join(jyc_core::session_state::MCP_OVERRIDE_FILE);
+    match std::fs::metadata(&path).and_then(|m| m.modified()) {
+        Ok(t) => t
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+        Err(_) => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_override_stamp_tracks_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Absent file -> 0.
+        assert_eq!(mcp_override_stamp("stamp-test-topic", tmp.path()), 0);
+
+        let dir = jyc_dir("stamp-test-topic", tmp.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(jyc_core::session_state::MCP_OVERRIDE_FILE);
+        std::fs::write(&file, b"{}").unwrap();
+        let s1 = mcp_override_stamp("stamp-test-topic", tmp.path());
+        assert_ne!(s1, 0);
+
+        // A rewrite (what a `/mcp` toggle does) must change the stamp.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(&file, b"{}").unwrap();
+        let s2 = mcp_override_stamp("stamp-test-topic", tmp.path());
+        assert_ne!(s2, s1);
     }
 }

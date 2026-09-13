@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use jyc_types::state_dir::jyc_dir;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -223,7 +224,7 @@ pub fn format_skills_section(skills: &[SkillMeta]) -> String {
             "- **{}** (at {})\n  {}\n\n",
             skill.name,
             skill.source_path.display(),
-            skill.description
+            truncate_description(&skill.description)
         ));
     }
 
@@ -234,4 +235,68 @@ pub fn format_skills_section(skills: &[SkillMeta]) -> String {
     );
 
     section
+}
+
+/// Max characters kept from a skill description in the system prompt.
+/// Long descriptions cost input tokens on every LLM call; the first
+/// ~200 chars carry the trigger semantics ("Use when…"), the rest is
+/// elaboration the model can fetch via `read SKILL.md` when matched.
+const SKILL_DESC_MAX_CHARS: usize = 200;
+
+/// Truncate a skill description to [`SKILL_DESC_MAX_CHARS`] characters,
+/// backing off to the last space so English text never ends mid-word.
+/// Returns the input unchanged when within the cap.
+///
+/// Char-based (not byte-based) slicing keeps multi-byte UTF-8 intact;
+/// for descriptions without spaces (e.g. CJK text) the retreat would
+/// land near the start, so we fall back to a hard char cut instead.
+fn truncate_description(desc: &str) -> Cow<'_, str> {
+    if desc.chars().count() <= SKILL_DESC_MAX_CHARS {
+        return Cow::Borrowed(desc);
+    }
+    let cut: String = desc.chars().take(SKILL_DESC_MAX_CHARS).collect();
+    let boundary = match cut.rfind(' ') {
+        Some(pos) if pos > SKILL_DESC_MAX_CHARS / 2 => pos,
+        _ => cut.len(),
+    };
+    Cow::Owned(format!("{}…", &cut[..boundary]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_description_is_unchanged() {
+        let desc = "Short summary.";
+        assert!(matches!(truncate_description(desc), Cow::Borrowed(_)));
+        assert_eq!(truncate_description(desc), desc);
+    }
+
+    #[test]
+    fn exactly_at_cap_is_unchanged() {
+        let desc: String = std::iter::repeat_n('a', SKILL_DESC_MAX_CHARS).collect();
+        assert_eq!(truncate_description(&desc), desc);
+    }
+
+    #[test]
+    fn long_english_description_retreats_to_word_boundary() {
+        let word = "lorem ";
+        let desc: String = word.repeat(60); // 360 chars, spaces every 6
+        let out = truncate_description(&desc);
+        assert!(out.ends_with('…'));
+        let body = out.strip_suffix('…').unwrap();
+        assert!(body.chars().count() < SKILL_DESC_MAX_CHARS);
+        assert!(!body.ends_with("lore")); // no mid-word cut
+        assert!(body.ends_with("lorem")); // ends on a full word
+    }
+
+    #[test]
+    fn spaceless_cjk_description_hard_cuts_without_panic() {
+        let desc: String = std::iter::repeat_n('汉', SKILL_DESC_MAX_CHARS + 50).collect();
+        let out = truncate_description(&desc);
+        assert!(out.ends_with('…'));
+        // No usable space → hard cut at exactly the cap.
+        assert_eq!(out.chars().count(), SKILL_DESC_MAX_CHARS + 1);
+    }
 }

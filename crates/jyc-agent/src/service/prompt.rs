@@ -54,9 +54,12 @@ impl JycAgentService {
         // `off` joins the exclusion list (applied after inclusion, so it
         // wins over whitelists).
         let skill_ovr = jyc_core::session_state::read_skill_override(topic_name, topic_path).await;
-        let include_owned: Option<Vec<String>> = match &skill_ovr {
-            Some(ovr) if !ovr.on.is_empty() => {
-                let mut list = include_list.map_or_else(Vec::new, <[String]>::to_vec);
+        let include_owned: Option<Vec<String>> = match (&skill_ovr, include_list) {
+            // Only materialize a whitelist when one already exists; with no
+            // whitelist every discoverable skill is already included, so
+            // `on` entries are a no-op (must not shrink "all" to "[x]").
+            (Some(ovr), Some(base)) if !ovr.on.is_empty() => {
+                let mut list = base.to_vec();
                 for name in &ovr.on {
                     if !list.contains(name) {
                         list.push(name.clone());

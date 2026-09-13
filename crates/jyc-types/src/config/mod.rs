@@ -243,6 +243,8 @@ pub const BUILTIN_COMMAND_NAMES: &[&str] = &[
     "/thinking",
     "/exchange",
     "/context",
+    "/skill",
+    "/mcp",
     "/info",
     "/backlog",
     "/bill",

@@ -49,7 +49,38 @@ impl JycAgentService {
                 }
             }
         }
-        let exclude_slice: Option<&[String]> = if exclude_list.is_empty() {
+        // Runtime `/skill` toggle override (persisted until `/skill reset`).
+        // `on` joins the whitelist and cancels config-level exclusions;
+        // `off` joins the exclusion list (applied after inclusion, so it
+        // wins over whitelists).
+        let skill_ovr = jyc_core::session_state::read_skill_override(topic_name, topic_path).await;
+        let include_owned: Option<Vec<String>> = match (&skill_ovr, include_list) {
+            // Only materialize a whitelist when one already exists; with no
+            // whitelist every discoverable skill is already included, so
+            // `on` entries are a no-op (must not shrink "all" to "[x]").
+            (Some(ovr), Some(base)) if !ovr.on.is_empty() => {
+                let mut list = base.to_vec();
+                for name in &ovr.on {
+                    if !list.contains(name) {
+                        list.push(name.clone());
+                    }
+                }
+                Some(list)
+            }
+            _ => None,
+        };
+        if let Some(ovr) = &skill_ovr {
+            for name in &ovr.on {
+                exclude_list.retain(|e| e != name);
+            }
+            for name in &ovr.off {
+                if !exclude_list.contains(name) {
+                    exclude_list.push(name.clone());
+                }
+            }
+        }
+        let include_final = include_owned.as_deref().or(include_list);
+        let exclude_final: Option<&[String]> = if exclude_list.is_empty() {
             None
         } else {
             Some(&exclude_list)
@@ -57,7 +88,7 @@ impl JycAgentService {
 
         // Discover and inject skill metadata (before AGENTS.md so instructions
         // to read SKILL.md files are seen first)
-        let skills = self.discover_skills(topic_name, topic_path, include_list, exclude_slice);
+        let skills = self.discover_skills(topic_name, topic_path, include_final, exclude_final);
         if !skills.is_empty() {
             prompt.push_str(&format_skills_section(&skills));
         }

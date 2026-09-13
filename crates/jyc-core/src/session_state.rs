@@ -191,6 +191,118 @@ pub async fn read_pattern(topic_name: &str, topic_path: &Path) -> Option<String>
         .filter(|s| !s.is_empty())
 }
 
+/// File name of the per-topic `/skill` toggle override.
+pub const SKILL_OVERRIDE_FILE: &str = "skill-override.json";
+/// File name of the per-topic `/mcp` toggle override.
+pub const MCP_OVERRIDE_FILE: &str = "mcp-override.json";
+
+/// Runtime name toggles written by the `/skill` and `/mcp` slash commands,
+/// persisted in the topic `.jyc/` dir until an explicit `reset`.
+///
+/// `on` forces a name enabled (removes it from the effective disabled /
+/// exclusion list, adds it to a skill whitelist); `off` forces it disabled
+/// (appends to the effective exclusion list). A name must never appear in
+/// both lists — [`ToggleOverride::set`] maintains that invariant.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ToggleOverride {
+    #[serde(default)]
+    pub on: Vec<String>,
+    #[serde(default)]
+    pub off: Vec<String>,
+}
+
+impl ToggleOverride {
+    /// Whether the override carries no entries (file can be removed).
+    pub fn is_empty(&self) -> bool {
+        self.on.is_empty() && self.off.is_empty()
+    }
+
+    /// Record `name` as toggled on (`on=true`) or off (`on=false`),
+    /// removing it from the opposite list.
+    pub fn set(&mut self, name: &str, on: bool) {
+        self.on.retain(|n| n != name);
+        self.off.retain(|n| n != name);
+        if on {
+            self.on.push(name.to_string());
+        } else {
+            self.off.push(name.to_string());
+        }
+    }
+
+    /// Apply to a set of disabled names: drop everything in `on`,
+    /// add everything in `off`.
+    pub fn apply(&self, disabled: &[String]) -> Vec<String> {
+        let mut out: Vec<String> = disabled
+            .iter()
+            .filter(|d| !self.on.contains(d))
+            .cloned()
+            .collect();
+        for name in &self.off {
+            if !out.contains(name) {
+                out.push(name.clone());
+            }
+        }
+        out
+    }
+}
+
+/// Read a toggle override file (`SKILL_OVERRIDE_FILE` / `MCP_OVERRIDE_FILE`).
+pub async fn read_toggle_override(
+    topic_name: &str,
+    topic_path: &Path,
+    file: &str,
+) -> Option<ToggleOverride> {
+    let path = jyc_dir(topic_name, topic_path).join(file);
+    let content = tokio::fs::read_to_string(&path).await.ok()?;
+    match serde_json::from_str(&content) {
+        Ok(ovr) => Some(ovr),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Corrupt toggle override, ignoring"
+            );
+            None
+        }
+    }
+}
+
+/// Read the `/skill` override for a topic.
+pub async fn read_skill_override(topic_name: &str, topic_path: &Path) -> Option<ToggleOverride> {
+    read_toggle_override(topic_name, topic_path, SKILL_OVERRIDE_FILE).await
+}
+
+/// Read the `/mcp` override for a topic.
+pub async fn read_mcp_override(topic_name: &str, topic_path: &Path) -> Option<ToggleOverride> {
+    read_toggle_override(topic_name, topic_path, MCP_OVERRIDE_FILE).await
+}
+
+/// Write a toggle override; removes the file when empty so the absence of
+/// the file always means "no override".
+pub async fn write_toggle_override(
+    topic_name: &str,
+    topic_path: &Path,
+    file: &str,
+    ovr: &ToggleOverride,
+) -> anyhow::Result<()> {
+    let dir = jyc_dir(topic_name, topic_path);
+    let path = dir.join(file);
+    if ovr.is_empty() {
+        tokio::fs::remove_file(&path).await.ok();
+        return Ok(());
+    }
+    tokio::fs::create_dir_all(&dir).await?;
+    tokio::fs::write(&path, serde_json::to_string(ovr)?).await?;
+    Ok(())
+}
+
+/// Delete a toggle override file (explicit `reset`).
+pub async fn clear_toggle_override(topic_name: &str, topic_path: &Path, file: &str) {
+    tokio::fs::remove_file(jyc_dir(topic_name, topic_path).join(file))
+        .await
+        .ok();
+}
+
 /// Resolve the effective mode for a topic:
 /// `.jyc/mode-override` > pattern `mode` from channel config (looked up via
 /// `.jyc/pattern`) > `None` (= build default).

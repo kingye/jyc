@@ -137,22 +137,29 @@ impl JycAgentService {
 
         // --- MCP server exclusion (disabled_mcps) ---
         // Merge channel-level + pattern-level disabled MCP servers
-        let disabled_mcps: Vec<&str> = {
+        let mut disabled_mcps: Vec<String> = {
             let mut set = Vec::new();
             if let Some(ref servers) = channel_disabled_mcps {
                 for s in servers {
-                    set.push(s.as_str());
+                    set.push(s.clone());
                 }
             }
             if let Some(servers) = matched_pattern.and_then(|p| p.disabled_mcps.as_ref()) {
                 for s in servers {
-                    if !set.contains(&s.as_str()) {
-                        set.push(s.as_str());
+                    if !set.contains(s) {
+                        set.push(s.clone());
                     }
                 }
             }
             set
         };
+
+        // Runtime `/mcp on|off` toggle override (persisted until `/mcp reset`):
+        // `on` un-disables config-level entries, `off` adds more.
+        if let Some(ovr) = jyc_core::session_state::read_mcp_override(topic_name, topic_path).await
+        {
+            disabled_mcps = ovr.apply(&disabled_mcps);
+        }
 
         // Resolve MCP configs: pattern → channel → global. Tag each baseline
         // entry with its source layer so the per-topic log can show exactly
@@ -190,7 +197,7 @@ impl JycAgentService {
             .collect();
 
         // Filter out disabled MCP servers before loading
-        filtered_mcp_configs.retain(|(c, _)| !disabled_mcps.contains(&c.name.as_str()));
+        filtered_mcp_configs.retain(|(c, _)| !disabled_mcps.contains(&c.name));
 
         if !disabled_mcps.is_empty() {
             tracing::debug!(

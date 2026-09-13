@@ -18,6 +18,7 @@ pub mod registry;
 pub mod reset_handler;
 pub mod template_handler;
 pub mod thinking_handler;
+pub mod toggle_handler;
 pub mod unpin_handler;
 
 pub use model_handler::list_available_models;
@@ -104,6 +105,16 @@ pub fn all_commands() -> Vec<CommandInfo> {
         CommandInfo {
             name: "/context".into(),
             description: "View or change the context strategy / debug-dump wire payload".into(),
+            ..Default::default()
+        },
+        CommandInfo {
+            name: "/skill".into(),
+            description: "Toggle a skill for this topic: /skill on|off|reset <name>".into(),
+            ..Default::default()
+        },
+        CommandInfo {
+            name: "/mcp".into(),
+            description: "Toggle an MCP server for this topic: /mcp on|off|reset <name>".into(),
             ..Default::default()
         },
         CommandInfo {

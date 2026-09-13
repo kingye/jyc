@@ -26,6 +26,15 @@
   error instead of silently passing through to the agent as message
   text. (#763)
 
+### Fixed
+
+- `/mcp on|off|reset` now takes effect on the next message without
+  requiring a service restart or `/reset`: the per-topic tool-registry
+  cache key includes `mcp-override.json`'s modification time, so toggle
+  writes invalidate the cached registry (previously a stale registry
+  could keep being served until an unrelated config reload).
+  Superseded same-topic registry entries are evicted on rebuild. (#765)
+
 ## [0.3.18] - 2026-09-12
 
 ### Added

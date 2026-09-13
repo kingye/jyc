@@ -62,12 +62,14 @@ pub struct JycAgentService {
     /// Vision fallback client for text-only models to analyze images.
     vision_client: Option<Arc<VisionClient>>,
     /// Cache of MCP-enriched tool registries keyed by
-    /// `(topic, config_snapshot_ptr)`. Bypasses the subprocess-spawn
-    /// / HTTP-handshake cost on every inbound message when the config
-    /// hasn't changed. A config swap (via `ArcSwap::store`) gives the
-    /// new `Arc<AppConfig>` a fresh pointer, so the cache key
-    /// invalidates automatically.
-    registry_cache: Mutex<HashMap<(String, usize), Arc<ToolRegistry>>>,
+    /// `(topic, config_snapshot_ptr, mcp_override_mtime)`. Bypasses the
+    /// subprocess-spawn / HTTP-handshake cost on every inbound message
+    /// when neither the config nor the `/mcp` toggle override has
+    /// changed. A config swap (via `ArcSwap::store`) gives the new
+    /// `Arc<AppConfig>` a fresh pointer, and a toggle rewrites
+    /// `mcp-override.json` (new mtime), so either change invalidates the
+    /// cache key automatically.
+    registry_cache: Mutex<HashMap<(String, usize, u128), Arc<ToolRegistry>>>,
     /// Outbound adapter for proactive messaging tools (e.g. `jyc_send_message`).
     outbound: Option<Arc<dyn jyc_types::channel::OutboundAdapter>>,
     /// Channel-level skills whitelist.

@@ -28,6 +28,12 @@
 
 ### Fixed
 
+- GitHub agent skills: planner-created PRs now carry the issue's assignees
+  and labels from birth (one atomic `gh pr create --assignee/--label`; the
+  skippable post-create copy step left a real PR untriggered for 6h). The
+  unused `ready-for-dev` handoff label was removed from both skills, and
+  github-developer now starts implementing on the first opened-PR trigger
+  instead of idling until a human comments. (#768)
 - Responses API (`openai-responses`) now tracks GPT-5.6+
   `usage.input_tokens_details.cache_write_tokens`: cache writes bill
   via `cache_creation_per_million` instead of being folded into the

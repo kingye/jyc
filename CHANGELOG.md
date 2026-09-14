@@ -28,6 +28,14 @@
 
 ### Fixed
 
+- GitHub/Gitee agent skills: planner-created PRs now carry the issue's
+  assignees and labels unconditionally (GitHub: one atomic
+  `gh pr create --assignee/--label`; Gitee: mandatory create+PATCH+labels
+  chain, since its API supports neither at create — the skippable
+  post-create copy step had left a real PR untriggered for 6h). The unused
+  `ready-for-dev` handoff label was removed from all four skills, and
+  github/gitee-developer now start implementing on the first opened-PR
+  trigger instead of idling until a human comments. (#768)
 - Responses API (`openai-responses`) now tracks GPT-5.6+
   `usage.input_tokens_details.cache_write_tokens`: cache writes bill
   via `cache_creation_per_million` instead of being folded into the

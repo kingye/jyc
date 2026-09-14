@@ -28,7 +28,7 @@ requirements with the user and create a PR when the plan is clear.
 ### How You Receive Work
 
 You are triggered automatically when an issue matches the pattern rules (e.g., label `planning`).
-Handoff between agents uses labels only (e.g., `ready-for-dev`, `ready-for-review`).
+Handoff between agents uses labels only (e.g., `ready-for-review`).
 The trigger message tells you the repository and issue number, for example:
 
 ```
@@ -180,7 +180,7 @@ LABELS=$(gh issue view <number> --json labels --jq '[.labels[].name] | join(",")
 
 # Create DRAFT PR with spec in body
 # Draft status signals that the PR is not ready for merge — the developer will implement the code.
-gh pr create --draft --title "feat: <description>" --body "$(cat <<'EOF'
+PR_URL=$(gh pr create --draft ${ASSIGNEES:+"--assignee=$ASSIGNEES"} ${LABELS:+"--label=$LABELS"} --title "feat: <description>" --body "$(cat <<'EOF'
 ## Spec
 
 <one-paragraph summary of what this PR achieves>
@@ -206,36 +206,16 @@ Fixes #<issue_number>
 ## Design Decisions
 - <any constraints, trade-offs, or conventions discussed>
 EOF
-)"
+)")
+echo "PR created: $PR_URL"
 
-# Copy assignees from issue to PR
-if [ -n "$ASSIGNEES" ]; then
-  for assignee in $(echo "$ASSIGNEES" | tr ',' '\n'); do
-    gh pr edit <pr_number> --add-assignee "$assignee"
-  done
-fi
-
-# Copy labels from issue to PR
-if [ -n "$LABELS" ]; then
-  for label in $(echo "$LABELS" | tr ',' '\n'); do
-    gh pr edit <pr_number> --add-label "$label"
-  done
-fi
-
-# Verify assignees and labels were copied
-PR_ASSIGNEES=$(gh pr view <pr_number> --json assignees --jq '[.assignees[].login] | join(",")')
-PR_LABELS=$(gh pr view <pr_number> --json labels --jq '[.labels[].name] | join(",")')
-echo "PR assignees: $PR_ASSIGNEES (expected: $ASSIGNEES)"
-echo "PR labels: $PR_LABELS (expected: $LABELS)"
-
-# Trigger the developer agent by adding the developer label
-gh label create ready-for-dev --color "0E8A16" --description "PR ready for development" 2>/dev/null || true
-gh pr edit <pr_number> --add-label "ready-for-dev"
+# Verify the PR was born with the routing metadata (flags above are the
+# only mechanism — never create a bare PR and edit it afterwards)
+gh pr view "$PR_URL" --json assignees,labels
 ```
 
 **CRITICAL:** The PR must contain only the initialization empty commit (created via `git commit --allow-empty`) — no other code changes. The developer agent will implement the code.
-**CRITICAL:** You MUST copy ALL assignees and labels from the issue to the PR using `gh pr edit --add-assignee` and `gh pr edit --add-label` AFTER creating the PR. This ensures correct routing to developer/reviewer agents. DO NOT rely on `gh pr create --assignee/--label` flags alone.
-**CRITICAL:** After creating the PR, add the label `ready-for-dev` — this auto-triggers the developer via pattern matching.
+**CRITICAL:** `gh pr create` MUST carry `--assignee`/`--label` copied from the issue (the `$ASSIGNEES`/`$LABELS` flags above) — a PR born without them NEVER triggers the developer agent, because pattern matching requires label + assignee. `ready-for-dev` is no longer used.
 **CRITICAL:** Include `Fixes #<issue_number>` in the PR body to link the PR to the issue.
 **CRITICAL:** The implementation plan must have concrete, testable steps — NOT vague bullet points.
 
@@ -334,7 +314,7 @@ After submitting the review, use the `jyc_reply` tool (NOT `gh issue comment`) t
 - ONLY use the `bash` tool and `jyc_reply` tool — NO other tools
 - ALWAYS run commands from the topic directory (it is the checkout — there is no `repo/` subdirectory)
 - ALWAYS include `Fixes #<issue_number>` in PR body
-- ALWAYS add the `ready-for-dev` label after creating the PR — this auto-triggers the Developer agent via pattern matching
+- ALWAYS pass the issue's assignees and labels to `gh pr create` via `--assignee`/`--label` — the Developer agent only triggers on PRs matching label + assignee patterns
 - **⚠️ NON-NEGOTIABLE — Review:** When asked to review a PR, ALWAYS post the review feedback via `gh pr comment` on the PR AND via `jyc_reply` on the issue. The PR comment is NON-NEGOTIABLE — even if `gh pr review` succeeds (or fails), you MUST still post the PR comment. Additionally, perform a deep technical review covering all seven dimensions (architecture, reusability, logic, security, performance, robustness, requirements alignment).
 - **⚠️ NON-NEGOTIABLE — Requirements change:** When requirements change after the PR has been created, BOTH `gh pr edit --body` (update PR description) AND `gh pr comment` (post a PR comment) are NON-NEGOTIABLE. Editing only the description without the PR comment will cause the developer agent to miss the update.
 - **⚠️ ONE CHANNEL PER REPLY:** Outside of Scenario 6 (PR review), NEVER use both `gh pr comment` and `jyc_reply_message` for the same message. Pick ONE channel: `jyc_reply_message` for user-facing discussion on the issue, `gh pr comment` for developer notifications or review feedback on the PR. When Scenario 6 requires both, the CONTENT MUST BE DIFFERENT — `gh pr comment` targets the developer on the PR, `jyc_reply_message` targets the user on the issue.

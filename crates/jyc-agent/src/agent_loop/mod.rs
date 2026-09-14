@@ -327,10 +327,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // and surfaced to the dashboard as `total_cache_hit_tokens`.
     let mut total_cache_hit_tokens: u64 = 0;
     // Sum of every LLM call's prompt-cache-**creation** (write)
-    // tokens in this round. Anthropic is the only provider that
-    // reports writes separately; for every other vendor this stays
-    // at `0`. Surfaced to the dashboard as
-    // `total_cache_creation_tokens`.
+    // tokens in this round. Anthropic and OpenAI (GPT-5.6+) report
+    // writes separately; for every other vendor this stays at `0`.
+    // Surfaced to the dashboard as `total_cache_creation_tokens`.
     let mut total_cache_creation_tokens: u64 = 0;
     // Sum of every LLM call's reasoning (thinking) tokens in this round.
     // Informational only — already included in `total_output_tokens`.

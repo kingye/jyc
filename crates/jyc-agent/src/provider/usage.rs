@@ -25,7 +25,9 @@
 //! | DeepSeek      | `prompt_cache_hit_tokens`                      | `usage` root                      |
 //! | Kimi          | `cached_tokens`                                | `usage` root                      |
 //! | OpenAI        | `cached_tokens` (read),                        | `usage.prompt_tokens_details`     |
-//! |               | `cache_write_tokens` (write, GPT-5.6+)         | `usage.prompt_tokens_details`     |
+//! |               | `cache_write_tokens` (write, GPT-5.6+)         | (Chat Completions); the same two  |
+//! |               |                                                | names under `input_tokens_details`|
+//! |               |                                                | in the Responses API              |
 //! | 火山引擎      | `cached_tokens`                                | `usage.prompt_tokens_details`     |
 //! | MiniMax       | `cached_tokens`                                | `usage.prompt_tokens_details`     |
 //! | Anthropic     | `cache_read_input_tokens` (read)               | `usage` root                      |

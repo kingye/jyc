@@ -28,6 +28,10 @@
 
 ### Fixed
 
+- Responses API (`openai-responses`) now tracks GPT-5.6+
+  `usage.input_tokens_details.cache_write_tokens`: cache writes bill
+  via `cache_creation_per_million` instead of being folded into the
+  full-rate input bucket. (#766)
 - `/mcp on|off|reset` now takes effect on the next message without
   requiring a service restart or `/reset`: the per-topic tool-registry
   cache key includes `mcp-override.json`'s modification time, so toggle

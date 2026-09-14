@@ -586,6 +586,18 @@ fn parse_responses_event(data: &str, state: &mut ResponsesStreamState) -> Option
                         .and_then(|d| d.get("cached_tokens"))
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
+                    // GPT-5.6+ reports the cache-WRITE bucket alongside
+                    // reads, under the same details object (mirroring the
+                    // Chat Completions `prompt_tokens_details.cache_write_tokens`
+                    // that `extract_openai_cache_split` already handles).
+                    // Without this the write tokens stay folded into
+                    // `input_tokens` and get billed at the full uncached
+                    // input rate by `compute_cost_split`.
+                    let cache_write = usage
+                        .get("input_tokens_details")
+                        .and_then(|d| d.get("cache_write_tokens"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     let reasoning = usage
                         .get("output_tokens_details")
                         .and_then(|d| d.get("reasoning_tokens"))
@@ -595,7 +607,7 @@ fn parse_responses_event(data: &str, state: &mut ResponsesStreamState) -> Option
                         input_tokens: input,
                         output_tokens: output,
                         cache_hit_tokens: cache_hit,
-                        cache_creation_tokens: 0,
+                        cache_creation_tokens: cache_write,
                         reasoning_tokens: reasoning,
                     });
                 }
@@ -692,7 +704,7 @@ mod tests {
                 "usage": {
                     "input_tokens": 100,
                     "output_tokens": 50,
-                    "input_tokens_details": { "cached_tokens": 40 },
+                    "input_tokens_details": { "cached_tokens": 40, "cache_write_tokens": 12 },
                     "output_tokens_details": { "reasoning_tokens": 20 },
                 }
             }
@@ -704,6 +716,7 @@ mod tests {
                 input_tokens: 100,
                 output_tokens: 50,
                 cache_hit_tokens: 40,
+                cache_creation_tokens: 12,
                 reasoning_tokens: 20,
                 ..
             }

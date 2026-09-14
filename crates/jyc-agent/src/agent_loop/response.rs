@@ -27,8 +27,8 @@ pub(crate) struct CollectedResponse {
     /// the provider didn't surface cache hits for this call.
     pub(crate) cache_hit_tokens: u64,
     /// Per-call prompt-cache **creation** (write) tokens. Anthropic
-    /// is the only vendor that reports writes separately from
-    /// reads; for every other provider this is `0`.
+    /// and OpenAI (GPT-5.6+) report writes separately from reads;
+    /// for every other provider this is `0`.
     pub(crate) cache_creation_tokens: u64,
     /// Per-call reasoning (thinking) tokens — the hidden chain-of-thought
     /// share of the output. Already included in `output_tokens` (and

@@ -586,13 +586,9 @@ fn parse_responses_event(data: &str, state: &mut ResponsesStreamState) -> Option
                         .and_then(|d| d.get("cached_tokens"))
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
-                    // GPT-5.6+ reports the cache-WRITE bucket alongside
-                    // reads, under the same details object (mirroring the
-                    // Chat Completions `prompt_tokens_details.cache_write_tokens`
-                    // that `extract_openai_cache_split` already handles).
-                    // Without this the write tokens stay folded into
-                    // `input_tokens` and get billed at the full uncached
-                    // input rate by `compute_cost_split`.
+                    // GPT-5.6+ reports the cache-WRITE bucket here too;
+                    // without it writes stay folded into `input_tokens`
+                    // and bill at the full uncached rate.
                     let cache_write = usage
                         .get("input_tokens_details")
                         .and_then(|d| d.get("cache_write_tokens"))
@@ -986,6 +982,7 @@ mod tests {
                 input_tokens: 10,
                 output_tokens: 5,
                 cache_hit_tokens: 3,
+                cache_creation_tokens: 0,
                 reasoning_tokens: 2,
                 ..
             }

@@ -477,6 +477,10 @@ url = "https://other.example.com/mcp"
 [mcps.oauth_dcr]
 scopes = ["jira.read"]
 redirect_uri = "http://localhost:1999/callback"
+
+[agent]
+enabled = true
+mode = "agent"
 "#,
         )
         .unwrap();

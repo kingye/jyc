@@ -119,6 +119,11 @@ pub(crate) async fn read_signal_attachments(
 /// out to the dashboard.
 ///
 /// The watcher runs until cancelled (when the agent finishes processing).
+// The `hooks` parameter pushed this over clippy's 7-arg heuristic;
+// grouping the delivery targets into a struct would obscure more than
+// it helps (same call as `#[allow(clippy::too_many_arguments)]` in
+// `jyc-services::smtp` and `jyc-agent::session`).
+#[allow(clippy::too_many_arguments)]
 pub async fn watch_pending_deliveries(
     topic_path: &Path,
     message_dir: &str,

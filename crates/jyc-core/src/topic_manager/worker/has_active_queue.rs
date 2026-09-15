@@ -1872,3 +1872,266 @@ mod custom_command_registration {
         );
     }
 }
+
+#[cfg(test)]
+mod worker_hook_tests {
+    use super::*;
+
+    /// Base config + a hooks TOML fragment appended at top level.
+    fn hook_tm_config(hooks_toml: &str) -> String {
+        format!(
+            r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+{hooks_toml}
+"#
+        )
+    }
+
+    fn hook_msg(topic: &str) -> InboundMessage {
+        InboundMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            channel: "test-channel".to_string(),
+            channel_uid: "test".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user".to_string(),
+            recipients: vec![],
+            topic: topic.to_string(),
+            content: jyc_types::MessageContent {
+                text: Some("hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            references: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: HashMap::new(),
+            matched_pattern: None,
+        }
+    }
+
+    fn hook_pm(name: &str) -> PatternMatch {
+        PatternMatch {
+            pattern_name: name.to_string(),
+            channel: "websocket".to_string(),
+            matches: HashMap::new(),
+        }
+    }
+
+    /// Poll until `path` exists (~2s), mirroring `wait_for_history_lines`.
+    async fn wait_for_file(path: &std::path::Path) -> bool {
+        for _ in 0..40 {
+            if path.exists() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[test]
+    fn build_hook_set_merges_global_and_agent() {
+        let cfg_str = hook_tm_config(
+            r#"
+[[hooks]]
+event = "pre_tool_use"
+shell = ["true"]
+
+[agents.hk]
+
+[[agents.hk.hooks]]
+event = "post_tool_use"
+shell = ["true"]
+"#,
+        );
+        let cfg = jyc_types::load_config_from_str(&cfg_str).unwrap();
+        // routed agent: global + its own
+        let merged = build_hook_set(&cfg, "hk");
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged.agent_name(), "hk");
+        // unrelated/empty agent name: globals only
+        assert_eq!(build_hook_set(&cfg, "other").len(), 1);
+        assert_eq!(build_hook_set(&cfg, "").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn message_received_hook_blocks_ai_dispatch() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let recording = Arc::new(RecordingOutbound::default());
+        let cfg = hook_tm_config(
+            r#"
+[[hooks]]
+event = "message_received"
+shell = ["sh", "-c", "echo seen >> hook-ran.log; echo nope >&2; exit 2"]
+"#,
+        );
+        let tm = make_test_tm_full(
+            &workspace,
+            &cfg,
+            recording.clone(),
+            Arc::new(StaticAgentService::new("ok")),
+        );
+        let topic_path = workspace.join("hr-block");
+        tm.enqueue(
+            hook_msg("hr-block"),
+            "hr-block".to_string(),
+            hook_pm(""),
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(
+            wait_for_file(&topic_path.join("hook-ran.log")).await,
+            "message_received hook did not run"
+        );
+        // Message was stored before the gate...
+        assert!(wait_for_history_lines(&topic_path, 1).await);
+        // ...but exit-2 stopped dispatch: the agent never produced a reply.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            recording.replies.lock().unwrap().is_empty(),
+            "blocked message still reached AI/delivery"
+        );
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn session_start_fires_once_per_new_topic() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let recording = Arc::new(RecordingOutbound::default());
+        // Notification hook: verify payload carries source=startup, mark it,
+        // exit 0 so the normal flow continues.
+        let cfg = hook_tm_config(
+            r#"
+[[hooks]]
+event = "session_start"
+shell = ["sh", "-c", "grep -q startup - && echo ss >> hook-ran.log"]
+"#,
+        );
+        let tm = make_test_tm_full(
+            &workspace,
+            &cfg,
+            recording.clone(),
+            Arc::new(StaticAgentService::new("ok")),
+        );
+        let topic_path = workspace.join("hr-startup");
+        tm.enqueue(
+            hook_msg("hr-startup"),
+            "hr-startup".to_string(),
+            hook_pm(""),
+            None,
+            false,
+            None,
+        )
+        .await;
+        // First message: processed with reply + session_start marker.
+        for _ in 0..40 {
+            if !recording.replies.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            recording.replies.lock().unwrap().len(),
+            1,
+            "first reply missing"
+        );
+        let marker = topic_path.join("hook-ran.log");
+        assert!(
+            wait_for_file(&marker).await,
+            "session_start hook did not fire"
+        );
+        // Second message: topic is no longer new → no second marker.
+        tm.enqueue(
+            hook_msg("hr-startup"),
+            "hr-startup".to_string(),
+            hook_pm(""),
+            None,
+            false,
+            None,
+        )
+        .await;
+        for _ in 0..40 {
+            if recording.replies.lock().unwrap().len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            recording.replies.lock().unwrap().len(),
+            2,
+            "second reply missing"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let content = tokio::fs::read_to_string(&marker).await.unwrap();
+        assert_eq!(
+            content.lines().filter(|l| l.trim() == "ss").count(),
+            1,
+            "session_start must fire only for the new topic"
+        );
+        tm.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn reply_send_hook_suppresses_delivery() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let recording = Arc::new(RecordingOutbound::default());
+        // AI reply carries reply_text; exit-2 suppresses the delivery.
+        let cfg = hook_tm_config(
+            r#"
+[[hooks]]
+event = "reply_send"
+shell = ["sh", "-c", "grep -q reply_text - && echo rs >> hook-ran.log; exit 2"]
+"#,
+        );
+        let tm = make_test_tm_full(
+            &workspace,
+            &cfg,
+            recording.clone(),
+            Arc::new(StaticAgentService::new("ok")),
+        );
+        let topic_path = workspace.join("hr-reply");
+        tm.enqueue(
+            hook_msg("hr-reply"),
+            "hr-reply".to_string(),
+            hook_pm(""),
+            None,
+            false,
+            None,
+        )
+        .await;
+        assert!(
+            wait_for_file(&topic_path.join("hook-ran.log")).await,
+            "reply_send hook did not run"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            recording.replies.lock().unwrap().is_empty(),
+            "suppressed reply was still delivered"
+        );
+        tm.shutdown().await;
+    }
+}

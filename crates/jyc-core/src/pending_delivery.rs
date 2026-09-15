@@ -10,11 +10,56 @@ use std::path::Path;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use jyc_types::config::HookEvent;
+use jyc_utils::hooks::{HookCtx, HookOutcome, HookSet};
+
 use crate::topic_event::TopicEvent;
 use crate::topic_event_bus::TopicEventBusRef;
 use jyc_types::{InboundMessage, OutboundAdapter};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Evaluate `reply_send` hooks for an AI reply about to be delivered.
+/// Returns the hook's stderr when a hook exited 2 (send must be
+/// suppressed); `None` includes the fast empty-set path.
+pub(crate) async fn reply_blocked_by_hook(
+    hooks: &HookSet,
+    topic_name: &str,
+    topic_path: &Path,
+    message: &InboundMessage,
+    reply_text: &str,
+) -> Option<String> {
+    if hooks.is_empty() {
+        return None;
+    }
+    let ctx = HookCtx {
+        topic: topic_name.to_string(),
+        cwd: topic_path.display().to_string(),
+        channel: Some(message.channel.clone()),
+        message_content: message.content.text.clone(),
+        sender: Some(message.sender.clone()),
+        sender_address: Some(message.sender_address.clone()),
+        reply_text: Some(reply_text.to_string()),
+        metadata: json_metadata(&message.metadata),
+        ..Default::default()
+    };
+    match hooks
+        .run(HookEvent::ReplySend, Some(topic_name), &ctx)
+        .await
+    {
+        HookOutcome::Block(reason) => Some(reason),
+        HookOutcome::Proceed => None,
+    }
+}
+
+/// Inbound message metadata as an optional JSON object for hook payloads.
+pub(crate) fn json_metadata(
+    md: &std::collections::HashMap<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    (!md.is_empty())
+        .then(|| serde_json::to_value(md).ok())
+        .flatten()
+}
 
 /// Read attachment filenames from the reply-sent.flag signal file.
 /// Returns OutboundAttachment list, or None if no attachments.
@@ -74,11 +119,17 @@ pub(crate) async fn read_signal_attachments(
 /// out to the dashboard.
 ///
 /// The watcher runs until cancelled (when the agent finishes processing).
+// The `hooks` parameter pushed this over clippy's 7-arg heuristic;
+// grouping the delivery targets into a struct would obscure more than
+// it helps (same call as `#[allow(clippy::too_many_arguments)]` in
+// `jyc-services::smtp` and `jyc-agent::session`).
+#[allow(clippy::too_many_arguments)]
 pub async fn watch_pending_deliveries(
     topic_path: &Path,
     message_dir: &str,
     message: &InboundMessage,
     outbound: &dyn OutboundAdapter,
+    hooks: std::sync::Arc<HookSet>,
     cancel: CancellationToken,
     event_bus: Option<TopicEventBusRef>,
     topic_name: &str,
@@ -108,6 +159,22 @@ pub async fn watch_pending_deliveries(
             text_len = reply_text.len(),
             "Delivering pending message from MCP tool (background watcher)"
         );
+
+        // reply_send hook: exit-2 suppresses this delivery. The signal
+        // files are cleaned up identically to a delivered reply, so a
+        // suppressed message never re-fires on the next poll.
+        if let Some(reason) =
+            reply_blocked_by_hook(&hooks, topic_name, topic_path, message, &reply_text).await
+        {
+            tracing::warn!(
+                topic = %topic_name,
+                reason = %reason,
+                "reply_send hook suppressed pending delivery"
+            );
+            tokio::fs::remove_file(&signal_path).await.ok();
+            tokio::fs::remove_file(&reply_path).await.ok();
+            continue;
+        }
 
         // Deliver via outbound adapter (channel-agnostic), carrying any
         // attachments the reply tool recorded in the signal file.
@@ -292,6 +359,7 @@ mod tests {
                 message_dir,
                 &test_message(),
                 &outbound,
+                std::sync::Arc::new(HookSet::default()),
                 cancel_clone,
                 None,
                 "test",
@@ -348,6 +416,7 @@ mod tests {
                 message_dir,
                 &test_message(),
                 &outbound,
+                std::sync::Arc::new(HookSet::default()),
                 cancel_clone,
                 None,
                 "test",
@@ -389,6 +458,7 @@ mod tests {
                 message_dir,
                 &test_message(),
                 &outbound,
+                std::sync::Arc::new(HookSet::default()),
                 cancel_clone,
                 None,
                 "test",
@@ -430,6 +500,7 @@ mod tests {
                 message_dir,
                 &test_message(),
                 &outbound,
+                std::sync::Arc::new(HookSet::default()),
                 cancel_clone,
                 None,
                 "test",
@@ -464,6 +535,7 @@ mod tests {
                 message_dir,
                 &test_message(),
                 &outbound,
+                std::sync::Arc::new(HookSet::default()),
                 cancel_clone,
                 None,
                 "test",
@@ -506,6 +578,7 @@ mod tests {
                 message_dir,
                 &test_message(),
                 &outbound,
+                std::sync::Arc::new(HookSet::default()),
                 cancel_clone,
                 Some(bus_for_watcher),
                 "test-topic",
@@ -529,5 +602,46 @@ mod tests {
         assert_eq!(delivered.lock().unwrap().len(), 1);
         assert!(!jyc_dir.join("reply-sent.flag").exists());
         assert!(!jyc_dir.join("reply.md").exists());
+    }
+
+    #[tokio::test]
+    async fn reply_blocked_by_hook_fast_paths_and_reason() {
+        let msg = test_message();
+        let dir = std::path::Path::new(".");
+        // Empty set → immediate None without spawning.
+        assert_eq!(
+            reply_blocked_by_hook(&HookSet::default(), "t", dir, &msg, "hi").await,
+            None
+        );
+        // exit-2 → the hook's stderr.
+        let blocker = HookSet::for_agent(
+            &[jyc_types::config::HookConfig {
+                event: "reply_send".into(),
+                matcher: None,
+                shell: vec!["sh".into(), "-c".into(), "echo censor >&2; exit 2".into()],
+                timeout: None,
+            }],
+            "",
+        );
+        assert_eq!(
+            reply_blocked_by_hook(&blocker, "t", dir, &msg, "hi")
+                .await
+                .as_deref(),
+            Some("censor")
+        );
+        // exit-0 → None (proceed).
+        let pass = HookSet::for_agent(
+            &[jyc_types::config::HookConfig {
+                event: "reply_send".into(),
+                matcher: None,
+                shell: vec!["true".into()],
+                timeout: None,
+            }],
+            "",
+        );
+        assert_eq!(
+            reply_blocked_by_hook(&pass, "t", dir, &msg, "hi").await,
+            None
+        );
     }
 }

@@ -3,8 +3,8 @@ use regex::Regex;
 
 use crate::channel::ChannelPattern;
 use crate::config::AppConfig;
-use crate::config::CustomCommand;
 use crate::config::agent::AgentConfig;
+use crate::config::{CustomCommand, HookConfig, HookEvent};
 
 /// A single validation error with context.
 #[derive(Debug)]
@@ -444,6 +444,21 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
         }
     }
 
+    // Hooks — global `[[hooks]]` then per-agent (no dedup/override:
+    // hooks are an ordered union, globals first).
+    for (i, hook) in config.hooks.iter().enumerate() {
+        validate_hook(&format!("hooks[{i}]"), hook, &mut errors);
+    }
+    for (agent_name, agent) in &config.agents {
+        for (i, hook) in agent.hooks.iter().enumerate() {
+            validate_hook(
+                &format!("agents.{agent_name}.hooks[{i}]"),
+                hook,
+                &mut errors,
+            );
+        }
+    }
+
     // Agents: per-agent skill / tool / mcps sanity, pipe exclusivity,
     // reserved-name check, and the synthesized "agents" collision.
     validate_agents(config, &mut errors);
@@ -859,6 +874,42 @@ fn validate_custom_command(
             });
         }
         _ => {}
+    }
+}
+
+/// Validate one `[[hooks]]` entry (global or per-agent).
+fn validate_hook(prefix: &str, hook: &HookConfig, errors: &mut Vec<ValidationError>) {
+    if HookEvent::parse(&hook.event).is_none() {
+        errors.push(ValidationError {
+            path: format!("{prefix}.event"),
+            message: format!(
+                "unknown event '{}' (supported jyc: message_received, pre_tool_use, \
+                 post_tool_use, post_tool_use_failure, reply_send, session_start, \
+                 session_end; Claude Code: UserPromptSubmit, PreToolUse, PostToolUse, \
+                 Stop, SessionStart, SessionEnd)",
+                hook.event
+            ),
+        });
+    }
+    if let Some(m) = &hook.matcher
+        && let Err(e) = validate_regex(m)
+    {
+        errors.push(ValidationError {
+            path: format!("{prefix}.matcher"),
+            message: e.to_string(),
+        });
+    }
+    if hook.shell.is_empty() || hook.shell[0].trim().is_empty() {
+        errors.push(ValidationError {
+            path: format!("{prefix}.shell"),
+            message: "must contain at least one element (the executable)".into(),
+        });
+    }
+    if hook.timeout == Some(0) {
+        errors.push(ValidationError {
+            path: format!("{prefix}.timeout"),
+            message: "must be > 0 (seconds before the hook is killed)".into(),
+        });
     }
 }
 

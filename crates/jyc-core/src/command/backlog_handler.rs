@@ -486,6 +486,7 @@ mode = "agent"
             template_dirs: PathBuf::from("/tmp/test/templates").into(),
             config_path: None,
             per_agent_commands: vec![],
+            hooks: Default::default(),
         }
     }
 

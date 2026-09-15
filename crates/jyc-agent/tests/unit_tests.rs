@@ -1970,6 +1970,7 @@ mod skills {
             mcps: Vec::new(),
             scheduler: jyc_types::SchedulerConfig::default(),
             commands: Vec::new(),
+            hooks: Vec::new(),
             agents: std::collections::HashMap::new(),
         };
         JycAgentService::new(

@@ -1569,4 +1569,46 @@ mod shell_command_timeout_tests {
             std::time::Duration::from_secs(30)
         );
     }
+
+    #[test]
+    fn hook_event_parses_both_vocabularies() {
+        assert_eq!(
+            HookEvent::parse("pre_tool_use"),
+            Some((HookEvent::PreToolUse, HookDialect::Jyc))
+        );
+        assert_eq!(
+            HookEvent::parse("PreToolUse"),
+            Some((HookEvent::PreToolUse, HookDialect::Claude))
+        );
+        assert_eq!(
+            HookEvent::parse("UserPromptSubmit"),
+            Some((HookEvent::MessageReceived, HookDialect::Claude))
+        );
+        assert_eq!(
+            HookEvent::parse("Stop"),
+            Some((HookEvent::ReplySend, HookDialect::Claude))
+        );
+        // jyc-only event has no CC name, and unsupported CC events are rejected.
+        assert_eq!(HookEvent::parse("PostToolUseFailure"), None);
+        assert_eq!(HookEvent::parse("SubagentStop"), None);
+        assert_eq!(HookEvent::parse("PreCompact"), None);
+    }
+
+    #[test]
+    fn hook_timeout_defaults_and_overrides() {
+        let base = |timeout: Option<u64>| HookConfig {
+            event: "pre_tool_use".into(),
+            matcher: None,
+            shell: vec!["true".into()],
+            timeout,
+        };
+        assert_eq!(
+            base(None).hook_timeout(),
+            std::time::Duration::from_secs(DEFAULT_HOOK_TIMEOUT_SECS)
+        );
+        assert_eq!(
+            base(Some(5)).hook_timeout(),
+            std::time::Duration::from_secs(5)
+        );
+    }
 }

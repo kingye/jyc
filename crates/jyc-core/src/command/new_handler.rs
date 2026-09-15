@@ -81,6 +81,8 @@ impl CommandHandler for NewCommandHandler {
             });
         }
 
+        context.session_end_hook("new").await;
+
         let state = jyc_types::state_dir::jyc_dir(&context.topic_name, &context.topic_path);
         let agent_path = state.join("agent-session.json");
         let context_path = state.join("agent-context.json");
@@ -138,6 +140,7 @@ impl CommandHandler for NewCommandHandler {
             "Topic refreshed via /new command"
         );
 
+        context.session_start_hook("new").await;
         Ok(CommandResult {
             success: true,
             message: msg,
@@ -189,6 +192,7 @@ mode = "agent"
             channel_type: "websocket".to_string(),
             config_path: None,
             per_agent_commands: vec![],
+            hooks: Default::default(),
         }
     }
 

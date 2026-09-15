@@ -152,6 +152,7 @@ fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {
         mcps: Vec::new(),
         scheduler: jyc_types::SchedulerConfig::default(),
         commands: Vec::new(),
+        hooks: Vec::new(),
         agents: std::collections::HashMap::new(),
     }
 }

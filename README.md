@@ -639,5 +639,6 @@ This is useful for diagnosing reply delivery failures.
 |----------|---------|
 | [DESIGN.md](DESIGN.md) | Architecture, data flow, component design, API reference |
 | [docs/architecture/context.md](docs/architecture/context.md) | Context strategies, sliding window, history notes, token safety nets |
+| [docs/hooks.md](docs/hooks.md) | Lifecycle hooks — config, events, payload, Claude Code compatibility |
 | [CHANGELOG.md](CHANGELOG.md) | Version history |
 | [docker/README.md](docker/README.md) | Docker/Podman deployment |

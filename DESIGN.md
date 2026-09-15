@@ -453,6 +453,38 @@ Multiple agent rows may pin the same topic dir (e.g. one repo shared by
   instances must pass `JYC_WORKDIR` in that server's `environment` for
   relocated state to resolve.
 
+## Lifecycle Hooks
+
+Operator-configured external commands (`[[hooks]]` global +
+`[[agents.<name>.hooks]]`, merged in that order exactly like
+`[[commands]]`) run at agent-layer chokepoints via argv spawn with the
+event JSON on stdin; exit 2 blocks the action, everything else fails
+open. Design decisions:
+
+- **Agent layer only** (two-layer deployment: outer channels forward, the
+  websocket-based agent does the AI work): `message_received` +
+  `session_start(startup)` gate in `worker::process_message`, tool events
+  wrap `ToolRegistry::execute` (hooks attached to the cached, per-agent
+  registry so config reload refreshes them), `reply_send` gates every AI
+  reply delivery path (watcher/tool/fallback), session events fire in the
+  `/reset`/`/new`/`/close` handlers (`session_end` before teardown so
+  hooks can archive).
+- **Dual dialect**: the config event spelling (jyc snake_case vs Claude
+  Code PascalCase) selects the stdin payload shape — CC-shaped payloads
+  make existing CC hook scripts reusable. Best-effort fields: the jyc
+  dialect always carries `hook_event_name`/`agent`/`topic`/`cwd` (CC:
+  `hook_event_name`/`session_id`/`cwd`); everything else — channel,
+  sender, `metadata` (forwarded senders ride it), tool/reply fields —
+  appears only when the site has it.
+- **Executor** lives in `jyc-utils::hooks` (both `jyc-core` and
+  `jyc-agent` depend on it); the vocabulary + config types live in
+  `jyc-types`. Hook sets compile per message (regex cost ≈ µs, same
+  per-message build pattern as the command registry).
+- **Trust boundary**: config-file only — never topic-local `.jyc/`
+  definitions (the agent writes that directory; loading commands from it
+  would be prompt-injection with a shell). Payload is untrusted input for
+  the script. Full docs: `docs/hooks.md`.
+
 ## Image Input & Multimodal Support
 
 JYC supports vision-capable models through two complementary paths:

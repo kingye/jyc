@@ -10,7 +10,9 @@ anyhow = "1"
 dirs = "6"
 thiserror = "2"
 regex = "1"
-tokio = { version = "1", features = ["fs", "rt-multi-thread", "macros"] }
+serde_json = "1"
+tracing = "0.1"
+tokio = { version = "1", features = ["fs", "rt-multi-thread", "macros", "process", "time", "io-util"] }
 getrandom = "0.4"
 
 [dev-dependencies]

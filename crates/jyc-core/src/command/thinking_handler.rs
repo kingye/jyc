@@ -109,6 +109,7 @@ mode = "agent"
             channel_type: "websocket".to_string(),
             config_path: None,
             per_agent_commands: vec![],
+            hooks: Default::default(),
         }
     }
 

@@ -2,6 +2,15 @@
 
 ### Added
 
+- Claude Code-compatible lifecycle **hooks** (`[[hooks]]` global +
+  `[[agents.<name>.hooks]]`, merged like `[[commands]]`): external commands
+  run at 7 agent-layer events (`message_received`, `pre_tool_use`,
+  `post_tool_use`, `post_tool_use_failure`, `reply_send`, `session_start`,
+  `session_end`) with the event JSON on stdin. Exit 2 blocks the action
+  (AI dispatch / tool call / reply delivery); other codes and timeouts fail
+  open. Writing an event in Claude Code spelling (`PreToolUse`, `Stop`, …)
+  also switches that hook's payload to the CC field layout, so existing CC
+  hook scripts work unmodified. See `docs/hooks.md`. (#774)
 - MCP OAuth 2.1 support for remote MCP servers (`[mcps.oauth_dcr]`): endpoint
   discovery, Dynamic Client Registration and browser-consent authorization via
   the new one-time `jyc mcp auth <name>` command (headless paste-back flow).

@@ -58,6 +58,7 @@ fn test_context_with_args(topic_path: &std::path::Path, args: &[&str]) -> Comman
         template_dirs: PathBuf::from("/tmp/test/templates").into(),
         config_path: None,
         per_agent_commands: vec![],
+        hooks: Default::default(),
     }
 }
 
@@ -175,6 +176,7 @@ async fn test_close_command_invalid_topic_path() {
         template_dirs: PathBuf::from("/tmp/test/templates").into(),
         config_path: None,
         per_agent_commands: vec![],
+        hooks: Default::default(),
     };
 
     let result = handler.execute(ctx).await.unwrap();

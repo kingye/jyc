@@ -166,6 +166,12 @@ pub struct AppConfig {
     /// User-defined slash commands (e.g. `/review`), declared as `[[commands]]`.
     #[serde(default)]
     pub commands: Vec<CustomCommand>,
+
+    /// Global lifecycle hooks, declared as `[[hooks]]`. Apply to every agent.
+    /// Merged with (and executed before) per-agent
+    /// `[[agents.<name>.hooks]]` — same two-level structure as `[[commands]]`.
+    #[serde(default)]
+    pub hooks: Vec<HookConfig>,
 }
 
 /// A user-defined slash command declared in `config.toml` as `[[commands]]`.
@@ -248,6 +254,131 @@ impl CustomCommand {
     /// (whole seconds) when set, else [`DEFAULT_SHELL_TIMEOUT_SECS`].
     pub fn shell_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.timeout.unwrap_or(DEFAULT_SHELL_TIMEOUT_SECS))
+    }
+}
+
+/// A configured external hook command, declared as global `[[hooks]]` or
+/// per-agent `[[agents.<name>.hooks]]` (same two-level structure and
+/// `shell`-flavor grammar as [`CustomCommand`]).
+///
+/// The hook command is spawned with the event payload JSON on stdin;
+/// exit code 0 proceeds, exit code 2 blocks the action (stderr is fed
+/// back to the model for tool events). Other exit codes and timeouts
+/// fail open with a warning. Execution lives in `jyc_utils::hooks`.
+///
+/// Hooks are an operator-trust surface (config files only — never topic
+/// directories): the config is trusted, the payload is not.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HookConfig {
+    /// Event name. Accepts both vocabularies — jyc snake_case
+    /// (`pre_tool_use`, `message_received`, …) and Claude Code PascalCase
+    /// (`PreToolUse`, `UserPromptSubmit`, …). The spelling picks the payload
+    /// dialect, so CC hook scripts can be reused verbatim
+    /// (see [`HookEvent::parse`]).
+    pub event: String,
+
+    /// Optional regex filter. Subject depends on the event: tool events
+    /// match the tool name; `message_received`/`reply_send` match the
+    /// topic name; `session_start`/`session_end` match source/reason.
+    /// Unset → matches all.
+    #[serde(default)]
+    pub matcher: Option<String>,
+
+    /// Direct argv to execute via `tokio::process::Command` — no shell
+    /// interpolation (wrap with `["sh", "-c", "..."]` for pipes).
+    pub shell: Vec<String>,
+
+    /// Grace period in whole seconds before the hook process is killed;
+    /// unset → [`DEFAULT_HOOK_TIMEOUT_SECS`].
+    #[serde(default)]
+    pub timeout: Option<u64>,
+}
+
+/// Default [`HookConfig::timeout`], in seconds. Same value as
+/// [`DEFAULT_SHELL_TIMEOUT_SECS`] but a distinct knob on purpose.
+pub const DEFAULT_HOOK_TIMEOUT_SECS: u64 = 30;
+
+impl HookConfig {
+    /// Resolve the hook kill timeout: per-hook `timeout` (whole seconds)
+    /// when set, else [`DEFAULT_HOOK_TIMEOUT_SECS`].
+    pub fn hook_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.timeout.unwrap_or(DEFAULT_HOOK_TIMEOUT_SECS))
+    }
+}
+
+/// Which stdin payload shape a hook receives, keyed off the event-name
+/// spelling used in the config. Exit-code semantics are identical in both
+/// dialects (0 = proceed, 2 = block); only the JSON differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookDialect {
+    /// jyc-native field names (agent/topic/content/…).
+    Jyc,
+    /// Claude Code-compatible field names (session_id/tool_name/prompt/…),
+    /// so existing CC hook scripts work unmodified.
+    Claude,
+}
+
+/// Canonical set of hook events. Both name vocabularies map onto these
+/// variants; each site executes the variant, and the recorded dialect
+/// decides serialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HookEvent {
+    /// A message is about to be dispatched to the AI (≈ CC UserPromptSubmit).
+    MessageReceived,
+    /// A tool call is about to execute (≈ CC PreToolUse).
+    PreToolUse,
+    /// A tool call finished (≈ CC PostToolUse).
+    PostToolUse,
+    /// A tool call failed (no CC counterpart; jyc-only event).
+    PostToolUseFailure,
+    /// An AI reply is about to be delivered (≈ CC Stop).
+    ReplySend,
+    /// A topic session began: startup / reset / new (≈ CC SessionStart).
+    SessionStart,
+    /// A topic session is being torn down: reset / new / close
+    /// (≈ CC SessionEnd).
+    SessionEnd,
+}
+
+impl HookEvent {
+    /// Parse a configured event name into `(event, dialect)`.
+    ///
+    /// jyc snake_case names produce jyc-dialect payloads; Claude Code
+    /// PascalCase names produce CC-shaped payloads — the same chokepoint,
+    /// different field names, so CC scripts are reusable verbatim.
+    /// `None` for unknown names (config validation rejects them).
+    pub fn parse(raw: &str) -> Option<(Self, HookDialect)> {
+        use HookDialect::{Claude, Jyc};
+        let ev = match raw {
+            "message_received" => return Some((Self::MessageReceived, Jyc)),
+            "pre_tool_use" => return Some((Self::PreToolUse, Jyc)),
+            "post_tool_use" => return Some((Self::PostToolUse, Jyc)),
+            "post_tool_use_failure" => return Some((Self::PostToolUseFailure, Jyc)),
+            "reply_send" => return Some((Self::ReplySend, Jyc)),
+            "session_start" => return Some((Self::SessionStart, Jyc)),
+            "session_end" => return Some((Self::SessionEnd, Jyc)),
+            "UserPromptSubmit" => Self::MessageReceived,
+            "PreToolUse" => Self::PreToolUse,
+            "PostToolUse" => Self::PostToolUse,
+            "Stop" => Self::ReplySend,
+            "SessionStart" => Self::SessionStart,
+            "SessionEnd" => Self::SessionEnd,
+            _ => return None,
+        };
+        Some((ev, Claude))
+    }
+
+    /// jyc-canonical name (used as `hook_event_name` in jyc-dialect payloads).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MessageReceived => "message_received",
+            Self::PreToolUse => "pre_tool_use",
+            Self::PostToolUse => "post_tool_use",
+            Self::PostToolUseFailure => "post_tool_use_failure",
+            Self::ReplySend => "reply_send",
+            Self::SessionStart => "session_start",
+            Self::SessionEnd => "session_end",
+        }
     }
 }
 

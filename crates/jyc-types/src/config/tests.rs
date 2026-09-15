@@ -447,14 +447,62 @@ enabled = true
                 auth_header,
                 custom_headers,
                 oauth,
+                oauth_dcr,
             } => {
                 assert_eq!(url, "https://mcp.example.com/handler");
                 assert!(*enabled);
                 assert!(auth_header.is_none());
                 assert!(custom_headers.is_empty());
                 assert!(oauth.is_none());
+                assert!(oauth_dcr.is_none());
             }
             _ => panic!("Expected Remote variant for remote_mcp"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_oauth_dcr_deserialize() {
+        let config = load_config_from_str(
+            r#"
+[[mcps]]
+name = "jira"
+type = "remote"
+url = "https://jira.example.com/mcp"
+[mcps.oauth_dcr]
+
+[[mcps]]
+name = "other"
+type = "remote"
+url = "https://other.example.com/mcp"
+[mcps.oauth_dcr]
+scopes = ["jira.read"]
+redirect_uri = "http://localhost:1999/callback"
+
+[agent]
+enabled = true
+mode = "agent"
+"#,
+        )
+        .unwrap();
+        // Empty block is a valid activation with all-default fields.
+        match &config.mcps[0].kind {
+            super::McpServerKind::Remote { oauth_dcr, .. } => {
+                let dcr = oauth_dcr.as_ref().expect("empty block → Some");
+                assert!(dcr.scopes.is_empty());
+                assert!(dcr.redirect_uri.is_none());
+            }
+            other => panic!("expected Remote, got {other:?}"),
+        }
+        match &config.mcps[1].kind {
+            super::McpServerKind::Remote { oauth_dcr, .. } => {
+                let dcr = oauth_dcr.as_ref().unwrap();
+                assert_eq!(dcr.scopes, vec!["jira.read".to_string()]);
+                assert_eq!(
+                    dcr.redirect_uri.as_deref(),
+                    Some("http://localhost:1999/callback")
+                );
+            }
+            other => panic!("expected Remote, got {other:?}"),
         }
     }
 
@@ -1084,6 +1132,7 @@ mode = "static"
                 auth_header: None,
                 custom_headers: Default::default(),
                 oauth: None,
+                oauth_dcr: None,
             },
             enabled_tools: None,
             timeout_ms: None,

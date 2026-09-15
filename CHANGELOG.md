@@ -2,6 +2,12 @@
 
 ### Added
 
+- MCP OAuth 2.1 support for remote MCP servers (`[mcps.oauth_dcr]`): endpoint
+  discovery, Dynamic Client Registration and browser-consent authorization via
+  the new one-time `jyc mcp auth <name>` command (headless paste-back flow).
+  `jyc serve` stores the tokens under the data dir and refreshes them
+  automatically at every MCP connect — no restart or re-auth until the refresh
+  token itself expires. (#772)
 - `/skill on|off|reset <name>` and `/mcp on|off|reset <name>` slash commands:
   toggle one skill or MCP server on/off for a single topic at runtime
   (persisted in `.jyc/*-override.json` until reset; takes effect from the next

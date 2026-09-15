@@ -3,6 +3,7 @@
 //! Defines the `Tool` trait and built-in tool implementations.
 
 pub mod builtin;
+pub mod mcp_auth;
 pub mod mcp_bridge;
 pub mod mcp_client;
 pub mod registry;

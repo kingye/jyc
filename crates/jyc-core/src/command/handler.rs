@@ -3,7 +3,9 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use jyc_types::config::HookEvent;
 use jyc_types::{AppConfig, CustomCommand};
+use jyc_utils::hooks::{HookCtx, HookSet};
 
 /// Context passed to a command handler during execution.
 #[derive(Clone)]
@@ -34,6 +36,11 @@ pub struct CommandContext {
     /// Used by `/?` so it reflects what actually dispatches at runtime
     /// (per-agent wins on collision with globals).
     pub per_agent_commands: Vec<CustomCommand>,
+    /// Compiled hooks for this topic's agent scope (global `[[hooks]]`
+    /// merged with `[[agents.<pattern>.hooks]]`). Session lifecycle
+    /// commands (`/reset`, `/new`, `/close`) fire notification events
+    /// through it; the default empty set no-ops instantly.
+    pub hooks: Arc<HookSet>,
 }
 
 impl Default for CommandContext {
@@ -53,7 +60,41 @@ impl Default for CommandContext {
             template_dirs: crate::template_dirs::TemplateDirs::default(),
             config_path: None,
             per_agent_commands: vec![],
+            hooks: Arc::new(HookSet::default()),
         }
+    }
+}
+
+impl CommandContext {
+    /// Fire a notification `session_start` hook (source: startup|reset|new).
+    pub(crate) async fn session_start_hook(&self, source: &str) {
+        self.session_hook(HookEvent::SessionStart, source, true)
+            .await;
+    }
+
+    /// Fire a notification `session_end` hook (reason: reset|new|close),
+    /// before the destructive action so hooks can still archive state.
+    pub(crate) async fn session_end_hook(&self, reason: &str) {
+        self.session_hook(HookEvent::SessionEnd, reason, false)
+            .await;
+    }
+
+    async fn session_hook(&self, event: HookEvent, cause: &str, start: bool) {
+        if self.hooks.is_empty() {
+            return;
+        }
+        let mut ctx = HookCtx {
+            topic: self.topic_name.clone(),
+            cwd: self.topic_path.display().to_string(),
+            channel: Some(self.channel.clone()),
+            ..Default::default()
+        };
+        if start {
+            ctx.source = Some(cause.to_string());
+        } else {
+            ctx.reason = Some(cause.to_string());
+        }
+        self.hooks.run(event, Some(cause), &ctx).await;
     }
 }
 

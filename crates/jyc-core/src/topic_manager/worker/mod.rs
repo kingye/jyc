@@ -35,8 +35,12 @@ use crate::command::template_handler::TemplateCommandHandler;
 use crate::command::thinking_handler::ThinkingCommandHandler;
 use crate::command::unpin_handler::UnpinCommandHandler;
 use crate::message_storage::{MessageStorage, StoreResult};
-use crate::pending_delivery::{read_signal_attachments, watch_pending_deliveries};
+use crate::pending_delivery::{
+    json_metadata, read_signal_attachments, reply_blocked_by_hook, watch_pending_deliveries,
+};
+use jyc_types::config::HookEvent;
 use jyc_types::{OutboundAdapter, QueueItem};
+use jyc_utils::hooks::{HookCtx, HookOutcome, HookSet};
 
 use super::TopicManager;
 
@@ -87,7 +91,8 @@ pub(crate) async fn process_message(
     // Without this, the proxy's InboundMessage has empty metadata and
     // channel-specific reply routing fails (e.g., github_number missing → 404).
     let topic_meta_path = jyc_dir(topic_name, &store_result.topic_path).join("topic-meta.json");
-    if !topic_meta_path.exists() && item.message.channel_uid != "dashboard" {
+    let topic_is_new = !topic_meta_path.exists();
+    if topic_is_new && item.message.channel_uid != "dashboard" {
         let meta = serde_json::json!({
             "channel_uid": item.message.channel_uid,
             "external_id": item.message.external_id,
@@ -180,6 +185,11 @@ pub(crate) async fn process_message(
         &mut command_registry,
     );
 
+    // Hook set for this topic: global [[hooks]] + the routed agent's.
+    // Built per message (same lifetime as the command registry), so a
+    // config reload applies immediately. Empty for hook-free configs.
+    let hooks = build_hook_set(&config.load(), &item.pattern_match.pattern_name);
+
     let cmd_context = CommandContext {
         topic_name: topic_name.to_string(),
         args: vec![],
@@ -191,6 +201,7 @@ pub(crate) async fn process_message(
         template_dirs: template_dirs.clone(),
         config_path: topic_manager.config_path.clone(),
         per_agent_commands: per_agent_commands.clone(),
+        hooks: hooks.clone(),
     };
 
     let cmd_output = command_registry
@@ -293,6 +304,42 @@ pub(crate) async fn process_message(
         m
     };
 
+    // ── 5.0 EXTERNAL HOOKS: session_start + message_received ──────────
+    // Notification `session_start(startup)` fires once for a brand-new
+    // topic; blocking `message_received` gates the AI dispatch itself —
+    // the message is already in the chat log, it just never reaches the
+    // model. Command-only and question-answer messages returned earlier.
+    if !hooks.is_empty() {
+        let base_ctx = || HookCtx {
+            topic: topic_name.to_string(),
+            cwd: store_result.topic_path.display().to_string(),
+            channel: Some(message.channel.clone()),
+            message_content: message.content.text.clone(),
+            sender: Some(message.sender.clone()),
+            sender_address: Some(message.sender_address.clone()),
+            metadata: json_metadata(&message.metadata),
+            ..Default::default()
+        };
+        if topic_is_new {
+            let mut sc = base_ctx();
+            sc.source = Some("startup".into());
+            hooks
+                .run(HookEvent::SessionStart, Some("startup"), &sc)
+                .await;
+        }
+        if let HookOutcome::Block(reason) = hooks
+            .run(HookEvent::MessageReceived, Some(topic_name), &base_ctx())
+            .await
+        {
+            tracing::info!(
+                topic = %topic_name,
+                reason = %reason,
+                "message_received hook blocked AI dispatch"
+            );
+            return Ok(());
+        }
+    }
+
     // Spawn a background task to watch for pending question deliveries.
     // The question MCP tool writes reply.md + reply-sent.flag during the SSE stream.
     // This watcher detects them and delivers immediately via the outbound adapter,
@@ -305,6 +352,7 @@ pub(crate) async fn process_message(
     let delivery_outbound = outbound.clone();
     let delivery_topic_manager = topic_manager.clone();
     let delivery_topic_name = topic_name.to_string();
+    let delivery_hooks = hooks.clone();
     let delivery_handle = tokio::spawn(async move {
         let event_bus = delivery_topic_manager
             .get_event_bus(&delivery_topic_name)
@@ -314,6 +362,7 @@ pub(crate) async fn process_message(
             &delivery_message_dir,
             &delivery_message,
             &*delivery_outbound,
+            delivery_hooks,
             delivery_cancel_child,
             event_bus,
             &delivery_topic_name,
@@ -377,7 +426,8 @@ pub(crate) async fn process_message(
                             template_dirs: template_dirs.clone(),
                             config_path: topic_manager.config_path.clone(),
                             per_agent_commands: per_agent_commands.clone(),
-                        };
+
+                            hooks: Default::default(),};
                         match command_registry.process_commands(trimmed, &cmd_ctx).await {
                             Ok(output) => {
                                 if !output.results.is_empty() {
@@ -552,36 +602,59 @@ pub(crate) async fn process_message(
             };
 
             if let Some(ref reply_text) = reply_text {
-                tracing::info!(
-                    text_len = reply_text.len(),
-                    "Delivering reply from MCP tool"
-                );
-
-                // Read signal file for attachment info
-                let attachments =
-                    read_signal_attachments(&signal_path, &store_result.topic_path).await;
-
-                outbound
-                    .send_reply(
-                        &message,
-                        reply_text,
-                        &store_result.topic_path,
-                        &store_result.message_dir,
-                        attachments.as_deref(),
-                    )
-                    .await?;
-                tracing::info!("Reply delivered via outbound adapter");
-                topic_manager
-                    .publish_reply_sent(topic_name, reply_text)
-                    .await;
-                // Clean up signal files after successful delivery to prevent re-delivery on restart
-                tokio::fs::remove_file(&signal_path).await.ok();
-                let reply_md_path = jyc_dir(topic_name, &store_result.topic_path).join("reply.md");
-                tokio::fs::remove_file(&reply_md_path).await.ok();
-                if result.reply_auto_delivered {
-                    topic_manager.metrics.reply_by_auto(topic_name);
+                if let Some(reason) = reply_blocked_by_hook(
+                    &hooks,
+                    topic_name,
+                    &store_result.topic_path,
+                    &message,
+                    reply_text,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        topic = %topic_name,
+                        reason = %reason,
+                        "reply_send hook suppressed delivery"
+                    );
+                    // Same bookkeeping as a delivered reply — clean up the
+                    // signal files so the suppression never re-fires.
+                    tokio::fs::remove_file(&signal_path).await.ok();
+                    let reply_md_gone =
+                        jyc_dir(topic_name, &store_result.topic_path).join("reply.md");
+                    tokio::fs::remove_file(&reply_md_gone).await.ok();
                 } else {
-                    topic_manager.metrics.reply_by_tool(topic_name);
+                    tracing::info!(
+                        text_len = reply_text.len(),
+                        "Delivering reply from MCP tool"
+                    );
+
+                    // Read signal file for attachment info
+                    let attachments =
+                        read_signal_attachments(&signal_path, &store_result.topic_path).await;
+
+                    outbound
+                        .send_reply(
+                            &message,
+                            reply_text,
+                            &store_result.topic_path,
+                            &store_result.message_dir,
+                            attachments.as_deref(),
+                        )
+                        .await?;
+                    tracing::info!("Reply delivered via outbound adapter");
+                    topic_manager
+                        .publish_reply_sent(topic_name, reply_text)
+                        .await;
+                    // Clean up signal files after successful delivery to prevent re-delivery on restart
+                    tokio::fs::remove_file(&signal_path).await.ok();
+                    let reply_md_path =
+                        jyc_dir(topic_name, &store_result.topic_path).join("reply.md");
+                    tokio::fs::remove_file(&reply_md_path).await.ok();
+                    if result.reply_auto_delivered {
+                        topic_manager.metrics.reply_by_auto(topic_name);
+                    } else {
+                        topic_manager.metrics.reply_by_tool(topic_name);
+                    }
                 }
             } else {
                 // The reply tool ran (reply_sent_by_tool=true) but its text
@@ -612,23 +685,46 @@ pub(crate) async fn process_message(
             text_len = text.len(),
             "Fallback: sending AI text via outbound"
         );
-        outbound
-            .send_reply(
-                &message,
-                text,
-                &store_result.topic_path,
-                &store_result.message_dir,
-                None,
-            )
-            .await?;
-        tracing::info!("Fallback reply sent");
-        topic_manager.publish_reply_sent(topic_name, text).await;
-        topic_manager.metrics.reply_by_fallback(topic_name);
+        if let Some(reason) =
+            reply_blocked_by_hook(&hooks, topic_name, &store_result.topic_path, &message, text)
+                .await
+        {
+            tracing::warn!(
+                topic = %topic_name,
+                reason = %reason,
+                "reply_send hook suppressed fallback reply"
+            );
+        } else {
+            outbound
+                .send_reply(
+                    &message,
+                    text,
+                    &store_result.topic_path,
+                    &store_result.message_dir,
+                    None,
+                )
+                .await?;
+            tracing::info!("Fallback reply sent");
+            topic_manager.publish_reply_sent(topic_name, text).await;
+            topic_manager.metrics.reply_by_fallback(topic_name);
+        }
     } else {
         tracing::warn!("No reply text from AI");
     }
 
     Ok(())
+}
+
+/// Compile the hook set for a topic: global `[[hooks]]` first, then the
+/// routed agent's `[[agents.<pattern>.hooks]]` (the pattern name is the
+/// agent key — same merge rule as `[[commands]]`). Non-agent topics
+/// (`pattern_name` empty) get the global set only.
+pub(crate) fn build_hook_set(cfg: &jyc_types::AppConfig, pattern_name: &str) -> Arc<HookSet> {
+    let mut hooks = cfg.hooks.clone();
+    if let Some(agent) = cfg.agents.get(pattern_name) {
+        hooks.extend(agent.hooks.iter().cloned());
+    }
+    Arc::new(HookSet::for_agent(&hooks, pattern_name))
 }
 
 /// Read skills from topic's .jyc/skills.json file.

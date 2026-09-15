@@ -47,6 +47,8 @@ impl CommandHandler for ResetCommandHandler {
             });
         }
 
+        context.session_end_hook("reset").await;
+
         // Clear agent-published files and the exchange-access token: /reset must
         // kill previously shared links (token rotation forces regeneration on
         // the next publish). Done for both the agent and fallback branches.
@@ -80,6 +82,7 @@ impl CommandHandler for ResetCommandHandler {
             agent
                 .reset_session(&context.topic_path, topic_name, &reset_config)
                 .await?;
+            context.session_start_hook("reset").await;
             Ok(CommandResult {
                 success: true,
                 message: "/reset: session reset successfully".into(),
@@ -94,6 +97,7 @@ impl CommandHandler for ResetCommandHandler {
             tokio::fs::remove_file(jyc_dir.join("agent-context.json"))
                 .await
                 .ok();
+            context.session_start_hook("reset").await;
             Ok(CommandResult {
                 success: true,
                 message: "/reset: session deleted (no agent service)".into(),
@@ -146,6 +150,7 @@ mode = "agent"
             channel_type: "websocket".to_string(),
             config_path: None,
             per_agent_commands: vec![],
+            hooks: Default::default(),
         }
     }
 

@@ -69,6 +69,10 @@ impl CommandHandler for CloseCommandHandler {
             });
         }
 
+        // Notification-only; fires before deletion so a hook can archive
+        // the topic directory while it still exists.
+        context.session_end_hook("close").await;
+
         match self.topic_manager.close_topic(topic_name).await {
             Ok(()) => {
                 tracing::info!(topic = %topic_name, "Topic closed successfully via /close command");

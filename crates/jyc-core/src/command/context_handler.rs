@@ -355,6 +355,7 @@ mode = "agent"
             channel_type: "email".into(),
             config_path: None,
             per_agent_commands: vec![],
+            hooks: Default::default(),
         }
     }
 

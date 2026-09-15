@@ -79,6 +79,12 @@ enum Commands {
         action: cli::skills::SkillsAction,
     },
 
+    /// MCP server maintenance (e.g. one-time OAuth authorization)
+    Mcp {
+        #[command(subcommand)]
+        action: cli::mcp::McpAction,
+    },
+
     /// MCP reply tool server (internal — spawned by agent)
     #[command(hide = true)]
     McpReplyTool,
@@ -232,6 +238,7 @@ async fn main() -> Result<()> {
         }
         Commands::Agents { action } => cli::agents::run(action).await,
         Commands::Skills { action } => cli::skills::run(action).await,
+        Commands::Mcp { action } => cli::mcp::run(action, &workdir, cli.workdir.is_some()).await,
         Commands::McpReplyTool => cli::mcp_reply::run().await,
         Commands::Stop(args) => cli::stop::run(args, &workdir).await,
         Commands::Token(args) => cli::token::run(args, &workdir),

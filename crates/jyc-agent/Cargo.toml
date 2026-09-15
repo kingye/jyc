@@ -40,7 +40,7 @@ glob = "0.3"
 regex = "1"
 base64 = "0.23"
 cron = { version = "0.17", default-features = false, features = ["serde"] }
-rmcp = { version = "3.1", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "3.1", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest", "auth"] }
 http = "1"
 
 [dev-dependencies]

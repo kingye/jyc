@@ -20,11 +20,13 @@ use tracing;
 use jyc_types::McpServerConfig;
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::{RoleClient, RunningService, serve_client};
+use rmcp::transport::auth::{AuthError, AuthorizationManager};
 use rmcp::transport::child_process::TokioChildProcess;
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
 };
 
+use crate::tools::mcp_auth::FileCredentialStore;
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
 /// Load all tools from a set of MCP server configurations.
@@ -188,6 +190,7 @@ async fn connect_and_list_tools(
             auth_header,
             custom_headers,
             oauth,
+            oauth_dcr,
         } => {
             if !enabled {
                 anyhow::bail!("remote MCP '{}' is disabled", cfg.name);
@@ -195,10 +198,13 @@ async fn connect_and_list_tools(
 
             let mut config = StreamableHttpClientTransportConfig::with_uri(url.as_str());
 
-            // Validation rejects both being set, so only one branch is taken.
-            let bearer = match oauth {
-                Some(oauth_cfg) => Some(fetch_oauth_token(&cfg.name, oauth_cfg, http).await?),
-                None => auth_header.clone(),
+            // Validation rejects more than one mechanism being set, so only one branch is taken.
+            let bearer = if oauth_dcr.is_some() {
+                Some(fetch_dcr_token(&cfg.name, url).await?)
+            } else if let Some(oauth_cfg) = oauth {
+                Some(fetch_oauth_token(&cfg.name, oauth_cfg, http).await?)
+            } else {
+                auth_header.clone()
             };
             if let Some(token) = bearer {
                 config = config.auth_header(token);
@@ -282,6 +288,44 @@ fn filter_tools_by_whitelist(
         }
         None => tools,
     }
+}
+
+/// Get an access token for an `oauth_dcr` MCP server from stored credentials.
+///
+/// The interactive half happens once, out-of-band, via `jyc mcp auth <name>`;
+/// from then on this is fully non-interactive: `initialize_from_store`
+/// restores the DCR-registered client id (re-running discovery and rejecting
+/// credentials minted by a different issuer) and `get_access_token`
+/// transparently refreshes a near-expiry token, persisting the rotated pair
+/// back to the same file. Re-authorization is needed only once the refresh
+/// token itself is expired or revoked.
+///
+/// Concurrent refreshes (several topics reloading the same server at once)
+/// can lose a one-time-use refresh token race: the loser reports the reauth
+/// error even though the winner just persisted a valid pair — the next load
+/// reads it and self-heals.
+async fn fetch_dcr_token(mcp_name: &str, url: &str) -> Result<String> {
+    let reauth = || {
+        anyhow::anyhow!(
+            "MCP '{mcp_name}': no usable OAuth credentials — run `jyc mcp auth {mcp_name}`, then restart jyc"
+        )
+    };
+    let store = FileCredentialStore::new(FileCredentialStore::path_for(mcp_name)?);
+    let mut manager = AuthorizationManager::new(url)
+        .await
+        .with_context(|| format!("MCP '{mcp_name}' OAuth setup failed"))?;
+    manager.set_credential_store(store);
+    if !manager
+        .initialize_from_store()
+        .await
+        .with_context(|| format!("MCP '{mcp_name}' OAuth credential init failed"))?
+    {
+        return Err(reauth());
+    }
+    manager.get_access_token().await.map_err(|e| match e {
+        AuthError::AuthorizationRequired | AuthError::TokenRefreshRejected(_) => reauth(),
+        other => anyhow::anyhow!("MCP '{mcp_name}' OAuth token failed: {other}"),
+    })
 }
 
 /// Fetch an OAuth2 access token using the client_credentials grant.

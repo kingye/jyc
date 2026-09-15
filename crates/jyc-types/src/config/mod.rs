@@ -60,7 +60,8 @@ pub enum McpServerKind {
         enabled: bool,
         /// Bearer token for authentication (without "Bearer " prefix).
         /// Sent as `Authorization: Bearer <token>` header with every request.
-        /// Mutually exclusive with `oauth`; if both are set, validation rejects.
+        /// Mutually exclusive with `oauth` and `oauth_dcr`; if more than one
+        /// is set, validation rejects.
         #[serde(default)]
         auth_header: Option<String>,
         /// Custom HTTP headers to include with every request.
@@ -73,7 +74,34 @@ pub enum McpServerKind {
         /// once per MCP connect — no auto-refresh; restart on expiry.
         #[serde(default)]
         oauth: Option<OAuthClientCredentialsConfig>,
+        /// MCP OAuth 2.1 flow: endpoint discovery + Dynamic Client
+        /// Registration + authorization code (PKCE). The interactive browser
+        /// authorization happens once via `jyc mcp auth <name>`; the daemon
+        /// then loads the stored credentials and auto-refreshes the access
+        /// token at connect time. Mutually exclusive with `auth_header` and
+        /// `oauth`.
+        #[serde(default)]
+        oauth_dcr: Option<OAuthDcrConfig>,
     },
+}
+
+/// MCP OAuth 2.1 (discovery + DCR + authorization code + PKCE) configuration.
+///
+/// All fields optional — an empty `[mcps.oauth_dcr]` block is a valid
+/// activation: scopes are then auto-selected from the authorization server's
+/// published metadata and the default paste-back redirect URI is used.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct OAuthDcrConfig {
+    /// Scopes to request. Empty = auto-select from server metadata.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    /// OAuth redirect URI for the authorization flow. Only used by the
+    /// one-time `jyc mcp auth` interactive step (paste-back: nothing listens;
+    /// the CLI parses the code from the URL you paste). The server must accept
+    /// this exact URI via DCR or pre-registration.
+    /// Default: `http://localhost:19876/callback`.
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
 }
 
 /// OAuth2 client_credentials grant configuration.

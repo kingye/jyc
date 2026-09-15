@@ -642,6 +642,7 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
                     url,
                     auth_header,
                     oauth,
+                    oauth_dcr,
                     ..
                 } => {
                     if url.is_empty() {
@@ -650,11 +651,14 @@ fn validate_pattern(prefix: &str, pattern: &ChannelPattern, errors: &mut Vec<Val
                             message: format!("MCP '{}' remote url is required", mcp.name),
                         });
                     }
-                    if auth_header.is_some() && oauth.is_some() {
+                    let mechanisms = auth_header.is_some() as u8
+                        + oauth.is_some() as u8
+                        + oauth_dcr.is_some() as u8;
+                    if mechanisms > 1 {
                         errors.push(ValidationError {
                             path: format!("{mcp_prefix}.auth_header"),
                             message: format!(
-                                "MCP '{}' cannot set both auth_header and oauth; pick one",
+                                "MCP '{}' cannot set both auth_header / oauth / oauth_dcr; pick one",
                                 mcp.name
                             ),
                         });

@@ -485,6 +485,86 @@ mode = "agent"
 }
 
 #[test]
+fn test_invalid_mcp_remote_auth_header_and_oauth_dcr_conflict() {
+    let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+
+[[channels.work.patterns]]
+name = "mcp-test"
+[channels.work.patterns.rules]
+
+[[channels.work.patterns.mcps]]
+name = "my-remote"
+type = "remote"
+url = "https://mcp.example.com"
+auth_header = "static-token"
+[channels.work.patterns.mcps.oauth_dcr]
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors.iter().any(
+            |e| e.path.contains("mcps[0].auth_header") && e.message.contains("cannot set both")
+        ),
+        "expected auth_header+oauth_dcr conflict error, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn test_valid_mcp_remote_oauth_dcr_alone() {
+    let toml = r#"
+[general]
+[channels.work]
+type = "email"
+[channels.work.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.work.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+
+[[channels.work.patterns]]
+name = "mcp-test"
+[channels.work.patterns.rules]
+
+[[channels.work.patterns.mcps]]
+name = "my-remote"
+type = "remote"
+url = "https://mcp.example.com"
+[channels.work.patterns.mcps.oauth_dcr]
+scopes = ["jira.read"]
+
+[agent]
+enabled = true
+mode = "agent"
+"#;
+    let config = load_config_from_str(toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+}
+
+#[test]
 fn test_invalid_mcp_remote_oauth_empty_client_id() {
     let toml = r#"
 [general]

@@ -11,7 +11,77 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rmcp::transport::auth::{AuthError, CredentialStore, StoredCredentials};
+use rmcp::transport::auth::{
+    AuthError, AuthorizationManager, AuthorizationRequest, AuthorizationSession, CredentialStore,
+    StoredCredentials,
+};
+
+/// Run the one-time interactive OAuth authorization for an `oauth_dcr` MCP
+/// server (browser consent + headless paste-back), persisting the resulting
+/// client id and tokens into the file store the daemon reads.
+///
+/// UX: print the authorization URL → the user approves in any browser → the
+/// browser lands on a localhost redirect that fails to load (nothing listens;
+/// the URI only has to match the DCR registration) → the user pastes the
+/// address-bar URL back → rmcp extracts code + CSRF state, verifies PKCE,
+/// exchanges and saves the token pair.
+///
+/// Blocking stdin by design: this runs from the interactive `jyc mcp auth`
+/// command, never inside the daemon.
+pub async fn authorize_interactively(
+    mcp_name: &str,
+    server_url: &str,
+    dcr: &jyc_types::OAuthDcrConfig,
+) -> Result<()> {
+    let redirect_uri = dcr.redirect_uri.as_deref().unwrap_or(DEFAULT_REDIRECT_URI);
+    let mut manager = AuthorizationManager::new(server_url)
+        .await
+        .with_context(|| format!("OAuth setup for MCP '{mcp_name}' failed"))?;
+    manager.set_credential_store(FileCredentialStore::new(FileCredentialStore::path_for(
+        mcp_name,
+    )?));
+    // AuthorizationSession requires metadata up front; resolve_metadata is a
+    // pure query, so seed the manager via the public setter.
+    let resolution = manager
+        .resolve_metadata()
+        .await
+        .with_context(|| format!("OAuth endpoint discovery for MCP '{mcp_name}' failed"))?;
+    manager.set_metadata(resolution.metadata);
+
+    let mut request = AuthorizationRequest::new(redirect_uri);
+    if !dcr.scopes.is_empty() {
+        request = request.with_scopes(dcr.scopes.iter().cloned());
+    }
+    let session = AuthorizationSession::new(manager, request)
+        .await
+        .map_err(|(_manager, e)| {
+            anyhow::Error::from(e).context(format!("starting authorization for '{mcp_name}'"))
+        })?;
+
+    eprintln!(
+        "\n1. Open this URL in a browser and approve the authorization request:\n\n  {}\n\n2. The browser will then try to load a `{redirect_uri}` URL and show an error — that is expected, nothing listens there.\n3. Copy the ENTIRE URL from the address bar and paste it at the prompt.\n\nRedirect URL> ",
+        session.get_authorization_url()
+    );
+    let mut pasted = String::new();
+    std::io::stdin()
+        .read_line(&mut pasted)
+        .context("failed to read the redirect URL from stdin")?;
+    session
+        .handle_callback_url(pasted.trim())
+        .await
+        .context("token exchange failed (stale or mistyped redirect URL?)")?;
+
+    let granted = session.auth_manager.get_current_scopes().await;
+    println!("\n✅ Authorized '{mcp_name}'.");
+    if !granted.is_empty() {
+        println!("   scopes: {}", granted.join(", "));
+    }
+    println!(
+        "   credentials: {}\n   Restart `jyc serve` to pick them up.",
+        FileCredentialStore::path_for(mcp_name)?.display()
+    );
+    Ok(())
+}
 
 /// Default OAuth redirect URI for the paste-back authorization flow.
 ///

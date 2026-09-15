@@ -723,12 +723,28 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # "X-API-Key" = "your-api-key"
 # # "X-Organization" = "my-org"
 # # --- OAuth2 client_credentials (machine-to-machine) ---
-# # See CHANGELOG.md for full semantics. Mutually exclusive with `auth_header`.
+# # See CHANGELOG.md for full semantics. Mutually exclusive with `auth_header`
+# # and `oauth_dcr`.
 # # [mcps.oauth]
 # # client_id = "your-client-id"
 # # client_secret = "your-client-secret"
 # # token_endpoint = "https://idp.example.com/oauth/token"
 # # scopes = ["read", "write"]   # optional, space-joined into `scope` form field
+#
+# # --- MCP OAuth 2.1 (discovery + Dynamic Client Registration + browser consent) ---
+# # For servers following the MCP authorization spec (e.g. hosted Jira MCP).
+# # Setup is two steps:  1) configure the block below,  2) run once interactively:
+# #     jyc mcp auth <name>     # prints URL -> approve in browser -> paste redirect URL back
+# # Afterwards `jyc serve` loads the stored tokens and refreshes them
+# # automatically at every MCP connect — no further interaction until the
+# # refresh token itself expires (then re-run the command). Credentials are
+# # stored at <data-home>/jyc/mcp_auth/<name>.json (0600).
+# # Mutually exclusive with `auth_header` and `oauth`.
+# # [mcps.oauth_dcr]
+# # scopes = ["jira.read"]       # optional; default auto-selects from the
+# #                              # authorization server's published metadata
+# # redirect_uri = "http://localhost:19876/callback"  # optional override;
+# #                              # paste-back flow — nothing listens on it
 #
 # # --- Per-Pattern MCP Configuration ---
 # # You can also configure MCP servers per pattern, overriding the global `[[mcps]]`

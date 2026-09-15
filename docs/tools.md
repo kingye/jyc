@@ -329,6 +329,28 @@ enabled_tools = ["product_list", "search", "checkout"]  # Only these 3 tools are
 - Vision analysis servers (image OCR/description)
 - Custom domain-specific tool servers
 
+**Remote MCP Authentication** (`type = "remote"`):
+
+| Mechanism | Config | Use when |
+|---|---|---|
+| Static bearer | `auth_header = "<token>"` (no `Bearer ` prefix) | You have a long-lived token |
+| client_credentials | `[mcps.oauth]` with client_id/secret/token_endpoint | Machine-to-machine with pre-provisioned credentials |
+| MCP OAuth 2.1 | `[mcps.oauth_dcr]` (empty block is valid) | Server uses the spec auth flow: discovery + Dynamic Client Registration + browser consent (e.g. hosted Jira MCP) |
+
+The three are mutually exclusive (validation rejects combinations). For
+`oauth_dcr`, run the one-time interactive authorization after adding the
+config block:
+
+```bash
+jyc mcp auth <name>   # prints URL → approve in browser → paste redirect URL back
+```
+
+Tokens (incl. the DCR-registered client id) are stored under
+`<data-home>/jyc/mcp_auth/<name>.json` (0600); `jyc serve` then refreshes
+them automatically at every MCP connect. Re-run the command only when the
+refresh token itself expires or is revoked. See `config.example.toml` for
+the optional `scopes` / `redirect_uri` fields.
+
 ---
 
 ## Tool Exclusion

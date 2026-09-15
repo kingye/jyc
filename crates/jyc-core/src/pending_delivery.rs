@@ -598,4 +598,45 @@ mod tests {
         assert!(!jyc_dir.join("reply-sent.flag").exists());
         assert!(!jyc_dir.join("reply.md").exists());
     }
+
+    #[tokio::test]
+    async fn reply_blocked_by_hook_fast_paths_and_reason() {
+        let msg = test_message();
+        let dir = std::path::Path::new(".");
+        // Empty set → immediate None without spawning.
+        assert_eq!(
+            reply_blocked_by_hook(&HookSet::default(), "t", dir, &msg, "hi").await,
+            None
+        );
+        // exit-2 → the hook's stderr.
+        let blocker = HookSet::for_agent(
+            &[jyc_types::config::HookConfig {
+                event: "reply_send".into(),
+                matcher: None,
+                shell: vec!["sh".into(), "-c".into(), "echo censor >&2; exit 2".into()],
+                timeout: None,
+            }],
+            "",
+        );
+        assert_eq!(
+            reply_blocked_by_hook(&blocker, "t", dir, &msg, "hi")
+                .await
+                .as_deref(),
+            Some("censor")
+        );
+        // exit-0 → None (proceed).
+        let pass = HookSet::for_agent(
+            &[jyc_types::config::HookConfig {
+                event: "reply_send".into(),
+                matcher: None,
+                shell: vec!["true".into()],
+                timeout: None,
+            }],
+            "",
+        );
+        assert_eq!(
+            reply_blocked_by_hook(&pass, "t", dir, &msg, "hi").await,
+            None
+        );
+    }
 }

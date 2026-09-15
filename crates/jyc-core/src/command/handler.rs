@@ -208,3 +208,70 @@ pub trait CommandHandler: Send + Sync {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jyc_types::config::HookConfig;
+
+    fn hook(event: &str, script: &str) -> HookConfig {
+        HookConfig {
+            event: event.into(),
+            matcher: None,
+            shell: vec!["sh".into(), "-c".into(), script.into()],
+            timeout: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn session_hooks_fire_with_source_and_reason() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Hooks scan stdin for the cause field and mark hits in the topic
+        // dir (which is also the hook's cwd).
+        let set = HookSet::for_agent(
+            &[
+                hook(
+                    "session_end",
+                    "grep -q '\"reason\":\"reset\"' - && echo end >> hook-events.log",
+                ),
+                hook(
+                    "session_start",
+                    "grep -q '\"source\":\"reset\"' - && echo start >> hook-events.log",
+                ),
+            ],
+            "hk",
+        );
+        let ctx = CommandContext {
+            topic_path: tmp.path().to_path_buf(),
+            topic_name: "hk-topic".into(),
+            hooks: Arc::new(set),
+            ..Default::default()
+        };
+        ctx.session_end_hook("reset").await;
+        ctx.session_start_hook("reset").await;
+        let content = std::fs::read_to_string(tmp.path().join("hook-events.log"))
+            .unwrap_or_else(|e| panic!("marker missing: {e}"));
+        assert_eq!(content.lines().collect::<Vec<_>>(), vec!["end", "start"]);
+    }
+
+    #[tokio::test]
+    async fn session_hooks_noop_with_empty_set() {
+        let ctx = CommandContext::default();
+        // Must not panic or spawn anything.
+        ctx.session_end_hook("close").await;
+        ctx.session_start_hook("new").await;
+    }
+
+    #[tokio::test]
+    async fn session_end_exit2_is_ignored_notification_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let set = HookSet::for_agent(&[hook("session_end", "echo hostile >&2; exit 2")], "hk");
+        let ctx = CommandContext {
+            topic_path: tmp.path().to_path_buf(),
+            hooks: Arc::new(set),
+            ..Default::default()
+        };
+        // Notification events never propagate Block — just must not panic.
+        ctx.session_end_hook("close").await;
+    }
+}

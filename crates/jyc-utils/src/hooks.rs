@@ -115,6 +115,11 @@ impl HookSet {
         self.hooks.is_empty()
     }
 
+    /// Number of compiled (valid) hooks in the set.
+    pub fn len(&self) -> usize {
+        self.hooks.len()
+    }
+
     /// Run every hook registered for `event`, in order.
     ///
     /// `subject` is what the optional per-hook `matcher` filters on

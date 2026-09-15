@@ -1470,6 +1470,7 @@ async fn list_topics_preserves_mixed_currency_from_ledger() {
                 input_rate_per_million: 0.0,
                 output_rate_per_million: 0.0,
                 cache_hit_rate_per_million: 0.0,
+                cache_creation_rate_per_million: 0.0,
                 time_window: None,
                 utc_offset: String::new(),
             },

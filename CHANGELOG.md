@@ -28,6 +28,13 @@
 
 ### Fixed
 
+- The billing ledger now persists the applied cache-creation (write) rate
+  per call (`cache_creation_rate_per_million`, effective value =
+  configured rate or the cache-hit rate when unset). The other three rate
+  columns were frozen per-row, but the write rate was dropped at every
+  write site (#507 leftover), so write-bucket cost could not be replayed
+  or audited from a row alone — and base vs long-context write rates were
+  indistinguishable. (#770)
 - GitHub/Gitee agent skills: planner-created PRs now carry the issue's
   assignees and labels unconditionally (GitHub: one atomic
   `gh pr create --assignee/--label`; Gitee: mandatory create+PATCH+labels

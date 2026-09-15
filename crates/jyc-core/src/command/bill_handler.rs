@@ -402,6 +402,7 @@ mod tests {
             input_rate_per_million: 0.0,
             output_rate_per_million: 0.0,
             cache_hit_rate_per_million: 0.0,
+            cache_creation_rate_per_million: 0.0,
             time_window: None,
             utc_offset: String::new(),
         }

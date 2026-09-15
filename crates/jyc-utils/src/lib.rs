@@ -3,6 +3,7 @@ pub mod auth_token;
 #[allow(dead_code)]
 pub mod constants;
 pub mod helpers;
+pub mod hooks;
 pub mod paths;
 
 use thiserror::Error;

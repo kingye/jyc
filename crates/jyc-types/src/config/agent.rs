@@ -144,6 +144,13 @@ pub struct AgentConfig {
     /// shell-vs-prompt semantics are unchanged.
     #[serde(default)]
     pub commands: Vec<CustomCommand>,
+
+    /// Per-agent lifecycle hooks, declared as `[[agents.<name>.hooks]]`.
+    /// Executed after the global `[[hooks]]` for this agent's topics
+    /// (same merge order as [`CustomCommand`] lists). Non-agent topics
+    /// never see these.
+    #[serde(default)]
+    pub hooks: Vec<crate::config::HookConfig>,
 }
 
 fn default_true() -> bool {

@@ -262,6 +262,7 @@ context_window = 200000
             channel_type: "websocket".to_string(),
             config_path: None,
             per_agent_commands: vec![],
+            hooks: Default::default(),
         }
     }
 
@@ -315,6 +316,7 @@ mode = "agent"
             channel_type: "websocket".to_string(),
             config_path: None,
             per_agent_commands: vec![],
+            hooks: Default::default(),
         };
         let handler = ModelCommandHandler;
         let result = handler.execute(ctx).await.unwrap();

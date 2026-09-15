@@ -2076,9 +2076,11 @@ dependencies = [
  "getrandom 0.4.3",
  "jyc-types",
  "regex",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

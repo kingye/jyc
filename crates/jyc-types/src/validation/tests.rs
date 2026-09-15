@@ -1342,3 +1342,63 @@ user_prompt = "clobber /model"
         "per-agent /model shadow must be rejected, got: {errors:?}"
     );
 }
+
+// ── hooks ──────────────────────────────────────────────────────────────
+
+#[test]
+fn hooks_accept_both_event_vocabularies_at_both_levels() {
+    let toml = config_with(
+        r#"
+[[hooks]]
+event = "reply_send"
+shell = ["sh", "-c", "exit 0"]
+
+[[agents.jyc.hooks]]
+event = "PreToolUse"
+matcher = "^bash$"
+shell = ["python3", "guard.py"]
+timeout = 5
+"#,
+    );
+    let config = load_config_from_str(&toml).unwrap();
+    assert_eq!(config.hooks.len(), 1);
+    assert_eq!(config.agents["jyc"].hooks.len(), 1);
+    let errors = validate_config(&config);
+    assert!(errors.is_empty(), "got: {errors:?}");
+}
+
+#[test]
+fn hooks_reject_unknown_event_bad_matcher_and_empty_shell() {
+    let toml = config_with(
+        r#"
+[[hooks]]
+event = "SubagentStop"
+shell = ["true"]
+
+[[hooks]]
+event = "pre_tool_use"
+matcher = "((("
+shell = ["true"]
+
+[[hooks]]
+event = "session_end"
+shell = []
+"#,
+    );
+    let config = load_config_from_str(&toml).unwrap();
+    let errors = validate_config(&config);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.path == "hooks[0].event" && e.message.contains("unknown event")),
+        "got: {errors:?}"
+    );
+    assert!(
+        errors.iter().any(|e| e.path == "hooks[1].matcher"),
+        "got: {errors:?}"
+    );
+    assert!(
+        errors.iter().any(|e| e.path == "hooks[2].shell"),
+        "got: {errors:?}"
+    );
+}

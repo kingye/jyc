@@ -322,6 +322,30 @@ impl JycAgentService {
             registry.remove(tool_name);
         }
 
+        // External hooks for tool events: global [[hooks]] first, then
+        // [[agents.<name>.hooks]] for the routed agent (the pattern name
+        // is the agent key — same merge rule as [[commands]]). The
+        // registry cache key includes the config snapshot pointer, so a
+        // config reload rebuilds the hook set without a restart.
+        {
+            let cfg = self.config.load();
+            let set = jyc_utils::hooks::HookSet::merged_for_agent(
+                &cfg.hooks,
+                &cfg.agents,
+                matched_pattern_name.unwrap_or_default(),
+            );
+            drop(cfg);
+            if !set.is_empty() {
+                tracing::info!(
+                    topic = %topic_name,
+                    agent = %matched_pattern_name.unwrap_or("(global)"),
+                    hooks = set.len(),
+                    "Tool-event hooks enabled"
+                );
+                registry.set_hooks(Arc::new(set));
+            }
+        }
+
         registry
     }
 

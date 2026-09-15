@@ -696,6 +696,37 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # shell = ["./scripts/deploy.sh"]  # user args appended: /deploy staging prod
 # timeout = 300                    # optional: seconds before kill (default 30)
 
+# --- Hooks ---
+# External commands invoked at agent lifecycle points (Claude Code-style).
+# Two levels, merged per topic like [[commands]]: global `[[hooks]]` first,
+# then `[[agents.<name>.hooks]]` for the routed agent. The event payload
+# JSON is written to the hook's stdin; the working directory is the topic
+# dir. Exit code 0 = proceed; 2 = block the action (stderr is surfaced to
+# the model for tool events); any other code or a timeout fails open.
+# Full event table, payload schemas, and Claude Code compatibility:
+# docs/hooks.md.
+#
+# Events (jyc names — or Claude Code names UserPromptSubmit/PreToolUse/
+# PostToolUse/Stop/SessionStart/SessionEnd as aliases; the spelling also
+# selects the stdin payload dialect so CC scripts work unmodified):
+#   message_received    blocking — gates AI dispatch of an inbound message
+#   pre_tool_use        blocking — matcher = tool name regex
+#   post_tool_use       blocking (result marked error, stderr appended)
+#   post_tool_use_failure  notification (jyc-only, no CC name)
+#   reply_send          blocking — suppresses an AI reply delivery
+#   session_start       notification; source: startup | reset | new
+#   session_end         notification; reason: reset | new | close (pre-teardown)
+#
+# [[hooks]]
+# event = "reply_send"
+# shell = ["sh", "-c", "tee -a /var/log/jyc-replies.log >/dev/null"]
+#
+# [[agents.jyc.hooks]]
+# event = "pre_tool_use"           # or "PreToolUse" for CC payload
+# matcher = "^bash$"               # optional regex (tool events: tool name)
+# shell = ["./scripts/guard.sh"]   # argv form; stdin = payload JSON
+# timeout = 30                     # optional: seconds before kill (default 30)
+
 # --- MCP Servers ---
 # Named MCP server definitions are configured here and loaded by the agent at startup.
 # Each MCP can be `local` (subprocess via stdio) or `remote` (HTTP).

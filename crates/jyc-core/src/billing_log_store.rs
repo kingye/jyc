@@ -107,6 +107,13 @@ pub struct BillingEntry {
     /// defaulting as `input_rate_per_million`.
     #[serde(default)]
     pub cache_hit_rate_per_million: f64,
+    /// Effective cache-creation (write) rate per million tokens applied
+    /// to this call: `cache_creation_per_million`, or `cache_hit` rate
+    /// when unset — mirroring `compute_cost_split`. Freezing it lets a
+    /// write-heavy row be replayed or audited without the config that
+    /// produced it. `serde(default)` so legacy lines read as `0.0`.
+    #[serde(default)]
+    pub cache_creation_rate_per_million: f64,
     /// Label of the `time_windows` entry whose rates applied, e.g.
     /// `"16:30-00:30"`. `None` means flat rates (no `time_windows`
     /// configured, or the call fell outside every window).
@@ -282,6 +289,7 @@ mod tests {
             input_rate_per_million: 0.0,
             output_rate_per_million: 0.0,
             cache_hit_rate_per_million: 0.0,
+            cache_creation_rate_per_million: 0.0,
             time_window: None,
             utc_offset: String::new(),
         }
@@ -318,6 +326,7 @@ mod tests {
         e.input_rate_per_million = 3.0;
         e.output_rate_per_million = 15.0;
         e.cache_hit_rate_per_million = 1.5;
+        e.cache_creation_rate_per_million = 4.0;
         e.time_window = Some("16:30-00:30".to_string());
         e.utc_offset = "+08:00".to_string();
         BillingLogStore::append(dir.path(), &e).unwrap();

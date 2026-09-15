@@ -22,7 +22,6 @@ use tokio::io::AsyncWriteExt;
 /// beyond `hook_event_name`/`agent`/`topic`/`cwd` as optional.
 #[derive(Debug, Default, Clone)]
 pub struct HookCtx {
-    pub agent: String,
     pub topic: String,
     /// Working directory: also the spawned hook's `current_dir`.
     pub cwd: String,
@@ -39,6 +38,10 @@ pub struct HookCtx {
     pub source: Option<String>,
     /// `session_end` cause: `reset` | `new` | `close`.
     pub reason: Option<String>,
+    /// Inbound message metadata passthrough (channel-forwarded context,
+    /// e.g. the original sender behind a websocket relay). jyc dialect
+    /// only — CC scripts don't know the key; best-effort like the rest.
+    pub metadata: Option<Value>,
 }
 
 /// Result of running all hooks registered for one event.
@@ -59,10 +62,14 @@ struct CompiledHook {
     timeout: Duration,
 }
 
-/// An ordered set of compiled hooks for one agent scope.
+/// An ordered set of compiled hooks for one agent scope (global
+/// `[[hooks]]` merged with the agent's `[[agents.<name>.hooks]]`, in that
+/// order). The agent name is carried so payloads self-identify without
+/// every call site threading it through.
 #[derive(Default)]
 pub struct HookSet {
     hooks: Vec<CompiledHook>,
+    agent_name: String,
 }
 
 impl HookSet {
@@ -87,7 +94,21 @@ impl HookSet {
                 }
             })
             .collect();
-        Self { hooks }
+        Self {
+            hooks,
+            agent_name: String::new(),
+        }
+    }
+
+    /// `from_configs` variant that stamps the agent identity into payloads.
+    pub fn for_agent(configs: &[HookConfig], agent_name: &str) -> Self {
+        let mut set = Self::from_configs(configs);
+        set.agent_name = agent_name.to_string();
+        set
+    }
+
+    pub fn agent_name(&self) -> &str {
+        &self.agent_name
     }
 
     pub fn is_empty(&self) -> bool {
@@ -110,7 +131,7 @@ impl HookSet {
                     continue;
                 }
             }
-            match run_one(hook, event, ctx).await {
+            match run_one(hook, event, ctx, &self.agent_name).await {
                 RunResult::Proceed => {}
                 RunResult::Block(reason) => return HookOutcome::Block(reason),
             }
@@ -124,8 +145,8 @@ enum RunResult {
     Block(String),
 }
 
-async fn run_one(hook: &CompiledHook, event: HookEvent, ctx: &HookCtx) -> RunResult {
-    let payload = build_payload(hook, event, ctx);
+async fn run_one(hook: &CompiledHook, event: HookEvent, ctx: &HookCtx, agent: &str) -> RunResult {
+    let payload = build_payload(hook, event, ctx, agent);
     let payload_str = match serde_json::to_string(&payload) {
         Ok(s) => s,
         Err(e) => {
@@ -147,7 +168,7 @@ async fn run_one(hook: &CompiledHook, event: HookEvent, ctx: &HookCtx) -> RunRes
         cmd.current_dir(&ctx.cwd);
     }
     cmd.env("JYC_HOOK_EVENT", event.as_str());
-    cmd.env("JYC_AGENT", &ctx.agent);
+    cmd.env("JYC_AGENT", agent);
     cmd.env("JYC_TOPIC", &ctx.topic);
     if let Some(ch) = &ctx.channel {
         cmd.env("JYC_CHANNEL", ch);
@@ -209,10 +230,10 @@ async fn run_one(hook: &CompiledHook, event: HookEvent, ctx: &HookCtx) -> RunRes
 }
 
 /// Serialize the stdin payload in the hook's dialect.
-fn build_payload(hook: &CompiledHook, event: HookEvent, ctx: &HookCtx) -> Value {
+fn build_payload(hook: &CompiledHook, event: HookEvent, ctx: &HookCtx, agent: &str) -> Value {
     match hook.dialect {
-        HookDialect::Jyc => build_jyc_payload(event, ctx),
-        HookDialect::Claude => build_cc_payload(event, ctx),
+        HookDialect::Jyc => build_jyc_payload(event, ctx, agent),
+        HookDialect::Claude => build_cc_payload(event, ctx, agent),
     }
 }
 
@@ -223,15 +244,18 @@ fn put(obj: &mut serde_json::Map<String, Value>, key: &str, val: &Option<String>
     }
 }
 
-fn build_jyc_payload(event: HookEvent, ctx: &HookCtx) -> Value {
+fn build_jyc_payload(event: HookEvent, ctx: &HookCtx, agent: &str) -> Value {
     let mut payload = json!({
         "hook_event_name": event.as_str(),
-        "agent": ctx.agent,
+        "agent": agent,
         "topic": ctx.topic,
         "cwd": ctx.cwd,
     });
     let obj = payload.as_object_mut().unwrap();
     put(obj, "channel", &ctx.channel);
+    if let Some(md) = ctx.metadata.as_ref().filter(|v| !v.is_null()) {
+        obj.insert("metadata".into(), md.clone());
+    }
     put(obj, "content", &ctx.message_content);
     put(obj, "tool_name", &ctx.tool_name);
     if let Some(input) = ctx.tool_input.as_ref().filter(|v| !v.is_null()) {
@@ -264,7 +288,7 @@ fn build_jyc_payload(event: HookEvent, ctx: &HookCtx) -> Value {
 /// Claude Code-shaped payload (best-effort: `session_id` is the topic
 /// name; `transcript_path` is intentionally absent — CC scripts that read
 /// it must tolerate the missing field).
-fn build_cc_payload(event: HookEvent, ctx: &HookCtx) -> Value {
+fn build_cc_payload(event: HookEvent, ctx: &HookCtx, _agent: &str) -> Value {
     let cc_name = match event {
         HookEvent::MessageReceived => "UserPromptSubmit",
         HookEvent::PreToolUse => "PreToolUse",
@@ -363,7 +387,6 @@ mod tests {
 
     fn ctx() -> HookCtx {
         HookCtx {
-            agent: "test".into(),
             topic: "t".into(),
             cwd: String::new(),
             message_content: Some("hello".into()),
@@ -517,10 +540,10 @@ mod tests {
         let payload = build_jyc_payload(
             HookEvent::MessageReceived,
             &HookCtx {
-                agent: "a".into(),
                 topic: "t".into(),
                 ..Default::default()
             },
+            "a",
         );
         assert_eq!(payload["hook_event_name"], "message_received");
         assert!(payload.get("channel").is_none());

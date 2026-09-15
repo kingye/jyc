@@ -60,6 +60,7 @@ mod tests {
             mcps: vec![],
             scheduler: Default::default(),
             commands: vec![],
+            hooks: vec![],
         }
     }
 

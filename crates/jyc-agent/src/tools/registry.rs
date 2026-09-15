@@ -1,9 +1,13 @@
 //! Tool registry — collects all available tools and provides definitions to the LLM.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::Value;
+
+use jyc_types::config::HookEvent;
+use jyc_utils::hooks::{HookCtx, HookOutcome, HookSet};
 
 use super::{Tool, ToolContext, ToolOutput};
 use crate::types::ToolDefinition;
@@ -11,6 +15,10 @@ use crate::types::ToolDefinition;
 /// Registry of available tools.
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
+    /// Compiled global + per-agent hook set for tool events
+    /// (`pre_tool_use`, `post_tool_use`, `post_tool_use_failure`);
+    /// `None` (the default) → zero hook overhead.
+    hooks: Option<Arc<HookSet>>,
 }
 
 impl ToolRegistry {
@@ -18,7 +26,15 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            hooks: None,
         }
+    }
+
+    /// Attach agent hooks. Called by `build_tool_registry` when the agent
+    /// (or global config) declares hooks; the registry cache key includes
+    /// the config snapshot pointer, so a reload rebuilds with fresh hooks.
+    pub fn set_hooks(&mut self, hooks: Arc<HookSet>) {
+        self.hooks = Some(hooks);
     }
 
     /// Register a tool.
@@ -48,7 +64,15 @@ impl ToolRegistry {
         defs
     }
 
-    /// Execute a tool by name.
+    /// Execute a tool by name, applying the agent's external hooks.
+    ///
+    /// Exit-code semantics mirror Claude Code: a `pre_tool_use` hook that
+    /// exits 2 fails the call with the hook's stderr as the error (visible
+    /// to the model); a `post_tool_use` hook that exits 2 marks the
+    /// (already executed) result as error with the stderr appended.
+    /// `post_tool_use_failure` is notification-only and fires whenever a
+    /// call failed. Without hooks configured this is the same zero-cost
+    /// pass-through it always was.
     pub async fn execute(
         &self,
         name: &str,
@@ -63,7 +87,73 @@ impl ToolRegistry {
             )
         })?;
 
-        tool.execute(input, ctx).await
+        let Some(hooks) = self.hooks.clone() else {
+            return tool.execute(input, ctx).await;
+        };
+
+        // Clone payload data only when hooks are configured.
+        let input_for_hook = input.clone();
+        let hook_ctx = |response: Option<String>| HookCtx {
+            topic: ctx.current_topic.clone().unwrap_or_default(),
+            cwd: ctx.working_dir.display().to_string(),
+            channel: ctx.current_channel.clone(),
+            tool_name: Some(name.to_string()),
+            tool_input: Some(input_for_hook.clone()),
+            tool_response: response,
+            ..Default::default()
+        };
+
+        // ── pre_tool_use ───────────────────────────────────────────────
+        if let HookOutcome::Block(reason) = hooks
+            .run(HookEvent::PreToolUse, Some(name), &hook_ctx(None))
+            .await
+        {
+            return Err(anyhow::anyhow!("blocked by pre_tool_use hook: {reason}"));
+        }
+
+        let mut output = match tool.execute(input, ctx).await {
+            Ok(output) => output,
+            Err(e) => {
+                // Failure notification (does not alter the outcome).
+                hooks
+                    .run(
+                        HookEvent::PostToolUseFailure,
+                        Some(name),
+                        &hook_ctx(Some(e.to_string())),
+                    )
+                    .await;
+                return Err(e);
+            }
+        };
+
+        // ── post_tool_use ──────────────────────────────────────────────
+        if let HookOutcome::Block(reason) = hooks
+            .run(
+                HookEvent::PostToolUse,
+                Some(name),
+                &hook_ctx(Some(output.content.clone())),
+            )
+            .await
+        {
+            // The tool already ran; surface the hook's reason to the model
+            // as an error result while preserving the output's other
+            // semantics (`stop_after`, delivery flags).
+            output.is_error = true;
+            output.content.push_str("\n\n[post_tool_use hook: ");
+            output.content.push_str(reason.trim());
+            output.content.push(']');
+        }
+        // ── post_tool_use_failure (notification-only) ──────────────────
+        if output.is_error {
+            hooks
+                .run(
+                    HookEvent::PostToolUseFailure,
+                    Some(name),
+                    &hook_ctx(Some(output.content.clone())),
+                )
+                .await;
+        }
+        Ok(output)
     }
 
     /// Check if a tool exists.
@@ -213,5 +303,71 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Tool 'missing' not found"));
+    }
+
+    fn hook(event: &str, script: &str) -> Arc<HookSet> {
+        let cfg = jyc_types::config::HookConfig {
+            event: event.to_string(),
+            matcher: None,
+            shell: vec!["sh".into(), "-c".into(), script.into()],
+            timeout: None,
+        };
+        Arc::new(HookSet::for_agent(&[cfg], "test"))
+    }
+
+    fn reg_with_mock() -> ToolRegistry {
+        let mut reg = ToolRegistry::new();
+        reg.register(Box::new(MockTool {
+            name: "mock".to_string(),
+        }));
+        reg
+    }
+
+    #[tokio::test]
+    async fn pre_tool_hook_exit2_blocks_call() {
+        let mut reg = reg_with_mock();
+        reg.set_hooks(hook("pre_tool_use", "echo nope >&2; exit 2"));
+        let ctx = ToolContext::new(std::path::Path::new("/tmp"));
+        let err = reg.execute("mock", Value::Null, &ctx).await.unwrap_err();
+        assert!(err.to_string().contains("nope"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn pre_tool_hook_exit0_allows_call() {
+        let mut reg = reg_with_mock();
+        reg.set_hooks(hook("pre_tool_use", "exit 0"));
+        let ctx = ToolContext::new(std::path::Path::new("/tmp"));
+        let out = reg.execute("mock", Value::Null, &ctx).await.unwrap();
+        assert_eq!(out.content, "executed");
+    }
+
+    #[tokio::test]
+    async fn post_tool_hook_exit2_marks_error_appends_reason() {
+        let mut reg = reg_with_mock();
+        reg.set_hooks(hook("post_tool_use", "echo review this >&2; exit 2"));
+        let ctx = ToolContext::new(std::path::Path::new("/tmp"));
+        let out = reg.execute("mock", Value::Null, &ctx).await.unwrap();
+        assert!(out.is_error);
+        assert!(out.content.contains("executed"));
+        assert!(out.content.contains("review this"), "got: {}", out.content);
+    }
+
+    #[tokio::test]
+    async fn hook_matcher_scopes_by_tool_name() {
+        let mut reg = reg_with_mock();
+        // matcher only fires for a tool literally named "other", not "mock".
+        reg.set_hooks(Arc::new(HookSet::for_agent(
+            &[jyc_types::config::HookConfig {
+                event: "pre_tool_use".into(),
+                matcher: Some("^other$".into()),
+                shell: vec!["sh".into(), "-c".into(), "exit 2".into()],
+                timeout: None,
+            }],
+            "test",
+        )));
+        let ctx = ToolContext::new(std::path::Path::new("/tmp"));
+        // "mock" doesn't match "^other$" → proceeds unblocked.
+        let out = reg.execute("mock", Value::Null, &ctx).await.unwrap();
+        assert_eq!(out.content, "executed");
     }
 }

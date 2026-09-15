@@ -490,10 +490,12 @@ mod tests {
 
     #[tokio::test]
     async fn payload_reaches_stdin_in_dialect_shape() {
-        // jyc dialect: grep the payload for jyc-only keys via exit code.
+        // NOTE: read stdin once into a variable — chained `grep -` calls
+        // would leave the second grep an already-drained stream.
+        // jyc dialect: required keys present, otherwise block.
         let set = HookSet::from_configs(&[hook(
             "pre_tool_use",
-            "grep -q '\"hook_event_name\":\"pre_tool_use\"' - && grep -q '\"agent\"' -",
+            "p=$(cat); echo \"$p\" | grep -q '\"hook_event_name\":\"pre_tool_use\"' && echo \"$p\" | grep -q '\"agent\"' && echo \"$p\" | grep -q '\"tool_input\"' || exit 2",
         )]);
         assert_eq!(
             set.run(HookEvent::PreToolUse, None, &ctx()).await,
@@ -513,7 +515,7 @@ mod tests {
         // CC dialect actually carries session_id + CC event name + tool fields.
         let set = HookSet::from_configs(&[hook(
             "PreToolUse",
-            "grep -q '\"hook_event_name\":\"PreToolUse\"' - && grep -q '\"session_id\"' - && grep -q '\"tool_input\"' - || exit 2",
+            "p=$(cat); echo \"$p\" | grep -q '\"hook_event_name\":\"PreToolUse\"' && echo \"$p\" | grep -q '\"session_id\"' && echo \"$p\" | grep -q '\"tool_input\"' || exit 2",
         )]);
         assert_eq!(
             set.run(HookEvent::PreToolUse, None, &ctx()).await,

@@ -2247,6 +2247,7 @@ mod billing_integration {
                 input_rate_per_million: 0.0,
                 output_rate_per_million: 0.0,
                 cache_hit_rate_per_million: 0.0,
+                cache_creation_rate_per_million: 0.0,
                 time_window: None,
                 utc_offset: String::new(),
             },
@@ -2381,6 +2382,7 @@ mod billing_integration {
                 input_rate_per_million: 0.0,
                 output_rate_per_million: 0.0,
                 cache_hit_rate_per_million: 0.0,
+                cache_creation_rate_per_million: 0.0,
                 time_window: None,
                 utc_offset: String::new(),
             },
@@ -2474,6 +2476,9 @@ mod billing_integration {
                 input_rate_per_million: rates.input_per_million,
                 output_rate_per_million: rates.output_per_million,
                 cache_hit_rate_per_million: rates.cache_hit_per_million,
+                cache_creation_rate_per_million: rates
+                    .cache_creation_per_million
+                    .unwrap_or(rates.cache_hit_per_million),
                 time_window,
                 utc_offset,
             },

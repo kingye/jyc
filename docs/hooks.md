@@ -48,7 +48,7 @@ every site short-circuits on `is_empty()`.
 | `pre_tool_use` | `PreToolUse` | every tool call (model-initiated and synthetic reply deliveries) | yes — the call fails with the hook's stderr as the error, visible to the model | tool name |
 | `post_tool_use` | `PostToolUse` | after a tool call completes (success **or** failure) | result is marked error + stderr appended; the tool already ran | tool name |
 | `post_tool_use_failure` | — | after a tool call failed (extra to `post_tool_use`) | notification only | tool name |
-| `reply_send` | `Stop` | every AI reply delivery (background watcher, tool, and fallback paths) | yes — delivery is suppressed and the reply is not retried | topic name |
+| `reply_send` | `Stop` | every AI reply delivery — synchronous tool send (gated in `ToolRegistry`), background watcher, worker auto-delivery, and fallback text | yes — delivery is suppressed and the reply is not retried | topic name |
 | `session_start` | `SessionStart` | new topic (`startup`), after `/reset --force` / `/new --force` (`reset`/`new`) | notification only | `source` |
 | `session_end` | `SessionEnd` | before `/reset --force` / `/new --force` / `/close --force` teardown | notification only | `reason` |
 
@@ -112,7 +112,7 @@ payload shape and field names — follows the CC convention:
 | `message_received` | `UserPromptSubmit` | `prompt` ← message text |
 | `pre_tool_use` | `PreToolUse` | `tool_name`, `tool_input` (identical) |
 | `post_tool_use` | `PostToolUse` | + `tool_response` (string) |
-| `reply_send` | `Stop` | `stop_hook_active: false` |
+| `reply_send` | `Stop` | `stop_hook_active: false` (+ `reply_text`, a jyc extension CC scripts ignore) |
 | `session_start` | `SessionStart` | `source`: reset → `"clear"`, startup/new → `"startup"` |
 | `session_end` | `SessionEnd` | `reason`: close → `"logout"`, reset/new → `"other"` (+ `jyc_reason`) |
 
@@ -127,8 +127,7 @@ are rejected at config load, not silently ignored.
 
 ## Security boundary
 
-Hooks are an **operator-trust surface**, identical to `[[commands]]
-shell]`: they are configured only in trusted config files (global or
+Hooks are an **operator-trust surface**, identical to `[[commands]] shell` commands: they are configured only in trusted config files (global or
 per-agent). Topic-local (`.jyc/`) hook definitions do not exist and must
 never be added — the topic directory is writable by the agent, so hooks
 loaded from it would be prompt-injection with a shell.

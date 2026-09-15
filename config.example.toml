@@ -745,6 +745,8 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # #                              # authorization server's published metadata
 # # redirect_uri = "http://localhost:19876/callback"  # optional override;
 # #                              # paste-back flow — nothing listens on it
+# # Note: OAuth discovery (+ token refresh when near expiry) runs inside this
+# # server's `timeout_ms` budget — raise it above the 10 s default for slow IdPs.
 #
 # # --- Per-Pattern MCP Configuration ---
 # # You can also configure MCP servers per pattern, overriding the global `[[mcps]]`

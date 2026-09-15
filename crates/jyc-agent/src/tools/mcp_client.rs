@@ -20,11 +20,11 @@ use tracing;
 use jyc_types::McpServerConfig;
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::{RoleClient, RunningService, serve_client};
+use rmcp::transport::auth::{AuthError, AuthorizationManager};
 use rmcp::transport::child_process::TokioChildProcess;
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
 };
-use rmcp::transport::{AuthError, AuthorizationManager};
 
 use crate::tools::mcp_auth::FileCredentialStore;
 use crate::tools::{Tool, ToolContext, ToolOutput};
@@ -299,6 +299,11 @@ fn filter_tools_by_whitelist(
 /// transparently refreshes a near-expiry token, persisting the rotated pair
 /// back to the same file. Re-authorization is needed only once the refresh
 /// token itself is expired or revoked.
+///
+/// Concurrent refreshes (several topics reloading the same server at once)
+/// can lose a one-time-use refresh token race: the loser reports the reauth
+/// error even though the winner just persisted a valid pair — the next load
+/// reads it and self-heals.
 async fn fetch_dcr_token(mcp_name: &str, url: &str) -> Result<String> {
     let reauth = || {
         anyhow::anyhow!(

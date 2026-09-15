@@ -48,6 +48,11 @@ pub async fn authorize_interactively(
         .with_context(|| format!("OAuth endpoint discovery for MCP '{mcp_name}' failed"))?;
     manager.set_metadata(resolution.metadata);
 
+    // Fresh DCR on every run, deliberately NOT reusing a stored client_id:
+    // re-authorization happens exactly when stored state went stale (revoked
+    // refresh token), and a revoked client id fed in as pre-registered would
+    // hard-fail the session with no cascade back to DCR. The cost is one
+    // orphan client registration per re-auth at the IdP.
     let mut request = AuthorizationRequest::new(redirect_uri);
     if !dcr.scopes.is_empty() {
         request = request.with_scopes(dcr.scopes.iter().cloned());
@@ -89,7 +94,7 @@ pub async fn authorize_interactively(
 /// redirect "fails" to load, and the CLI parses the code straight from the
 /// address-bar URL. The URI only needs to be stable (it is registered with
 /// the server via DCR) and to match what the authorization server expects.
-pub const DEFAULT_REDIRECT_URI: &str = "http://localhost:19876/callback";
+const DEFAULT_REDIRECT_URI: &str = "http://localhost:19876/callback";
 
 /// Filesystem-backed [`CredentialStore`]: one JSON file per MCP server.
 pub struct FileCredentialStore {
@@ -173,6 +178,7 @@ impl CredentialStore for FileCredentialStore {
 fn write_secret_file(path: &Path, bytes: &[u8]) -> std::result::Result<(), AuthError> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::PermissionsExt;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -180,6 +186,10 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> std::result::Result<(), AuthE
         .mode(0o600)
         .open(path)
         .map_err(|e| io_to_auth_err(e, path, "open for write"))?;
+    // `.mode()` applies at creation only — enforce also for pre-existing
+    // files that were created with loose permissions.
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| io_to_auth_err(e, path, "chmod"))?;
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|e| io_to_auth_err(e, path, "write"))
@@ -212,7 +222,8 @@ mod tests {
         assert_eq!(sanitize_name("a b:c").unwrap(), "a_b_c");
         assert!(sanitize_name("").is_err());
         assert!(sanitize_name("..").is_err());
-        assert!(sanitize_name("/").is_err());
+        // "/" sanitizes to a safe single-char stem, it is not an error.
+        assert_eq!(sanitize_name("/").unwrap(), "_");
     }
 
     #[tokio::test]

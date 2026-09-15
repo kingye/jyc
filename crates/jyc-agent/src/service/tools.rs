@@ -329,20 +329,17 @@ impl JycAgentService {
         // config reload rebuilds the hook set without a restart.
         {
             let cfg = self.config.load();
-            let mut hook_cfgs = cfg.hooks.clone();
-            if let Some(agent) = matched_pattern_name.and_then(|n| cfg.agents.get(n)) {
-                hook_cfgs.extend(agent.hooks.iter().cloned());
-            }
-            drop(cfg);
-            let set = jyc_utils::hooks::HookSet::for_agent(
-                &hook_cfgs,
+            let set = jyc_utils::hooks::HookSet::merged_for_agent(
+                &cfg.hooks,
+                &cfg.agents,
                 matched_pattern_name.unwrap_or_default(),
             );
+            drop(cfg);
             if !set.is_empty() {
                 tracing::info!(
                     topic = %topic_name,
                     agent = %matched_pattern_name.unwrap_or("(global)"),
-                    hooks = hook_cfgs.len(),
+                    hooks = set.len(),
                     "Tool-event hooks enabled"
                 );
                 registry.set_hooks(Arc::new(set));

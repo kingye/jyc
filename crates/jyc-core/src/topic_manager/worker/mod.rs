@@ -309,6 +309,10 @@ pub(crate) async fn process_message(
     // topic; blocking `message_received` gates the AI dispatch itself —
     // the message is already in the chat log, it just never reaches the
     // model. Command-only and question-answer messages returned earlier.
+    // `session_start` is gated on the SAME condition as the topic-meta.json
+    // write above (not the dashboard): dashboard-proxy messages never create
+    // that file, so keying only on `topic_is_new` would re-fire startup on
+    // every dashboard message. A startup is "the first real-channel message".
     if !hooks.is_empty() {
         let base_ctx = || HookCtx {
             topic: topic_name.to_string(),
@@ -320,7 +324,7 @@ pub(crate) async fn process_message(
             metadata: json_metadata(&message.metadata),
             ..Default::default()
         };
-        if topic_is_new {
+        if topic_is_new && message.channel_uid != "dashboard" {
             let mut sc = base_ctx();
             sc.source = Some("startup".into());
             hooks
@@ -720,11 +724,11 @@ pub(crate) async fn process_message(
 /// agent key — same merge rule as `[[commands]]`). Non-agent topics
 /// (`pattern_name` empty) get the global set only.
 pub(crate) fn build_hook_set(cfg: &jyc_types::AppConfig, pattern_name: &str) -> Arc<HookSet> {
-    let mut hooks = cfg.hooks.clone();
-    if let Some(agent) = cfg.agents.get(pattern_name) {
-        hooks.extend(agent.hooks.iter().cloned());
-    }
-    Arc::new(HookSet::for_agent(&hooks, pattern_name))
+    Arc::new(HookSet::merged_for_agent(
+        &cfg.hooks,
+        &cfg.agents,
+        pattern_name,
+    ))
 }
 
 /// Read skills from topic's .jyc/skills.json file.

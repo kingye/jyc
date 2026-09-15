@@ -29,7 +29,6 @@ pub struct HookCtx {
     pub message_content: Option<String>,
     pub sender: Option<String>,
     pub sender_address: Option<String>,
-    pub subject: Option<String>,
     pub tool_name: Option<String>,
     pub tool_input: Option<Value>,
     pub tool_response: Option<String>,
@@ -105,6 +104,22 @@ impl HookSet {
         let mut set = Self::from_configs(configs);
         set.agent_name = agent_name.to_string();
         set
+    }
+
+    /// Merge an agent's hook scope from the full app config: global
+    /// `[[hooks]]` first, then `[[agents.<agent_name>.hooks]]` — the same
+    /// ordered-union rule as `[[commands]]`. `agent_name` empty (or not a
+    /// configured agent) yields the global set only.
+    pub fn merged_for_agent(
+        global: &[HookConfig],
+        agents: &std::collections::HashMap<String, jyc_types::AgentConfig>,
+        agent_name: &str,
+    ) -> Self {
+        let mut configs: Vec<HookConfig> = global.to_vec();
+        if let Some(agent) = agents.get(agent_name) {
+            configs.extend(agent.hooks.iter().cloned());
+        }
+        Self::for_agent(&configs, agent_name)
     }
 
     pub fn agent_name(&self) -> &str {
@@ -186,13 +201,19 @@ async fn run_one(hook: &CompiledHook, event: HookEvent, ctx: &HookCtx, agent: &s
             return RunResult::Proceed;
         }
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        // Best-effort: a hook that never reads stdin and fills the pipe
-        // buffer is cut off by the timeout below, same fail-open policy.
-        let _ = stdin.write_all(payload_str.as_bytes()).await;
-        let _ = stdin.shutdown().await;
-    }
-    let outcome = match tokio::time::timeout(hook.timeout, child.wait_with_output()).await {
+    let outcome = match tokio::time::timeout(hook.timeout, async move {
+        // Write AND wait inside the same timeout: a hook that never reads
+        // stdin would block `write_all` forever once the payload exceeds
+        // the ~64 KiB pipe buffer, and that wait must not be unbounded.
+        // On timeout the future is dropped, `kill_on_drop` reaps the hook.
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(payload_str.as_bytes()).await;
+            let _ = stdin.shutdown().await;
+        }
+        child.wait_with_output().await
+    })
+    .await
+    {
         Ok(Ok(output)) => output,
         Ok(Err(e)) => {
             tracing::warn!(hook = %hook.raw_name, error = %e, "Hook wait failed — proceeding");
@@ -277,9 +298,6 @@ fn build_jyc_payload(event: HookEvent, ctx: &HookCtx, agent: &str) -> Value {
     }
     if let Some(v) = ctx.sender_address.as_ref().filter(|s| !s.is_empty()) {
         message.insert("sender_address".into(), json!(v));
-    }
-    if let Some(v) = ctx.subject.as_ref().filter(|s| !s.is_empty()) {
-        message.insert("subject".into(), json!(v));
     }
     if let Some(v) = ctx.message_content.as_ref().filter(|s| !s.is_empty()) {
         message.insert("content".into(), json!(v));
@@ -444,6 +462,31 @@ mod tests {
             set.run(HookEvent::PreToolUse, None, &ctx()).await,
             HookOutcome::Proceed
         );
+    }
+
+    #[tokio::test]
+    async fn large_payload_on_unread_stdin_times_out_not_hangs() {
+        // The hook holds stdin open but never reads it (common shape:
+        // env-only scripts). A payload past the ~64 KiB pipe buffer must
+        // not block the write forever — write+wait share one timeout.
+        let cfg = HookConfig {
+            timeout: Some(1),
+            ..hook("pre_tool_use", "sleep 30")
+        };
+        let set = HookSet::from_configs(&[cfg]);
+        let ctx = HookCtx {
+            topic: "t".into(),
+            message_content: Some("x".repeat(256 * 1024)),
+            ..Default::default()
+        };
+        // Outer guard: a regression turns this into a FAILURE, not a hang.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            set.run(HookEvent::PreToolUse, None, &ctx),
+        )
+        .await
+        .expect("run must return within its budget");
+        assert_eq!(outcome, HookOutcome::Proceed);
     }
 
     #[tokio::test]

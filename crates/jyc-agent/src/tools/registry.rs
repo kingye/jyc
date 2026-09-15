@@ -128,21 +128,20 @@ impl ToolRegistry {
                 .get("silent")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
+            && let Some(text) = input.get("message").and_then(Value::as_str)
         {
-            if let Some(text) = input.get("message").and_then(Value::as_str) {
-                let mut rctx = hook_ctx(None);
-                rctx.message_content = None; // this is an output, not an intake
-                rctx.reply_text = Some(text.to_string());
-                if let HookOutcome::Block(reason) = hooks
-                    .run(HookEvent::ReplySend, ctx.current_topic.as_deref(), &rctx)
-                    .await
-                {
-                    // Suppress the send and end the turn (`error` defaults to
-                    // stop_after), so the model can't loop retrying it.
-                    return Ok(ToolOutput::error(format!(
-                        "reply suppressed by reply_send hook: {reason}"
-                    )));
-                }
+            let mut rctx = hook_ctx(None);
+            rctx.message_content = None; // this is an output, not an intake
+            rctx.reply_text = Some(text.to_string());
+            if let HookOutcome::Block(reason) = hooks
+                .run(HookEvent::ReplySend, ctx.current_topic.as_deref(), &rctx)
+                .await
+            {
+                // Suppress the send and end the turn (`error` defaults to
+                // stop_after), so the model can't loop retrying it.
+                return Ok(ToolOutput::error(format!(
+                    "reply suppressed by reply_send hook: {reason}"
+                )));
             }
         }
 

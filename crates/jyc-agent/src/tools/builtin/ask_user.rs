@@ -242,31 +242,29 @@ mod tests {
         });
         let ctx = ctx_with(tmp.path(), hub.clone(), outbound);
 
-        // Answer from a "channel" as soon as the question lands.
-        let answerer = {
-            let sent = sent.clone();
-            tokio::spawn(async move {
-                loop {
-                    let req = sent.lock().await.first().cloned();
-                    if let Some(req) = req {
-                        return req.id;
-                    }
-                    tokio::task::yield_now().await;
+        // Poll the outbound capture until the question lands, then answer
+        // it. `select!` interleaves the two futures on one task because the
+        // tool context borrows `tmp` (not 'static, so no spawn).
+        let answerer = async {
+            loop {
+                let req = sent.lock().await.first().cloned();
+                if let Some(req) = req {
+                    return req.id;
                 }
-            })
+                tokio::task::yield_now().await;
+            }
         };
 
         let tool = AskUserTool;
-        let handle = tokio::spawn(async move {
-            tool.execute(input("Pick?", &["a", "b"], Some(5)), &ctx)
-                .await
-                .unwrap()
-        });
+        tokio::pin!(let out = tool.execute(input("Pick?", &["a", "b"], Some(5)), &ctx););
+        let out = tokio::select! {
+            finished = &mut out => panic!("tool finished before the answer: {finished:?}"),
+            id = answerer => {
+                assert!(hub.respond(&id, QuestionAnswer::Choice("b".to_string())));
+                out.await.unwrap()
+            }
+        };
 
-        let id = answerer.await.unwrap();
-        assert!(hub.respond(&id, QuestionAnswer::Choice("b".to_string())));
-
-        let out = handle.await.unwrap();
         assert!(!out.is_error);
         assert_eq!(out.content, "b");
     }
@@ -281,30 +279,26 @@ mod tests {
         });
         let ctx = ctx_with(tmp.path(), hub.clone(), outbound);
 
-        let answerer = {
-            let sent = sent.clone();
-            tokio::spawn(async move {
-                loop {
-                    let req = sent.lock().await.first().cloned();
-                    if let Some(req) = req {
-                        return req.id;
-                    }
-                    tokio::task::yield_now().await;
+        let answerer = async {
+            loop {
+                let req = sent.lock().await.first().cloned();
+                if let Some(req) = req {
+                    return req.id;
                 }
-            })
+                tokio::task::yield_now().await;
+            }
         };
 
         let tool = AskUserTool;
-        let handle = tokio::spawn(async move {
-            tool.execute(input("Pick?", &["a"], Some(5)), &ctx)
-                .await
-                .unwrap()
-        });
+        tokio::pin!(let out = tool.execute(input("Pick?", &["a"], Some(5)), &ctx););
+        let out = tokio::select! {
+            finished = &mut out => panic!("tool finished before the answer: {finished:?}"),
+            id = answerer => {
+                assert!(hub.respond(&id, QuestionAnswer::Cancelled));
+                out.await.unwrap()
+            }
+        };
 
-        let id = answerer.await.unwrap();
-        assert!(hub.respond(&id, QuestionAnswer::Cancelled));
-
-        let out = handle.await.unwrap();
         assert!(!out.is_error);
         assert!(out.content.contains("dismissed"));
     }

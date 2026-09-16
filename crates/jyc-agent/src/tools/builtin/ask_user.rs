@@ -65,10 +65,9 @@ impl Tool for AskUserTool {
     }
 
     async fn execute(&self, input: Value, ctx: &ToolContext<'_>) -> Result<ToolOutput> {
-        let question = input
-            .get("question")
-            .and_then(|q| q.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'question' parameter"))?;
+        let Some(question) = input.get("question").and_then(|q| q.as_str()) else {
+            return Ok(ToolOutput::error("Missing 'question' parameter"));
+        };
         let options: Vec<String> = input
             .get("options")
             .and_then(|o| o.as_array())
@@ -77,8 +76,10 @@ impl Tool for AskUserTool {
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect()
             })
-            .filter(|v: &Vec<String>| !v.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("Missing or empty 'options' parameter"))?;
+            .unwrap_or_default();
+        if options.is_empty() {
+            return Ok(ToolOutput::error("Missing or empty 'options' parameter"));
+        }
         let timeout_secs = input
             .get("timeout_seconds")
             .and_then(|t| t.as_u64())

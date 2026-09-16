@@ -376,10 +376,10 @@ These are internal tools used by the AI, not user-facing commands.
 ## Configuration
 
 JYC uses TOML configuration with environment variable substitution (`${VAR}`).
-Two built-ins are resolved by jyc itself when the process environment does not
-define them: `${JYC_CONFIG_PATH}` is the directory of the config file being
-loaded (typically `~/.config/jyc`); `${JYC_TOPIC_PATH}` and
-`${JYC_TOPIC_STATE_PATH}` resolve per topic inside hook `shell` entries (see
+Built-ins jyc resolves itself when the process environment does not define
+them: `${JYC_CONFIG_PATH}` is the directory of the config file being loaded
+(typically `~/.config/jyc`); `${JYC_TOPIC_PATH}` and `${JYC_TOPIC_STATE_PATH}`
+are reserved for hooks, where they resolve per topic at spawn (see
 `docs/hooks.md`).
 
 Key sections:

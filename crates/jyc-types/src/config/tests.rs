@@ -86,6 +86,25 @@ mod config_loader_tests {
         );
     }
 
+    /// Seam test for the hooks feature: topic builtins must SURVIVE
+    /// load-time `${VAR}` expansion verbatim — they are per-topic and only
+    /// resolved by the hooks executor at spawn. Regression guard against
+    /// them being blanked like an unknown var.
+    #[test]
+    fn topic_vars_survive_load_for_hook_shell() {
+        let toml = r#"
+[[hooks]]
+event = "session_start"
+shell = ["sh", "-c", 'echo "${JYC_TOPIC_PATH}" >> "${JYC_CONFIG_PATH}/sessions.log" ${JYC_TOPIC_STATE_PATH}']
+"#;
+        let cfg: AppConfig =
+            parse_and_deserialize(toml, "/home/user/.config/jyc/config.toml").unwrap();
+        assert_eq!(
+            cfg.hooks[0].shell[2],
+            r#"echo "${JYC_TOPIC_PATH}" >> "/home/user/.config/jyc/sessions.log" ${JYC_TOPIC_STATE_PATH}"#
+        );
+    }
+
     /// `resolve_api_key` returns the env-var value when `api_key_env` is
     /// set and the env var exists. Late binding preserved.
     #[test]

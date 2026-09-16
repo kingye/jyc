@@ -326,14 +326,20 @@ pub(crate) fn expand_env_vars(value: &mut toml::Value, config_path: &str) {
 /// process environment does not define them. An actual env var always
 /// wins (explicit override).
 ///
-/// `JYC_CONFIG_PATH` → the directory containing the config file being
-/// loaded (typically `~/.config/jyc` on Linux/macOS), so paths beside it
-/// compose: `${JYC_CONFIG_PATH}/skills`. Returns `None` for other names.
+/// - `JYC_CONFIG_PATH` → the directory containing the config file being
+///   loaded (typically `~/.config/jyc` on Linux/macOS), so paths beside
+///   it compose: `${JYC_CONFIG_PATH}/skills`. With layered configs the
+///   merged tree expands against the overlay file's directory.
+/// - `JYC_TOPIC_PATH` / `JYC_TOPIC_STATE_PATH` → deliberately *not*
+///   resolved at load time: they are per-topic and only known at hook
+///   spawn, so they pass through verbatim (the hooks executor substitutes
+///   them). Writing them outside hooks keeps the literal too.
 fn builtin_var(name: &str, config_path: &str) -> Option<String> {
     match name {
         "JYC_CONFIG_PATH" => std::path::Path::new(config_path)
             .parent()
             .map(|p| p.display().to_string()),
+        "JYC_TOPIC_PATH" | "JYC_TOPIC_STATE_PATH" => Some(format!("${{{name}}}")),
         _ => None,
     }
 }

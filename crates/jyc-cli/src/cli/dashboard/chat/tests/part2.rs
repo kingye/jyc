@@ -1067,8 +1067,6 @@ fn code_fence_renders_with_highlight_colors() {
 }
 // Tests for the `ask_user` question box flow in the chat pane.
 
-use super::*;
-
 fn chat_for_topic(topic: &str) -> (ChatState, tokio::sync::mpsc::UnboundedReceiver<String>) {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut chat = ChatState::new(rx);

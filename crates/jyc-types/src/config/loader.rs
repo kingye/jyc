@@ -291,31 +291,49 @@ pub fn load_config_layered(global: Option<&Path>, path: &Path) -> Result<AppConf
     parse_and_deserialize_from_value(value, &path.display().to_string())
 }
 
-/// Recursively expand `${VAR}` patterns in TOML string values
-/// with values from environment variables.
+/// Recursively expand `${VAR}` patterns in TOML string values.
 ///
-/// Missing env vars are replaced with empty strings.
-pub(crate) fn expand_env_vars(value: &mut toml::Value) {
+/// Resolution order per name: process environment variable, then jyc
+/// built-ins ([`builtin_var`]), then empty string. `config_path` is the
+/// file being loaded, used to resolve `${JYC_CONFIG_PATH}`.
+pub(crate) fn expand_env_vars(value: &mut toml::Value, config_path: &str) {
     let re = Regex::new(r"\$\{(\w+)\}").unwrap();
 
     match value {
         toml::Value::String(s) if s.contains("${") => {
             *s = re
                 .replace_all(s, |caps: &regex::Captures| {
-                    std::env::var(&caps[1]).unwrap_or_default()
+                    std::env::var(&caps[1])
+                        .unwrap_or_else(|_| builtin_var(&caps[1], config_path).unwrap_or_default())
                 })
                 .to_string();
         }
         toml::Value::Table(t) => {
             for (_, v) in t.iter_mut() {
-                expand_env_vars(v);
+                expand_env_vars(v, config_path);
             }
         }
         toml::Value::Array(a) => {
             for v in a.iter_mut() {
-                expand_env_vars(v);
+                expand_env_vars(v, config_path);
             }
         }
         _ => {}
+    }
+}
+
+/// Built-in values for `${VAR}` names jyc resolves itself when the
+/// process environment does not define them. An actual env var always
+/// wins (explicit override).
+///
+/// `JYC_CONFIG_PATH` → the directory containing the config file being
+/// loaded (typically `~/.config/jyc` on Linux/macOS), so paths beside it
+/// compose: `${JYC_CONFIG_PATH}/skills`. Returns `None` for other names.
+fn builtin_var(name: &str, config_path: &str) -> Option<String> {
+    match name {
+        "JYC_CONFIG_PATH" => std::path::Path::new(config_path)
+            .parent()
+            .map(|p| p.display().to_string()),
+        _ => None,
     }
 }

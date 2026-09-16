@@ -28,6 +28,20 @@ pub(super) enum ChatPhase {
     Chatting,
 }
 
+/// An `ask_user` question pushed by the daemon, awaiting the user's answer.
+pub(super) struct PendingQuestion {
+    /// Question id — the response frame references it.
+    pub id: String,
+    /// Topic the question belongs to (only surfaced in that topic's pane).
+    pub topic: String,
+    /// Question text.
+    pub question: String,
+    /// Selectable options.
+    pub options: Vec<String>,
+    /// Currently highlighted option.
+    pub selected: usize,
+}
+
 /// Which pane has focus in chat mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ChatFocus {
@@ -178,6 +192,9 @@ pub(super) struct ChatState {
     pub(super) leader: Option<leader::Leader>,
     /// History of sent messages for Up/Down recall (newest appended last).
     pub(super) input_history: Vec<String>,
+    /// An `ask_user` question awaiting the user's answer. Takes over the
+    /// input area until confirmed or dismissed.
+    pub(super) question: Option<PendingQuestion>,
     /// Current position in history browsing (None = not browsing).
     pub(super) history_pos: Option<usize>,
     /// Authorization token to attach to WebSocket upgrade requests.
@@ -682,6 +699,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         // Close any open command popup so the cancel path runs cleanly.
         app.chat.command_popup = None;
         app.chat.leader = None;
+        app.chat.dismiss_question();
         app.chat.send_message_inner("/cancel".to_string());
         return;
     }
@@ -743,6 +761,25 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         app.refresh_chat_commands();
         app.chat.leader = None;
         app.chat.command_popup = Some(CommandPopupState::new());
+        return;
+    }
+
+    // A pending question owns the keyboard until answered or dismissed:
+    // the agent is blocked mid-turn waiting for this answer.
+    if app.chat.active_question() {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => app.chat.select_question_prev(),
+            KeyCode::Down | KeyCode::Char('j') => app.chat.select_question_next(),
+            KeyCode::Enter => app.chat.confirm_question(),
+            KeyCode::Char(c) if c.is_ascii_digit() => {
+                let idx = c as usize - '1' as usize;
+                if idx < app.chat.question.as_ref().map_or(0, |q| q.options.len()) {
+                    app.chat.confirm_question_idx(idx);
+                }
+            }
+            KeyCode::Esc => app.chat.dismiss_question(),
+            _ => {}
+        }
         return;
     }
 
@@ -1159,7 +1196,6 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
             let dot_style = match t.status {
                 TopicStatus::Processing => Style::default().fg(Color::Green),
                 TopicStatus::Queued => Style::default().fg(Color::Yellow),
-                TopicStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
                 TopicStatus::Idle => Style::default().fg(Color::DarkGray),
                 TopicStatus::Error => Style::default().fg(Color::Red),
             };
@@ -1469,6 +1505,49 @@ pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
             }
         })
         .collect();
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, inner);
+}
+
+pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(q) = app.chat.question.as_ref() else {
+        return;
+    };
+    let block = Block::default()
+        .title(" Question ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(area);
+    // Clear first: the covered editor's draft text must not ghost through
+    // the box's empty cells.
+    frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+        q.question.clone(),
+        Style::default().add_modifier(Modifier::BOLD),
+    ))];
+    lines.push(Line::from(""));
+    for (i, opt) in q.options.iter().enumerate() {
+        let label = format!("  {}. {opt}", i + 1);
+        if i == q.selected {
+            lines.push(Line::from(Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        } else {
+            lines.push(Line::from(Span::raw(label)));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " Up/Down or j/k select - 1-9 choose - Enter confirm - Esc dismiss ",
+        Style::default().fg(Color::DarkGray),
+    )));
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
     frame.render_widget(paragraph, inner);
@@ -1828,6 +1907,7 @@ impl ChatState {
             command_popup: None,
             leader: None,
             input_history: vec![],
+            question: None,
             history_pos: None,
             token: None,
         }
@@ -2279,6 +2359,124 @@ impl ChatState {
         self.awaiting_response = true;
     }
 
+    /// Whether a question is pending for the topic open in this pane.
+    pub(super) fn active_question(&self) -> bool {
+        self.question
+            .as_ref()
+            .is_some_and(|q| self.topic.as_deref() == Some(q.topic.as_str()))
+    }
+
+    /// Move the question selection up (clamped at the first option).
+    fn select_question_prev(&mut self) {
+        if let Some(q) = &mut self.question
+            && q.selected > 0
+        {
+            q.selected -= 1;
+        }
+    }
+
+    /// Move the question selection down (clamped at the last option).
+    fn select_question_next(&mut self) {
+        if let Some(q) = &mut self.question
+            && q.selected + 1 < q.options.len()
+        {
+            q.selected += 1;
+        }
+    }
+
+    /// Confirm the pending question with the option at `idx` (0-based).
+    fn confirm_question_idx(&mut self, idx: usize) {
+        let Some(q) = self.question.take() else {
+            return;
+        };
+        if let Some(choice) = q.options.get(idx) {
+            self.send_question_response(&q.id, choice);
+        }
+    }
+
+    /// Confirm the pending question with the highlighted option.
+    fn confirm_question(&mut self) {
+        let idx = self.question.as_ref().map_or(0, |q| q.selected);
+        self.confirm_question_idx(idx);
+    }
+
+    /// Dismiss the pending question (Esc) — the daemon treats it as cancelled.
+    fn dismiss_question(&mut self) {
+        if let Some(q) = self.question.take() {
+            self.send_question_cancelled(&q.id);
+        }
+    }
+
+    /// Send a `question_response` frame with the picked option.
+    fn send_question_response(&self, id: &str, choice: &str) {
+        let msg = serde_json::json!({
+            "type": "question_response",
+            "id": id,
+            "choice": choice,
+        })
+        .to_string();
+        if let Some(tx) = &self.ws_tx {
+            let _ = tx.send(msg);
+        }
+    }
+
+    /// Send a `question_response` frame marking the question as cancelled.
+    fn send_question_cancelled(&self, id: &str) {
+        let msg = serde_json::json!({
+            "type": "question_response",
+            "id": id,
+            "cancelled": true,
+        })
+        .to_string();
+        if let Some(tx) = &self.ws_tx {
+            let _ = tx.send(msg);
+        }
+    }
+
+    /// A `question` payload arrived on the websocket. Surface it in this
+    /// pane only when it belongs to the topic open here; a question for
+    /// another topic is left for a pane on that topic (the server times
+    /// out unanswered questions).
+    fn handle_question_event(&mut self, parsed: &serde_json::Value) {
+        let topic = parsed
+            .get("topic")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if self.topic.as_deref() != Some(topic) {
+            return;
+        }
+        let Some(id) = parsed.get("id").and_then(|v| v.as_str()) else {
+            return;
+        };
+        let options: Vec<String> = parsed
+            .get("options")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|o| o.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if options.is_empty() {
+            return;
+        }
+        // Replacing an unanswered question cancels it server-side.
+        if let Some(prev) = self.question.take() {
+            self.send_question_cancelled(&prev.id);
+        }
+        self.question = Some(PendingQuestion {
+            id: id.to_string(),
+            topic: topic.to_string(),
+            question: parsed
+                .get("question")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            options,
+            selected: 0,
+        });
+    }
+
     pub(super) fn handle_ws_message(&mut self, text: &str) {
         let parsed: serde_json::Value = match serde_json::from_str(text) {
             Ok(v) => v,
@@ -2293,6 +2491,9 @@ impl ChatState {
             Some("activity") | Some("chat_message") | Some("thinking") | Some("processing")
             | Some("resync") | Some("loop_tick") => {
                 self.handle_live_event(&parsed);
+            }
+            Some("question") => {
+                self.handle_question_event(&parsed);
             }
             _ => {}
         }

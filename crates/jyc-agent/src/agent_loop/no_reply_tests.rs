@@ -124,6 +124,7 @@ async fn no_reply_emits_event_and_reminds_once_then_exits() {
         model_label: "empty-test-1",
         context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
         reply_target: None,
+        question_hub: None,
     })
     .await
     .expect("agent loop should run to completion");
@@ -210,6 +211,7 @@ async fn no_reply_reminds_once_when_reply_tool_available() {
         model_label: "empty-with-tool-test-1",
         context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
         reply_target: None,
+        question_hub: None,
     })
     .await
     .expect("agent loop should run to completion");

@@ -209,6 +209,7 @@ async fn cancel_during_llm_call_publishes_processing_completed() {
             model_label: "",
             context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
             reply_target: None,
+            question_hub: None,
         }),
     )
     .await;
@@ -301,6 +302,7 @@ async fn cancel_during_long_running_tool_returns_quickly() {
             model_label: "",
             context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
             reply_target: None,
+            question_hub: None,
         }),
     )
     .await;

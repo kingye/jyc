@@ -196,6 +196,9 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     let mut websocket_handlers: Vec<Arc<WebsocketInboundAdapter>> = vec![];
     // Map for setting TopicManager on websocket handlers after creation
     let mut ws_handler_for_channel: HashMap<String, Arc<WebsocketInboundAdapter>> = HashMap::new();
+    // Daemon-wide question/answer registry for the `ask_user` tool. One hub
+    // serves all channels — entries are keyed by question id (UUID).
+    let question_hub = Arc::new(jyc_core::question::QuestionHub::new());
     // Per-channel websocket broadcast senders, keyed by channel name. Used by
     // piped channels (e.g. feishu with `pipe = "local_dev"`) to receive the
     // target channel's replies.
@@ -395,6 +398,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         handler.set_workspace_dir(workspace_dir.clone());
         handler.set_inspect_broadcast(inspect_broadcast.clone());
         handler.set_ws_shutdown(ws_shutdown.clone());
+        handler.set_question_hub(question_hub.clone());
         let handler = Arc::new(handler);
         ws_handler_for_channel.insert(channel_name.to_string(), handler.clone());
         websocket_handlers.push(handler);
@@ -532,6 +536,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         let tm_map = Arc::new(tokio::sync::Mutex::new(tm_map));
         for svc in &all_agent_services {
             svc.set_topic_managers(tm_map.clone());
+            svc.set_question_hub(question_hub.clone());
         }
         tracing::info!(
             "Wired topic managers into {} agent service(s)",

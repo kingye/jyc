@@ -166,6 +166,7 @@ async fn text_only_finish_auto_delivers_without_reminder() {
         model_label: "scripted-test-auto",
         context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
         reply_target: None,
+        question_hub: None,
     })
     .await
     .expect("agent loop should run to completion");
@@ -278,6 +279,7 @@ async fn silent_reply_closes_turn_without_delivery() {
         model_label: "scripted-test-silent",
         context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
         reply_target: None,
+        question_hub: None,
     })
     .await
     .expect("agent loop should run to completion");
@@ -347,6 +349,7 @@ async fn persistent_text_only_is_auto_delivered_via_reply_tool() {
         model_label: "scripted-test-1",
         context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
         reply_target: None,
+        question_hub: None,
     })
     .await
     .expect("agent loop should run to completion");
@@ -502,6 +505,7 @@ async fn synthetic_auto_delivery_publishes_reply_sent() {
             original,
             message_dir: "2026-08-23_00-00-00".to_string(),
         }),
+        question_hub: None,
     })
     .await
     .expect("agent loop should run to completion");
@@ -602,6 +606,7 @@ async fn failed_reply_then_text_only_gets_failure_reminder() {
         model_label: "scripted-test-failure",
         context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
         reply_target: None,
+        question_hub: None,
     })
     .await
     .expect("agent loop should run to completion");

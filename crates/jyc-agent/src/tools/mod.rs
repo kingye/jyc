@@ -105,6 +105,9 @@ pub struct ToolContext<'a> {
     /// together with `outbound`, the reply tool delivers through the channel
     /// adapter immediately and its result reflects the real delivery outcome.
     pub reply_target: Option<ReplyTarget>,
+    /// Shared question/answer registry for the `ask_user` tool. `None` in
+    /// contexts without interactive-question support (unit tests, sub-agents).
+    pub question_hub: Option<std::sync::Arc<jyc_core::question::QuestionHub>>,
 }
 
 /// Whether `canonical` lies inside the system temp dir `tmp`.
@@ -142,6 +145,7 @@ impl<'a> ToolContext<'a> {
             outbounds: None,
             raw_context: Vec::new(),
             reply_target: None,
+            question_hub: None,
         }
     }
 
@@ -160,6 +164,7 @@ impl<'a> ToolContext<'a> {
             outbounds: None,
             raw_context: Vec::new(),
             reply_target: None,
+            question_hub: None,
         }
     }
     /// Drain and return any pending image sources accumulated during the

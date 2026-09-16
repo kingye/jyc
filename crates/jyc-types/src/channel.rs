@@ -245,6 +245,48 @@ pub trait OutboundAdapter: Send + Sync {
             "Attachments not supported for this channel type"
         ))
     }
+
+    /// Push an interactive question to the user, awaiting their answer.
+    ///
+    /// Channels that support interactive questions (websocket; feishu/wecom
+    /// cards later) override this. The default fails gracefully so the
+    /// `ask_user` tool can tell the model to fall back to asking in plain
+    /// text within its reply.
+    async fn send_question(&self, _request: &QuestionRequest) -> Result<()> {
+        Err(anyhow::anyhow!(
+            "channel '{}' does not support interactive questions",
+            self.channel_type()
+        ))
+    }
+}
+
+/// An interactive question pushed to a user through a channel.
+///
+/// Serialized as the websocket `question` payload; other channels render it
+/// natively (feishu/wecom cards) or as numbered text (email, github).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct QuestionRequest {
+    /// Unique id; the answer must reference it.
+    pub id: String,
+    /// Channel the question was sent through.
+    pub channel: String,
+    /// Topic the question belongs to.
+    pub topic: String,
+    /// Question text.
+    pub question: String,
+    /// Selectable options.
+    pub options: Vec<String>,
+    /// Server-side timeout in seconds; `None` waits indefinitely.
+    pub timeout_seconds: Option<u64>,
+}
+
+/// The user's answer to a pending [`QuestionRequest`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuestionAnswer {
+    /// The user picked one of the options.
+    Choice(String),
+    /// The user dismissed the question without choosing.
+    Cancelled,
 }
 
 // --- Pattern Types ---

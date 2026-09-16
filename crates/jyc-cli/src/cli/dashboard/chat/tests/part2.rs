@@ -1065,3 +1065,127 @@ fn code_fence_renders_with_highlight_colors() {
         .any(|span| matches!(span.style.fg, Some(Color::Rgb(..))));
     assert!(has_rgb_fg, "code fence produced no highlighted spans");
 }
+// Tests for the `ask_user` question box flow in the chat pane.
+
+use super::*;
+
+fn chat_for_topic(topic: &str) -> (ChatState, tokio::sync::mpsc::UnboundedReceiver<String>) {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut chat = ChatState::new(rx);
+    chat.topic = Some(topic.to_string());
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    chat.ws_tx = Some(cmd_tx);
+    (chat, cmd_rx)
+}
+
+fn question_payload(topic: &str, id: &str, options: &[&str]) -> serde_json::Value {
+    serde_json::json!({
+        "type": "question",
+        "id": id,
+        "channel": "chan",
+        "topic": topic,
+        "question": "Pick one?",
+        "options": options,
+        "timeout_seconds": 300,
+    })
+}
+
+#[test]
+fn question_event_surfaces_for_matching_topic() {
+    let (mut chat, _rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
+
+    assert!(chat.active_question());
+    let q = chat.question.as_ref().expect("question stored");
+    assert_eq!(q.id, "q1");
+    assert_eq!(q.question, "Pick one?");
+    assert_eq!(q.options, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(q.selected, 0);
+}
+
+#[test]
+fn question_event_ignored_for_other_topic() {
+    let (mut chat, _rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("other", "q1", &["a"]));
+    assert!(!chat.active_question());
+    assert!(chat.question.is_none());
+}
+
+#[test]
+fn question_event_ignored_without_options() {
+    let (mut chat, _rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &[]));
+    assert!(chat.question.is_none());
+}
+
+#[test]
+fn replacing_question_cancels_previous() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a"]));
+    chat.handle_question_event(&question_payload("jyc", "q2", &["b"]));
+
+    let cancel = rx.try_recv().expect("cancel frame for q1");
+    let parsed: serde_json::Value = serde_json::from_str(&cancel).unwrap();
+    assert_eq!(parsed["type"], "question_response");
+    assert_eq!(parsed["id"], "q1");
+    assert_eq!(parsed["cancelled"], true);
+
+    let q = chat.question.as_ref().expect("new question stored");
+    assert_eq!(q.id, "q2");
+}
+
+#[test]
+fn confirm_sends_choice_frame() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b", "c"]));
+    chat.select_question_next();
+    chat.select_question_next();
+    chat.confirm_question();
+
+    assert!(!chat.active_question());
+    let frame = rx.try_recv().expect("response frame");
+    let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
+    assert_eq!(parsed["type"], "question_response");
+    assert_eq!(parsed["id"], "q1");
+    assert_eq!(parsed["choice"], "c");
+    assert!(parsed.get("cancelled").is_none());
+}
+
+#[test]
+fn dismiss_sends_cancelled_frame() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a"]));
+    chat.dismiss_question();
+
+    assert!(!chat.active_question());
+    let frame = rx.try_recv().expect("cancel frame");
+    let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
+    assert_eq!(parsed["cancelled"], true);
+    assert!(parsed.get("choice").is_none());
+}
+
+#[test]
+fn selection_clamps_at_bounds() {
+    let (mut chat, _rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
+
+    chat.select_question_prev(); // already at top
+    assert_eq!(chat.question.as_ref().unwrap().selected, 0);
+    chat.select_question_next();
+    chat.select_question_next(); // past bottom
+    chat.select_question_next();
+    assert_eq!(chat.question.as_ref().unwrap().selected, 1);
+}
+
+#[test]
+fn confirm_out_of_range_digit_is_noop() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
+    // Simulate the digit guard: idx 5 >= 2 options → no frame, question stays.
+    let idx = 5_usize;
+    if idx < chat.question.as_ref().map_or(0, |q| q.options.len()) {
+        chat.confirm_question_idx(idx);
+    }
+    assert!(chat.active_question());
+    assert!(rx.try_recv().is_err());
+}

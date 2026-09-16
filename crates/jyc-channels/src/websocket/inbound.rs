@@ -451,10 +451,15 @@ async fn handle_connection_impl(
                                     );
                                     continue;
                                 };
-                                let answer = if cancelled || choice.is_none() {
+                                let answer = if cancelled {
                                     jyc_types::channel::QuestionAnswer::Cancelled
                                 } else {
-                                    jyc_types::channel::QuestionAnswer::Choice(choice.unwrap())
+                                    // A response without a choice counts as
+                                    // a dismissal.
+                                    choice.map_or(
+                                        jyc_types::channel::QuestionAnswer::Cancelled,
+                                        jyc_types::channel::QuestionAnswer::Choice,
+                                    )
                                 };
                                 if !hub.respond(&id, answer) {
                                     // Unknown id or asker gone (timed out /

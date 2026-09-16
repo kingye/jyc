@@ -726,6 +726,11 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # matcher = "^bash$"               # optional regex (tool events: tool name)
 # shell = ["./scripts/guard.sh"]   # argv form; stdin = payload JSON
 # timeout = 30                     # optional: seconds before kill (default 30)
+#
+# Topic builtins resolve per topic at spawn (also exported as env vars):
+# [[hooks]]
+# event = "session_start"
+# shell = ["sh", "-c", 'printf "%s started\n" "${JYC_TOPIC_PATH}" >> "${JYC_CONFIG_PATH}/sessions.log"']
 
 # --- MCP Servers ---
 # Named MCP server definitions are configured here and loaded by the agent at startup.

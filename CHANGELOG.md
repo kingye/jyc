@@ -2,6 +2,13 @@
 
 ### Added
 
+- Built-in `${VAR}` config resolution: `${JYC_CONFIG_PATH}` expands to the
+  directory of the config file being loaded (typically `~/.config/jyc` on
+  Linux/macOS) whenever the process environment does not define it (a real
+  env var still wins). Hook `shell` entries additionally support
+  `${JYC_TOPIC_PATH}` / `${JYC_TOPIC_STATE_PATH}`, expanded per topic at
+  spawn (argv form included) and exported as `JYC_TOPIC_PATH` /
+  `JYC_TOPIC_STATE_PATH` env vars. See `docs/hooks.md`. (#775)
 - Claude Code-compatible lifecycle **hooks** (`[[hooks]]` global +
   `[[agents.<name>.hooks]]`, merged like `[[commands]]`): external commands
   run at 7 agent-layer events (`message_received`, `pre_tool_use`,

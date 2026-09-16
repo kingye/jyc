@@ -175,7 +175,24 @@ async fn run_one(hook: &CompiledHook, event: HookEvent, ctx: &HookCtx, agent: &s
         }
     };
 
-    let Some((program, args)) = hook.shell.split_first() else {
+    // Topic builtins: `${JYC_TOPIC_PATH}` / `${JYC_TOPIC_STATE_PATH}` are
+    // expanded textually in every shell entry (argv-form hooks have no
+    // shell to expand them) and injected as env vars for the hook process.
+    // State dir comes from the topic-state registry; empty when the topic
+    // has no registered state dir.
+    let state_path = jyc_types::state_dir::registered_state(&ctx.topic)
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let shell: Vec<String> = hook
+        .shell
+        .iter()
+        .map(|arg| {
+            arg.replace("${JYC_TOPIC_PATH}", &ctx.cwd)
+                .replace("${JYC_TOPIC_STATE_PATH}", &state_path)
+        })
+        .collect();
+
+    let Some((program, args)) = shell.split_first() else {
         return RunResult::Proceed;
     };
     let mut cmd = tokio::process::Command::new(program);
@@ -190,6 +207,8 @@ async fn run_one(hook: &CompiledHook, event: HookEvent, ctx: &HookCtx, agent: &s
     cmd.env("JYC_HOOK_EVENT", event.as_str());
     cmd.env("JYC_AGENT", agent);
     cmd.env("JYC_TOPIC", &ctx.topic);
+    cmd.env("JYC_TOPIC_PATH", &ctx.cwd);
+    cmd.env("JYC_TOPIC_STATE_PATH", &state_path);
     if let Some(ch) = &ctx.channel {
         cmd.env("JYC_CHANNEL", ch);
     }
@@ -449,6 +468,35 @@ mod tests {
             set.run(HookEvent::PreToolUse, None, &ctx()).await,
             HookOutcome::Proceed
         );
+    }
+
+    /// `${JYC_TOPIC_PATH}` is expanded textually in shell entries (works
+    /// for argv-form hooks too) and both topic builtins are injected as
+    /// env vars on the hook process. Unique topic name: the state
+    /// registry is process-global (parallel-test safety).
+    #[tokio::test]
+    async fn topic_builtins_expand_and_inject() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = dir.path().join("state");
+        jyc_types::state_dir::register("t-builtin-vars", &state);
+        let marker = dir.path().join("marker");
+        let script = format!(
+            "test \"${{JYC_TOPIC_PATH}}\" = '{}' && test \"$JYC_TOPIC_STATE_PATH\" = '{}' && printf ok > '{}'",
+            dir.path().display(),
+            state.display(),
+            marker.display()
+        );
+        let set = HookSet::from_configs(&[hook("pre_tool_use", &script)]);
+        let c = HookCtx {
+            topic: "t-builtin-vars".into(),
+            cwd: dir.path().display().to_string(),
+            ..ctx()
+        };
+        assert_eq!(
+            set.run(HookEvent::PreToolUse, None, &c).await,
+            HookOutcome::Proceed
+        );
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "ok");
     }
 
     #[tokio::test]

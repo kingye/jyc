@@ -63,7 +63,16 @@ still read or archive the topic directory while it exists.
 
 The hook process is spawned with the topic directory as its working
 directory. Environment: `JYC_HOOK_EVENT`, `JYC_AGENT`, `JYC_TOPIC`,
-`JYC_CHANNEL` (when known).
+`JYC_CHANNEL` (when known), `JYC_TOPIC_PATH` (the topic directory),
+`JYC_TOPIC_STATE_PATH` (the topic's `.jyc` state dir; empty when the
+topic has no registered state).
+
+`shell` entries in the hook config additionally support
+`${JYC_TOPIC_PATH}` / `${JYC_TOPIC_STATE_PATH}`, substituted by jyc
+before the process is spawned — so they work in argv form too, where no
+shell would expand them. Both names are reserved: they survive config
+load verbatim everywhere in the config (a literal elsewhere, not an
+empty string).
 
 Exit codes (both dialects): `0` proceed (stdout logged at debug level),
 `2` block + stderr as the reason, anything else (including crash,

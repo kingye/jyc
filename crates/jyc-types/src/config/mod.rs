@@ -1297,7 +1297,7 @@ fn parse_and_deserialize_from_value<T: serde::de::DeserializeOwned>(
     // before deserialization (so the `extends` key never reaches the
     // `deny_unknown_fields` `AgentConfig` struct).
     resolve_agent_extends(&mut value, ctx)?;
-    expand_env_vars(&mut value);
+    expand_env_vars(&mut value, ctx);
     value
         .try_into()
         .with_context(|| format!("failed to deserialize config: {ctx}"))

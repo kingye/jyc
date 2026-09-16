@@ -50,7 +50,7 @@ mod config_loader_tests {
             t
         });
 
-        expand_env_vars(&mut value);
+        expand_env_vars(&mut value, "");
 
         let table = value.as_table().unwrap();
         assert_eq!(table["host"].as_str().unwrap(), "imap.example.com");
@@ -63,6 +63,50 @@ mod config_loader_tests {
             std::env::remove_var("JYC_TEST_HOST");
             std::env::remove_var("JYC_TEST_PORT");
         }
+    }
+
+    /// `${JYC_CONFIG_PATH}` is a builtin: it resolves to the directory of
+    /// the config file being loaded, with no env var involved.
+    #[test]
+    fn builtin_config_path_var_expands_to_config_dir() {
+        let mut value = toml::Value::Table({
+            let mut t = toml::map::Map::new();
+            t.insert(
+                "skills".into(),
+                toml::Value::String("${JYC_CONFIG_PATH}/skills".into()),
+            );
+            t
+        });
+
+        expand_env_vars(&mut value, "/home/user/.config/jyc/config.toml");
+
+        assert_eq!(
+            value.as_table().unwrap()["skills"].as_str().unwrap(),
+            "/home/user/.config/jyc/skills"
+        );
+    }
+
+    /// Seam test for the hooks feature: topic builtins must SURVIVE
+    /// load-time `${VAR}` expansion verbatim — they are per-topic and only
+    /// resolved by the hooks executor at spawn. Regression guard against
+    /// them being blanked like an unknown var.
+    #[test]
+    fn topic_vars_survive_load_for_hook_shell() {
+        let toml = r#"
+[ai]
+enabled = true
+mode = "agent"
+
+[[hooks]]
+event = "session_start"
+shell = ["sh", "-c", 'echo "${JYC_TOPIC_PATH}" >> "${JYC_CONFIG_PATH}/sessions.log" ${JYC_TOPIC_STATE_PATH}']
+"#;
+        let cfg: AppConfig =
+            parse_and_deserialize(toml, "/home/user/.config/jyc/config.toml").unwrap();
+        assert_eq!(
+            cfg.hooks[0].shell[2],
+            r#"echo "${JYC_TOPIC_PATH}" >> "/home/user/.config/jyc/sessions.log" ${JYC_TOPIC_STATE_PATH}"#
+        );
     }
 
     /// `resolve_api_key` returns the env-var value when `api_key_env` is

@@ -1354,7 +1354,6 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
             let status_style = match t.status {
                 TopicStatus::Processing => Style::default().fg(Color::Green),
                 TopicStatus::Queued => Style::default().fg(Color::Yellow),
-                TopicStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
                 TopicStatus::Idle => Style::default().fg(Color::DarkGray),
                 TopicStatus::Error => Style::default().fg(Color::Red),
             };
@@ -1487,7 +1486,6 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
             match selected.status {
                 TopicStatus::Processing => Style::default().fg(Color::Green),
                 TopicStatus::Queued => Style::default().fg(Color::Yellow),
-                TopicStatus::WaitingForAnswer => Style::default().fg(Color::Cyan),
                 TopicStatus::Idle => Style::default().fg(Color::DarkGray),
                 TopicStatus::Error => Style::default().fg(Color::Red),
             },

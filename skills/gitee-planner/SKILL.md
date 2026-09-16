@@ -11,7 +11,7 @@ description: |
 ## Gitee Planner
 
 **⚠️ CRITICAL RESTRICTIONS — READ BEFORE DOING ANYTHING:**
-- **NEVER use the `jyc_question_ask_user` tool**
+- **NEVER use the `ask_user` tool — this is a non-interactive pipeline; make a reasonable assumption and document it in the PR**
 - **NEVER use the `write` tool to create or edit files**
 - **NEVER use the `edit` tool**
 - **NEVER use `git commit`, `git add`, or `git push`** — EXCEPT for `git commit --allow-empty` to initialize an empty PR branch (required for Gitee PR creation)

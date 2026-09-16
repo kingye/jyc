@@ -1,5 +1,5 @@
-//! Background delivery watcher for MCP tools that need to send messages
-//! during an active SSE stream (e.g., the question tool).
+//! Background delivery watcher for tools that need to send messages
+//! during an active SSE stream (e.g., synchronously-delivered replies).
 //!
 //! Channel-agnostic: uses the OutboundAdapter trait for delivery.
 //! Watches for `reply-sent.flag` + `reply.md` files and delivers immediately.
@@ -109,9 +109,9 @@ pub(crate) async fn read_signal_attachments(
 
 /// Watch for pending message deliveries during SSE processing.
 ///
-/// MCP tools (like the question tool) write `reply.md` + `reply-sent.flag`
-/// during the SSE stream. This watcher detects them and delivers immediately
-/// via the outbound adapter, without waiting for the SSE stream to complete.
+/// Tools delivering mid-stream write `reply.md` + `reply-sent.flag` during
+/// the SSE stream. This watcher detects them and delivers immediately via
+/// the outbound adapter, without waiting for the SSE stream to complete.
 ///
 /// When delivery succeeds, the watcher also publishes a `ReplySent` event on
 /// the provided topic event bus so dashboard clients can display the reply

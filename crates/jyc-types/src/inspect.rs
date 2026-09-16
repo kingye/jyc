@@ -384,8 +384,6 @@ pub enum TopicStatus {
     /// Worker running, waiting for messages
     #[default]
     Idle,
-    /// Question tool waiting for user reply
-    WaitingForAnswer,
     /// Topic encountered an error
     Error,
 }
@@ -396,7 +394,6 @@ impl std::fmt::Display for TopicStatus {
             Self::Queued => write!(f, "Queued"),
             Self::Processing => write!(f, "Processing"),
             Self::Idle => write!(f, "Idle"),
-            Self::WaitingForAnswer => write!(f, "Waiting"),
             Self::Error => write!(f, "Error"),
         }
     }
@@ -563,7 +560,6 @@ mod tests {
         assert_eq!(format!("{}", TopicStatus::Queued), "Queued");
         assert_eq!(format!("{}", TopicStatus::Processing), "Processing");
         assert_eq!(format!("{}", TopicStatus::Idle), "Idle");
-        assert_eq!(format!("{}", TopicStatus::WaitingForAnswer), "Waiting");
         assert_eq!(format!("{}", TopicStatus::Error), "Error");
     }
 
@@ -579,9 +575,6 @@ mod tests {
     #[test]
     fn test_topic_status_serde() {
         // TopicStatus serializes to snake_case
-        let json = serde_json::to_string(&TopicStatus::WaitingForAnswer).unwrap();
-        assert_eq!(json, r#""waiting_for_answer""#);
-
         let parsed: TopicStatus = serde_json::from_str(r#""processing""#).unwrap();
         assert_eq!(parsed, TopicStatus::Processing);
 

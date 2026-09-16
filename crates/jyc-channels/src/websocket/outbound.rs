@@ -163,6 +163,22 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         tracing::info!(text_len = body.len(), message_id = %message_id, "WebSocket message broadcast");
         Ok(SendResult { message_id })
     }
+
+    async fn send_question(&self, request: &jyc_types::channel::QuestionRequest) -> Result<()> {
+        let payload = serde_json::json!({
+            "type": "question",
+            "id": request.id,
+            "channel": request.channel,
+            "topic": request.topic,
+            "question": request.question,
+            "options": request.options,
+            "timeout_seconds": request.timeout_seconds,
+        });
+        // Same no-receiver tolerance as `broadcast_reply`.
+        let _ = self.broadcast_tx.send(payload.to_string());
+        tracing::info!(question_id = %request.id, topic = %request.topic, "WebSocket question broadcast");
+        Ok(())
+    }
 }
 
 #[cfg(test)]

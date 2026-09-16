@@ -156,6 +156,10 @@ pub struct AgentLoopConfig<'a> {
     /// (tests, sub-agents), where the reply tool falls back to the
     /// `reply.md`/`reply-sent.flag` file relay.
     pub reply_target: Option<crate::tools::ReplyTarget>,
+    /// Shared question/answer registry for the `ask_user` tool. Passed
+    /// through to `ToolContext`; `None` disables interactive questions
+    /// (the tool then reports unavailability to the model).
+    pub question_hub: Option<std::sync::Arc<jyc_core::question::QuestionHub>>,
 }
 
 /// Execute `jyc_reply_message` "in the agent's name" — synthetically, on
@@ -294,6 +298,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         model_label,
         context_strategy,
         reply_target,
+        question_hub,
     } = config;
 
     // Topic label stamped on every billing entry this loop writes.
@@ -351,6 +356,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     ctx.current_topic = Some(topic_name.to_string());
     ctx.outbounds = outbounds.clone();
     ctx.reply_target = reply_target.clone();
+    ctx.question_hub = question_hub.clone();
     let start_time = Instant::now();
 
     // RAII guard: the spawned ticker task is terminated on every return

@@ -226,11 +226,21 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // Split: scrollable messages (top) + dynamic input area (bottom)
     // Input area = 1 mode header row ("╭─ build") + editor rows (grows with
     // content, up to 10). Subtract the prompt gutter from the wrap width.
-    let input_line_count = (count_wrapped_lines(
-        &app.chat.text(),
-        area.width.saturating_sub(PROMPT_GUTTER_WIDTH),
-    ) + 1)
-        .clamp(2, 11) as u16;
+    let input_line_count = if app.chat.active_question() {
+        // Question box: bold question line + blank + one row per option
+        // + blank + hint row, bordered (2) and clamped like the editor.
+        let q = app.chat.question.as_ref().expect("active_question");
+        (count_wrapped_lines(&q.question, area.width.saturating_sub(PROMPT_GUTTER_WIDTH))
+            + q.options.len()
+            + 4)
+        .clamp(6, 15) as u16
+    } else {
+        (count_wrapped_lines(
+            &app.chat.text(),
+            area.width.saturating_sub(PROMPT_GUTTER_WIDTH),
+        ) + 1)
+            .clamp(2, 11) as u16
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])
@@ -540,16 +550,24 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // first editor row; both dim when the input field loses focus.
     // The cursor is a blinking underline when the input has focus and
     // invisible when another pane does (a default-styled cursor cell is
-    // indistinguishable from the text under it).
-    app.chat.editor.set_cursor_style(match app.chat.focus {
-        ChatFocus::ChatPane => Style::default()
-            .add_modifier(Modifier::UNDERLINED)
-            .add_modifier(Modifier::SLOW_BLINK),
-        ChatFocus::MessageArea
-        | ChatFocus::ActivityPane
-        | ChatFocus::ExplorerPane
-        | ChatFocus::InfoPane => Style::default(),
-    });
+    // indistinguishable from the text under it). While a question is
+    // pending the editor is covered by the question box, so the cursor
+    // stays hidden.
+    app.chat
+        .editor
+        .set_cursor_style(if app.chat.active_question() {
+            Style::default()
+        } else {
+            match app.chat.focus {
+                ChatFocus::ChatPane => Style::default()
+                    .add_modifier(Modifier::UNDERLINED)
+                    .add_modifier(Modifier::SLOW_BLINK),
+                ChatFocus::MessageArea
+                | ChatFocus::ActivityPane
+                | ChatFocus::ExplorerPane
+                | ChatFocus::InfoPane => Style::default(),
+            }
+        });
     let [header_area, body_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(chunks[1]);
     let [prompt_area, editor_area] =
@@ -599,6 +617,9 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         prompt_area,
     );
     frame.render_widget(&app.chat.editor, editor_area);
+    if app.chat.active_question() {
+        super::render_question_box(frame, editor_area, app);
+    }
 
     // ── Command popup overlay ──
     if let Some(ref popup) = app.chat.command_popup {

@@ -269,33 +269,6 @@ pub(crate) async fn process_message(
         );
     }
 
-    // ── 4.5. CHECK IF THREAD IS WAITING FOR QUESTION ANSWER ──────────
-    // If the AI previously asked a question via the ask_user MCP tool,
-    // the next user message is the answer — route it to the answer file
-    // instead of creating a new AI prompt.
-    let question_flag = jyc_dir(topic_name, &store_result.topic_path).join("question-sent.flag");
-    if question_flag.exists() {
-        tracing::info!("Topic is waiting for question answer, routing response");
-        let answer_file =
-            jyc_dir(topic_name, &store_result.topic_path).join("question-answer.json");
-        let answer = serde_json::json!({
-            "answer": cleaned_body.trim(),
-            "sender": message.sender_address,
-            "answered_at": chrono::Utc::now().to_rfc3339(),
-        });
-        tokio::fs::write(
-            &answer_file,
-            serde_json::to_string_pretty(&answer).unwrap_or_default(),
-        )
-        .await
-        .ok();
-        tracing::info!(
-            answer_len = cleaned_body.trim().len(),
-            "Question answer written, MCP tool will pick it up"
-        );
-        return Ok(());
-    }
-
     // ── 5. DISPATCH TO AGENT ──────────────────────────────────────────
     // Build message with cleaned body for agent processing
     let message = {
@@ -344,10 +317,11 @@ pub(crate) async fn process_message(
         }
     }
 
-    // Spawn a background task to watch for pending question deliveries.
-    // The question MCP tool writes reply.md + reply-sent.flag during the SSE stream.
-    // This watcher detects them and delivers immediately via the outbound adapter,
-    // without waiting for the SSE stream to complete.
+    // Spawn a background task to watch for pending reply deliveries.
+    // Synchronously-delivered tools (e.g. `jyc_reply_message` with a
+    // reply_target) write reply.md + reply-sent.flag during the SSE stream.
+    // This watcher detects them and delivers immediately via the outbound
+    // adapter, without waiting for the SSE stream to complete.
     let delivery_cancel = tokio_util::sync::CancellationToken::new();
     let delivery_cancel_child = delivery_cancel.clone();
     let delivery_topic_path = store_result.topic_path.clone();
@@ -581,8 +555,8 @@ pub(crate) async fn process_message(
                  skipping post-loop delivery"
             );
         } else {
-            // Reply text comes from the SSE tool input (extracted by service layer).
-            // If not available (e.g., question tool), try reading from reply.md.
+            // Reply text comes from the SSE tool input (extracted by service
+            // layer). If not available, fall back to reply.md.
             let reply_text = result
                 .reply_text
                 .as_deref()

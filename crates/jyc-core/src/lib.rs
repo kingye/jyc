@@ -12,6 +12,7 @@ pub mod message_router;
 pub mod message_storage;
 pub mod metrics;
 pub mod pending_delivery;
+pub mod question;
 pub mod security;
 pub mod session_state;
 pub mod state_manager;

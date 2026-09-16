@@ -117,6 +117,8 @@ impl ChannelMatcher for WebsocketMatcher {
 /// (`list_patterns` and `create_topic`). The WebSocket protocol now
 /// only carries the live-message stream:
 /// - `message`: send a chat message to the bound topic
+/// - `question_response`: answer an `ask_user` question (never enqueued as a
+///   topic message; routed straight to the `QuestionHub`)
 /// - `disconnect`: close the connection cleanly
 /// - `ping`: keep-alive (tokio-tungstenite also handles WS-level pings)
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -147,6 +149,20 @@ enum ClientMessage {
     /// Keep-alive ping. tokio-tungstenite already handles WS-level pings
     /// at the protocol layer; this is a no-op for application-level pings.
     Ping,
+    /// Answer to an `ask_user` question. Routed to the `QuestionHub`, not
+    /// the topic queue — while the agent waits, the topic is busy and a
+    /// normal message would be rejected.
+    QuestionResponse {
+        /// Id of the question being answered (from the `question` payload).
+        id: String,
+        /// The picked option. `None` together with `cancelled: false` is
+        /// treated as a dismissal.
+        #[serde(default)]
+        choice: Option<String>,
+        /// Whether the user dismissed the question without choosing.
+        #[serde(default)]
+        cancelled: bool,
+    },
 }
 
 /// WebSocket inbound adapter.
@@ -178,6 +194,9 @@ pub struct WebsocketInboundAdapter {
     /// `with_graceful_shutdown` from waiting forever on still-open WS
     /// connections (which used to leave zombie `jyc serve` processes).
     ws_shutdown: CancellationToken,
+    /// Shared question/answer registry. `question_response` frames are
+    /// routed here instead of the topic queue.
+    question_hub: Arc<StdMutex<Option<Arc<jyc_core::question::QuestionHub>>>>,
 }
 
 impl WebsocketInboundAdapter {
@@ -191,6 +210,7 @@ impl WebsocketInboundAdapter {
             topic_manager: Arc::new(StdMutex::new(None)),
             inspect_broadcast: None,
             ws_shutdown: CancellationToken::new(),
+            question_hub: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -217,6 +237,11 @@ impl WebsocketInboundAdapter {
         *self.topic_manager.lock().unwrap() = Some(tm);
     }
 
+    /// Set the shared question/answer registry for `question_response` frames.
+    pub fn set_question_hub(&self, hub: Arc<jyc_core::question::QuestionHub>) {
+        *self.question_hub.lock().unwrap() = Some(hub);
+    }
+
     /// Return the channel name for this adapter.
     /// Used by the inspect server for path-based handler routing.
     pub fn channel_name(&self) -> &str {
@@ -237,6 +262,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         let channel_name = self.channel_name.clone();
         let on_message = self.on_message.clone();
         let shutdown = self.ws_shutdown.clone();
+        let question_hub = self.question_hub.lock().unwrap().clone();
 
         handle_connection_impl(
             ws,
@@ -247,6 +273,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
             on_message,
             scoped_topic,
             shutdown,
+            question_hub,
         )
         .await
     }
@@ -312,6 +339,7 @@ async fn handle_connection_impl(
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
     scoped_topic: Option<&str>,
     shutdown: CancellationToken,
+    question_hub: Option<Arc<jyc_core::question::QuestionHub>>,
 ) -> anyhow::Result<()> {
     use axum::extract::ws::Message;
 
@@ -410,6 +438,37 @@ async fn handle_connection_impl(
                             ClientMessage::Ping => {
                                 // No-op; axum auto-replies to WS pings at the
                                 // protocol layer.
+                            }
+                            ClientMessage::QuestionResponse {
+                                id,
+                                choice,
+                                cancelled,
+                            } => {
+                                let Some(hub) = question_hub.clone() else {
+                                    tracing::warn!(
+                                        question_id = %id,
+                                        "question_response received but no QuestionHub configured"
+                                    );
+                                    continue;
+                                };
+                                let answer = if cancelled {
+                                    jyc_types::channel::QuestionAnswer::Cancelled
+                                } else {
+                                    // A response without a choice counts as
+                                    // a dismissal.
+                                    choice.map_or(
+                                        jyc_types::channel::QuestionAnswer::Cancelled,
+                                        jyc_types::channel::QuestionAnswer::Choice,
+                                    )
+                                };
+                                if !hub.respond(&id, answer) {
+                                    // Unknown id or asker gone (timed out /
+                                    // cancelled) — late or duplicate answer.
+                                    tracing::info!(
+                                        question_id = %id,
+                                        "question_response ignored: no pending question"
+                                    );
+                                }
                             }
                         }
                     }
@@ -815,6 +874,45 @@ mod tests {
                 assert!(sender_address.is_none());
             }
             _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_question_response_parses() {
+        let msg: ClientMessage =
+            serde_json::from_str(r#"{"type":"question_response","id":"q1","choice":"option B"}"#)
+                .unwrap();
+        match msg {
+            ClientMessage::QuestionResponse {
+                id,
+                choice,
+                cancelled,
+            } => {
+                assert_eq!(id, "q1");
+                assert_eq!(choice.as_deref(), Some("option B"));
+                assert!(!cancelled);
+            }
+            _ => panic!("expected QuestionResponse"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_question_response_cancelled() {
+        // Cancel frames may omit `choice` entirely.
+        let msg: ClientMessage =
+            serde_json::from_str(r#"{"type":"question_response","id":"q1","cancelled":true}"#)
+                .unwrap();
+        match msg {
+            ClientMessage::QuestionResponse {
+                id,
+                choice,
+                cancelled,
+            } => {
+                assert_eq!(id, "q1");
+                assert!(choice.is_none());
+                assert!(cancelled);
+            }
+            _ => panic!("expected QuestionResponse"),
         }
     }
 }

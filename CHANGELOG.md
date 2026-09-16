@@ -2,6 +2,15 @@
 
 ### Added
 
+- Built-in `ask_user` tool for interactive user decisions: the agent asks a
+  question with selectable options and blocks mid-turn until the user
+  answers (via the websocket `question` / `question_response` protocol),
+  cancels, or a `timeout_seconds` deadline expires (default 300s). Answers
+  are routed in-process through a daemon-wide `QuestionHub`
+  (`jyc-core`), bypassing the busy-topic queue. The TUI renders the
+  question as an input-area modal (↑/↓ or j/k select, 1-9 quick choose,
+  Enter confirm, Esc dismiss). Channels without interactive support fail
+  gracefully so the model asks in plain text instead. (#779)
 - Built-in `${VAR}` config resolution: `${JYC_CONFIG_PATH}` expands to the
   directory of the config file being loaded (typically `~/.config/jyc` on
   Linux/macOS) whenever the process environment does not define it (a real

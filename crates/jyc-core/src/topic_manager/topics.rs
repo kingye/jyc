@@ -509,7 +509,6 @@ impl TopicManager {
 
         // Collect names of actively queued topics
         let queues = self.topic_queues.lock().await;
-        let active_names: std::collections::HashSet<String> = queues.keys().cloned().collect();
         drop(queues);
 
         // Scan workspace for all topic directories with .jyc/ subdirectory
@@ -584,19 +583,10 @@ impl TopicManager {
             // Read skills from .jyc/skills.json
             let skills = read_skills(&name, &topic_path).await;
 
-            // Determine status
-            let status = if jyc_dir(&name, &topic_path)
-                .join("question-sent.flag")
-                .exists()
-            {
-                TopicStatus::WaitingForAnswer
-            } else if active_names.contains(&name) {
-                // Topic has an active queue — it's either processing or waiting for messages
-                TopicStatus::Idle
-            } else {
-                // Topic exists on disk but has no active queue — it's dormant
-                TopicStatus::Idle
-            };
+            // Determine status. The legacy `WaitingForAnswer` state (question
+            // MCP tool) was removed in #188; both active and dormant topics
+            // report `Idle` here — liveness is tracked via the activity log.
+            let status = TopicStatus::Idle;
 
             // Fallback: read .jyc directory mtime if no activity tracker data
             let last_active_at = match tokio::fs::metadata(jyc_dir(&name, &topic_path)).await {

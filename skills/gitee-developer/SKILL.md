@@ -11,7 +11,7 @@ description: |
 ## Gitee Developer
 
 **⚠️ CRITICAL RESTRICTIONS — READ BEFORE DOING ANYTHING:**
-- **NEVER use the `jyc_question_ask_user` tool**
+- **NEVER use the `ask_user` tool — this is a non-interactive pipeline; make a reasonable assumption and document it in the PR**
 - **NEVER create a new PR — the PR already exists (created by the planner)**
 - **NEVER create new branches — use the existing PR branch**
 - **NEVER merge the PR — that's the user's decision**
@@ -242,7 +242,7 @@ When the triggering message indicates a CI failure on the PR, fix the failing ch
 - When using the reply tool, put your COMPLETE response in the message
 - Do NOT create new PRs or branches
 - Do NOT merge the PR
-- Do NOT use the `jyc_question_ask_user` tool
+- Do NOT use the `ask_user` tool (non-interactive pipeline)
 
 ### Behavioral Guidelines
 

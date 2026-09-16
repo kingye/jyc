@@ -1012,14 +1012,15 @@ mod tool_registry {
         assert!(registry.has_tool("job_toggle"));
         assert!(registry.has_tool("jyc_send_to_topic"));
         assert!(registry.has_tool("context_browse"));
-        assert_eq!(registry.len(), 13);
+        assert!(registry.has_tool("ask_user"));
+        assert_eq!(registry.len(), 14);
     }
 
     #[test]
     fn registry_produces_definitions() {
         let registry = create_builtin_registry();
         let definitions = registry.definitions();
-        assert_eq!(definitions.len(), 13);
+        assert_eq!(definitions.len(), 14);
 
         // Each definition should have name, description, and input_schema
         for def in &definitions {

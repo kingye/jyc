@@ -93,6 +93,10 @@ mod config_loader_tests {
     #[test]
     fn topic_vars_survive_load_for_hook_shell() {
         let toml = r#"
+[ai]
+enabled = true
+mode = "agent"
+
 [[hooks]]
 event = "session_start"
 shell = ["sh", "-c", 'echo "${JYC_TOPIC_PATH}" >> "${JYC_CONFIG_PATH}/sessions.log" ${JYC_TOPIC_STATE_PATH}']

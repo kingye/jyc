@@ -172,10 +172,13 @@ fn progress_card_json(status_text: &str, thinking: Option<&str>) -> serde_json::
 /// 2. **Live** — PATCH the card as tools fire; finalize on
 ///    `ProcessingCompleted`.
 ///
-/// Exits on `ProcessingCompleted` (final card), when the bus is dropped, or
-/// after `MAX_LIFETIME` (safety net). A PATCH failure only skips the current
-/// tick — the card itself was already posted, so transient API errors must
-/// not kill the watcher. The dedup entry is released on every exit path.
+/// Exits on `ProcessingCompleted` (final card), when a *different* run
+/// starts on the topic (this run was cancelled — a cancelled run publishes
+/// no event, so the next start is the only signal), when the bus is
+/// dropped, or after `MAX_LIFETIME` (safety net). A PATCH failure only
+/// skips the current tick — the card itself was already posted, so
+/// transient API errors must not kill the watcher. The dedup entry is
+/// released on every exit path.
 ///
 /// Concurrent watchers of the same topic share one status message via the
 /// `cards` registry: the first watcher to arm posts it and records the
@@ -257,7 +260,10 @@ pub fn spawn_progress_watcher(
         // watcher that reused another live watcher's card must not release
         // that watcher's dedup entry.
         let mut owns_entry = false;
-        let (status_message_id, mut last_text) = loop {
+        // Set by the arming ProcessingStarted; a *different* run's start in
+        // Phase 2 means ours is over (see the superseded-exit arm there).
+        let run_message_id;
+        let (status_message_id, run_message_id, mut last_text) = loop {
             // Bounded wait: even on a completely silent topic (no events
             // at all) the watcher exits once MAX_LIFETIME is exceeded.
             let remaining = MAX_LIFETIME.saturating_sub(start.elapsed());
@@ -279,7 +285,9 @@ pub fn spawn_progress_watcher(
                     prior_completed = true;
                     continue;
                 }
-                TopicEvent::ProcessingStarted { .. } => {}
+                TopicEvent::ProcessingStarted { message_id, .. } => {
+                    run_message_id = message_id;
+                }
                 _ => continue,
             }
             // Processing actually starts now — exclude the queue wait
@@ -297,7 +305,11 @@ pub fn spawn_progress_watcher(
             // concurrently can't both create.
             let mut cards = cards.lock().await;
             if let Some(existing) = reuse_decision(cards.get(&topic), prior_completed) {
-                break (existing, progress_card_json(&text, None).to_string());
+                break (
+                    existing,
+                    run_message_id,
+                    progress_card_json(&text, None).to_string(),
+                );
             }
             // Bounded send: the event bus is shared with the agent loop,
             // so a hung Feishu call must never stall this watcher.
@@ -310,7 +322,11 @@ pub fn spawn_progress_watcher(
                 Ok(Ok(r)) => {
                     cards.insert(topic.clone(), r.message_id.clone());
                     owns_entry = true;
-                    break (r.message_id, progress_card_json(&text, None).to_string());
+                    break (
+                        r.message_id,
+                        run_message_id,
+                        progress_card_json(&text, None).to_string(),
+                    );
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(
@@ -379,6 +395,22 @@ pub fn spawn_progress_watcher(
                             // so the final card can embed the full history.
                             TopicEvent::Thinking { text, .. } => {
                                 push_thinking_block(&mut thinking_blocks, text);
+                            }
+                            TopicEvent::ProcessingStarted { message_id, .. } => {
+                                if message_id != run_message_id {
+                                    // A new run started on this topic: ours
+                                    // is over — a cancelled run publishes no
+                                    // event, so the next start is the only
+                                    // signal. Release now (owner only) so
+                                    // the new watcher posts a fresh card
+                                    // instead of reusing ours; the post-loop
+                                    // release is then an idempotent no-op.
+                                    if owns_entry {
+                                        release_topic_card(&cards, &topic, &status_message_id)
+                                            .await;
+                                    }
+                                    break;
+                                }
                             }
                             _ => {}
                         }
@@ -468,11 +500,14 @@ pub fn spawn_progress_watcher(
                 break;
             }
         }
-        // Every exit path (final card, bus drop, lifetime cap) releases the
-        // dedup entry so the next run posts a fresh status message — a
-        // leaked entry would make later watchers PATCH a stale, buried card.
-        // Only the owner releases: a watcher that reused another live
-        // watcher's card shares its message id and must keep the entry.
+        // Every exit path (final card, superseded by a new run, bus drop,
+        // lifetime cap) releases the dedup entry so the next run posts a
+        // fresh status message — a leaked entry would make later watchers
+        // PATCH a stale, buried card. The superseded path also releases
+        // inline above, before the new watcher's arm check; this call is
+        // then an idempotent no-op. Only the owner releases: a watcher that
+        // reused another live watcher's card shares its message id and must
+        // keep the entry.
         if owns_entry {
             release_topic_card(&cards, &topic, &status_message_id).await;
         }

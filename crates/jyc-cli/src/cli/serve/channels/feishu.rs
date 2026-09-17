@@ -264,7 +264,7 @@ pub(crate) fn spawn_feishu_adapter(
                         // the topic's agent is blocked in `ask_user` answers
                         // the question instead of entering the topic (the
                         // text fallback of `QuestionHub::pending_for`).
-                        if let Some(text) = message.content.text.as_deref().map(str::trim)
+                        if let Some(text) = message.content.text.as_deref()
                             && try_answer_pending_question(&question_hub, &message.topic, text)
                         {
                             return;
@@ -432,6 +432,7 @@ fn try_answer_pending_question(
     topic: &str,
     text: &str,
 ) -> bool {
+    let text = text.trim();
     if text.is_empty() || text.starts_with('/') {
         return false;
     }

@@ -152,6 +152,18 @@ impl FeishuClient {
             .await
     }
 
+    /// Send a card JSON 2.0 interactive message to a chat.
+    ///
+    /// Used for `ask_user` question cards (see [`crate::feishu::question_card`]).
+    pub async fn send_card_message(
+        &self,
+        chat_id: &str,
+        card: &serde_json::Value,
+    ) -> Result<FeishuMessageResult> {
+        self.send_message(chat_id, "interactive", &card.to_string())
+            .await
+    }
+
     /// Send a file message to a chat (after uploading via `upload_file()`).
     pub async fn send_file_message(
         &self,

@@ -247,6 +247,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
                 config_for_spawn.clone(),
                 ws_broadcasts.clone(),
                 routers.clone(),
+                question_hub.clone(),
             )?;
             continue;
         }

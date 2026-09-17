@@ -783,6 +783,10 @@ fn matches_transient_pattern(lower_msg: &str) -> bool {
         "transport error",
         "incomplete message",
         "unexpected eof",
+        // Model emitted raw tool-call syntax as text (weak function-calling
+        // via OpenAI-compat) — retryable; the next attempt usually
+        // re-formats correctly (#786).
+        "provider format failure",
     ];
     TRANSIENT_PATTERNS.iter().any(|p| lower_msg.contains(p))
 }

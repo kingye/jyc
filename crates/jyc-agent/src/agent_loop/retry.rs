@@ -7,7 +7,7 @@ use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
 use super::publish_event;
-use super::response::{CollectedResponse, collect_response};
+use super::response::{CollectedResponse, collect_response, looks_like_leaked_tool_call};
 use crate::provider::{Provider, RetryClass, classify_retry, extract_retry_after};
 use crate::types::ToolDefinition;
 use jyc_core::topic_event::TopicEvent;
@@ -222,14 +222,31 @@ async fn issue_call(
             let stream = provider
                 .complete_raw(raw_context, tools, system_prompt)
                 .await?;
-            collect_response(
+            let collected = collect_response(
                 stream,
                 sse_read_timeout,
                 event_bus,
                 topic_name,
                 thinking_enabled,
             )
-            .await
+            .await?;
+            // Provider format-failure guard (#786): a model with weak
+            // function-calling can emit raw tool-call syntax into the text
+            // channel instead of structured tool_calls. Shipped verbatim by
+            // the text-only auto-delivery fallback, that syntax is garbage
+            // to the user — fail the attempt (transient "provider format
+            // failure") so the retry loop re-issues the call.
+            if collected.tool_calls.is_empty() && looks_like_leaked_tool_call(&collected.text) {
+                tracing::warn!(
+                    text_excerpt = %jyc_utils::helpers::truncate_str_ellipsis(&collected.text, 200),
+                    "provider format failure: model emitted tool-call syntax as text"
+                );
+                Err(anyhow::anyhow!(
+                    "provider format failure: model emitted tool-call syntax as text"
+                ))
+            } else {
+                Ok(collected)
+            }
         } => r,
         _ = cancel.cancelled() => Err(anyhow::anyhow!("cancelled during LLM call")),
     }
@@ -291,15 +308,7 @@ mod retry_tests {
         }
 
         fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
-            let text: String = blocks
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            serde_json::json!({"role": "user", "content": text})
+            mock_format_user_message(blocks)
         }
 
         fn format_tool_result(
@@ -308,11 +317,7 @@ mod retry_tests {
             content: &str,
             _is_error: bool,
         ) -> serde_json::Value {
-            serde_json::json!({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": content,
-            })
+            mock_format_tool_result(tool_call_id, content)
         }
 
         fn build_raw_assistant_message(
@@ -321,12 +326,108 @@ mod retry_tests {
             _reasoning: &str,
             _tool_calls: &[(String, String, String)],
         ) -> serde_json::Value {
-            serde_json::json!({"role": "assistant", "content": text})
+            mock_build_raw_assistant_message(text)
         }
     }
 
     use super::super::event_test_helpers::drain_events;
     use crate::types::ContentBlock;
+
+    /// Shared `Provider::format_user_message` body for the mock providers
+    /// below: text blocks joined into one JSON object.
+    fn mock_format_user_message(blocks: &[ContentBlock]) -> serde_json::Value {
+        let text: String = blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        serde_json::json!({"role": "user", "content": text})
+    }
+
+    /// Shared `Provider::format_tool_result` body for the mock providers.
+    fn mock_format_tool_result(tool_call_id: &str, content: &str) -> serde_json::Value {
+        serde_json::json!({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": content,
+        })
+    }
+
+    /// Shared `Provider::build_raw_assistant_message` body for the mock
+    /// providers.
+    fn mock_build_raw_assistant_message(text: &str) -> serde_json::Value {
+        serde_json::json!({"role": "assistant", "content": text})
+    }
+
+    /// Mock provider whose FIRST call returns a well-formed stream whose
+    /// text is leaked tool-call syntax (with no structured tool_calls);
+    /// every later call returns a normal text response. Used to prove the
+    /// leak guard fails the attempt as a transient error and the retry
+    /// re-issues the call (#786).
+    struct LeakyProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for LeakyProvider {
+        fn name(&self) -> &str {
+            "leaky"
+        }
+        fn model(&self) -> &str {
+            "leaky-1"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            unimplemented!("complete() unused in retry tests")
+        }
+
+        async fn complete_raw(
+            &self,
+            _raw_messages: &[serde_json::Value],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            let text = if n == 0 {
+                "<response tools=\"<call tool=\"bash\" index=\"1\">".to_string()
+            } else {
+                "ok".to_string()
+            };
+            let events: Vec<anyhow::Result<StreamEvent>> =
+                vec![Ok(StreamEvent::TextDelta(text)), Ok(StreamEvent::Done)];
+            Ok(Box::pin(stream::iter(events)))
+        }
+
+        fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
+            mock_format_user_message(blocks)
+        }
+
+        fn format_tool_result(
+            &self,
+            tool_call_id: &str,
+            content: &str,
+            _is_error: bool,
+        ) -> serde_json::Value {
+            mock_format_tool_result(tool_call_id, content)
+        }
+
+        fn build_raw_assistant_message(
+            &self,
+            text: &str,
+            _reasoning: &str,
+            _tool_calls: &[(String, String, String)],
+        ) -> serde_json::Value {
+            mock_build_raw_assistant_message(text)
+        }
+    }
 
     /// Two transient failures then success → returns Ok, publishes 2 retry events.
     #[tokio::test]
@@ -426,6 +527,64 @@ mod retry_tests {
             retry_count,
             (SSE_MAX_ATTEMPTS - 1) as usize,
             "should publish one retry event per retry (not for the initial attempt or the final failed attempt)"
+        );
+    }
+
+    /// Leaked tool-call syntax in the text channel (no structured
+    /// tool_calls) fails the attempt as a transient provider format failure
+    /// and the retry re-issues the call (#786).
+    #[tokio::test]
+    async fn leaked_tool_call_syntax_is_retried_then_succeeds() {
+        let provider = LeakyProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "topic-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+            &CancellationToken::new(),
+            true,
+            &[1, 2],
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "expected Ok after retry, got {:?}",
+            result.err()
+        );
+        let response = result.unwrap();
+        assert_eq!(response.text, "ok");
+        assert!(response.tool_calls.is_empty());
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            2,
+            "expected 2 total calls (1 leaked + 1 good)"
+        );
+    }
+
+    /// The leak-guard and truncation errors must classify as Transient so
+    /// they retry on the fast SSE schedule instead of dying Terminal (#786).
+    #[test]
+    fn format_failures_classify_as_transient() {
+        let leak =
+            anyhow::anyhow!("provider format failure: model emitted tool-call syntax as text");
+        assert!(
+            matches!(classify_retry(&leak), RetryClass::Transient),
+            "leak guard error should be transient"
+        );
+
+        let truncated =
+            anyhow::anyhow!("SSE stream ended without Done marker (truncated mid-stream)");
+        assert!(
+            matches!(classify_retry(&truncated), RetryClass::Transient),
+            "truncated-stream error should be transient"
         );
     }
 

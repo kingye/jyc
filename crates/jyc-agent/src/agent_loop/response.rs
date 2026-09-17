@@ -92,6 +92,7 @@ pub(crate) async fn collect_response(
     let mut current_tool_id: Option<String> = None;
     let mut current_tool_name: Option<String> = None;
     let mut current_tool_args = String::new();
+    let mut saw_done = false;
 
     // Throttle Thinking events so we don't flood the event bus.
     let mut last_thinking_publish: Option<std::time::Instant> = None;
@@ -182,11 +183,26 @@ pub(crate) async fn collect_response(
                 response.cache_creation_tokens = cache_creation_tokens;
                 response.reasoning_tokens += reasoning_tokens;
             }
-            StreamEvent::Done => break,
+            StreamEvent::Done => {
+                saw_done = true;
+                break;
+            }
             StreamEvent::Error(msg) => {
                 return Err(anyhow::anyhow!("LLM error: {}", msg));
             }
         }
+    }
+
+    // A stream that reaches EOF without the provider's `Done` marker was
+    // truncated mid-response (gateway cut, connection drop, proxy timeout).
+    // Accepting the partial text as complete lets the text-only
+    // auto-delivery fallback ship a broken fragment to the user (#786).
+    // Fail instead: the message matches the transient retry patterns
+    // ("stream ended"), so `complete_with_retry` re-issues the call.
+    if !saw_done {
+        return Err(anyhow::anyhow!(
+            "SSE stream ended without Done marker (truncated mid-stream)"
+        ));
     }
 
     // Final thinking flush: the throttled publishes inside the stream loop
@@ -219,4 +235,121 @@ pub(crate) async fn collect_response(
     }
 
     Ok(response)
+}
+
+/// Markers of raw tool-call syntax leaking into the text channel. Models
+/// with weak function-calling (via OpenAI-compat adapters) sometimes emit
+/// these instead of structured `tool_calls`; left unchecked, the text-only
+/// auto-delivery fallback would ship the syntax to the user as a "reply".
+///
+/// Detection is start-anchored (after leading whitespace): real leaks BEGIN
+/// with the raw syntax, while legit replies only ever QUOTE it inside prose
+/// or code blocks — rejecting those would break meta-discussion (#786
+/// review). Cut-mid-leak fragments with a prose preamble are still caught
+/// by the truncated-stream check above (no `Done` marker). A response that
+/// matches with no parsed tool calls is a provider format failure, so the
+/// iteration is retried rather than delivered.
+const LEAKED_TOOL_CALL_MARKERS: &[&str] = &[
+    "<call tool=",
+    "<parameter name=",
+    "<argument key=",
+    "</call>",
+    "<tool_call>",
+    "<antml:invoke",
+    // Gateway-wrapped leak: `<response tools="<call tool=...>">`.
+    "<response tools=",
+];
+
+/// Whether `text` looks like leaked tool-call syntax rather than a
+/// user-facing reply. Only meaningful when the response parsed no
+/// structured tool calls.
+pub(crate) fn looks_like_leaked_tool_call(text: &str) -> bool {
+    let text = text.trim_start();
+    LEAKED_TOOL_CALL_MARKERS.iter().any(|m| text.starts_with(m))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::stream;
+
+    fn event_stream(events: Vec<StreamEvent>) -> crate::provider::EventStream {
+        Box::pin(stream::iter(events.into_iter().map(Ok)))
+    }
+
+    #[tokio::test]
+    async fn done_stream_collects_text_and_tool_calls() {
+        let events = vec![
+            StreamEvent::TextDelta("hello ".to_string()),
+            StreamEvent::ToolUseStart {
+                id: "1".to_string(),
+                name: "bash".to_string(),
+            },
+            StreamEvent::ToolInputDelta("{\"a\":1}".to_string()),
+            StreamEvent::ToolUseEnd,
+            StreamEvent::Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_hit_tokens: 0,
+                cache_creation_tokens: 0,
+                reasoning_tokens: 0,
+            },
+            StreamEvent::Done,
+        ];
+        let r = collect_response(
+            event_stream(events),
+            std::time::Duration::from_secs(5),
+            None,
+            "topic",
+            false,
+        )
+        .await
+        .expect("stream with Done marker must collect");
+        assert_eq!(r.text, "hello ");
+        assert_eq!(r.tool_calls.len(), 1);
+        assert_eq!(r.tool_calls[0].name, "bash");
+    }
+
+    #[tokio::test]
+    async fn eof_without_done_marker_is_rejected() {
+        // A stream that ends (EOF) before `Done` was truncated
+        // mid-response; the partial text must not be accepted as complete
+        // (#786).
+        let events = vec![StreamEvent::TextDelta("half a sentence ".to_string())];
+        let err = collect_response(
+            event_stream(events),
+            std::time::Duration::from_secs(5),
+            None,
+            "topic",
+            false,
+        )
+        .await
+        .expect_err("EOF without Done must fail");
+        assert!(
+            format!("{err:#}").contains("stream ended"),
+            "error should match the transient retry patterns, got: {err:#}"
+        );
+    }
+
+    #[test]
+    fn leaked_tool_call_detection() {
+        // Real leaks BEGIN with the raw syntax (after optional whitespace).
+        assert!(looks_like_leaked_tool_call(
+            "<response tools=\"<call tool=\"bash\""
+        ));
+        assert!(looks_like_leaked_tool_call(
+            "  \n\t<call tool=\"bash\" index=\"1\">"
+        ));
+        assert!(looks_like_leaked_tool_call("</call> trailing"));
+        // Legit replies may QUOTE the syntax mid-prose — the gate must not
+        // reject meta-discussion (start-anchored detection).
+        assert!(!looks_like_leaked_tool_call(
+            "看日志：\n<call tool=\"bash\" index=\"1\">"
+        ));
+        assert!(!looks_like_leaked_tool_call(
+            "比如 `<parameter name=\"command\">` 这种写法。"
+        ));
+        assert!(!looks_like_leaked_tool_call("普通回复，没有工具调用语法。"));
+        assert!(!looks_like_leaked_tool_call(""));
+    }
 }

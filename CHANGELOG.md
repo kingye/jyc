@@ -81,6 +81,14 @@
   message id — previously a non-terminal exit leaked the entry, so every
   later message PATCHed a stale, buried card instead of posting a fresh
   progress indicator. (#782)
+- Feishu live progress card: a dedup registry entry left by a previous run
+  could be reused by the next message's watcher (the previous watcher's
+  release lags behind its final PATCH), so after a cancelled/superseded run
+  — the ask_user question flow in particular — no fresh "⏳ 处理中" card
+  was posted and updates kept landing on the old, buried card. While
+  waiting, a fresh `ProcessingCompleted` now marks the previous run as
+  done: the arming watcher ignores the stale entry and posts a new card,
+  and only the entry's owner releases it on exit. (#784)
 - The billing ledger now persists the applied cache-creation (write) rate
   per call (`cache_creation_rate_per_million`, effective value =
   configured rate or the cache-hit rate when unset). The other three rate

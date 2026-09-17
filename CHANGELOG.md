@@ -2,6 +2,13 @@
 
 ### Added
 
+- Feishu interactive cards for the `ask_user` tool: a pending question is
+  relayed to the originating chat as a card JSON 2.0 message with numbered
+  options; the user answers by replying with the number or option text,
+  which the feishu pipe routes to the `QuestionHub` instead of the topic.
+  (Button callbacks are not used: openlark-client's WebSocket layer drops
+  `card.action.trigger` frames, so numbered-reply keeps everything on the
+  existing long connection.) Slash commands are never intercepted.
 - Built-in `ask_user` tool for interactive user decisions: the agent asks a
   question with selectable options and blocks mid-turn until the user
   answers (via the websocket `question` / `question_response` protocol),

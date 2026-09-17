@@ -264,10 +264,10 @@ pub(crate) fn spawn_feishu_adapter(
                         // the topic's agent is blocked in `ask_user` answers
                         // the question instead of entering the topic (the
                         // text fallback of `QuestionHub::pending_for`).
-                        if let Some(text) = message.content.text.as_deref().map(str::trim) {
-                            if try_answer_pending_question(&question_hub, &message.topic, text) {
-                                return;
-                            }
+                        if let Some(text) = message.content.text.as_deref().map(str::trim)
+                            && try_answer_pending_question(&question_hub, &message.topic, text)
+                        {
+                            return;
                         }
 
                         // Record resolved topic -> chat_id for reply relay.

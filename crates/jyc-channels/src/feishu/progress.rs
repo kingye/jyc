@@ -86,7 +86,14 @@ fn final_card_json(status_text: &str, thinking_blocks: &[String]) -> serde_json:
             "elements": [{"tag": "markdown", "content": content}]
         }));
     }
-    serde_json::json!({"elements": elements})
+    // Full card-JSON 2.0 envelope: Feishu's update-card API requires
+    // `config.update_multi` in BOTH the initial card and every PATCH
+    // payload — a bare `{"elements": …}` body is rejected.
+    serde_json::json!({
+        "schema": "2.0",
+        "config": {"update_multi": true},
+        "body": {"elements": elements}
+    })
 }
 
 /// Build the status-card markdown for the Feishu progress watcher.
@@ -147,7 +154,11 @@ fn progress_card_json(status_text: &str, thinking: Option<&str>) -> serde_json::
             }]
         }));
     }
-    serde_json::json!({"elements": elements})
+    serde_json::json!({
+        "schema": "2.0",
+        "config": {"update_multi": true},
+        "body": {"elements": elements}
+    })
 }
 
 /// Watch one topic's event bus and maintain the Feishu status card.
@@ -161,15 +172,29 @@ fn progress_card_json(status_text: &str, thinking: Option<&str>) -> serde_json::
 /// 2. **Live** — PATCH the card as tools fire; finalize on
 ///    `ProcessingCompleted`.
 ///
-/// Exits on `ProcessingCompleted` (final card), when the bus is dropped,
-/// after `MAX_LIFETIME` (safety net), or silently after 3 consecutive
-/// Feishu API failures — the reply footer works independently.
+/// Exits on `ProcessingCompleted` (final card), when the bus is dropped, or
+/// after `MAX_LIFETIME` (safety net). A PATCH failure only skips the current
+/// tick — the card itself was already posted, so transient API errors must
+/// not kill the watcher. The dedup entry is released on every exit path.
 ///
 /// Concurrent watchers of the same topic share one status message via the
 /// `cards` registry: the first watcher to arm posts it and records the
 /// message id; later watchers armed by the same run reuse that id instead
-/// of posting a duplicate. The entry is removed when the run finalizes,
-/// so the next run posts a fresh message.
+/// of posting a duplicate. The entry is removed when the run finalizes (or
+/// the watcher exits), so the next run posts a fresh message.
+async fn release_topic_card(
+    cards: &Arc<tokio::sync::Mutex<std::collections::HashMap<String, String>>>,
+    topic: &str,
+    message_id: &str,
+) {
+    // Only release our own entry: a concurrent watcher may have replaced
+    // it (its final card would otherwise be orphaned for the next run).
+    let mut g = cards.lock().await;
+    if g.get(topic).is_some_and(|id| id == message_id) {
+        g.remove(topic);
+    }
+}
+
 pub fn spawn_progress_watcher(
     feishu_client: Arc<FeishuClient>,
     topic_manager: Arc<TopicManager>,
@@ -181,7 +206,6 @@ pub fn spawn_progress_watcher(
 ) {
     tokio::spawn(async move {
         const MAX_LIFETIME: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
-        const MAX_PATCH_FAILURES: u32 = 3;
 
         // No bus (events disabled) → no status card at all.
         let Some(bus) = topic_manager.get_or_create_event_bus(&topic).await else {
@@ -274,7 +298,7 @@ pub fn spawn_progress_watcher(
         let mut thinking_blocks: Vec<String> = Vec::new();
         let mut done: Option<(bool, u64)> = None;
         let mut last_patch = std::time::Instant::now();
-        let mut fails = 0u32;
+        let mut patch_warned = false;
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(2));
 
         loop {
@@ -372,38 +396,45 @@ pub fn spawn_progress_watcher(
             .await;
             match upd {
                 Ok(Ok(())) => {
-                    fails = 0;
+                    patch_warned = false;
                     last_text = card_str;
                     last_patch = std::time::Instant::now();
                 }
                 Ok(Err(e)) => {
-                    fails += 1;
-                    tracing::debug!(
-                        error = %e, topic = %topic, fails,
-                        "feishu progress watcher: status card update failed"
-                    );
-                    if fails >= MAX_PATCH_FAILURES {
-                        break;
+                    // Transient (throttle/network): skip this tick and keep
+                    // watching. First failure is warn-level so a systematic
+                    // problem (e.g. a rejected card schema) is visible
+                    // without spamming one line per tick.
+                    if patch_warned {
+                        tracing::debug!(error = %e, topic = %topic,
+                            "feishu progress watcher: status card update failed");
+                    } else {
+                        tracing::warn!(error = %e, topic = %topic,
+                            "feishu progress watcher: status card update failed; \
+                             further failures logged at debug");
+                        patch_warned = true;
                     }
                 }
                 Err(_elapsed) => {
-                    fails += 1;
-                    tracing::debug!(
-                        topic = %topic, fails,
-                        "feishu progress watcher: status card update timed out"
-                    );
-                    if fails >= MAX_PATCH_FAILURES {
-                        break;
+                    if patch_warned {
+                        tracing::debug!(topic = %topic,
+                            "feishu progress watcher: status card update timed out");
+                    } else {
+                        tracing::warn!(topic = %topic,
+                            "feishu progress watcher: status card update timed out; \
+                             further failures logged at debug");
+                        patch_warned = true;
                     }
                 }
             }
             if terminal {
-                // Run finalized — release the dedup entry so the next run
-                // posts a fresh status message.
-                cards.lock().await.remove(&topic);
                 break;
             }
         }
+        // Every exit path (final card, bus drop, lifetime cap) releases the
+        // dedup entry so the next run posts a fresh status message — a
+        // leaked entry would make later watchers PATCH a stale, buried card.
+        release_topic_card(&cards, &topic, &status_message_id).await;
     });
 }
 
@@ -433,7 +464,7 @@ mod tests {
         let none = TopicDisplayState::default();
         let status = progress_card("⏳ 处理中", 12, 3, Some("read — a.rs"), &none);
         let card = progress_card_json(&status, Some("计划步骤一\n然后调用工具读取文件"));
-        let elements = card["elements"].as_array().expect("elements");
+        let elements = card["body"]["elements"].as_array().expect("elements");
         assert_eq!(elements.len(), 2, "card: {card}");
         assert_eq!(elements[0]["tag"], "markdown");
         assert_eq!(elements[0]["content"], status);
@@ -450,20 +481,58 @@ mod tests {
     #[test]
     fn progress_card_json_omits_panel_without_thinking() {
         let card = progress_card_json("⏳ 处理中 · 1s · 工具 0", None);
-        assert_eq!(card["elements"].as_array().expect("elements").len(), 1);
+        assert_eq!(
+            card["body"]["elements"].as_array().expect("elements").len(),
+            1
+        );
         // Whitespace-only thinking → no panel either.
         let card = progress_card_json("⏳ 处理中 · 1s · 工具 0", Some("  "));
-        assert_eq!(card["elements"].as_array().expect("elements").len(), 1);
+        assert_eq!(
+            card["body"]["elements"].as_array().expect("elements").len(),
+            1
+        );
     }
 
     #[test]
     fn progress_card_json_truncates_thinking_to_tail_chars() {
         let thinking = "a".repeat(THINKING_PREVIEW_CHARS + 500);
         let card = progress_card_json("⏳ 处理中 · 1s · 工具 0", Some(&thinking));
-        let body = card["elements"][1]["elements"][0]["content"]
+        let body = card["body"]["elements"][1]["elements"][0]["content"]
             .as_str()
             .expect("panel body");
         assert_eq!(body.chars().count(), THINKING_PREVIEW_CHARS);
+    }
+
+    #[test]
+    fn progress_card_json_declares_update_multi_config() {
+        // Regression: Feishu's update-card API rejects PATCH bodies that do
+        // not declare `config.update_multi`, so the card JSON sent via
+        // `update_card_message` must carry the full 2.0 envelope — same as
+        // the initial card posted by `FeishuClient::build_card_content`.
+        let card = progress_card_json("⏳ 处理中 · 1s · 工具 0", None);
+        assert_eq!(card["schema"], "2.0");
+        assert_eq!(card["config"]["update_multi"], true);
+        let card = final_card_json("✅ 完成", &[]);
+        assert_eq!(card["schema"], "2.0");
+        assert_eq!(card["config"]["update_multi"], true);
+    }
+
+    #[tokio::test]
+    async fn release_topic_card_only_removes_own_entry() {
+        let cards: Arc<tokio::sync::Mutex<std::collections::HashMap<String, String>>> =
+            Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        cards.lock().await.insert("t".into(), "mine".into());
+        // Another watcher's entry (different id) is untouched.
+        release_topic_card(&cards, "t", "theirs").await;
+        assert_eq!(
+            cards.lock().await.get("t").map(String::as_str),
+            Some("mine")
+        );
+        // Our own entry is removed.
+        release_topic_card(&cards, "t", "mine").await;
+        assert!(!cards.lock().await.contains_key("t"));
+        // Releasing on an empty registry is a no-op.
+        release_topic_card(&cards, "t", "mine").await;
     }
 
     #[test]
@@ -493,7 +562,7 @@ mod tests {
     fn final_card_embeds_collapsed_thinking_panel() {
         let blocks = vec!["block one".to_string(), "block two".to_string()];
         let card = final_card_json("✅ 完成 · 52s · 工具 8", &blocks);
-        let elements = card["elements"].as_array().unwrap();
+        let elements = card["body"]["elements"].as_array().unwrap();
         assert_eq!(elements[0]["tag"].as_str().unwrap(), "markdown");
         assert_eq!(
             elements[0]["content"].as_str().unwrap(),
@@ -510,17 +579,17 @@ mod tests {
     #[test]
     fn final_card_without_thinking_has_no_panel() {
         let card = final_card_json("✅ 完成", &[]);
-        assert_eq!(card["elements"].as_array().unwrap().len(), 1);
+        assert_eq!(card["body"]["elements"].as_array().unwrap().len(), 1);
         // Whitespace-only thinking collapses to nothing.
         let card = final_card_json("✅ 完成", &["  ".to_string()]);
-        assert_eq!(card["elements"].as_array().unwrap().len(), 1);
+        assert_eq!(card["body"]["elements"].as_array().unwrap().len(), 1);
     }
 
     #[test]
     fn final_card_truncates_long_thinking_tail() {
         let long = "x".repeat(FINAL_THINKING_PANEL_CHARS + 500);
         let card = final_card_json("✅ 完成", &[long]);
-        let content = card["elements"][1]["elements"][0]["content"]
+        let content = card["body"]["elements"][1]["elements"][0]["content"]
             .as_str()
             .unwrap();
         assert!(content.starts_with('…'));

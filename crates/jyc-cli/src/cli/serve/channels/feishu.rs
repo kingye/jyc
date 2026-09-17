@@ -424,8 +424,9 @@ pub(crate) fn spawn_feishu_adapter(
 /// If a question is pending for `topic` and `text` looks like an answer
 /// (non-empty, not a slash command), submit it to the question hub and
 /// return `true` — the caller must then drop the message instead of routing
-/// it into the topic. Returns `false` when there is no pending question or
-/// the text is a command, leaving normal routing untouched.
+/// it into the topic. Returns `false` when there is no pending question, the
+/// text is a command, or the asker is already gone (answered concurrently /
+/// timed out) — the message then routes normally instead of being dropped.
 fn try_answer_pending_question(
     hub: &jyc_core::question::QuestionHub,
     topic: &str,
@@ -440,9 +441,7 @@ fn try_answer_pending_question(
     hub.respond(
         &id,
         jyc_types::channel::QuestionAnswer::Choice(text.to_string()),
-    );
-    tracing::info!(topic = %topic, "feishu pipe: text reply answered pending question");
-    true
+    )
 }
 
 #[cfg(test)]

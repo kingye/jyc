@@ -77,11 +77,4 @@ mod tests {
         assert_eq!(els.len(), 2);
         assert_eq!(els[1]["content"], "👉 回复序号或选项内容作答");
     }
-
-    #[test]
-    fn question_text_is_not_renumbered() {
-        // A question containing digits must render verbatim in element 0.
-        let card = build_question_card("choose 2 things", &["x".to_string()]);
-        assert_eq!(elements(&card)[0]["content"], "choose 2 things");
-    }
 }

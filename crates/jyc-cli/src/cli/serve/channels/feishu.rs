@@ -267,6 +267,22 @@ pub(crate) fn spawn_feishu_adapter(
                         if let Some(text) = message.content.text.as_deref()
                             && try_answer_pending_question(&question_hub, &message.topic, text)
                         {
+                            // Ack the answer in-chat: the agent keeps working
+                            // in the background and the final reply may take a
+                            // while; without this the chat is silent after the
+                            // question card (this interception skips the
+                            // progress watcher below). Best-effort.
+                            if let Some(chat_id) =
+                                message.metadata.get("chat_id").and_then(|v| v.as_str())
+                                && let Err(e) = feishu_client
+                                    .send_text_message(
+                                        chat_id,
+                                        "✅ 已收到你的回答，正在继续处理…",
+                                    )
+                                    .await
+                            {
+                                tracing::debug!("feishu pipe: failed to ack question answer: {e:#}");
+                            }
                             return;
                         }
 

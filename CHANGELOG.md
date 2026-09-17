@@ -70,6 +70,17 @@
 
 ### Fixed
 
+- Truncated LLM streams and leaked tool-call syntax no longer reach users as
+  broken auto-delivered replies (#786): an SSE stream that reaches EOF
+  without the provider's `Done` marker is now a transient error (retried by
+  `complete_with_retry` with the usual backoff) instead of being silently
+  accepted as a complete text-only response — previously the half-finished
+  text was auto-delivered to the user with the `— auto-delivered` trace.
+  Likewise, a response whose text contains raw tool-call syntax (models with
+  weak function-calling emit `<call tool=…>` into the text channel instead
+  of structured `tool_calls`) fails the attempt as a transient "provider
+  format failure" and is retried, so the syntax is never shipped to the user
+  as a "reply".
 - Feishu live progress card: the PATCH payload (`progress_card_json` /
   `final_card_json`) was a bare `{"elements": …}` body without
   `config.update_multi`, which Feishu's update-card API rejects, so the

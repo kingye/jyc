@@ -175,6 +175,19 @@ as the target. The recipient must be the exact piped topic name (the sanitized
 chat name). Limitation: after a restart the topic→chat mapping only exists
 once a new feishu message has arrived (see above).
 
+### Interactive questions (`ask_user`)
+
+When the agent calls the built-in `ask_user` tool in a feishu-originated topic,
+the pending question is relayed to the chat as a card message with numbered
+options. The user answers by **replying in the chat with the number or the
+option text** (e.g. `1` or `option text`) — the pipe routes that reply to the
+question hub and the agent continues. Slash commands are never intercepted.
+
+> **Why no clickable buttons?** Feishu button callbacks (`card.action.trigger`)
+> are dropped by openlark-client's WebSocket frame handler, so JYC cannot
+> receive them over the long connection. Numbered-reply keeps everything on
+> the existing connection — no public webhook needed.
+
 ### Topic directory names
 
 Piped topics live in the **agent channel's** workspace, named by the pipe
@@ -202,16 +215,17 @@ websocket.rs event loop        ← parse JSON → enrich with names → InboundM
      │ on_message callback
      ▼
 FeishuMatcher → apply_pipe_retarget (channel/topic rewritten, topic→chat_id recorded)
-     │
+     │ pending `ask_user` question? → answer QuestionHub, drop message
      ▼
 Hub channel's MessageRouter → TopicManager → in-process agent
-     │ reply
+     │ reply / question
      ▼
-Hub channel's WebsocketOutboundAdapter → broadcast {"type":"reply", topic, text, attachments}
+Hub channel's WebsocketOutboundAdapter → broadcast {"type":"reply"|"question", topic, ...}
      │
      ▼
 Feishu pipe reply forwarder (subscribed to the agent broadcast)
-     │ topic→chat_id lookup → FeishuClient.send_text_message()
+     │ "reply": topic→chat_id lookup → FeishuClient.send_text_message()
+     │ "question": topic→chat_id lookup → numbered-options card
      │ attachments: download from inspect files endpoint → re-upload to feishu
      ▼
 Feishu Server → User sees reply in chat

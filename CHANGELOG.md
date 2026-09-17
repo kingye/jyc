@@ -70,6 +70,17 @@
 
 ### Fixed
 
+- Feishu live progress card: the PATCH payload (`progress_card_json` /
+  `final_card_json`) was a bare `{"elements": …}` body without
+  `config.update_multi`, which Feishu's update-card API rejects, so the
+  card froze at its initial state forever. Both builders now emit the full
+  card-JSON 2.0 envelope matching the initial card. The watcher also no
+  longer exits after 3 consecutive PATCH failures (transient errors only
+  skip a tick; the first failure logs at warn level), and the per-topic
+  dedup registry entry is released on every watcher exit path, guarded by
+  message id — previously a non-terminal exit leaked the entry, so every
+  later message PATCHed a stale, buried card instead of posting a fresh
+  progress indicator. (#782)
 - The billing ledger now persists the applied cache-creation (write) rate
   per call (`cache_creation_rate_per_million`, effective value =
   configured rate or the cache-hit rate when unset). The other three rate

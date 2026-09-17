@@ -437,7 +437,10 @@ fn try_answer_pending_question(
     let Some(id) = hub.pending_for(topic) else {
         return false;
     };
-    hub.respond(&id, jyc_types::channel::QuestionAnswer::Choice(text.to_string()));
+    hub.respond(
+        &id,
+        jyc_types::channel::QuestionAnswer::Choice(text.to_string()),
+    );
     tracing::info!(topic = %topic, "feishu pipe: text reply answered pending question");
     true
 }

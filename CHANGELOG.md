@@ -76,11 +76,12 @@
   `complete_with_retry` with the usual backoff) instead of being silently
   accepted as a complete text-only response — previously the half-finished
   text was auto-delivered to the user with the `— auto-delivered` trace.
-  Likewise, a response whose text contains raw tool-call syntax (models with
-  weak function-calling emit `<call tool=…>` into the text channel instead
-  of structured `tool_calls`) fails the attempt as a transient "provider
-  format failure" and is retried, so the syntax is never shipped to the user
-  as a "reply".
+  Likewise, a response whose text BEGINS with raw tool-call syntax (models
+  with weak function-calling emit `<call tool=…>` into the text channel
+  instead of structured `tool_calls`; detection is start-anchored so legit
+  replies quoting the syntax are not rejected) fails the attempt as a
+  transient "provider format failure" and is retried, so the syntax is
+  never shipped to the user as a "reply".
 - Feishu live progress card: the PATCH payload (`progress_card_json` /
   `final_card_json`) was a bare `{"elements": …}` body without
   `config.update_multi`, which Feishu's update-card API rejects, so the

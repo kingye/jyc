@@ -241,9 +241,14 @@ pub(crate) async fn collect_response(
 /// with weak function-calling (via OpenAI-compat adapters) sometimes emit
 /// these instead of structured `tool_calls`; left unchecked, the text-only
 /// auto-delivery fallback would ship the syntax to the user as a "reply".
-/// These substrings are rare in natural prose — a hit on a response with no
-/// parsed tool calls means the provider mis-formatted the response, so the
-/// iteration is failed and retried rather than delivered (#786).
+///
+/// Detection is start-anchored (after leading whitespace): real leaks BEGIN
+/// with the raw syntax, while legit replies only ever QUOTE it inside prose
+/// or code blocks — rejecting those would break meta-discussion (#786
+/// review). Cut-mid-leak fragments with a prose preamble are still caught
+/// by the truncated-stream check above (no `Done` marker). A response that
+/// matches with no parsed tool calls is a provider format failure, so the
+/// iteration is retried rather than delivered.
 const LEAKED_TOOL_CALL_MARKERS: &[&str] = &[
     "<call tool=",
     "<parameter name=",
@@ -259,7 +264,8 @@ const LEAKED_TOOL_CALL_MARKERS: &[&str] = &[
 /// user-facing reply. Only meaningful when the response parsed no
 /// structured tool calls.
 pub(crate) fn looks_like_leaked_tool_call(text: &str) -> bool {
-    LEAKED_TOOL_CALL_MARKERS.iter().any(|m| text.contains(m))
+    let text = text.trim_start();
+    LEAKED_TOOL_CALL_MARKERS.iter().any(|m| text.starts_with(m))
 }
 
 #[cfg(test)]
@@ -327,16 +333,22 @@ mod tests {
 
     #[test]
     fn leaked_tool_call_detection() {
-        assert!(looks_like_leaked_tool_call(
-            "看日志：\n<call tool=\"bash\" index=\"1\">"
-        ));
+        // Real leaks BEGIN with the raw syntax (after optional whitespace).
         assert!(looks_like_leaked_tool_call(
             "<response tools=\"<call tool=\"bash\""
         ));
         assert!(looks_like_leaked_tool_call(
-            "x <parameter name=\"command\">y"
+            "  \n\t<call tool=\"bash\" index=\"1\">"
         ));
         assert!(looks_like_leaked_tool_call("</call> trailing"));
+        // Legit replies may QUOTE the syntax mid-prose — the gate must not
+        // reject meta-discussion (start-anchored detection).
+        assert!(!looks_like_leaked_tool_call(
+            "看日志：\n<call tool=\"bash\" index=\"1\">"
+        ));
+        assert!(!looks_like_leaked_tool_call(
+            "比如 `<parameter name=\"command\">` 这种写法。"
+        ));
         assert!(!looks_like_leaked_tool_call("普通回复，没有工具调用语法。"));
         assert!(!looks_like_leaked_tool_call(""));
     }

@@ -237,6 +237,10 @@ async fn issue_call(
             // to the user — fail the attempt (transient "provider format
             // failure") so the retry loop re-issues the call.
             if collected.tool_calls.is_empty() && looks_like_leaked_tool_call(&collected.text) {
+                tracing::warn!(
+                    text_excerpt = %jyc_utils::helpers::truncate_str_ellipsis(&collected.text, 200),
+                    "provider format failure: model emitted tool-call syntax as text"
+                );
                 Err(anyhow::anyhow!(
                     "provider format failure: model emitted tool-call syntax as text"
                 ))
@@ -304,15 +308,7 @@ mod retry_tests {
         }
 
         fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
-            let text: String = blocks
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            serde_json::json!({"role": "user", "content": text})
+            mock_format_user_message(blocks)
         }
 
         fn format_tool_result(
@@ -321,11 +317,7 @@ mod retry_tests {
             content: &str,
             _is_error: bool,
         ) -> serde_json::Value {
-            serde_json::json!({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": content,
-            })
+            mock_format_tool_result(tool_call_id, content)
         }
 
         fn build_raw_assistant_message(
@@ -334,12 +326,41 @@ mod retry_tests {
             _reasoning: &str,
             _tool_calls: &[(String, String, String)],
         ) -> serde_json::Value {
-            serde_json::json!({"role": "assistant", "content": text})
+            mock_build_raw_assistant_message(text)
         }
     }
 
     use super::super::event_test_helpers::drain_events;
     use crate::types::ContentBlock;
+
+    /// Shared `Provider::format_user_message` body for the mock providers
+    /// below: text blocks joined into one JSON object.
+    fn mock_format_user_message(blocks: &[ContentBlock]) -> serde_json::Value {
+        let text: String = blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        serde_json::json!({"role": "user", "content": text})
+    }
+
+    /// Shared `Provider::format_tool_result` body for the mock providers.
+    fn mock_format_tool_result(tool_call_id: &str, content: &str) -> serde_json::Value {
+        serde_json::json!({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": content,
+        })
+    }
+
+    /// Shared `Provider::build_raw_assistant_message` body for the mock
+    /// providers.
+    fn mock_build_raw_assistant_message(text: &str) -> serde_json::Value {
+        serde_json::json!({"role": "assistant", "content": text})
+    }
 
     /// Mock provider whose FIRST call returns a well-formed stream whose
     /// text is leaked tool-call syntax (with no structured tool_calls);
@@ -386,15 +407,7 @@ mod retry_tests {
         }
 
         fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
-            let text: String = blocks
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            serde_json::json!({"role": "user", "content": text})
+            mock_format_user_message(blocks)
         }
 
         fn format_tool_result(
@@ -403,11 +416,7 @@ mod retry_tests {
             content: &str,
             _is_error: bool,
         ) -> serde_json::Value {
-            serde_json::json!({
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": content,
-            })
+            mock_format_tool_result(tool_call_id, content)
         }
 
         fn build_raw_assistant_message(
@@ -416,7 +425,7 @@ mod retry_tests {
             _reasoning: &str,
             _tool_calls: &[(String, String, String)],
         ) -> serde_json::Value {
-            serde_json::json!({"role": "assistant", "content": text})
+            mock_build_raw_assistant_message(text)
         }
     }
 

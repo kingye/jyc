@@ -396,21 +396,19 @@ pub fn spawn_progress_watcher(
                             TopicEvent::Thinking { text, .. } => {
                                 push_thinking_block(&mut thinking_blocks, text);
                             }
-                            TopicEvent::ProcessingStarted { message_id, .. } => {
-                                if message_id != run_message_id {
-                                    // A new run started on this topic: ours
-                                    // is over — a cancelled run publishes no
-                                    // event, so the next start is the only
-                                    // signal. Release now (owner only) so
-                                    // the new watcher posts a fresh card
-                                    // instead of reusing ours; the post-loop
-                                    // release is then an idempotent no-op.
-                                    if owns_entry {
-                                        release_topic_card(&cards, &topic, &status_message_id)
-                                            .await;
-                                    }
-                                    break;
+                            // A new run started on this topic: ours is over —
+                            // a cancelled run publishes no event, so the next
+                            // start is the only signal. Release now (owner
+                            // only) so the new watcher posts a fresh card
+                            // instead of reusing ours; the post-loop release
+                            // is then an idempotent no-op.
+                            TopicEvent::ProcessingStarted { message_id, .. }
+                                if message_id != run_message_id =>
+                            {
+                                if owns_entry {
+                                    release_topic_card(&cards, &topic, &status_message_id).await;
                                 }
+                                break;
                             }
                             _ => {}
                         }

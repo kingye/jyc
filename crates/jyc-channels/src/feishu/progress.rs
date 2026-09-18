@@ -6,7 +6,9 @@
 //!
 //! - Two-phase: the card is only sent once the first fresh
 //!   `ProcessingStarted` arrives — messages that never reach the agent
-//!   (slash commands, empty-body drops) produce no card at all.
+//!   (slash commands, empty-body drops) produce no card at all. In `attach`
+//!   mode the run is already in flight, so the card is sent immediately
+//!   instead (see `spawn_progress_watcher`).
 //! - While live, the card is PATCHed as tools fire (throttled, never
 //!   blocking the event bus).
 //! - On `ProcessingCompleted` the card is finalized with the outcome.
@@ -172,6 +174,14 @@ fn progress_card_json(status_text: &str, thinking: Option<&str>) -> serde_json::
 /// 2. **Live** — PATCH the card as tools fire; finalize on
 ///    `ProcessingCompleted`.
 ///
+/// `attach: true` skips phase 1 and arms immediately, for runs that are
+/// already in flight when the watcher spawns (the caller just answered
+/// such a run's question in-chat — see `try_answer_pending_question`).
+/// The run id is then unknown (`None`): any fresh `ProcessingCompleted`
+/// finalizes the card and any new `ProcessingStarted` supersedes it.
+/// The card itself — builders, PATCH payloads, dedup — is identical in
+/// both modes.
+///
 /// Exits on `ProcessingCompleted` (final card), when a *different* run
 /// starts on the topic (this run was cancelled — a cancelled run publishes
 /// no event, so the next start is the only signal), when the bus is
@@ -217,6 +227,9 @@ fn reuse_decision(existing: Option<&String>, prior_completed: bool) -> Option<St
     existing.cloned()
 }
 
+// Args are built inline at the two pipe call sites, which already sit next
+// to several local clones (same pattern as `spawn_feishu_adapter`).
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_progress_watcher(
     feishu_client: Arc<FeishuClient>,
     topic_manager: Arc<TopicManager>,
@@ -225,6 +238,7 @@ pub fn spawn_progress_watcher(
     start: std::time::Instant,
     seen_after: chrono::DateTime<chrono::Utc>,
     cards: Arc<tokio::sync::Mutex<std::collections::HashMap<String, String>>>,
+    attach: bool,
 ) {
     tokio::spawn(async move {
         const MAX_LIFETIME: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
@@ -260,35 +274,52 @@ pub fn spawn_progress_watcher(
         // watcher that reused another live watcher's card must not release
         // that watcher's dedup entry.
         let mut owns_entry = false;
-        // Set by the arming ProcessingStarted; a *different* run's start in
-        // Phase 2 means ours is over (see the superseded-exit arm there).
+        // Set by the arming ProcessingStarted (`None` in attach mode, where
+        // the run is already in flight and its id is unknown); a *different*
+        // run's start in Phase 2 means ours is over (see the superseded-exit
+        // arm there).
         let run_message_id;
         let (status_message_id, run_message_id, mut last_text) = loop {
-            // Bounded wait: even on a completely silent topic (no events
-            // at all) the watcher exits once MAX_LIFETIME is exceeded.
-            let remaining = MAX_LIFETIME.saturating_sub(start.elapsed());
-            if remaining.is_zero() {
-                return;
-            }
-            let ev = match tokio::time::timeout(remaining, rx.recv()).await {
-                Ok(Some(ev)) => ev,
-                Ok(None) => return, // bus dropped
-                Err(_) => return,   // lifetime exceeded
-            };
-            if ev.timestamp() <= seen_after {
-                continue;
-            }
-            match ev {
-                TopicEvent::ProcessingCompleted { .. } => {
-                    // A previous run's completion (this message may be
-                    // queued behind it) — remember it for the dedup check.
-                    prior_completed = true;
+            if !attach {
+                // ── Phase 1: wait for the first fresh ProcessingStarted ──
+                //
+                // `seen_after` is captured by the caller *before routing*, so
+                // every event of this run is strictly newer and previous runs'
+                // replayed events stay filtered. A fresh ProcessingCompleted
+                // while waiting belongs to a *previous* run — ignored: this
+                // message may still be queued behind it.
+                // Bounded wait: even on a completely silent topic (no events
+                // at all) the watcher exits once MAX_LIFETIME is exceeded.
+                let remaining = MAX_LIFETIME.saturating_sub(start.elapsed());
+                if remaining.is_zero() {
+                    return;
+                }
+                let ev = match tokio::time::timeout(remaining, rx.recv()).await {
+                    Ok(Some(ev)) => ev,
+                    Ok(None) => return, // bus dropped
+                    Err(_) => return,   // lifetime exceeded
+                };
+                if ev.timestamp() <= seen_after {
                     continue;
                 }
-                TopicEvent::ProcessingStarted { message_id, .. } => {
-                    run_message_id = message_id;
+                match ev {
+                    TopicEvent::ProcessingCompleted { .. } => {
+                        // A previous run's completion (this message may be
+                        // queued behind it) — remember it for the dedup check.
+                        prior_completed = true;
+                        continue;
+                    }
+                    TopicEvent::ProcessingStarted { message_id, .. } => {
+                        run_message_id = Some(message_id);
+                    }
+                    _ => continue,
                 }
-                _ => continue,
+            } else {
+                // Attach mode: the run is already in flight — no fresh
+                // ProcessingStarted will come. Arm immediately; Phase 2's
+                // completion and supersede arms (unfiltered by run id) take
+                // it from here.
+                run_message_id = None;
             }
             // Processing actually starts now — exclude the queue wait
             // from the elapsed time shown on the card.
@@ -403,7 +434,7 @@ pub fn spawn_progress_watcher(
                             // instead of reusing ours; the post-loop release
                             // is then an idempotent no-op.
                             TopicEvent::ProcessingStarted { message_id, .. }
-                                if message_id != run_message_id =>
+                                if run_message_id.as_deref() != Some(message_id.as_str()) =>
                             {
                                 if owns_entry {
                                     release_topic_card(&cards, &topic, &status_message_id).await;

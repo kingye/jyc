@@ -2,10 +2,11 @@
 
 ### Added
 
-- Feishu question answers are acknowledged in-chat: once a text reply is
-  routed to the `QuestionHub`, the pipe immediately posts a "已收到你的回答，
-  正在继续处理…" message so the user sees feedback while the agent keeps
-  working (the interception skips the regular progress watcher).
+- Feishu question answers are covered by the standard live progress card:
+  once a text reply is routed to the `QuestionHub`, the pipe attaches a
+  progress watcher to the still-running run (attach mode — skipped when a
+  live card already exists), so the chat shows the same ⏳/✅ indicator as a
+  regular message until the final reply, replacing the previous static ack. (#788)
 - Feishu interactive cards for the `ask_user` tool: a pending question is
   relayed to the originating chat as a card JSON 2.0 message with numbered
   options; the user answers by replying with the number or option text,

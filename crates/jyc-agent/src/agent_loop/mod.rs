@@ -598,7 +598,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             tools.definitions()
         };
 
-        let response = match complete_with_retry(
+        let mut response = match complete_with_retry(
             provider,
             &send_context,
             &tool_defs,
@@ -819,6 +819,72 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 );
             }
 
+            // Embedded-question shim: models with weak function-calling
+            // sometimes write the `ask_user` call as XML in the reply text
+            // instead of emitting a native tool call. Recover a well-formed
+            // tag — deliver the prose first, block on the question, then
+            // continue the turn with the answer as a synthetic tool result.
+            // A malformed tag is stripped so raw syntax never ships to the
+            // user, and the remaining prose falls through to normal
+            // delivery below.
+            match embedded_ask::find_embedded_ask(&response.text) {
+                Some(embedded_ask::EmbeddedAsk::WellFormed {
+                    span,
+                    question,
+                    options,
+                    timeout_secs,
+                }) => {
+                    let prose = embedded_ask::remove_span(&response.text, span);
+                    if !prose.trim().is_empty() && reply_tool_available {
+                        let output = execute_reply_tool_synthetic(
+                            tools,
+                            &ctx,
+                            event_bus,
+                            topic_name,
+                            &format!("pre-ask-{total_iterations}"),
+                            &prose,
+                            false,
+                            &mut history,
+                        )
+                        .await;
+                        if output.is_error {
+                            tracing::warn!(
+                                error = %output.content,
+                                "Pre-ask prose delivery failed; asking anyway"
+                            );
+                        }
+                    }
+                    let input = serde_json::json!({
+                        "question": question,
+                        "options": options,
+                        "timeout_seconds": timeout_secs,
+                    });
+                    let output = match tools.execute("ask_user", input, &ctx).await {
+                        Ok(output) => output,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Embedded ask_user execution failed");
+                            ToolOutput::error(format!("Tool error: {e}"))
+                        }
+                    };
+                    history.push(Message::tool_result(
+                        "embedded-ask-user",
+                        &output.content,
+                        output.is_error,
+                    ));
+                    raw_context.push(provider.format_tool_result(
+                        "embedded-ask-user",
+                        &output.content,
+                        output.is_error,
+                    ));
+                    continue;
+                }
+                Some(embedded_ask::EmbeddedAsk::Malformed { span }) => {
+                    tracing::warn!("Malformed <ask_user> tag in reply text; stripping it");
+                    response.text = embedded_ask::remove_span(&response.text, span);
+                }
+                None => {}
+            }
+
             // Fallback delivery: the reply tool exists but was never called.
             // Instead of returning the raw text for the worker's
             // degraded-fallback path, deliver it IN THE AGENT'S NAME by
@@ -914,6 +980,33 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             tools = ?response.tool_calls.iter().map(|tc| tc.name.as_str()).collect::<Vec<_>>(),
             "Executing tool calls"
         );
+
+        // Question ordering: when this batch includes a blocking `ask_user`,
+        // deliver the narration text first — the user must read the message
+        // before the question card arrives. Progress-style delivery
+        // (stop_after=false): the final auto-delivery still fires when the
+        // run ends, so the post-answer conclusion is not lost.
+        if response.tool_calls.iter().any(|tc| tc.name == "ask_user")
+            && !response.text.trim().is_empty()
+        {
+            let output = execute_reply_tool_synthetic(
+                tools,
+                &ctx,
+                event_bus,
+                topic_name,
+                &format!("pre-ask-{total_iterations}"),
+                &response.text,
+                false,
+                &mut history,
+            )
+            .await;
+            if output.is_error {
+                tracing::warn!(
+                    error = %output.content,
+                    "Pre-ask narration delivery failed; continuing to the question"
+                );
+            }
+        }
 
         // Snapshot for `context_browse` — only when the tool is actually in
         // this batch. `raw_context` is mutated as tool results are appended
@@ -1501,6 +1594,12 @@ mod guardrail_tests;
 #[cfg(test)]
 mod cancel_during_tool_tests;
 
+/// Regression tests for the message-before-question ordering guarantee and
+/// the embedded `<ask_user>` recovery shim (models that write the question
+/// as XML in the reply text instead of a native tool call).
+#[cfg(test)]
+mod embedded_ask_tests;
+
 /// Verifies the live-duration ticker: spawns `run_ticker`, observes
 /// `LoopTick` events on the bus, and confirms the task stops on both
 /// cancel-driven and JoinHandle-driven exit (the latter covers natural
@@ -1509,6 +1608,7 @@ mod cancel_during_tool_tests;
 mod ticker_tests;
 
 mod context;
+mod embedded_ask;
 mod response;
 mod retry;
 

@@ -1,108 +1,13 @@
 use super::event_test_helpers::drain_events;
+use super::event_test_helpers::scripted::ScriptedProvider;
 use super::*;
-use crate::provider::{EventStream, Provider};
 use crate::tools::mcp_bridge::register_mcp_tools;
-use crate::types::{Message, StreamEvent, ToolDefinition};
-use async_trait::async_trait;
-use futures::stream;
+use crate::types::StreamEvent;
 use jyc_core::topic_event_bus::{SimpleThreadEventBus, TopicEventBusRef};
 use jyc_types::channel::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
-
-/// Mock provider that replays a scripted list of responses, one per
-/// `complete_raw` call. Used to drive text-only → reply-tool and
-/// text-only → text-only sequences.
-struct ScriptedProvider {
-    /// Per-call round of raw `StreamEvent`s (no `Result` wrapper:
-    /// `anyhow::Error` is not `Clone`, and the wrapper is only needed
-    /// at stream-construction time).
-    rounds: Vec<Vec<StreamEvent>>,
-    calls: AtomicUsize,
-    /// Tool names offered on each `complete_raw` call, in call order —
-    /// lets tests assert the reply-recovery turn restricts the tool
-    /// list to `jyc_reply_message` alone.
-    seen_tools: std::sync::Mutex<Vec<Vec<String>>>,
-}
-
-impl ScriptedProvider {
-    /// Record the offered tool names and replay the next scripted round.
-    fn next_stream(&self, tools: &[ToolDefinition]) -> EventStream {
-        self.seen_tools
-            .lock()
-            .unwrap()
-            .push(tools.iter().map(|t| t.name.clone()).collect());
-        let i = self.calls.fetch_add(1, Ordering::SeqCst);
-        let events: Vec<anyhow::Result<StreamEvent>> = match self.rounds.get(i) {
-            Some(round) => round.iter().cloned().map(Ok).collect(),
-            None => vec![Ok(StreamEvent::Done)],
-        };
-        Box::pin(stream::iter(events))
-    }
-}
-
-#[async_trait]
-impl Provider for ScriptedProvider {
-    fn name(&self) -> &str {
-        "scripted-test"
-    }
-    fn model(&self) -> &str {
-        "scripted-test-1"
-    }
-
-    async fn complete(
-        &self,
-        _messages: &[Message],
-        _tools: &[ToolDefinition],
-        _system: &str,
-    ) -> anyhow::Result<EventStream> {
-        unimplemented!("complete() unused in scripted tests")
-    }
-
-    async fn complete_raw(
-        &self,
-        _raw_messages: &[serde_json::Value],
-        tools: &[ToolDefinition],
-        _system: &str,
-    ) -> anyhow::Result<EventStream> {
-        Ok(self.next_stream(tools))
-    }
-
-    fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
-        let text: String = blocks
-            .iter()
-            .filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("");
-        serde_json::json!({"role": "user", "content": text})
-    }
-
-    fn format_tool_result(
-        &self,
-        tool_call_id: &str,
-        content: &str,
-        _is_error: bool,
-    ) -> serde_json::Value {
-        serde_json::json!({
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "content": content,
-        })
-    }
-
-    fn build_raw_assistant_message(
-        &self,
-        text: &str,
-        _reasoning: &str,
-        _tool_calls: &[(String, String, String)],
-    ) -> serde_json::Value {
-        serde_json::json!({"role": "assistant", "content": text})
-    }
-}
 
 /// Registry matching production: builtin tools plus the MCP bridge
 /// (which registers `jyc_reply_message`).

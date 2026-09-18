@@ -824,9 +824,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             // instead of emitting a native tool call. Recover a well-formed
             // tag — deliver the prose first, block on the question, then
             // continue the turn with the answer as a synthetic tool result.
-            // A malformed tag is stripped so raw syntax never ships to the
-            // user, and the remaining prose falls through to normal
-            // delivery below.
+            // Malformed tags are stripped (all of them) so raw syntax never
+            // ships to the user; the remaining prose falls through to
+            // normal delivery below.
+            while let Some(embedded_ask::EmbeddedAsk::Malformed { span }) =
+                embedded_ask::find_embedded_ask(&response.text)
+            {
+                tracing::warn!("Malformed <ask_user> tag in reply text; stripping it");
+                response.text = embedded_ask::remove_span(&response.text, span);
+            }
             match embedded_ask::find_embedded_ask(&response.text) {
                 Some(embedded_ask::EmbeddedAsk::WellFormed {
                     span,
@@ -878,11 +884,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     ));
                     continue;
                 }
-                Some(embedded_ask::EmbeddedAsk::Malformed { span }) => {
-                    tracing::warn!("Malformed <ask_user> tag in reply text; stripping it");
-                    response.text = embedded_ask::remove_span(&response.text, span);
-                }
-                None => {}
+                // Malformed tags were all stripped above; only None remains.
+                _ => {}
             }
 
             // Fallback delivery: the reply tool exists but was never called.
@@ -989,13 +992,23 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         if response.tool_calls.iter().any(|tc| tc.name == "ask_user")
             && !response.text.trim().is_empty()
         {
+            // A model may mix a native call with an XML-style tag in the
+            // same response — never let raw syntax ship in the narration.
+            let span = embedded_ask::find_embedded_ask(&response.text).map(|ask| match ask {
+                embedded_ask::EmbeddedAsk::WellFormed { span, .. } => span,
+                embedded_ask::EmbeddedAsk::Malformed { span } => span,
+            });
+            let narration = span.map_or_else(
+                || response.text.clone(),
+                |span| embedded_ask::remove_span(&response.text, span),
+            );
             let output = execute_reply_tool_synthetic(
                 tools,
                 &ctx,
                 event_bus,
                 topic_name,
                 &format!("pre-ask-{total_iterations}"),
-                &response.text,
+                &narration,
                 false,
                 &mut history,
             )

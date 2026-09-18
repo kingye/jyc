@@ -11,11 +11,11 @@
 //! Malformed tags are stripped from the delivered reply.
 
 use super::event_test_helpers::scripted::ScriptedProvider;
+use super::event_test_helpers::test_config;
 use super::*;
 use crate::tools::mcp_bridge::register_mcp_tools;
 use crate::types::StreamEvent;
 use jyc_core::question::QuestionHub;
-use jyc_core::topic_event_bus::{SimpleThreadEventBus, TopicEventBusRef};
 use jyc_types::channel::{
     InboundMessage, OutboundAdapter, OutboundAttachment, QuestionAnswer, QuestionRequest,
     SendResult,
@@ -127,53 +127,6 @@ async fn run_and_answer(
     }
 }
 
-fn base_config<'a>(
-    provider: &'a ScriptedProvider,
-    tools: &'a crate::tools::registry::ToolRegistry,
-    working_dir: &'a Path,
-    bus: &'a TopicEventBusRef,
-    cancel: tokio_util::sync::CancellationToken,
-    outbound: Arc<CapturingOutbound>,
-    hub: Arc<QuestionHub>,
-    topic: &'a str,
-) -> AgentLoopConfig<'a> {
-    AgentLoopConfig {
-        provider,
-        small_provider: None,
-        tools,
-        system_prompt: "test",
-        user_blocks: vec![ContentBlock::Text {
-            text: "hello".to_string(),
-        }],
-        working_dir,
-        topic_path: working_dir,
-        cancel,
-        topic_name: topic,
-        event_bus: Some(bus),
-        prior_history: vec![],
-        prior_raw_context: vec![],
-        max_iterations: Some(6),
-        sse_read_timeout: std::time::Duration::from_secs(60),
-        additional_read_roots: vec![],
-        additional_write_roots: vec![],
-        pattern_inject_images: false,
-        outbound: Some(outbound),
-        topic_managers: None,
-        current_channel: Some("mock".to_string()),
-        outbounds: None,
-        context_window: None,
-        auto_reset_threshold: 0.95,
-        thinking_enabled: false,
-        pricing: None,
-        billing_mode: Default::default(),
-        billing_dir: None,
-        model_label: "scripted-ask",
-        context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
-        reply_target: None,
-        question_hub: Some(hub),
-    }
-}
-
 /// The exact field failure: reply text ends with a literal `<ask_user>`
 /// tag. The prose must be delivered first, the question must execute
 /// (blocking), the answer must reach the model, and the raw tag must
@@ -196,23 +149,18 @@ async fn embedded_tag_recovers_question_with_message_first() {
     };
     let tmp = TempDir::new().unwrap();
     let tools = registry_with_reply_tool();
-    let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
     let cancel = tokio_util::sync::CancellationToken::new();
     let log = DeliveryLog::default();
     let outbound = Arc::new(CapturingOutbound { log: log.clone() });
     let hub = Arc::new(QuestionHub::new());
 
     let result = run_and_answer(
-        base_config(
-            &provider,
-            &tools,
-            tmp.path(),
-            &bus,
-            cancel,
-            outbound,
-            hub.clone(),
-            "embedded-ask",
-        ),
+        AgentLoopConfig {
+            outbound: Some(outbound),
+            current_channel: Some("mock".to_string()),
+            question_hub: Some(hub.clone()),
+            ..test_config(&provider, &tools, tmp.path(), cancel, "embedded-ask")
+        },
         hub,
         "embedded-ask",
     )
@@ -289,23 +237,18 @@ async fn native_ask_delivers_narration_before_question() {
     };
     let tmp = TempDir::new().unwrap();
     let tools = registry_with_reply_tool();
-    let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
     let cancel = tokio_util::sync::CancellationToken::new();
     let log = DeliveryLog::default();
     let outbound = Arc::new(CapturingOutbound { log: log.clone() });
     let hub = Arc::new(QuestionHub::new());
 
     let result = run_and_answer(
-        base_config(
-            &provider,
-            &tools,
-            tmp.path(),
-            &bus,
-            cancel,
-            outbound,
-            hub.clone(),
-            "native-ask",
-        ),
+        AgentLoopConfig {
+            outbound: Some(outbound),
+            current_channel: Some("mock".to_string()),
+            question_hub: Some(hub.clone()),
+            ..test_config(&provider, &tools, tmp.path(), cancel, "native-ask")
+        },
         hub,
         "native-ask",
     )
@@ -329,6 +272,71 @@ async fn native_ask_delivers_narration_before_question() {
     );
 }
 
+/// Native path with a stray XML tag mixed into the narration: the tag
+/// must not ship in the delivered narration, and the question must still
+/// execute exactly once (via the native call).
+#[tokio::test]
+async fn native_ask_strips_embedded_tag_from_narration() {
+    let provider = ScriptedProvider {
+        rounds: vec![
+            vec![
+                StreamEvent::TextDelta(
+                    "方案如下。<ask_user question=\"泄漏的 tag\" options=\"x, y\">"
+                        .to_string(),
+                ),
+                StreamEvent::ToolUseStart {
+                    id: "ask-1".to_string(),
+                    name: "ask_user".to_string(),
+                },
+                StreamEvent::ToolInputDelta(
+                    "{\"question\":\"开工吗？\",\"options\":[\"按方案\",\"再想想\"],\"timeout_seconds\":60}"
+                        .to_string(),
+                ),
+                StreamEvent::ToolUseEnd,
+                StreamEvent::Done,
+            ],
+            vec![
+                StreamEvent::TextDelta("收到，按方案开工。".to_string()),
+                StreamEvent::Done,
+            ],
+        ],
+        calls: AtomicUsize::new(0),
+        seen_tools: Default::default(),
+    };
+    let tmp = TempDir::new().unwrap();
+    let tools = registry_with_reply_tool();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let log = DeliveryLog::default();
+    let outbound = Arc::new(CapturingOutbound { log: log.clone() });
+    let hub = Arc::new(QuestionHub::new());
+
+    let result = run_and_answer(
+        AgentLoopConfig {
+            outbound: Some(outbound),
+            current_channel: Some("mock".to_string()),
+            question_hub: Some(hub.clone()),
+            ..test_config(&provider, &tools, tmp.path(), cancel, "native-mixed")
+        },
+        hub,
+        "native-mixed",
+    )
+    .await;
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    assert!(result.reply_auto_delivered);
+    let log = log.snapshot();
+    assert_eq!(
+        log[0],
+        ("reply", "方案如下。".to_string()),
+        "narration must be delivered with the stray tag stripped: {log:?}"
+    );
+    assert_eq!(
+        log.iter().filter(|(k, _)| *k == "question").count(),
+        1,
+        "exactly one question must execute: {log:?}"
+    );
+}
+
 /// A malformed tag (missing required attributes) cannot be executed, but
 /// it must still never reach the user: the reply ships the prose alone.
 #[tokio::test]
@@ -343,46 +351,16 @@ async fn malformed_tag_is_stripped_from_delivery() {
     };
     let tmp = TempDir::new().unwrap();
     let tools = registry_with_reply_tool();
-    let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
     let cancel = tokio_util::sync::CancellationToken::new();
     let log = DeliveryLog::default();
     let outbound = Arc::new(CapturingOutbound { log: log.clone() });
     let hub = Arc::new(QuestionHub::new());
 
-    let result = run(super::AgentLoopConfig {
-        provider: &provider,
-        small_provider: None,
-        tools: &tools,
-        system_prompt: "test",
-        user_blocks: vec![ContentBlock::Text {
-            text: "hello".to_string(),
-        }],
-        working_dir: tmp.path(),
-        topic_path: tmp.path(),
-        cancel,
-        topic_name: "malformed-ask",
-        event_bus: Some(&bus),
-        prior_history: vec![],
-        prior_raw_context: vec![],
-        max_iterations: Some(3),
-        sse_read_timeout: std::time::Duration::from_secs(60),
-        additional_read_roots: vec![],
-        additional_write_roots: vec![],
-        pattern_inject_images: false,
+    let result = run(AgentLoopConfig {
         outbound: Some(outbound),
-        topic_managers: None,
         current_channel: Some("mock".to_string()),
-        outbounds: None,
-        context_window: None,
-        auto_reset_threshold: 0.95,
-        thinking_enabled: false,
-        pricing: None,
-        billing_mode: Default::default(),
-        billing_dir: None,
-        model_label: "scripted-malformed",
-        context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
-        reply_target: None,
         question_hub: Some(hub.clone()),
+        ..test_config(&provider, &tools, tmp.path(), cancel, "malformed-ask")
     })
     .await
     .expect("agent loop should run to completion");

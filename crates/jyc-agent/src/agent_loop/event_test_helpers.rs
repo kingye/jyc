@@ -1,5 +1,54 @@
 use jyc_core::topic_event::TopicEvent;
 
+/// Baseline [`super::AgentLoopConfig`] for agent-loop integration tests:
+/// everything a scripted run needs, with the fields tests actually vary
+/// (`topic_name`, `event_bus`, `outbound`, `model_label`, `max_iterations`,
+/// `reply_target`, `question_hub`, ...) overridden at the call site via
+/// struct-update syntax.
+pub(super) fn test_config<'a>(
+    provider: &'a scripted::ScriptedProvider,
+    tools: &'a crate::tools::registry::ToolRegistry,
+    working_dir: &'a std::path::Path,
+    cancel: tokio_util::sync::CancellationToken,
+    topic_name: &'a str,
+) -> super::AgentLoopConfig<'a> {
+    super::AgentLoopConfig {
+        provider,
+        small_provider: None,
+        tools,
+        system_prompt: "test",
+        user_blocks: vec![super::ContentBlock::Text {
+            text: "hello".to_string(),
+        }],
+        working_dir,
+        topic_path: working_dir,
+        cancel,
+        topic_name,
+        event_bus: None,
+        prior_history: vec![],
+        prior_raw_context: vec![],
+        max_iterations: Some(5),
+        sse_read_timeout: std::time::Duration::from_secs(60),
+        additional_read_roots: vec![],
+        additional_write_roots: vec![],
+        pattern_inject_images: false,
+        outbound: None,
+        topic_managers: None,
+        current_channel: None,
+        outbounds: None,
+        context_window: None,
+        auto_reset_threshold: 0.95,
+        thinking_enabled: false,
+        pricing: None,
+        billing_mode: Default::default(),
+        billing_dir: None,
+        model_label: "scripted-test",
+        context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
+        reply_target: None,
+        question_hub: None,
+    }
+}
+
 /// Scripted LLM provider for agent-loop integration tests: replays a
 /// fixed list of `StreamEvent` rounds, one per `complete_raw` call.
 pub(super) mod scripted {

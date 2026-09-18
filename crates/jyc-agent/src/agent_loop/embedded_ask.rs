@@ -106,12 +106,14 @@ fn parse_inner(inner: &str) -> Option<(String, Vec<String>, Option<u64>)> {
     Some((question, options, timeout_secs))
 }
 
-/// Value of `key="value"` — first quoted segment after the key.
+/// Value of a whitespace-delimited `key="value"` attribute. The leading
+/// space in the needle keeps the search off values that merely contain the
+/// key as a substring — e.g. a question asking which "options" to pick
+/// must not be read as the options attribute.
 fn extract_attr<'a>(text: &'a str, key: &str) -> Option<&'a str> {
-    let pos = text.find(key)?;
-    let after = text[pos + key.len()..].trim_start();
-    let after = after.strip_prefix('=')?.trim_start();
-    let after = after.strip_prefix('"')?;
+    let needle = format!(" {key}=\"");
+    let pos = text.find(&needle)?;
+    let after = &text[pos + needle.len()..];
     let end = after.find('"')?;
     Some(&after[..end])
 }
@@ -120,12 +122,11 @@ fn extract_attr<'a>(text: &'a str, key: &str) -> Option<&'a str> {
 /// comma-separated inside one pair of quotes (`options="a, b"`) and the
 /// misquoted per-item style (`options="a", "b"`).
 fn extract_options(inner: &str) -> Option<Vec<String>> {
-    let pos = inner.find("options")?;
-    let after = &inner[pos + "options".len()..];
-    let after = after.trim_start();
-    let after = after.strip_prefix('=')?.trim_start();
+    // Whitespace-delimited needle — see `extract_attr` for why.
+    let needle = " options=\"";
+    let pos = inner.find(needle)?;
     // Everything between the opening quote and the end of the tag.
-    let region = after.strip_prefix('"').unwrap_or(after);
+    let region = &inner[pos + needle.len()..];
     let items: Vec<String> = if region.contains('"') {
         // Misquoted per-item style: `a", "b", "c` → quoted segments.
         let mut items = Vec::new();
@@ -204,6 +205,24 @@ mod tests {
             ]
         );
         assert_eq!(ask.2, None);
+    }
+
+    #[test]
+    fn attribute_values_containing_key_words_do_not_confuse_the_parser() {
+        // Regression: a question asking about "options" must not be read
+        // as the options attribute (substring match inside the value).
+        let ask = well_formed(
+            "<ask_user question=\"这两个 options 选哪个？\" options=\"a, b\" timeout_seconds=\"30\">",
+        )
+        .expect("question text mentioning options must still parse");
+        assert_eq!(ask.0, "这两个 options 选哪个？");
+        assert_eq!(ask.1, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(ask.2, Some(30));
+
+        let ask = well_formed("<ask_user options=\"question, 其他\" question=\"q\">")
+            .expect("options text mentioning question must still parse");
+        assert_eq!(ask.0, "q");
+        assert_eq!(ask.1, vec!["question".to_string(), "其他".to_string()]);
     }
 
     #[test]

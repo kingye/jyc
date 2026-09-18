@@ -1,5 +1,6 @@
 use super::event_test_helpers::drain_events;
 use super::event_test_helpers::scripted::ScriptedProvider;
+use super::event_test_helpers::test_config;
 use super::*;
 use crate::tools::mcp_bridge::register_mcp_tools;
 use crate::types::StreamEvent;
@@ -39,39 +40,15 @@ async fn text_only_finish_auto_delivers_without_reminder() {
     let cancel = CancellationToken::new();
 
     let result = run(super::AgentLoopConfig {
-        provider: &provider,
-        small_provider: None,
-        tools: &tools,
-        system_prompt: "test",
-        user_blocks: vec![ContentBlock::Text {
-            text: "hello".to_string(),
-        }],
-        working_dir: &working_dir,
-        topic_path: &working_dir,
-        cancel: cancel.clone(),
-        topic_name: "reply-tool-auto",
         event_bus: Some(&bus),
-        prior_history: vec![],
-        prior_raw_context: vec![],
-        max_iterations: Some(5),
-        sse_read_timeout: std::time::Duration::from_secs(60),
-        additional_read_roots: vec![],
-        additional_write_roots: vec![],
-        pattern_inject_images: false,
-        outbound: None,
-        topic_managers: None,
-        current_channel: None,
-        outbounds: None,
-        context_window: None,
-        auto_reset_threshold: 0.95,
-        thinking_enabled: false,
-        pricing: None,
-        billing_mode: Default::default(),
-        billing_dir: None,
         model_label: "scripted-test-auto",
-        context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
-        reply_target: None,
-        question_hub: None,
+        ..test_config(
+            &provider,
+            &tools,
+            &working_dir,
+            cancel.clone(),
+            "reply-tool-auto",
+        )
     })
     .await
     .expect("agent loop should run to completion");
@@ -152,39 +129,14 @@ async fn silent_reply_closes_turn_without_delivery() {
     let cancel = CancellationToken::new();
 
     let result = run(super::AgentLoopConfig {
-        provider: &provider,
-        small_provider: None,
-        tools: &tools,
-        system_prompt: "test",
-        user_blocks: vec![ContentBlock::Text {
-            text: "hello".to_string(),
-        }],
-        working_dir: &working_dir,
-        topic_path: &working_dir,
-        cancel: cancel.clone(),
-        topic_name: "silent-reply",
-        event_bus: None,
-        prior_history: vec![],
-        prior_raw_context: vec![],
-        max_iterations: Some(5),
-        sse_read_timeout: std::time::Duration::from_secs(60),
-        additional_read_roots: vec![],
-        additional_write_roots: vec![],
-        pattern_inject_images: false,
-        outbound: None,
-        topic_managers: None,
-        current_channel: None,
-        outbounds: None,
-        context_window: None,
-        auto_reset_threshold: 0.95,
-        thinking_enabled: false,
-        pricing: None,
-        billing_mode: Default::default(),
-        billing_dir: None,
         model_label: "scripted-test-silent",
-        context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
-        reply_target: None,
-        question_hub: None,
+        ..test_config(
+            &provider,
+            &tools,
+            &working_dir,
+            cancel.clone(),
+            "silent-reply",
+        )
     })
     .await
     .expect("agent loop should run to completion");
@@ -222,39 +174,15 @@ async fn persistent_text_only_is_auto_delivered_via_reply_tool() {
     let cancel = CancellationToken::new();
 
     let result = run(super::AgentLoopConfig {
-        provider: &provider,
-        small_provider: None,
-        tools: &tools,
-        system_prompt: "test",
-        user_blocks: vec![ContentBlock::Text {
-            text: "hello".to_string(),
-        }],
-        working_dir: &working_dir,
-        topic_path: &working_dir,
-        cancel: cancel.clone(),
-        topic_name: "reply-tool-persist",
         event_bus: Some(&bus),
-        prior_history: vec![],
-        prior_raw_context: vec![],
-        max_iterations: Some(5),
-        sse_read_timeout: std::time::Duration::from_secs(60),
-        additional_read_roots: vec![],
-        additional_write_roots: vec![],
-        pattern_inject_images: false,
-        outbound: None,
-        topic_managers: None,
-        current_channel: None,
-        outbounds: None,
-        context_window: None,
-        auto_reset_threshold: 0.95,
-        thinking_enabled: false,
-        pricing: None,
-        billing_mode: Default::default(),
-        billing_dir: None,
         model_label: "scripted-test-1",
-        context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
-        reply_target: None,
-        question_hub: None,
+        ..test_config(
+            &provider,
+            &tools,
+            &working_dir,
+            cancel.clone(),
+            "reply-tool-persist",
+        )
     })
     .await
     .expect("agent loop should run to completion");
@@ -375,42 +303,20 @@ async fn synthetic_auto_delivery_publishes_reply_sent() {
     };
 
     let result = run(super::AgentLoopConfig {
-        provider: &provider,
-        small_provider: None,
-        tools: &tools,
-        system_prompt: "test",
-        user_blocks: vec![ContentBlock::Text {
-            text: "hello".to_string(),
-        }],
-        working_dir: &working_dir,
-        topic_path: &working_dir,
-        cancel: cancel.clone(),
-        topic_name: "reply-sent-direct",
         event_bus: Some(&bus),
-        prior_history: vec![],
-        prior_raw_context: vec![],
-        max_iterations: Some(5),
-        sse_read_timeout: std::time::Duration::from_secs(60),
-        additional_read_roots: vec![],
-        additional_write_roots: vec![],
-        pattern_inject_images: false,
         outbound: Some(mock),
-        topic_managers: None,
-        current_channel: None,
-        outbounds: None,
-        context_window: None,
-        auto_reset_threshold: 0.95,
-        thinking_enabled: false,
-        pricing: None,
-        billing_mode: Default::default(),
-        billing_dir: None,
         model_label: "scripted-test-2",
-        context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
         reply_target: Some(crate::tools::ReplyTarget {
             original,
             message_dir: "2026-08-23_00-00-00".to_string(),
         }),
-        question_hub: None,
+        ..test_config(
+            &provider,
+            &tools,
+            &working_dir,
+            cancel.clone(),
+            "reply-sent-direct",
+        )
     })
     .await
     .expect("agent loop should run to completion");
@@ -479,39 +385,15 @@ async fn failed_reply_then_text_only_gets_failure_reminder() {
     let cancel = CancellationToken::new();
 
     let result = run(super::AgentLoopConfig {
-        provider: &provider,
-        small_provider: None,
-        tools: &tools,
-        system_prompt: "test",
-        user_blocks: vec![ContentBlock::Text {
-            text: "hello".to_string(),
-        }],
-        working_dir: &working_dir,
-        topic_path: &working_dir,
-        cancel: cancel.clone(),
-        topic_name: "reply-failure",
-        event_bus: None,
-        prior_history: vec![],
-        prior_raw_context: vec![],
         max_iterations: Some(6),
-        sse_read_timeout: std::time::Duration::from_secs(60),
-        additional_read_roots: vec![],
-        additional_write_roots: vec![],
-        pattern_inject_images: false,
-        outbound: None,
-        topic_managers: None,
-        current_channel: None,
-        outbounds: None,
-        context_window: None,
-        auto_reset_threshold: 0.95,
-        thinking_enabled: false,
-        pricing: None,
-        billing_mode: Default::default(),
-        billing_dir: None,
         model_label: "scripted-test-failure",
-        context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
-        reply_target: None,
-        question_hub: None,
+        ..test_config(
+            &provider,
+            &tools,
+            &working_dir,
+            cancel.clone(),
+            "reply-failure",
+        )
     })
     .await
     .expect("agent loop should run to completion");

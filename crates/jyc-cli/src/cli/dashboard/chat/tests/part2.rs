@@ -1150,16 +1150,21 @@ fn confirm_sends_choice_frame() {
 }
 
 #[test]
-fn dismiss_sends_cancelled_frame() {
+fn dismiss_hides_question_without_sending_a_frame() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload("jyc", "q1", &["a"]));
     chat.dismiss_question();
 
+    // Esc only hides the box locally: the question stays pending
+    // server-side so the next typed message answers it via the
+    // websocket inbound adapter's try_answer interception. No
+    // question_response frame may be sent.
     assert!(!chat.active_question());
-    let frame = rx.try_recv().expect("cancel frame");
-    let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
-    assert_eq!(parsed["cancelled"], true);
-    assert!(parsed.get("choice").is_none());
+    assert!(chat.question.is_none());
+    assert!(
+        rx.try_recv().is_err(),
+        "no frame expected: the question stays pending server-side"
+    );
 }
 
 #[test]

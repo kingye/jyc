@@ -193,7 +193,8 @@ pub(super) struct ChatState {
     /// History of sent messages for Up/Down recall (newest appended last).
     pub(super) input_history: Vec<String>,
     /// An `ask_user` question awaiting the user's answer. Takes over the
-    /// input area until confirmed or dismissed.
+    /// input area while visible; Esc hides it (the question stays pending
+    /// and a typed message becomes the free-form answer).
     pub(super) question: Option<PendingQuestion>,
     /// Current position in history browsing (None = not browsing).
     pub(super) history_pos: Option<usize>,
@@ -764,8 +765,10 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         return;
     }
 
-    // A pending question owns the keyboard until answered or dismissed:
-    // the agent is blocked mid-turn waiting for this answer.
+    // A pending question owns the keyboard while visible: the agent is
+    // blocked mid-turn waiting for this answer. Esc hides it (focus back
+    // to the editor, question still pending — the next typed message
+    // becomes the free-form answer via try_answer interception).
     if app.chat.active_question() {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => app.chat.select_question_prev(),
@@ -1545,7 +1548,7 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        " Up/Down or j/k select - 1-9 choose - Enter confirm - Esc dismiss ",
+        " Up/Down or j/k select - 1-9 choose - Enter confirm - Esc hide, then type your answer ",
         Style::default().fg(Color::DarkGray),
     )));
 
@@ -2400,11 +2403,15 @@ impl ChatState {
         self.confirm_question_idx(idx);
     }
 
-    /// Dismiss the pending question (Esc) — the daemon treats it as cancelled.
+    /// Hide the pending question (Esc) and return focus to the editor.
+    ///
+    /// The question stays alive server-side: the next typed message is
+    /// routed to it by the websocket inbound adapter's pending-question
+    /// interception (`QuestionHub::try_answer`), making it the free-form
+    /// answer. The daemon-side timeout still bounds an unanswered
+    /// question; a replacement question cancels it as before.
     fn dismiss_question(&mut self) {
-        if let Some(q) = self.question.take() {
-            self.send_question_cancelled(&q.id);
-        }
+        self.question = None;
     }
 
     /// Send a `question_response` frame with the picked option.

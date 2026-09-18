@@ -124,30 +124,39 @@ fn extract_attr<'a>(text: &'a str, key: &str) -> Option<&'a str> {
 fn extract_options(inner: &str) -> Option<Vec<String>> {
     // Whitespace-delimited needle — see `extract_attr` for why.
     let needle = " options=\"";
-    let pos = inner.find(needle)?;
-    // Everything between the opening quote and the end of the tag.
-    let region = &inner[pos + needle.len()..];
-    let items: Vec<String> = if region.contains('"') {
-        // Misquoted per-item style: `a", "b", "c` → quoted segments.
-        let mut items = Vec::new();
-        let mut rest = region;
-        while let Some(open) = rest.find('"') {
-            let tail = &rest[open + 1..];
-            let Some(close) = tail.find('"') else { break };
-            let item = tail[..close].trim();
-            if !item.is_empty() {
-                items.push(item.to_string());
-            }
-            rest = &tail[close + 1..];
+    let mut rest = &inner[inner.find(needle)? + needle.len()..];
+
+    // First value: everything up to the closing quote. The documented form
+    // `options="a, b"` is fully covered by this comma-split alone.
+    let end = rest.find('"')?;
+    let mut items: Vec<String> = rest[..end]
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    rest = &rest[end + 1..];
+
+    // Misquoted per-item form `options="a", "b", "c"`: keep collecting while
+    // the gap between items is only separators that include a quote — a bare
+    // ` timeout_seconds="30"` gap is the next attribute, not another item.
+    loop {
+        let gap_len = rest
+            .chars()
+            .take_while(|c| matches!(c, '"' | ',' | ' ' | '\t'))
+            .map(char::len_utf8)
+            .sum::<usize>();
+        if gap_len == 0 || !rest[..gap_len].contains('"') {
+            break;
         }
-        items
-    } else {
-        region
-            .split(',')
-            .map(|s| s.trim().trim_matches('"').trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
-    };
+        rest = &rest[gap_len..];
+        let Some(end) = rest.find('"') else { break };
+        let item = rest[..end].trim();
+        if !item.is_empty() {
+            items.push(item.to_string());
+        }
+        rest = &rest[end + 1..];
+    }
     if items.is_empty() { None } else { Some(items) }
 }
 

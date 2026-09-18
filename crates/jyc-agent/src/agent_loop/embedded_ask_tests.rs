@@ -96,6 +96,29 @@ impl OutboundAdapter for CapturingOutbound {
     }
 }
 
+fn test_reply_target() -> crate::tools::ReplyTarget {
+    crate::tools::ReplyTarget {
+        original: InboundMessage {
+            id: "test".to_string(),
+            channel: "mock".to_string(),
+            channel_uid: "1".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user@test".to_string(),
+            recipients: vec![],
+            topic: "test".to_string(),
+            content: Default::default(),
+            timestamp: chrono::Utc::now(),
+            references: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: Default::default(),
+            matched_pattern: None,
+        },
+        message_dir: "2026-09-18_00-00-00".to_string(),
+    }
+}
+
 fn registry_with_reply_tool() -> crate::tools::registry::ToolRegistry {
     let mut registry = crate::tools::builtin::create_builtin_registry();
     register_mcp_tools(&mut registry);
@@ -157,6 +180,7 @@ async fn embedded_tag_recovers_question_with_message_first() {
     let result = run_and_answer(
         AgentLoopConfig {
             outbound: Some(outbound),
+            reply_target: Some(test_reply_target()),
             current_channel: Some("mock".to_string()),
             question_hub: Some(hub.clone()),
             ..test_config(&provider, &tools, tmp.path(), cancel, "embedded-ask")
@@ -245,6 +269,7 @@ async fn native_ask_delivers_narration_before_question() {
     let result = run_and_answer(
         AgentLoopConfig {
             outbound: Some(outbound),
+            reply_target: Some(test_reply_target()),
             current_channel: Some("mock".to_string()),
             question_hub: Some(hub.clone()),
             ..test_config(&provider, &tools, tmp.path(), cancel, "native-ask")
@@ -313,6 +338,7 @@ async fn native_ask_strips_embedded_tag_from_narration() {
     let result = run_and_answer(
         AgentLoopConfig {
             outbound: Some(outbound),
+            reply_target: Some(test_reply_target()),
             current_channel: Some("mock".to_string()),
             question_hub: Some(hub.clone()),
             ..test_config(&provider, &tools, tmp.path(), cancel, "native-mixed")

@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Changed
+
+- TUI dashboard chat: Esc on a pending `ask_user` question now only hides
+  the question box and returns focus to the editor instead of cancelling
+  the question server-side. The question stays pending — the next typed
+  message becomes the free-form answer via the websocket inbound
+  interception — so free-input answers are possible without a dedicated
+  UI affordance. The question is still cancelled server-side when a new
+  question replaces it or the daemon-side timeout fires (#791)
+
 ### Added
 
 - Websocket channel: a chat message sent while the topic's agent is blocked in `ask_user` now answers the pending question instead of being rejected with a busy-topic error — the free-input path for websocket clients such as the TUI, mirroring the feishu pipe's interception. The text-fallback routing moves from the feishu pipe into a shared `QuestionHub::try_answer` (#791)

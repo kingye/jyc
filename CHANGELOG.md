@@ -2,6 +2,17 @@
 
 ### Added
 
+- Message-before-question delivery ordering: when the agent's response
+  carries narration text alongside a blocking `ask_user` (native tool call
+  or a literal `<ask_user ...>` tag written into the reply text by models
+  with weak function-calling), the text is delivered first as a progress
+  reply and the conclusion after the answer still auto-delivers — the user
+  reads the message before the question card arrives. An embedded
+  well-formed tag is recovered as a real question (answer lands in the
+  transcript as a synthetic tool result); a malformed tag is stripped from
+  the delivered reply and logged, so raw tool syntax never ships to the
+  user. The tag parser tolerates both documented option styles
+  (`options="a, b"` and the misquoted `options="a", "b"`).
 - Feishu question answers are covered by the standard live progress card:
   once a text reply is routed to the `QuestionHub`, the pipe attaches a
   progress watcher to the still-running run (attach mode — skipped when a

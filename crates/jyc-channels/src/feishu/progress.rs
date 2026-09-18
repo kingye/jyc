@@ -227,6 +227,9 @@ fn reuse_decision(existing: Option<&String>, prior_completed: bool) -> Option<St
     existing.cloned()
 }
 
+// Args are built inline at the two pipe call sites, which already sit next
+// to several local clones (same pattern as `spawn_feishu_adapter`).
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_progress_watcher(
     feishu_client: Arc<FeishuClient>,
     topic_manager: Arc<TopicManager>,

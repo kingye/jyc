@@ -124,6 +124,10 @@ impl ChannelMatcher for WebsocketMatcher {
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
+    /// A chat message. Intercepted before entering the topic queue: while
+    /// the topic's agent is blocked in `ask_user`, the text answers the
+    /// pending question instead (mirroring the feishu pipe) — this is the
+    /// free-input path for websocket clients such as the TUI.
     #[serde(rename = "message")]
     Message {
         /// Optional: when the connection is scoped to a single topic via
@@ -149,9 +153,10 @@ enum ClientMessage {
     /// Keep-alive ping. tokio-tungstenite already handles WS-level pings
     /// at the protocol layer; this is a no-op for application-level pings.
     Ping,
-    /// Answer to an `ask_user` question. Routed to the `QuestionHub`, not
-    /// the topic queue — while the agent waits, the topic is busy and a
-    /// normal message would be rejected.
+    /// Answer to an `ask_user` question, picked from the question payload's
+    /// options. Routed to the `QuestionHub`, not the topic queue; free-text
+    /// answers go through the `Message` variant's pending-question
+    /// interception instead.
     QuestionResponse {
         /// Id of the question being answered (from the `question` payload).
         id: String,
@@ -399,6 +404,25 @@ async fn handle_connection_impl(
                                         continue;
                                     }
                                 };
+                                // Pending-question interception (the
+                                // websocket twin of the feishu pipe): while
+                                // the topic's agent is blocked in `ask_user`,
+                                // a chat message answers the question instead
+                                // of entering the topic queue — the topic is
+                                // busy and would reject it. This is what makes
+                                // free-input answers work for websocket
+                                // clients such as the TUI: dismiss the option
+                                // modal and type in the normal input box.
+                                if let Some(hub) = question_hub.as_ref()
+                                    && hub.try_answer(&topic_name, &text)
+                                {
+                                    tracing::info!(
+                                        addr = %addr,
+                                        topic = %topic_name,
+                                        "WebSocket message answered a pending question; not enqueueing"
+                                    );
+                                    continue;
+                                }
                                 let message = InboundMessage {
                                     id: uuid::Uuid::new_v4().to_string(),
                                     channel: channel_name.clone(),

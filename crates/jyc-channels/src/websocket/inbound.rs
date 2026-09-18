@@ -413,6 +413,10 @@ async fn handle_connection_impl(
                                 // free-input answers work for websocket
                                 // clients such as the TUI: dismiss the option
                                 // modal and type in the normal input box.
+                                // Note: matches on the raw payload/URL topic;
+                                // if routing patterns remap the topic the
+                                // interception misses and the message falls
+                                // back to normal (busy-rejected) routing.
                                 if let Some(hub) = question_hub.as_ref()
                                     && hub.try_answer(&topic_name, &text)
                                 {

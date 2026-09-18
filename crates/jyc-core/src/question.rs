@@ -206,6 +206,14 @@ mod tests {
     }
 
     #[test]
+    fn try_answer_for_other_topic_routes_normally() {
+        let hub = QuestionHub::new();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let _guard = hub.register("q1", "topic-b", tx);
+        assert!(!hub.try_answer("topic-a", "1"));
+    }
+
+    #[test]
     fn try_answer_skips_blank_text() {
         let hub = QuestionHub::new();
         let (tx, _rx) = tokio::sync::oneshot::channel();

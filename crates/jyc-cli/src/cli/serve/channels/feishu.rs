@@ -267,21 +267,37 @@ pub(crate) fn spawn_feishu_adapter(
                         if let Some(text) = message.content.text.as_deref()
                             && try_answer_pending_question(&question_hub, &message.topic, text)
                         {
-                            // Ack the answer in-chat: the agent keeps working
-                            // in the background and the final reply may take a
-                            // while; without this the chat is silent after the
-                            // question card (this interception skips the
-                            // progress watcher below). Best-effort.
+                            // The answer is consumed and the run keeps working
+                            // in the background — the final reply may take a
+                            // while. Cover the rest of the run with the standard
+                            // live progress card: a run started by this Feishu
+                            // message already has a watcher (below), but a run
+                            // that asked its question from another channel
+                            // (e.g. the ws TUI) has none, leaving the chat
+                            // silent between the answer and the reply. Attach
+                            // mode arms the same watcher immediately instead
+                            // of waiting for a ProcessingStarted that already
+                            // fired; skipped when a live card already exists.
                             if let Some(chat_id) =
                                 message.metadata.get("chat_id").and_then(|v| v.as_str())
-                                && let Err(e) = feishu_client
-                                    .send_text_message(
-                                        chat_id,
-                                        "✅ 已收到你的回答，正在继续处理…",
-                                    )
-                                    .await
+                                && progress_cards.lock().await.get(&message.topic).is_none()
                             {
-                                tracing::debug!("feishu pipe: failed to ack question answer: {e:#}");
+                                let hub_tm = {
+                                    let reg = routers.lock().unwrap();
+                                    reg.get(&message.channel).map(|(_, tm)| tm.clone())
+                                };
+                                if let Some(tm) = hub_tm {
+                                    jyc_channels::feishu::progress::spawn_progress_watcher(
+                                        feishu_client.clone(),
+                                        tm,
+                                        message.topic.clone(),
+                                        chat_id.to_string(),
+                                        std::time::Instant::now(),
+                                        chrono::Utc::now(),
+                                        progress_cards.clone(),
+                                        true, // attach: the run is already in flight
+                                    );
+                                }
                             }
                             return;
                         }
@@ -357,6 +373,7 @@ pub(crate) fn spawn_feishu_adapter(
                                     start,
                                     seen_after,
                                     progress_cards.clone(),
+                                    false, // arm on this message's own run start
                                 );
                             }
                             topic_starts

@@ -69,7 +69,7 @@ fn find_tag_start(text: &str) -> Option<usize> {
         let boundary = text[after..]
             .chars()
             .next()
-            .map_or(true, |c| c.is_whitespace() || c == '>' || c == '/');
+            .is_none_or(|c| c.is_whitespace() || c == '>' || c == '/');
         if boundary {
             return Some(start);
         }

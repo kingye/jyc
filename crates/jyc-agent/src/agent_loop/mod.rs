@@ -833,59 +833,56 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 tracing::warn!("Malformed <ask_user> tag in reply text; stripping it");
                 response.text = embedded_ask::remove_span(&response.text, span);
             }
-            match embedded_ask::find_embedded_ask(&response.text) {
-                Some(embedded_ask::EmbeddedAsk::WellFormed {
-                    span,
-                    question,
-                    options,
-                    timeout_secs,
-                }) => {
-                    let prose = embedded_ask::remove_span(&response.text, span);
-                    if !prose.trim().is_empty() && reply_tool_available {
-                        let output = execute_reply_tool_synthetic(
-                            tools,
-                            &ctx,
-                            event_bus,
-                            topic_name,
-                            &format!("pre-ask-{total_iterations}"),
-                            &prose,
-                            false,
-                            &mut history,
-                        )
-                        .await;
-                        if output.is_error {
-                            tracing::warn!(
-                                error = %output.content,
-                                "Pre-ask prose delivery failed; asking anyway"
-                            );
-                        }
+            if let Some(embedded_ask::EmbeddedAsk::WellFormed {
+                span,
+                question,
+                options,
+                timeout_secs,
+            }) = embedded_ask::find_embedded_ask(&response.text)
+            {
+                let prose = embedded_ask::remove_span(&response.text, span);
+                if !prose.trim().is_empty() && reply_tool_available {
+                    let output = execute_reply_tool_synthetic(
+                        tools,
+                        &ctx,
+                        event_bus,
+                        topic_name,
+                        &format!("pre-ask-{total_iterations}"),
+                        &prose,
+                        false,
+                        &mut history,
+                    )
+                    .await;
+                    if output.is_error {
+                        tracing::warn!(
+                            error = %output.content,
+                            "Pre-ask prose delivery failed; asking anyway"
+                        );
                     }
-                    let input = serde_json::json!({
-                        "question": question,
-                        "options": options,
-                        "timeout_seconds": timeout_secs,
-                    });
-                    let output = match tools.execute("ask_user", input, &ctx).await {
-                        Ok(output) => output,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "Embedded ask_user execution failed");
-                            ToolOutput::error(format!("Tool error: {e}"))
-                        }
-                    };
-                    history.push(Message::tool_result(
-                        "embedded-ask-user",
-                        &output.content,
-                        output.is_error,
-                    ));
-                    raw_context.push(provider.format_tool_result(
-                        "embedded-ask-user",
-                        &output.content,
-                        output.is_error,
-                    ));
-                    continue;
                 }
-                // Malformed tags were all stripped above; only None remains.
-                _ => {}
+                let input = serde_json::json!({
+                    "question": question,
+                    "options": options,
+                    "timeout_seconds": timeout_secs,
+                });
+                let output = match tools.execute("ask_user", input, &ctx).await {
+                    Ok(output) => output,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Embedded ask_user execution failed");
+                        ToolOutput::error(format!("Tool error: {e}"))
+                    }
+                };
+                history.push(Message::tool_result(
+                    "embedded-ask-user",
+                    &output.content,
+                    output.is_error,
+                ));
+                raw_context.push(provider.format_tool_result(
+                    "embedded-ask-user",
+                    &output.content,
+                    output.is_error,
+                ));
+                continue;
             }
 
             // Fallback delivery: the reply tool exists but was never called.

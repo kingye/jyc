@@ -128,7 +128,7 @@ pub(crate) fn spawn_feishu_adapter(
                         if v.get("type").and_then(|t| t.as_str()) == Some("question") {
                             // `ask_user` push: relay as an interactive card
                             // with numbered options. The user answers by
-                            // replying (see try_answer_pending_question).
+                            // replying (see `QuestionHub::try_answer`).
                             let (Some(topic), Some(question)) = (
                                 v.get("topic").and_then(|t| t.as_str()),
                                 v.get("question").and_then(|q| q.as_str()),
@@ -265,7 +265,7 @@ pub(crate) fn spawn_feishu_adapter(
                         // the question instead of entering the topic (the
                         // text fallback of `QuestionHub::pending_for`).
                         if let Some(text) = message.content.text.as_deref()
-                            && try_answer_pending_question(&question_hub, &message.topic, text)
+                            && question_hub.try_answer(&message.topic, text)
                         {
                             // The answer is consumed and the run keeps working
                             // in the background — the final reply may take a
@@ -452,77 +452,4 @@ pub(crate) fn spawn_feishu_adapter(
     );
     tasks.push(task);
     Ok(())
-}
-
-/// If a question is pending for `topic` and `text` looks like an answer
-/// (non-empty, not a slash command), submit it to the question hub and
-/// return `true` — the caller must then drop the message instead of routing
-/// it into the topic. Returns `false` when there is no pending question, the
-/// text is a command, or the asker is already gone (answered concurrently /
-/// timed out) — the message then routes normally instead of being dropped.
-fn try_answer_pending_question(
-    hub: &jyc_core::question::QuestionHub,
-    topic: &str,
-    text: &str,
-) -> bool {
-    let text = text.trim();
-    if text.is_empty() || text.starts_with('/') {
-        return false;
-    }
-    let Some(id) = hub.pending_for(topic) else {
-        return false;
-    };
-    hub.respond(
-        &id,
-        jyc_types::channel::QuestionAnswer::Choice(text.to_string()),
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::try_answer_pending_question;
-    use jyc_types::channel::QuestionAnswer;
-
-    #[test]
-    fn answers_pending_question_and_consumes_it() {
-        let hub = jyc_core::question::QuestionHub::new();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let _guard = hub.register("q1", "topic-a", tx);
-
-        assert!(try_answer_pending_question(&hub, "topic-a", "2"));
-        assert_eq!(rx.blocking_recv(), Ok(QuestionAnswer::Choice("2".into())));
-        // Consumed — a second reply routes normally.
-        assert!(!try_answer_pending_question(&hub, "topic-a", "2"));
-    }
-
-    #[test]
-    fn no_pending_question_routes_normally() {
-        let hub = jyc_core::question::QuestionHub::new();
-        assert!(!try_answer_pending_question(&hub, "topic-a", "1"));
-    }
-
-    #[test]
-    fn pending_question_in_other_topic_routes_normally() {
-        let hub = jyc_core::question::QuestionHub::new();
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        let _guard = hub.register("q1", "topic-b", tx);
-        assert!(!try_answer_pending_question(&hub, "topic-a", "1"));
-    }
-
-    #[test]
-    fn slash_command_never_intercepted() {
-        let hub = jyc_core::question::QuestionHub::new();
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        let _guard = hub.register("q1", "topic-a", tx);
-        assert!(!try_answer_pending_question(&hub, "topic-a", "/cancel"));
-    }
-
-    #[test]
-    fn empty_text_routes_normally() {
-        let hub = jyc_core::question::QuestionHub::new();
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        let _guard = hub.register("q1", "topic-a", tx);
-        assert!(!try_answer_pending_question(&hub, "topic-a", ""));
-        assert!(!try_answer_pending_question(&hub, "topic-a", "   "));
-    }
 }

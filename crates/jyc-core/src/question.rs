@@ -66,6 +66,29 @@ impl QuestionHub {
         entry.sender.send(answer).is_ok()
     }
 
+    /// Route a plain user message as the answer to a pending question:
+    /// if a question is pending for `topic` and `text` looks like an answer
+    /// (non-empty, not a slash command), submit it and return `true` — the
+    /// caller must then drop the message instead of routing it into the
+    /// topic. Returns `false` when there is no pending question, the text
+    /// is a command, or the asker is already gone (answered concurrently /
+    /// timed out) — the message then routes normally instead of being
+    /// dropped.
+    ///
+    /// Used by text-fallback channels (email, github, feishu pipe,
+    /// websocket) so a user's plain reply answers the outstanding question
+    /// instead of bouncing off the busy topic.
+    pub fn try_answer(&self, topic: &str, text: &str) -> bool {
+        let text = text.trim();
+        if text.is_empty() || text.starts_with('/') {
+            return false;
+        }
+        let Some(id) = self.pending_for(topic) else {
+            return false;
+        };
+        self.respond(&id, QuestionAnswer::Choice(text.to_string()))
+    }
+
     /// Id of a pending question for `topic`, if any.
     ///
     /// Used by text-fallback channels (email, github) to route a plain user
@@ -150,5 +173,53 @@ mod tests {
         drop(guard);
         // Entry removed by guard; even without it, send would fail.
         assert!(!hub.respond("q1", QuestionAnswer::Cancelled));
+    }
+
+    #[test]
+    fn try_answer_answers_pending_question_and_consumes_it() {
+        let hub = QuestionHub::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _guard = hub.register("q1", "topic-a", tx);
+
+        assert!(hub.try_answer("topic-a", "2"));
+        assert_eq!(rx.blocking_recv(), Ok(QuestionAnswer::Choice("2".into())));
+        // Consumed — a second reply routes normally.
+        assert!(!hub.try_answer("topic-a", "2"));
+    }
+
+    #[test]
+    fn try_answer_without_pending_question_routes_normally() {
+        let hub = QuestionHub::new();
+        assert!(!hub.try_answer("topic-a", "1"));
+    }
+
+    #[test]
+    fn try_answer_skips_slash_commands() {
+        let hub = QuestionHub::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _guard = hub.register("q1", "topic-a", tx);
+
+        assert!(!hub.try_answer("topic-a", "/cancel"));
+        // Not consumed — the question is still answerable.
+        assert!(hub.try_answer("topic-a", "1"));
+        assert_eq!(rx.blocking_recv(), Ok(QuestionAnswer::Choice("1".into())));
+    }
+
+    #[test]
+    fn try_answer_for_other_topic_routes_normally() {
+        let hub = QuestionHub::new();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let _guard = hub.register("q1", "topic-b", tx);
+        assert!(!hub.try_answer("topic-a", "1"));
+    }
+
+    #[test]
+    fn try_answer_skips_blank_text() {
+        let hub = QuestionHub::new();
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let _guard = hub.register("q1", "topic-a", tx);
+
+        assert!(!hub.try_answer("topic-a", ""));
+        assert!(!hub.try_answer("topic-a", "   "));
     }
 }

@@ -2,6 +2,8 @@
 
 ### Added
 
+- Websocket channel: a chat message sent while the topic's agent is blocked in `ask_user` now answers the pending question instead of being rejected with a busy-topic error — the free-input path for websocket clients such as the TUI, mirroring the feishu pipe's interception. The text-fallback routing moves from the feishu pipe into a shared `QuestionHub::try_answer` (#791)
+
 - Message-before-question delivery ordering: when the agent's response
   carries narration text alongside a blocking `ask_user` (native tool call
   or a literal `<ask_user ...>` tag written into the reply text by models

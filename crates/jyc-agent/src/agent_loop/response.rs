@@ -283,6 +283,21 @@ pub(crate) fn looks_like_leaked_tool_call(text: &str) -> bool {
     {
         return true;
     }
+    looks_like_leak_in_text_body(text)
+}
+
+/// Mixed-mode variant, used when the response already parsed valid
+/// structured tool calls: the start-anchored check is skipped, because
+/// legit meta-discussion prose can itself BEGIN with a quoted marker, and
+/// killing a valid tool call over one quoted tag is worse than letting a
+/// single ambiguous fragment through. Real mixed-mode leaks still trip
+/// the remaining checks — a machine dump never ships exactly one opener
+/// with no closer.
+pub(crate) fn looks_like_leak_in_mixed_response(text: &str) -> bool {
+    looks_like_leak_in_text_body(text)
+}
+
+fn looks_like_leak_in_text_body(text: &str) -> bool {
     if text.contains("</response_tools>") || text.contains("</invoke>") {
         return true;
     }
@@ -396,5 +411,20 @@ mod tests {
         assert!(!looks_like_leaked_tool_call(
             "报错输出里有 `<response_tools>`，重试后又出现 `<response_tools>`，最后还有 `<response_tools>`。"
         ));
+    }
+
+    #[test]
+    fn mixed_mode_leak_detection_skips_start_anchor() {
+        // Mixed mode (structured tool calls present) must NOT flag a single
+        // start-anchored marker quote — legit meta-discussion prose can
+        // begin with one — but must still flag real leak signatures.
+        assert!(!looks_like_leak_in_mixed_response(
+            "<response_tools>\n这是正文里引用一次标签。"
+        ));
+        assert!(looks_like_leak_in_mixed_response(
+            "结论。\n<response_tools>\n<invoke name=\"bash\">x</invoke>\n</response_tools>"
+        ));
+        let storm = format!("先说结论。\n{}", "<response_tools>\n".repeat(6));
+        assert!(looks_like_leak_in_mixed_response(&storm));
     }
 }

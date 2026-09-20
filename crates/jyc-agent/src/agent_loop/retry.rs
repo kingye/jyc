@@ -7,7 +7,10 @@ use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
 use super::publish_event;
-use super::response::{CollectedResponse, collect_response, looks_like_leaked_tool_call};
+use super::response::{
+    CollectedResponse, collect_response, looks_like_leak_in_mixed_response,
+    looks_like_leaked_tool_call,
+};
 use crate::provider::{Provider, RetryClass, classify_retry, extract_retry_after};
 use crate::types::ToolDefinition;
 use jyc_core::topic_event::TopicEvent;
@@ -236,11 +239,23 @@ async fn issue_call(
             // re-issues the call. Applies even when structured tool_calls
             // parsed fine: a partially parsed stream can carry valid calls
             // while the unparsed remainder lands in the text channel and
-            // ships verbatim via the auto-delivery fallback. Also reject
+            // ships verbatim via the auto-delivery fallback — but in that
+            // mixed mode only the closing-tag / repetition checks run, so
+            // one start-anchored quote in legit prose does not kill a valid
+            // call. Also reject
             // structured tool calls with an EMPTY name: degenerate streams
             // parse into blank-name calls that bypass the text guard and
             // ship as `<response_tools>` garbage to the user.
-            if looks_like_leaked_tool_call(&collected.text)
+            let text_is_leak = if collected.tool_calls.is_empty() {
+                looks_like_leaked_tool_call(&collected.text)
+            } else {
+                // Mixed mode: a valid structured call coexists with the text
+                // channel. Use the narrow check — a single start-anchored
+                // marker quote in legit prose must not kill a valid tool
+                // call; only closing tags and repetition storms flag here.
+                looks_like_leak_in_mixed_response(&collected.text)
+            };
+            if text_is_leak
                 || collected
                     .tool_calls
                     .iter()
@@ -417,6 +432,77 @@ mod retry_tests {
             };
             let events: Vec<anyhow::Result<StreamEvent>> =
                 vec![Ok(StreamEvent::TextDelta(text)), Ok(StreamEvent::Done)];
+            Ok(Box::pin(stream::iter(events)))
+        }
+
+        fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
+            mock_format_user_message(blocks)
+        }
+
+        fn format_tool_result(
+            &self,
+            tool_call_id: &str,
+            content: &str,
+            _is_error: bool,
+        ) -> serde_json::Value {
+            mock_format_tool_result(tool_call_id, content)
+        }
+
+        fn build_raw_assistant_message(
+            &self,
+            text: &str,
+            _reasoning: &str,
+            _tool_calls: &[(String, String, String)],
+        ) -> serde_json::Value {
+            mock_build_raw_assistant_message(text)
+        }
+    }
+
+    /// Mock provider that ALWAYS returns a valid structured tool call plus
+    /// prose that BEGINS with a single quoted `<response_tools>` marker —
+    /// the legit meta-discussion shape the mixed-mode guard must not flag
+    /// (regression test for the start-anchored false positive).
+    struct MixedQuotingProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for MixedQuotingProvider {
+        fn name(&self) -> &str {
+            "mixed-quoting"
+        }
+        fn model(&self) -> &str {
+            "mixed-quoting-1"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            unimplemented!("complete() unused in retry tests")
+        }
+
+        async fn complete_raw(
+            &self,
+            _raw_messages: &[serde_json::Value],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let events: Vec<anyhow::Result<StreamEvent>> = vec![
+                Ok(StreamEvent::ToolUseStart {
+                    id: "1".to_string(),
+                    name: "bash".to_string(),
+                }),
+                Ok(StreamEvent::ToolInputDelta("{}".to_string())),
+                Ok(StreamEvent::ToolUseEnd),
+                Ok(StreamEvent::TextDelta(
+                    "<response_tools>\n这是正文里引用一次标签。".to_string(),
+                )),
+                Ok(StreamEvent::Done),
+            ];
             Ok(Box::pin(stream::iter(events)))
         }
 
@@ -812,6 +898,41 @@ mod retry_tests {
             provider.calls.load(Ordering::SeqCst),
             2,
             "expected 2 total calls (1 mixed-leak + 1 good)"
+        );
+    }
+
+    /// Mixed mode: a valid tool call plus prose that begins with ONE quoted
+    /// marker must pass the guard untouched — the start-anchored check only
+    /// applies to text-only responses, otherwise legit meta-discussion
+    /// kills a valid tool call and burns the retry budget.
+    #[tokio::test]
+    async fn mixed_mode_single_marker_quote_is_not_flagged() {
+        let provider = MixedQuotingProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "topic-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+            &CancellationToken::new(),
+            true,
+            &[1, 2],
+        )
+        .await;
+
+        let response = result.expect("single marker quote in mixed mode must pass");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].name, "bash");
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            1,
+            "no retry expected for a valid mixed response"
         );
     }
 

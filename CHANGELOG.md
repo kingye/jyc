@@ -164,6 +164,12 @@
   guard and ship `<response_tools>` garbage to the user — both are
   retried, then surfaced as terminal errors (#794)
 
+- Provider format-failure guard: mixed-mode responses (valid structured
+  tool calls plus prose) no longer trip on a single start-anchored marker
+  quote — once tool calls have parsed, only closing tags and repetition
+  storms flag the text channel, narrowing false positives on legit
+  meta-discussion (#795)
+
 ## [0.3.18] - 2026-09-12
 
 ### Added

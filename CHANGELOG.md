@@ -151,6 +151,11 @@
   could keep being served until an unrelated config reload).
   Superseded same-topic registry entries are evicted on rebuild. (#765)
 
+- The #786 leak guard no longer misses underscore-wrapper tool-call syntax:
+  `<response_tools>` / bare `<invoke>` variants and preamble-prose leaks that
+  ship complete open+close blocks are now detected (closing tags mid-text)
+  and retried instead of auto-delivered as raw XML. (#793)
+
 ## [0.3.18] - 2026-09-12
 
 ### Added

@@ -258,14 +258,27 @@ const LEAKED_TOOL_CALL_MARKERS: &[&str] = &[
     "<antml:invoke",
     // Gateway-wrapped leak: `<response tools="<call tool=...>">`.
     "<response tools=",
+    // Underscore wrapper variant emitted by some runtimes.
+    "<response_tools>",
+    "</response_tools>",
+    "<invoke",
 ];
 
 /// Whether `text` looks like leaked tool-call syntax rather than a
 /// user-facing reply. Only meaningful when the response parsed no
 /// structured tool calls.
+///
+/// Detection is start-anchored (after leading whitespace), plus a
+/// mid-text check for CLOSING tags (`</response_tools>`, `</invoke>`):
+/// real leaks ship whole blocks, while legit replies only ever QUOTE
+/// opening-tag fragments inside prose — a quoted closer in user-facing
+/// text is practically always a machine dump.
 pub(crate) fn looks_like_leaked_tool_call(text: &str) -> bool {
     let text = text.trim_start();
-    LEAKED_TOOL_CALL_MARKERS.iter().any(|m| text.starts_with(m))
+    if LEAKED_TOOL_CALL_MARKERS.iter().any(|m| text.starts_with(m)) {
+        return true;
+    }
+    text.contains("</response_tools>") || text.contains("</invoke>")
 }
 
 #[cfg(test)]
@@ -351,5 +364,17 @@ mod tests {
         ));
         assert!(!looks_like_leaked_tool_call("普通回复，没有工具调用语法。"));
         assert!(!looks_like_leaked_tool_call(""));
+        // Underscore-wrapper leak: preamble prose followed by complete
+        // blocks — caught by the closing-tag check.
+        assert!(looks_like_leaked_tool_call(
+            "先说结论。\n<response_tools>\n<invoke name=\"bash\">x</invoke>\n</response_tools>"
+        ));
+        assert!(looks_like_leaked_tool_call(
+            "<response_tools>\n<invoke name=\"bash\">x</invoke>"
+        ));
+        // Quoted OPENING tag in prose without a closer stays deliverable.
+        assert!(!looks_like_leaked_tool_call(
+            "报错输出里有 `<response_tools>` 标签。"
+        ));
     }
 }

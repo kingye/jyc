@@ -265,20 +265,30 @@ const LEAKED_TOOL_CALL_MARKERS: &[&str] = &[
 ];
 
 /// Whether `text` looks like leaked tool-call syntax rather than a
-/// user-facing reply. Only meaningful when the response parsed no
-/// structured tool calls.
+/// user-facing reply.
 ///
-/// Detection is start-anchored (after leading whitespace), plus a
-/// mid-text check for CLOSING tags (`</response_tools>`, `</invoke>`):
-/// real leaks ship whole blocks, while legit replies only ever QUOTE
-/// opening-tag fragments inside prose — a quoted closer in user-facing
-/// text is practically always a machine dump.
+/// Detection: (1) start-anchored markers (after leading whitespace);
+/// (2) a mid-text CLOSING tag (`</response_tools>`, `</invoke>`) — real
+/// leaks ship whole blocks, while legit replies only ever QUOTE
+/// opening-tag fragments inside prose; (3) repetition — degenerate
+/// streams emit the same bare opener dozens of times with no closing
+/// tag at all (preamble prose followed by pages of `<response_tools>`
+/// fragments), which (1) and (2) both miss. Prose quotes a tag once or
+/// twice, so a single marker appearing 4+ times is a machine dump.
 pub(crate) fn looks_like_leaked_tool_call(text: &str) -> bool {
-    let text = text.trim_start();
-    if LEAKED_TOOL_CALL_MARKERS.iter().any(|m| text.starts_with(m)) {
+    let trimmed = text.trim_start();
+    if LEAKED_TOOL_CALL_MARKERS
+        .iter()
+        .any(|m| trimmed.starts_with(m))
+    {
         return true;
     }
-    text.contains("</response_tools>") || text.contains("</invoke>")
+    if text.contains("</response_tools>") || text.contains("</invoke>") {
+        return true;
+    }
+    LEAKED_TOOL_CALL_MARKERS
+        .iter()
+        .any(|m| text.matches(m).count() >= 4)
 }
 
 #[cfg(test)]
@@ -375,6 +385,16 @@ mod tests {
         // Quoted OPENING tag in prose without a closer stays deliverable.
         assert!(!looks_like_leaked_tool_call(
             "报错输出里有 `<response_tools>` 标签。"
+        ));
+        // Fragment storm: preamble prose followed by pages of bare openers
+        // with NO closing tags at all (observed in production) — caught by
+        // the repetition check, not the closing-tag check.
+        let storm = format!("先说结论。\n{}", "<response_tools>\n".repeat(6));
+        assert!(looks_like_leaked_tool_call(&storm));
+        // Legit meta-discussion may quote the same tag a few times — under
+        // the repetition threshold it stays deliverable.
+        assert!(!looks_like_leaked_tool_call(
+            "报错输出里有 `<response_tools>`，重试后又出现 `<response_tools>`，最后还有 `<response_tools>`。"
         ));
     }
 }

@@ -156,6 +156,14 @@
   ship complete open+close blocks are now detected (closing tags mid-text)
   and retried instead of auto-delivered as raw XML. (#793)
 
+### Fixed
+
+- Provider format-failure guard: mixed-mode streams (valid structured
+  tool calls plus leaked tool syntax in the text channel) and degenerate
+  streams that parse into empty-name tool calls no longer bypass the
+  guard and ship `<response_tools>` garbage to the user — both are
+  retried, then surfaced as terminal errors (#794)
+
 ## [0.3.18] - 2026-09-12
 
 ### Added

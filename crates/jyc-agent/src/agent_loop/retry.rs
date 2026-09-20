@@ -230,15 +230,29 @@ async fn issue_call(
                 thinking_enabled,
             )
             .await?;
-            // Provider format-failure guard (#786): a model with weak
-            // function-calling can emit raw tool-call syntax into the text
-            // channel instead of structured tool_calls. Shipped verbatim by
-            // the text-only auto-delivery fallback, that syntax is garbage
-            // to the user — fail the attempt (transient "provider format
-            // failure") so the retry loop re-issues the call.
-            if collected.tool_calls.is_empty() && looks_like_leaked_tool_call(&collected.text) {
+            // Provider format-failure guard (#786): raw tool-call syntax in
+            // the text channel is garbage to the user — fail the attempt
+            // (transient "provider format failure") so the retry loop
+            // re-issues the call. Applies even when structured tool_calls
+            // parsed fine: a partially parsed stream can carry valid calls
+            // while the unparsed remainder lands in the text channel and
+            // ships verbatim via the auto-delivery fallback. Also reject
+            // structured tool calls with an EMPTY name: degenerate streams
+            // parse into blank-name calls that bypass the text guard and
+            // ship as `<response_tools>` garbage to the user.
+            if looks_like_leaked_tool_call(&collected.text)
+                || collected
+                    .tool_calls
+                    .iter()
+                    .any(|tc| tc.name.trim().is_empty())
+            {
                 tracing::warn!(
                     text_excerpt = %jyc_utils::helpers::truncate_str_ellipsis(&collected.text, 200),
+                    empty_name_calls = collected
+                        .tool_calls
+                        .iter()
+                        .filter(|tc| tc.name.trim().is_empty())
+                        .count(),
                     "provider format failure: model emitted tool-call syntax as text"
                 );
                 Err(anyhow::anyhow!(
@@ -429,6 +443,201 @@ mod retry_tests {
         }
     }
 
+    /// Mock provider whose FIRST call returns a stream with BOTH a valid
+    /// structured tool call AND leaked tool-call syntax in the text channel
+    /// (partial-parse mixed mode, which used to bypass the guard via
+    /// `tool_calls.is_empty()` and ship the garbage silently); every later
+    /// call returns a normal text response.
+    struct MixedLeakyProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for MixedLeakyProvider {
+        fn name(&self) -> &str {
+            "mixed-leaky"
+        }
+        fn model(&self) -> &str {
+            "mixed-leaky-1"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            unimplemented!("complete() unused in retry tests")
+        }
+
+        async fn complete_raw(
+            &self,
+            _raw_messages: &[serde_json::Value],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events: Vec<anyhow::Result<StreamEvent>> = if n == 0 {
+                vec![
+                    Ok(StreamEvent::ToolUseStart {
+                        id: "1".to_string(),
+                        name: "bash".to_string(),
+                    }),
+                    Ok(StreamEvent::ToolInputDelta("{}".to_string())),
+                    Ok(StreamEvent::ToolUseEnd),
+                    // Fragment storm: bare openers, no closing tags.
+                    Ok(StreamEvent::TextDelta(format!(
+                        "先说结论。\n{}",
+                        "<response_tools>\n".repeat(6)
+                    ))),
+                    Ok(StreamEvent::Done),
+                ]
+            } else {
+                vec![
+                    Ok(StreamEvent::TextDelta("ok".to_string())),
+                    Ok(StreamEvent::Done),
+                ]
+            };
+            Ok(Box::pin(stream::iter(events)))
+        }
+
+        fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
+            mock_format_user_message(blocks)
+        }
+
+        fn format_tool_result(
+            &self,
+            tool_call_id: &str,
+            content: &str,
+            _is_error: bool,
+        ) -> serde_json::Value {
+            mock_format_tool_result(tool_call_id, content)
+        }
+
+        fn build_raw_assistant_message(
+            &self,
+            text: &str,
+            _reasoning: &str,
+            _tool_calls: &[(String, String, String)],
+        ) -> serde_json::Value {
+            mock_build_raw_assistant_message(text)
+        }
+    }
+
+    /// Mock provider whose FIRST call returns a structured tool call with an
+    /// EMPTY name (degenerate-stream signature: the runtime parses the
+    /// `<response_tools>` storm into blank-name calls, which bypass the text
+    /// guard and ship as garbage to the user); every later call returns
+    /// normal text.
+    struct EmptyNameLeakyProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for EmptyNameLeakyProvider {
+        fn name(&self) -> &str {
+            "empty-name-leaky"
+        }
+        fn model(&self) -> &str {
+            "empty-name-leaky-1"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            unimplemented!("complete() unused in retry tests")
+        }
+
+        async fn complete_raw(
+            &self,
+            _raw_messages: &[serde_json::Value],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events: Vec<anyhow::Result<StreamEvent>> = if n == 0 {
+                vec![
+                    Ok(StreamEvent::ToolUseStart {
+                        id: "1".to_string(),
+                        name: "".to_string(),
+                    }),
+                    Ok(StreamEvent::ToolInputDelta("{}".to_string())),
+                    Ok(StreamEvent::ToolUseEnd),
+                    Ok(StreamEvent::TextDelta("先说结论。".to_string())),
+                    Ok(StreamEvent::Done),
+                ]
+            } else {
+                vec![
+                    Ok(StreamEvent::TextDelta("ok".to_string())),
+                    Ok(StreamEvent::Done),
+                ]
+            };
+            Ok(Box::pin(stream::iter(events)))
+        }
+
+        fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
+            mock_format_user_message(blocks)
+        }
+
+        fn format_tool_result(
+            &self,
+            tool_call_id: &str,
+            content: &str,
+            _is_error: bool,
+        ) -> serde_json::Value {
+            mock_format_tool_result(tool_call_id, content)
+        }
+
+        fn build_raw_assistant_message(
+            &self,
+            text: &str,
+            _reasoning: &str,
+            _tool_calls: &[(String, String, String)],
+        ) -> serde_json::Value {
+            mock_build_raw_assistant_message(text)
+        }
+    }
+
+    /// A structured tool call with an empty name is a degenerate-stream
+    /// signature that bypasses the text leak guard; the attempt must fail as
+    /// a provider format failure and the retry re-issue the call.
+    #[tokio::test]
+    async fn empty_name_tool_call_is_retried_then_succeeds() {
+        let provider = EmptyNameLeakyProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "topic-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+            &CancellationToken::new(),
+            true,
+            &[1, 2],
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "expected Ok after retry, got {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap().text, "ok");
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            2,
+            "expected 2 total calls (1 empty-name + 1 good)"
+        );
+    }
+
     /// Two transient failures then success → returns Ok, publishes 2 retry events.
     #[tokio::test]
     async fn retries_transient_sse_errors_then_succeeds() {
@@ -566,6 +775,43 @@ mod retry_tests {
             provider.calls.load(Ordering::SeqCst),
             2,
             "expected 2 total calls (1 leaked + 1 good)"
+        );
+    }
+
+    /// Mixed mode: valid tool_calls + leaked syntax in the text channel —
+    /// the attempt must STILL fail the leak guard (no `tool_calls.is_empty()`
+    /// bypass) and the retry re-issue the call.
+    #[tokio::test]
+    async fn mixed_leak_with_valid_tool_calls_is_retried() {
+        let provider = MixedLeakyProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "topic-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+            &CancellationToken::new(),
+            true,
+            &[1, 2],
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "expected Ok after retry, got {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap().text, "ok");
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            2,
+            "expected 2 total calls (1 mixed-leak + 1 good)"
         );
     }
 

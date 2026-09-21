@@ -241,9 +241,23 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         ) + 1)
             .clamp(2, 11) as u16
     };
+    // Rows reserved for an open popup, directly BELOW the input field: the
+    // popup is a layout participant, not an overlay, so it can never be
+    // clipped by the pane edge or cover the field the user is typing in.
+    let popup_rows = match (app.chat.command_popup.as_ref(), app.chat.leader.as_ref()) {
+        (Some(state), _) => {
+            crate::cli::command_popup::popup_height(state, &app.chat.commands, &app.chat.models)
+        }
+        (None, Some(leader)) => leader.popup_height(),
+        (None, None) => 0,
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(input_line_count)])
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(input_line_count),
+            Constraint::Length(popup_rows),
+        ])
         .split(area);
     // Cache the message-area rect so mouse-wheel events can hit-test
     // against it from the input loop.
@@ -621,14 +635,20 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         super::render_question_box(frame, editor_area, app);
     }
 
-    // ── Command popup overlay ──
+    // ── Popups: the slot right below the input field (chunks[2]) ──
     if let Some(ref popup) = app.chat.command_popup {
-        render_command_popup(frame, area, popup, &app.chat.commands, &app.chat.models);
+        render_command_popup(
+            frame,
+            chunks[2],
+            popup,
+            &app.chat.commands,
+            &app.chat.models,
+        );
     }
 
-    // ── Leader-key popup overlay (TUI-local commands) ──
+    // ── Leader-key popup (TUI-local commands) ──
     if let Some(ref leader) = app.chat.leader {
-        leader.render(frame, area);
+        leader.render_anchored(frame, chunks[2]);
     }
 }
 

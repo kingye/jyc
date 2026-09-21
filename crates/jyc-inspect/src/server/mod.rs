@@ -13,7 +13,7 @@ use crate::scoped_ws::ScopedWsHandler;
 use crate::topic_proxy::TopicProxyHandler;
 use jyc_core::activity_log_store::ActivityLogStore;
 use jyc_core::command::list_available_models;
-use jyc_core::command::{all_commands_with, per_agent_commands};
+use jyc_core::command::{ArgCtx, all_commands_with, command_args, per_agent_commands};
 use jyc_core::metrics::SharedHealthStats;
 use jyc_core::topic_manager::TopicManager;
 use jyc_types::AppConfig;
@@ -257,31 +257,35 @@ impl InspectServer {
         // dispatches in that topic (built-ins + globals + per-agent for
         // the topic's pattern; per-agent wins on collision).
         let cfg = context.config.as_ref().map(|c| c.load_full());
+        let fallback_cfg = AppConfig::default();
+        let cfg_ref = cfg.as_deref().unwrap_or(&fallback_cfg);
+        let models = list_available_models(&cfg_ref.ai.providers);
         let mut summaries: Vec<TopicSummary> = topics
             .into_iter()
-            .map(|t| TopicSummary {
-                name: t.name,
-                channel: t.channel,
-                pattern: t.pattern.clone(),
-                status: t.status,
-                model: t.model,
-                mode: t.mode,
-                context_input_tokens: t.context_input_tokens,
-                max_tokens: t.max_tokens,
-                output_tokens: t.output_tokens,
-                total_input_tokens: t.total_input_tokens,
-                total_cache_hit_tokens: t.total_cache_hit_tokens,
-                total_cache_creation_tokens: t.total_cache_creation_tokens,
-                last_active_at: t.last_active_at,
-                skills: t.skills,
-                topic_path: t.topic_path,
-                branch: t.branch,
-                changed_files: t.changed_files,
-                cost: t.cost,
-                commands: commands_for_topic(
-                    t.pattern.as_deref(),
-                    cfg.as_deref().unwrap_or(&AppConfig::default()),
-                ),
+            .map(|t| {
+                let commands =
+                    commands_for_topic(t.pattern.as_deref(), cfg_ref, &t.skills, &models);
+                TopicSummary {
+                    name: t.name,
+                    channel: t.channel,
+                    pattern: t.pattern.clone(),
+                    status: t.status,
+                    model: t.model,
+                    mode: t.mode,
+                    context_input_tokens: t.context_input_tokens,
+                    max_tokens: t.max_tokens,
+                    output_tokens: t.output_tokens,
+                    total_input_tokens: t.total_input_tokens,
+                    total_cache_hit_tokens: t.total_cache_hit_tokens,
+                    total_cache_creation_tokens: t.total_cache_creation_tokens,
+                    last_active_at: t.last_active_at,
+                    skills: t.skills,
+                    topic_path: t.topic_path,
+                    branch: t.branch,
+                    changed_files: t.changed_files,
+                    cost: t.cost,
+                    commands,
+                }
             })
             .collect();
         // list_topics() sorts within each channel, but topics from multiple
@@ -299,11 +303,7 @@ impl InspectServer {
             channels,
             topics: summaries,
             stats,
-            models: context
-                .config
-                .as_ref()
-                .map(|cfg| list_available_models(&cfg.load().ai.providers))
-                .unwrap_or_default(),
+            models,
         }
     }
     pub async fn build_state(context: &InspectContext) -> InspectState {
@@ -338,6 +338,8 @@ impl InspectServer {
         // Attach per-topic commands so the dashboard `/` popup reflects
         // what actually dispatches in this topic (built-ins + globals +
         // per-agent for the topic's pattern; per-agent wins on collision).
+        // The commands also carry their enumerable argument values, which
+        // drive the popup's nested levels (`/model <id>`, `/skill on <name>`).
         // TODO(perf): `commands_for_topic` recomputes per topic on every
         // ~500 ms overview poll, but the dashboard TUI only reads commands
         // for its current chat topic. To stop the per-poll work: either
@@ -346,13 +348,13 @@ impl InspectServer {
         // overview and expose `GET /api/commands?pattern=X` for the TUI
         // to fetch lazily.
         let cfg = context.config.as_ref().map(|c| c.load_full());
+        let fallback_cfg = AppConfig::default();
+        let cfg_ref = cfg.as_deref().unwrap_or(&fallback_cfg);
+        let models = list_available_models(&cfg_ref.ai.providers);
         let topics: Vec<TopicInfo> = topics
             .into_iter()
             .map(|mut t| {
-                t.commands = commands_for_topic(
-                    t.pattern.as_deref(),
-                    cfg.as_deref().unwrap_or(&AppConfig::default()),
-                );
+                t.commands = commands_for_topic(t.pattern.as_deref(), cfg_ref, &t.skills, &models);
                 t
             })
             .collect();
@@ -363,11 +365,7 @@ impl InspectServer {
             channels,
             topics,
             stats,
-            models: context
-                .config
-                .as_ref()
-                .map(|cfg| list_available_models(&cfg.load().ai.providers))
-                .unwrap_or_default(),
+            models,
         }
     }
 }
@@ -458,11 +456,29 @@ pub(crate) fn build_channels(
 /// Per-agent lookup is the shared
 /// `jyc_core::command::per_agent_commands` helper — the same call the
 /// worker makes — so the popup and `/?` always agree.
-fn commands_for_topic(pattern: Option<&str>, cfg: &AppConfig) -> Vec<CommandInfo> {
+///
+/// Each command also gets its enumerable argument values (`CommandInfo::args`)
+/// from `jyc_core::command::command_args`, which is what lets the TUI popup
+/// offer `/model <id>` or `/skill on <name>` without knowing any commands.
+fn commands_for_topic(
+    pattern: Option<&str>,
+    cfg: &AppConfig,
+    skills: &[String],
+    models: &[ModelInfo],
+) -> Vec<CommandInfo> {
     let per_agent = pattern
         .map(|p| per_agent_commands(cfg, p))
         .unwrap_or_default();
-    all_commands_with(&cfg.commands, &per_agent)
+    let arg_ctx = ArgCtx {
+        config: cfg,
+        skills,
+        models,
+    };
+    let mut commands = all_commands_with(&cfg.commands, &per_agent);
+    for cmd in &mut commands {
+        cmd.args = command_args(&cmd.name, &arg_ctx);
+    }
+    commands
 }
 
 /// Filter activity entries by `since` timestamp (RFC 3339 string).

@@ -13,9 +13,11 @@
   — including a remote sender piped in from another channel — renders as a
   full-width dark background block with a blank painted row of padding above
   and below, keeping the terminal's own foreground so it reads at the same
-  brightness as the agent's replies. Those replies stay on the pane background,
-  and the `┄┄┄┄` separator between a human turn and its answer is gone — the
-  block's padding and one blank row delimit it (#798, #799)
+  brightness as the agent's replies. The block's gray is a neutral r=g=b so a
+  terminal that quantizes colors onto its own palette cannot turn it brown.
+  Both sides' text is inset one column, a reply is followed by a blank row of
+  its own, and the `┄┄┄┄` separator between a human turn and its answer is gone
+  — the block's padding delimits it (#798, #799, #800)
 
 - TUI dashboard chat: Esc on a pending `ask_user` question now only hides
   the question box and returns focus to the editor instead of cancelling
@@ -121,6 +123,9 @@
 
 ### Fixed
 
+- TUI chat pane: the round rules (`── 10:19 ──` and `──── 5s ──`) are exactly
+  pane-wide — each was one column too long and relied on the renderer clipping
+  the excess (#800)
 - Truncated LLM streams and leaked tool-call syntax no longer reach users as
   broken auto-delivered replies (#786): an SSE stream that reaches EOF
   without the provider's `Done` marker is now a transient error (retried by

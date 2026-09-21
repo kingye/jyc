@@ -1774,11 +1774,37 @@ fn render_history_marks_human_turns_with_background_not_labels() {
         block.iter().all(|l| l.style.fg.is_none()),
         "the block must not set a foreground"
     );
-    assert!(
+    // Neither side hugs the pane edge: both bodies start one column in — the
+    // block paints its own inset cell, the reply's is a bare space. Finding the
+    // reply by `is_block(l) == false` also pins that it stays unpainted.
+    let row_of = |word: &str, painted: bool| {
         lines
             .iter()
-            .any(|l| !is_block(l) && l.spans.iter().any(|s| s.content == "answer")),
-        "the agent's reply must not be painted"
+            .position(|l| is_block(l) == painted && l.spans.iter().any(|s| s.content == word))
+    };
+    let question = row_of("question", true).expect("the human turn's text row");
+    let answer = row_of("answer", false).expect("an unpainted reply row");
+    assert_eq!(
+        lines[question].spans[0].content, " ",
+        "the block insets its text"
+    );
+    assert_eq!(
+        lines[answer].spans[0].content, " ",
+        "the reply is inset the same way"
+    );
+    // The inset must not push a row past the pane: the body is laid out one
+    // column narrower for exactly that reason.
+    assert!(
+        lines.iter().all(|l| l.width() <= 80),
+        "no row may overflow the pane: {:?}",
+        lines.iter().map(|l| l.width()).collect::<Vec<_>>()
+    );
+    // And a reply is followed by a blank row, so it never ends flush against
+    // whatever comes next.
+    let blank = |l: &Line| l.spans.iter().all(|s| s.content.trim_end().is_empty());
+    assert!(
+        lines.get(answer + 1).is_some_and(blank),
+        "a reply must be followed by a blank row"
     );
 }
 

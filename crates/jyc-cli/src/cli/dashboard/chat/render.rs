@@ -85,15 +85,17 @@ pub(super) fn history_fingerprint(
 }
 
 /// Background of a human turn's block (see
-/// [`render_history_lines`]). Deliberately a fixed dark RGB rather than
-/// `Color::DarkGray`: a mid gray is hard to tell apart from a terminal whose
-/// own background is gray.
+/// [`render_history_lines`]). A neutral r=g=b on purpose: a bluish dark gray
+/// (One Dark's #282c34 was the first pick) gets quantized onto a warm palette by
+/// terminals that do not do truecolor, and reads as coffee. Equal channels rule
+/// that out. It stays a fixed dark RGB rather than `Color::DarkGray` because a
+/// mid gray is hard to tell apart from a terminal whose own background is gray.
 ///
 /// The block sets **no foreground** — the text keeps the terminal's own color,
 /// which is what makes a human turn read at exactly the same brightness as the
 /// agent's reply. The cost: on a light terminal theme the default foreground is
 /// dark and this background is not, so the block assumes a dark theme.
-pub(super) const USER_BG: Color = Color::Rgb(40, 44, 52);
+pub(super) const USER_BG: Color = Color::Rgb(48, 48, 48);
 
 /// Whether a chat message belongs to the human side of the conversation.
 ///
@@ -105,12 +107,13 @@ fn is_user_message(sender: &str) -> bool {
 }
 
 /// Render the full message history to wrapped, styled lines: per-round
-/// top/bottom rules (time / duration) plus each message's markdown body
-/// word-wrapped to `width`. There is no speaker label — the human side is
-/// identified by a background block (see [`USER_BG`]), the agent's replies sit
-/// on the pane background. Pure in `(messages, width)` so the result is cached
-/// per frame — the dynamic progress tail (thinking / activity / live ticker) is
-/// appended by the caller after these lines and stays per-frame.
+/// top/bottom rules (time / duration) spanning `width`, plus each human or
+/// agent message's markdown body, word-wrapped one column narrower and inset —
+/// no text starts flush against the pane edge. There is no speaker label — the
+/// human side is identified by a background block (see [`USER_BG`]), the agent's
+/// replies sit on the pane background. Pure in `(messages, width)` so the result
+/// is cached per frame — the dynamic progress tail (thinking / activity / live
+/// ticker) is appended by the caller after these lines and stays per-frame.
 pub(super) fn render_history_lines(
     messages: &[ChatMessage],
     width: usize,
@@ -168,7 +171,7 @@ pub(super) fn render_history_lines(
                 all_lines.push(Line::from(Span::styled(dashes, dim_style)));
             } else {
                 // <dashes> <elapsed> ──
-                let dash_count = width.saturating_sub(elapsed.len() + 3);
+                let dash_count = width.saturating_sub(elapsed.len() + 4);
                 all_lines.push(Line::from(vec![
                     Span::styled(format!("{} ", "─".repeat(dash_count)), dim_style),
                     Span::styled(elapsed, dim_style),
@@ -189,7 +192,7 @@ pub(super) fn render_history_lines(
                 all_lines.push(Line::from(Span::styled("─".repeat(width), dim_style)));
             } else {
                 // ── <time> <dashes>
-                let dash_count = width.saturating_sub(time_str.len() + 3);
+                let dash_count = width.saturating_sub(time_str.len() + 4);
                 all_lines.push(Line::from(vec![
                     Span::styled("── ", dim_style),
                     Span::styled(time_str, dim_style),
@@ -206,12 +209,17 @@ pub(super) fn render_history_lines(
             all_lines.push(Line::from(""));
         }
 
-        // Render message (no side gutters, no speaker label — the human side
-        // is identified by its background below).
+        // Render message (no speaker label — the human side is identified by
+        // its background below).
+        //
+        // One column of left inset, shared by both sides, so that no text
+        // starts flush against the pane edge: the body is laid out one column
+        // narrower and that cell is put back in front of it.
+        let body_width = width.saturating_sub(1);
         let md_text = softbreaks_to_hardbreaks(&format!("{}\n", msg.text));
         let rendered =
             tui_markdown::from_str_with_options(&md_text, &chat_markdown_options()).lines;
-        let mut msg_lines = wrap_styled_lines(wrap_tables(rendered, width), width);
+        let mut msg_lines = wrap_styled_lines(wrap_tables(rendered, body_width), body_width);
         if is_user {
             for line in &mut msg_lines {
                 // A row that carries its own background (a fenced code block
@@ -221,6 +229,11 @@ pub(super) fn render_history_lines(
                 // Patched *under* the line style so markdown's own colors
                 // (a blockquote's green, a heading) survive on the block.
                 line.style = user_style.patch(line.style);
+                // The inset belongs to the block, so it carries the same
+                // background as the row it precedes. It goes in before the pad
+                // is measured, so the row still ends up exactly `width` wide.
+                line.spans
+                    .insert(0, Span::styled(" ", Style::default().bg(bg)));
                 // `Paragraph` paints a line's style only where it has glyphs,
                 // so the row is padded to read as one solid block.
                 let pad = width.saturating_sub(line.width());
@@ -236,8 +249,19 @@ pub(super) fn render_history_lines(
                 || Line::from(Span::styled(" ".repeat(width), user_style)).style(user_style);
             msg_lines.insert(0, pad_row());
             msg_lines.push(pad_row());
+        } else {
+            // The agent's reply sits on the pane background, so a bare space is
+            // the whole inset.
+            for line in &mut msg_lines {
+                line.spans.insert(0, Span::raw(" "));
+            }
         }
         all_lines.extend(msg_lines);
+        // Breath below a reply as well, mirroring the padding the human block
+        // paints for itself: no message ends flush against the next row.
+        if !is_user {
+            all_lines.push(Line::from(""));
+        }
         prev_conv_sender = Some(msg.sender.as_str());
     }
 
@@ -249,7 +273,7 @@ pub(super) fn render_history_lines(
             let dashes = "─".repeat(width);
             all_lines.push(Line::from(Span::styled(dashes, dim_style)));
         } else {
-            let dash_count = width.saturating_sub(elapsed.len() + 3);
+            let dash_count = width.saturating_sub(elapsed.len() + 4);
             all_lines.push(Line::from(vec![
                 Span::styled(format!("{} ", "─".repeat(dash_count)), dim_style),
                 Span::styled(elapsed, dim_style),

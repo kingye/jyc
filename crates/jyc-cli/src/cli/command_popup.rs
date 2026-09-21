@@ -474,14 +474,20 @@ mod tests {
         let commands = vec![model_cmd()];
         let level = resolve_level("/model deep", &commands).unwrap();
         assert_eq!(keys(&level.items), vec!["deepseek/deepseek-chat"]);
-        // Mid-name too — a slash-qualified id must answer to its tail.
+        // A value answers to any substring, across the provider slash too —
+        // that is why argument levels match by `contains`, not `starts_with`.
         assert_eq!(
-            keys(&resolve_level("/model sonnet", &commands).unwrap().items),
-            Vec::<&str>::new()
-        );
-        assert_eq!(
-            keys(&resolve_level("/model eep-c", &commands).unwrap().items),
+            keys(
+                &resolve_level("/model /deepseek-chat", &commands)
+                    .unwrap()
+                    .items
+            ),
             vec!["deepseek/deepseek-chat"]
+        );
+        // The partial is case-insensitive.
+        assert_eq!(
+            keys(&resolve_level("/model GPT", &commands).unwrap().items),
+            vec!["gpt-4"]
         );
     }
 

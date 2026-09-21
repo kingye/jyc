@@ -433,6 +433,34 @@ pub struct CommandInfo {
     /// the channel adapter watcher skipped every registered command.
     #[serde(default)]
     pub continues_to_agent: bool,
+    /// Enumerable values for this command's arguments, used by the TUI's
+    /// multi-level `/` popup. Empty means the command takes free-text
+    /// arguments (or none at all), so the popup offers nothing for it.
+    /// Filled per topic by the inspect server — see
+    /// `jyc_core::command::command_args` for the value table. Omitted from the
+    /// payload when empty: most commands take free text, and this rides on
+    /// every topic of every overview poll.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<CommandArg>,
+}
+
+/// One enumerable argument value of a command (see [`CommandInfo::args`]).
+///
+/// Nests to arbitrary depth: `args` holds the values of the *next* argument
+/// position, so `/skill on <name>` is an `on` entry whose `args` are the
+/// skill names. A leaf entry has empty `args`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CommandArg {
+    /// Literal value as it appears on the command line (e.g. "reset",
+    /// "hide", or a full model id like "deepseek/deepseek-chat").
+    pub value: String,
+    /// Optional one-line hint shown next to the value in the popup.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Values for the next argument position. Empty = this value is last, so
+    /// it is left off the wire — a leaf is the common case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<CommandArg>,
 }
 
 /// Information about an available model (name only, for model picker UI).

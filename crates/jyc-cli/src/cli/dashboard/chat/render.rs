@@ -245,9 +245,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // popup is a layout participant, not an overlay, so it can never be
     // clipped by the pane edge or cover the field the user is typing in.
     let popup_rows = match (app.chat.command_popup.as_ref(), app.chat.leader.as_ref()) {
-        (Some(state), _) => {
-            crate::cli::command_popup::popup_height(state, &app.chat.commands, &app.chat.models)
-        }
+        (Some(state), _) => crate::cli::command_popup::popup_height(state, &app.chat.commands),
         (None, Some(leader)) => leader.popup_height(),
         (None, None) => 0,
     };
@@ -637,13 +635,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
 
     // ── Popups: the slot right below the input field (chunks[2]) ──
     if let Some(ref popup) = app.chat.command_popup {
-        render_command_popup(
-            frame,
-            chunks[2],
-            popup,
-            &app.chat.commands,
-            &app.chat.models,
-        );
+        render_command_popup(frame, chunks[2], popup, &app.chat.commands);
     }
 
     // ── Leader-key popup (TUI-local commands) ──

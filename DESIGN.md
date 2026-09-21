@@ -3406,6 +3406,32 @@ message.content.text = Some(output.cleaned_body);
 - **Single responsibility**: All command-related logic (parsing, executing, stripping) lives in `CommandRegistry`. `TopicManager` only checks `body_empty` and `results`.
 - **Testable**: One function in, one struct out. Easy to unit test without mocking TopicManager.
 
+### Command Argument Values (`command/args.rs`)
+
+The TUI's `/` popup is multi-level: `/model <id>`, `/thinking show`,
+`/skill on <name>`, `/context dump on`. Which values a command accepts is
+handler knowledge, so it lives server-side, not in the client:
+`jyc_core::command::command_args(name, ctx)` returns a recursive
+`Vec<CommandArg>` for one command, and `jyc-inspect` folds it into
+`CommandInfo::args` while building the topic payload. The popup then walks
+that tree and needs no command knowledge at all — `/model` is a row of the
+table, not a special case in `jyc-cli`.
+
+- **The field text is the path.** `/skill on po` means "values of
+  `/skill on`, filtered by `po`", so no level state is kept anywhere; the
+  popup's position is derived from the input field on every key.
+- **Empty `args` means free text.** `/grant <path>` and `/backlog push <text>`
+  complete nothing; the popup closes and the field sends what was typed.
+- **Trade-off**: the values are computed per topic on every ~500 ms overview
+  poll and serialized per topic, so a long model list is repeated for every
+  topic (`topics × models`). Leaf entries omit their empty `description`/`args`
+  on the wire to keep that cheap, but the real fix is the lazy per-topic
+  command fetch in the `TODO(perf)` in the inspect overview builder — which
+  also removes the per-poll recompute.
+  `/exchange` (a directory scan) and `/ungrant` (agent runtime state) are
+  deliberately absent from the table until commands are fetched lazily per
+  topic.
+
 ### Model Override Persistence
 
 The `/model` command writes the model ID to `.jyc/model-override` in the topic directory. This persists across messages — subsequent emails in the same topic use the overridden model until `/model reset` is sent.

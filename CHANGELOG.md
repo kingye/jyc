@@ -12,6 +12,18 @@
 
 ### Added
 
+- TUI `/` command popup is multi-level: the input field text *is* the path, so
+  `/model <id>`, `/thinking show`, `/context dump on`, `/skill on <name>`,
+  `/mcp off <server>`, `/bill 2026-08` and `/backlog push` each open their own
+  level under the input field, filtered as you type. Tab completes a value and
+  steps into the next level; Enter sends the whole line; a command whose
+  arguments are free text (`/grant <path>`) closes the popup and sends what was
+  typed. The top rule names the current level (`── Commands ──`, then
+  `── /model ──`) and rows with a deeper level carry a `▸`. Values come from a
+  new `CommandInfo::args` field in the inspect payload (`jyc-core`'s
+  `command_args` table), so `/model` is no longer special-cased in the client
+  and a server older than the field still gets a model picker (#797)
+
 - Websocket channel: a chat message sent while the topic's agent is blocked in `ask_user` now answers the pending question instead of being rejected with a busy-topic error — the free-input path for websocket clients such as the TUI, mirroring the feishu pipe's interception. The text-fallback routing moves from the feishu pipe into a shared `QuestionHub::try_answer` (#791)
 
 - Message-before-question delivery ordering: when the agent's response

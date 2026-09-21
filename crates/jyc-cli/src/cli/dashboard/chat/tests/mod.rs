@@ -711,6 +711,10 @@ fn leader_command_popup_filters_off_the_draft() {
         &mut test_terminal(),
         local_commands::LocalAction::OpenCommandPopup,
     );
+    assert!(
+        !app.chat.commands.is_empty(),
+        "the leader path loads the commands itself, or the popup renders Loading..."
+    );
     let popup = app
         .chat
         .command_popup
@@ -783,6 +787,84 @@ fn command_popup_renders_below_the_input_field() {
     assert!(
         row(prompt + 2).contains('/'),
         "command list should follow the rule"
+    );
+}
+
+/// The popup follows the command tree out: once the text reaches an argument
+/// position with nothing to complete (`/plan <free text>`), the popup closes
+/// and the field behaves as if it had never opened.
+#[test]
+fn command_popup_closes_on_a_free_text_argument() {
+    let mut app = chatting_app();
+    let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+
+    for c in "/plan".chars() {
+        handle_chat_keys(&mut app, key(KeyCode::Char(c)), &mut test_terminal());
+    }
+    assert!(
+        app.chat.command_popup.is_some(),
+        "the root level is still completable"
+    );
+
+    handle_chat_keys(&mut app, key(KeyCode::Char(' ')), &mut test_terminal());
+    assert_eq!(app.chat.text(), "/plan ");
+    assert!(
+        app.chat.command_popup.is_none(),
+        "/plan declares no argument values, so the popup goes away"
+    );
+}
+
+/// A command's argument level renders the same way: the rule names the
+/// level, the rows are its values, still directly below the input field.
+#[test]
+fn command_popup_renders_a_deeper_level() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    let char_key = |c: char| crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    handle_chat_keys(&mut app, char_key('/'), &mut test_terminal());
+    // What a server sends for a `/model` topic: the picker's values ride on
+    // the command itself, so the popup needs no knowledge of `/model`.
+    app.chat.commands = vec![CommandInfo {
+        name: "/model".to_string(),
+        description: "Switch AI model for this topic".to_string(),
+        args: vec![jyc_types::CommandArg {
+            value: "deepseek/deepseek-chat".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+    for c in "model ".chars() {
+        handle_chat_keys(&mut app, char_key(c), &mut test_terminal());
+    }
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+    terminal
+        .draw(|frame| ui_chat_mode(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let row = |y: u16| -> String {
+        (0..80)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let prompt = (0..23)
+        .rev()
+        .find(|&y| row(y).contains('❯'))
+        .expect("prompt row rendered");
+    let rule = row(prompt + 1);
+    assert!(
+        rule.contains("/model"),
+        "the rule should name the level: {rule:?}"
+    );
+    assert!(
+        row(prompt + 2).contains("deepseek/deepseek-chat"),
+        "the level's values should follow: {:?}",
+        row(prompt + 2)
     );
 }
 

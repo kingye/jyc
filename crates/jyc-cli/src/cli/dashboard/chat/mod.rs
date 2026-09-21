@@ -1593,11 +1593,15 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        " Up/Down or j/k select - 1-9 choose - Enter confirm - Esc hide, then type your answer ",
+        "Up/Down or j/k select - 1-9 choose - Enter confirm - Esc hide, then type your answer",
         Style::default().fg(Color::DarkGray),
     )));
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+    // `Wrap { trim: false }` is required so the option rows' two-column
+    // gutter survives: the default `trim: true` strips leading whitespace
+    // per line, which leaves the unselected rows' blank gutter gone and the
+    // selected row's `→` as the only indented one.
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 }
 

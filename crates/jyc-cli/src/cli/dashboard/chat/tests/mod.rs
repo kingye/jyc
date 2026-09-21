@@ -777,14 +777,47 @@ fn leader_command_popup_filters_off_the_draft() {
     );
 }
 
+/// Draw `app` into the shared 80x24 test backend and hand back the cells.
+fn draw_80x24(app: &mut App) -> ratatui::buffer::Buffer {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+    terminal
+        .draw(|frame| ui_chat_mode(frame, frame.area(), app))
+        .expect("draw");
+    terminal.backend().buffer().clone()
+}
+
+/// One screen row as a string, one char per cell.
+fn row_text(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
+    (0..buffer.area.width)
+        .map(|x| buffer[(x, y)].symbol().to_string())
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// The prompt row — the input field's last content row ("╰─❯ ").
+fn prompt_row(buffer: &ratatui::buffer::Buffer) -> u16 {
+    (0..buffer.area.height)
+        .rev()
+        .find(|&y| row_text(buffer, y).contains('❯'))
+        .expect("prompt row rendered")
+}
+
+/// Column of `needle` in row `y`, counted in cells: a row string holds one
+/// char per cell, so a byte offset would not survive the `→`.
+fn col_of(buffer: &ratatui::buffer::Buffer, y: u16, needle: &str) -> u16 {
+    let text = row_text(buffer, y);
+    let byte = text.find(needle).expect("needle rendered");
+    text[..byte].chars().count() as u16
+}
+
 /// The popup renders directly BELOW the input field: a borderless top rule
 /// on the row after the prompt, with the list under it — so it can never
 /// cover the text being typed.
 #[test]
 fn command_popup_renders_below_the_input_field() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
     let mut app = chatting_app();
     // Full-width chat pane: no info pane whose own border could land on the
     // row under test.
@@ -794,29 +827,14 @@ fn command_popup_renders_below_the_input_field() {
         crossterm::event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
         &mut test_terminal(),
     );
+    let buffer = draw_80x24(&mut app);
 
-    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
-    terminal
-        .draw(|frame| ui_chat_mode(frame, frame.area(), &mut app))
-        .expect("draw");
-    let buffer = terminal.backend().buffer().clone();
-    let row = |y: u16| -> String {
-        (0..80)
-            .map(|x| buffer[(x, y)].symbol().to_string())
-            .collect::<Vec<_>>()
-            .join("")
-    };
-
-    // The prompt row is the input field's last content row ("╰─❯ ").
-    let prompt = (0..23)
-        .rev()
-        .find(|&y| row(y).contains('❯'))
-        .expect("prompt row rendered");
+    let prompt = prompt_row(&buffer);
     assert!(
-        row(prompt).contains('/'),
+        row_text(&buffer, prompt).contains('/'),
         "the input field must stay visible: {prompt}"
     );
-    let rule = row(prompt + 1);
+    let rule = row_text(&buffer, prompt + 1);
     assert!(rule.contains("Commands"), "top rule missing: {rule:?}");
     assert!(
         rule.contains('─') && !rule.contains('│'),
@@ -827,7 +845,7 @@ fn command_popup_renders_below_the_input_field() {
         "the rule should stretch across the pane: {rule:?}"
     );
     assert!(
-        row(prompt + 2).contains('/'),
+        row_text(&buffer, prompt + 2).contains('/'),
         "command list should follow the rule"
     );
 }
@@ -860,9 +878,6 @@ fn command_popup_closes_on_a_free_text_argument() {
 /// level, the rows are its values, still directly below the input field.
 #[test]
 fn command_popup_renders_a_deeper_level() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
     let mut app = chatting_app();
     app.chat.info_visible = false;
     let char_key = |c: char| crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
@@ -881,32 +896,18 @@ fn command_popup_renders_a_deeper_level() {
     for c in "model ".chars() {
         handle_chat_keys(&mut app, char_key(c), &mut test_terminal());
     }
+    let buffer = draw_80x24(&mut app);
 
-    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
-    terminal
-        .draw(|frame| ui_chat_mode(frame, frame.area(), &mut app))
-        .expect("draw");
-    let buffer = terminal.backend().buffer().clone();
-    let row = |y: u16| -> String {
-        (0..80)
-            .map(|x| buffer[(x, y)].symbol().to_string())
-            .collect::<Vec<_>>()
-            .join("")
-    };
-
-    let prompt = (0..23)
-        .rev()
-        .find(|&y| row(y).contains('❯'))
-        .expect("prompt row rendered");
-    let rule = row(prompt + 1);
+    let prompt = prompt_row(&buffer);
+    let rule = row_text(&buffer, prompt + 1);
     assert!(
         rule.contains("/model"),
         "the rule should name the level: {rule:?}"
     );
     assert!(
-        row(prompt + 2).contains("deepseek/deepseek-chat"),
+        row_text(&buffer, prompt + 2).contains("deepseek/deepseek-chat"),
         "the level's values should follow: {:?}",
-        row(prompt + 2)
+        row_text(&buffer, prompt + 2)
     );
 }
 
@@ -914,9 +915,6 @@ fn command_popup_renders_a_deeper_level() {
 /// paints no highlight bar, so the arrow is the only cursor cue.
 #[test]
 fn command_popup_marks_the_selected_row_with_an_arrow() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
     let mut app = chatting_app();
     app.chat.info_visible = false;
     handle_chat_keys(
@@ -924,36 +922,38 @@ fn command_popup_marks_the_selected_row_with_an_arrow() {
         crossterm::event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
         &mut test_terminal(),
     );
+    let buffer = draw_80x24(&mut app);
 
-    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
-    terminal
-        .draw(|frame| ui_chat_mode(frame, frame.area(), &mut app))
-        .expect("draw");
-    let buffer = terminal.backend().buffer().clone();
-    let row = |y: u16| -> String {
-        (0..80)
-            .map(|x| buffer[(x, y)].symbol().to_string())
-            .collect::<Vec<_>>()
-            .join("")
-    };
+    let row = prompt_row(&buffer) + 2;
+    let selected = row_text(&buffer, row);
+    assert!(
+        selected.contains("→ "),
+        "selected row needs the arrow: {selected:?}"
+    );
 
-    let prompt = (0..23)
-        .rev()
-        .find(|&y| row(y).contains('❯'))
-        .expect("prompt row rendered");
-    let selected = row(prompt + 2);
-    // Everything left of the arrow is a single-byte space, so the byte index
-    // of `→` is its column.
-    let x = selected.find('→').expect("selected row carries the arrow");
+    let x = col_of(&buffer, row, "→");
     assert_eq!(
-        buffer[(x as u16, prompt + 2)].modifier,
+        buffer[(x, row)].modifier,
         ratatui::style::Modifier::DIM,
         "the selected row is dimmed: {selected:?}"
     );
-    let next = row(prompt + 3);
+    assert_eq!(
+        buffer[(x, row)].bg,
+        Color::Reset,
+        "the highlight bar is gone: {selected:?}"
+    );
+
+    // The arrow occupies exactly the blank gutter every other row has, so
+    // the command names stay in one column as the cursor moves.
+    let next = row_text(&buffer, row + 1);
     assert!(
-        !next.contains('→'),
+        next.contains('/') && !next.contains('→'),
         "only the selected row gets the arrow: {next:?}"
+    );
+    assert_eq!(
+        col_of(&buffer, row, "/"),
+        col_of(&buffer, row + 1, "/"),
+        "command names share a column"
     );
 }
 
@@ -961,9 +961,6 @@ fn command_popup_marks_the_selected_row_with_an_arrow() {
 /// cursor instead of always marking the first option.
 #[test]
 fn question_box_marks_the_selected_option_with_an_arrow() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
     let mut app = chatting_app();
     app.chat.info_visible = false;
     app.chat.question = Some(PendingQuestion {
@@ -973,37 +970,40 @@ fn question_box_marks_the_selected_option_with_an_arrow() {
         options: vec!["alpha".to_string(), "beta".to_string()],
         selected: 1,
     });
+    let buffer = draw_80x24(&mut app);
 
-    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
-    terminal
-        .draw(|frame| ui_chat_mode(frame, frame.area(), &mut app))
-        .expect("draw");
-    let buffer = terminal.backend().buffer().clone();
-    let row = |y: u16| -> String {
-        (0..80)
-            .map(|x| buffer[(x, y)].symbol().to_string())
-            .collect::<Vec<_>>()
-            .join("")
-    };
-
-    let selected = (0..24)
-        .find(|&y| row(y).contains("2. beta"))
+    let selected = (0..buffer.area.height)
+        .find(|&y| row_text(&buffer, y).contains("2. beta"))
         .expect("option row rendered");
-    let line = row(selected);
+    let above = selected - 1;
+    let line = row_text(&buffer, selected);
     assert!(
         line.contains("→ 2. beta"),
         "the selected option carries the arrow: {line:?}"
     );
-    let x = line.find('→').expect("arrow column");
+
+    let x = col_of(&buffer, selected, "→");
     assert_eq!(
-        buffer[(x as u16, selected)].modifier,
+        buffer[(x, selected)].modifier,
         ratatui::style::Modifier::DIM,
         "the selected option is dimmed: {line:?}"
     );
-    let above = row(selected.saturating_sub(1));
+    assert_eq!(
+        buffer[(x, selected)].bg,
+        Color::Reset,
+        "the highlight bar is gone: {line:?}"
+    );
     assert!(
-        !above.contains('→'),
-        "the unselected option stays in the gutter: {above:?}"
+        !row_text(&buffer, above).contains('→'),
+        "the unselected option stays in the gutter: {:?}",
+        row_text(&buffer, above)
+    );
+    // The blank gutter survives on the unselected row (`Wrap { trim: true }`
+    // would strip it), so both option numbers land in the same column.
+    assert_eq!(
+        col_of(&buffer, selected, "2."),
+        col_of(&buffer, above, "1."),
+        "option numbers share a column"
     );
 }
 
@@ -1011,9 +1011,6 @@ fn question_box_marks_the_selected_option_with_an_arrow() {
 /// input field, no side borders.
 #[test]
 fn leader_popup_renders_below_the_input_field() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
     let mut app = chatting_app();
     app.chat.info_visible = false;
     handle_chat_keys(
@@ -1022,24 +1019,9 @@ fn leader_popup_renders_below_the_input_field() {
         &mut test_terminal(),
     );
     assert!(app.chat.leader.is_some());
+    let buffer = draw_80x24(&mut app);
 
-    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
-    terminal
-        .draw(|frame| ui_chat_mode(frame, frame.area(), &mut app))
-        .expect("draw");
-    let buffer = terminal.backend().buffer().clone();
-    let row = |y: u16| -> String {
-        (0..80)
-            .map(|x| buffer[(x, y)].symbol().to_string())
-            .collect::<Vec<_>>()
-            .join("")
-    };
-    // The prompt row is the input field's last content row ("╰─❯ ").
-    let prompt = (0..23)
-        .rev()
-        .find(|&y| row(y).contains('❯'))
-        .expect("prompt row rendered");
-    let rule = row(prompt + 1);
+    let rule = row_text(&buffer, prompt_row(&buffer) + 1);
     assert!(rule.contains("Leader"), "top rule missing: {rule:?}");
     assert!(!rule.contains('│'), "no side borders expected: {rule:?}");
 }

@@ -86,17 +86,16 @@ pub(super) fn history_fingerprint(
 
 /// Background of a human turn's block (see [`render_history_lines`]).
 ///
-/// `Color::DarkGray` is ANSI bright black — palette slot 8, SGR 100 as a
-/// background — so the shade is the terminal's own idea of dark gray and never
-/// passes through truecolor quantization: a hardcoded RGB gets quantized onto a
-/// warm palette on some terminals and reads as coffee. The cost of handing the
-/// choice to the theme is that a theme whose slot 8 sits near its own background
-/// shows a barely-there block.
+/// `#343541` — the shade pi's dark theme paints its own user turns with
+/// (`userMsgBg` in `theme/dark.json`), so the block matches what the eye is
+/// already used to. It is a hardcoded RGB on purpose: ANSI palette slot 8 was
+/// the previous answer, and it turned out to be the theme's *bright* black,
+/// lighter than this block wants.
 ///
 /// The block sets **no foreground** — the text keeps the terminal's own color,
 /// which is what makes a human turn read at exactly the same brightness as the
 /// agent's reply.
-pub(super) const USER_BG: Color = Color::DarkGray;
+pub(super) const USER_BG: Color = Color::Rgb(52, 53, 65);
 
 /// Whether a chat message belongs to the human side of the conversation.
 ///

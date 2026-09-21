@@ -88,18 +88,23 @@ impl Leader {
         render_leader(frame, area, &self.entries, &self.buffer);
     }
 
-    /// Rows this leader needs when anchored: top rule + entries + footer.
-    /// The chat layout reserves exactly this many rows below the input
-    /// field, so the layout and the renderer share this helper.
-    pub fn popup_height(&self) -> u16 {
-        // +1 top rule, +1 footer; `max(1)` keeps the "no commands" row
-        // visible for an empty scope.
-        2 + self.entries.len().max(1) as u16
+    /// Rows the anchored popup needs at `width` cells: top rule + grid rows +
+    /// footer. The chat layout reserves exactly this many rows below the input
+    /// field, so the layout and the renderer share this helper — and share the
+    /// grid math with [`leader_grid_lines`], which is what keeps the two from
+    /// disagreeing about how tall the popup is.
+    pub fn popup_height(&self, width: usize) -> u16 {
+        (2 + leader_grid_rows(&self.entries, width)) as u16
     }
 
-    /// Render as a full-width top rule + list inside `rect` — the slot the
-    /// chat layout placed directly below the input field. No side or bottom
+    /// Render as a full-width top rule + compact grid inside `rect` — the slot
+    /// the chat layout placed directly below the input field. No side or bottom
     /// borders, same treatment as the `/` command popup.
+    ///
+    /// The grid rather than the descriptive list on purpose: the chat screen
+    /// has ~17 entries, and one row each made a popup taller than the screen,
+    /// so the bottom entries fell off it entirely. Descriptions stay on the
+    /// dashboard's centered popup, which has few enough commands to fit them.
     pub fn render_anchored(&self, frame: &mut Frame, rect: Rect) {
         let block = Block::default()
             .title(leader_title(&self.buffer))
@@ -107,7 +112,8 @@ impl Leader {
             .border_style(Style::default().fg(Color::Cyan));
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
-        render_leader_body(frame, inner, &self.entries, &self.buffer);
+        let lines = leader_grid_lines(&self.entries, &self.buffer, inner.width as usize);
+        render_leader_body(frame, inner, lines, &self.buffer);
     }
 }
 
@@ -119,6 +125,91 @@ fn leader_key_col_width(entries: &[LeaderEntry]) -> usize {
         .max()
         .unwrap_or(0)
         .max(2)
+}
+
+/// Width of one cell in the anchored grid: key column, a gap, the longest
+/// command name, and a gutter so cells never run into each other.
+fn leader_cell_width(entries: &[LeaderEntry]) -> usize {
+    let name = entries
+        .iter()
+        .map(|e| UnicodeWidthStr::width(e.name))
+        .max()
+        .unwrap_or(0);
+    leader_key_col_width(entries) + 2 + name + 3
+}
+
+/// Columns the anchored grid fits in `width` cells (at least one).
+fn leader_grid_cols(entries: &[LeaderEntry], width: usize) -> usize {
+    (width / leader_cell_width(entries)).max(1)
+}
+
+/// Rows the entries occupy in the anchored grid at `width` cells. An empty
+/// scope still takes the one row that shows "No commands available".
+fn leader_grid_rows(entries: &[LeaderEntry], width: usize) -> usize {
+    entries
+        .len()
+        .div_ceil(leader_grid_cols(entries, width))
+        .max(1)
+}
+
+/// The leader key of one entry, padded to `key_col` and styled by how well it
+/// matches what the user has typed so far.
+fn leader_key_span(entry: &LeaderEntry, buffer: &str, key_col: usize) -> Span<'static> {
+    let pad = " ".repeat(key_col.saturating_sub(entry.keys.width()));
+    let style = if entry.keys == buffer {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else if !buffer.is_empty() && buffer.starts_with(entry.keys) {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    };
+    Span::styled(format!("{}{}", entry.keys, pad), style)
+}
+
+/// One entry as `key  name  description`, for the centered popup.
+fn leader_entry_line(entry: &LeaderEntry, buffer: &str, key_col: usize) -> Line<'static> {
+    Line::from(vec![
+        leader_key_span(entry, buffer, key_col),
+        Span::raw("  "),
+        Span::styled(entry.name, Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::styled(entry.description, Style::default().fg(Color::DarkGray)),
+    ])
+}
+
+/// The entries laid out in as many columns as `width` allows, so the anchored
+/// popup stays short enough to show every one of them. Cells are laid out at
+/// exactly [`leader_cell_width`] each; the last one in a row gets no trailing
+/// gutter, which is what keeps a row from wrapping into two.
+fn leader_grid_lines(entries: &[LeaderEntry], buffer: &str, width: usize) -> Vec<Line<'static>> {
+    let key_col = leader_key_col_width(entries);
+    let cell = leader_cell_width(entries);
+    entries
+        .chunks(leader_grid_cols(entries, width))
+        .map(|row| {
+            let mut spans = Vec::with_capacity(row.len() * 4);
+            for (i, entry) in row.iter().enumerate() {
+                spans.push(leader_key_span(entry, buffer, key_col));
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    entry.name,
+                    Style::default().add_modifier(Modifier::BOLD),
+                ));
+                if i + 1 < row.len() {
+                    let used = key_col + 2 + entry.name.width();
+                    spans.push(Span::raw(" ".repeat(cell.saturating_sub(used))));
+                }
+            }
+            Line::from(spans)
+        })
+        .collect()
 }
 
 /// Title line for both render styles: the pending key buffer as a chip.
@@ -179,76 +270,34 @@ fn render_leader(frame: &mut Frame, area: Rect, entries: &[LeaderEntry], buffer:
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    render_leader_body(frame, inner, entries, buffer);
+    let key_col = leader_key_col_width(entries);
+    let lines = entries
+        .iter()
+        .map(|e| leader_entry_line(e, buffer, key_col))
+        .collect();
+    render_leader_body(frame, inner, lines, buffer);
 }
 
-/// Entries + footer, shared by the centered overlay and the anchored
-/// (directly below the chat input field) rendering.
-fn render_leader_body(frame: &mut Frame, area: Rect, entries: &[LeaderEntry], buffer: &str) {
+/// Entries + footer, shared by the centered overlay (which passes one
+/// descriptive row per entry) and the anchored popup (which passes the grid).
+fn render_leader_body(frame: &mut Frame, area: Rect, mut lines: Vec<Line<'static>>, buffer: &str) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(area);
-    let key_col_width = leader_key_col_width(entries);
-
-    let mut lines: Vec<Line> = entries
-        .iter()
-        .map(|e| {
-            let keys_width = UnicodeWidthStr::width(e.keys);
-            let pad = " ".repeat(key_col_width.saturating_sub(keys_width));
-            let keys_span = if e.keys == buffer {
-                Span::styled(
-                    format!("{}{}", e.keys, pad),
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else if buffer.starts_with(e.keys) && !buffer.is_empty() {
-                Span::styled(
-                    format!("{}{}", e.keys, pad),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Span::styled(
-                    format!("{}{}", e.keys, pad),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )
-            };
-            Line::from(vec![
-                keys_span,
-                Span::raw("  "),
-                Span::styled(e.name, Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw("  "),
-                Span::styled(e.description, Style::default().fg(Color::DarkGray)),
-            ])
-        })
-        .collect();
-
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No commands available",
             Style::default().fg(Color::DarkGray),
         )));
     }
-
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[0]);
-
-    let footer = if buffer.is_empty() {
-        Line::from(Span::styled(
-            " Esc to cancel",
-            Style::default().fg(Color::DarkGray),
-        ))
+    let text = if buffer.is_empty() {
+        " Esc to cancel"
     } else {
-        Line::from(Span::styled(
-            " Esc to cancel · waiting for next key",
-            Style::default().fg(Color::DarkGray),
-        ))
+        " Esc to cancel · waiting for next key"
     };
+    let footer = Line::from(Span::styled(text, Style::default().fg(Color::DarkGray)));
     frame.render_widget(Paragraph::new(footer), chunks[1]);
 }
 
@@ -340,5 +389,57 @@ mod tests {
             leader.handle_key(key('c')),
             LeaderResult::Action(LocalAction::OpenChat)
         );
+    }
+
+    /// The anchored popup has to show every command. The chat scope is the
+    /// crowded one, and one row per entry made the popup taller than the screen
+    /// so its tail fell off the bottom; the grid keeps it short, and the height
+    /// the layout reserves must be the height the grid actually draws.
+    #[test]
+    fn anchored_popup_shows_every_entry_without_wrapping() {
+        let leader = Leader::new(CommandScope::Chat);
+        let width = 80;
+        assert!(
+            leader.entries.len() >= 15,
+            "the chat scope should be the crowded one, got {}",
+            leader.entries.len()
+        );
+        let lines = leader_grid_lines(&leader.entries, "", width);
+        assert!(
+            lines.len() < leader.entries.len(),
+            "the grid should pack {} entries into fewer rows, got {}",
+            leader.entries.len(),
+            lines.len()
+        );
+        assert_eq!(
+            leader.popup_height(width) as usize,
+            lines.len() + 2,
+            "reserved rows must equal rendered rows plus rule and footer"
+        );
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        for entry in &leader.entries {
+            assert!(text.contains(entry.name), "{} missing", entry.name);
+        }
+        for line in &lines {
+            assert!(line.width() <= width, "a row would wrap: {line:?}");
+        }
+    }
+
+    /// One cell per row when the terminal is too narrow for two, and an empty
+    /// scope still reserves the row that says so.
+    #[test]
+    fn anchored_grid_degrades_gracefully() {
+        let leader = Leader::new(CommandScope::Chat);
+        assert_eq!(leader_grid_cols(&leader.entries, 20), 1);
+        assert_eq!(
+            leader_grid_rows(&leader.entries, 20),
+            leader.entries.len(),
+            "the degenerate case is one row per entry"
+        );
+        let empty: Vec<LeaderEntry> = Vec::new();
+        assert_eq!(leader_grid_rows(&empty, 80), 1, "the placeholder row");
     }
 }

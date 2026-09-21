@@ -2,6 +2,12 @@
 
 ### Changed
 
+- TUI popups: the focused row is marked with a `→` in a two-column gutter
+  instead of a full-width highlight bar. The `/` command list and the
+  `ask_user` question box share the treatment, and the focused row is dimmed
+  (`Modifier::DIM`) rather than repainted, so it keeps the terminal's own
+  foreground color. Rows that open a deeper level keep their `▸` marker (#803)
+
 - TUI `/` command popup: every Tab completion now ends in exactly one space,
   so the input field is left ready for the next argument. The space is also
   the marker that opens a deeper level, and what dismisses the popup when a

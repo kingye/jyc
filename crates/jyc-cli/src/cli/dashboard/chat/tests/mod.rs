@@ -910,6 +910,103 @@ fn command_popup_renders_a_deeper_level() {
     );
 }
 
+/// The focused row carries a `→` in the gutter and is dimmed — the popup
+/// paints no highlight bar, so the arrow is the only cursor cue.
+#[test]
+fn command_popup_marks_the_selected_row_with_an_arrow() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    handle_chat_keys(
+        &mut app,
+        crossterm::event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+        &mut test_terminal(),
+    );
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+    terminal
+        .draw(|frame| ui_chat_mode(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let row = |y: u16| -> String {
+        (0..80)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let prompt = (0..23)
+        .rev()
+        .find(|&y| row(y).contains('❯'))
+        .expect("prompt row rendered");
+    let selected = row(prompt + 2);
+    // Everything left of the arrow is a single-byte space, so the byte index
+    // of `→` is its column.
+    let x = selected.find('→').expect("selected row carries the arrow");
+    assert_eq!(
+        buffer[(x as u16, prompt + 2)].modifier,
+        ratatui::style::Modifier::DIM,
+        "the selected row is dimmed: {selected:?}"
+    );
+    let next = row(prompt + 3);
+    assert!(
+        !next.contains('→'),
+        "only the selected row gets the arrow: {next:?}"
+    );
+}
+
+/// The question box marks its selected option the same way, and follows the
+/// cursor instead of always marking the first option.
+#[test]
+fn question_box_marks_the_selected_option_with_an_arrow() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    app.chat.question = Some(PendingQuestion {
+        id: "q1".to_string(),
+        topic: "jyc".to_string(),
+        question: "Pick one?".to_string(),
+        options: vec!["alpha".to_string(), "beta".to_string()],
+        selected: 1,
+    });
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+    terminal
+        .draw(|frame| ui_chat_mode(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let row = |y: u16| -> String {
+        (0..80)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let selected = (0..24)
+        .find(|&y| row(y).contains("2. beta"))
+        .expect("option row rendered");
+    let line = row(selected);
+    assert!(
+        line.contains("→ 2. beta"),
+        "the selected option carries the arrow: {line:?}"
+    );
+    let x = line.find('→').expect("arrow column");
+    assert_eq!(
+        buffer[(x as u16, selected)].modifier,
+        ratatui::style::Modifier::DIM,
+        "the selected option is dimmed: {line:?}"
+    );
+    let above = row(selected.saturating_sub(1));
+    assert!(
+        !above.contains('→'),
+        "the unselected option stays in the gutter: {above:?}"
+    );
+}
+
 /// The ctrl+p leader gets the same treatment: top rule directly below the
 /// input field, no side borders.
 #[test]

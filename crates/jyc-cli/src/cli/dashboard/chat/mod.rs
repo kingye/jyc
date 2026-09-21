@@ -1580,14 +1580,12 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
     ))];
     lines.push(Line::from(""));
     for (i, opt) in q.options.iter().enumerate() {
-        let label = format!("  {}. {opt}", i + 1);
+        let gutter = if i == q.selected { "→ " } else { "  " };
+        let label = format!("{gutter}{}. {opt}", i + 1);
         if i == q.selected {
             lines.push(Line::from(Span::styled(
                 label,
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().add_modifier(Modifier::DIM),
             )));
         } else {
             lines.push(Line::from(Span::raw(label)));

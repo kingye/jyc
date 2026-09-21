@@ -38,7 +38,8 @@ pub struct PopupLevel {
     /// (`/model`, `/skill on`) deeper.
     pub title: String,
     /// Field text this level's values are appended to — "" at the root,
-    /// "/model " one level down.
+    /// "/model " one level down. The empty prefix marks the first level, which
+    /// is where Enter sends instead of completing.
     pub prefix: String,
     /// Values at this level, already narrowed by the partial token.
     pub items: Vec<PopupItem>,
@@ -188,15 +189,39 @@ pub enum PopupAction {
     /// The caller feeds it to the chat input field, which IS the popup's
     /// filter (the popup has no input box of its own).
     PassThrough,
-    /// Enter pressed — send the command immediately.
+    /// Enter pressed on the first level — send the command immediately.
     Send(String),
-    /// Tab completed the selected row — write it into the chat input field
-    /// (always followed by one space) and let the caller re-derive the level
-    /// from the new text: a deeper level opens, and a row with nothing after
-    /// it closes the popup.
+    /// Tab, or Enter below the first level, completed the selected row — write
+    /// it into the chat input field (always followed by one space) and let the
+    /// caller re-derive the level from the new text: a deeper level opens, and
+    /// a row with nothing after it closes the popup.
     Complete(String),
     /// Esc pressed — close the popup.
     Close,
+}
+
+/// The completion one press of Tab (or Enter below the first level) produces:
+/// the selected row's line, or the canonical line when the field already names
+/// a value at this level in full, always with one trailing space. That space
+/// leaves the field ready for the next argument and is the marker
+/// [`resolve_level`] reads: a deeper level opens there, and where nothing
+/// follows, the caller's re-derivation closes the popup.
+///
+/// `None` when this level has no row to complete.
+fn completion_for(level: &PopupLevel, selected: usize) -> Option<String> {
+    let row = level.items.get(selected);
+    let mut completion = if let Some(row) = row.filter(|r| r.has_children) {
+        level.line(row)
+    } else if let Some(complete) = &level.complete {
+        // The field already names a value at this level in full.
+        complete.clone()
+    } else {
+        level.line(row?)
+    };
+    if !completion.ends_with(' ') {
+        completion.push(' ');
+    }
+    Some(completion)
 }
 
 /// Handle a key event for the command popup.
@@ -226,34 +251,28 @@ pub fn handle_popup_key(
 
     match key.code {
         KeyCode::Esc => PopupAction::Close,
-        KeyCode::Tab => {
-            let row = level.items.get(state.selected);
-            let mut completion = if let Some(row) = row.filter(|r| r.has_children) {
-                level.line(row)
-            } else if let Some(complete) = &level.complete {
-                // The field already names a value at this level in full.
-                complete.clone()
-            } else if let Some(row) = row {
-                level.line(row)
-            } else {
-                return PopupAction::None;
-            };
-            // One Tab is the whole completion. The trailing space leaves the
-            // field ready for the next argument, and it is the marker
-            // `resolve_level` reads: a deeper level opens there, and where
-            // nothing follows, the caller's re-derivation closes the popup.
-            if !completion.ends_with(' ') {
-                completion.push(' ');
-            }
-            PopupAction::Complete(completion)
-        }
-        KeyCode::Enter => match level.items.get(state.selected) {
-            // The root sends the command itself (`/model` lists models);
-            // deeper levels send the whole line (`/model <id>`).
-            Some(item) => PopupAction::Send(level.line(item)),
-            // Nothing selected: let the editor send what was typed.
-            None => PopupAction::PassThrough,
+        KeyCode::Tab => match completion_for(&level, state.selected) {
+            Some(completion) => PopupAction::Complete(completion),
+            None => PopupAction::None,
         },
+        KeyCode::Enter => {
+            // Only the first level sends (`/model` fires the command that lists
+            // models). Below it Enter is Tab — the value has to reach the field
+            // first, so sending a command with arguments takes a second Enter.
+            // With nothing to select at this level the key belongs to the chat
+            // input field, which sends what was typed.
+            if level.prefix.is_empty() {
+                match level.items.get(state.selected) {
+                    Some(item) => PopupAction::Send(level.line(item)),
+                    None => PopupAction::PassThrough,
+                }
+            } else {
+                match completion_for(&level, state.selected) {
+                    Some(completion) => PopupAction::Complete(completion),
+                    None => PopupAction::PassThrough,
+                }
+            }
+        }
         KeyCode::Up => {
             if state.selected > 0 {
                 state.selected -= 1;
@@ -668,15 +687,52 @@ mod tests {
         assert_eq!(result, PopupAction::Send("/plan".to_string()));
     }
 
+    /// Below the first level Enter *is* Tab: the value lands in the field and
+    /// the caller re-derives the level from it, so sending a command that takes
+    /// arguments costs a second Enter. Asserted as literal equality with Tab so
+    /// the two keys cannot drift apart.
     #[test]
-    fn enter_sends_the_whole_line_deeper_down() {
+    fn enter_completes_like_tab_below_the_root() {
+        let commands = vec![model_cmd(), skill_cmd()];
+        for filter in ["/model ", "/model g", "/skill on ", "/skill on po"] {
+            let state = || {
+                let mut state = CommandPopupState::new();
+                state.filter = filter.to_string();
+                state
+            };
+            let tab = handle_popup_key(key(KeyCode::Tab), &mut state(), &commands);
+            let enter = handle_popup_key(key(KeyCode::Enter), &mut state(), &commands);
+            assert!(matches!(tab, PopupAction::Complete(_)), "{filter}: {tab:?}");
+            assert_eq!(tab, enter, "{filter}: Enter must mirror Tab");
+        }
+    }
+
+    /// The first level sends even when the command has values below it — that
+    /// is what makes Enter on `/model` list models instead of picking one.
+    #[test]
+    fn enter_sends_at_the_root_for_a_command_with_children() {
         let mut state = CommandPopupState::new();
-        state.filter = "/model ".to_string();
-        state.selected = 0;
+        state.filter = "mo".to_string();
         let commands = vec![model_cmd()];
 
-        let result = handle_popup_key(key(KeyCode::Enter), &mut state, &commands);
-        assert_eq!(result, PopupAction::Send("/model gpt-4".to_string()));
+        assert_eq!(
+            handle_popup_key(key(KeyCode::Enter), &mut state, &commands),
+            PopupAction::Send("/model".to_string())
+        );
+    }
+
+    /// Nothing to select at a deeper level: the key belongs to the input field,
+    /// which sends the line as typed.
+    #[test]
+    fn enter_sends_the_typed_line_when_a_deeper_level_has_no_matches() {
+        let mut state = CommandPopupState::new();
+        state.filter = "/model zzz".to_string();
+        let commands = vec![model_cmd()];
+
+        assert_eq!(
+            handle_popup_key(key(KeyCode::Enter), &mut state, &commands),
+            PopupAction::PassThrough
+        );
     }
 
     #[test]

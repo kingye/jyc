@@ -33,13 +33,15 @@
   `/model <id>`, `/thinking show`, `/context dump on`, `/skill on <name>`,
   `/mcp off <server>`, `/bill 2026-08` and `/backlog push` each open their own
   level under the input field, filtered as you type. Tab completes a value and
-  steps into the next level; Enter sends the whole line; a command whose
-  arguments are free text (`/grant <path>`) closes the popup and sends what was
-  typed. The top rule names the current level (`── Commands ──`, then
+  steps into the next level; Enter fires the command at that first level and,
+  below it, completes exactly like Tab — sending then takes a second Enter; a
+  level with nothing to select (free-text arguments like `/grant <path>`, or a
+  filter that matches no value) sends what was typed. The top rule names the
+  current level (`── Commands ──`, then
   `── /model ──`) and rows with a deeper level carry a `▸`. Values come from a
   new `CommandInfo::args` field in the inspect payload (`jyc-core`'s
   `command_args` table), so `/model` is no longer special-cased in the client
-  and a server older than the field still gets a model picker (#797)
+  and a server older than the field still gets a model picker (#797, #800)
 
 - Websocket channel: a chat message sent while the topic's agent is blocked in `ask_user` now answers the pending question instead of being rejected with a busy-topic error — the free-input path for websocket clients such as the TUI, mirroring the feishu pipe's interception. The text-fallback routing moves from the feishu pipe into a shared `QuestionHub::try_answer` (#791)
 

@@ -13,12 +13,13 @@
   — including a remote sender piped in from another channel — renders as a
   full-width dark background block with a blank painted row of padding above
   and below, keeping the terminal's own foreground so it reads at the same
-  brightness as the agent's replies. The block's background is the terminal's
-  own dark gray (ANSI palette slot 8) rather than a hardcoded RGB, which a
-  terminal without truecolor quantizes onto its own palette — often warm.
+  brightness as the agent's replies. The block's background is `#343541`, the
+  shade pi's dark theme paints its own user turns with, since the terminal's
+  own dark gray (ANSI palette slot 8) turned out to be the theme's *bright*
+  black.
   Both sides' text is inset one column, a reply is followed by a blank row of
   its own, and the `┄┄┄┄` separator between a human turn and its answer is gone
-  — the block's padding delimits it (#798, #799, #800, #801)
+  — the block's padding delimits it (#798, #799, #800, #801, #802)
 
 - TUI leader popup (`Ctrl+P`) on the chat screen lays its commands out in
   columns instead of one row each: that scope has seventeen of them, so the

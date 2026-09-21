@@ -31,7 +31,7 @@ use tokio::process::Command;
 use unicode_width::UnicodeWidthStr;
 
 use jyc_inspect::client::InspectClient;
-use jyc_types::{CommandInfo, InspectOverview, ModelInfo, Severity, TopicStatus};
+use jyc_types::{CommandInfo, InspectOverview, Severity, TopicStatus};
 
 use super::command_popup::*;
 
@@ -266,7 +266,7 @@ impl App {
             .map(|t| t.commands.clone())
             .filter(|cmds| !cmds.is_empty());
         let used_fallback = topic_commands.is_none();
-        let final_commands = topic_commands.unwrap_or_else(jyc_core::command::all_commands);
+        let mut final_commands = topic_commands.unwrap_or_else(jyc_core::command::all_commands);
         tracing::info!(
             chat_topic = ?self.chat.topic,
             server_topic_name = ?topic.map(|t| t.name.clone()),
@@ -276,6 +276,24 @@ impl App {
             popup_commands = ?final_commands.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
             "tui refresh_chat_commands"
         );
+        // Mixed-version compat: a server older than `CommandInfo::args`
+        // sends commands with no argument values, which would leave `/model`
+        // without a picker. Refill it from the model list the overview
+        // already carries — the same source the server's table reads.
+        if let Some(state) = self.state.as_ref()
+            && let Some(cmd) = final_commands
+                .iter_mut()
+                .find(|c| c.name == "/model" && c.args.is_empty())
+        {
+            cmd.args = state
+                .models
+                .iter()
+                .map(|m| jyc_types::CommandArg {
+                    value: m.name.clone(),
+                    ..Default::default()
+                })
+                .collect();
+        }
         self.chat.commands = final_commands;
     }
 
@@ -650,9 +668,6 @@ pub async fn run(
                         // popup opens (see refresh_chat_commands); no need
                         // to re-sync here just because the topic list may
                         // have changed.
-                        if let Some(state) = app.state.as_ref() {
-                            app.chat.models = state.models.clone();
-                        }
 
                         // Hydrate the live buffers when the table-selected
                         // topic changes (so the overview's activity pane
@@ -2141,6 +2156,73 @@ mod tests {
             description: String::new(),
             ..Default::default()
         }
+    }
+
+    fn cmd_arg(name: &str, value: &str) -> jyc_types::CommandInfo {
+        jyc_types::CommandInfo {
+            name: name.to_string(),
+            description: String::new(),
+            args: vec![jyc_types::CommandArg {
+                value: value.to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn overview_with_models(
+        cmds: Vec<jyc_types::CommandInfo>,
+        models: &[&str],
+    ) -> jyc_types::InspectOverview {
+        let mut overview = make_overview_with_topic_commands(&["jyc"], &[cmds]);
+        overview.models = models
+            .iter()
+            .map(|m| jyc_types::ModelInfo {
+                name: (*m).to_string(),
+            })
+            .collect();
+        overview
+    }
+
+    /// The nested `/` popup levels ride in on the server's commands.
+    #[tokio::test]
+    async fn refresh_chat_commands_keeps_server_argument_values() {
+        let mut app = make_test_app();
+        app.chat.topic = Some("jyc".to_string());
+        app.state = Some(overview_with_models(
+            vec![cmd_arg("/model", "gpt-4")],
+            &["deepseek/deepseek-chat"],
+        ));
+
+        app.refresh_chat_commands();
+
+        assert_eq!(
+            app.chat.commands[0].args[0].value, "gpt-4",
+            "values the server sent must survive the model refill"
+        );
+    }
+
+    /// Mixed-version compat: a server older than `CommandInfo::args` sends
+    /// `/model` with no values at all; the picker still gets filled from the
+    /// overview's own model list.
+    #[tokio::test]
+    async fn refresh_chat_commands_refills_model_args_for_old_servers() {
+        let mut app = make_test_app();
+        app.chat.topic = Some("jyc".to_string());
+        app.state = Some(overview_with_models(
+            vec![cmd("/model"), cmd("/plan")],
+            &["deepseek/deepseek-chat"],
+        ));
+
+        app.refresh_chat_commands();
+
+        let model = &app.chat.commands[0];
+        assert_eq!(model.name, "/model");
+        assert_eq!(model.args[0].value, "deepseek/deepseek-chat");
+        assert!(
+            app.chat.commands[1].args.is_empty(),
+            "only /model gets the refill"
+        );
     }
 
     #[tokio::test]

@@ -1,3 +1,4 @@
+pub mod args;
 pub mod backlog_handler;
 pub mod bill_handler;
 pub mod cancel_handler;
@@ -21,6 +22,7 @@ pub mod thinking_handler;
 pub mod toggle_handler;
 pub mod unpin_handler;
 
+pub use args::{ArgCtx, command_args};
 pub use model_handler::list_available_models;
 
 use jyc_types::{CommandInfo, CustomCommand};
@@ -133,6 +135,7 @@ pub fn all_commands() -> Vec<CommandInfo> {
             // before dispatch and cannot inspect the subcommand.
             description: "Save and replay user messages (push|list|get|pop|rm|set)".into(),
             continues_to_agent: true,
+            ..Default::default()
         },
         CommandInfo {
             name: "/bill".into(),
@@ -220,6 +223,7 @@ fn custom_to_info(c: &CustomCommand) -> CommandInfo {
         // (no agent run, no `ProcessingStarted`); prompt commands inject
         // `user_prompt` via `append_body` and continue into the agent.
         continues_to_agent: c.shell.is_none(),
+        ..Default::default()
     }
 }
 

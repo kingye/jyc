@@ -745,7 +745,9 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
             PopupAction::Complete(cmd) => {
                 app.chat.populate_editor(&cmd);
                 // Re-filter now, not on the next keypress: the list must
-                // match what the field just got filled with.
+                // match what the field just got filled with — and this is
+                // also where a completion with nothing below it (`/plan `)
+                // closes the popup, since the sync drops the level.
                 sync_command_popup(app);
                 return;
             }
@@ -760,11 +762,6 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                 // command from sitting there ready to be sent twice.
                 app.chat.editor = empty_chat_editor();
                 app.chat.send_message_inner(cmd);
-                return;
-            }
-            PopupAction::CopyToInput(cmd) => {
-                app.chat.command_popup = None;
-                app.chat.populate_editor(&cmd);
                 return;
             }
         }

@@ -2,6 +2,19 @@
 
 ### Changed
 
+- TUI `/` command popup: every Tab completion now ends in exactly one space,
+  so the input field is left ready for the next argument. The space is also
+  the marker that opens a deeper level, and what dismisses the popup when a
+  command has nothing left to complete (`/plan` + Tab now yields `/plan ` and
+  closes in one keystroke) — the second Tab of the old two-step completion and
+  its `PopupAction::CopyToInput` are gone (#798)
+
+- TUI chat message pane: no more `You:` / `AI:` speaker labels. The human side
+  — including a remote sender piped in from another channel — renders as a
+  full-width dark background block, the agent's replies stay on the pane
+  background, and the round rules plus the `┄┄┄┄` separator still delimit the
+  turns (#798)
+
 - TUI dashboard chat: Esc on a pending `ask_user` question now only hides
   the question box and returns focus to the editor instead of cancelling
   the question server-side. The question stays pending — the next typed

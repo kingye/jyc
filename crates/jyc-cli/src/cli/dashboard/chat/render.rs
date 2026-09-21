@@ -56,6 +56,11 @@ pub(crate) struct RenderFingerprint {
     text_len_sum: usize,
     last_timestamp: Option<String>,
     width: usize,
+    /// How many messages render as the human side (the background block).
+    /// The sender is otherwise invisible to the fingerprint, so a message
+    /// that flips sides with the same length and timestamp would serve stale
+    /// styled lines from the cache.
+    human_side: usize,
     /// Thinking expand/collapse affects the rendered lines of
     /// `sender == "thinking"` pseudo-messages, so it must bust the cache.
     thinking_expanded: bool,
@@ -71,9 +76,21 @@ pub(super) fn history_fingerprint(
         text_len_sum: messages.iter().map(|m| m.text.len()).sum(),
         last_timestamp: messages.last().and_then(|m| m.timestamp.clone()),
         width,
+        human_side: messages
+            .iter()
+            .filter(|m| is_user_message(&m.sender))
+            .count(),
         thinking_expanded,
     }
 }
+
+/// Background of a human turn's block (see
+/// [`render_history_lines`]). Deliberately a fixed dark RGB rather than
+/// `Color::DarkGray`: a mid gray is hard to tell apart from a terminal whose
+/// own background is gray, and it flattens the dim text markdown can produce
+/// (raw HTML, heading metadata). Paired with an explicit `fg(Color::White)`
+/// it stays readable on light terminal themes too.
+pub(super) const USER_BG: Color = Color::Rgb(40, 44, 52);
 
 /// Whether a chat message belongs to the human side of the conversation.
 ///
@@ -86,10 +103,12 @@ fn is_user_message(sender: &str) -> bool {
 
 /// Render the full message history to wrapped, styled lines: per-round
 /// top/bottom rules (time / duration), user→AI separators, and each
-/// message's markdown body word-wrapped to `width`. Pure in
-/// `(messages, width)` so the result is cached per frame — the dynamic
-/// progress tail (thinking / activity / live ticker) is appended by the
-/// caller after these lines and stays per-frame.
+/// message's markdown body word-wrapped to `width`. There is no speaker
+/// label — the human side is a full-width background block, the agent's
+/// replies sit on the pane background. Pure in `(messages, width)` so the
+/// result is cached per frame — the dynamic progress tail (thinking /
+/// activity / live ticker) is appended by the caller after these lines and
+/// stays per-frame.
 pub(super) fn render_history_lines(
     messages: &[ChatMessage],
     width: usize,
@@ -98,6 +117,9 @@ pub(super) fn render_history_lines(
     let mut all_lines: Vec<Line<'static>> = Vec::new();
 
     let dim_style = Style::default().fg(Color::DarkGray);
+    // The human side of the conversation: a background block in place of a
+    // label.
+    let user_style = Style::default().bg(USER_BG).fg(Color::White);
     let thinking_style = Style::default()
         .fg(Color::Gray)
         .add_modifier(Modifier::ITALIC);
@@ -128,7 +150,6 @@ pub(super) fn render_history_lines(
         }
 
         let is_user = is_user_message(&msg.sender);
-        let prefix = if is_user { "**You:** " } else { "**AI:** " };
 
         let prev_sender = prev_conv_sender;
 
@@ -173,20 +194,40 @@ pub(super) fn render_history_lines(
             }
         }
 
-        // Separator between the user message and the AI response within
-        // a round: a light dashed rule, visually subordinate to the
-        // solid "─" round rules.
-        if !is_user && prev_sender == Some("user") {
+        // Separator between the user message and the AI reply within a
+        // round: a light dashed rule, visually subordinate to the solid "─"
+        // round rules. Keyed off the same human-side predicate as the
+        // background block, so a piped channel's display name counts too.
+        if !is_user && prev_sender.is_some_and(is_user_message) {
             all_lines.push(Line::from(""));
             all_lines.push(Line::from(Span::styled("┄".repeat(width), dim_style)));
             all_lines.push(Line::from(""));
         }
 
-        // Render message (no side gutters).
-        let md_text = softbreaks_to_hardbreaks(&format!("{prefix}{}\n", msg.text));
+        // Render message (no side gutters, no speaker label — the human side
+        // is identified by its background below).
+        let md_text = softbreaks_to_hardbreaks(&format!("{}\n", msg.text));
         let rendered =
             tui_markdown::from_str_with_options(&md_text, &chat_markdown_options()).lines;
-        let msg_lines = wrap_styled_lines(wrap_tables(rendered, width), width);
+        let mut msg_lines = wrap_styled_lines(wrap_tables(rendered, width), width);
+        if is_user {
+            for line in &mut msg_lines {
+                // A row that carries its own background (a fenced code block
+                // when syntax highlighting is off) pads in that shade too, so
+                // the row reads as one piece to the edge.
+                let bg = line.style.bg.unwrap_or(USER_BG);
+                // Patched *under* the line style so markdown's own colors
+                // (a blockquote's green, a heading) survive on the block.
+                line.style = user_style.patch(line.style);
+                // `Paragraph` paints a line's style only where it has glyphs,
+                // so the row is padded to read as one solid block.
+                let pad = width.saturating_sub(line.width());
+                if pad > 0 {
+                    line.spans
+                        .push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
+                }
+            }
+        }
         all_lines.extend(msg_lines);
         prev_conv_sender = Some(msg.sender.as_str());
     }

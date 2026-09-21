@@ -1774,11 +1774,52 @@ fn render_history_marks_human_turns_with_background_not_labels() {
         block.iter().all(|l| l.style.fg.is_none()),
         "the block must not set a foreground"
     );
+    // Neither side hugs the pane edge: both bodies start one column in.
+    let question = lines
+        .iter()
+        .position(|l| is_block(l) && l.spans.iter().any(|s| s.content == "question"))
+        .expect("the human turn's text row");
+    let answer = lines
+        .iter()
+        .position(|l| !is_block(l) && l.spans.iter().any(|s| s.content == "answer"))
+        .expect("the reply row, unpainted");
+    assert_eq!(lines[question].spans[0].content, " ");
+    assert_eq!(lines[answer].spans[0].content, " ");
+    // A reply is followed by a blank row, so it never ends flush against what
+    // comes next.
+    let blank = |l: &Line| l.spans.iter().all(|s| s.content.trim_end().is_empty());
     assert!(
-        lines
-            .iter()
-            .any(|l| !is_block(l) && l.spans.iter().any(|s| s.content == "answer")),
-        "the agent's reply must not be painted"
+        lines.get(answer + 1).is_some_and(blank),
+        "a reply must be followed by a blank row"
+    );
+}
+
+/// Every row fits the pane: the round rules are exactly `width` (they used to be
+/// `width + 1`, kept in check only by clipping), and the one-column inset leaves
+/// no body row overflowing by a cell.
+#[test]
+fn render_history_rows_fit_the_pane() {
+    let msgs = vec![
+        history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
+        history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
+    ];
+    let lines = render_history_lines(&msgs, 80, false);
+    // `dim_style` on the line is what marks a round rule.
+    let rules: Vec<&Line> = lines
+        .iter()
+        .filter(|l| l.style.fg == Some(Color::DarkGray))
+        .collect();
+    assert_eq!(rules.len(), 2, "expected the top and bottom rule");
+    let widths = || rules.iter().map(|l| l.width()).collect::<Vec<_>>();
+    assert!(
+        widths().iter().all(|w| *w == 80),
+        "a rule must be exactly pane-wide, got {:?}",
+        widths()
+    );
+    assert!(
+        lines.iter().all(|l| l.width() <= 80),
+        "no row may overflow the pane: {:?}",
+        lines.iter().map(|l| l.width()).collect::<Vec<_>>()
     );
 }
 

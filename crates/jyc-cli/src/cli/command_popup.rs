@@ -1,9 +1,9 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use jyc_types::{CommandInfo, ModelInfo};
@@ -50,11 +50,18 @@ fn is_filter_complete(filter: &str, commands: &[CommandInfo]) -> bool {
 /// Action the popup wants the caller to perform after handling a key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PopupAction {
-    /// Key was handled but no action is requested (Up/Down/Backspace/Char,
-    /// or Tab on an incomplete filter). Popup stays open.
+    /// A popup-owned key was handled (Up/Down navigation, a Tab with
+    /// nothing to complete). The popup stays open.
     None,
+    /// Not a popup key — text editing, cursor moves, global shortcuts.
+    /// The caller feeds it to the chat input field, which IS the popup's
+    /// filter (the popup has no input box of its own).
+    PassThrough,
     /// Enter pressed — send the command immediately.
     Send(String),
+    /// Tab on an incomplete filter — write the completion into the chat
+    /// input field and keep the popup open (the filter follows on sync).
+    Complete(String),
     /// Tab pressed on a complete filter — copy the command to the chat
     /// input line so the user can add arguments before sending.
     CopyToInput(String),
@@ -65,7 +72,9 @@ pub enum PopupAction {
 /// State for the `/` command popup in chat input.
 #[derive(Debug)]
 pub struct CommandPopupState {
-    /// Current filter text typed by the user
+    /// Current filter text. The popup has no input box of its own — the
+    /// caller mirrors the chat input field into this before each dispatch
+    /// (see `sync_command_popup` in the chat dashboard).
     pub filter: String,
     /// Index of the selected item in the filtered list
     pub selected: usize,
@@ -144,8 +153,9 @@ pub fn handle_popup_key(
         KeyCode::Esc => PopupAction::Close,
         KeyCode::Tab => {
             // Model mode: if the sub-filter already exactly matches a real
-            // model name, copy to the input line (symmetric with command
-            // mode). Otherwise fill the filter with the selected model.
+            // model name, close and leave it in the input line (symmetric
+            // with command mode). Otherwise hand the selected model to the
+            // caller to write into the chat input field.
             if model_mode {
                 let sub = model_subfilter(&state.filter);
                 if !sub.is_empty()
@@ -153,15 +163,14 @@ pub fn handle_popup_key(
                 {
                     return PopupAction::CopyToInput(format!("/model {}", model.name));
                 }
-                if let Some(model) = state
+                match state
                     .filtered_models(models)
                     .into_iter()
                     .nth(state.selected)
                 {
-                    state.filter = format!("/model {}", model.name);
-                    state.selected = 0;
+                    Some(model) => PopupAction::Complete(format!("/model {}", model.name)),
+                    None => PopupAction::None,
                 }
-                PopupAction::None
             } else {
                 match state
                     .filtered_commands(commands)
@@ -171,11 +180,7 @@ pub fn handle_popup_key(
                     Some(cmd) if is_filter_complete(&state.filter, commands) => {
                         PopupAction::CopyToInput(cmd.name.clone())
                     }
-                    Some(cmd) => {
-                        state.filter = cmd.name.clone();
-                        state.selected = 0;
-                        PopupAction::None
-                    }
+                    Some(cmd) => PopupAction::Complete(cmd.name.clone()),
                     None => PopupAction::None,
                 }
             }
@@ -188,7 +193,8 @@ pub fn handle_popup_key(
                     .nth(state.selected)
                 {
                     Some(m) => PopupAction::Send(format!("/model {}", m.name)),
-                    None => PopupAction::None,
+                    // Nothing selected: let the editor send what was typed.
+                    None => PopupAction::PassThrough,
                 }
             } else {
                 match state
@@ -197,7 +203,7 @@ pub fn handle_popup_key(
                     .nth(state.selected)
                 {
                     Some(cmd) => PopupAction::Send(cmd.name.clone()),
-                    None => PopupAction::None,
+                    None => PopupAction::PassThrough,
                 }
             }
         }
@@ -218,22 +224,32 @@ pub fn handle_popup_key(
             }
             PopupAction::None
         }
-        KeyCode::Backspace => {
-            state.filter.pop();
-            state.selected = 0;
-            PopupAction::None
-        }
-        KeyCode::Char(c) if !c.is_control() => {
-            state.filter.push(c);
-            // If we just transitioned into model mode or out of it, reset selection
-            state.selected = 0;
-            PopupAction::None
-        }
-        _ => PopupAction::None,
+        // Everything else — text, editing, cursor moves — belongs to the
+        // chat input field, whose text is the filter.
+        _ => PopupAction::PassThrough,
     }
 }
 
-/// Render the command/mode popup as a centered overlay.
+/// Rows the popup needs below the chat input field: one top rule plus the
+/// (clamped) list. The chat layout reserves exactly this many rows, so the
+/// renderer and the layout must agree through this single helper.
+pub fn popup_height(
+    state: &CommandPopupState,
+    commands: &[CommandInfo],
+    models: &[ModelInfo],
+) -> u16 {
+    let rows = if model_mode_active(&state.filter, models) {
+        state.filtered_models(models).len()
+    } else {
+        state.filtered_commands(commands).len()
+    };
+    1 + rows.clamp(1, 10) as u16
+}
+
+/// Render the command/mode popup as a full-width top rule plus the list,
+/// inside `area` — the slot the caller reserved directly below the input
+/// field. No side or bottom borders: the rule is the only chrome, so it
+/// stretches across the whole pane.
 pub fn render_command_popup(
     frame: &mut Frame,
     area: Rect,
@@ -241,147 +257,58 @@ pub fn render_command_popup(
     commands: &[CommandInfo],
     models: &[ModelInfo],
 ) {
-    render_popup(frame, area, state, commands, models, " Commands ");
-}
-
-/// Shared renderer for the command popup and the command palette.
-fn render_popup(
-    frame: &mut Frame,
-    area: Rect,
-    state: &CommandPopupState,
-    commands: &[CommandInfo],
-    models: &[ModelInfo],
-    cmd_title: &str,
-) {
     let model_mode = model_mode_active(&state.filter, models);
-
-    let (items, title) = if model_mode {
-        let filtered = state.filtered_models(models);
-        if filtered.is_empty() {
-            (
-                vec![Line::from(Span::styled(
-                    "  (no models)",
-                    Style::default().fg(Color::DarkGray),
-                ))],
-                " Models ",
-            )
-        } else {
-            (render_model_list(&filtered, state.selected), " Models ")
-        }
-    } else if state.filter.is_empty() || !state.filtered_commands(commands).is_empty() {
-        let filtered = state.filtered_commands(commands);
-        (render_command_list(&filtered, state.selected), cmd_title)
-    } else {
-        // Filter doesn't match anything — show empty state
-        (
-            vec![Line::from(Span::styled(
-                "  (no matches)",
-                Style::default().fg(Color::DarkGray),
-            ))],
-            cmd_title,
-        )
-    };
-
-    let list_height = items.len().clamp(1, 10) as u16;
-    let popup_height = list_height + 3; // border(2) + filter(1)
-
-    // Adaptive width: fit the longest item text (name + description) so
-    // wide content isn't truncated, clamped to the available area.
-    // Width is computed over *all* entries (not the filtered subset) so
-    // the popup doesn't resize while typing.
-    let content_width = if model_mode {
-        models
-            .iter()
-            .map(|m| UnicodeWidthStr::width(m.name.as_str()) + 4)
-            .max()
-            .unwrap_or(0)
-    } else {
-        commands
-            .iter()
-            .map(|c| {
-                UnicodeWidthStr::width(c.name.as_str())
-                    + UnicodeWidthStr::width(c.description.as_str())
-                    + 6
-            })
-            .max()
-            .unwrap_or(0)
-    };
-    let popup_width = (content_width as u16 + 2) // + borders
-        .max(UnicodeWidthStr::width(title) as u16 + 4)
-        .clamp(32, area.width.saturating_sub(2).max(32));
-
-    // Center the popup
-    let x = area.x + area.width.saturating_sub(popup_width) / 2;
-    let y = area.y + area.height.saturating_sub(popup_height) / 2;
-    let popup_area = Rect::new(
-        x,
-        y.min(area.bottom().saturating_sub(popup_height)),
-        popup_width,
-        popup_height,
-    );
-
-    // Clear behind
-    frame.render_widget(Clear, popup_area);
-
-    // Main block
     let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
+        .title(if model_mode { " Models " } else { " Commands " })
+        .borders(Borders::TOP)
         .border_style(Style::default().fg(Color::Cyan));
-
-    let inner = block.inner(popup_area);
-    frame.render_widget(block, popup_area);
-
-    // Inner layout: filter input (1 line) + list (remaining)
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(inner);
-
-    // Filter input line
-    let cursor_visible = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_millis() / 500 % 2 == 0)
-        .unwrap_or(true);
-
-    let filter_display = if state.filter.is_empty() {
-        if cursor_visible {
-            Span::styled("▌", Style::default().add_modifier(Modifier::SLOW_BLINK))
-        } else {
-            Span::raw(" ")
-        }
-    } else {
-        let cursor_char = if cursor_visible { "▌" } else { " " };
-        Span::raw(format!("{}{}", state.filter, cursor_char))
-    };
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("> ", Style::default().fg(Color::Yellow)),
-            filter_display,
-        ]))
-        .style(Style::default()),
-        chunks[0],
-    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     // "Loading..." — only before any data has arrived from the first poll
-    let has_data = !commands.is_empty() || !models.is_empty();
-    if !has_data {
+    if commands.is_empty() && models.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  Loading...",
                 Style::default().fg(Color::DarkGray),
             ))),
-            chunks[1],
+            inner,
         );
         return;
     }
 
-    frame.render_widget(Paragraph::new(items).wrap(Wrap { trim: false }), chunks[1]);
+    let items = if model_mode {
+        let filtered = state.filtered_models(models);
+        if filtered.is_empty() {
+            vec![Line::from(Span::styled(
+                "  (no models)",
+                Style::default().fg(Color::DarkGray),
+            ))]
+        } else {
+            render_model_list(&filtered, state.selected, inner.width)
+        }
+    } else {
+        let filtered = state.filtered_commands(commands);
+        if filtered.is_empty() {
+            vec![Line::from(Span::styled(
+                "  (no matches)",
+                Style::default().fg(Color::DarkGray),
+            ))]
+        } else {
+            render_command_list(&filtered, state.selected, inner.width)
+        }
+    };
+
+    frame.render_widget(Paragraph::new(items).wrap(Wrap { trim: false }), inner);
 }
 
-fn render_command_list<'a>(filtered: &[&'a CommandInfo], selected: usize) -> Vec<Line<'a>> {
+/// List rows. The selected row is padded to `width` so its highlight bar
+/// spans the full popup width — there are no side borders to end it at.
+fn render_command_list<'a>(
+    filtered: &[&'a CommandInfo],
+    selected: usize,
+    width: u16,
+) -> Vec<Line<'a>> {
     let clamped = if filtered.is_empty() {
         0
     } else {
@@ -392,33 +319,28 @@ fn render_command_list<'a>(filtered: &[&'a CommandInfo], selected: usize) -> Vec
         .iter()
         .enumerate()
         .map(|(i, cmd)| {
-            let padded = format!("  {}  ", cmd.name);
+            let name = format!("  {}  ", cmd.name);
             let desc = cmd.description.as_str();
-            if i == clamped {
-                Line::from(vec![
-                    Span::styled(
-                        padded,
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!(" {}", desc),
-                        Style::default().fg(Color::Black).bg(Color::Cyan),
-                    ),
-                ])
-            } else {
-                Line::from(vec![
-                    Span::raw(padded),
+            if i != clamped {
+                return Line::from(vec![
+                    Span::raw(name),
                     Span::styled(desc, Style::default().fg(Color::DarkGray)),
-                ])
+                ]);
             }
+            let bar = Style::default().fg(Color::Black).bg(Color::Cyan);
+            let used = UnicodeWidthStr::width(name.as_str()) + 1 + UnicodeWidthStr::width(desc);
+            Line::from(vec![
+                Span::styled(name, bar.add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" {}", desc), bar),
+                Span::styled(" ".repeat((width as usize).saturating_sub(used)), bar),
+            ])
         })
         .collect()
 }
 
-fn render_model_list<'a>(filtered: &[&'a ModelInfo], selected: usize) -> Vec<Line<'a>> {
+/// Model rows, with the same full-width highlight bar as
+/// [`render_command_list`].
+fn render_model_list<'a>(filtered: &[&'a ModelInfo], selected: usize, width: u16) -> Vec<Line<'a>> {
     let clamped = if filtered.is_empty() {
         0
     } else {
@@ -430,17 +352,18 @@ fn render_model_list<'a>(filtered: &[&'a ModelInfo], selected: usize) -> Vec<Lin
         .enumerate()
         .map(|(i, model)| {
             let name = format!("  {}  ", model.name);
-            if i == clamped {
-                Line::from(vec![Span::styled(
-                    name,
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )])
-            } else {
-                Line::from(vec![Span::raw(name)])
+            if i != clamped {
+                return Line::from(vec![Span::raw(name)]);
             }
+            let bar = Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD);
+            let used = UnicodeWidthStr::width(name.as_str());
+            Line::from(vec![
+                Span::styled(name, bar),
+                Span::styled(" ".repeat((width as usize).saturating_sub(used)), bar),
+            ])
         })
         .collect()
 }
@@ -478,51 +401,55 @@ mod tests {
         assert!(!model_mode_active("zen", &[make_model("m1")]));
 
         // Palette scenario: Enter with a "model " filter and no models
-        // must not produce a "/model ..." send action.
+        // must not produce a "/model ..." send action — the key falls
+        // through so the chat input field sends what was typed instead.
         let mut state = CommandPopupState::new();
         state.filter = "model x".to_string();
         let cmds = vec![make_cmd("toggle zen")];
         assert_eq!(
             handle_popup_key(key(KeyCode::Enter), &mut state, &cmds, &[]),
-            PopupAction::None
+            PopupAction::PassThrough
         );
     }
 
     #[test]
-    fn tab_auto_completes_command_name_into_filter() {
+    fn tab_hands_completion_to_the_caller() {
         let mut state = CommandPopupState::new();
         state.filter = "pl".to_string();
         state.selected = 0;
         let commands = vec![make_cmd("/plan")];
 
         let result = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
-        assert_eq!(result, PopupAction::None, "Tab should not close popup");
-        assert_eq!(state.filter, "/plan");
-        assert_eq!(state.selected, 0);
+        assert_eq!(result, PopupAction::Complete("/plan".to_string()));
+        // The popup no longer owns the filter text: the caller writes the
+        // completion into the chat input field, and the filter follows.
+        assert_eq!(state.filter, "pl");
     }
 
     #[test]
-    fn tab_auto_completes_selected_command_not_first() {
+    fn tab_completes_selected_command_not_first() {
         let mut state = CommandPopupState::new();
         state.filter = String::new(); // All commands shown
         state.selected = 1; // Second item
         let commands = vec![make_cmd("/plan"), make_cmd("/model")];
 
-        let result = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
-        assert_eq!(result, PopupAction::None);
-        assert_eq!(state.filter, "/model");
+        assert_eq!(
+            handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]),
+            PopupAction::Complete("/model".to_string())
+        );
     }
 
     #[test]
-    fn tab_auto_completes_model_in_model_mode() {
+    fn tab_completes_model_in_model_mode() {
         let mut state = CommandPopupState::new();
         state.filter = "model ".to_string();
         state.selected = 0;
         let models = vec![make_model("gpt-4"), make_model("claude-3")];
 
-        let result = handle_popup_key(key(KeyCode::Tab), &mut state, &[], &models);
-        assert_eq!(result, PopupAction::None);
-        assert_eq!(state.filter, "/model gpt-4");
+        assert_eq!(
+            handle_popup_key(key(KeyCode::Tab), &mut state, &[], &models),
+            PopupAction::Complete("/model gpt-4".to_string())
+        );
     }
 
     #[test]
@@ -536,6 +463,36 @@ mod tests {
         assert_eq!(result, PopupAction::None);
         // No matching command, so filter unchanged
         assert!(!state.filter.contains("/plan"));
+    }
+
+    #[test]
+    fn text_keys_belong_to_the_chat_input_field() {
+        // The popup has no input box of its own: text, editing and cursor
+        // keys pass through to the editor, which is the filter's single
+        // source of truth.
+        let mut state = CommandPopupState::new();
+        state.filter = "/pl".to_string();
+        let commands = vec![make_cmd("/plan")];
+
+        for code in [KeyCode::Char('a'), KeyCode::Backspace, KeyCode::Left] {
+            assert_eq!(
+                handle_popup_key(key(code), &mut state, &commands, &[]),
+                PopupAction::PassThrough,
+                "{code:?} must reach the chat input field"
+            );
+        }
+        assert_eq!(state.filter, "/pl", "pass-through must not edit it");
+    }
+
+    #[test]
+    fn popup_height_is_top_rule_plus_clamped_list() {
+        let commands: Vec<CommandInfo> = (0..20).map(|i| make_cmd(&format!("/c{i}"))).collect();
+        // 1 top rule + at most 10 list rows.
+        assert_eq!(popup_height(&CommandPopupState::new(), &commands, &[]), 11);
+        // A filter matching nothing still reserves one row.
+        let mut empty = CommandPopupState::new();
+        empty.filter = "/zzz".to_string();
+        assert_eq!(popup_height(&empty, &commands, &[]), 2);
     }
 
     #[test]
@@ -561,14 +518,15 @@ mod tests {
     }
 
     #[test]
-    fn enter_no_op_when_no_command_selected() {
+    fn enter_falls_through_when_nothing_matches() {
         let mut state = CommandPopupState::new();
         state.filter = "zzz".to_string();
         state.selected = 0;
         let commands = vec![make_cmd("/plan")];
 
         let result = handle_popup_key(key(KeyCode::Enter), &mut state, &commands, &[]);
-        assert_eq!(result, PopupAction::None);
+        // No command to send: the editor gets the key and sends the text.
+        assert_eq!(result, PopupAction::PassThrough);
     }
 
     #[test]
@@ -595,36 +553,35 @@ mod tests {
 
     #[test]
     fn tab_then_tab_copies_to_input() {
-        // Simulates: type "think" + Tab → "/thinking" in filter,
-        // then Tab again → CopyToInput.
+        // Simulates: "/think" in the chat input field + Tab → the caller
+        // writes "/thinking" back into the field (popup stays open, filter
+        // follows on the next sync) → Tab again → CopyToInput (closes).
         let mut state = CommandPopupState::new();
-        state.filter = "think".to_string();
+        state.filter = "/think".to_string();
         state.selected = 0;
         let commands = vec![make_cmd("/thinking")];
 
-        // First Tab fills the filter
         let first = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
-        assert_eq!(first, PopupAction::None);
-        assert_eq!(state.filter, "/thinking");
+        assert_eq!(first, PopupAction::Complete("/thinking".to_string()));
 
-        // Second Tab on the now-complete filter copies to input line
+        state.filter = "/thinking".to_string(); // what the editor now holds
         let second = handle_popup_key(key(KeyCode::Tab), &mut state, &commands, &[]);
         assert_eq!(second, PopupAction::CopyToInput("/thinking".to_string()));
     }
 
     #[test]
     fn tab_then_tab_copies_to_input_in_model_mode() {
-        // Simulates: type "model gpt" + Tab → "/model gpt-4" in filter,
-        // then Tab again → CopyToInput, mirroring the command-mode flow.
+        // Same two-step flow for models: "/model gpt" + Tab completes the
+        // name into the input field, Tab again closes with it in place.
         let mut state = CommandPopupState::new();
-        state.filter = "model gpt".to_string();
+        state.filter = "/model gpt".to_string();
         state.selected = 0;
         let models = vec![make_model("gpt-4"), make_model("claude-3")];
 
         let first = handle_popup_key(key(KeyCode::Tab), &mut state, &[], &models);
-        assert_eq!(first, PopupAction::None);
-        assert_eq!(state.filter, "/model gpt-4");
+        assert_eq!(first, PopupAction::Complete("/model gpt-4".to_string()));
 
+        state.filter = "/model gpt-4".to_string();
         let second = handle_popup_key(key(KeyCode::Tab), &mut state, &[], &models);
         assert_eq!(second, PopupAction::CopyToInput("/model gpt-4".to_string()));
     }

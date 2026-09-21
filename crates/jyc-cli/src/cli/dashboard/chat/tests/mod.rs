@@ -633,6 +633,126 @@ fn leader_slash_opens_command_popup() {
     assert!(app.chat.command_popup.is_some());
 }
 
+/// The `/` popup has no input box of its own: text keys go to the chat
+/// input field and the popup's filter mirrors whatever it holds.
+#[test]
+fn command_popup_filters_off_the_chat_input_field() {
+    let mut app = chatting_app();
+    let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+
+    handle_chat_keys(&mut app, key(KeyCode::Char('/')), &mut test_terminal());
+    assert!(app.chat.command_popup.is_some(), "'/' opens the popup");
+    assert_eq!(app.chat.text(), "/", "the slash lands in the input field");
+
+    handle_chat_keys(&mut app, key(KeyCode::Char('p')), &mut test_terminal());
+    handle_chat_keys(&mut app, key(KeyCode::Char('l')), &mut test_terminal());
+    assert_eq!(
+        app.chat.text(),
+        "/pl",
+        "typing continues in the input field"
+    );
+    let popup = app.chat.command_popup.as_ref().expect("popup stays open");
+    assert_eq!(popup.filter, "/pl", "filter mirrors the input field");
+
+    // Backspacing past the slash empties the field and dismisses the popup.
+    for _ in 0..3 {
+        handle_chat_keys(&mut app, key(KeyCode::Backspace), &mut test_terminal());
+    }
+    assert!(app.chat.text().is_empty());
+    assert!(
+        app.chat.command_popup.is_none(),
+        "an empty input field closes the popup"
+    );
+}
+
+/// The popup renders directly BELOW the input field: a borderless top rule
+/// on the row after the prompt, with the list under it — so it can never
+/// cover the text being typed.
+#[test]
+fn command_popup_renders_below_the_input_field() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = chatting_app();
+    // Full-width chat pane: no info pane whose own border could land on the
+    // row under test.
+    app.chat.info_visible = false;
+    handle_chat_keys(
+        &mut app,
+        crossterm::event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+        &mut test_terminal(),
+    );
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+    terminal
+        .draw(|frame| ui_chat_mode(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let row = |y: u16| -> String {
+        (0..80)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect::<Vec<_>>()
+            .join("")
+    };
+
+    let prompt = (0..23)
+        .find(|&y| row(y).starts_with('❯'))
+        .expect("prompt row rendered");
+    assert!(
+        row(prompt).contains('/'),
+        "the input field must stay visible: {prompt}"
+    );
+    let rule = row(prompt + 1);
+    assert!(rule.contains("Commands"), "top rule missing: {rule:?}");
+    assert!(
+        rule.contains('─') && !rule.contains('│'),
+        "expected a side-border-free rule, got: {rule:?}"
+    );
+    assert!(
+        rule.chars().filter(|c| *c == '─').count() > 50,
+        "the rule should stretch across the pane: {rule:?}"
+    );
+    assert!(
+        row(prompt + 2).contains('/'),
+        "command list should follow the rule"
+    );
+}
+
+/// The ctrl+p leader gets the same treatment: top rule directly below the
+/// input field, no side borders.
+#[test]
+fn leader_popup_renders_below_the_input_field() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    handle_chat_keys(
+        &mut app,
+        crossterm::event::KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        &mut test_terminal(),
+    );
+    assert!(app.chat.leader.is_some());
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+    terminal
+        .draw(|frame| ui_chat_mode(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let row = |y: u16| -> String {
+        (0..80)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect::<Vec<_>>()
+            .join("")
+    };
+    let prompt = (0..23)
+        .find(|&y| row(y).starts_with('❯'))
+        .expect("prompt row rendered");
+    let rule = row(prompt + 1);
+    assert!(rule.contains("Leader"), "top rule missing: {rule:?}");
+    assert!(!rule.contains('│'), "no side borders expected: {rule:?}");
+}
+
 #[test]
 fn printable_key_refocuses_input_without_inserting() {
     for focus in [

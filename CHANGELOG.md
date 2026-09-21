@@ -170,6 +170,16 @@
   storms flag the text channel, narrowing false positives on legit
   meta-discussion (#795)
 
+### Changed
+
+- TUI chat: the `/` command popup and the `ctrl+p` leader popup now open as
+  a borderless list directly below the input field (full-width top rule, no
+  side or bottom borders) instead of floating over the transcript. The
+  command popup also dropped its own filter box — the chat input field *is*
+  the filter, so typing, backspacing and cursor keys keep editing the field,
+  Tab completions land there, and the popup closes once the field is
+  emptied (#796)
+
 ## [0.3.18] - 2026-09-12
 
 ### Added

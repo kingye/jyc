@@ -730,26 +730,37 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     }
 
     // ── Command popup handling ─────────────────────────────────────
+    // The popup has no input box of its own: the chat input field IS its
+    // filter. Only navigation keys belong to the popup — every other key
+    // falls through to the editor below (and the filter follows on sync).
+    sync_command_popup(app);
     if let Some(ref mut popup) = app.chat.command_popup {
         match handle_popup_key(key, popup, &app.chat.commands, &app.chat.models) {
-            PopupAction::None => {}
+            PopupAction::PassThrough => {}
+            PopupAction::None => return,
+            PopupAction::Complete(cmd) => {
+                app.chat.populate_editor(&cmd);
+                return;
+            }
             PopupAction::Close => {
                 app.chat.command_popup = None;
+                return;
             }
             PopupAction::Send(cmd) => {
                 app.chat.command_popup = None;
                 app.chat.send_message_inner(cmd);
+                return;
             }
             PopupAction::CopyToInput(cmd) => {
                 app.chat.command_popup = None;
                 app.chat.populate_editor(&cmd);
+                return;
             }
         }
-        return;
     }
 
-    // "/" opens the command popup as the first char of an empty input
-    // (intercepted before it reaches the editor).
+    // "/" opens the command popup as the first char of an empty input.
+    // The slash also lands in the input field — the popup filters off it.
     let is_slash = key.code == KeyCode::Char('/') && !key.modifiers.contains(KeyModifiers::CONTROL);
     if is_slash
         && app.chat.phase == ChatPhase::Chatting
@@ -762,6 +773,8 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         app.refresh_chat_commands();
         app.chat.leader = None;
         app.chat.command_popup = Some(CommandPopupState::new());
+        app.chat.editor.input(key);
+        sync_command_popup(app);
         return;
     }
 
@@ -969,7 +982,29 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     app.chat.editor.input(key);
                 }
             }
+            // The command popup filters off this field — refresh or drop it.
+            sync_command_popup(app);
         }
+    }
+}
+
+/// The command popup has no input box of its own: its filter is the chat
+/// input field. Mirror the text into the popup, and close the popup once
+/// the field is empty again (e.g. the user deleted the `/`).
+fn sync_command_popup(app: &mut App) {
+    if app.chat.command_popup.is_none() {
+        return;
+    }
+    let text = app.chat.text();
+    if text.trim().is_empty() {
+        app.chat.command_popup = None;
+        return;
+    }
+    if let Some(popup) = app.chat.command_popup.as_mut()
+        && popup.filter != text
+    {
+        popup.filter = text;
+        popup.selected = 0;
     }
 }
 

@@ -87,9 +87,12 @@ pub(super) fn history_fingerprint(
 /// Background of a human turn's block (see
 /// [`render_history_lines`]). Deliberately a fixed dark RGB rather than
 /// `Color::DarkGray`: a mid gray is hard to tell apart from a terminal whose
-/// own background is gray, and it flattens the dim text markdown can produce
-/// (raw HTML, heading metadata). Paired with an explicit `fg(Color::White)`
-/// it stays readable on light terminal themes too.
+/// own background is gray.
+///
+/// The block sets **no foreground** — the text keeps the terminal's own color,
+/// which is what makes a human turn read at exactly the same brightness as the
+/// agent's reply. The cost: on a light terminal theme the default foreground is
+/// dark and this background is not, so the block assumes a dark theme.
 pub(super) const USER_BG: Color = Color::Rgb(40, 44, 52);
 
 /// Whether a chat message belongs to the human side of the conversation.
@@ -102,13 +105,12 @@ fn is_user_message(sender: &str) -> bool {
 }
 
 /// Render the full message history to wrapped, styled lines: per-round
-/// top/bottom rules (time / duration), user→AI separators, and each
-/// message's markdown body word-wrapped to `width`. There is no speaker
-/// label — the human side is a full-width background block, the agent's
-/// replies sit on the pane background. Pure in `(messages, width)` so the
-/// result is cached per frame — the dynamic progress tail (thinking /
-/// activity / live ticker) is appended by the caller after these lines and
-/// stays per-frame.
+/// top/bottom rules (time / duration) plus each message's markdown body
+/// word-wrapped to `width`. There is no speaker label — the human side is
+/// identified by a background block (see [`USER_BG`]), the agent's replies sit
+/// on the pane background. Pure in `(messages, width)` so the result is cached
+/// per frame — the dynamic progress tail (thinking / activity / live ticker) is
+/// appended by the caller after these lines and stays per-frame.
 pub(super) fn render_history_lines(
     messages: &[ChatMessage],
     width: usize,
@@ -118,15 +120,17 @@ pub(super) fn render_history_lines(
 
     let dim_style = Style::default().fg(Color::DarkGray);
     // The human side of the conversation: a background block in place of a
-    // label.
-    let user_style = Style::default().bg(USER_BG).fg(Color::White);
+    // label. No foreground is set on purpose — see [`USER_BG`]: the text keeps
+    // the terminal's own color, so a human turn reads at exactly the brightness
+    // of the agent's reply.
+    let user_style = Style::default().bg(USER_BG);
     let thinking_style = Style::default()
         .fg(Color::Gray)
         .add_modifier(Modifier::ITALIC);
     let mut group_start_ts: Option<String> = None;
     // Last *conversation* sender (user/AI) — thinking pseudo-messages are
-    // skipped so the user→AI separator and AI→user round close still fire
-    // across an interleaved thinking block. Tracked incrementally.
+    // skipped so the human→AI blank row and the AI→human round close still
+    // fire across an interleaved thinking block. Tracked incrementally.
     let mut prev_conv_sender: Option<&str> = None;
 
     for (idx, msg) in messages.iter().enumerate() {
@@ -194,13 +198,11 @@ pub(super) fn render_history_lines(
             }
         }
 
-        // Separator between the user message and the AI reply within a
-        // round: a light dashed rule, visually subordinate to the solid "─"
-        // round rules. Keyed off the same human-side predicate as the
-        // background block, so a piped channel's display name counts too.
+        // Between a human turn and the agent's reply: one blank row, no rule.
+        // The block's own padding already separates them; the blank keeps the
+        // reply from hugging the block. Keyed off the same human-side
+        // predicate, so a piped channel's display name counts too.
         if !is_user && prev_sender.is_some_and(is_user_message) {
-            all_lines.push(Line::from(""));
-            all_lines.push(Line::from(Span::styled("┄".repeat(width), dim_style)));
             all_lines.push(Line::from(""));
         }
 
@@ -227,6 +229,13 @@ pub(super) fn render_history_lines(
                         .push(Span::styled(" ".repeat(pad), Style::default().bg(bg)));
                 }
             }
+            // One painted blank row above and below: the block needs breathing
+            // room inside itself. The row is padded with spaces because
+            // `Paragraph` only paints where there are glyphs.
+            let pad_row =
+                || Line::from(Span::styled(" ".repeat(width), user_style)).style(user_style);
+            msg_lines.insert(0, pad_row());
+            msg_lines.push(pad_row());
         }
         all_lines.extend(msg_lines);
         prev_conv_sender = Some(msg.sender.as_str());

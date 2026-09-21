@@ -592,7 +592,16 @@ Both have the fields below, except `TopicSummary` **omits** `activity`,
 - `ChangeKind` — `added` / `modified` / `deleted`. `Modified` is the default — old payloads missing the field deserialize as `Modified`. Renames, copies, type changes from `git diff --name-status` are normalized to `Modified` server-side (no separate variant for those).
 - `TopicCost` — `session: f64` (current agent session, zeroes on reset), `today: f64` (UTC day total from billing ledger), `currency: string` (`"USD"` or `"mixed"` when today's entries span multiple currencies)
 - `GlobalStats` — `active_workers`, `total_topics`, `max_concurrent`, `available_workers`, `messages_received`, `messages_processed`, `errors`
-- `CommandInfo` — `name` (e.g. `"/model"`), `description`
+- `CommandInfo` — `name` (e.g. `"/model"`), `description`, `continues_to_agent`,
+  `args: Vec<CommandArg>` — enumerable argument values for the command, `[]`
+  when its arguments are free text. Filled per topic by the inspect server
+  from `jyc_core::command::command_args` (models, skills, MCP servers, and the
+  literals each handler accepts). `serde(default)`, so payloads from older
+  servers simply carry no values.
+- `CommandArg` — `{value: string, description: string, args: Vec<CommandArg>}`.
+  Nests to arbitrary depth: `args` holds the values of the *next* argument
+  position, so `/skill on <name>` is an `on` entry whose `args` are the skill
+  names. A leaf entry has `args: []`.
 - `ModelInfo` — `name` (e.g. `"deepseek/deepseek-chat"`)
 
 ---

@@ -183,9 +183,10 @@ pub(super) struct ChatState {
     /// Address stash for `select_pattern` to call back into `open` when
     /// the user picks a pattern from the `c`-key pattern-select UI.
     pub(super) open_addr: Option<String>,
-    // Command popup state
+    // Command popup state. `/model` and every other command's nested levels
+    // come from `CommandInfo::args` (the inspect payload), so the popup needs
+    // nothing but this list.
     pub(super) commands: Vec<CommandInfo>,
-    pub(super) models: Vec<ModelInfo>,
     pub(super) command_popup: Option<CommandPopupState>,
     /// TUI-local leader-key popup (navigation, zen mode, activity pane, ...).
     /// Never sent to the backend.
@@ -735,7 +736,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     // falls through to the editor below (and the filter follows on sync).
     sync_command_popup(app);
     if let Some(ref mut popup) = app.chat.command_popup {
-        match handle_popup_key(key, popup, &app.chat.commands, &app.chat.models) {
+        match handle_popup_key(key, popup, &app.chat.commands) {
             PopupAction::PassThrough => {}
             PopupAction::None => return,
             PopupAction::Complete(cmd) => {
@@ -996,14 +997,18 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
 }
 
 /// The command popup has no input box of its own: its filter is the chat
-/// input field. Mirror the text into the popup, and close the popup once
-/// the field is empty again (e.g. the user deleted the `/`).
+/// input field. Mirror the text into the popup, and close it once the field
+/// is empty again (the user deleted the `/`) or its text walks off the
+/// command tree into free text (`/grant <path>`, `/plan on`).
 fn sync_command_popup(app: &mut App) {
     if app.chat.command_popup.is_none() {
         return;
     }
     let text = app.chat.text();
-    if text.trim().is_empty() {
+    // Close on an empty field, and on a path that leads to free text
+    // (`/grant <path>`, `/plan on`) — there is nothing to complete there, so
+    // the field should behave like the popup was never open.
+    if text.trim().is_empty() || resolve_level(&text, &app.chat.commands).is_none() {
         app.chat.command_popup = None;
         return;
     }
@@ -1948,7 +1953,6 @@ impl ChatState {
             last_hydrated_key: None,
             open_addr: None,
             commands: vec![],
-            models: vec![],
             command_popup: None,
             leader: None,
             input_history: vec![],

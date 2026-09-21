@@ -125,7 +125,7 @@ fn leader_key_col_width(entries: &[LeaderEntry]) -> usize {
 fn leader_title(buffer: &str) -> Line<'static> {
     if buffer.is_empty() {
         return Line::from(Span::styled(
-            "── Leader ──",
+            crate::cli::command_popup::rule_title("Leader"),
             Style::default().add_modifier(Modifier::BOLD),
         ));
     }

@@ -481,6 +481,40 @@ fn commands_for_topic(
     commands
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The payload's commands carry the argument values that drive the TUI
+    /// popup's nested levels.
+    #[test]
+    fn commands_carry_argument_values() {
+        let cfg = AppConfig::default();
+        let models = vec![ModelInfo {
+            name: "deepseek/deepseek-chat".into(),
+        }];
+        let skills = vec!["ponytail".to_string()];
+        let commands = commands_for_topic(None, &cfg, &skills, &models);
+
+        let find = |name: &str| commands.iter().find(|c| c.name == name).expect(name);
+        assert_eq!(find("/model").args[0].value, "deepseek/deepseek-chat");
+        assert!(
+            find("/model").args.iter().any(|a| a.value == "reset"),
+            "`reset` rides along with the models"
+        );
+        let on = find("/skill")
+            .args
+            .iter()
+            .find(|a| a.value == "on")
+            .expect("/skill on");
+        assert_eq!(on.args[0].value, "ponytail");
+        assert!(
+            find("/plan").args.is_empty(),
+            "a free-text command carries none"
+        );
+    }
+}
+
 /// Filter activity entries by `since` timestamp (RFC 3339 string).
 /// Returns entries whose timestamp is `>= since`. If `since` is None,
 /// returns all entries unchanged.

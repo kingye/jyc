@@ -1580,14 +1580,12 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
     ))];
     lines.push(Line::from(""));
     for (i, opt) in q.options.iter().enumerate() {
-        let label = format!("  {}. {opt}", i + 1);
+        let gutter = if i == q.selected { "→ " } else { "  " };
+        let label = format!("{gutter}{}. {opt}", i + 1);
         if i == q.selected {
             lines.push(Line::from(Span::styled(
                 label,
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().add_modifier(Modifier::DIM),
             )));
         } else {
             lines.push(Line::from(Span::raw(label)));
@@ -1595,11 +1593,15 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        " Up/Down or j/k select - 1-9 choose - Enter confirm - Esc hide, then type your answer ",
+        "Up/Down or j/k select - 1-9 choose - Enter confirm - Esc hide, then type your answer",
         Style::default().fg(Color::DarkGray),
     )));
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+    // `Wrap { trim: false }` is required so the option rows' two-column
+    // gutter survives: the default `trim: true` strips leading whitespace
+    // per line, which leaves the unselected rows' blank gutter gone and the
+    // selected row's `→` as the only indented one.
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 }
 

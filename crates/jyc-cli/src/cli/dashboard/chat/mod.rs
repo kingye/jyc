@@ -634,8 +634,8 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
         LocalAction::ScrollTop => app.chat.scroll_to_top(),
         LocalAction::ScrollBottom => app.chat.scroll_to_bottom(),
         LocalAction::ToggleMouseCapture => super::toggle_mouse_capture(app),
-        // Leader equivalent of typing `/` in an empty input, minus the
-        // empty-input requirement (the leader is explicit intent).
+        // Same popup as typing `/`, but the input field stays untouched —
+        // so the popup filters off whatever the field already holds.
         // Chatting-only: the popup is meaningless in PatternSelect.
         LocalAction::OpenCommandPopup => {
             if app.chat.phase == ChatPhase::Chatting {
@@ -740,6 +740,9 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
             PopupAction::None => return,
             PopupAction::Complete(cmd) => {
                 app.chat.populate_editor(&cmd);
+                // Re-filter now, not on the next keypress: the list must
+                // match what the field just got filled with.
+                sync_command_popup(app);
                 return;
             }
             PopupAction::Close => {
@@ -748,6 +751,10 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
             }
             PopupAction::Send(cmd) => {
                 app.chat.command_popup = None;
+                // The field held the filter that selected `cmd`; clearing
+                // it matches a normal send (`send_message`) and stops the
+                // command from sitting there ready to be sent twice.
+                app.chat.editor = empty_chat_editor();
                 app.chat.send_message_inner(cmd);
                 return;
             }

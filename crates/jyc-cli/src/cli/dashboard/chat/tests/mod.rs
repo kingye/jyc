@@ -665,6 +665,72 @@ fn command_popup_filters_off_the_chat_input_field() {
     );
 }
 
+/// Enter sends the highlighted command and leaves the field clean: the text
+/// that filtered the list must not sit in the input field waiting to be
+/// sent a second time.
+#[test]
+fn command_popup_send_clears_the_input_field() {
+    let mut app = chatting_app();
+    let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+    handle_chat_keys(&mut app, key(KeyCode::Char('/')), &mut test_terminal());
+    handle_chat_keys(&mut app, key(KeyCode::Enter), &mut test_terminal());
+
+    assert!(app.chat.command_popup.is_none());
+    assert!(
+        app.chat.text().is_empty(),
+        "no residue after sending, field holds {:?}",
+        app.chat.text()
+    );
+    let sent = app.chat.messages.last().expect("command echoed locally");
+    assert!(sent.text.starts_with('/'), "sent {:?}", sent.text);
+}
+
+/// Tab writes the completion into the field and re-filters in the same
+/// keypress — the list must not lag one frame behind the field.
+#[test]
+fn command_popup_tab_completion_refilters_immediately() {
+    let mut app = chatting_app();
+    let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+    handle_chat_keys(&mut app, key(KeyCode::Char('/')), &mut test_terminal());
+    handle_chat_keys(&mut app, key(KeyCode::Tab), &mut test_terminal());
+
+    assert!(!app.chat.text().is_empty(), "Tab completed into the field");
+    let popup = app.chat.command_popup.as_ref().expect("popup stays open");
+    assert_eq!(popup.filter, app.chat.text(), "list follows the completion");
+    assert_eq!(popup.selected, 0, "a new filter restarts at the top");
+}
+
+/// `ctrl+p c` opens the same popup, which has no field of its own: with a
+/// draft in the input field, further typing filters off that draft.
+#[test]
+fn leader_command_popup_filters_off_the_draft() {
+    let mut app = chatting_app();
+    app.chat.populate_editor("draft");
+    execute_local_action(
+        &mut app,
+        &mut test_terminal(),
+        local_commands::LocalAction::OpenCommandPopup,
+    );
+    let popup = app
+        .chat
+        .command_popup
+        .as_ref()
+        .expect("leader opens the popup");
+    assert!(popup.filter.is_empty(), "opens with the full list");
+
+    handle_chat_keys(
+        &mut app,
+        crossterm::event::KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
+        &mut test_terminal(),
+    );
+    assert_eq!(app.chat.text(), "draft!", "the key went to the field");
+    assert_eq!(
+        app.chat.command_popup.as_ref().expect("still open").filter,
+        "draft!",
+        "the filter adopts the field"
+    );
+}
+
 /// The popup renders directly BELOW the input field: a borderless top rule
 /// on the row after the prompt, with the list under it — so it can never
 /// cover the text being typed.

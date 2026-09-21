@@ -178,7 +178,9 @@
   command popup also dropped its own filter box — the chat input field *is*
   the filter, so typing, backspacing and cursor keys keep editing the field,
   Tab completions land there, and the popup closes once the field is
-  emptied (#796)
+  emptied. Sending a command now clears the field instead of leaving the
+  command there to be sent twice, and Enter with no matching item sends what
+  you typed rather than doing nothing (#796)
 
 ## [0.3.18] - 2026-09-12
 

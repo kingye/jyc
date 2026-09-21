@@ -7,7 +7,6 @@ use ratatui::{
 };
 
 use jyc_types::{CommandArg, CommandInfo};
-use unicode_width::UnicodeWidthStr;
 
 /// Strips a leading `/` from a command name for filter matching.
 fn skip_slash(s: &str) -> &str {
@@ -337,16 +336,16 @@ pub fn render_command_popup(
             Style::default().fg(Color::DarkGray),
         ))]
     } else {
-        render_rows(&level.items, state.selected, inner.width)
+        render_rows(&level.items, state.selected)
     };
 
     frame.render_widget(Paragraph::new(items).wrap(Wrap { trim: false }), inner);
 }
 
-/// List rows. The selected row is padded to `width` so its highlight bar
-/// spans the full popup width — there are no side borders to end it at.
-/// Rows that open a deeper level carry a `▸` marker.
-fn render_rows(items: &[PopupItem], selected: usize, width: u16) -> Vec<Line<'_>> {
+/// List rows. The selected row carries a `→` in the two-column gutter and is
+/// dimmed, matching the question box's options. Rows that open a deeper level
+/// carry a `▸` marker.
+fn render_rows(items: &[PopupItem], selected: usize) -> Vec<Line<'_>> {
     let clamped = if items.is_empty() {
         0
     } else {
@@ -357,7 +356,8 @@ fn render_rows(items: &[PopupItem], selected: usize, width: u16) -> Vec<Line<'_>
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let name = format!("  {}  ", item.text);
+            let gutter = if i == clamped { "→ " } else { "  " };
+            let name = format!("{gutter}{}  ", item.text);
             let marker = if item.has_children { " ▸" } else { "" };
             if i != clamped {
                 return Line::from(vec![
@@ -369,15 +369,9 @@ fn render_rows(items: &[PopupItem], selected: usize, width: u16) -> Vec<Line<'_>
                     Span::styled(marker, Style::default().fg(Color::DarkGray)),
                 ]);
             }
-            let bar = Style::default().fg(Color::Black).bg(Color::Cyan);
+            let dim = Style::default().add_modifier(Modifier::DIM);
             let desc = format!(" {}{}", item.description, marker);
-            let used =
-                UnicodeWidthStr::width(name.as_str()) + UnicodeWidthStr::width(desc.as_str());
-            Line::from(vec![
-                Span::styled(name, bar.add_modifier(Modifier::BOLD)),
-                Span::styled(desc, bar),
-                Span::styled(" ".repeat((width as usize).saturating_sub(used)), bar),
-            ])
+            Line::from(vec![Span::styled(name, dim), Span::styled(desc, dim)])
         })
         .collect()
 }

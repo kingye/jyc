@@ -59,8 +59,9 @@ pub enum LocalAction {
     ScrollTop,
     /// Scroll the message area to the bottom.
     ScrollBottom,
-    /// Open the `/` command popup (leader equivalent of typing `/` in
-    /// an empty input).
+    /// Open the `/` command popup without touching the input field (typing
+    /// `/` also leaves the slash in the field, which then serves as the
+    /// popup's filter).
     OpenCommandPopup,
     /// Expand/collapse thinking display (live progress tail and the
     /// completed-turn pseudo-messages in the chat history).

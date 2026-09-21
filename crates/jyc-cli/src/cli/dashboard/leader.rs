@@ -82,20 +82,67 @@ impl Leader {
         }
     }
 
-    /// Render the leader as a centered overlay.
+    /// Render the leader as a centered overlay (used on the dashboard
+    /// screen, which has no input field to anchor against).
     pub fn render(&self, frame: &mut Frame, area: Rect) {
         render_leader(frame, area, &self.entries, &self.buffer);
     }
+
+    /// Rows this leader needs when anchored: top rule + entries + footer.
+    /// The chat layout reserves exactly this many rows below the input
+    /// field, so the layout and the renderer share this helper.
+    pub fn popup_height(&self) -> u16 {
+        // +1 top rule, +1 footer; `max(1)` keeps the "no commands" row
+        // visible for an empty scope.
+        2 + self.entries.len().max(1) as u16
+    }
+
+    /// Render as a full-width top rule + list inside `rect` — the slot the
+    /// chat layout placed directly below the input field. No side or bottom
+    /// borders, same treatment as the `/` command popup.
+    pub fn render_anchored(&self, frame: &mut Frame, rect: Rect) {
+        let block = Block::default()
+            .title(leader_title(&self.buffer))
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(Color::Cyan));
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+        render_leader_body(frame, inner, &self.entries, &self.buffer);
+    }
 }
 
-fn render_leader(frame: &mut Frame, area: Rect, entries: &[LeaderEntry], buffer: &str) {
-    // Adaptive width: fit the longest entry (key column + name + description).
-    let key_col_width = entries
+/// Width of the leader-key column (longest key, at least 2).
+fn leader_key_col_width(entries: &[LeaderEntry]) -> usize {
+    entries
         .iter()
         .map(|e| UnicodeWidthStr::width(e.keys))
         .max()
         .unwrap_or(0)
-        .max(2);
+        .max(2)
+}
+
+/// Title line for both render styles: the pending key buffer as a chip.
+fn leader_title(buffer: &str) -> Line<'static> {
+    if buffer.is_empty() {
+        return Line::from(Span::styled(
+            "── Leader ──",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+    }
+    Line::from(vec![
+        Span::styled("── Leader ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" {} ", buffer),
+            Style::default().fg(Color::Black).bg(Color::Yellow),
+        ),
+        Span::styled(" ──", Style::default().add_modifier(Modifier::BOLD)),
+    ])
+}
+
+/// Centered overlay inside a full box — used on the dashboard screen.
+fn render_leader(frame: &mut Frame, area: Rect, entries: &[LeaderEntry], buffer: &str) {
+    // Adaptive width: fit the longest entry (key column + name + description).
+    let key_col_width = leader_key_col_width(entries);
     let content_width = entries
         .iter()
         .map(|e| {
@@ -108,23 +155,6 @@ fn render_leader(frame: &mut Frame, area: Rect, entries: &[LeaderEntry], buffer:
         .max()
         .unwrap_or(0);
     let popup_width = (content_width as u16 + 2).clamp(36, area.width.saturating_sub(2).max(36));
-
-    // Title: show the current buffer as a chip when non-empty.
-    let title = if buffer.is_empty() {
-        Line::from(Span::styled(
-            "── Leader ──",
-            Style::default().add_modifier(Modifier::BOLD),
-        ))
-    } else {
-        Line::from(vec![
-            Span::styled("── Leader ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(
-                format!(" {} ", buffer),
-                Style::default().fg(Color::Black).bg(Color::Yellow),
-            ),
-            Span::styled(" ──", Style::default().add_modifier(Modifier::BOLD)),
-        ])
-    };
 
     let list_height = entries.len() as u16 + 1; // rows + footer
     let popup_height = list_height + 2; // borders
@@ -142,17 +172,24 @@ fn render_leader(frame: &mut Frame, area: Rect, entries: &[LeaderEntry], buffer:
     frame.render_widget(Clear, popup_area);
 
     let block = Block::default()
-        .title(title)
+        .title(leader_title(buffer))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
+    render_leader_body(frame, inner, entries, buffer);
+}
+
+/// Entries + footer, shared by the centered overlay and the anchored
+/// (directly below the chat input field) rendering.
+fn render_leader_body(frame: &mut Frame, area: Rect, entries: &[LeaderEntry], buffer: &str) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
-        .split(inner);
+        .split(area);
+    let key_col_width = leader_key_col_width(entries);
 
     let mut lines: Vec<Line> = entries
         .iter()

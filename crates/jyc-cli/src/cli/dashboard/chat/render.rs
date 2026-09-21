@@ -84,12 +84,11 @@ pub(super) fn history_fingerprint(
     }
 }
 
-/// Background of a human turn's block (see
-/// [`render_history_lines`]). A neutral r=g=b on purpose: a bluish dark gray
-/// (One Dark's #282c34 was the first pick) gets quantized onto a warm palette by
-/// terminals that do not do truecolor, and reads as coffee. Equal channels rule
-/// that out. It stays a fixed dark RGB rather than `Color::DarkGray` because a
-/// mid gray is hard to tell apart from a terminal whose own background is gray.
+/// Background of a human turn's block (see [`render_history_lines`]). A neutral
+/// r=g=b on purpose: a bluish gray gets quantized onto a warm palette by a
+/// terminal without truecolor and reads as coffee. `Color::DarkGray` is no good
+/// either — its mid gray barely differs from a terminal whose own background is
+/// gray.
 ///
 /// The block sets **no foreground** — the text keeps the terminal's own color,
 /// which is what makes a human turn read at exactly the same brightness as the
@@ -107,13 +106,14 @@ fn is_user_message(sender: &str) -> bool {
 }
 
 /// Render the full message history to wrapped, styled lines: per-round
-/// top/bottom rules (time / duration) spanning `width`, plus each human or
-/// agent message's markdown body, word-wrapped one column narrower and inset —
-/// no text starts flush against the pane edge. There is no speaker label — the
-/// human side is identified by a background block (see [`USER_BG`]), the agent's
-/// replies sit on the pane background. Pure in `(messages, width)` so the result
-/// is cached per frame — the dynamic progress tail (thinking / activity / live
-/// ticker) is appended by the caller after these lines and stays per-frame.
+/// top/bottom rules (time / duration) of exactly `width`, plus each human or
+/// agent message's markdown body, wrapped one column narrower than the pane and
+/// inset by that column — no text starts flush against the pane edge. There is
+/// no speaker label — the human side is identified by a background block (see
+/// [`USER_BG`]), the agent's replies sit on the pane background. Pure in
+/// `(messages, width)` so the result is cached per frame — the dynamic progress
+/// tail (thinking / activity / live ticker) is appended by the caller after
+/// these lines and stays per-frame.
 pub(super) fn render_history_lines(
     messages: &[ChatMessage],
     width: usize,
@@ -122,6 +122,9 @@ pub(super) fn render_history_lines(
     let mut all_lines: Vec<Line<'static>> = Vec::new();
 
     let dim_style = Style::default().fg(Color::DarkGray);
+    // The pane is `width` wide; message bodies give up one column to the inset
+    // they are drawn with (see the insert below), so a row never overflows.
+    let body_width = width.saturating_sub(1);
     // The human side of the conversation: a background block in place of a
     // label. No foreground is set on purpose — see [`USER_BG`]: the text keeps
     // the terminal's own color, so a human turn reads at exactly the brightness
@@ -170,13 +173,14 @@ pub(super) fn render_history_lines(
                 let dashes = "─".repeat(width);
                 all_lines.push(Line::from(Span::styled(dashes, dim_style)));
             } else {
-                // <dashes> <elapsed> ──
-                let dash_count = width.saturating_sub(elapsed.len() + 4);
-                all_lines.push(Line::from(vec![
-                    Span::styled(format!("{} ", "─".repeat(dash_count)), dim_style),
-                    Span::styled(elapsed, dim_style),
-                    Span::styled(" ──", dim_style),
-                ]));
+                // "<dashes> <elapsed> ──" of exactly `width`: the fill is what
+                // the label leaves over, so the two cannot disagree.
+                let label = format!(" {elapsed} ──");
+                let fill = width.saturating_sub(label.chars().count());
+                all_lines.push(Line::styled(
+                    format!("{}{label}", "─".repeat(fill)),
+                    dim_style,
+                ));
             }
             all_lines.push(Line::from(""));
             group_start_ts = None;
@@ -191,13 +195,13 @@ pub(super) fn render_history_lines(
             if time_str.is_empty() {
                 all_lines.push(Line::from(Span::styled("─".repeat(width), dim_style)));
             } else {
-                // ── <time> <dashes>
-                let dash_count = width.saturating_sub(time_str.len() + 4);
-                all_lines.push(Line::from(vec![
-                    Span::styled("── ", dim_style),
-                    Span::styled(time_str, dim_style),
-                    Span::styled(format!(" {}", "─".repeat(dash_count)), dim_style),
-                ]));
+                // "── <time> <dashes>", same as the round-close rule above.
+                let label = format!("── {time_str} ");
+                let fill = width.saturating_sub(label.chars().count());
+                all_lines.push(Line::styled(
+                    format!("{label}{}", "─".repeat(fill)),
+                    dim_style,
+                ));
             }
         }
 
@@ -211,15 +215,17 @@ pub(super) fn render_history_lines(
 
         // Render message (no speaker label — the human side is identified by
         // its background below).
-        //
-        // One column of left inset, shared by both sides, so that no text
-        // starts flush against the pane edge: the body is laid out one column
-        // narrower and that cell is put back in front of it.
-        let body_width = width.saturating_sub(1);
         let md_text = softbreaks_to_hardbreaks(&format!("{}\n", msg.text));
         let rendered =
             tui_markdown::from_str_with_options(&md_text, &chat_markdown_options()).lines;
         let mut msg_lines = wrap_styled_lines(wrap_tables(rendered, body_width), body_width);
+        // The inset cell, one per row, both sides. A bare span is enough:
+        // `Line::styled_graphemes` patches the row's own style onto every
+        // grapheme it renders, so the block's background — or a code block's
+        // shade — covers this cell too. Goes in before the pad is measured.
+        for line in &mut msg_lines {
+            line.spans.insert(0, Span::raw(" "));
+        }
         if is_user {
             for line in &mut msg_lines {
                 // A row that carries its own background (a fenced code block
@@ -229,11 +235,6 @@ pub(super) fn render_history_lines(
                 // Patched *under* the line style so markdown's own colors
                 // (a blockquote's green, a heading) survive on the block.
                 line.style = user_style.patch(line.style);
-                // The inset belongs to the block, so it carries the same
-                // background as the row it precedes. It goes in before the pad
-                // is measured, so the row still ends up exactly `width` wide.
-                line.spans
-                    .insert(0, Span::styled(" ", Style::default().bg(bg)));
                 // `Paragraph` paints a line's style only where it has glyphs,
                 // so the row is padded to read as one solid block.
                 let pad = width.saturating_sub(line.width());
@@ -249,12 +250,6 @@ pub(super) fn render_history_lines(
                 || Line::from(Span::styled(" ".repeat(width), user_style)).style(user_style);
             msg_lines.insert(0, pad_row());
             msg_lines.push(pad_row());
-        } else {
-            // The agent's reply sits on the pane background, so a bare space is
-            // the whole inset.
-            for line in &mut msg_lines {
-                line.spans.insert(0, Span::raw(" "));
-            }
         }
         all_lines.extend(msg_lines);
         // Breath below a reply as well, mirroring the padding the human block
@@ -273,12 +268,12 @@ pub(super) fn render_history_lines(
             let dashes = "─".repeat(width);
             all_lines.push(Line::from(Span::styled(dashes, dim_style)));
         } else {
-            let dash_count = width.saturating_sub(elapsed.len() + 4);
-            all_lines.push(Line::from(vec![
-                Span::styled(format!("{} ", "─".repeat(dash_count)), dim_style),
-                Span::styled(elapsed, dim_style),
-                Span::styled(" ──", dim_style),
-            ]));
+            let label = format!(" {elapsed} ──");
+            let fill = width.saturating_sub(label.chars().count());
+            all_lines.push(Line::styled(
+                format!("{}{label}", "─".repeat(fill)),
+                dim_style,
+            ));
         }
         all_lines.push(Line::from(""));
     }

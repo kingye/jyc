@@ -192,9 +192,9 @@ pub enum PopupAction {
     /// Enter pressed on the first level — send the command immediately.
     Send(String),
     /// Tab, or Enter below the first level, completed the selected row — write
-    /// it into the chat input field (always followed by one space) and let the
-    /// caller re-derive the level from the new text: a deeper level opens, and
-    /// a row with nothing after it closes the popup.
+    /// it into the chat input field and let the caller re-derive the level from
+    /// the new text: a deeper level opens, and a row with nothing after it
+    /// closes the popup. See [`completion_for`] for the exact text.
     Complete(String),
     /// Esc pressed — close the popup.
     Close,
@@ -255,24 +255,19 @@ pub fn handle_popup_key(
             Some(completion) => PopupAction::Complete(completion),
             None => PopupAction::None,
         },
-        KeyCode::Enter => {
-            // Only the first level sends (`/model` fires the command that lists
-            // models). Below it Enter is Tab — the value has to reach the field
-            // first, so sending a command with arguments takes a second Enter.
-            // With nothing to select at this level the key belongs to the chat
-            // input field, which sends what was typed.
-            if level.prefix.is_empty() {
-                match level.items.get(state.selected) {
-                    Some(item) => PopupAction::Send(level.line(item)),
-                    None => PopupAction::PassThrough,
-                }
-            } else {
-                match completion_for(&level, state.selected) {
-                    Some(completion) => PopupAction::Complete(completion),
-                    None => PopupAction::PassThrough,
-                }
-            }
-        }
+        // Only the first level sends (`/model` fires the command that lists
+        // models). Below it Enter is Tab — the value has to reach the field
+        // first, so sending a command with arguments takes a second Enter. With
+        // nothing to select the key belongs to the chat input field, which sends
+        // what was typed.
+        KeyCode::Enter if level.prefix.is_empty() => match level.items.get(state.selected) {
+            Some(item) => PopupAction::Send(level.line(item)),
+            None => PopupAction::PassThrough,
+        },
+        KeyCode::Enter => match completion_for(&level, state.selected) {
+            Some(completion) => PopupAction::Complete(completion),
+            None => PopupAction::PassThrough,
+        },
         KeyCode::Up => {
             if state.selected > 0 {
                 state.selected -= 1;

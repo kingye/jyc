@@ -695,8 +695,10 @@ fn command_popup_renders_below_the_input_field() {
             .join("")
     };
 
+    // The prompt row is the input field's last content row ("╰─❯ ").
     let prompt = (0..23)
-        .find(|&y| row(y).starts_with('❯'))
+        .rev()
+        .find(|&y| row(y).contains('❯'))
         .expect("prompt row rendered");
     assert!(
         row(prompt).contains('/'),
@@ -745,8 +747,10 @@ fn leader_popup_renders_below_the_input_field() {
             .collect::<Vec<_>>()
             .join("")
     };
+    // The prompt row is the input field's last content row ("╰─❯ ").
     let prompt = (0..23)
-        .find(|&y| row(y).starts_with('❯'))
+        .rev()
+        .find(|&y| row(y).contains('❯'))
         .expect("prompt row rendered");
     let rule = row(prompt + 1);
     assert!(rule.contains("Leader"), "top rule missing: {rule:?}");

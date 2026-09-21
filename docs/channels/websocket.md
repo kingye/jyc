@@ -98,6 +98,8 @@ undo/redo, and standard readline-style editing keys.
 | `gg` / `G` | Jump to top / bottom of the focused pane (message-area focus) |
 | `Enter` | Select pattern / send message (chat input) |
 | `Shift+Enter` / `Alt+Enter` | Insert a newline in the chat input |
+| `/` popup: `Tab` | Complete the highlighted row — writes it into the input followed by one space, which opens the next level (or closes the popup when nothing is left to complete) |
+| `/` popup: `Enter` | Sends the command at the first (command) level. Below it `Enter` behaves like `Tab`, so sending a command with arguments takes a second `Enter`; with nothing to select it sends what was typed |
 | `Esc` | Message-area/explorer focus → back to input. Does not close the chat — use the palette (`open dashboard`) |
 | `Ctrl+P` | Open the leader-key popup: navigation (`open dashboard`, `new chat`, `reload config`, `quit`), pane actions (`z` zen, `e` explorer, `a` activity, `s` status bar, `i` topic info, `o` editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
 | `Ctrl+P` → `o` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |

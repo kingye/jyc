@@ -13,9 +13,11 @@
   — including a remote sender piped in from another channel — renders as a
   full-width dark background block with a blank painted row of padding above
   and below, keeping the terminal's own foreground so it reads at the same
-  brightness as the agent's replies. Those replies stay on the pane background,
-  and the `┄┄┄┄` separator between a human turn and its answer is gone — the
-  block's padding and one blank row delimit it (#798, #799)
+  brightness as the agent's replies. The block's gray is a neutral r=g=b so a
+  terminal that quantizes colors onto its own palette cannot turn it brown.
+  Both sides' text is inset one column, a reply is followed by a blank row of
+  its own, and the `┄┄┄┄` separator between a human turn and its answer is gone
+  — the block's padding delimits it (#798, #799, #800)
 
 - TUI dashboard chat: Esc on a pending `ask_user` question now only hides
   the question box and returns focus to the editor instead of cancelling
@@ -31,13 +33,15 @@
   `/model <id>`, `/thinking show`, `/context dump on`, `/skill on <name>`,
   `/mcp off <server>`, `/bill 2026-08` and `/backlog push` each open their own
   level under the input field, filtered as you type. Tab completes a value and
-  steps into the next level; Enter sends the whole line; a command whose
-  arguments are free text (`/grant <path>`) closes the popup and sends what was
-  typed. The top rule names the current level (`── Commands ──`, then
+  steps into the next level; Enter fires the command at that first level and,
+  below it, completes exactly like Tab — sending then takes a second Enter; a
+  level with nothing to select (free-text arguments like `/grant <path>`, or a
+  filter that matches no value) sends what was typed. The top rule names the
+  current level (`── Commands ──`, then
   `── /model ──`) and rows with a deeper level carry a `▸`. Values come from a
   new `CommandInfo::args` field in the inspect payload (`jyc-core`'s
   `command_args` table), so `/model` is no longer special-cased in the client
-  and a server older than the field still gets a model picker (#797)
+  and a server older than the field still gets a model picker (#797, #800)
 
 - Websocket channel: a chat message sent while the topic's agent is blocked in `ask_user` now answers the pending question instead of being rejected with a busy-topic error — the free-input path for websocket clients such as the TUI, mirroring the feishu pipe's interception. The text-fallback routing moves from the feishu pipe into a shared `QuestionHub::try_answer` (#791)
 
@@ -121,6 +125,9 @@
 
 ### Fixed
 
+- TUI chat pane: the round rules (`── 10:19 ──` and `──── 5s ──`) are exactly
+  pane-wide — each was one column too long and relied on the renderer clipping
+  the excess (#800)
 - Truncated LLM streams and leaked tool-call syntax no longer reach users as
   broken auto-delivered replies (#786): an SSE stream that reaches EOF
   without the provider's `Done` marker is now a transient error (retried by

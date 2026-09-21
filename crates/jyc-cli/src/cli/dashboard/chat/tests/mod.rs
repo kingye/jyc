@@ -1,4 +1,4 @@
-use super::render::{history_fingerprint, render_history_lines};
+use super::render::{USER_BG, history_fingerprint, render_history_lines};
 use super::*;
 
 fn history_msg(sender: &str, text: &str, ts: Option<&str>) -> ChatMessage {
@@ -45,6 +45,12 @@ fn history_fingerprint_changes_on_message_mutations() {
     let mut stamped = msgs.clone();
     stamped[1].timestamp = Some("2026-08-13T10:00:06Z".to_string());
     assert_ne!(base, history_fingerprint(&stamped, 80, false));
+
+    // A message flipping side: same text, count and timestamps, but the
+    // background block now belongs to a different line.
+    let mut flipped = msgs.clone();
+    flipped[0].sender = "ai".to_string();
+    assert_ne!(base, history_fingerprint(&flipped, 80, false));
 
     // Cleared history.
     assert_ne!(base, history_fingerprint(&[], 80, false));
@@ -692,12 +698,48 @@ fn command_popup_tab_completion_refilters_immediately() {
     let mut app = chatting_app();
     let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
     handle_chat_keys(&mut app, key(KeyCode::Char('/')), &mut test_terminal());
+    // Set after `/`: opening the popup refreshes the command list, and the
+    // offline fallback carries no argument values.
+    app.chat.commands = vec![CommandInfo {
+        name: "/model".to_string(),
+        description: "Switch AI model for this topic".to_string(),
+        args: vec![jyc_types::CommandArg {
+            value: "deepseek/deepseek-chat".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
     handle_chat_keys(&mut app, key(KeyCode::Tab), &mut test_terminal());
 
-    assert!(!app.chat.text().is_empty(), "Tab completed into the field");
-    let popup = app.chat.command_popup.as_ref().expect("popup stays open");
+    assert_eq!(app.chat.text(), "/model ", "Tab leaves a space");
+    let popup = app
+        .chat
+        .command_popup
+        .as_ref()
+        .expect("the space opens the value level");
     assert_eq!(popup.filter, app.chat.text(), "list follows the completion");
-    assert_eq!(popup.selected, 0, "a new filter restarts at the top");
+    assert_eq!(popup.selected, 0, "a new level restarts at the top");
+}
+
+/// A command with nothing below it: the space Tab leaves behind is also what
+/// drops the popup, so one Tab completes and dismisses.
+#[test]
+fn tab_on_a_command_without_values_closes_the_popup() {
+    let mut app = chatting_app();
+    let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+    handle_chat_keys(&mut app, key(KeyCode::Char('/')), &mut test_terminal());
+    app.chat.commands = vec![CommandInfo {
+        name: "/plan".to_string(),
+        description: "Switch to plan mode (read-only)".to_string(),
+        ..Default::default()
+    }];
+    handle_chat_keys(&mut app, key(KeyCode::Tab), &mut test_terminal());
+
+    assert_eq!(app.chat.text(), "/plan ");
+    assert!(
+        app.chat.command_popup.is_none(),
+        "no values follow `/plan`, so the popup must be gone"
+    );
 }
 
 /// `ctrl+p c` opens the same popup, which has no field of its own: with a
@@ -1674,6 +1716,55 @@ fn render_history_thinking_expanded_shows_full_text() {
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
         .collect();
     assert!(text.contains("full chain of thought"), "got: {text}");
+}
+
+/// No speaker labels any more: the human side is a full-width background
+/// block, the agent's reply stays on the pane background.
+#[test]
+fn render_history_marks_human_turns_with_background_not_labels() {
+    let msgs = vec![
+        history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
+        history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
+    ];
+    let lines = render_history_lines(&msgs, 80, false);
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect();
+    assert!(!text.contains("You:"), "label must be gone: {text}");
+    assert!(!text.contains("AI:"), "label must be gone: {text}");
+
+    let is_block = |l: &Line| l.style.bg == Some(USER_BG);
+    let block: Vec<&Line> = lines.iter().filter(|l| is_block(l)).collect();
+    assert!(
+        !block.is_empty() && block.iter().all(|l| l.width() == 80),
+        "the block must fill the row instead of stopping at the last glyph"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| !is_block(l) && l.spans.iter().any(|s| s.content == "answer")),
+        "the agent's reply must not be painted"
+    );
+}
+
+/// A remote (piped-channel) sender is the human side too, so it gets the
+/// block — the label used to be the only thing distinguishing it.
+#[test]
+fn render_history_blocks_piped_channel_sender() {
+    let msgs = vec![history_msg(
+        "金晔",
+        "from feishu",
+        Some("2026-08-13T10:00:00Z"),
+    )];
+    let lines = render_history_lines(&msgs, 40, false);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.style.bg == Some(USER_BG)
+                && l.spans.iter().any(|s| s.content == "from feishu")),
+        "human-side sender must carry the background"
+    );
 }
 
 #[test]

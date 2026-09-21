@@ -27,7 +27,7 @@ pub struct PopupItem {
     /// argument value (`hide`, `deepseek/deepseek-chat`).
     pub text: String,
     pub description: String,
-    /// Completing this row opens another level, so Tab appends a space.
+    /// A deeper level exists below this row — Tab's trailing space opens it.
     pub has_children: bool,
 }
 
@@ -190,12 +190,11 @@ pub enum PopupAction {
     PassThrough,
     /// Enter pressed — send the command immediately.
     Send(String),
-    /// Tab on an incomplete filter — write the completion into the chat
-    /// input field and keep the popup open (the filter follows on sync).
+    /// Tab completed the selected row — write it into the chat input field
+    /// (always followed by one space) and let the caller re-derive the level
+    /// from the new text: a deeper level opens, and a row with nothing after
+    /// it closes the popup.
     Complete(String),
-    /// Tab pressed on a complete filter — copy the command to the chat
-    /// input line so the user can add arguments before sending.
-    CopyToInput(String),
     /// Esc pressed — close the popup.
     Close,
 }
@@ -229,24 +228,24 @@ pub fn handle_popup_key(
         KeyCode::Esc => PopupAction::Close,
         KeyCode::Tab => {
             let row = level.items.get(state.selected);
-            if let Some(row) = row.filter(|r| r.has_children) {
-                // A row with a deeper level steps into it: the trailing space
-                // is what opens that level, so the user never types it.
-                let mut line = level.line(row);
-                line.push(' ');
-                return PopupAction::Complete(line);
-            }
-            // A partial that already equals a value at this level: leave it
-            // in the input line and close (the second Tab of the two-step
-            // completion, at any level).
-            if let Some(line) = level.complete {
-                PopupAction::CopyToInput(line)
+            let mut completion = if let Some(row) = row.filter(|r| r.has_children) {
+                level.line(row)
+            } else if let Some(complete) = &level.complete {
+                // The field already names a value at this level in full.
+                complete.clone()
+            } else if let Some(row) = row {
+                level.line(row)
             } else {
-                match row {
-                    Some(row) => PopupAction::Complete(level.line(row)),
-                    None => PopupAction::None,
-                }
+                return PopupAction::None;
+            };
+            // One Tab is the whole completion. The trailing space leaves the
+            // field ready for the next argument, and it is the marker
+            // `resolve_level` reads: a deeper level opens there, and where
+            // nothing follows, the caller's re-derivation closes the popup.
+            if !completion.ends_with(' ') {
+                completion.push(' ');
             }
+            PopupAction::Complete(completion)
         }
         KeyCode::Enter => match level.items.get(state.selected) {
             // The root sends the command itself (`/model` lists models);
@@ -549,7 +548,9 @@ mod tests {
         let commands = vec![make_cmd("/plan")];
 
         let result = handle_popup_key(key(KeyCode::Tab), &mut state, &commands);
-        assert_eq!(result, PopupAction::Complete("/plan".to_string()));
+        // A command with nothing below it still gets the space: the field is
+        // left ready for arguments, and the caller's re-derivation closes.
+        assert_eq!(result, PopupAction::Complete("/plan ".to_string()));
         // The popup no longer owns the filter text: the caller writes the
         // completion into the chat input field, and the filter follows.
         assert_eq!(state.filter, "pl");
@@ -581,7 +582,7 @@ mod tests {
 
         assert_eq!(
             handle_popup_key(key(KeyCode::Tab), &mut state, &commands),
-            PopupAction::Complete("/model".to_string())
+            PopupAction::Complete("/model ".to_string())
         );
     }
 
@@ -594,7 +595,7 @@ mod tests {
 
         assert_eq!(
             handle_popup_key(key(KeyCode::Tab), &mut state, &commands),
-            PopupAction::Complete("/skill on dev-workflow".to_string())
+            PopupAction::Complete("/skill on dev-workflow ".to_string())
         );
     }
 
@@ -700,50 +701,50 @@ mod tests {
     }
 
     #[test]
-    fn tab_copies_to_input_when_filter_complete_with_slash() {
+    fn tab_keeps_a_typed_value_over_the_selected_row() {
         let mut state = CommandPopupState::new();
         state.filter = "/thinking".to_string();
-        state.selected = 0;
-        let commands = vec![make_cmd("/thinking"), make_cmd("/plan")];
+        state.selected = 1; // "/thinking-verbose", not the typed command
+        let commands = vec![make_cmd("/thinking"), make_cmd("/thinking-verbose")];
 
         let result = handle_popup_key(key(KeyCode::Tab), &mut state, &commands);
-        assert_eq!(result, PopupAction::CopyToInput("/thinking".to_string()));
-        // Filter is not mutated on the CopyToInput path
+        assert_eq!(result, PopupAction::Complete("/thinking ".to_string()));
+        // The filter text itself is the caller's business (it is the input
+        // field); the popup never rewrites it.
         assert_eq!(state.filter, "/thinking");
     }
 
     #[test]
-    fn tab_then_tab_copies_to_input() {
-        // Simulates: "/think" in the chat input field + Tab → the caller
-        // writes "/thinking" back into the field (popup stays open, filter
-        // follows on the next sync) → Tab again → CopyToInput (closes).
+    fn tab_on_a_leaf_command_leaves_the_caller_to_close_it() {
+        // One Tab is now the whole completion. What it leaves behind
+        // (`/thinking `) no longer points at a level, which is the condition
+        // `sync_command_popup` closes on — proven end to end by
+        // `tab_on_a_command_without_values_closes_the_popup`.
         let mut state = CommandPopupState::new();
         state.filter = "/think".to_string();
         state.selected = 0;
         let commands = vec![make_cmd("/thinking")];
 
         let first = handle_popup_key(key(KeyCode::Tab), &mut state, &commands);
-        assert_eq!(first, PopupAction::Complete("/thinking".to_string()));
-
-        state.filter = "/thinking".to_string(); // what the editor now holds
-        let second = handle_popup_key(key(KeyCode::Tab), &mut state, &commands);
-        assert_eq!(second, PopupAction::CopyToInput("/thinking".to_string()));
+        assert_eq!(first, PopupAction::Complete("/thinking ".to_string()));
+        assert!(
+            resolve_level("/thinking ", &commands).is_none(),
+            "a leaf completion must leave nothing to show"
+        );
     }
 
     #[test]
-    fn tab_then_tab_copies_to_input_at_the_second_level() {
-        // Same two-step flow for argument values: "/model gpt" + Tab completes
-        // the name into the input field, Tab again closes with it in place.
+    fn tab_completes_a_value_at_the_second_level() {
+        // Same for argument values: "/model gpt" + Tab writes the full id
+        // followed by one space (nothing deeper to open).
         let mut state = CommandPopupState::new();
         state.filter = "/model gpt".to_string();
         state.selected = 0;
         let commands = vec![model_cmd()];
 
-        let first = handle_popup_key(key(KeyCode::Tab), &mut state, &commands);
-        assert_eq!(first, PopupAction::Complete("/model gpt-4".to_string()));
-
-        state.filter = "/model gpt-4".to_string();
-        let second = handle_popup_key(key(KeyCode::Tab), &mut state, &commands);
-        assert_eq!(second, PopupAction::CopyToInput("/model gpt-4".to_string()));
+        assert_eq!(
+            handle_popup_key(key(KeyCode::Tab), &mut state, &commands),
+            PopupAction::Complete("/model gpt-4 ".to_string())
+        );
     }
 }

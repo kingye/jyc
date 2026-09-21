@@ -482,7 +482,7 @@ fn commands_for_topic(
 }
 
 #[cfg(test)]
-mod tests {
+mod command_args_tests {
     use super::*;
 
     /// The payload's commands carry the argument values that drive the TUI

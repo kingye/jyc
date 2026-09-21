@@ -711,6 +711,10 @@ fn leader_command_popup_filters_off_the_draft() {
         &mut test_terminal(),
         local_commands::LocalAction::OpenCommandPopup,
     );
+    assert!(
+        !app.chat.commands.is_empty(),
+        "the leader path loads the commands itself, or the popup renders Loading..."
+    );
     let popup = app
         .chat
         .command_popup
@@ -783,6 +787,30 @@ fn command_popup_renders_below_the_input_field() {
     assert!(
         row(prompt + 2).contains('/'),
         "command list should follow the rule"
+    );
+}
+
+/// The popup follows the command tree out: once the text reaches an argument
+/// position with nothing to complete (`/plan <free text>`), the popup closes
+/// and the field behaves as if it had never opened.
+#[test]
+fn command_popup_closes_on_a_free_text_argument() {
+    let mut app = chatting_app();
+    let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+
+    for c in "/plan".chars() {
+        handle_chat_keys(&mut app, key(KeyCode::Char(c)), &mut test_terminal());
+    }
+    assert!(
+        app.chat.command_popup.is_some(),
+        "the root level is still completable"
+    );
+
+    handle_chat_keys(&mut app, key(KeyCode::Char(' ')), &mut test_terminal());
+    assert_eq!(app.chat.text(), "/plan ");
+    assert!(
+        app.chat.command_popup.is_none(),
+        "/plan declares no argument values, so the popup goes away"
     );
 }
 

@@ -22,7 +22,7 @@
   `── /model ──`) and rows with a deeper level carry a `▸`. Values come from a
   new `CommandInfo::args` field in the inspect payload (`jyc-core`'s
   `command_args` table), so `/model` is no longer special-cased in the client
-  and a server older than the field still gets a model picker (#NNN)
+  and a server older than the field still gets a model picker (#797)
 
 - Websocket channel: a chat message sent while the topic's agent is blocked in `ask_user` now answers the pending question instead of being rejected with a busy-topic error — the free-input path for websocket clients such as the TUI, mirroring the feishu pipe's interception. The text-fallback routing moves from the feishu pipe into a shared `QuestionHub::try_answer` (#791)
 

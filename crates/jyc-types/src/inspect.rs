@@ -437,8 +437,10 @@ pub struct CommandInfo {
     /// multi-level `/` popup. Empty means the command takes free-text
     /// arguments (or none at all), so the popup offers nothing for it.
     /// Filled per topic by the inspect server — see
-    /// `jyc_core::command::command_args` for the value table.
-    #[serde(default)]
+    /// `jyc_core::command::command_args` for the value table. Omitted from the
+    /// payload when empty: most commands take free text, and this rides on
+    /// every topic of every overview poll.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<CommandArg>,
 }
 
@@ -453,10 +455,11 @@ pub struct CommandArg {
     /// "hide", or a full model id like "deepseek/deepseek-chat").
     pub value: String,
     /// Optional one-line hint shown next to the value in the popup.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
-    /// Values for the next argument position. Empty = this value is last.
-    #[serde(default)]
+    /// Values for the next argument position. Empty = this value is last, so
+    /// it is left off the wire — a leaf is the common case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<CommandArg>,
 }
 

@@ -135,9 +135,13 @@ pub fn resolve_level(filter: &str, commands: &[CommandInfo]) -> Option<PopupLeve
     })
 }
 
-/// True when `token` names `command` either with or without the slash.
+/// True when `token` names `command`, with or without the slash and ignoring
+/// case — the registry lowercases the command before dispatch, so `/MODEL x`
+/// works server-side and the walk must not disagree with it. (Argument values
+/// stay case-exact: the handlers are inconsistent there.)
 fn matches_command(command: &str, token: &str) -> bool {
-    !token.is_empty() && (command == token || skip_slash(command) == skip_slash(token))
+    let token = skip_slash(token);
+    !token.is_empty() && skip_slash(command).eq_ignore_ascii_case(token)
 }
 
 /// Root rows: commands whose name starts with the partial, with or without
@@ -226,9 +230,11 @@ pub fn handle_popup_key(
         KeyCode::Tab => {
             let row = level.items.get(state.selected);
             if let Some(row) = row.filter(|r| r.has_children) {
-                // A row with a deeper level steps into it: the trailing
-                // space is what opens that level, so the user never types it.
-                return PopupAction::Complete(format!("{}{} ", level.prefix, row.text));
+                // A row with a deeper level steps into it: the trailing space
+                // is what opens that level, so the user never types it.
+                let mut line = level.line(row);
+                line.push(' ');
+                return PopupAction::Complete(line);
             }
             // A partial that already equals a value at this level: leave it
             // in the input line and close (the second Tab of the two-step
@@ -285,12 +291,11 @@ pub fn render_command_popup(
     state: &CommandPopupState,
     commands: &[CommandInfo],
 ) {
-    let title = resolve_level(&state.filter, commands)
-        .map(|l| l.title)
-        .unwrap_or_else(|| "Commands".to_string());
+    let level = resolve_level(&state.filter, commands);
+    let title = level.as_ref().map_or("Commands", |l| l.title.as_str());
     let block = Block::default()
         .title(Line::from(Span::styled(
-            rule_title(&title),
+            rule_title(title),
             Style::default().add_modifier(Modifier::BOLD),
         )))
         .borders(Borders::TOP)
@@ -310,9 +315,9 @@ pub fn render_command_popup(
         return;
     }
 
-    let Some(level) = resolve_level(&state.filter, commands) else {
-        return;
-    };
+    // A free-text path: the caller closes the popup in `sync_command_popup`,
+    // so this is only the one-frame race where the commands changed under it.
+    let Some(level) = level else { return };
     let items = if level.items.is_empty() {
         vec![Line::from(Span::styled(
             "  (no matches)",
@@ -339,23 +344,25 @@ fn render_rows(items: &[PopupItem], selected: usize, width: u16) -> Vec<Line<'_>
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let mut name = format!("  {}  ", item.text);
-            if item.has_children {
-                name.push('▸');
-                name.push(' ');
-            }
-            let desc = item.description.as_str();
+            let name = format!("  {}  ", item.text);
+            let marker = if item.has_children { " ▸" } else { "" };
             if i != clamped {
                 return Line::from(vec![
                     Span::raw(name),
-                    Span::styled(desc, Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        item.description.as_str(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(marker, Style::default().fg(Color::DarkGray)),
                 ]);
             }
             let bar = Style::default().fg(Color::Black).bg(Color::Cyan);
-            let used = UnicodeWidthStr::width(name.as_str()) + 1 + UnicodeWidthStr::width(desc);
+            let desc = format!(" {}{}", item.description, marker);
+            let used =
+                UnicodeWidthStr::width(name.as_str()) + UnicodeWidthStr::width(desc.as_str());
             Line::from(vec![
                 Span::styled(name, bar.add_modifier(Modifier::BOLD)),
-                Span::styled(format!(" {}", desc), bar),
+                Span::styled(desc, bar),
                 Span::styled(" ".repeat((width as usize).saturating_sub(used)), bar),
             ])
         })
@@ -488,6 +495,24 @@ mod tests {
         assert_eq!(
             keys(&resolve_level("/model GPT", &commands).unwrap().items),
             vec!["gpt-4"]
+        );
+    }
+
+    #[test]
+    fn the_walk_matches_the_registries_case_folding() {
+        let commands = vec![model_cmd()];
+        // `/MODEL x` dispatches server-side (the registry lowercases the
+        // command), so the walk must resolve it too — and hand back the
+        // canonical spelling for the completion.
+        let level = resolve_level("/MODEL gpt", &commands).unwrap();
+        assert_eq!(level.prefix, "/model ");
+        assert_eq!(level.title, "/model");
+        assert_eq!(keys(&level.items), vec!["gpt-4"]);
+        assert_eq!(level.complete, None);
+        assert_eq!(
+            resolve_level("/MODEL", &commands).unwrap().complete,
+            Some("/model".to_string()),
+            "a case-folded full name is still complete"
         );
     }
 

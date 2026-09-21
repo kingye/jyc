@@ -157,7 +157,9 @@ curl -H 'Authorization: Bearer <token>' http://127.0.0.1:9876/api/state
     "available_workers": 3,
     "messages_received": 567, "messages_processed": 560, "errors": 2
   },
-  "commands": [{ "name": "/model", "description": "..." }],
+  "commands": [{ "name": "/model", "description": "...",
+                 "args": [{ "value": "deepseek/deepseek-chat" },
+                          { "value": "reset", "description": "Clear the override" }] }],
   "models":   [{ "name": "deepseek/deepseek-chat" }]
 }
 ```

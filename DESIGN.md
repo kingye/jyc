@@ -3423,8 +3423,11 @@ table, not a special case in `jyc-cli`.
 - **Empty `args` means free text.** `/grant <path>` and `/backlog push <text>`
   complete nothing; the popup closes and the field sends what was typed.
 - **Trade-off**: the values are computed per topic on every ~500 ms overview
-  poll (see the `TODO(perf)` in the inspect overview builder), which is fine
-  while they are all config-derived (models, MCP names, topic skills).
+  poll and serialized per topic, so a long model list is repeated for every
+  topic (`topics × models`). Leaf entries omit their empty `description`/`args`
+  on the wire to keep that cheap, but the real fix is the lazy per-topic
+  command fetch in the `TODO(perf)` in the inspect overview builder — which
+  also removes the per-poll recompute.
   `/exchange` (a directory scan) and `/ungrant` (agent runtime state) are
   deliberately absent from the table until commands are fetched lazily per
   topic.

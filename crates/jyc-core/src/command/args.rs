@@ -73,11 +73,9 @@ pub fn command_args(command: &str, ctx: &ArgCtx) -> Vec<CommandArg> {
         ],
         "/context" => vec![
             val("full", "Keep the whole prior conversation verbatim"),
-            val_with(
-                "sliding",
-                "Sliding window; optionally follow with a window size",
-                vec![],
-            ),
+            // The handler also answers to `sliding_window`; the table offers
+            // one spelling, and typing the other simply closes the popup.
+            val("sliding", "Sliding window; optionally follow a window size"),
             val("reset", "Drop the runtime override"),
             val_with(
                 "dump",
@@ -100,6 +98,9 @@ pub fn command_args(command: &str, ctx: &ArgCtx) -> Vec<CommandArg> {
             "update",
             "Re-apply the template, overwriting local edits",
         )],
+        // The one argument these three guards accept, in any position. Without
+        // it the popup would close on `/close ` even though `--force` exists.
+        "/close" | "/new" | "/reset" => vec![val("--force", "Skip the confirmation guard")],
         "/bill" => {
             let mut args = recent_months();
             args.push(val("all", "Every day with recorded usage"));
@@ -231,10 +232,26 @@ mod tests {
     }
 
     #[test]
+    fn force_flag_is_offered_where_the_handlers_accept_it() {
+        let cfg = AppConfig::default();
+        let empty = ctx(&cfg, &[], &[]);
+        for cmd in ["/close", "/new", "/reset"] {
+            assert_eq!(
+                command_args(cmd, &empty)
+                    .iter()
+                    .map(|a| a.value.as_str())
+                    .collect::<Vec<_>>(),
+                ["--force"],
+                "{cmd}'s only argument"
+            );
+        }
+    }
+
+    #[test]
     fn free_text_commands_have_no_values() {
         let cfg = AppConfig::default();
         let empty = ctx(&cfg, &[], &[]);
-        for cmd in ["/grant", "/plan", "/pin", "/exchange", "/ungrant", "/reset"] {
+        for cmd in ["/grant", "/plan", "/pin", "/exchange", "/ungrant"] {
             assert!(command_args(cmd, &empty).is_empty(), "{cmd} must not");
         }
     }

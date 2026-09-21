@@ -641,6 +641,9 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
         LocalAction::OpenCommandPopup => {
             if app.chat.phase == ChatPhase::Chatting {
                 app.chat.focus = ChatFocus::ChatPane;
+                // Same just-in-time refresh as the `/` key: without it the
+                // popup shows "Loading..." until the user types a slash.
+                app.refresh_chat_commands();
                 app.chat.command_popup = Some(CommandPopupState::new());
             }
         }

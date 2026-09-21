@@ -1699,8 +1699,20 @@ fn render_history_thinking_collapsed_shows_summary_not_body() {
         .collect();
     assert!(text.contains("💭 thinking — 28 chars"), "got: {text}");
     assert!(!text.contains("secret chain of thought body"));
-    // The user→AI separator must still render across the thinking block.
-    assert!(text.contains("┄"), "separator lost across thinking: {text}");
+    // No dashed rule between the human block and the reply any more, and the
+    // collapsed thinking message must not swallow the blank row either.
+    assert!(!text.contains('┄'), "the rule should be gone: {text}");
+    let answer = lines
+        .iter()
+        .position(|l| l.spans.iter().any(|s| s.content.contains("answer")))
+        .expect("answer line");
+    assert!(
+        lines[answer.saturating_sub(1)]
+            .spans
+            .iter()
+            .all(|s| s.content.trim_end().is_empty()),
+        "the reply must not hug the block"
+    );
 }
 
 #[test]
@@ -1739,6 +1751,28 @@ fn render_history_marks_human_turns_with_background_not_labels() {
     assert!(
         !block.is_empty() && block.iter().all(|l| l.width() == 80),
         "the block must fill the row instead of stopping at the last glyph"
+    );
+    // The block breathes: it opens and closes on a painted blank row.
+    assert!(block.len() >= 3, "block too small for padding: {block:?}");
+    for edge in [block[0], *block.last().unwrap()] {
+        assert_eq!(
+            edge.spans
+                .iter()
+                .map(|s| s.content.trim_end().len())
+                .sum::<usize>(),
+            0,
+            "the block's first and last row must be blank padding: {edge:?}"
+        );
+    }
+    // The block contributes only a background — no foreground — so a human turn
+    // reads at the terminal's own brightness, same as the agent's reply. Checked
+    // on the *line* style, which is where `user_style` lands via `Style::patch`
+    // (spans keep markdown's own styles). Holds for this plain-text fixture;
+    // markdown puts heading/blockquote colors on the line style, so keep the
+    // fixture plain if this ever moves inside a styled block.
+    assert!(
+        block.iter().all(|l| l.style.fg.is_none()),
+        "the block must not set a foreground"
     );
     assert!(
         lines

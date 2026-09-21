@@ -13,11 +13,18 @@
   — including a remote sender piped in from another channel — renders as a
   full-width dark background block with a blank painted row of padding above
   and below, keeping the terminal's own foreground so it reads at the same
-  brightness as the agent's replies. The block's gray is a neutral r=g=b so a
-  terminal that quantizes colors onto its own palette cannot turn it brown.
+  brightness as the agent's replies. The block's background is the terminal's
+  own dark gray (ANSI palette slot 8) rather than a hardcoded RGB, which a
+  terminal without truecolor quantizes onto its own palette — often warm.
   Both sides' text is inset one column, a reply is followed by a blank row of
   its own, and the `┄┄┄┄` separator between a human turn and its answer is gone
-  — the block's padding delimits it (#798, #799, #800)
+  — the block's padding delimits it (#798, #799, #800, #801)
+
+- TUI leader popup (`Ctrl+P`) on the chat screen lays its commands out in
+  columns instead of one row each: that scope has seventeen of them, so the
+  popup was taller than the terminal and the last ones fell off the bottom. The
+  descriptive one-per-row layout stays on the dashboard, where five commands fit
+  comfortably (#801)
 
 - TUI dashboard chat: Esc on a pending `ask_user` question now only hides
   the question box and returns focus to the editor instead of cancelling

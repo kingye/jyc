@@ -84,17 +84,19 @@ pub(super) fn history_fingerprint(
     }
 }
 
-/// Background of a human turn's block (see [`render_history_lines`]). A neutral
-/// r=g=b on purpose: a bluish gray gets quantized onto a warm palette by a
-/// terminal without truecolor and reads as coffee. `Color::DarkGray` is no good
-/// either — its mid gray barely differs from a terminal whose own background is
-/// gray.
+/// Background of a human turn's block (see [`render_history_lines`]).
+///
+/// `Color::DarkGray` is ANSI bright black — palette slot 8, SGR 100 as a
+/// background — so the shade is the terminal's own idea of dark gray and never
+/// passes through truecolor quantization: a hardcoded RGB gets quantized onto a
+/// warm palette on some terminals and reads as coffee. The cost of handing the
+/// choice to the theme is that a theme whose slot 8 sits near its own background
+/// shows a barely-there block.
 ///
 /// The block sets **no foreground** — the text keeps the terminal's own color,
 /// which is what makes a human turn read at exactly the same brightness as the
-/// agent's reply. The cost: on a light terminal theme the default foreground is
-/// dark and this background is not, so the block assumes a dark theme.
-pub(super) const USER_BG: Color = Color::Rgb(48, 48, 48);
+/// agent's reply.
+pub(super) const USER_BG: Color = Color::DarkGray;
 
 /// Whether a chat message belongs to the human side of the conversation.
 ///
@@ -315,7 +317,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // clipped by the pane edge or cover the field the user is typing in.
     let popup_rows = match (app.chat.command_popup.as_ref(), app.chat.leader.as_ref()) {
         (Some(state), _) => crate::cli::command_popup::popup_height(state, &app.chat.commands),
-        (None, Some(leader)) => leader.popup_height(),
+        (None, Some(leader)) => leader.popup_height(area.width as usize),
         (None, None) => 0,
     };
     let chunks = Layout::default()

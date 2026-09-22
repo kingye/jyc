@@ -1,6 +1,7 @@
 use jyc_types::AppConfig;
 use jyc_types::channel::{ContextStrategyConfig, ResetCompressionConfig};
 use jyc_types::state_dir::jyc_dir;
+use jyc_types::task::TaskList;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -303,6 +304,53 @@ pub async fn clear_toggle_override(topic_name: &str, topic_path: &Path, file: &s
         .ok();
 }
 
+/// File name of the agent-maintained task list (types in `jyc_types::task`).
+///
+/// The helpers below take the topic's `.jyc` dir (from
+/// `jyc_types::state_dir::jyc_dir`) rather than `(topic_name, topic_path)`, so
+/// the agent's tools — which only see `ToolContext::working_dir` — and the
+/// topic-info readers share one implementation.
+pub const TASKS_FILE: &str = "tasks.json";
+
+/// Read a topic's task list. `None` when the file is missing, malformed, or
+/// holds no items — an empty list has nothing to show, and the renderers omit
+/// the section entirely ([`write_tasks_at`] keeps that invariant by deleting
+/// instead of writing `[]`).
+pub async fn read_tasks_at(jyc_dir: &Path) -> Option<TaskList> {
+    let path = jyc_dir.join(TASKS_FILE);
+    let content = tokio::fs::read_to_string(&path).await.ok()?;
+    match serde_json::from_str::<TaskList>(&content) {
+        Ok(tasks) if !tasks.is_empty() => Some(tasks),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Corrupt task list, ignoring"
+            );
+            None
+        }
+    }
+}
+
+/// Write a topic's task list (creating the `.jyc` dir); deletes the file when
+/// the list is empty so a missing file always means "no list".
+pub async fn write_tasks_at(jyc_dir: &Path, tasks: &TaskList) -> anyhow::Result<()> {
+    let path = jyc_dir.join(TASKS_FILE);
+    if tasks.is_empty() {
+        tokio::fs::remove_file(&path).await.ok();
+        return Ok(());
+    }
+    tokio::fs::create_dir_all(jyc_dir).await?;
+    tokio::fs::write(&path, serde_json::to_string(tasks)?).await?;
+    Ok(())
+}
+
+/// Delete a topic's task list (`/reset`, `/new`).
+pub async fn clear_tasks_at(jyc_dir: &Path) {
+    tokio::fs::remove_file(jyc_dir.join(TASKS_FILE)).await.ok();
+}
+
 /// Resolve the effective mode for a topic:
 /// `.jyc/mode-override` > pattern `mode` from channel config (looked up via
 /// `.jyc/pattern`) > `None` (= build default).
@@ -580,6 +628,7 @@ pub fn resolve_context_strategy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jyc_types::task::{TaskItem, TaskStatus};
 
     #[tokio::test]
     async fn read_input_tokens_from_file() {
@@ -1388,5 +1437,80 @@ mode = "agent"
             .await
             .unwrap();
         assert_eq!(cfg.tool_result_cap, Some(2048));
+    }
+
+    // ── task list ─────────────────────────────────────────────────────
+
+    fn jyc_of(tmp: &tempfile::TempDir) -> std::path::PathBuf {
+        tmp.path().join(".jyc")
+    }
+
+    fn tasks(a: &[(&str, TaskStatus)]) -> TaskList {
+        TaskList {
+            items: a
+                .iter()
+                .enumerate()
+                .map(|(i, (text, status))| TaskItem {
+                    id: (i + 1) as u32,
+                    text: (*text).to_string(),
+                    status: *status,
+                })
+                .collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn write_then_read_tasks_roundtrips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let list = tasks(&[("a", TaskStatus::Pending), ("b", TaskStatus::Completed)]);
+        write_tasks_at(&jyc_of(&tmp), &list).await.unwrap();
+        assert_eq!(read_tasks_at(&jyc_of(&tmp)).await, Some(list));
+    }
+
+    #[tokio::test]
+    async fn read_tasks_missing_file_is_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(read_tasks_at(&jyc_of(&tmp)).await, None);
+    }
+
+    #[tokio::test]
+    async fn read_tasks_corrupt_file_is_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = jyc_of(&tmp);
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        tokio::fs::write(dir.join(TASKS_FILE), "not json")
+            .await
+            .unwrap();
+        assert_eq!(read_tasks_at(&jyc_of(&tmp)).await, None);
+    }
+
+    #[tokio::test]
+    async fn write_empty_tasks_deletes_file() {
+        // A missing file and an empty list must mean the same thing, so the
+        // renderer can treat `None` as "no section".
+        let tmp = tempfile::tempdir().unwrap();
+        write_tasks_at(&jyc_of(&tmp), &tasks(&[("a", TaskStatus::Pending)]))
+            .await
+            .unwrap();
+        write_tasks_at(&jyc_of(&tmp), &TaskList::default())
+            .await
+            .unwrap();
+        assert!(
+            !tokio::fs::try_exists(jyc_of(&tmp).join(TASKS_FILE))
+                .await
+                .unwrap()
+        );
+        assert_eq!(read_tasks_at(&jyc_of(&tmp)).await, None);
+    }
+
+    #[tokio::test]
+    async fn clear_tasks_removes_file_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_tasks_at(&jyc_of(&tmp), &tasks(&[("a", TaskStatus::Pending)]))
+            .await
+            .unwrap();
+        clear_tasks_at(&jyc_of(&tmp)).await;
+        assert_eq!(read_tasks_at(&jyc_of(&tmp)).await, None);
+        clear_tasks_at(&jyc_of(&tmp)).await;
     }
 }

@@ -11,6 +11,7 @@ pub mod publish_file;
 pub mod read;
 pub mod read_image;
 pub mod send_to_topic;
+pub mod task_tools;
 pub mod webfetch;
 pub mod write;
 
@@ -37,6 +38,9 @@ pub fn create_builtin_registry() -> ToolRegistry {
     registry.register(Box::new(job_tools::JobDeleteTool));
     registry.register(Box::new(job_tools::JobToggleTool));
     registry.register(Box::new(send_to_topic::SendToThreadTool));
+    registry.register(Box::new(task_tools::TaskListTool));
+    registry.register(Box::new(task_tools::TaskCreateTool));
+    registry.register(Box::new(task_tools::TaskUpdateTool));
 
     registry
 }

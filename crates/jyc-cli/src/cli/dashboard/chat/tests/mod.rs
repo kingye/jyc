@@ -2702,27 +2702,36 @@ fn a_count_in_a_yank_copies_that_many_rows() {
     }
 }
 
-/// The bar is the message pane's own: it spans the row edge to edge, and with
-/// the input focused the transcript is plain text again.
+/// The bar is the message pane's own: it spans the row edge to edge, it leaves the
+/// text's colour alone while nothing is selected, and with the input focused the
+/// transcript is plain text again.
 #[test]
 fn the_cursor_bar_spans_the_row_only_while_the_pane_has_focus() {
-    use super::render::CURSOR_BG;
+    use ratatui::style::Color;
+
+    use super::render::SELECT_BG;
 
     let mut app = cursor_app();
     let area = app.chat.last_message_area.unwrap();
     let y = area.top() + (app.chat.cursor_line - app.chat.view_start_line()) as u16;
 
     let buffer = draw_80x24(&mut app);
-    assert_eq!(buffer[(area.left(), y)].style().bg, Some(CURSOR_BG));
+    assert_eq!(buffer[(area.left(), y)].style().bg, Some(SELECT_BG));
     assert_eq!(
         buffer[(area.right() - 1, y)].style().bg,
-        Some(CURSOR_BG),
+        Some(SELECT_BG),
         "the bar reaches the edge even on a short row"
+    );
+    assert_ne!(
+        buffer[(area.left(), y)].style().fg,
+        Some(Color::White),
+        "the cursor row alone keeps the transcript's own foreground — it is lit \
+         while you are only reading"
     );
 
     app.chat.focus = ChatFocus::ChatPane;
     let buffer = draw_80x24(&mut app);
-    assert_ne!(buffer[(area.left(), y)].style().bg, Some(CURSOR_BG));
+    assert_ne!(buffer[(area.left(), y)].style().bg, Some(SELECT_BG));
 }
 
 // ── Selecting rows with Shift ─────────────────────────────────────────────
@@ -2778,6 +2787,72 @@ fn shift_movement_opens_a_selection_that_y_copies() {
         app.chat.selection_range(),
         None,
         "`y` is the end of the selection"
+    );
+    assert_eq!(
+        app.chat.cursor_line,
+        start - 5,
+        "and the cursor lands back on the first copied row"
+    );
+}
+
+/// Selecting upwards leaves the anchor at the *bottom* of the range, so "the
+/// first row" cannot mean the anchor: `y` still ends on the topmost copied row.
+#[test]
+fn y_lands_on_the_topmost_copied_row_whichever_way_the_selection_was_made() {
+    let mut app = cursor_app();
+    let rows = transcript_rows(&app);
+    let start = app.chat.cursor_line;
+    move_up(&mut app, 3);
+    press_shift(&mut app, 'K');
+    assert_eq!(
+        app.chat.selection_range(),
+        Some((start - 4, start - 3)),
+        "the anchor is the lower end of an upward selection"
+    );
+
+    press(&mut app, 'y');
+    let copied = app
+        .chat
+        .pending_clipboard
+        .take()
+        .expect("a queued clipboard write");
+    assert_eq!(
+        copied,
+        format!("{}\n{}", rows[start - 4], rows[start - 3]),
+        "both copied rows, top first"
+    );
+    assert_eq!(app.chat.cursor_line, start - 4, "topmost, not the anchor");
+}
+
+/// `y` also brings the view with it: the row it lands on is the point of the
+/// motion, so a range that was paged out of sight is revealed rather than copied
+/// invisibly (`scrolling_leaves_an_open_selection_alone` is what lets the view get
+/// away from the selection in the first place).
+#[test]
+fn y_reveals_the_row_it_lands_on() {
+    let mut app = cursor_app();
+    let height = app.chat.last_message_area.unwrap().height as usize;
+    move_up(&mut app, 3);
+    press_shift(&mut app, 'K');
+    // `page_up` walks the view away toward the start; the selection does not
+    // follow it, so the rows fall out of sight below the pane. (`page_down` would
+    // be clamped at the end of the transcript, which is where the cursor sits.)
+    for _ in 0..40 {
+        app.chat.page_up();
+        if app.chat.cursor_line >= app.chat.view_start_line() + height {
+            break;
+        }
+    }
+    assert!(
+        app.chat.cursor_line >= app.chat.view_start_line() + height,
+        "the setup must get the selection out of the view"
+    );
+
+    press(&mut app, 'y');
+    let view = app.chat.view_start_line()..app.chat.view_start_line() + height;
+    assert!(
+        view.contains(&app.chat.cursor_line),
+        "the yanked row is on screen again"
     );
 }
 
@@ -2847,9 +2922,15 @@ fn esc_leaves_the_selection_before_it_leaves_the_pane() {
     move_up(&mut app, 3);
     press_shift(&mut app, 'K');
     assert!(app.chat.selection_range().is_some());
+    let at = app.chat.cursor_line;
 
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert_eq!(app.chat.selection_range(), None);
+    assert_eq!(
+        app.chat.cursor_line, at,
+        "`Esc` drops the selection where it is — unlike `y`, it is not a copy, so \
+         the cursor keeps the row it moved to"
+    );
     assert_eq!(app.chat.focus, ChatFocus::MessageArea);
 
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
@@ -2953,13 +3034,13 @@ fn leaving_the_pane_drops_the_selection() {
     );
 }
 
-/// Selected rows get their own bar and the cursor row keeps the solid one inside
-/// the range, so both the selection and where it is being moved are readable.
+/// One background for the whole highlight — the cursor row and every selected row
+/// look alike — and only the selected rows give up their own foreground.
 #[test]
-fn the_selection_bars_show_the_range_and_the_cursor() {
+fn the_highlight_bar_covers_the_cursor_and_the_selection() {
     use ratatui::style::Color;
 
-    use super::render::{CURSOR_BG, SELECT_BG};
+    use super::render::SELECT_BG;
 
     let mut app = cursor_app();
     move_up(&mut app, 3);
@@ -2969,25 +3050,31 @@ fn the_selection_bars_show_the_range_and_the_cursor() {
     let skip = app.chat.view_start_line();
     let row_of = |line: usize| area.top() + (line - skip) as u16;
     let cursor = app.chat.cursor_line;
-
     let buffer = draw_80x24(&mut app);
-    let bg_at = |line: usize| buffer[(area.left(), row_of(line))].style().bg;
+    let cell = |line: usize| {
+        let s = buffer[(area.left(), row_of(line))].style();
+        (s.bg, s.fg)
+    };
+    let bg_at = |line: usize| cell(line).0;
+
+    assert_eq!(bg_at(cursor), Some(SELECT_BG), "the cursor row");
+    assert_eq!(bg_at(cursor - 1), Some(SELECT_BG), "a selected row");
+    assert_eq!(bg_at(cursor - 2), Some(SELECT_BG), "the anchor row");
     assert_eq!(
-        bg_at(cursor),
-        Some(CURSOR_BG),
-        "the moving end keeps its bar"
+        cell(cursor).1,
+        Some(Color::White),
+        "inside a selection even the cursor row takes the light foreground, so the \
+         range has one look"
     );
-    assert_eq!(bg_at(cursor - 1), Some(SELECT_BG));
-    assert_eq!(bg_at(cursor - 2), Some(SELECT_BG), "the anchor end too");
     assert_eq!(
-        buffer[(area.left(), row_of(cursor - 1))].style().fg,
+        cell(cursor - 1).1,
         Some(Color::White),
         "a selected row forces a light foreground so the navy works on any theme"
     );
     assert_ne!(
         bg_at(cursor - 3),
         Some(SELECT_BG),
-        "rows outside the range are untouched"
+        "rows outside are untouched"
     );
 }
 

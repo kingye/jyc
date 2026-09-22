@@ -97,32 +97,28 @@ pub(super) fn history_fingerprint(
 /// agent's reply.
 pub(super) const USER_BG: Color = Color::Rgb(52, 53, 65);
 
-/// Background for the message-pane cursor row: a solid bar, so the position is
-/// obvious even on a blank line.
+/// Background for the message-pane highlight: the same bar for the cursor row and
+/// for every selected row (`Shift+J` to start a selection, any movement key to
+/// extend it), so a selection reads as one thing instead of two.
 ///
-/// An ANSI name rather than a fixed RGB (unlike [`USER_BG`]) because the bar sits
-/// *behind* transcript text of every colour — dim gray metadata, markdown green,
-/// yellow warnings — and has to stay readable on whatever theme the terminal
-/// uses.
-pub(super) const CURSOR_BG: Color = Color::DarkGray;
-
-/// Background for selected rows (start with `Shift+J`, extend with any movement
-/// key): a dim navy, far enough from [`USER_BG`]'s neutral gray to read as a
-/// highlight rather than as part of a message. The cursor row keeps [`CURSOR_BG`]
-/// even inside a selection, so the end being moved is always distinguishable.
-///
-/// Unlike [`CURSOR_BG`] this cannot be an ANSI name — no theme color is both
-/// distinct from the message gray and light-theme safe — so a selected row
-/// additionally forces a light foreground (see the paint loop): on a light-theme
-/// terminal the default foreground is black, which would vanish on this navy.
+/// A dim navy, far enough from [`USER_BG`]'s neutral gray to read as a highlight
+/// rather than as part of a message. Unlike [`USER_BG`] it cannot be an ANSI name
+/// — no theme color is both distinct from the message gray and light-theme safe —
+/// so a *selected* row additionally forces a light foreground (on a light-theme
+/// terminal the default foreground is black, which would vanish on this navy),
+/// while the cursor row gives up its background alone — it is the highlight that
+/// sits on screen while you are merely reading, and the text's own colours (dim
+/// metadata, markdown colours) are worth more there than they are mid-selection.
+/// Inside a selection the cursor row is painted with the range, so it takes the
+/// light foreground like its neighbours.
 pub(super) const SELECT_BG: Color = Color::Rgb(35, 58, 84);
 
-/// Paint one transcript row with a solid background bar (the cursor, or a
-/// selected row).
+/// Paint one transcript row with the highlight bar (the cursor row, or a selected
+/// row — both on [`SELECT_BG`]).
 ///
-/// `bar` says what the row gives up: the cursor overrides the background only, so
-/// the text under it keeps its own colour, while a selected row also overrides
-/// the foreground (it has to stay legible on the navy — see [`SELECT_BG`]). The
+/// `bar` says what the row gives up: a selected row overrides the foreground as
+/// well (it has to stay legible on the navy — see [`SELECT_BG`]), the cursor row
+/// only the background, so the text under it keeps its own colour. Either way the
 /// row is padded out with
 /// spaces because `Paragraph` paints a style only where it has glyphs — without
 /// the padding the bar stops at the last character instead of crossing the pane.
@@ -677,26 +673,24 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         .take(inner_height)
         .cloned()
         .collect();
-    // The cursor and the selection belong to the message pane alone: while any
-    // other pane has focus the transcript is plain text. One transcript line is
-    // exactly one screen row here (the markdown renderer wraps to the pane width
-    // and the `Paragraph` does not wrap again), hence the direct line -> row
-    // mapping. The cursor bar only replaces the background, so the text under it
-    // keeps its own colour; a selected row also takes a light foreground (see
-    // [`SELECT_BG`]).
+    // The highlight belongs to the message pane alone: while any other pane has
+    // focus the transcript is plain text. One transcript line is exactly one
+    // screen row here (the markdown renderer wraps to the pane width and the
+    // `Paragraph` does not wrap again), hence the direct line -> row mapping.
+    // The cursor row and the selected rows share the one background — how many
+    // rows are selected is in the status line, so a second colour would be noise.
     let cursor = app.chat.cursor_line;
     let selection = app.chat.selection_range();
     if app.chat.focus == ChatFocus::MessageArea {
+        let bar = Style::default().bg(SELECT_BG);
+        let selected_bar = bar.fg(Color::White);
         for (row, line) in visible_lines.iter_mut().enumerate() {
             let line_no = skip + row;
-            let bar = if line_no == cursor {
-                Style::default().bg(CURSOR_BG)
-            } else if selection.is_some_and(|(from, to)| line_no >= from && line_no <= to) {
-                Style::default().bg(SELECT_BG).fg(Color::White)
-            } else {
-                continue;
-            };
-            paint_row(line, chunks[0].width, bar);
+            if selection.is_some_and(|(from, to)| line_no >= from && line_no <= to) {
+                paint_row(line, chunks[0].width, selected_bar);
+            } else if line_no == cursor {
+                paint_row(line, chunks[0].width, bar);
+            }
         }
     }
 

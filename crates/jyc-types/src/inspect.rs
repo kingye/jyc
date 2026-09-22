@@ -1,3 +1,4 @@
+use crate::task::TaskList;
 use serde::{Deserialize, Serialize};
 
 // ── State snapshot ──
@@ -128,6 +129,16 @@ pub struct TopicSummary {
     /// as `None` and the section is simply omitted in the renderer.
     #[serde(default)]
     pub changed_files: Option<Vec<ChangedFileEntry>>,
+    /// The agent's current task list for this topic (`.jyc/tasks.json`).
+    /// Empty when there is none — the renderers then omit the section.
+    /// `#[serde(default)]` so payloads written before the field exist still
+    /// deserialize.
+    ///
+    /// ponytail: the whole list rides on every overview poll (up to 20 one-line
+    /// items per topic). If that ever costs dashboard latency, the summary should
+    /// carry `{done, total, current}` and leave the full list to `TopicInfo`.
+    #[serde(default)]
+    pub tasks: TaskList,
     /// Commands available in this topic: built-ins + globals +
     /// per-agent commands (`[[agents.<pattern>.commands]]`).
     ///
@@ -311,6 +322,10 @@ pub struct TopicInfo {
     /// uses the same `Vec<ChangedFileEntry>` shape (path + uncommitted flag).
     #[serde(default)]
     pub changed_files: Option<Vec<ChangedFileEntry>>,
+    /// The agent's current task list. See `TopicSummary::tasks` for the full
+    /// semantics; this field carries the same `TaskList` shape.
+    #[serde(default)]
+    pub tasks: TaskList,
     /// Accumulated cost (session + today). `None` when the active model
     /// has no configured `pricing`, so the row is omitted entirely
     /// rather than showing a misleading zero.
@@ -540,6 +555,7 @@ mod tests {
                 max_concurrent: 3,
             }],
             topics: vec![TopicInfo {
+                tasks: Default::default(),
                 name: "issue-42".to_string(),
                 channel: "emf".to_string(),
                 pattern: Some("planner".to_string()),
@@ -720,6 +736,7 @@ mod tests {
     #[test]
     fn test_topic_summary_roundtrip() {
         let summary = TopicSummary {
+            tasks: Default::default(),
             name: "issue-42".to_string(),
             channel: "emf".to_string(),
             pattern: Some("planner".to_string()),

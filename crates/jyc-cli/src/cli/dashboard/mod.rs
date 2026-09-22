@@ -2030,6 +2030,7 @@ mod tests {
             topics: names
                 .iter()
                 .map(|n| TopicSummary {
+                    tasks: Default::default(),
                     name: (*n).to_string(),
                     channel: "chan".to_string(),
                     pattern: None,
@@ -2077,6 +2078,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, n)| TopicSummary {
+                    tasks: Default::default(),
                     name: (*n).to_string(),
                     channel: "chan".to_string(),
                     pattern: Some((*n).to_string()),

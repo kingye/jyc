@@ -677,6 +677,9 @@ impl TopicManager {
                     &topic_path,
                 )
                 .await,
+                tasks: crate::session_state::read_tasks_at(&jyc_dir(&name, &topic_path))
+                    .await
+                    .unwrap_or_default(),
                 activity: vec![], // Filled by InspectServer from event bus
                 last_active_at,   // Filled by activity tracker; falls back to .jyc mtime
                 skills,

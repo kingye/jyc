@@ -840,7 +840,7 @@ Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) 
 
 - **L1 (global)**: `<config dir>/` — `config.toml`, `skills/`, `templates/`
 - **L2 (workdir / data root)**: `--workdir` if given, else the data dir — `config.toml` (via `--config`), `skills/`, `templates/`, plus all generated state
-- **L3 (topic)**: `<topic_path>/.jyc/` — `config.toml` (restricted `[agent]` subset), `skills/`, `templates/`, sessions, chat history
+- **L3 (topic)**: `<topic_path>/.jyc/` — `config.toml` (restricted `[agent]` subset), `skills/`, `templates/`, sessions, chat history, task list (`.jyc/tasks.json`)
 
 ### Merge & Lookup Rules
 

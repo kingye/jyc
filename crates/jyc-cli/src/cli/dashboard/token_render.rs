@@ -174,6 +174,7 @@ mod tests {
         cache_creation: Option<u64>,
     ) -> TopicSummary {
         TopicSummary {
+            tasks: Default::default(),
             name: "t".into(),
             channel: "c".into(),
             pattern: None,

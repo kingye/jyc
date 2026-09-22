@@ -77,6 +77,12 @@ and uses an in-process AI agent to generate replies.
 - Agent must use `reply_message` for in-topic responses; `jyc_send_message` only for out-of-topic proactive messages.
 - Agent must not use `jyc_send_message` to spam users; limit to alerts and notifications.
 
+### Task List
+- Multi-step work (a plan, an implementation, a cross-file fix) must start with `task_create`; the list is the topic's single plan of record.
+- Mark an item `in_progress` when picking it up and `completed` with `task_update` as soon as it is genuinely done — never ahead of the work, never with validation still failing.
+- Re-plan with a new `task_create` (it replaces the list and renumbers ids) rather than patching a stale one item by item.
+- After a context reset, call `task_list` for the ids and current progress; never guess ids from memory.
+
 ## References
 - See DESIGN.md for architecture
 - See CHANGELOG.md for version history

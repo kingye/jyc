@@ -284,6 +284,7 @@ impl InspectServer {
                     branch: t.branch,
                     changed_files: t.changed_files,
                     cost: t.cost,
+                    tasks: t.tasks,
                     commands,
                 }
             })

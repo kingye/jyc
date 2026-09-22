@@ -193,6 +193,28 @@ Page through the agent's in-memory conversation transcript (user/assistant text 
 
 ---
 
+### `task_list` / `task_create` / `task_update`
+
+The agent's plan for the topic's current piece of work, persisted at
+`.jyc/tasks.json` — one list per topic. `task_create` replaces whatever list was
+there, and `/reset` / `/new` delete it.
+
+| Tool | Input | Effect |
+|------|-------|--------|
+| `task_create` | `items: string[]` (1–20 one-line steps) | Writes a fresh list, numbered 1..N, all `pending` |
+| `task_update` | `id: integer`, `status: "pending" \| "in_progress" \| "completed"` | Sets one item's status |
+| `task_list` | — | Shows the list, including the ids |
+
+Three tools rather than one whole-list call so that finishing a step stays a
+small call, and `task_list` exists because the ids must be recoverable after the
+context is compressed. All three return the rendered list — `Tasks (2/5):` plus
+one `[ ]` / `[~]` / `[x]` line per item — which is also what the TUI topic-info
+pane and `/info` show, so the ids the user reads are the ids `task_update` takes.
+
+Use it for anything multi-step: write the list before starting, mark an item
+`in_progress` as you pick it up and `completed` once it is genuinely done.
+Re-planning means a new `task_create` (which renumbers), not patching a stale list.
+
 ## MCP Bridge Tools
 
 These are JYC-specific tools implemented as in-process bridges (not external MCP subprocesses). They are always registered unless excluded via `disabled_tools`.

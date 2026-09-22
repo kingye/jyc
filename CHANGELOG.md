@@ -2,6 +2,15 @@
 
 ### Added
 
+- Agent task list: three built-in tools. `task_create` writes the plan for the current
+  piece of work as one-line steps (1–20, numbered 1..N, replacing any list that was
+  there), `task_update` marks one item `pending` / `in_progress` / `completed` as the
+  work moves, and `task_list` reads it back. The list lives in `.jyc/tasks.json`, is
+  part of topic info — shown between the cost row and the changed-file list in the TUI
+  topic-info pane and by `/info`, with the same markers and ids the tools print — and
+  `/reset` and `/new` clear it. A plan now survives context compression, and the user
+  can follow progress without asking (#810)
+
 - TUI chat message pane: focusing it (Tab, `Ctrl+P` → `c`, or the wheel over the
   messages) shows a cursor bar on one transcript row. `j`/`k` and `↑`/`↓` move it,
   and the view scrolls only once the cursor reaches the pane's top or bottom row;

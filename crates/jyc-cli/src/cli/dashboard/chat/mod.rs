@@ -1578,6 +1578,31 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         if !cost_spans.is_empty() {
             out.push(Line::from(cost_spans));
         }
+        // Separated section: the agent's task list (`.jyc/tasks.json`),
+        // placed between the cost row and the files section. Same
+        // `[ ] [~] [x]` markers and ids the agent's own tools print, so what
+        // the user sees and what `task_update` takes agree. Completed fades,
+        // in-progress is the row you want to spot. Omitted entirely when the
+        // topic has no list; the whole pane (list included) scrolls.
+        if !t.tasks.is_empty() {
+            out.push(Line::default());
+            let (done, total) = t.tasks.progress();
+            out.push(Line::from(Span::styled(
+                format!("Tasks ({done}/{total}):"),
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            for item in &t.tasks.items {
+                let style = match item.status {
+                    jyc_types::task::TaskStatus::InProgress => Style::default().fg(Color::Yellow),
+                    jyc_types::task::TaskStatus::Completed => Style::default().fg(Color::DarkGray),
+                    jyc_types::task::TaskStatus::Pending => Style::default(),
+                };
+                out.push(Line::from(Span::styled(
+                    format!("  {} {}. {}", item.status.marker(), item.id, item.text),
+                    style,
+                )));
+            }
+        }
         if t.status == TopicStatus::Processing {
             let mut thinking_line: Vec<Span> = vec![Span::styled(
                 "⏳ AI thinking...",

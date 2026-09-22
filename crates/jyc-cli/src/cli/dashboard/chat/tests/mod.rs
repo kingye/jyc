@@ -2485,11 +2485,51 @@ fn status(app: &App) -> String {
         .unwrap_or_default()
 }
 
-/// A fresh cursor lands on the newest row — where the reader already is.
+/// A fresh cursor lands at the end of the newest message — where the reader
+/// already is. Not on the blank spacer that closes a reply: the bar there paints
+/// an empty line, and `yy` would copy nothing.
 #[test]
-fn message_cursor_starts_on_the_newest_row() {
+fn message_cursor_starts_on_the_newest_message_row() {
     let app = cursor_app();
-    assert_eq!(app.chat.cursor_line, app.chat.last_total_lines - 1);
+    let rows = transcript_rows(&app);
+    assert_eq!(
+        Some(app.chat.cursor_line),
+        rows.iter().rposition(|r| !r.trim().is_empty()),
+        "the cursor starts on the last row that carries text"
+    );
+    assert_ne!(
+        app.chat.cursor_line,
+        app.chat.last_total_lines - 1,
+        "the end of the transcript is spacer/pending rows, not the newest message"
+    );
+}
+
+/// A topic's messages reach the pane a frame or two after the switch (the REST
+/// hydrate), so the unplaced cursor has to wait: resolving it against the empty
+/// transcript would park it on row 0 for the rest of the session, which is what
+/// the reader sees as "the cursor starts at the top".
+#[test]
+fn an_unplaced_cursor_waits_for_the_transcript_to_arrive() {
+    let mut app = cursor_app();
+    let messages = std::mem::take(&mut app.chat.messages);
+    app.chat.render_cache = None;
+    app.chat.reset_cursor();
+    draw_80x24(&mut app);
+    assert_eq!(
+        app.chat.cursor_line,
+        usize::MAX,
+        "the sentinel must survive the frame without messages"
+    );
+
+    app.chat.messages = messages;
+    app.chat.render_cache = None;
+    draw_80x24(&mut app);
+    let rows = transcript_rows(&app);
+    assert_eq!(
+        Some(app.chat.cursor_line),
+        rows.iter().rposition(|r| !r.trim().is_empty()),
+        "the first frame with messages places the cursor at their end"
+    );
 }
 
 /// `j`/`k` move the cursor; the view starts scrolling only once the cursor runs
@@ -2774,12 +2814,13 @@ fn shift_movement_opens_a_selection_that_y_copies() {
         .take()
         .expect("a queued clipboard write");
     assert_eq!(
-        copied.lines().collect::<Vec<_>>(),
-        vec![
-            rows[start - 5].as_str(),
-            rows[start - 4].as_str(),
-            rows[start - 3].as_str()
-        ],
+        copied,
+        format!(
+            "{}\n{}\n{}",
+            rows[start - 5],
+            rows[start - 4],
+            rows[start - 3]
+        ),
         "both ends are included"
     );
     assert_eq!(status(&app), "Copied 3 lines");
@@ -2910,7 +2951,11 @@ fn the_jumps_extend_an_open_selection() {
     );
 
     press(&mut app, 'G');
-    assert_eq!(app.chat.selection_range(), Some((start, start)));
+    assert_eq!(
+        app.chat.selection_range(),
+        Some((start, app.chat.last_total_lines - 1)),
+        "`G` extends the selection down to the last row of the transcript"
+    );
 }
 
 /// `Esc` drops the selection and leaves the user in the message pane; the second
@@ -2995,12 +3040,15 @@ fn an_armed_yank_does_not_survive_a_selection() {
     );
 }
 
-/// At the end of the transcript there is nowhere to extend, so the selection is
-/// the single row under the cursor — and the status line counts it as one line.
+/// At the end of the transcript (`G` — a fresh cursor stops one row short, on the
+/// newest message) there is nowhere to extend, so the selection is the single row
+/// under the cursor — and the status line counts it as one line.
 #[test]
 fn a_one_row_selection_reports_a_single_line() {
     let mut app = cursor_app();
+    press(&mut app, 'G');
     let last = app.chat.cursor_line;
+    assert_eq!(last, app.chat.last_total_lines - 1, "`G` is the end");
 
     press_shift(&mut app, 'J');
     assert_eq!(app.chat.selection_range(), Some((last, last)));

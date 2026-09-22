@@ -648,9 +648,20 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // geometry the keys move against is always last frame's.
     app.chat.last_total_lines = total_lines;
     app.chat.scroll = app.chat.scroll.min(max_skip);
-    // Clamp against *this* frame too: switching topics or a resize that
-    // shortened the transcript must not leave the cursor past the end.
-    app.chat.cursor_line = app.chat.cursor_line.min(total_lines.saturating_sub(1));
+    if app.chat.cursor_line == usize::MAX {
+        // Never placed: resolving the sentinel against the empty transcript of a
+        // topic switch would park it on row 0 for the session, so it waits for
+        // content and lands on the last row with text — not the blank spacer that
+        // closes a reply, nor the pending rows after the history.
+        app.chat.cursor_line = history
+            .iter()
+            .rposition(|line| line.spans.iter().any(|s| !s.content.trim().is_empty()))
+            .unwrap_or(usize::MAX);
+    } else {
+        // Clamp against *this* frame too: switching topics or a resize that
+        // shortened the transcript must not leave the cursor past the end.
+        app.chat.cursor_line = app.chat.cursor_line.min(total_lines.saturating_sub(1));
+    }
     // The selection belongs to the message pane alone. Focus can leave it by
     // routes that do not go through `refocus_input` (`Tab`, a click, the
     // explorer), and a selection left behind is invisible yet still live: it

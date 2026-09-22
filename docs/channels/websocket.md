@@ -138,7 +138,11 @@ under the selected rows instead of growing them, so looking around cannot change
 what `y` will copy. `Esc`, leaving the message area, and switching topics drop the
 selection. Exiting differs between the two: `y` puts the cursor back on the first
 row of what it copied (linewise vim), while `Esc` leaves it on the row it moved to
-— dropping a selection is not a copy, so it does not move you.
+— dropping a selection is not a copy, so it does not move you. A topic opens with
+the cursor on the last written row of its newest message — for an answered round
+that is the `──── 1m ──` rule closing it, one `k` above the reply's text — skipping
+the blank spacer and the pending rows below. No bar shows at all while a topic's
+messages are still loading.
 
 Many terminals send the same bytes for `Shift+↑` as for `↑`, so `J`/`K` are the
 reliable way to start a selection — where the terminal does report Shift on the

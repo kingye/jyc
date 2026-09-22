@@ -264,7 +264,7 @@ impl InspectServer {
             .into_iter()
             .map(|t| {
                 let commands =
-                    commands_for_topic(t.pattern.as_deref(), cfg_ref, &t.skills, &models);
+                    commands_for_topic(t.pattern.as_deref(), cfg_ref, &t.available_skills, &models);
                 TopicSummary {
                     name: t.name,
                     channel: t.channel,
@@ -354,7 +354,8 @@ impl InspectServer {
         let topics: Vec<TopicInfo> = topics
             .into_iter()
             .map(|mut t| {
-                t.commands = commands_for_topic(t.pattern.as_deref(), cfg_ref, &t.skills, &models);
+                t.commands =
+                    commands_for_topic(t.pattern.as_deref(), cfg_ref, &t.available_skills, &models);
                 t
             })
             .collect();
@@ -460,21 +461,29 @@ pub(crate) fn build_channels(
 /// Each command also gets its enumerable argument values (`CommandInfo::args`)
 /// from `jyc_core::command::command_args`, which is what lets the TUI popup
 /// offer `/model <id>` or `/skill on <name>` without knowing any commands.
+///
+/// `available` is the topic's live skill list
+/// ([`jyc_core::agent::AgentService::available_skills`], via
+/// `TopicInfo::available_skills`): it both adds the `/skill:<name>` rows and
+/// feeds the `/skill on|off` argument values — deliberately the *available*
+/// names rather than the enabled snapshot in `TopicInfo::skills`, so a skill
+/// the user toggled off can still be completed back on.
 fn commands_for_topic(
     pattern: Option<&str>,
     cfg: &AppConfig,
-    skills: &[String],
+    available: &[jyc_types::SkillMeta],
     models: &[ModelInfo],
 ) -> Vec<CommandInfo> {
     let per_agent = pattern
         .map(|p| per_agent_commands(cfg, p))
         .unwrap_or_default();
+    let skill_names: Vec<String> = available.iter().map(|s| s.name.clone()).collect();
     let arg_ctx = ArgCtx {
         config: cfg,
-        skills,
+        skills: &skill_names,
         models,
     };
-    let mut commands = all_commands_with(&cfg.commands, &per_agent);
+    let mut commands = all_commands_with(&cfg.commands, &per_agent, available);
     for cmd in &mut commands {
         cmd.args = command_args(&cmd.name, &arg_ctx);
     }
@@ -493,7 +502,11 @@ mod command_args_tests {
         let models = vec![ModelInfo {
             name: "deepseek/deepseek-chat".into(),
         }];
-        let skills = vec!["ponytail".to_string()];
+        let skills = vec![jyc_types::SkillMeta {
+            name: "ponytail".to_string(),
+            description: "Laziest solution that works".to_string(),
+            source_path: std::path::PathBuf::from("/skills/ponytail"),
+        }];
         let commands = commands_for_topic(None, &cfg, &skills, &models);
 
         let find = |name: &str| commands.iter().find(|c| c.name == name).expect(name);
@@ -512,6 +525,11 @@ mod command_args_tests {
             find("/plan").args.is_empty(),
             "a free-text command carries none"
         );
+        // The skill itself arrives as a `/skill:<name>` row, described by its
+        // frontmatter, and continues into the agent run.
+        let row = find("/skill:ponytail");
+        assert_eq!(row.description, "Laziest solution that works");
+        assert!(row.continues_to_agent);
     }
 }
 

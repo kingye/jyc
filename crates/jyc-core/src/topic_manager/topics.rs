@@ -583,6 +583,13 @@ impl TopicManager {
             // Read skills from .jyc/skills.json
             let skills = read_skills(&name, &topic_path).await;
 
+            // What the topic *could* use, live-resolved through the agent's
+            // discovery (config filters, toggle ignored) — this is what turns
+            // into `/skill:<name>` rows in the command popup.
+            let available_skills =
+                self.agent
+                    .available_skills(&name, &topic_path, pattern.as_deref());
+
             // Determine status. The legacy `WaitingForAnswer` state (question
             // MCP tool) was removed in #188; both active and dormant topics
             // report `Idle` here — liveness is tracked via the activity log.
@@ -673,6 +680,7 @@ impl TopicManager {
                 activity: vec![], // Filled by InspectServer from event bus
                 last_active_at,   // Filled by activity tracker; falls back to .jyc mtime
                 skills,
+                available_skills,
                 recent_messages: vec![], // Filled by InspectServer from event bus
                 thinking_text: None,     // Filled by InspectServer from event bus
                 topic_path: Some(topic_path.clone()),

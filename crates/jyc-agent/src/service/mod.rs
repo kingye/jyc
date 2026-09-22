@@ -25,16 +25,9 @@ use crate::tools::registry::ToolRegistry;
 use crate::vision::VisionClient;
 use std::sync::Arc;
 
-/// Metadata for a discovered skill.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkillMeta {
-    /// Skill name (e.g., "coding-principles")
-    pub name: String,
-    /// Human-readable description
-    pub description: String,
-    /// Path to the skill's directory (contains SKILL.md)
-    pub source_path: PathBuf,
-}
+/// Metadata for a discovered skill. Re-exported from `jyc-types` so the
+/// command layer and the inspect payload can name the same type.
+pub use jyc_types::SkillMeta;
 
 /// Parse frontmatter from a SKILL.md file.
 pub struct JycAgentService {
@@ -172,6 +165,21 @@ impl AgentService for JycAgentService {
     async fn base_url(&self) -> Result<String> {
         // Not applicable for in-process agent
         Ok("in-process".to_string())
+    }
+
+    fn available_skills(
+        &self,
+        topic_name: &str,
+        topic_path: &Path,
+        matched_pattern: Option<&str>,
+    ) -> Vec<SkillMeta> {
+        let (include, exclude) = self.config_skill_filters(matched_pattern);
+        self.discover_skills(
+            topic_name,
+            topic_path,
+            include.as_deref(),
+            (!exclude.is_empty()).then_some(exclude.as_slice()),
+        )
     }
 
     async fn process(

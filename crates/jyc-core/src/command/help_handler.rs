@@ -20,11 +20,26 @@ impl CommandHandler for HelpCommandHandler {
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        // Generated from all_commands_with() so built-ins and user-defined
-        // globals + this topic's per-agent commands stay in sync with the
-        // dashboard command popup.
-        let commands =
-            super::all_commands_with(&context.config.commands, &context.per_agent_commands);
+        // Generated from all_commands_with() so built-ins, user-defined
+        // globals, this topic's per-agent commands and its `/skill:<name>`
+        // entries stay in sync with the dashboard command popup. The skills
+        // come from the agent itself — the same call the worker uses to
+        // register them, so `/?` can never list a command that does not
+        // dispatch.
+        let skills = match context.agent.as_ref() {
+            Some(agent) => {
+                let pattern =
+                    crate::session_state::read_pattern(&context.topic_name, &context.topic_path)
+                        .await;
+                agent.available_skills(&context.topic_name, &context.topic_path, pattern.as_deref())
+            }
+            None => Vec::new(),
+        };
+        let commands = super::all_commands_with(
+            &context.config.commands,
+            &context.per_agent_commands,
+            &skills,
+        );
         let width = commands.iter().map(|c| c.name.len()).max().unwrap_or(0);
 
         let mut help = String::from("Available commands:\n");

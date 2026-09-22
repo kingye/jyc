@@ -297,12 +297,15 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // Input area = 1 mode header row ("╭─ build") + editor rows (grows with
     // content, up to 10). Subtract the prompt gutter from the wrap width.
     let input_line_count = if app.chat.active_question() {
-        // Question box: bold question line + blank + one row per option
-        // + blank + hint row, bordered (2) and clamped like the editor.
+        // Question box: `question_chrome_rows` (the question, the hint, the two
+        // spacers, slack) + one row per option + the box's borders + the input's
+        // mode header row — the box is drawn in the *body* under that header, so
+        // a row missing here is a row the box loses, and the window would eat an
+        // option for it. Both sides measure with the same helper.
         let q = app.chat.question.as_ref().expect("active_question");
-        (count_wrapped_lines(&q.question, area.width.saturating_sub(PROMPT_GUTTER_WIDTH))
+        (question_chrome_rows(&q.question, area.width.saturating_sub(PROMPT_GUTTER_WIDTH))
             + q.options.len()
-            + 4)
+            + 3)
         .clamp(6, 15) as u16
     } else {
         (count_wrapped_lines(

@@ -1,5 +1,6 @@
 use super::render::{USER_BG, history_fingerprint, render_history_lines};
 use super::*;
+use crate::cli::command_popup::popup_height;
 
 fn history_msg(sender: &str, text: &str, ts: Option<&str>) -> ChatMessage {
     ChatMessage {
@@ -911,6 +912,65 @@ fn command_popup_renders_a_deeper_level() {
     );
 }
 
+/// A list deeper than the popup's rows scrolls to follow the cursor, so the
+/// tail is reachable. Before this the whole list went into a fixed-height
+/// `Paragraph`: the arrow walked down past the clipped rows, stopped being
+/// visible, and Enter fired a command the user could not see.
+#[test]
+fn command_popup_scrolls_to_keep_the_cursor_visible() {
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+    handle_chat_keys(&mut app, key(KeyCode::Char('/')), &mut test_terminal());
+    // A list deeper than the popup reserves, set after `/` because opening
+    // refreshes the commands from the topic.
+    app.chat.commands = (0..21)
+        .map(|i| CommandInfo {
+            name: format!("/c{i}"),
+            description: "row".to_string(),
+            ..Default::default()
+        })
+        .collect();
+    let rows = {
+        let popup = app.chat.command_popup.as_ref().expect("popup open");
+        // The top rule is not a list row.
+        popup_height(popup, &app.chat.commands) as usize - 1
+    };
+    // All the way down: the last command is the one that used to be lost.
+    for _ in 0..20 {
+        handle_chat_keys(&mut app, key(KeyCode::Down), &mut test_terminal());
+    }
+    let buffer = draw_80x24(&mut app);
+
+    let prompt = prompt_row(&buffer);
+    let list: Vec<String> = ((prompt + 2)..=(prompt + 1 + rows as u16))
+        .map(|y| row_text(&buffer, y))
+        .collect();
+    let popup = list.join("\n");
+
+    assert_eq!(
+        app.chat
+            .command_popup
+            .as_ref()
+            .expect("popup still open")
+            .selected,
+        20
+    );
+    assert_eq!(list.len(), rows, "the popup shows its reserved rows");
+    assert!(
+        list[rows - 1].contains("→ /c20"),
+        "the selected row must ride the bottom edge, not sit below the clip:\n{popup}"
+    );
+    assert!(
+        list[0].contains("/c11"),
+        "the window slides with the cursor:\n{popup}"
+    );
+    assert!(
+        !popup.contains("/c10"),
+        "the rows the cursor walked over must scroll away:\n{popup}"
+    );
+}
+
 /// The focused row carries a `→` in the gutter and is dimmed — the popup
 /// paints no highlight bar, so the arrow is the only cursor cue.
 #[test]
@@ -954,6 +1014,88 @@ fn command_popup_marks_the_selected_row_with_an_arrow() {
         col_of(&buffer, row, "/"),
         col_of(&buffer, row + 1, "/"),
         "command names share a column"
+    );
+}
+
+/// The `Select Pattern` list gets the same window as the popups: with more
+/// patterns than rows the arrow rides the bottom edge instead of walking into
+/// the clip. It used to draw every pattern into the pane, and its `Wrap` put a
+/// long path on a second row — which moved the rows out from under the cursor.
+#[test]
+fn pattern_select_scrolls_to_keep_the_cursor_visible() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.phase = ChatPhase::PatternSelect;
+    app.chat.patterns = (0..20).map(|i| format!("p{i:02}")).collect();
+    app.chat.pattern_selected = 19;
+
+    let (width, height) = (30, 8);
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| render_pattern_select(frame, frame.area(), &app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let rows: Vec<String> = (0..height).map(|y| row_text(&buffer, y)).collect();
+    let pane = rows.join("\n");
+
+    // Borders::ALL: the inner rows are 1..=6, so the window's last row is 6.
+    assert!(
+        rows[6].contains("→ p19"),
+        "the selected pattern must sit on the list's bottom row:\n{pane}"
+    );
+    assert!(
+        rows[1].contains("p14"),
+        "the window slides with the cursor, so the top row is no longer the \
+         first pattern:\n{pane}"
+    );
+    assert!(
+        !pane.contains("p0"),
+        "the patterns the cursor walked over must scroll away:\n{pane}"
+    );
+}
+
+/// A question with more options than the box has rows: the list scrolls to
+/// follow the cursor, the option keeps its real number, and the hint below it
+/// survives — the box is the one list whose rows are not all options.
+#[test]
+fn question_box_scrolls_to_keep_the_cursor_visible() {
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    app.chat.question = Some(PendingQuestion {
+        id: "q1".to_string(),
+        topic: "jyc".to_string(),
+        question: "Pick one?".to_string(),
+        options: (0..20).map(|i| format!("opt{i:02}")).collect(),
+        selected: 19,
+    });
+    let buffer = draw_80x24(&mut app);
+
+    let rows: Vec<String> = (0..buffer.area.height)
+        .map(|y| row_text(&buffer, y))
+        .collect();
+    let pane = rows.join("\n");
+    let cursor_row = rows
+        .iter()
+        .find(|r| r.contains("opt19"))
+        .expect("the selected option must be drawn, not clipped below the box");
+
+    assert!(
+        cursor_row.contains("→ 20. opt19"),
+        "the last option must carry the cursor, numbered by its real index: \
+         {cursor_row:?}"
+    );
+    assert!(
+        !pane.contains("opt0"),
+        "the options above the window must scroll away:\n{pane}"
+    );
+    assert!(
+        pane.contains("Esc hide"),
+        "the hint must still fit under the window:\n{pane}"
     );
 }
 

@@ -147,6 +147,7 @@ mod tests {
 
     fn full_info() -> TopicInfo {
         TopicInfo {
+            tasks: Default::default(),
             name: "issue-42".into(),
             channel: "feishu".into(),
             pattern: Some("gh-issue".into()),

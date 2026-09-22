@@ -45,6 +45,7 @@ fn explorer_move_clamps_and_saturates() {
     app.state = Some(jyc_types::InspectOverview {
         topics: (0..5)
             .map(|i| jyc_types::TopicSummary {
+                tasks: Default::default(),
                 name: format!("t{i}"),
                 channel: "test".to_string(),
                 pattern: None,
@@ -89,6 +90,7 @@ fn opening_explorer_snaps_selection_to_chat_topic() {
     app.state = Some(jyc_types::InspectOverview {
         topics: (0..5)
             .map(|i| jyc_types::TopicSummary {
+                tasks: Default::default(),
                 name: format!("t{i}"),
                 channel: "test".to_string(),
                 pattern: None,
@@ -132,6 +134,7 @@ fn opening_explorer_keeps_selection_when_chat_topic_not_in_list() {
     let mut app = App::new(rx, None);
     app.state = Some(jyc_types::InspectOverview {
         topics: vec![jyc_types::TopicSummary {
+            tasks: Default::default(),
             name: "t0".to_string(),
             channel: "test".to_string(),
             pattern: None,
@@ -220,6 +223,7 @@ async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
         }],
         topics: vec![
             jyc_types::TopicSummary {
+                tasks: Default::default(),
                 name: "current".to_string(),
                 channel: "local_dev".to_string(),
                 pattern: None,
@@ -241,6 +245,7 @@ async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
                 commands: vec![],
             },
             jyc_types::TopicSummary {
+                tasks: Default::default(),
                 name: "other".to_string(),
                 channel: "local_dev".to_string(),
                 pattern: None,
@@ -522,6 +527,7 @@ fn explorer_scrolls_to_keep_the_cursor_visible() {
 /// Minimal idle topic for the explorer rendering tests.
 fn explorer_topic(name: &str) -> jyc_types::TopicSummary {
     jyc_types::TopicSummary {
+        tasks: Default::default(),
         name: name.to_string(),
         channel: "test".to_string(),
         pattern: None,
@@ -612,6 +618,7 @@ fn files_section_colors_uncommitted_paths_yellow() {
     app.chat.info_visible = true;
     app.state = Some(jyc_types::InspectOverview {
         topics: vec![jyc_types::TopicSummary {
+            tasks: Default::default(),
             name: "jyc".to_string(),
             channel: "local_dev".to_string(),
             pattern: Some("jyc".to_string()),
@@ -795,6 +802,7 @@ fn info_scroll_is_clamped_after_render() {
     app.chat.info_visible = true;
     app.state = Some(jyc_types::InspectOverview {
         topics: vec![jyc_types::TopicSummary {
+            tasks: Default::default(),
             name: "jyc".to_string(),
             channel: "local_dev".to_string(),
             pattern: Some("jyc".to_string()),

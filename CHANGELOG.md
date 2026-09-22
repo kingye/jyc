@@ -5,7 +5,8 @@
 - TUI chat message pane: focusing it (Tab, `Ctrl+P` → `c`, or the wheel over the
   messages) shows a cursor bar on one transcript row. `j`/`k` and `↑`/`↓` move it,
   and the view scrolls only once the cursor reaches the pane's top or bottom row;
-  digits count rows (`5j`, `20k`) and `gg`/`G` jump to the ends. `PgUp`/`PgDn`,
+  digits count rows (`5j`, `20k`) and `gg`/`G` jump to the ends; a topic opens with
+  the cursor at the end of its newest message. `PgUp`/`PgDn`,
   `Ctrl+B`/`Ctrl+F` and the wheel still just scroll — and carry the cursor by the
   same distance, so it keeps the screen row it was on while the text slides
   underneath — unless rows are selected, which scrolling leaves alone. `yy`, `y3y`
@@ -14,7 +15,7 @@
   the selected rows, ending with the cursor back on the first of them (`Esc` drops
   the selection where it stands instead). The cursor row and the selected rows
   share one highlight colour. Everything lands in the *terminal's* clipboard via OSC
-  52 (tmux needs `set -g set-clipboard on`) (#806, #807)
+  52 (tmux needs `set -g set-clipboard on`) (#806, #807, #808)
 
 ### Changed
 

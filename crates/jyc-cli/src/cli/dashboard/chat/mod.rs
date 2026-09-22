@@ -8,6 +8,7 @@ use super::token_render::{
 use super::*;
 use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
 
+pub(super) mod clipboard;
 mod render;
 mod table_wrap;
 
@@ -101,6 +102,11 @@ pub(super) struct ChatState {
     /// the source — without this the offset overshoots the top and the
     /// overshoot must be scrolled back off before the view visibly moves.
     pub(super) last_max_scroll: usize,
+    /// A clipboard write queued by a yank key (`yy`, `y3y`, `Ctrl+Y`), flushed
+    /// and cleared by the event loop each frame. Queued rather than written on
+    /// the spot because the handlers run inside `terminal.draw` — see
+    /// [`clipboard`](clipboard).
+    pub(super) pending_clipboard: Option<clipboard::ClipboardRequest>,
     /// Rendered transcript lines cache — rebuilt only when the message
     /// history or pane width changes (see `history_fingerprint`). Avoids
     /// re-parsing the full transcript markdown on every frame (each
@@ -1951,6 +1957,7 @@ impl ChatState {
             activity_scroll: 0,
             last_message_area: None,
             last_max_scroll: 0,
+            pending_clipboard: None,
             render_cache: None,
             pending_g: false,
             activity_hscroll: 0,

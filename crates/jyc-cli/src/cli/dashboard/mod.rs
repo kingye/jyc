@@ -740,6 +740,13 @@ pub async fn run(
                 }
             }
 
+            // Flush a yank's clipboard write, if any. Here rather than in the key
+            // handlers: those run inside `terminal.draw`, and OSC 52 has to write
+            // to the real stdout.
+            if let Some(req) = app.chat.pending_clipboard.take() {
+                chat::clipboard::apply(&req);
+            }
+
             // Draw
             if app.needs_full_redraw {
                 app.needs_full_redraw = false;

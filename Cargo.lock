@@ -1919,6 +1919,7 @@ version = "0.3.18"
 dependencies = [
  "anyhow",
  "arc-swap",
+ "base64 0.23.1",
  "chrono",
  "clap",
  "crossterm",

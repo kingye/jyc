@@ -382,10 +382,11 @@ fn toggle_resets_after_zen_mode() {
     assert_eq!(app.chat.activity_split, 1);
 }
 
-/// Regression: the focused explorer row marks the selection with the same
-/// two-column `→` gutter + DIM as the command/question popups — no
+/// Regression: the explorer row under the cursor marks the selection with the
+/// same two-column `→` gutter + DIM as the command/question popups — no
 /// background fill, and the status dot keeps its own color. The gutter is
-/// reserved on every row so the topic names never shift sideways.
+/// reserved on every row so the topic names never shift sideways, and the
+/// cursor stays visible while the pane itself is unfocused.
 #[test]
 fn explorer_selection_uses_arrow_gutter_and_keeps_status_dot() {
     use ratatui::Terminal;
@@ -394,14 +395,15 @@ fn explorer_selection_uses_arrow_gutter_and_keeps_status_dot() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.explorer_visible = true;
-    app.chat.focus = ChatFocus::ExplorerPane;
+    // Focus stays on the chat input: only the border color reacts to focus.
+    app.chat.focus = ChatFocus::ChatPane;
     app.state = Some(jyc_types::InspectOverview {
         topics: vec![explorer_topic("selected"), explorer_topic("other")],
         ..Default::default()
     });
     app.chat.explorer_selected = 0;
-    // The second topic is the one open in the chat pane: cyan + BOLD is the
-    // only cue left once the explorer loses focus and the arrow goes away.
+    // The second topic is the one open in the chat pane: cyan + BOLD marks it
+    // even though it is not the cursor row.
     app.chat.topic = Some("other".to_string());
     app.chat.channel = Some("test".to_string());
 
@@ -420,7 +422,12 @@ fn explorer_selection_uses_arrow_gutter_and_keeps_status_dot() {
     assert_eq!(
         buffer[(0, 1)].symbol(),
         "→",
-        "selected row needs the arrow gutter"
+        "cursor row needs the arrow gutter even while unfocused"
+    );
+    assert_eq!(
+        buffer[(width - 1, 1)].fg,
+        Color::DarkGray,
+        "the border is what focus changes"
     );
     assert_eq!(buffer[(1, 1)].symbol(), " ");
     assert_eq!(buffer[(2, 1)].symbol(), "●");

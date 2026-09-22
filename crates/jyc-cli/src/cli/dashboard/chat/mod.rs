@@ -1202,7 +1202,9 @@ fn sync_explorer_selection(app: &mut App) {
 ///
 /// Lists all topics from the latest overview poll with a status dot
 /// (green = processing, yellow = queued, cyan = waiting, red = error),
-/// highlighting the topic currently open in the chat pane. The list is
+/// highlighting the topic currently open in the chat pane. The cursor row is
+/// marked whether or not this pane has focus, so switching focus back to the
+/// input never hides which topic the arrow keys would move. The list is
 /// rebuilt from `app.state` on every render, so it stays live.
 pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
     let focused = app.chat.focus == ChatFocus::ExplorerPane;
@@ -1250,7 +1252,7 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
                 TopicStatus::Error => Style::default().fg(Color::Red),
             };
             let is_current = current == Some((&t.name, &t.channel));
-            let is_selected = i == selected && focused;
+            let is_selected = i == selected;
             let name_style = if is_current {
                 Style::default()
                     .fg(Color::Cyan)

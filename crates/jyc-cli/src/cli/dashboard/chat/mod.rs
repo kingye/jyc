@@ -580,7 +580,10 @@ where
 /// pane, then press any key to return to the input and start typing.
 fn refocus_input(app: &mut App) {
     app.chat.focus = ChatFocus::ChatPane;
+    // A half-typed command (`3`, or an armed `y`) must not survive the way back
+    // into the input, or the next keystroke would complete it.
     app.chat.pending_count = 0;
+    app.chat.pending_y = false;
 }
 
 /// `yy` / `y3y`: copy `count` transcript rows starting at the cursor.

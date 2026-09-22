@@ -2658,6 +2658,25 @@ fn yy_copies_the_row_under_the_cursor() {
     assert!(!app.chat.pending_y, "the pair is closed");
 }
 
+/// Leaving the message pane drops a half-typed command, so a stray `y` cannot
+/// complete itself minutes later.
+#[test]
+fn refocusing_the_input_drops_a_half_typed_yank() {
+    let mut app = cursor_app();
+    for c in ['y', '3'] {
+        press(&mut app, c);
+    }
+    press(&mut app, 'x'); // any other key goes back to the input
+    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert!(!app.chat.pending_y);
+    assert_eq!(app.chat.pending_count, 0);
+
+    app.chat.focus = ChatFocus::MessageArea;
+    press(&mut app, 'y');
+    assert!(app.chat.pending_y, "it arms again rather than copying");
+    assert!(app.chat.pending_clipboard.is_none());
+}
+
 /// The count may sit between the two halves (`y3y`) or in front of them (`3yy`).
 #[test]
 fn a_count_in_a_yank_copies_that_many_rows() {

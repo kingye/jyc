@@ -21,9 +21,6 @@ use super::super::{Tool, ToolContext, ToolOutput};
 /// Max items in one list — a plan is a handful of steps, not a transcript.
 const MAX_ITEMS: usize = 20;
 
-/// Max characters per item (every item renders as one line).
-const MAX_ITEM_CHARS: usize = 120;
-
 /// The topic's `.jyc` dir, resolved the way `job_tools` resolves it:
 /// `working_dir` is the topic directory and `current_topic` keys the state-dir
 /// registry (which can point a topic's state elsewhere).
@@ -31,21 +28,11 @@ fn tasks_dir(ctx: &ToolContext<'_>) -> PathBuf {
     jyc_dir(ctx.current_topic.as_deref().unwrap_or(""), ctx.working_dir)
 }
 
-/// Render the list the way the user sees it in `/info` and the TUI pane:
-/// `Tasks (2/5):` then one marked, numbered line per item. The ids shown are
-/// the ones `task_update` takes.
+/// The list as the tools return it: the very lines `/info` shows (one
+/// [`TaskList::render_lines`]), so the ids the model reads back are the ids it
+/// passes to `task_update`.
 fn render(list: &TaskList) -> String {
-    let (done, total) = list.progress();
-    let mut out = format!("Tasks ({done}/{total}):\n");
-    for item in &list.items {
-        out.push_str(&format!(
-            "  {} {}. {}\n",
-            item.status.marker(),
-            item.id,
-            item.text
-        ));
-    }
-    out
+    format!("{}\n", list.render_lines().join("\n"))
 }
 
 /// Show this topic's current task list.
@@ -109,7 +96,7 @@ impl Tool for TaskCreateTool {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": format!(
-                        "Ordered task texts, one line each (1..={MAX_ITEMS} items, {MAX_ITEM_CHARS} chars max)."
+                        "Ordered task texts, one per line (1..={MAX_ITEMS})."
                     ),
                 }
             },
@@ -123,10 +110,17 @@ impl Tool for TaskCreateTool {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let texts: Vec<&str> = raw
+        if let Some(bad) = raw.iter().find(|v| !v.is_string()) {
+            return Ok(ToolOutput::error(format!(
+                "`items` must be an array of task strings, got {bad}."
+            )));
+        }
+        // Every renderer puts one item on one row, so newlines can't survive
+        // in the text.
+        let texts: Vec<String> = raw
             .iter()
             .filter_map(Value::as_str)
-            .map(str::trim)
+            .map(|t| t.trim().replace(['\n', '\r'], " "))
             .filter(|t| !t.is_empty())
             .collect();
 
@@ -141,12 +135,6 @@ impl Tool for TaskCreateTool {
                 texts.len()
             )));
         }
-        if let Some(long) = texts.iter().find(|t| t.chars().count() > MAX_ITEM_CHARS) {
-            return Ok(ToolOutput::error(format!(
-                "task text is {} chars, over the {MAX_ITEM_CHARS} limit: {long}",
-                long.chars().count()
-            )));
-        }
 
         let list = TaskList {
             items: texts
@@ -154,7 +142,7 @@ impl Tool for TaskCreateTool {
                 .enumerate()
                 .map(|(i, text)| TaskItem {
                     id: (i + 1) as u32,
-                    text: (*text).to_string(),
+                    text: text.clone(),
                     status: TaskStatus::Pending,
                 })
                 .collect(),
@@ -343,13 +331,37 @@ mod tests {
         assert!(out.is_error);
         assert!(out.content.contains(&MAX_ITEMS.to_string()));
 
-        let out = create(tmp.path(), vec!["x".repeat(MAX_ITEM_CHARS + 1).as_str()]).await;
+        let out = TaskCreateTool
+            .execute(
+                json!({ "items": ["real step", { "text": "not a string" }] }),
+                &ctx_for(tmp.path()),
+            )
+            .await
+            .unwrap();
         assert!(out.is_error);
-        assert!(out.content.contains("chars"), "{}", out.content);
+        assert!(
+            out.content.contains("array of task strings"),
+            "{}",
+            out.content
+        );
 
         let out = update(tmp.path(), 1, "done").await;
         assert!(out.is_error);
         assert!(out.content.contains("unknown status"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn item_text_cannot_break_the_one_line_per_item_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = create(tmp.path(), vec!["first\nsecond", "plain"]).await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("[ ] 1. first second"),
+            "{}",
+            out.content
+        );
+        // header + two items, nothing wrapped by an embedded newline
+        assert_eq!(out.content.lines().count(), 3, "{}", out.content);
     }
 
     #[tokio::test]

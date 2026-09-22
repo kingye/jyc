@@ -60,6 +60,25 @@ impl TaskList {
         self.items.is_empty()
     }
 
+    /// The section exactly as the user sees it: a `Tasks (done/total):` header,
+    /// then one `[ ]` / `[~]` / `[x]` line per item with its id.
+    ///
+    /// `/info` and the agent's own tools both render through here, so the ids
+    /// the model prints and the ids the user reads cannot drift. The TUI pane
+    /// builds its own styled rows because it colours per-item status the way it
+    /// colours uncommitted files.
+    pub fn render_lines(&self) -> Vec<String> {
+        let (done, total) = self.progress();
+        let mut lines = Vec::with_capacity(self.items.len() + 1);
+        lines.push(format!("Tasks ({done}/{total}):"));
+        lines.extend(
+            self.items
+                .iter()
+                .map(|i| format!("  {} {}. {}", i.status.marker(), i.id, i.text)),
+        );
+        lines
+    }
+
     /// Items completed, out of how many.
     pub fn progress(&self) -> (usize, usize) {
         let done = self
@@ -88,6 +107,40 @@ mod tests {
                 "round-trip should be stable"
             );
         }
+    }
+
+    /// Pins the markers, the 2-space indent and the id column that `/info`,
+    /// the tools and (by convention) the TUI pane all show.
+    #[test]
+    fn render_lines_is_a_header_plus_one_row_per_item() {
+        let list = TaskList {
+            items: vec![
+                TaskItem {
+                    id: 1,
+                    text: "a".into(),
+                    status: TaskStatus::Completed,
+                },
+                TaskItem {
+                    id: 2,
+                    text: "b".into(),
+                    status: TaskStatus::InProgress,
+                },
+                TaskItem {
+                    id: 7,
+                    text: "c".into(),
+                    status: TaskStatus::Pending,
+                },
+            ],
+        };
+        assert_eq!(
+            list.render_lines(),
+            vec![
+                "Tasks (1/3):".to_string(),
+                "  [x] 1. a".to_string(),
+                "  [~] 2. b".to_string(),
+                "  [ ] 7. c".to_string(),
+            ]
+        );
     }
 
     #[test]

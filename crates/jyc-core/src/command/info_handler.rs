@@ -118,19 +118,10 @@ fn format_topic_info(t: &TopicInfo) -> String {
             format_amount(cost.today, &cost.currency)
         ));
     }
-    // Agent task list, same shape as the tools' own output (the model and the
-    // user must be looking at the same ids). Omitted entirely when empty.
+    // Agent task list, through the same renderer the tools return, so the ids
+    // the model prints are the ids the user reads. Omitted when there is none.
     if !t.tasks.is_empty() {
-        let (done, total) = t.tasks.progress();
-        lines.push(format!("Tasks ({done}/{total}):"));
-        for item in &t.tasks.items {
-            lines.push(format!(
-                "  {} {}. {}",
-                item.status.marker(),
-                item.id,
-                item.text
-            ));
-        }
+        lines.extend(t.tasks.render_lines());
     }
     if let Some(files) = t.changed_files.as_deref() {
         if files.is_empty() {

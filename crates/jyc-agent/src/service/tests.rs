@@ -805,6 +805,56 @@ command = ["./topic-mcp"]
 
 // ── Skill filtering tests ──────────────────────────────────────────
 
+/// [`AgentService::available_skills`] — the source for a topic's
+/// `/skill:<name>` commands — runs the same discovery as the system prompt,
+/// with the *config* filters (pattern > channel > none). The runtime `/skill`
+/// toggle is not consulted: the list answers "what may a message ask for".
+#[test]
+fn available_skills_uses_config_filters_not_toggles() {
+    use jyc_core::agent::AgentService;
+
+    with_temp_home(|| {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills_dir = tmp.path().join(".jyc").join("skills");
+        for name in &["alpha", "beta"] {
+            let dir = skills_dir.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: The {name} skill\n---\n"),
+            )
+            .unwrap();
+        }
+
+        let patterns = vec![ChannelPattern {
+            name: "pinned".to_string(),
+            skills: Some(vec!["alpha".to_string()]),
+            ..ChannelPattern::default()
+        }];
+        let svc = service_with_skills(patterns, None, None);
+        let names = |pattern: Option<&str>| {
+            svc.available_skills("", tmp.path(), pattern)
+                .into_iter()
+                .map(|s| s.name)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(names(Some("pinned")), vec!["alpha".to_string()]);
+        // An unmatched pattern — and a topic with no pattern at all — falls
+        // back to the channel filter, which is unset here: everything found.
+        assert_eq!(names(Some("other")), vec!["alpha", "beta"]);
+        assert_eq!(names(None), vec!["alpha", "beta"]);
+
+        let alpha = svc
+            .available_skills("", tmp.path(), Some("pinned"))
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(alpha.description, "The alpha skill");
+        assert_eq!(alpha.source_path, skills_dir.join("alpha"));
+    });
+}
+
 #[test]
 fn discover_skills_include_filter_retains_only_matched() {
     with_temp_home(|| {

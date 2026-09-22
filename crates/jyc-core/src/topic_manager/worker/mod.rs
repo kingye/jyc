@@ -31,6 +31,7 @@ use crate::command::per_agent_commands;
 use crate::command::pin_handler::PinCommandHandler;
 use crate::command::registry::CommandRegistry;
 use crate::command::reset_handler::ResetCommandHandler;
+use crate::command::skill_commands;
 use crate::command::template_handler::TemplateCommandHandler;
 use crate::command::thinking_handler::ThinkingCommandHandler;
 use crate::command::unpin_handler::UnpinCommandHandler;
@@ -184,6 +185,21 @@ pub(crate) async fn process_message(
         &item.pattern_match.pattern_name,
         &mut command_registry,
     );
+
+    // `/skill:<name>`: one command per skill this topic's agent can resolve,
+    // registered as the synthesized `[[commands]]` entry it is (see
+    // [`skill_commands`]). A name already taken by config is skipped, so an
+    // explicit `[[commands]] name = "skill:foo"` wins without the
+    // warn-on-overwrite firing on every message.
+    let pattern = (!item.pattern_match.pattern_name.is_empty())
+        .then_some(item.pattern_match.pattern_name.as_str());
+    for cmd in
+        skill_commands(&agent.available_skills(topic_name, &store_result.topic_path, pattern))
+    {
+        if command_registry.get(&format!("/{}", cmd.name)).is_none() {
+            command_registry.register(Box::new(CustomCommandHandler::new(cmd)));
+        }
+    }
 
     // Hook set for this topic: global [[hooks]] + the routed agent's.
     // Built per message (same lifetime as the command registry), so a

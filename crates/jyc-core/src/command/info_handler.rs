@@ -162,6 +162,7 @@ mod tests {
             total_reasoning_tokens: Some(4_096),
             last_active_at: None,
             skills: vec![],
+            available_skills: vec![],
             recent_messages: vec![],
             thinking_text: None,
             activity: vec![],

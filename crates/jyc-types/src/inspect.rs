@@ -285,6 +285,12 @@ pub struct TopicInfo {
     /// Skills loaded for this topic
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Skills this topic *could* use — config filters applied, the runtime
+    /// `/skill` toggle ignored. Drives the `/skill:<name>` rows in the
+    /// dashboard/TUI command popup. See
+    /// [`jyc_core::agent::AgentService::available_skills`].
+    #[serde(default)]
+    pub available_skills: Vec<crate::SkillMeta>,
     /// Recent chat messages (incoming + replies) for live dashboard display
     #[serde(default)]
     pub recent_messages: Vec<ChatMessageEntry>,
@@ -550,6 +556,13 @@ mod tests {
                 activity: vec![],
                 last_active_at: None,
                 skills: vec!["coding-principles".to_string(), "dev-workflow".to_string()],
+                available_skills: vec![crate::SkillMeta {
+                    name: "coding-principles".to_string(),
+                    description: "Four principles for LLM coding agents".to_string(),
+                    source_path: std::path::PathBuf::from(
+                        "/home/u/.config/jyc/skills/coding-principles",
+                    ),
+                }],
                 recent_messages: vec![],
                 thinking_text: None,
                 topic_path: None,

@@ -30,25 +30,10 @@ impl JycAgentService {
             additional_write_roots,
         ));
 
-        // Resolve skill filters: pattern > channel > none
-        let pattern =
-            matched_pattern.and_then(|name| self.patterns.iter().find(|p| p.name == name));
-
-        let include_list: Option<&[String]> = pattern
-            .and_then(|p| p.skills.as_deref())
-            .or(self.channel_skills.as_deref());
-
-        let mut exclude_list: Vec<String> = Vec::new();
-        if let Some(ref channel_excluded) = self.channel_disabled_skills {
-            exclude_list.extend(channel_excluded.iter().cloned());
-        }
-        if let Some(pattern_excluded) = pattern.and_then(|p| p.disabled_skills.as_ref()) {
-            for name in pattern_excluded {
-                if !exclude_list.contains(name) {
-                    exclude_list.push(name.clone());
-                }
-            }
-        }
+        // Resolve skill filters: pattern > channel > none (shared with
+        // `available_skills` so the `/` popup lists exactly what config allows).
+        let (include_base, mut exclude_list) = self.config_skill_filters(matched_pattern);
+        let include_list: Option<&[String]> = include_base.as_deref();
         // Runtime `/skill` toggle override (persisted until `/skill reset`).
         // `on` joins the whitelist and cancels config-level exclusions;
         // `off` joins the exclusion list (applied after inclusion, so it

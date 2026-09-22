@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
 };
 
 use jyc_types::{CommandArg, CommandInfo};
@@ -287,10 +287,23 @@ pub fn handle_popup_key(
 
 /// Rows the popup needs below the chat input field: one top rule plus the
 /// (clamped) list. The chat layout reserves exactly this many rows, so the
-/// renderer and the layout must agree through this single helper.
+/// renderer and the layout must agree through this single helper. A list longer
+/// than the reserved rows scrolls to follow the cursor — see `window_offset`.
 pub fn popup_height(state: &CommandPopupState, commands: &[CommandInfo]) -> u16 {
     let rows = resolve_level(&state.filter, commands).map_or(0, |l| l.items.len());
     1 + rows.clamp(1, 10) as u16
+}
+
+/// First row of the `height`-row window that shows `selected`: it holds still
+/// while the cursor fits, then slides one row at a time, so a selectable list
+/// longer than its rows never loses the cursor — otherwise the arrow walks into
+/// the clipped part of the buffer and the tail of the list is unreachable.
+/// Every hand-rolled list in this TUI goes through it; ratatui's `Table` does
+/// the same internally for the dashboard's topic table.
+pub(crate) fn window_offset(total: usize, selected: usize, height: usize) -> usize {
+    selected
+        .min(total.saturating_sub(1))
+        .saturating_sub(height.saturating_sub(1))
 }
 
 /// Render the command popup as a full-width top rule plus the list, inside
@@ -336,30 +349,33 @@ pub fn render_command_popup(
             Style::default().fg(Color::DarkGray),
         ))]
     } else {
-        render_rows(&level.items, state.selected)
+        // One row per item, and the window follows the cursor so a list deeper
+        // than the popup stays reachable — see [`window_offset`]. The level has
+        // items here; the empty case took the branch above.
+        let height = inner.height as usize;
+        let count = level.items.len();
+        let selected = state.selected.min(count - 1);
+        let off = window_offset(count, selected, height);
+        render_rows(&level.items[off..(off + height).min(count)], selected - off)
     };
 
-    frame.render_widget(Paragraph::new(items).wrap(Wrap { trim: false }), inner);
+    frame.render_widget(Paragraph::new(items), inner);
 }
 
-/// List rows. The selected row carries a `→` in the two-column gutter and is
-/// dimmed, matching the question box's options. Rows that open a deeper level
-/// carry a `▸` marker.
+/// List rows, one per item — no wrapping, so a row can never push the cursor
+/// out of the window [`window_offset`] picked. `selected` is the index inside
+/// `items`. The selected row carries a `→` in the two-column gutter and is
+/// dimmed, matching the question box's options.
+/// Rows that open a deeper level carry a `▸` marker.
 fn render_rows(items: &[PopupItem], selected: usize) -> Vec<Line<'_>> {
-    let clamped = if items.is_empty() {
-        0
-    } else {
-        selected.min(items.len() - 1)
-    };
-
     items
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let gutter = if i == clamped { "→ " } else { "  " };
+            let gutter = if i == selected { "→ " } else { "  " };
             let name = format!("{gutter}{}  ", item.text);
             let marker = if item.has_children { " ▸" } else { "" };
-            if i != clamped {
+            if i != selected {
                 return Line::from(vec![
                     Span::raw(name),
                     Span::styled(
@@ -663,6 +679,44 @@ mod tests {
         let mut empty = CommandPopupState::new();
         empty.filter = "/zzz".to_string();
         assert_eq!(popup_height(&empty, &commands), 2);
+    }
+
+    /// The window a list deeper than its rows shows: it holds still while the
+    /// cursor fits, then slides one row at a time, so the cursor is always
+    /// inside it.
+    #[test]
+    fn window_offset_keeps_the_cursor_in_the_window() {
+        assert_eq!(window_offset(3, 2, 10), 0, "short list: nothing slides");
+        assert_eq!(window_offset(20, 9, 10), 0, "cursor on the last row");
+        assert_eq!(window_offset(20, 10, 10), 1, "one past the edge slides one");
+        assert_eq!(window_offset(20, 19, 10), 10, "the tail is reachable");
+        // A stale cursor (the list shrank under it) clamps instead of slicing
+        // out of bounds, and so do the degenerate windows.
+        assert_eq!(window_offset(20, 42, 10), 10);
+        assert_eq!(window_offset(0, 0, 10), 0);
+        assert_eq!(window_offset(20, 3, 0), 3);
+        assert_eq!(
+            window_offset(20, 3, 1),
+            3,
+            "one-row window rides the cursor"
+        );
+
+        // The invariant every list here needs.
+        for height in [1usize, 4, 10] {
+            for total in [1usize, 5, 20] {
+                for selected in 0..total {
+                    let off = window_offset(total, selected, height);
+                    assert!(
+                        off <= selected && selected < off + height,
+                        "cursor {selected} outside {off}..+{height} (total {total})"
+                    );
+                    assert!(
+                        off + height <= total.max(height),
+                        "window runs past the end: {off} + {height} > {total}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

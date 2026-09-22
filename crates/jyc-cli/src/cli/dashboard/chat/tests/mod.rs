@@ -2432,5 +2432,564 @@ fn seed_live_resets_last_pushed_chat_id_so_revisit_rehydrates() {
     );
 }
 
+// ── Message-pane cursor ───────────────────────────────────────────────────
+
+/// A chat whose message pane is focused and drawn once, so the renderer has
+/// measured the geometry the cursor moves against (the keys always work on last
+/// frame's numbers).
+fn cursor_app() -> App {
+    let mut app = chatting_app();
+    app.chat.messages = (0..40)
+        .map(|i| history_msg("user", &format!("message {i:02}"), None))
+        .collect();
+    app.chat.focus = ChatFocus::MessageArea;
+    let _ = draw_80x24(&mut app);
+    assert!(
+        app.chat.last_total_lines > 30,
+        "the fixture needs rows below the fold, got {}",
+        app.chat.last_total_lines
+    );
+    app
+}
+
+/// Send one key to the chat screen the way the event loop does.
+fn press_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+    handle_chat_keys(
+        app,
+        crossterm::event::KeyEvent::new(code, modifiers),
+        &mut test_terminal(),
+    );
+}
+
+fn press(app: &mut App, c: char) {
+    press_key(app, KeyCode::Char(c), KeyModifiers::NONE);
+}
+
+/// The rendered transcript rows as plain text — what a yank copies.
+fn transcript_rows(app: &App) -> Vec<String> {
+    app.chat
+        .render_cache
+        .as_ref()
+        .expect("drawn once")
+        .1
+        .iter()
+        .map(line_text)
+        .collect()
+}
+
+/// The status line the app is showing, if any.
+fn status(app: &App) -> String {
+    app.status_message
+        .as_ref()
+        .map(|(m, _)| m.clone())
+        .unwrap_or_default()
+}
+
+/// A fresh cursor lands on the newest row — where the reader already is.
+#[test]
+fn message_cursor_starts_on_the_newest_row() {
+    let app = cursor_app();
+    assert_eq!(app.chat.cursor_line, app.chat.last_total_lines - 1);
+}
+
+/// `j`/`k` move the cursor; the view starts scrolling only once the cursor runs
+/// into the top or bottom row, so a long jump stops at the edge instead of
+/// dragging the whole screen along.
+#[test]
+fn the_view_follows_the_cursor_only_at_its_edges() {
+    let mut app = cursor_app();
+    let start = app.chat.view_start_line();
+    let rows_to_top = app.chat.cursor_line - start;
+    assert!(
+        rows_to_top > 1,
+        "the fixture needs room to walk inside the view"
+    );
+
+    for _ in 0..rows_to_top {
+        press(&mut app, 'k');
+    }
+    assert_eq!(app.chat.cursor_line, start);
+    assert_eq!(app.chat.scroll, 0, "walking inside the view never scrolls");
+
+    press(&mut app, 'k');
+    assert_eq!(
+        app.chat.scroll, 1,
+        "one row off the top is one row of scroll"
+    );
+    assert_eq!(app.chat.view_start_line(), start - 1);
+    assert_eq!(
+        app.chat.cursor_line,
+        start - 1,
+        "and it sits on the new top row"
+    );
+
+    // Coming back inside the view does not undo the scroll — the cursor has
+    // room to travel before it reaches the bottom edge again.
+    press(&mut app, 'j');
+    assert_eq!(app.chat.scroll, 1);
+    assert_eq!(app.chat.cursor_line, start);
+}
+
+/// Digits before a movement key count lines. A jump past either end stops there.
+#[test]
+fn digits_before_a_movement_key_count_lines() {
+    let mut app = cursor_app();
+    let total = app.chat.last_total_lines;
+    let start = app.chat.cursor_line;
+
+    for c in ['5', 'k'] {
+        press(&mut app, c);
+    }
+    assert_eq!(app.chat.cursor_line, start - 5, "`5k` steps five rows up");
+    assert_eq!(app.chat.pending_count, 0, "the prefix is spent");
+
+    for c in ['1', '2', 'j'] {
+        press(&mut app, c);
+    }
+    assert_eq!(
+        app.chat.cursor_line,
+        total - 1,
+        "twelve rows down clamps at the end"
+    );
+}
+
+/// A view-only move (wheel, `PgDn`, `Ctrl+F`) carries the cursor the same number
+/// of rows, so it keeps the screen row it was on while the text slides
+/// underneath — through the partial page at the end of the transcript, where it
+/// stops along with the view.
+#[test]
+fn a_view_move_carries_the_cursor_along_its_screen_row() {
+    let mut app = cursor_app();
+    // Top of the transcript, cursor on the third visible row.
+    app.chat.scroll = app.chat.last_max_scroll;
+    app.chat.cursor_line = app.chat.view_start_line() + 2;
+    let row = app.chat.cursor_line - app.chat.view_start_line();
+
+    for _ in 0..5 {
+        app.chat.scroll_down();
+        assert_eq!(
+            app.chat.cursor_line - app.chat.view_start_line(),
+            row,
+            "the wheel moves the cursor with the text"
+        );
+    }
+    // The bottom of the transcript, row by row, with the same promise.
+    for _ in 0..64 {
+        if app.chat.scroll == 0 {
+            break;
+        }
+        app.chat.page_down();
+        assert_eq!(
+            app.chat.cursor_line - app.chat.view_start_line(),
+            row,
+            "a page does too, including the last one when it only fits partway"
+        );
+    }
+    assert_eq!(app.chat.scroll, 0, "the walk reached the bottom");
+    let parked = app.chat.cursor_line;
+    app.chat.page_down();
+    app.chat.scroll_down();
+    assert_eq!(
+        app.chat.cursor_line, parked,
+        "with nowhere to go the cursor holds still"
+    );
+
+    // Same at the top.
+    for _ in 0..64 {
+        if app.chat.scroll == app.chat.last_max_scroll {
+            break;
+        }
+        app.chat.page_up();
+        assert_eq!(app.chat.cursor_line - app.chat.view_start_line(), row);
+    }
+    assert_eq!(
+        app.chat.scroll, app.chat.last_max_scroll,
+        "the walk reached the top"
+    );
+    let parked = app.chat.cursor_line;
+    app.chat.page_up();
+    assert_eq!(app.chat.cursor_line, parked);
+}
+
+/// `gg` and `G` are jumps, not steps: cursor and view go to the first / last row.
+#[test]
+fn gg_and_capital_g_take_the_cursor_to_the_ends() {
+    let mut app = cursor_app();
+    let total = app.chat.last_total_lines;
+
+    press(&mut app, 'G');
+    assert_eq!(app.chat.cursor_line, total - 1);
+    assert_eq!(app.chat.scroll, 0);
+
+    press(&mut app, 'g');
+    press(&mut app, 'g');
+    assert_eq!(app.chat.cursor_line, 0);
+    assert_eq!(
+        app.chat.scroll, app.chat.last_max_scroll,
+        "the view follows the jump"
+    );
+}
+
+/// `y` arms, the second `y` copies the row under the cursor and says how much it
+/// took. The copy is the *rendered* row, so it matches what was on screen.
+#[test]
+fn yy_copies_the_row_under_the_cursor() {
+    let mut app = cursor_app();
+    let rows = transcript_rows(&app);
+    let target = rows
+        .iter()
+        .position(|r| r.contains("message 07"))
+        .expect("the fixture's rows");
+    app.chat.cursor_line = target;
+
+    press(&mut app, 'y');
+    assert!(app.chat.pending_y, "one `y` only arms the pair");
+    assert!(app.chat.pending_clipboard.is_none());
+
+    press(&mut app, 'y');
+    assert_eq!(
+        app.chat
+            .pending_clipboard
+            .take()
+            .expect("a queued clipboard write"),
+        rows[target]
+    );
+    assert_eq!(status(&app), "Copied 1 line");
+    assert!(!app.chat.pending_y, "the pair is closed");
+}
+
+/// Leaving the message pane drops a half-typed command, so a stray `y` cannot
+/// complete itself minutes later.
+#[test]
+fn refocusing_the_input_drops_a_half_typed_yank() {
+    let mut app = cursor_app();
+    for c in ['y', '3'] {
+        press(&mut app, c);
+    }
+    press(&mut app, 'x'); // any other key goes back to the input
+    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+    assert!(!app.chat.pending_y);
+    assert_eq!(app.chat.pending_count, 0);
+
+    app.chat.focus = ChatFocus::MessageArea;
+    press(&mut app, 'y');
+    assert!(app.chat.pending_y, "it arms again rather than copying");
+    assert!(app.chat.pending_clipboard.is_none());
+}
+
+/// The count may sit between the two halves (`y3y`) or in front of them (`3yy`).
+#[test]
+fn a_count_in_a_yank_copies_that_many_rows() {
+    for keys in [['y', '3', 'y'], ['3', 'y', 'y']] {
+        let mut app = cursor_app();
+        let rows = transcript_rows(&app);
+        let target = rows
+            .iter()
+            .position(|r| r.contains("message 07"))
+            .expect("the fixture's rows");
+        app.chat.cursor_line = target;
+        for c in keys {
+            press(&mut app, c);
+        }
+        let copied = app
+            .chat
+            .pending_clipboard
+            .take()
+            .unwrap_or_else(|| panic!("{keys:?} queued nothing"));
+        assert_eq!(copied.lines().count(), 3, "{keys:?} copies three rows");
+        assert_eq!(copied.lines().next().unwrap(), rows[target]);
+        assert_eq!(status(&app), "Copied 3 lines");
+    }
+}
+
+/// The bar is the message pane's own: it spans the row edge to edge, and with
+/// the input focused the transcript is plain text again.
+#[test]
+fn the_cursor_bar_spans_the_row_only_while_the_pane_has_focus() {
+    use super::render::CURSOR_BG;
+
+    let mut app = cursor_app();
+    let area = app.chat.last_message_area.unwrap();
+    let y = area.top() + (app.chat.cursor_line - app.chat.view_start_line()) as u16;
+
+    let buffer = draw_80x24(&mut app);
+    assert_eq!(buffer[(area.left(), y)].style().bg, Some(CURSOR_BG));
+    assert_eq!(
+        buffer[(area.right() - 1, y)].style().bg,
+        Some(CURSOR_BG),
+        "the bar reaches the edge even on a short row"
+    );
+
+    app.chat.focus = ChatFocus::ChatPane;
+    let buffer = draw_80x24(&mut app);
+    assert_ne!(buffer[(area.left(), y)].style().bg, Some(CURSOR_BG));
+}
+
+// ── Selecting rows with Shift ─────────────────────────────────────────────
+
+/// Press a Shifted character the way the terminal reports it.
+fn press_shift(app: &mut App, c: char) {
+    press_key(app, KeyCode::Char(c), KeyModifiers::SHIFT);
+}
+
+/// Walk the cursor up `n` rows with the digit-count form (`n` < pane height).
+fn move_up(app: &mut App, n: usize) {
+    for digit in n.to_string().chars() {
+        press(app, digit);
+    }
+    press(app, 'k');
+}
+
+/// Shift+J opens a selection at the cursor, and `y` copies exactly the rows
+/// between the two ends and leaves visual mode.
+#[test]
+fn shift_movement_opens_a_selection_that_y_copies() {
+    let mut app = cursor_app();
+    let rows = transcript_rows(&app);
+    let start = app.chat.cursor_line;
+    move_up(&mut app, 5);
+
+    press_shift(&mut app, 'J');
+    press_shift(&mut app, 'J');
+    assert_eq!(
+        app.chat.selection_range(),
+        Some((start - 5, start - 3)),
+        "the anchor stayed put while the cursor moved"
+    );
+    assert_eq!(status(&app), "3 lines selected");
+
+    press(&mut app, 'y');
+    let copied = app
+        .chat
+        .pending_clipboard
+        .take()
+        .expect("a queued clipboard write");
+    assert_eq!(
+        copied.lines().collect::<Vec<_>>(),
+        vec![
+            rows[start - 5].as_str(),
+            rows[start - 4].as_str(),
+            rows[start - 3].as_str()
+        ],
+        "both ends are included"
+    );
+    assert_eq!(status(&app), "Copied 3 lines");
+    assert_eq!(
+        app.chat.selection_range(),
+        None,
+        "`y` is the end of the selection"
+    );
+}
+
+/// Once a selection is open, every movement grows it — Shift or not, with a
+/// count or without. Walking back across the anchor shrinks it and then flips
+/// which end is which, so the range is always the rows in between.
+#[test]
+fn movement_keeps_extending_an_open_selection() {
+    let mut app = cursor_app();
+    let start = app.chat.cursor_line;
+    move_up(&mut app, 5);
+    press_shift(&mut app, 'J');
+
+    press(&mut app, 'j');
+    assert_eq!(app.chat.selection_range(), Some((start - 5, start - 3)));
+
+    press(&mut app, '3');
+    press(&mut app, 'j');
+    assert_eq!(app.chat.selection_range(), Some((start - 5, start)));
+
+    for _ in 0..4 {
+        press(&mut app, 'k');
+    }
+    assert_eq!(
+        app.chat.selection_range(),
+        Some((start - 5, start - 4)),
+        "shrinking back towards the anchor"
+    );
+    for _ in 0..2 {
+        press(&mut app, 'k');
+    }
+    assert_eq!(
+        app.chat.selection_range(),
+        Some((start - 6, start - 5)),
+        "crossing the anchor flips the ends"
+    );
+}
+
+/// The jumps work the same way: with a selection open, `gg` takes the far end to
+/// the top of the transcript and `G` pulls it back to the bottom.
+#[test]
+fn the_jumps_extend_an_open_selection() {
+    let mut app = cursor_app();
+    let start = app.chat.cursor_line;
+    press_shift(&mut app, 'K');
+    press_shift(&mut app, 'K');
+    assert_eq!(app.chat.selection_range(), Some((start - 2, start)));
+
+    press(&mut app, 'g');
+    press(&mut app, 'g');
+    assert_eq!(
+        app.chat.selection_range(),
+        Some((0, start)),
+        "`gg` selected everything above"
+    );
+
+    press(&mut app, 'G');
+    assert_eq!(app.chat.selection_range(), Some((start, start)));
+}
+
+/// `Esc` drops the selection and leaves the user in the message pane; the second
+/// one is what returns to the input. A mis-click on `Esc` must not throw away a
+/// selection *and* the focused pane at once.
+#[test]
+fn esc_leaves_the_selection_before_it_leaves_the_pane() {
+    let mut app = cursor_app();
+    move_up(&mut app, 3);
+    press_shift(&mut app, 'K');
+    assert!(app.chat.selection_range().is_some());
+
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(app.chat.selection_range(), None);
+    assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+}
+
+/// Scrolling to look around while a selection is open changes nothing about it:
+/// the cursor is pinned to its text, unlike the view-riding behaviour it has
+/// when nothing is selected (`a_view_move_carries_the_cursor_along_its_screen_row`).
+#[test]
+fn scrolling_leaves_an_open_selection_alone() {
+    let mut app = cursor_app();
+    let start = app.chat.cursor_line;
+    move_up(&mut app, 5);
+    press_shift(&mut app, 'J');
+    let selected = app.chat.selection_range();
+    assert_eq!(selected, Some((start - 5, start - 4)));
+    let before = app.chat.view_start_line();
+
+    for _ in 0..3 {
+        app.chat.page_up();
+        app.chat.scroll_up();
+    }
+    assert!(
+        app.chat.view_start_line() < before,
+        "the test needs the view to have actually moved"
+    );
+    assert_eq!(app.chat.selection_range(), selected, "same rows selected");
+}
+
+/// A yank armed *before* a selection must not outlive it: `y` + `J` + `y` copies
+/// the selection and spends the arm, so the next `y` starts a fresh pair instead
+/// of firing the stale one and silently yanking a second time.
+#[test]
+fn an_armed_yank_does_not_survive_a_selection() {
+    let mut app = cursor_app();
+    move_up(&mut app, 3);
+    let rows = transcript_rows(&app);
+    press(&mut app, 'y');
+    press_shift(&mut app, 'J');
+    let (from, to) = app.chat.selection_range().expect("open");
+    assert_eq!(to - from, 1, "two rows");
+    press(&mut app, 'y');
+
+    let copied = app
+        .chat
+        .pending_clipboard
+        .take()
+        .expect("a queued clipboard write");
+    assert_eq!(
+        copied,
+        rows[from..=to].join("\n"),
+        "both ends, exactly as rendered"
+    );
+    assert_eq!(status(&app), "Copied 2 lines");
+    assert!(!app.chat.pending_y, "the arm is spent with the selection");
+
+    press(&mut app, 'y');
+    assert!(
+        app.chat.pending_clipboard.is_none(),
+        "the next `y` arms, it does not copy"
+    );
+}
+
+/// At the end of the transcript there is nowhere to extend, so the selection is
+/// the single row under the cursor — and the status line counts it as one line.
+#[test]
+fn a_one_row_selection_reports_a_single_line() {
+    let mut app = cursor_app();
+    let last = app.chat.cursor_line;
+
+    press_shift(&mut app, 'J');
+    assert_eq!(app.chat.selection_range(), Some((last, last)));
+    assert_eq!(status(&app), "1 line selected");
+
+    press(&mut app, 'y');
+    assert_eq!(status(&app), "Copied 1 line");
+}
+
+/// A selection is the message pane's alone. Focus can leave it by routes that do
+/// not clear state themselves (`Tab`, a click, opening the explorer), so the
+/// render drops the selection: an invisible one must not be yankable, and must
+/// not keep pinning the cursor against the view.
+#[test]
+fn leaving_the_pane_drops_the_selection() {
+    let mut app = cursor_app();
+    move_up(&mut app, 3);
+    press_shift(&mut app, 'J');
+    assert!(app.chat.selection_range().is_some());
+
+    app.chat.focus = ChatFocus::InfoPane;
+    let _ = draw_80x24(&mut app);
+    assert_eq!(app.chat.selection_range(), None, "dropped with the focus");
+
+    app.chat.focus = ChatFocus::MessageArea;
+    let _ = draw_80x24(&mut app);
+    press(&mut app, 'y');
+    assert!(
+        app.chat.pending_clipboard.is_none(),
+        "`y` arms a fresh pair instead of copying the old range"
+    );
+}
+
+/// Selected rows get their own bar and the cursor row keeps the solid one inside
+/// the range, so both the selection and where it is being moved are readable.
+#[test]
+fn the_selection_bars_show_the_range_and_the_cursor() {
+    use ratatui::style::Color;
+
+    use super::render::{CURSOR_BG, SELECT_BG};
+
+    let mut app = cursor_app();
+    move_up(&mut app, 3);
+    press_shift(&mut app, 'J');
+    press_shift(&mut app, 'J');
+    let area = app.chat.last_message_area.unwrap();
+    let skip = app.chat.view_start_line();
+    let row_of = |line: usize| area.top() + (line - skip) as u16;
+    let cursor = app.chat.cursor_line;
+
+    let buffer = draw_80x24(&mut app);
+    let bg_at = |line: usize| buffer[(area.left(), row_of(line))].style().bg;
+    assert_eq!(
+        bg_at(cursor),
+        Some(CURSOR_BG),
+        "the moving end keeps its bar"
+    );
+    assert_eq!(bg_at(cursor - 1), Some(SELECT_BG));
+    assert_eq!(bg_at(cursor - 2), Some(SELECT_BG), "the anchor end too");
+    assert_eq!(
+        buffer[(area.left(), row_of(cursor - 1))].style().fg,
+        Some(Color::White),
+        "a selected row forces a light foreground so the navy works on any theme"
+    );
+    assert_ne!(
+        bg_at(cursor - 3),
+        Some(SELECT_BG),
+        "rows outside the range are untouched"
+    );
+}
+
 #[cfg(test)]
 mod part2;

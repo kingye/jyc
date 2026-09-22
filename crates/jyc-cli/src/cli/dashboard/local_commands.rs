@@ -201,7 +201,7 @@ pub fn local_commands() -> &'static [LocalCommand] {
         },
         LocalCommand {
             name: "focus chat",
-            description: "Focus the message area (j/k scroll; typing returns to input)",
+            description: "Focus the message area (j/k move the cursor, J/K select, y copies; typing returns to input)",
             scope: Chat,
             action: LocalAction::FocusChat,
             leader_keys: "c",

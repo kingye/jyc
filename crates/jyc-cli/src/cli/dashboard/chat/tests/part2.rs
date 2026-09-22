@@ -382,46 +382,27 @@ fn toggle_resets_after_zen_mode() {
     assert_eq!(app.chat.activity_split, 1);
 }
 
+/// Regression: the focused explorer row marks the selection with the same
+/// two-column `→` gutter + DIM as the command/question popups — no
+/// background fill, and the status dot keeps its own color. The gutter is
+/// reserved on every row so the topic names never shift sideways.
 #[test]
-fn explorer_selected_row_fills_full_width() {
+fn explorer_selection_uses_arrow_gutter_and_keeps_status_dot() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    // Short topic name so the missing highlight (the bug) would leave
-    // most of the row uncolored. The selection background must extend
-    // to the pane's right edge, not just under the topic-name text.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.explorer_visible = true;
     app.chat.focus = ChatFocus::ExplorerPane;
     app.state = Some(jyc_types::InspectOverview {
-        topics: vec![jyc_types::TopicSummary {
-            name: "x".to_string(),
-            channel: "test".to_string(),
-            pattern: None,
-            status: jyc_types::TopicStatus::Idle,
-            model: None,
-            mode: None,
-            branch: None,
-            changed_files: None,
-            context_input_tokens: None,
-            total_input_tokens: None,
-            total_cache_hit_tokens: None,
-            total_cache_creation_tokens: None,
-            max_tokens: None,
-            output_tokens: None,
-            last_active_at: None,
-            skills: vec![],
-            topic_path: None,
-            cost: None,
-            commands: vec![],
-        }],
+        topics: vec![explorer_topic("selected"), explorer_topic("other")],
         ..Default::default()
     });
     app.chat.explorer_selected = 0;
 
-    let width = 20;
-    let height = 5;
+    let width = 24;
+    let height = 6;
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal
@@ -429,18 +410,105 @@ fn explorer_selected_row_fills_full_width() {
         .expect("draw");
 
     let buffer = terminal.backend().buffer().clone();
-    // The pane has no title or top border but one row of top padding,
-    // so the selected row sits at y=1. Every cell across it must have
-    // the cyan selection background.
-    for x in 1..(width - 1) {
-        let cell = &buffer[(x, 1)];
-        assert_eq!(
-            cell.bg,
-            Color::Cyan,
-            "explorer selection bg should fill row at x={x}, got {:?}",
-            cell.bg
-        );
+    // No title and no top border, but one row of top padding: the
+    // selected row sits at y=1, the next topic at y=2. Both rows use a
+    // two-column gutter, then the dot, then the name.
+    assert_eq!(
+        buffer[(0, 1)].symbol(),
+        "→",
+        "selected row needs the arrow gutter"
+    );
+    assert_eq!(buffer[(1, 1)].symbol(), " ");
+    assert_eq!(buffer[(2, 1)].symbol(), "●");
+    assert_eq!(buffer[(4, 1)].symbol(), "s", "name follows gutter + dot");
+    assert_eq!(
+        buffer[(2, 1)].fg,
+        Color::DarkGray,
+        "idle status dot keeps its own color"
+    );
+    assert_eq!(
+        buffer[(0, 1)].bg,
+        Color::Reset,
+        "selection paints no background"
+    );
+    assert_eq!(buffer[(4, 1)].bg, Color::Reset);
+    assert!(buffer[(4, 1)].modifier.contains(Modifier::DIM));
+
+    assert_eq!(buffer[(0, 2)].symbol(), " ");
+    assert_eq!(buffer[(1, 2)].symbol(), " ");
+    assert_eq!(buffer[(2, 2)].symbol(), "●");
+    assert_eq!(
+        buffer[(4, 2)].symbol(),
+        "o",
+        "unselected name stays in column"
+    );
+    assert!(!buffer[(4, 2)].modifier.contains(Modifier::DIM));
+}
+
+/// Minimal idle topic for the explorer rendering tests.
+fn explorer_topic(name: &str) -> jyc_types::TopicSummary {
+    jyc_types::TopicSummary {
+        name: name.to_string(),
+        channel: "test".to_string(),
+        pattern: None,
+        status: jyc_types::TopicStatus::Idle,
+        model: None,
+        mode: None,
+        branch: None,
+        changed_files: None,
+        context_input_tokens: None,
+        total_input_tokens: None,
+        total_cache_hit_tokens: None,
+        total_cache_creation_tokens: None,
+        max_tokens: None,
+        output_tokens: None,
+        last_active_at: None,
+        skills: vec![],
+        topic_path: None,
+        cost: None,
+        commands: vec![],
     }
+}
+
+/// Regression: the pattern list marks its cursor with the same two-column
+/// `→` gutter + DIM as the command and question popups, and the unselected
+/// rows keep an equally wide blank gutter so nothing shifts sideways.
+#[test]
+fn pattern_select_uses_arrow_gutter_aligned_with_unselected_rows() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.patterns = vec!["alpha".to_string(), "beta".to_string()];
+    app.chat.pattern_selected = 1;
+
+    let backend = TestBackend::new(20, 6);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| render_pattern_select(frame, frame.area(), &app))
+        .expect("draw");
+
+    let buffer = terminal.backend().buffer().clone();
+    // Bordered block: both rows start at x=1, the name column at x=3.
+    assert_eq!(
+        buffer[(1, 1)].symbol(),
+        " ",
+        "unselected row keeps its gutter"
+    );
+    assert_eq!(
+        buffer[(3, 1)].symbol(),
+        "a",
+        "unselected name stays in column"
+    );
+    assert_eq!(buffer[(1, 2)].symbol(), "→", "selected row needs the arrow");
+    assert_eq!(
+        buffer[(3, 2)].symbol(),
+        "b",
+        "selected name stays in column"
+    );
+    assert!(buffer[(3, 2)].modifier.contains(Modifier::DIM));
+    assert!(!buffer[(3, 1)].modifier.contains(Modifier::DIM));
 }
 
 /// Regression: the Files section must color `uncommitted: true`

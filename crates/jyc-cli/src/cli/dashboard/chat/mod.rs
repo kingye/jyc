@@ -1251,12 +1251,7 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
             };
             let is_current = current == Some((&t.name, &t.channel));
             let is_selected = i == selected && focused;
-            let name_style = if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else if is_current {
+            let name_style = if is_current {
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
@@ -1264,26 +1259,23 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default()
             };
 
-            // For the focused selection row, paint the full row width with
-            // the highlight background so the selection visually fills the
-            // row instead of stopping at the end of the topic name.
-            if is_selected {
-                let sel_style = Style::default().fg(Color::Black).bg(Color::Cyan);
-                let mut spans = Vec::with_capacity(3);
-                spans.push(Span::styled("● ", sel_style));
-                spans.push(Span::styled(t.name.as_str(), name_style));
-                let used = "● ".width() + t.name.as_str().width();
-                let pad = (inner.width as usize).saturating_sub(used);
-                if pad > 0 {
-                    spans.push(Span::styled(" ".repeat(pad), sel_style));
-                }
-                Line::from(spans)
+            // The selected row uses the same two-column `→` gutter + DIM as
+            // the command and question popups. The status dot keeps its own
+            // color on that row too, so it stays readable at a glance.
+            let (gutter, gutter_style, name_style) = if is_selected {
+                (
+                    "→ ",
+                    Style::default().add_modifier(Modifier::DIM),
+                    name_style.add_modifier(Modifier::DIM),
+                )
             } else {
-                Line::from(vec![
-                    Span::styled("● ", dot_style),
-                    Span::styled(t.name.as_str(), name_style),
-                ])
-            }
+                ("  ", Style::default(), name_style)
+            };
+            Line::from(vec![
+                Span::styled(gutter, gutter_style),
+                Span::styled("● ", dot_style),
+                Span::styled(t.name.as_str(), name_style),
+            ])
         })
         .collect();
 
@@ -1544,11 +1536,8 @@ pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
         .map(|(i, pattern)| {
             if i == app.chat.pattern_selected {
                 Line::from(vec![Span::styled(
-                    format!("> {pattern}"),
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
+                    format!("→ {pattern}"),
+                    Style::default().add_modifier(Modifier::DIM),
                 )])
             } else {
                 Line::from(vec![Span::raw("  "), Span::raw(pattern)])
@@ -1556,7 +1545,10 @@ pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
+    // `Wrap { trim: false }` is required so the two-column gutter on the
+    // unselected rows survives (default `trim: true` strips leading
+    // whitespace per line, leaving the `→` as the only indented row).
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 }
 

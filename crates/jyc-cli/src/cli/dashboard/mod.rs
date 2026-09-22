@@ -1406,7 +1406,8 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
                 .title(format!(" Topics ({}) ", state.topics.len()))
                 .borders(Borders::ALL),
         )
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .row_highlight_style(Style::default().add_modifier(Modifier::DIM))
+        .highlight_symbol("→ ");
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
 }
@@ -2146,6 +2147,40 @@ mod tests {
 
         // No topics -> no auto-select.
         assert!(app.table_state.selected().is_none());
+    }
+
+    /// Regression: the topic table marks its selection with the same
+    /// two-column `→` gutter + DIM as the chat popups (no reverse video),
+    /// and the gutter is reserved on every row so the names don't shift.
+    #[test]
+    fn topics_table_selection_uses_arrow_gutter_without_reverse() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = make_test_app();
+        app.state = Some(make_overview_with_topics(&["alpha", "beta"]));
+        app.table_state.select(Some(0));
+
+        let area = Rect::new(0, 0, 60, 6);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_topics(frame, area, &mut app))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer().clone();
+        // Border, then the header on y=1 and the first data row on y=2.
+        assert_eq!(buffer[(1, 2)].symbol(), "→", "selected row needs the arrow");
+        assert_eq!(buffer[(3, 2)].symbol(), "a");
+        assert_eq!(
+            buffer[(3, 2)].bg,
+            Color::Reset,
+            "selection paints no background"
+        );
+        assert!(buffer[(3, 2)].modifier.contains(Modifier::DIM));
+        // The unselected row keeps the gutter width and stays undimmed.
+        assert_eq!(buffer[(3, 3)].symbol(), "b");
+        assert!(!buffer[(3, 3)].modifier.contains(Modifier::DIM));
     }
 
     // --- refresh_chat_commands uses chat.topic, not table_state.selected() ---

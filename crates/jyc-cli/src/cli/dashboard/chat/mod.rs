@@ -1578,26 +1578,6 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         if !cost_spans.is_empty() {
             out.push(Line::from(cost_spans));
         }
-        if t.status == TopicStatus::Processing {
-            let mut thinking_line: Vec<Span> = vec![Span::styled(
-                "⏳ AI thinking...",
-                Style::default().fg(Color::Yellow),
-            )];
-            // Append the live-duration ticker when a tick has arrived.
-            // Falls back to the plain `⏳ AI thinking...` line when no
-            // tick has arrived yet — the first tick fires at t=0 so
-            // this is essentially instantaneous for any loop that runs
-            // long enough to render this view.
-            if let Some(ms) = app.chat.live_tick_ms_for(&t.channel, &t.name) {
-                thinking_line.push(Span::styled(
-                    format!(" ({})", format_elapsed_ms(ms)),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::ITALIC),
-                ));
-            }
-            out.push(Line::from(thinking_line));
-        }
         // Separated section: the agent's task list (`.jyc/tasks.json`),
         // placed between the cost row and the files section. Same
         // `[ ] [~] [x]` markers and ids the agent's own tools print, so what
@@ -1622,6 +1602,26 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
                     style,
                 )));
             }
+        }
+        if t.status == TopicStatus::Processing {
+            let mut thinking_line: Vec<Span> = vec![Span::styled(
+                "⏳ AI thinking...",
+                Style::default().fg(Color::Yellow),
+            )];
+            // Append the live-duration ticker when a tick has arrived.
+            // Falls back to the plain `⏳ AI thinking...` line when no
+            // tick has arrived yet — the first tick fires at t=0 so
+            // this is essentially instantaneous for any loop that runs
+            // long enough to render this view.
+            if let Some(ms) = app.chat.live_tick_ms_for(&t.channel, &t.name) {
+                thinking_line.push(Span::styled(
+                    format!(" ({})", format_elapsed_ms(ms)),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+            out.push(Line::from(thinking_line));
         }
         // Separated section at the end: files changed relative to `main`,
         // resolved server-side and shipped on `TopicSummary.changed_files`

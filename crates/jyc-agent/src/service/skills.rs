@@ -70,6 +70,40 @@ pub fn parse_skill_frontmatter(content: &str) -> Option<SkillMeta> {
 
 /// In-process AI agent service.
 impl JycAgentService {
+    /// Config-derived skill filters for a topic: pattern > channel > none.
+    ///
+    /// The single source of truth for both callers:
+    /// [`Self::build_system_prompt`] layers the runtime `/skill` toggle on top
+    /// of this, and [`AgentService::available_skills`] uses it as-is.
+    ///
+    /// [`AgentService::available_skills`]: jyc_core::agent::AgentService::available_skills
+    pub(crate) fn config_skill_filters(
+        &self,
+        matched_pattern: Option<&str>,
+    ) -> (Option<Vec<String>>, Vec<String>) {
+        let pattern =
+            matched_pattern.and_then(|name| self.patterns.iter().find(|p| p.name == name));
+
+        let include = pattern
+            .and_then(|p| p.skills.as_deref())
+            .or(self.channel_skills.as_deref())
+            .map(|list| list.to_vec());
+
+        let mut exclude: Vec<String> = Vec::new();
+        if let Some(channel_excluded) = &self.channel_disabled_skills {
+            exclude.extend(channel_excluded.iter().cloned());
+        }
+        if let Some(pattern_excluded) = pattern.and_then(|p| p.disabled_skills.as_ref()) {
+            for name in pattern_excluded {
+                if !exclude.contains(name) {
+                    exclude.push(name.clone());
+                }
+            }
+        }
+
+        (include, exclude)
+    }
+
     ///
     /// Scans paths from lowest to highest priority (later paths override earlier ones
     /// when skills share the same name).
@@ -174,7 +208,9 @@ impl JycAgentService {
         // Sort by name for deterministic output
         result.sort_by(|a, b| a.name.cmp(&b.name));
 
-        tracing::info!(
+        // `debug!`, not `info!`: discovery now also runs per overview poll (the
+        // `/skill:<name>` command rows), so an info line here would drown the log.
+        tracing::debug!(
             topic_path = %topic_path.display(),
             skills = ?result.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
             "Discovered {} skill(s)", result.len()

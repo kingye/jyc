@@ -17,6 +17,13 @@
   share one highlight colour. Everything lands in the *terminal's* clipboard via OSC
   52 (tmux needs `set -g set-clipboard on`) (#806, #807, #808)
 
+- `/skill:<name>` — one command per skill a topic can use, so a single message can
+  ask for a skill without a `[[commands]]` entry and without changing session state
+  (`/skill on <name>` remains the persistent switch). The names are resolved at
+  runtime through the agent's own skill discovery (config filters applied, the
+  `/skill` toggle ignored) and feed `/skill on|off` completion, `/?` and the `/`
+  popup, so listing and dispatch cannot disagree (#809)
+
 ### Changed
 
 - TUI selection cursor: the topic explorer, the `Select Pattern` panel and the

@@ -206,6 +206,7 @@ body line.
 | `/skill on <name>` | Force-enable a discoverable skill for this topic, even if excluded by config; takes effect from the next message, persists until `/skill reset` |
 | `/skill off <name>` | Force-disable a skill for this topic, even if whitelisted by config |
 | `/skill reset` | Clear all runtime skill toggles for this topic |
+| `/skill:<name>` | Use that skill for **this one message** — no config entry, no state change. One such command exists per skill the topic can use, created at runtime and listed in `/?` and the `/` popup |
 | `/mcp` | Show this topic's runtime MCP-server toggles |
 | `/mcp on <name>` | Force-enable an MCP server defined in config (un-disables `disabled_mcps`), even if excluded by config; takes effect from the next message, persists until `/mcp reset` |
 | `/mcp off <name>` | Force-disable an MCP server for this topic |
@@ -235,6 +236,11 @@ Typing `/review` then:
    skill's path and description, so naming them is enough for it to read the
    right `SKILL.md`,
 3. appends `user_prompt` to the message body.
+
+You do not need a `[[commands]]` entry to reach a skill: every skill a topic
+can use already has a runtime `/skill:<name>` command that does exactly this
+(your text is the prompt, nothing else changes). Config wins on a name
+collision, so `[[commands]] name = "skill:review"` overrides the derived one.
 
 Text you type after the command is preserved, with `user_prompt` appended last so
 it is the most recent instruction. These two forms are equivalent:

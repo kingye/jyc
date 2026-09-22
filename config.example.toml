@@ -148,7 +148,9 @@ pipe = { agent = "jin" }
 # topic_path = "~/my-project"
 
 # Per-pattern skills whitelist: overrides channel-level `skills`.
-# When both are unset, all discovered skills are loaded.
+# When both are unset, all discovered skills are loaded. Every skill that
+# survives these filters also becomes a `/skill:<name>` command, for use on a
+# single message without changing the topic's `/skill` toggles.
 # skills = ["invoice-processing"]
 
 # Per-pattern skills to disable: merged with channel-level `disabled_skills`.

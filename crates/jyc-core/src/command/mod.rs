@@ -175,11 +175,19 @@ pub fn all_commands() -> Vec<CommandInfo> {
 pub fn all_commands_with(
     global: &[CustomCommand],
     per_agent: &[CustomCommand],
+    skills: &[jyc_types::SkillMeta],
 ) -> Vec<CommandInfo> {
     let mut by_name: std::collections::HashMap<String, CommandInfo> = all_commands()
         .into_iter()
         .map(|c| (c.name.clone(), c))
         .collect();
+    // Skill rows go in before the config entries so an explicit
+    // `[[commands]] name = "skill:<name>"` wins the name, as everywhere else
+    // in this function.
+    for c in &skill_commands(skills) {
+        let info = custom_to_info(c);
+        by_name.insert(info.name.clone(), info);
+    }
     for c in global {
         let info = custom_to_info(c);
         by_name.insert(info.name.clone(), info);
@@ -191,6 +199,36 @@ pub fn all_commands_with(
     let mut sorted: Vec<CommandInfo> = by_name.into_values().collect();
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
     sorted
+}
+
+/// The `[[commands]]`-shaped entries for every skill a topic can use: one
+/// prompt-injection command `/skill:<name>` per skill, naming that skill.
+///
+/// Synthesized rather than written into config, so skill discovery stays the
+/// single source of truth and every consumer derives the same list: the
+/// per-message [`CommandRegistry`] (so the command dispatches) and
+/// [`all_commands_with`] (so the `/` popup and `/?` show it).
+/// [`custom_handler::CustomCommandHandler`] does the rest — it appends the
+/// skill directive to that one message and changes no topic state, which is
+/// the point: `/skill:<name>` is per-message, `/skill on <name>` is persistent.
+///
+/// [`CommandRegistry`]: registry::CommandRegistry
+/// [`custom_handler::CustomCommandHandler`]: custom_handler::CustomCommandHandler
+pub fn skill_commands(skills: &[jyc_types::SkillMeta]) -> Vec<CustomCommand> {
+    skills
+        .iter()
+        .map(|s| CustomCommand {
+            name: format!("skill:{}", s.name),
+            description: s.description.clone(),
+            mode: None,
+            skills: Some(vec![s.name.clone()]),
+            // Empty: the user's own text is the prompt. `CustomCommandHandler`
+            // puts same-line args first, then the skills directive.
+            user_prompt: Some(String::new()),
+            shell: None,
+            timeout: None,
+        })
+        .collect()
 }
 
 /// Single canonical lookup: given a pattern/agent name and the live
@@ -320,7 +358,7 @@ mod tests {
     #[test]
     fn test_all_commands_with_appends_custom() {
         let builtin_count = all_commands().len();
-        let commands = all_commands_with(&[custom("review", "Review the PR")], &[]);
+        let commands = all_commands_with(&[custom("review", "Review the PR")], &[], &[]);
 
         assert_eq!(commands.len(), builtin_count + 1);
         let entry = commands.iter().find(|c| c.name == "/review").unwrap();
@@ -329,19 +367,19 @@ mod tests {
 
     #[test]
     fn test_all_commands_with_normalizes_slash() {
-        let commands = all_commands_with(&[custom("/review", "d")], &[]);
+        let commands = all_commands_with(&[custom("/review", "d")], &[], &[]);
         assert!(commands.iter().any(|c| c.name == "/review"));
         assert!(!commands.iter().any(|c| c.name == "//review"));
     }
 
     #[test]
     fn test_all_commands_with_empty_matches_builtin() {
-        assert_eq!(all_commands_with(&[], &[]).len(), all_commands().len());
+        assert_eq!(all_commands_with(&[], &[], &[]).len(), all_commands().len());
     }
 
     #[test]
     fn test_all_commands_with_falls_back_on_empty_description() {
-        let commands = all_commands_with(&[custom("review", "")], &[]);
+        let commands = all_commands_with(&[custom("review", "")], &[], &[]);
         let entry = commands.iter().find(|c| c.name == "/review").unwrap();
         assert_eq!(entry.description, "(no description)");
     }
@@ -350,7 +388,7 @@ mod tests {
     /// lowercase (see CustomCommandHandler::new).
     #[test]
     fn test_all_commands_with_lowercases_name() {
-        let commands = all_commands_with(&[custom("Review", "d")], &[]);
+        let commands = all_commands_with(&[custom("Review", "d")], &[], &[]);
         assert!(commands.iter().any(|c| c.name == "/review"));
         assert!(!commands.iter().any(|c| c.name == "/Review"));
     }
@@ -363,6 +401,7 @@ mod tests {
         let commands = all_commands_with(
             &[custom("review", "global review")],
             &[custom("deploy", "per-agent deploy")],
+            &[],
         );
         assert_eq!(commands.len(), builtin_count + 2);
         assert!(commands.iter().any(|c| c.name == "/review"));
@@ -377,6 +416,7 @@ mod tests {
         let commands = all_commands_with(
             &[custom("review", "global")],
             &[custom("review", "per-agent")],
+            &[],
         );
         let entries: Vec<&CommandInfo> = commands.iter().filter(|c| c.name == "/review").collect();
         assert_eq!(entries.len(), 1, "duplicate /review");
@@ -396,10 +436,12 @@ mod tests {
         let a = all_commands_with(
             &[custom("review", "r"), custom("audit", "a")],
             &[custom("deploy", "d"), custom("backup", "b")],
+            &[],
         );
         let b = all_commands_with(
             &[custom("review", "r"), custom("audit", "a")],
             &[custom("deploy", "d"), custom("backup", "b")],
+            &[],
         );
         let names_a: Vec<&str> = a.iter().map(|c| c.name.as_str()).collect();
         let names_b: Vec<&str> = b.iter().map(|c| c.name.as_str()).collect();
@@ -435,9 +477,73 @@ mod tests {
     /// `append_body` and continue into the agent run.
     #[test]
     fn test_custom_prompt_command_continues_to_agent() {
-        let commands = all_commands_with(&[custom("review", "Review the PR")], &[]);
+        let commands = all_commands_with(&[custom("review", "Review the PR")], &[], &[]);
         let entry = commands.iter().find(|c| c.name == "/review").unwrap();
         assert!(entry.continues_to_agent);
+    }
+
+    fn skill(name: &str) -> jyc_types::SkillMeta {
+        jyc_types::SkillMeta {
+            name: name.into(),
+            description: format!("{name} does things"),
+            source_path: std::path::PathBuf::from("/skills").join(name),
+        }
+    }
+
+    /// A discovered skill surfaces as a `/skill:<name>` row carrying its
+    /// frontmatter description, and continues into the agent run — the same
+    /// shape a hand-written `[[commands]]` entry has. Sorted by name, the
+    /// family sits right after the builtin `/skill`.
+    #[test]
+    fn test_skill_commands_surface_as_rows() {
+        let commands = all_commands_with(&[], &[], &[skill("ponytail"), skill("pr-review")]);
+        let entry = commands
+            .iter()
+            .find(|c| c.name == "/skill:ponytail")
+            .expect("/skill:ponytail row");
+        assert_eq!(entry.description, "ponytail does things");
+        assert!(entry.continues_to_agent, "the run must reach the agent");
+
+        let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
+        let at = names.iter().position(|n| *n == "/skill").unwrap();
+        assert_eq!(
+            &names[at..at + 3],
+            ["/skill", "/skill:ponytail", "/skill:pr-review"]
+        );
+    }
+
+    /// An explicit `[[commands]] name = "skill:foo"` wins over the derived
+    /// row, matching the worker: skill handlers are registered last and skip
+    /// names the registry already has.
+    #[test]
+    fn test_config_command_overrides_skill_row() {
+        let commands = all_commands_with(
+            &[custom("skill:ponytail", "mine")],
+            &[],
+            &[skill("ponytail")],
+        );
+        let entries: Vec<&CommandInfo> = commands
+            .iter()
+            .filter(|c| c.name == "/skill:ponytail")
+            .collect();
+        assert_eq!(entries.len(), 1, "duplicate /skill:ponytail");
+        assert_eq!(entries[0].description, "mine");
+    }
+
+    /// `skill_commands` is the one synthesis both the registry and the popup
+    /// call, so a skill never appears in one without the other.
+    #[test]
+    fn test_skill_commands_shape() {
+        let cmds = skill_commands(&[skill("pr-review")]);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].name, "skill:pr-review");
+        assert_eq!(cmds[0].skills, Some(vec!["pr-review".to_string()]));
+        assert!(
+            cmds[0].user_prompt.as_deref() == Some(""),
+            "the user's own text is the prompt"
+        );
+        assert!(cmds[0].shell.is_none(), "never a shell command");
+        assert!(cmds[0].mode.is_none(), "must not touch the topic's mode");
     }
 
     /// Shell custom commands reply synchronously with stdout/stderr and
@@ -454,7 +560,7 @@ mod tests {
             shell: Some(vec!["git".into(), "log".into()]),
             timeout: None,
         };
-        let commands = all_commands_with(&[cmd], &[]);
+        let commands = all_commands_with(&[cmd], &[], &[]);
         let entry = commands.iter().find(|c| c.name == "/gitlog").unwrap();
         assert!(!entry.continues_to_agent);
     }

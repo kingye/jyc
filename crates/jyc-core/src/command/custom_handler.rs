@@ -442,6 +442,34 @@ mode = "agent"
         );
     }
 
+    /// A `/skill:<name>` command synthesized by [`crate::command::skill_commands`]
+    /// injects the skills directive and the caller's own words — it has no
+    /// `user_prompt` of its own, so the user's text is the whole prompt.
+    #[tokio::test]
+    async fn skill_derived_command_injects_args_then_directive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let meta = jyc_types::SkillMeta {
+            name: "pr-review".into(),
+            description: "Review pull requests".into(),
+            source_path: tmp.path().join("pr-review"),
+        };
+        let synthesized = crate::command::skill_commands(&[meta]).pop().unwrap();
+        assert_eq!(synthesized.name, "skill:pr-review");
+        let handler = CustomCommandHandler::new(synthesized);
+
+        let mut ctx = test_context(tmp.path());
+        ctx.args = vec!["focus".into(), "on X".into()];
+        let result = handler.execute(ctx).await.unwrap();
+
+        assert!(result.success);
+        let body = result.append_body.unwrap();
+        assert!(
+            body.starts_with("focus on X\n\nFor this task, use these skills: pr-review."),
+            "unexpected body: {body:?}"
+        );
+        assert!(body.contains("SKILL.md"), "the directive names SKILL.md");
+    }
+
     #[tokio::test]
     async fn append_body_without_skills_is_just_user_prompt() {
         let tmp = tempfile::tempdir().unwrap();

@@ -321,6 +321,39 @@ mode = "agent"
         assert!(!output.body_empty);
     }
 
+    /// `/skill:<name> <text>` end to end: the command line is consumed, the
+    /// rest of the message stays the body, and the skill directive is appended
+    /// after it — the same shape a `[[commands]]` entry produces.
+    #[tokio::test]
+    async fn test_skill_command_appends_directive_to_body() {
+        let meta = jyc_types::SkillMeta {
+            name: "ponytail".into(),
+            description: "Laziest solution that works".into(),
+            source_path: std::path::PathBuf::from("/skills/ponytail"),
+        };
+        let mut registry = CommandRegistry::new();
+        for cmd in crate::command::skill_commands(&[meta]) {
+            registry.register(Box::new(
+                crate::command::custom_handler::CustomCommandHandler::new(cmd),
+            ));
+        }
+
+        let output = registry
+            .process_commands("/skill:ponytail 帮我看看这段\n第二段\n", &test_context())
+            .await
+            .unwrap();
+
+        assert_eq!(output.results.len(), 1);
+        assert!(output.results[0].success);
+        assert!(
+            output.cleaned_body.starts_with("第二段"),
+            "the user's own lines lead: {:?}",
+            output.cleaned_body
+        );
+        assert!(output.cleaned_body.contains("帮我看看这段"));
+        assert!(output.cleaned_body.contains("use these skills: ponytail"));
+    }
+
     #[tokio::test]
     async fn test_command_only_message() {
         let mut registry = CommandRegistry::new();

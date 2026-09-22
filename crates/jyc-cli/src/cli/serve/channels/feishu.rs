@@ -345,7 +345,10 @@ pub(crate) fn spawn_feishu_adapter(
                             .next()
                             .unwrap_or("");
                         let custom = cfg.commands.clone();
-                        let continues_to_agent = jyc_core::command::all_commands_with(&custom, &[])
+                        // No skills passed: every `/skill:<name>` continues into
+                        // an agent run, which is exactly what the `unwrap_or(true)`
+                        // below answers for a name missing from this list.
+                        let continues_to_agent = jyc_core::command::all_commands_with(&custom, &[], &[])
                             .iter()
                             .find(|c| c.name == first_token)
                             .map(|c| c.continues_to_agent)

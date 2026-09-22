@@ -102,11 +102,23 @@ pub(super) struct ChatState {
     /// the source — without this the offset overshoots the top and the
     /// overshoot must be scrolled back off before the view visibly moves.
     pub(super) last_max_scroll: usize,
-    /// A clipboard write queued by a yank key (`yy`, `y3y`, `Ctrl+Y`), flushed
-    /// and cleared by the event loop each frame. Queued rather than written on
-    /// the spot because the handlers run inside `terminal.draw` — see
-    /// [`clipboard`](clipboard).
-    pub(super) pending_clipboard: Option<clipboard::ClipboardRequest>,
+    /// Text a yank key (`yy`, `y3y`, `Ctrl+Y`) put on the clipboard, waiting for
+    /// the event loop to send it as OSC 52 — queued because the handlers run
+    /// inside `terminal.draw` and cannot write to stdout, see [`clipboard`].
+    pub(super) pending_clipboard: Option<String>,
+    /// A `y` was pressed and is waiting for the second half of `yy` / `y3y`.
+    pub(super) pending_y: bool,
+    /// Line of the rendered transcript the message-pane cursor sits on, absolute
+    /// (independent of scrolling) so the view can move under it. `usize::MAX`
+    /// until the transcript is measured, which the renderer resolves to the
+    /// newest line; the renderer also keeps it inside the line count. Visible
+    /// only while `focus == ChatFocus::MessageArea`.
+    pub(super) cursor_line: usize,
+    /// How many lines the transcript rendered last frame — the cursor's
+    /// movement range. Written by the renderer, read by the keys.
+    pub(super) last_total_lines: usize,
+    /// Digit prefix for a movement or yank command: `3j`, `y3y`, `20k`.
+    pub(super) pending_count: usize,
     /// Rendered transcript lines cache — rebuilt only when the message
     /// history or pane width changes (see `history_fingerprint`). Avoids
     /// re-parsing the full transcript markdown on every frame (each
@@ -568,6 +580,65 @@ where
 /// pane, then press any key to return to the input and start typing.
 fn refocus_input(app: &mut App) {
     app.chat.focus = ChatFocus::ChatPane;
+    app.chat.pending_count = 0;
+}
+
+/// `yy` / `y3y`: copy `count` transcript rows starting at the cursor.
+fn yank_from_cursor(app: &mut App, count: usize) {
+    let start = app.chat.cursor_line;
+    let (text, rows) = copy_rows(app, start, count);
+    report_yank(app, text, rows);
+}
+
+/// `Ctrl+Y`: copy every row the message viewport is showing.
+fn yank_view(app: &mut App) {
+    let start = app.chat.view_start_line();
+    let rows = app.chat.last_message_area.map_or(0, |a| a.height as usize);
+    let (text, copied) = copy_rows(app, start, rows);
+    report_yank(app, text, copied);
+}
+
+/// Text of `count` rendered transcript rows from `start`, and how many there
+/// were.
+///
+/// The rows are the rendered ones — the same wrapping the user sees — so one
+/// message can copy as several lines, exactly as it reads on screen. The live
+/// tail (activity progress, the streaming reply) is rebuilt every frame and is
+/// not part of the transcript, so a range reaching it is truncated to the
+/// history and a cursor sitting in it copies nothing.
+fn copy_rows(app: &App, start: usize, count: usize) -> (String, usize) {
+    let Some((_, lines)) = app.chat.render_cache.as_ref() else {
+        return (String::new(), 0);
+    };
+    let end = start.saturating_add(count).min(lines.len());
+    let rows = &lines[start.min(lines.len())..end];
+    (
+        rows.iter().map(line_text).collect::<Vec<_>>().join("\n"),
+        rows.len(),
+    )
+}
+
+/// Hand the text to the event loop, which sends it to the terminal, and say how
+/// much of the request actually made it.
+fn report_yank(app: &mut App, text: String, rows: usize) {
+    if rows == 0 {
+        app.set_status("Nothing to copy".to_string());
+        return;
+    }
+    app.chat.pending_clipboard = Some(text);
+    let noun = if rows == 1 { "line" } else { "lines" };
+    app.set_status(format!("Copied {rows} {noun}"));
+}
+
+/// The plain text of one rendered row, without the padding the renderer adds so
+/// a message's background reaches the edge of the pane.
+fn line_text(line: &Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 /// Move the explorer selection by `delta` rows, clamped to the current
@@ -944,20 +1015,34 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                 return;
             }
 
-            // Message area: scroll the conversation with arrows / vim keys.
-            // Esc returns focus to the input field (does not exit the chat).
-            // Any other key refocuses the input (consumed, not forwarded),
-            // so the user can scroll then just start typing.
+            // Message area: the cursor is showing here, so these keys move the
+            // cursor rather than scrolling (the wheel and PgUp/PgDn still
+            // scroll, and the cursor rides along — see `carry_cursor`). Digits
+            // before a key count lines: `5j`, `y3y`. Esc returns focus to the
+            // input field (does not exit the chat); any other key refocuses the
+            // input, so the user can move around and then just start typing.
             if app.chat.focus == ChatFocus::MessageArea {
                 match key.code {
-                    KeyCode::Esc => {
-                        app.chat.focus = ChatFocus::ChatPane;
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
-                    KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
-                    KeyCode::Char('G') => app.chat.scroll_to_bottom(),
-                    KeyCode::Char('g') if gg_jump => app.chat.scroll_to_top(),
+                    KeyCode::Esc => refocus_input(app),
+                    KeyCode::Up | KeyCode::Char('k') => app.chat.cursor_step(-1),
+                    KeyCode::Down | KeyCode::Char('j') => app.chat.cursor_step(1),
+                    KeyCode::Char('G') => app.chat.cursor_jump(false),
+                    KeyCode::Char('g') if gg_jump => app.chat.cursor_jump(true),
                     KeyCode::Char('g') => {}
+                    // `Ctrl+Y` copies the rows on screen. `y` is the first half
+                    // of a yank: arming it lets a count sit between the two
+                    // halves, so `yy`, `y3y` and `3yy` all mean the same thing.
+                    KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.chat.pending_count = 0;
+                        yank_view(app)
+                    }
+                    KeyCode::Char('y') if app.chat.pending_y => {
+                        app.chat.pending_y = false;
+                        let count = app.chat.take_count();
+                        yank_from_cursor(app, count)
+                    }
+                    KeyCode::Char('y') => app.chat.pending_y = true,
+                    KeyCode::Char(c) if c.is_ascii_digit() => app.chat.push_count_digit(c),
                     _ => refocus_input(app),
                 }
                 return;
@@ -1958,6 +2043,10 @@ impl ChatState {
             last_message_area: None,
             last_max_scroll: 0,
             pending_clipboard: None,
+            pending_y: false,
+            cursor_line: usize::MAX,
+            last_total_lines: 0,
+            pending_count: 0,
             render_cache: None,
             pending_g: false,
             activity_hscroll: 0,
@@ -2018,6 +2107,7 @@ impl ChatState {
         self.info_scroll = 0;
         self.last_message_area = None;
         self.last_max_scroll = 0;
+        self.cursor_line = usize::MAX;
         self.render_cache = None;
         self.activity_hscroll = 0;
         self.pending_g = false;
@@ -2085,6 +2175,7 @@ impl ChatState {
         self.info_scroll = 0;
         self.last_message_area = None;
         self.last_max_scroll = 0;
+        self.cursor_line = usize::MAX;
         self.render_cache = None;
         self.activity_hscroll = 0;
         self.pending_g = false;
@@ -2150,6 +2241,7 @@ impl ChatState {
         self.topic = Some(pattern);
         self.editor = empty_chat_editor();
         self.scroll = 0;
+        self.cursor_line = usize::MAX;
         self.messages.clear();
         self.input_history.clear();
         self.history_pos = None;
@@ -2269,10 +2361,92 @@ impl ChatState {
         }
     }
 
+    /// Transcript line the viewport starts at. `scroll` counts lines from the
+    /// *bottom* of the scrollable range, so the two convert through
+    /// `last_max_scroll`, which the renderer measures every frame.
+    fn view_start_line(&self) -> usize {
+        self.last_max_scroll - self.scroll.min(self.last_max_scroll)
+    }
+
+    /// Consume the digit prefix a command was typed with (`3j`, `y3y`); 1 when
+    /// there was none.
+    pub(super) fn take_count(&mut self) -> usize {
+        let n = self.pending_count.max(1);
+        self.pending_count = 0;
+        n
+    }
+
+    /// Extend the digit prefix with `digit`, capped so a held key cannot run
+    /// away from any reasonable transcript.
+    fn push_count_digit(&mut self, digit: char) {
+        debug_assert!(digit.is_ascii_digit(), "only called for digit keys");
+        let value = digit as usize - '0' as usize;
+        self.pending_count = (self.pending_count * 10 + value).min(999);
+    }
+
+    /// Scroll the view the minimum needed to bring `line` inside it.
+    fn scroll_to_show(&mut self, line: usize) {
+        let Some(height) = self
+            .last_message_area
+            .map(|a| a.height as usize)
+            .filter(|h| *h > 0)
+        else {
+            return;
+        };
+        let start = self.view_start_line();
+        if line >= start + height {
+            self.scroll = self.last_max_scroll.saturating_sub(line - height + 1);
+        } else if line < start {
+            self.scroll = self.last_max_scroll.saturating_sub(line);
+        }
+    }
+
+    /// Move the cursor by the pending count of lines in direction `dir`
+    /// (`j`/`k`, Up/Down). The view only starts scrolling once the cursor runs
+    /// into its top or bottom edge, so a big count stops at the edge instead of
+    /// dragging the whole screen along.
+    pub(super) fn cursor_step(&mut self, dir: i32) {
+        let Some(last) = self.last_total_lines.checked_sub(1) else {
+            return;
+        };
+        let to = (self.cursor_line.min(last) as i32 + dir * self.take_count() as i32)
+            .clamp(0, last as i32) as usize;
+        self.cursor_line = to;
+        self.scroll_to_show(to);
+    }
+
+    /// `gg` / `G`: cursor and view to the first / last transcript line.
+    pub(super) fn cursor_jump(&mut self, to_top: bool) {
+        self.pending_count = 0;
+        let Some(last) = self.last_total_lines.checked_sub(1) else {
+            return;
+        };
+        self.cursor_line = if to_top { 0 } else { last };
+        self.scroll = if to_top { self.last_max_scroll } else { 0 };
+    }
+
+    /// Carry the cursor along a view-only move (wheel, `PgUp`/`PgDn`,
+    /// `Ctrl+B`/`Ctrl+F`, jumping): `before` and `after` are the viewport's
+    /// start line around the move, and the cursor travels the same distance, so
+    /// it keeps the screen row it was on while the text slides underneath. A
+    /// move that clamps to nothing — the wheel at the bottom, a page at the top
+    /// — leaves the cursor alone. Applies while the cursor is hidden too, so
+    /// focusing the pane later finds it where the user was reading.
+    fn carry_cursor(&mut self, before: usize, after: usize) {
+        let Some(last) = self.last_total_lines.checked_sub(1) else {
+            return;
+        };
+        let moved = after as i64 - before as i64;
+        let cur = self.cursor_line.min(last) as i64 + moved;
+        self.cursor_line = cur.clamp(0, last as i64) as usize;
+    }
+
     pub(super) fn scroll_up(&mut self) {
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => {
-                self.scroll = self.scroll.saturating_add(1).min(self.last_max_scroll)
+                let before = self.view_start_line();
+                self.scroll = self.scroll.saturating_add(1).min(self.last_max_scroll);
+                self.carry_cursor(before, self.view_start_line());
             }
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_add(1)
@@ -2299,7 +2473,9 @@ impl ChatState {
     pub(super) fn scroll_down(&mut self) {
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => {
-                self.scroll = self.scroll.saturating_sub(1)
+                let before = self.view_start_line();
+                self.scroll = self.scroll.saturating_sub(1);
+                self.carry_cursor(before, self.view_start_line());
             }
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_sub(1)
@@ -2316,7 +2492,11 @@ impl ChatState {
     /// setting it to `usize::MAX` is a safe "scroll all the way up".
     pub(super) fn scroll_to_top(&mut self) {
         match self.focus {
-            ChatFocus::ChatPane | ChatFocus::MessageArea => self.scroll = usize::MAX,
+            ChatFocus::ChatPane | ChatFocus::MessageArea => {
+                let before = self.view_start_line();
+                self.scroll = usize::MAX;
+                self.carry_cursor(before, self.view_start_line());
+            }
             ChatFocus::ActivityPane => self.activity_scroll = usize::MAX,
             // Info pane: offset-from-top, so "top" is offset = 0.
             ChatFocus::InfoPane => self.info_scroll = 0,
@@ -2327,7 +2507,11 @@ impl ChatState {
     /// Jump to the latest message (bottom) of the focused pane.
     pub(super) fn scroll_to_bottom(&mut self) {
         match self.focus {
-            ChatFocus::ChatPane | ChatFocus::MessageArea => self.scroll = 0,
+            ChatFocus::ChatPane | ChatFocus::MessageArea => {
+                let before = self.view_start_line();
+                self.scroll = 0;
+                self.carry_cursor(before, self.view_start_line());
+            }
             ChatFocus::ActivityPane => self.activity_scroll = 0,
             // Info pane: clamped to max in render.
             ChatFocus::InfoPane => self.info_scroll = usize::MAX,
@@ -2359,7 +2543,9 @@ impl ChatState {
         let page = self.page_size();
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => {
-                self.scroll = self.scroll.saturating_add(page).min(self.last_max_scroll)
+                let before = self.view_start_line();
+                self.scroll = self.scroll.saturating_add(page).min(self.last_max_scroll);
+                self.carry_cursor(before, self.view_start_line());
             }
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_add(page)
@@ -2374,7 +2560,9 @@ impl ChatState {
         let page = self.page_size();
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => {
-                self.scroll = self.scroll.saturating_sub(page)
+                let before = self.view_start_line();
+                self.scroll = self.scroll.saturating_sub(page);
+                self.carry_cursor(before, self.view_start_line());
             }
             ChatFocus::ActivityPane => {
                 self.activity_scroll = self.activity_scroll.saturating_sub(page)

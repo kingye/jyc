@@ -97,6 +97,32 @@ pub(super) fn history_fingerprint(
 /// agent's reply.
 pub(super) const USER_BG: Color = Color::Rgb(52, 53, 65);
 
+/// Background for the message-pane cursor row: a solid bar, so the position is
+/// obvious even on a blank line.
+///
+/// An ANSI name rather than a fixed RGB (unlike [`USER_BG`]) because the bar sits
+/// *behind* transcript text of every colour — dim gray metadata, markdown green,
+/// yellow warnings — and has to stay readable on whatever theme the terminal
+/// uses.
+pub(super) const CURSOR_BG: Color = Color::DarkGray;
+
+/// Paint one transcript row as the cursor line.
+///
+/// Only the background is replaced: each span keeps its foreground and
+/// modifiers, so the text under the bar still reads. The row is padded out with
+/// spaces because `Paragraph` paints a style only where it has glyphs — without
+/// the padding the bar stops at the last character instead of crossing the pane.
+fn paint_cursor_row(line: &mut Line<'static>, width: u16) {
+    let bar = Style::default().bg(CURSOR_BG);
+    for span in &mut line.spans {
+        span.style = span.style.patch(bar);
+    }
+    let pad = width.saturating_sub(line.width() as u16);
+    if pad > 0 {
+        line.spans.push(Span::styled(" ".repeat(pad as usize), bar));
+    }
+}
+
 /// Whether a chat message belongs to the human side of the conversation.
 ///
 /// The agent's replies carry `sender == "ai"`; every other sender — the chat
@@ -606,9 +632,16 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         .expect("render cache stored above")
         .1;
     let history_len = history.len();
-    let max_skip = (history_len + tail_lines.len()).saturating_sub(inner_height);
+    let total_lines = history_len + tail_lines.len();
+    let max_skip = total_lines.saturating_sub(inner_height);
     app.chat.last_max_scroll = max_skip;
+    // The cursor's range and the viewport height are only known here, so the
+    // geometry the keys move against is always last frame's.
+    app.chat.last_total_lines = total_lines;
     app.chat.scroll = app.chat.scroll.min(max_skip);
+    // Clamp against *this* frame too: switching topics or a resize that
+    // shortened the transcript must not leave the cursor past the end.
+    app.chat.cursor_line = app.chat.cursor_line.min(total_lines.saturating_sub(1));
     let skip = max_skip.saturating_sub(app.chat.scroll);
     // Clone only the visible window (≤ inner_height lines) — the
     // Paragraph clips anything beyond the area anyway.
@@ -618,12 +651,23 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         &[]
     };
     let tail_start = skip.saturating_sub(history_len);
-    let visible_lines: Vec<Line> = hist_slice
+    let mut visible_lines: Vec<Line> = hist_slice
         .iter()
         .chain(&tail_lines[tail_start..])
         .take(inner_height)
         .cloned()
         .collect();
+    // The cursor belongs to the message pane alone: while any other pane has
+    // focus the transcript is plain text. One transcript line is exactly one
+    // screen row here (the markdown renderer wraps to the pane width and the
+    // `Paragraph` does not wrap again), hence the direct line -> row mapping.
+    if app.chat.focus == ChatFocus::MessageArea {
+        if let Some(row) = app.chat.cursor_line.checked_sub(skip) {
+            if let Some(line) = visible_lines.get_mut(row as usize) {
+                paint_cursor_row(line, chunks[0].width);
+            }
+        }
+    }
 
     let messages_para = Paragraph::new(visible_lines);
     frame.render_widget(messages_para, chunks[0]);

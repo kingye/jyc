@@ -14,36 +14,25 @@
 
 use base64::Engine;
 
-/// A clipboard write a key handler asked for, waiting for the event loop.
-pub struct ClipboardRequest {
-    /// The text to place on the clipboard.
-    pub text: String,
-    /// Ask for append/paste rather than a replace. Not every terminal honours
-    /// it; those that do not simply replace.
-    pub append: bool,
-}
-
 /// The OSC 52 sequence that sets the clipboard to `text`.
 ///
 /// The payload is the UTF-8 bytes base64-encoded — the escape has no other
 /// framing, so a raw newline inside would end the sequence early — and the whole
 /// thing is BEL-terminated, which every terminal accepts.
-pub fn osc52(text: &str, append: bool) -> String {
+pub fn osc52(text: &str) -> String {
     let payload = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-    // "c" selects the clipboard register, "?" asks the terminal to add to what
-    // is already there instead of replacing it.
-    let sel = if append { "?" } else { "c" };
-    format!("\x1b]52;{sel};{payload}\x07")
+    // "c" = the clipboard register (as opposed to the selection/primary one).
+    format!("\x1b]52;c;{payload}\x07")
 }
 
-/// Send `req` to the terminal's clipboard.
+/// Send `text` to the terminal's clipboard.
 ///
 /// Nothing is reported on failure: when stdout is gone there is no channel back
 /// to the user, and a terminal that does not implement OSC 52 accepts the
 /// sequence and ignores it.
-pub fn apply(req: &ClipboardRequest) {
+pub fn apply(text: &str) {
     use std::io::Write;
-    print!("{}", osc52(&req.text, req.append));
+    print!("{}", osc52(text));
     let _ = std::io::stdout().flush();
 }
 
@@ -55,8 +44,7 @@ mod tests {
     /// yank: selector, base64 payload, BEL.
     #[test]
     fn encodes_the_clipboard_escape() {
-        assert_eq!(osc52("hi", false), "\u{1b}]52;c;aGk=\u{7}");
-        assert!(osc52("hi", true).starts_with("\u{1b}]52;?;"));
+        assert_eq!(osc52("hi"), "\u{1b}]52;c;aGk=\u{7}");
     }
 
     /// Yanked chat lines are full of box glyphs and CJK; both must survive the
@@ -64,7 +52,7 @@ mod tests {
     #[test]
     fn utf8_and_newlines_survive_the_payload() {
         let text = "a\nb\tc \u{2192} 中文";
-        let seq = osc52(text, false);
+        let seq = osc52(text);
         let payload = seq
             .strip_prefix("\u{1b}]52;c;")
             .and_then(|s| s.strip_suffix('\u{7}'))

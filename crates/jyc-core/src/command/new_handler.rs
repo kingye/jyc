@@ -112,6 +112,9 @@ impl CommandHandler for NewCommandHandler {
             .await
             .ok();
 
+        // The task list goes with the session: `/new` starts a topic over.
+        crate::session_state::clear_tasks_at(&jyc_dir).await;
+
         // Delete all chat_history_*.jsonl files in the topic directory (both locations)
         let mut deleted_history = 0u64;
 
@@ -248,6 +251,18 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         setup_session(&tmp).await;
         setup_chat_history(&tmp).await;
+        crate::session_state::write_tasks_at(
+            &tmp.path().join(".jyc"),
+            &jyc_types::task::TaskList {
+                items: vec![jyc_types::task::TaskItem {
+                    id: 1,
+                    text: "step".into(),
+                    status: jyc_types::task::TaskStatus::Pending,
+                }],
+            },
+        )
+        .await
+        .unwrap();
 
         let handler = NewCommandHandler;
         let ctx = test_context(tmp.path());
@@ -257,6 +272,12 @@ mode = "agent"
         assert!(result.message.contains("session deleted"));
         assert!(result.message.contains("2 chat history files removed"));
         assert!(!tmp.path().join(".jyc/agent-session.json").exists());
+        assert!(
+            crate::session_state::read_tasks_at(&tmp.path().join(".jyc"))
+                .await
+                .is_none(),
+            "/new must clear the task list"
+        );
         assert!(!tmp.path().join("chat_history_2026-06-25.jsonl").exists());
         assert!(!tmp.path().join("chat_history_2026-06-24.jsonl").exists());
     }

@@ -1294,3 +1294,119 @@ fn confirm_out_of_range_digit_is_noop() {
     assert!(chat.active_question());
     assert!(rx.try_recv().is_err());
 }
+
+/// Render the topic-info pane for the selected topic into a plain string
+/// (wide enough that no row wraps, so assertions can match whole rows).
+fn info_pane_text(app: &mut App, width: u16, height: u16) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| render_topic_info_pane(frame, frame.area(), app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The chat topic the two info-pane tests below select: a priced model (so the
+/// `Cost:` row renders) and an empty-but-resolved file list (so `Files:` does),
+/// which is what the task section is positioned between.
+fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.phase = ChatPhase::Chatting;
+    app.chat.topic = Some("jyc".to_string());
+    app.chat.channel = Some("local_dev".to_string());
+    app.chat.info_visible = true;
+    app.state = Some(jyc_types::InspectOverview {
+        topics: vec![jyc_types::TopicSummary {
+            name: "jyc".to_string(),
+            channel: "local_dev".to_string(),
+            pattern: Some("jyc".to_string()),
+            status: jyc_types::TopicStatus::Idle,
+            model: None,
+            mode: None,
+            branch: None,
+            // Empty-but-resolved, so `Files:` renders — that is the section the
+            // task list has to sit above.
+            changed_files: Some(vec![]),
+            context_input_tokens: None,
+            total_input_tokens: None,
+            total_cache_hit_tokens: None,
+            total_cache_creation_tokens: None,
+            max_tokens: None,
+            output_tokens: None,
+            last_active_at: None,
+            skills: vec![],
+            topic_path: None,
+            cost: Some(jyc_types::TopicCost {
+                session: 0.42,
+                today: 1.23,
+                currency: "USD".to_string(),
+            }),
+            commands: vec![],
+            tasks,
+        }],
+        ..Default::default()
+    });
+    app.table_state.select(Some(0));
+    app
+}
+
+/// The task list has to sit where it was asked for — below the cost row, above
+/// the files section — and show the same markers and ids the agent's own tools
+/// print, since those ids are what `task_update` takes.
+#[test]
+fn info_pane_shows_task_list_between_cost_and_files() {
+    use jyc_types::task::{TaskItem, TaskList, TaskStatus};
+    let mut app = info_pane_app(TaskList {
+        items: vec![
+            TaskItem {
+                id: 1,
+                text: "inspect list_topics".into(),
+                status: TaskStatus::Completed,
+            },
+            TaskItem {
+                id: 2,
+                text: "wire the pane".into(),
+                status: TaskStatus::InProgress,
+            },
+            TaskItem {
+                id: 7,
+                text: "ship it".into(),
+                status: TaskStatus::Pending,
+            },
+        ],
+    });
+    let pane = info_pane_text(&mut app, 46, 24);
+
+    let cost = pane.find("Cost:").expect("cost row");
+    let tasks = pane.find("Tasks (1/3):").expect("tasks header");
+    let files = pane.find("Files:").expect("files section");
+    assert!(
+        cost < tasks && tasks < files,
+        "tasks must sit between cost and files:\n{pane}"
+    );
+    assert!(pane.contains("[x] 1. inspect list_topics"), "{pane}");
+    assert!(pane.contains("[~] 2. wire the pane"), "{pane}");
+    assert!(pane.contains("[ ] 7. ship it"), "{pane}");
+}
+
+#[test]
+fn info_pane_omits_the_task_section_when_there_is_no_list() {
+    let mut app = info_pane_app(jyc_types::task::TaskList::default());
+    let pane = info_pane_text(&mut app, 46, 24);
+    assert!(!pane.contains("Tasks"), "no list, no section:\n{pane}");
+    // The neighbours still render, so the omission is local.
+    assert!(pane.contains("Cost:"), "{pane}");
+    assert!(pane.contains("Files:"), "{pane}");
+}

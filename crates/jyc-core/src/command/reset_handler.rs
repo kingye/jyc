@@ -60,6 +60,10 @@ impl CommandHandler for ResetCommandHandler {
             .await
             .ok();
 
+        // The task list is part of the session being reset — chat history is
+        // kept, the agent's plan for the current piece of work is not.
+        crate::session_state::clear_tasks_at(&jyc_dir).await;
+
         // Resolve ResetCompressionConfig. Best signal we have at command time:
         // read the matched pattern from disk (written by the message router
         // when the topic was created). Falls back to first pattern if the
@@ -193,12 +197,31 @@ mode = "agent"
         .await
         .unwrap();
 
+        crate::session_state::write_tasks_at(
+            &jyc_dir,
+            &jyc_types::task::TaskList {
+                items: vec![jyc_types::task::TaskItem {
+                    id: 1,
+                    text: "step".into(),
+                    status: jyc_types::task::TaskStatus::InProgress,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
         let handler = ResetCommandHandler;
         let ctx = test_context(tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(!jyc_dir.join("agent-session.json").exists());
+        assert!(
+            crate::session_state::read_tasks_at(&jyc_dir)
+                .await
+                .is_none(),
+            "/reset must clear the task list"
+        );
         assert!(
             result.message.contains("session deleted")
                 || result.message.contains("session reset")

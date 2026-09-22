@@ -102,9 +102,10 @@ pub(super) struct ChatState {
     /// the source — without this the offset overshoots the top and the
     /// overshoot must be scrolled back off before the view visibly moves.
     pub(super) last_max_scroll: usize,
-    /// Text a yank key (`yy`, `y3y`, `Ctrl+Y`) put on the clipboard, waiting for
-    /// the event loop to send it as OSC 52 — queued because the handlers run
-    /// inside `terminal.draw` and cannot write to stdout, see [`clipboard`].
+    /// Text a yank key (`yy`, `y3y`, or `y` on a selection) put on the clipboard,
+    /// waiting for the event loop to send it as OSC 52 — queued because the
+    /// handlers run inside `terminal.draw` and cannot write to stdout, see
+    /// [`clipboard`].
     pub(super) pending_clipboard: Option<String>,
     /// A `y` was pressed and is waiting for the second half of `yy` / `y3y`.
     pub(super) pending_y: bool,
@@ -119,6 +120,12 @@ pub(super) struct ChatState {
     pub(super) last_total_lines: usize,
     /// Digit prefix for a movement or yank command: `3j`, `y3y`, `20k`.
     pub(super) pending_count: usize,
+    /// The far end of a selection started with a Shift movement key, as an
+    /// absolute transcript row (`None` = nothing selected). The cursor is the
+    /// other end, so movement keeps growing (or shrinking) the range until `y`
+    /// copies it or `Esc` drops it; scrolling leaves both ends alone, so a
+    /// selection never changes just because the view moved.
+    pub(super) selection_anchor: Option<usize>,
     /// Rendered transcript lines cache — rebuilt only when the message
     /// history or pane width changes (see `history_fingerprint`). Avoids
     /// re-parsing the full transcript markdown on every frame (each
@@ -580,10 +587,47 @@ where
 /// pane, then press any key to return to the input and start typing.
 fn refocus_input(app: &mut App) {
     app.chat.focus = ChatFocus::ChatPane;
-    // A half-typed command (`3`, or an armed `y`) must not survive the way back
-    // into the input, or the next keystroke would complete it.
+    // A half-typed command (`3`, or an armed `y`) and an open selection must not
+    // survive the way back into the input, or the next keystroke would complete
+    // them against a transcript the user is no longer pointing at.
     app.chat.pending_count = 0;
     app.chat.pending_y = false;
+    app.chat.selection_anchor = None;
+}
+
+/// Move the cursor (see `ChatState::cursor_step`) and tell the status line what
+/// a selection now covers, so the growing range is readable without hunting for
+/// it on screen.
+fn step_cursor(app: &mut App, dir: i32, extend: bool) {
+    let rows = app.chat.cursor_step(dir, extend);
+    report_selection(app, rows);
+}
+
+/// `gg` / `G` with the cursor showing.
+fn jump_cursor(app: &mut App, to_top: bool) {
+    let rows = app.chat.cursor_jump(to_top);
+    report_selection(app, rows);
+}
+
+/// Say how much the cursor now has selected, if anything.
+fn report_selection(app: &mut App, rows: usize) {
+    if rows > 0 {
+        let noun = if rows == 1 { "line" } else { "lines" };
+        app.set_status(format!("{rows} {noun} selected"));
+    }
+}
+
+/// `y` while rows are selected: copy the selection and leave visual mode, the
+/// way vim drops back to normal after a yank. The count is for the no-selection
+/// form (`y3y`), so a stray digit must not carry into the next command.
+fn yank_selection(app: &mut App) {
+    let Some((start, end)) = app.chat.selection_range() else {
+        return;
+    };
+    app.chat.selection_anchor = None;
+    app.chat.pending_count = 0;
+    let (text, rows) = copy_rows(app, start, end - start + 1);
+    report_yank(app, text, rows);
 }
 
 /// `yy` / `y3y`: copy `count` transcript rows starting at the cursor.
@@ -591,14 +635,6 @@ fn yank_from_cursor(app: &mut App, count: usize) {
     let start = app.chat.cursor_line;
     let (text, rows) = copy_rows(app, start, count);
     report_yank(app, text, rows);
-}
-
-/// `Ctrl+Y`: copy every row the message viewport is showing.
-fn yank_view(app: &mut App) {
-    let start = app.chat.view_start_line();
-    let rows = app.chat.last_message_area.map_or(0, |a| a.height as usize);
-    let (text, copied) = copy_rows(app, start, rows);
-    report_yank(app, text, copied);
 }
 
 /// Text of `count` rendered transcript rows from `start`, and how many there
@@ -1021,23 +1057,44 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
             // Message area: the cursor is showing here, so these keys move the
             // cursor rather than scrolling (the wheel and PgUp/PgDn still
             // scroll, and the cursor rides along — see `carry_cursor`). Digits
-            // before a key count lines: `5j`, `y3y`. Esc returns focus to the
-            // input field (does not exit the chat); any other key refocuses the
-            // input, so the user can move around and then just start typing.
+            // before a key count lines: `5j`, `y3y`. A Shifted movement key
+            // opens a selection that every later movement grows, and `y` copies
+            // it. `Esc` drops the selection first and only then returns focus to
+            // the input field (it never exits the chat); any other key refocuses
+            // the input, so the user can move around and then just start typing.
             if app.chat.focus == ChatFocus::MessageArea {
+                // Terminals differ in whether they report Shift+arrow at all
+                // (many send the same bytes as the plain key), so Shift+J/K is
+                // the reliable way to start a selection; Shift+arrow works
+                // wherever the terminal can tell them apart.
+                let shift = key.modifiers.contains(KeyModifiers::SHIFT);
                 match key.code {
-                    KeyCode::Esc => refocus_input(app),
-                    KeyCode::Up | KeyCode::Char('k') => app.chat.cursor_step(-1),
-                    KeyCode::Down | KeyCode::Char('j') => app.chat.cursor_step(1),
-                    KeyCode::Char('G') => app.chat.cursor_jump(false),
-                    KeyCode::Char('g') if gg_jump => app.chat.cursor_jump(true),
+                    KeyCode::Esc => {
+                        // Dropping an open selection comes first, and the next
+                        // `Esc` returns to the input — leaving both at once
+                        // would throw a selection away by accident. Staying in
+                        // the pane is how `Esc` leaves visual mode in vim.
+                        if app.chat.selection_anchor.take().is_none() {
+                            refocus_input(app)
+                        }
+                    }
+                    KeyCode::Up => step_cursor(app, -1, shift),
+                    KeyCode::Down => step_cursor(app, 1, shift),
+                    // Uppercase means Shift was held (that is how a terminal
+                    // reports it), so `J`/`K` are the selection-friendly forms.
+                    KeyCode::Char('k') => step_cursor(app, -1, false),
+                    KeyCode::Char('K') => step_cursor(app, -1, true),
+                    KeyCode::Char('j') => step_cursor(app, 1, false),
+                    KeyCode::Char('J') => step_cursor(app, 1, true),
+                    KeyCode::Char('G') => jump_cursor(app, false),
+                    KeyCode::Char('g') if gg_jump => jump_cursor(app, true),
                     KeyCode::Char('g') => {}
-                    // `Ctrl+Y` copies the rows on screen. `y` is the first half
-                    // of a yank: arming it lets a count sit between the two
-                    // halves, so `yy`, `y3y` and `3yy` all mean the same thing.
-                    KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        app.chat.pending_count = 0;
-                        yank_view(app)
+                    // With rows selected, one `y` copies them. Without a
+                    // selection `y` is the first half of a yank: arming it lets
+                    // a count sit between the halves, so `yy`, `y3y` and `3yy`
+                    // all mean the same thing.
+                    KeyCode::Char('y') if app.chat.selection_anchor.is_some() => {
+                        yank_selection(app)
                     }
                     KeyCode::Char('y') if app.chat.pending_y => {
                         app.chat.pending_y = false;
@@ -2050,6 +2107,7 @@ impl ChatState {
             cursor_line: usize::MAX,
             last_total_lines: 0,
             pending_count: 0,
+            selection_anchor: None,
             render_cache: None,
             pending_g: false,
             activity_hscroll: 0,
@@ -2110,7 +2168,7 @@ impl ChatState {
         self.info_scroll = 0;
         self.last_message_area = None;
         self.last_max_scroll = 0;
-        self.cursor_line = usize::MAX;
+        self.reset_cursor();
         self.render_cache = None;
         self.activity_hscroll = 0;
         self.pending_g = false;
@@ -2178,7 +2236,7 @@ impl ChatState {
         self.info_scroll = 0;
         self.last_message_area = None;
         self.last_max_scroll = 0;
-        self.cursor_line = usize::MAX;
+        self.reset_cursor();
         self.render_cache = None;
         self.activity_hscroll = 0;
         self.pending_g = false;
@@ -2244,7 +2302,7 @@ impl ChatState {
         self.topic = Some(pattern);
         self.editor = empty_chat_editor();
         self.scroll = 0;
-        self.cursor_line = usize::MAX;
+        self.reset_cursor();
         self.messages.clear();
         self.input_history.clear();
         self.history_pos = None;
@@ -2364,6 +2422,16 @@ impl ChatState {
         }
     }
 
+    /// Put the cursor away because the transcript is being replaced: a new
+    /// topic starts reading at its own end, with nothing selected and no
+    /// half-finished command.
+    fn reset_cursor(&mut self) {
+        self.cursor_line = usize::MAX;
+        self.selection_anchor = None;
+        self.pending_count = 0;
+        self.pending_y = false;
+    }
+
     /// Transcript line the viewport starts at. `scroll` counts lines from the
     /// *bottom* of the scrollable range, so the two convert through
     /// `last_max_scroll`, which the renderer measures every frame.
@@ -2404,28 +2472,56 @@ impl ChatState {
         }
     }
 
+    /// The selected rows, lowest first, clamped to the transcript; `None` when
+    /// nothing is selected. The ends are the anchor and the cursor in whichever
+    /// order they came out, so moving back across the anchor shrinks the
+    /// selection and crossing it flips which end is which.
+    pub(super) fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        let last = self.last_total_lines.checked_sub(1)?;
+        let from = anchor.min(self.cursor_line).min(last);
+        let to = anchor.max(self.cursor_line).min(last);
+        Some((from, to))
+    }
+
     /// Move the cursor by the pending count of lines in direction `dir`
     /// (`j`/`k`, Up/Down). The view only starts scrolling once the cursor runs
     /// into its top or bottom edge, so a big count stops at the edge instead of
     /// dragging the whole screen along.
-    pub(super) fn cursor_step(&mut self, dir: i32) {
+    ///
+    /// `extend` (a Shift movement key) opens a selection anchored where the
+    /// cursor was. From then on *every* movement grows it, Shift or not — vim's
+    /// visual-line mode, where `Esc` is the way out. Returns the number of
+    /// selected rows, 0 when nothing is selected.
+    pub(super) fn cursor_step(&mut self, dir: i32, extend: bool) -> usize {
         let Some(last) = self.last_total_lines.checked_sub(1) else {
-            return;
+            return 0;
         };
-        let to = (self.cursor_line.min(last) as i32 + dir * self.take_count() as i32)
-            .clamp(0, last as i32) as usize;
+        let from = self.cursor_line.min(last);
+        if extend {
+            self.selection_anchor = Some(self.selection_anchor.unwrap_or(from));
+        }
+        let to = (from as i32 + dir * self.take_count() as i32).clamp(0, last as i32) as usize;
         self.cursor_line = to;
         self.scroll_to_show(to);
+        self.selected_rows()
     }
 
-    /// `gg` / `G`: cursor and view to the first / last transcript line.
-    pub(super) fn cursor_jump(&mut self, to_top: bool) {
+    /// `gg` / `G`: cursor and view to the first / last transcript line, growing
+    /// an open selection along the way. Returns the number of selected rows.
+    pub(super) fn cursor_jump(&mut self, to_top: bool) -> usize {
         self.pending_count = 0;
         let Some(last) = self.last_total_lines.checked_sub(1) else {
-            return;
+            return 0;
         };
         self.cursor_line = if to_top { 0 } else { last };
         self.scroll = if to_top { self.last_max_scroll } else { 0 };
+        self.selected_rows()
+    }
+
+    /// How many rows the selection covers, for the status line.
+    fn selected_rows(&self) -> usize {
+        self.selection_range().map_or(0, |(from, to)| to - from + 1)
     }
 
     /// Carry the cursor along a view-only move (wheel, `PgUp`/`PgDn`,
@@ -2436,6 +2532,13 @@ impl ChatState {
     /// — leaves the cursor alone. Applies while the cursor is hidden too, so
     /// focusing the pane later finds it where the user was reading.
     fn carry_cursor(&mut self, before: usize, after: usize) {
+        // While a selection is open the cursor is pinned to its text: scrolling
+        // to look elsewhere must not grow or shrink what is selected. With
+        // nothing selected the cursor rides the view instead, keeping the screen
+        // row it was on (see the `PgUp`/`PgDn` rule).
+        if self.selection_anchor.is_some() {
+            return;
+        }
         let Some(last) = self.last_total_lines.checked_sub(1) else {
             return;
         };

@@ -95,12 +95,13 @@ undo/redo, and standard readline-style editing keys.
 |-----|--------|
 | `c` | Open chat pane (from topic list) |
 | `↑` / `↓` or `j` / `k` | Select pattern (pattern select); move the message cursor (message-area focus — the view scrolls only once the cursor hits its top or bottom row); move the text cursor / recall history (input, when empty) |
-| `gg` / `G` | Jump to top / bottom of the focused pane; in the message pane the cursor goes to the first / last row with the view |
+| `J` / `K` or `Shift+↑` / `Shift+↓` | With message-area focus: open a selection at the cursor and extend it by that many rows; every movement afterwards (with or without Shift) keeps growing it |
+| `gg` / `G` | Jump to top / bottom of the focused pane; in the message pane the cursor goes to the first / last row with the view, taking an open selection with it |
 | `Enter` | Select pattern / send message (chat input) |
 | `Shift+Enter` / `Alt+Enter` | Insert a newline in the chat input |
 | `/` popup: `Tab` | Complete the highlighted row — writes it into the input followed by one space, which opens the next level (or closes the popup when nothing is left to complete) |
 | `/` popup: `Enter` | Sends the command at the first (command) level. Below it `Enter` behaves like `Tab`, so sending a command with arguments takes a second `Enter`; with nothing to select it sends what was typed |
-| `Esc` | Message-area/explorer focus → back to input. Does not close the chat — use the palette (`open dashboard`) |
+| `Esc` | Message-area focus: drops an open selection first, the next `Esc` goes back to the input. Explorer focus → back to input. Does not close the chat — use the palette (`open dashboard`) |
 | `Ctrl+P` | Open the leader-key popup: navigation (`open dashboard`, `new chat`, `reload config`, `quit`), pane actions (`z` zen, `e` explorer, `a` activity, `s` status bar, `i` topic info, `o` editor, scroll), and `toggle mouse` (flips terminal mouse capture for the chat message area; off restores tmux/terminal-native text selection) |
 | `Ctrl+P` → `o` | Open `$VISUAL` / `$EDITOR` (fallback: `vi`) to edit the chat input |
 | `Ctrl+P` → `/` | Open the `/` command popup (same as typing `/` in an empty input, but works from any focus) |
@@ -108,12 +109,12 @@ undo/redo, and standard readline-style editing keys.
 | `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane. In the message pane the cursor travels with the view, so it keeps the screen row it was on |
 | Digits before a movement or yank key | Count rows: `5j` moves five, `y3y` copies three, `20k` moves twenty up (capped at 999) |
 | `yy` / `y3y` / `3yy` | Copy that many transcript rows, starting at the message cursor, to the clipboard |
-| `Ctrl+Y` | Copy every row the message pane is showing |
+| `y` with a selection | Copy every selected row (both ends included), then leave the selection |
 | `Ctrl+P` → `a` | Toggle activity pane: hidden ↔ bottom 20% |
 | `Ctrl+P` → `e` | Toggle the topic explorer pane (left side); `Enter` in it switches the chat to the selected topic |
 | `Ctrl+P` → `s` | Toggle the bottom status bar |
 | `Ctrl+P` → `i` | Toggle the topic info pane (right side) |
-| `Ctrl+P` → `c` | Focus the chat message area, which shows the cursor bar (j/k/arrows move it, `y` copies from it); pressing any other key returns focus to the input (the key itself is consumed) |
+| `Ctrl+P` → `c` | Focus the chat message area, which shows the cursor bar (j/k/arrows move it, Shift selects, `y` copies); pressing any other key returns focus to the input (the key itself is consumed) |
 | `Ctrl+P` → `z` | Toggle zen mode: snapshot and hide all aux panes (activity, topic info, status bar, explorer); pressing again restores the exact pre-zen state |
 | `Ctrl+C` | Cancel current AI processing |
 | `Shift+Tab` | Toggle plan / build mode |
@@ -127,6 +128,15 @@ keypress is consumed). The input
 area grows with content from 1 up to 10 text lines. The input prompt shows an
 always-visible agent-mode letter chip before `❯ `: `B` (green) for build mode,
 `P` (yellow) for plan mode.
+
+Scrolling with a selection open leaves it alone: the view moves under the
+selected rows instead of growing them, so looking around cannot change what `y`
+will copy. `Esc`, leaving the message area, and switching topics drop the
+selection.
+
+Many terminals send the same bytes for `Shift+↑` as for `↑`, so `J`/`K` are the
+reliable way to start a selection — where the terminal does report Shift on the
+arrows, both work.
 
 The `y` keys copy through OSC 52, i.e. the *terminal's* clipboard — so a yank
 made inside an SSH session lands where you paste. tmux has to be told to forward

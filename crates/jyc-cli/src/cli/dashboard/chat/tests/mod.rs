@@ -2702,32 +2702,6 @@ fn a_count_in_a_yank_copies_that_many_rows() {
     }
 }
 
-/// `Ctrl+Y` takes the rows the pane is showing, not the whole transcript.
-#[test]
-fn ctrl_y_copies_the_rows_on_screen() {
-    let mut app = cursor_app();
-    let rows = transcript_rows(&app);
-    let height = app.chat.last_message_area.unwrap().height as usize;
-
-    press_key(&mut app, KeyCode::Char('y'), KeyModifiers::CONTROL);
-    let copied = app
-        .chat
-        .pending_clipboard
-        .take()
-        .expect("a queued clipboard write");
-    assert_eq!(
-        copied.lines().next().unwrap(),
-        rows[app.chat.view_start_line()],
-        "it starts where the viewport starts"
-    );
-    assert!(
-        copied.lines().count() <= height,
-        "one screenful, got {}",
-        copied.lines().count()
-    );
-    assert!(copied.lines().count() < rows.len());
-}
-
 /// The bar is the message pane's own: it spans the row edge to edge, and with
 /// the input focused the transcript is plain text again.
 #[test]
@@ -2749,6 +2723,192 @@ fn the_cursor_bar_spans_the_row_only_while_the_pane_has_focus() {
     app.chat.focus = ChatFocus::ChatPane;
     let buffer = draw_80x24(&mut app);
     assert_ne!(buffer[(area.left(), y)].style().bg, Some(CURSOR_BG));
+}
+
+// ── Selecting rows with Shift ─────────────────────────────────────────────
+
+/// Press a Shifted character the way the terminal reports it.
+fn press_shift(app: &mut App, c: char) {
+    press_key(app, KeyCode::Char(c), KeyModifiers::SHIFT);
+}
+
+/// Walk the cursor up `n` rows with the digit-count form (`n` < pane height).
+fn move_up(app: &mut App, n: usize) {
+    for digit in n.to_string().chars() {
+        press(app, digit);
+    }
+    press(app, 'k');
+}
+
+/// Shift+J opens a selection at the cursor, and `y` copies exactly the rows
+/// between the two ends and leaves visual mode.
+#[test]
+fn shift_movement_opens_a_selection_that_y_copies() {
+    let mut app = cursor_app();
+    let rows = transcript_rows(&app);
+    let start = app.chat.cursor_line;
+    move_up(&mut app, 5);
+
+    press_shift(&mut app, 'J');
+    press_shift(&mut app, 'J');
+    assert_eq!(
+        app.chat.selection_range(),
+        Some((start - 5, start - 3)),
+        "the anchor stayed put while the cursor moved"
+    );
+    assert_eq!(status(&app), "3 lines selected");
+
+    press(&mut app, 'y');
+    let copied = app
+        .chat
+        .pending_clipboard
+        .take()
+        .expect("a queued clipboard write");
+    assert_eq!(
+        copied.lines().collect::<Vec<_>>(),
+        vec![
+            rows[start - 5].as_str(),
+            rows[start - 4].as_str(),
+            rows[start - 3].as_str()
+        ],
+        "both ends are included"
+    );
+    assert_eq!(status(&app), "Copied 3 lines");
+    assert_eq!(
+        app.chat.selection_range(),
+        None,
+        "`y` is the end of the selection"
+    );
+}
+
+/// Once a selection is open, every movement grows it — Shift or not, with a
+/// count or without. Walking back across the anchor shrinks it and then flips
+/// which end is which, so the range is always the rows in between.
+#[test]
+fn movement_keeps_extending_an_open_selection() {
+    let mut app = cursor_app();
+    let start = app.chat.cursor_line;
+    move_up(&mut app, 5);
+    press_shift(&mut app, 'J');
+
+    press(&mut app, 'j');
+    assert_eq!(app.chat.selection_range(), Some((start - 5, start - 3)));
+
+    press(&mut app, '3');
+    press(&mut app, 'j');
+    assert_eq!(app.chat.selection_range(), Some((start - 5, start)));
+
+    for _ in 0..4 {
+        press(&mut app, 'k');
+    }
+    assert_eq!(
+        app.chat.selection_range(),
+        Some((start - 5, start - 4)),
+        "shrinking back towards the anchor"
+    );
+    for _ in 0..2 {
+        press(&mut app, 'k');
+    }
+    assert_eq!(
+        app.chat.selection_range(),
+        Some((start - 6, start - 5)),
+        "crossing the anchor flips the ends"
+    );
+}
+
+/// The jumps work the same way: with a selection open, `gg` takes the far end to
+/// the top of the transcript and `G` pulls it back to the bottom.
+#[test]
+fn the_jumps_extend_an_open_selection() {
+    let mut app = cursor_app();
+    let start = app.chat.cursor_line;
+    press_shift(&mut app, 'K');
+    press_shift(&mut app, 'K');
+    assert_eq!(app.chat.selection_range(), Some((start - 2, start)));
+
+    press(&mut app, 'g');
+    press(&mut app, 'g');
+    assert_eq!(
+        app.chat.selection_range(),
+        Some((0, start)),
+        "`gg` selected everything above"
+    );
+
+    press(&mut app, 'G');
+    assert_eq!(app.chat.selection_range(), Some((start, start)));
+}
+
+/// `Esc` drops the selection and leaves the user in the message pane; the second
+/// one is what returns to the input. A mis-click on `Esc` must not throw away a
+/// selection *and* the focused pane at once.
+#[test]
+fn esc_leaves_the_selection_before_it_leaves_the_pane() {
+    let mut app = cursor_app();
+    move_up(&mut app, 3);
+    press_shift(&mut app, 'K');
+    assert!(app.chat.selection_range().is_some());
+
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(app.chat.selection_range(), None);
+    assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+
+    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(app.chat.focus, ChatFocus::ChatPane);
+}
+
+/// Scrolling to look around while a selection is open changes nothing about it:
+/// the cursor is pinned to its text, unlike the view-riding behaviour it has
+/// when nothing is selected (`a_view_move_carries_the_cursor_along_its_screen_row`).
+#[test]
+fn scrolling_leaves_an_open_selection_alone() {
+    let mut app = cursor_app();
+    let start = app.chat.cursor_line;
+    move_up(&mut app, 5);
+    press_shift(&mut app, 'J');
+    let selected = app.chat.selection_range();
+    assert_eq!(selected, Some((start - 5, start - 4)));
+    let before = app.chat.view_start_line();
+
+    for _ in 0..3 {
+        app.chat.page_up();
+        app.chat.scroll_up();
+    }
+    assert!(
+        app.chat.view_start_line() < before,
+        "the test needs the view to have actually moved"
+    );
+    assert_eq!(app.chat.selection_range(), selected, "same rows selected");
+}
+
+/// Selected rows get their own bar and the cursor row keeps the solid one inside
+/// the range, so both the selection and where it is being moved are readable.
+#[test]
+fn the_selection_bars_show_the_range_and_the_cursor() {
+    use super::render::{CURSOR_BG, SELECT_BG};
+
+    let mut app = cursor_app();
+    move_up(&mut app, 3);
+    press_shift(&mut app, 'J');
+    press_shift(&mut app, 'J');
+    let area = app.chat.last_message_area.unwrap();
+    let skip = app.chat.view_start_line();
+    let row_of = |line: usize| area.top() + (line - skip) as u16;
+    let cursor = app.chat.cursor_line;
+
+    let buffer = draw_80x24(&mut app);
+    let bg_at = |line: usize| buffer[(area.left(), row_of(line))].style().bg;
+    assert_eq!(
+        bg_at(cursor),
+        Some(CURSOR_BG),
+        "the moving end keeps its bar"
+    );
+    assert_eq!(bg_at(cursor - 1), Some(SELECT_BG));
+    assert_eq!(bg_at(cursor - 2), Some(SELECT_BG), "the anchor end too");
+    assert_ne!(
+        bg_at(cursor - 3),
+        Some(SELECT_BG),
+        "rows outside the range are untouched"
+    );
 }
 
 #[cfg(test)]

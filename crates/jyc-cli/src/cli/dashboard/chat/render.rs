@@ -106,14 +106,22 @@ pub(super) const USER_BG: Color = Color::Rgb(52, 53, 65);
 /// uses.
 pub(super) const CURSOR_BG: Color = Color::DarkGray;
 
-/// Paint one transcript row as the cursor line.
+/// Background for selected rows (start with `Shift+J`, extend with any movement
+/// key): a dim navy, far enough from [`USER_BG`]'s neutral gray to read as a
+/// highlight rather than as part of a message, and dark enough to sit under
+/// transcript text of any colour. The cursor row keeps [`CURSOR_BG`] even inside
+/// a selection, so the end being moved is always distinguishable.
+pub(super) const SELECT_BG: Color = Color::Rgb(35, 58, 84);
+
+/// Paint one transcript row with a solid background bar (the cursor, or a
+/// selected row).
 ///
 /// Only the background is replaced: each span keeps its foreground and
 /// modifiers, so the text under the bar still reads. The row is padded out with
 /// spaces because `Paragraph` paints a style only where it has glyphs — without
 /// the padding the bar stops at the last character instead of crossing the pane.
-fn paint_cursor_row(line: &mut Line<'static>, width: u16) {
-    let bar = Style::default().bg(CURSOR_BG);
+fn paint_row(line: &mut Line<'static>, width: u16, color: Color) {
+    let bar = Style::default().bg(color);
     for span in &mut line.spans {
         span.style = span.style.patch(bar);
     }
@@ -657,14 +665,26 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         .take(inner_height)
         .cloned()
         .collect();
-    // The cursor belongs to the message pane alone: while any other pane has
-    // focus the transcript is plain text. One transcript line is exactly one
-    // screen row here (the markdown renderer wraps to the pane width and the
-    // `Paragraph` does not wrap again), hence the direct line -> row mapping.
+    // The cursor and the selection belong to the message pane alone: while any
+    // other pane has focus the transcript is plain text. One transcript line is
+    // exactly one screen row here (the markdown renderer wraps to the pane width
+    // and the `Paragraph` does not wrap again), hence the direct line -> row
+    // mapping. Both bars replace the background only, so the message text under
+    // them keeps its own colour.
+    let cursor = app.chat.cursor_line;
+    let selection = app.chat.selection_range();
     if app.chat.focus == ChatFocus::MessageArea {
-        if let Some(row) = app.chat.cursor_line.checked_sub(skip) {
-            if let Some(line) = visible_lines.get_mut(row as usize) {
-                paint_cursor_row(line, chunks[0].width);
+        for (row, line) in visible_lines.iter_mut().enumerate() {
+            let line_no = skip + row;
+            let bar = if line_no == cursor {
+                Some(CURSOR_BG)
+            } else if selection.is_some_and(|(from, to)| line_no >= from && line_no <= to) {
+                Some(SELECT_BG)
+            } else {
+                None
+            };
+            if let Some(color) = bar {
+                paint_row(line, chunks[0].width, color);
             }
         }
     }

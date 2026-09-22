@@ -32,7 +32,7 @@ impl CommandHandler for InfoCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Show topic info (mode, model, tokens, cost, files)"
+        "Show topic info (mode, model, tokens, cost, tasks, files)"
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {

@@ -121,7 +121,7 @@ pub fn all_commands() -> Vec<CommandInfo> {
         },
         CommandInfo {
             name: "/info".into(),
-            description: "Show topic info (mode, model, tokens, cost, files)".into(),
+            description: "Show topic info (mode, model, tokens, cost, tasks, files)".into(),
             ..Default::default()
         },
         CommandInfo {

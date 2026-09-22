@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
 };
 
 use jyc_types::{CommandArg, CommandInfo};
@@ -287,10 +287,26 @@ pub fn handle_popup_key(
 
 /// Rows the popup needs below the chat input field: one top rule plus the
 /// (clamped) list. The chat layout reserves exactly this many rows, so the
-/// renderer and the layout must agree through this single helper.
+/// renderer and the layout must agree through this single helper. A list
+/// longer than the reserved rows scrolls to follow the cursor — see
+/// [`visible_rows`].
 pub fn popup_height(state: &CommandPopupState, commands: &[CommandInfo]) -> u16 {
     let rows = resolve_level(&state.filter, commands).map_or(0, |l| l.items.len());
     1 + rows.clamp(1, 10) as u16
+}
+
+/// The slice of `items` a `height`-row list shows, with the cursor's index
+/// inside that slice. The window slides one row at a time once the cursor
+/// passes the bottom edge, so a list longer than its reserved rows stays fully
+/// reachable instead of clipping the cursor away.
+///
+/// The same offset rule the topic explorer uses; the dashboard's topic table
+/// gets this from ratatui's `render_stateful_widget` instead of hand-rolling it.
+fn visible_rows(items: &[PopupItem], selected: usize, height: usize) -> (&[PopupItem], usize) {
+    let selected = selected.min(items.len().saturating_sub(1));
+    let offset = selected.saturating_sub(height.saturating_sub(1));
+    let end = (offset + height).min(items.len());
+    (&items[offset..end], selected - offset)
 }
 
 /// Render the command popup as a full-width top rule plus the list, inside
@@ -336,30 +352,26 @@ pub fn render_command_popup(
             Style::default().fg(Color::DarkGray),
         ))]
     } else {
-        render_rows(&level.items, state.selected)
+        let (rows, cursor) = visible_rows(&level.items, state.selected, inner.height as usize);
+        render_rows(rows, cursor)
     };
 
-    frame.render_widget(Paragraph::new(items).wrap(Wrap { trim: false }), inner);
+    frame.render_widget(Paragraph::new(items), inner);
 }
 
-/// List rows. The selected row carries a `→` in the two-column gutter and is
-/// dimmed, matching the question box's options. Rows that open a deeper level
-/// carry a `▸` marker.
+/// List rows, one per item — no wrapping, so a row can never push the cursor
+/// out of the window [`visible_rows`] picked. The selected row carries a `→` in
+/// the two-column gutter and is dimmed, matching the question box's options.
+/// Rows that open a deeper level carry a `▸` marker.
 fn render_rows(items: &[PopupItem], selected: usize) -> Vec<Line<'_>> {
-    let clamped = if items.is_empty() {
-        0
-    } else {
-        selected.min(items.len() - 1)
-    };
-
     items
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let gutter = if i == clamped { "→ " } else { "  " };
+            let gutter = if i == selected { "→ " } else { "  " };
             let name = format!("{gutter}{}  ", item.text);
             let marker = if item.has_children { " ▸" } else { "" };
-            if i != clamped {
+            if i != selected {
                 return Line::from(vec![
                     Span::raw(name),
                     Span::styled(
@@ -663,6 +675,50 @@ mod tests {
         let mut empty = CommandPopupState::new();
         empty.filter = "/zzz".to_string();
         assert_eq!(popup_height(&empty, &commands), 2);
+    }
+
+    /// The window a clipped list shows: the cursor rides the bottom row once it
+    /// passes the edge, so it can never be scrolled out of the popup.
+    #[test]
+    fn visible_rows_follows_the_cursor() {
+        let items: Vec<PopupItem> = (0..20)
+            .map(|i| PopupItem {
+                text: format!("/c{i}"),
+                description: String::new(),
+                has_children: false,
+            })
+            .collect();
+
+        // Short list: the whole thing, cursor untouched.
+        let (rows, cursor) = visible_rows(&items[..3], 2, 10);
+        assert_eq!((rows.len(), cursor), (3, 2));
+
+        // Cursor inside the first window: nothing slides.
+        let (rows, cursor) = visible_rows(&items, 9, 10);
+        assert_eq!((rows.len(), cursor, rows[0].text.as_str()), (10, 9, "/c0"));
+
+        // One past the edge: the window slides by one row, cursor on the last.
+        let (rows, cursor) = visible_rows(&items, 10, 10);
+        assert_eq!((rows.len(), cursor, rows[0].text.as_str()), (10, 9, "/c1"));
+
+        // Near the top the window stays anchored on the first row; only the
+        // cursor moving past the bottom edge slides it.
+        let (rows, cursor) = visible_rows(&items, 5, 10);
+        assert_eq!((rows.len(), cursor, rows[0].text.as_str()), (10, 5, "/c0"));
+
+        // Past the end, and the degenerate cases, must not panic or slice out
+        // of bounds.
+        let (rows, cursor) = visible_rows(&items, 42, 10);
+        assert_eq!((rows.len(), cursor, rows[0].text.as_str()), (10, 9, "/c10"));
+        assert_eq!(visible_rows(&[], 0, 10).0.len(), 0);
+        assert_eq!(visible_rows(&items, 3, 0).0.len(), 0);
+
+        // The invariant the popup needs: for every cursor index, the row it
+        // points at is inside the window.
+        for i in 0..items.len() {
+            let (rows, cursor) = visible_rows(&items, i, 10);
+            assert_eq!(rows[cursor].text, format!("/c{i}"), "cursor {i}");
+        }
     }
 
     #[test]

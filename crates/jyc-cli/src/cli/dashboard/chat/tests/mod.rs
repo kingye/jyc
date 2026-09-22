@@ -911,6 +911,61 @@ fn command_popup_renders_a_deeper_level() {
     );
 }
 
+/// A list longer than the popup's rows scrolls to follow the cursor: after
+/// walking past the bottom edge the arrow must still be on screen and the rows
+/// it walked over must be gone. Clamping the cursor into the visible rows
+/// instead — which is what this popup did before — pins it at the last visible
+/// item, so the tail of a long list can never be reached.
+#[test]
+fn command_popup_scrolls_to_keep_the_cursor_visible() {
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+    handle_chat_keys(&mut app, key(KeyCode::Char('/')), &mut test_terminal());
+    // A list deeper than the popup reserves, set after `/` because opening
+    // refreshes the commands from the topic.
+    app.chat.commands = (0..21)
+        .map(|i| CommandInfo {
+            name: format!("/c{i}"),
+            description: "row".to_string(),
+            ..Default::default()
+        })
+        .collect();
+    for _ in 0..15 {
+        handle_chat_keys(&mut app, key(KeyCode::Down), &mut test_terminal());
+    }
+    let buffer = draw_80x24(&mut app);
+
+    let prompt = prompt_row(&buffer);
+    let rows: Vec<String> = ((prompt + 2)..=(prompt + 11))
+        .map(|y| row_text(&buffer, y))
+        .collect();
+    let popup = rows.join("\n");
+
+    assert_eq!(
+        app.chat
+            .command_popup
+            .as_ref()
+            .expect("popup still open")
+            .selected,
+        15,
+        "the cursor walked past the visible rows"
+    );
+    assert!(
+        rows[9].contains("→ /c15"),
+        "the selected row must ride the bottom edge:\n{popup}"
+    );
+    assert!(
+        rows[0].contains("/c6"),
+        "the window slides with the cursor, so the first row is no longer the \
+         first item:\n{popup}"
+    );
+    assert!(
+        !popup.contains("/c0"),
+        "the row the cursor started on must scroll away:\n{popup}"
+    );
+}
+
 /// The focused row carries a `→` in the gutter and is dimmed — the popup
 /// paints no highlight bar, so the arrow is the only cursor cue.
 #[test]

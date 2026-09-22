@@ -50,6 +50,15 @@
   UI affordance. The question is still cancelled server-side when a new
   question replaces it or the daemon-side timeout fires (#791)
 
+### Fixed
+
+- TUI `/` command popup: a list longer than the popup's ten rows now scrolls to
+  follow the cursor, so every command is reachable. The arrow used to walk down
+  the rows and vanish below the clip, leaving the selection stuck on the last
+  visible one; the same window rule the topic explorer already uses is applied
+  here, and the list no longer wraps, which would have put the cursor's row out
+  of the window's reach (#805)
+
 ### Added
 
 - TUI `/` command popup is multi-level: the input field text *is* the path, so

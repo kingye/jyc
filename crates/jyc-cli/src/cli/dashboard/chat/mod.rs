@@ -1262,19 +1262,15 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
             // The selected row uses the same two-column `→` gutter + DIM as
             // the command and question popups. The status dot keeps its own
             // color on that row too, so it stays readable at a glance.
-            let (gutter, gutter_style, name_style) = if is_selected {
-                (
-                    "→ ",
-                    Style::default().add_modifier(Modifier::DIM),
-                    name_style.add_modifier(Modifier::DIM),
-                )
+            let sel = if is_selected {
+                Style::default().add_modifier(Modifier::DIM)
             } else {
-                ("  ", Style::default(), name_style)
+                Style::default()
             };
             Line::from(vec![
-                Span::styled(gutter, gutter_style),
+                Span::styled(if is_selected { "→ " } else { "  " }, sel),
                 Span::styled("● ", dot_style),
-                Span::styled(t.name.as_str(), name_style),
+                Span::styled(t.name.as_str(), name_style.patch(sel)),
             ])
         })
         .collect();

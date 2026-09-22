@@ -2179,6 +2179,11 @@ mod tests {
         );
         assert!(buffer[(3, 2)].modifier.contains(Modifier::DIM));
         // The unselected row keeps the gutter width and stays undimmed.
+        assert_eq!(
+            buffer[(1, 3)].symbol(),
+            " ",
+            "gutter stays blank off-cursor"
+        );
         assert_eq!(buffer[(3, 3)].symbol(), "b");
         assert!(!buffer[(3, 3)].modifier.contains(Modifier::DIM));
     }

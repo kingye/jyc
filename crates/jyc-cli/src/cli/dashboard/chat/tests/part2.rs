@@ -400,6 +400,10 @@ fn explorer_selection_uses_arrow_gutter_and_keeps_status_dot() {
         ..Default::default()
     });
     app.chat.explorer_selected = 0;
+    // The second topic is the one open in the chat pane: cyan + BOLD is the
+    // only cue left once the explorer loses focus and the arrow goes away.
+    app.chat.topic = Some("other".to_string());
+    app.chat.channel = Some("test".to_string());
 
     let width = 24;
     let height = 6;
@@ -442,6 +446,12 @@ fn explorer_selection_uses_arrow_gutter_and_keeps_status_dot() {
         "o",
         "unselected name stays in column"
     );
+    assert_eq!(
+        buffer[(4, 2)].fg,
+        Color::Cyan,
+        "the chat pane's topic stays marked when it is not the cursor row"
+    );
+    assert!(buffer[(4, 2)].modifier.contains(Modifier::BOLD));
     assert!(!buffer[(4, 2)].modifier.contains(Modifier::DIM));
 }
 
@@ -509,6 +519,11 @@ fn pattern_select_uses_arrow_gutter_aligned_with_unselected_rows() {
     );
     assert!(buffer[(3, 2)].modifier.contains(Modifier::DIM));
     assert!(!buffer[(3, 1)].modifier.contains(Modifier::DIM));
+    assert_eq!(
+        buffer[(1, 2)].bg,
+        Color::Reset,
+        "selection paints no background"
+    );
 }
 
 /// Regression: the Files section must color `uncommitted: true`

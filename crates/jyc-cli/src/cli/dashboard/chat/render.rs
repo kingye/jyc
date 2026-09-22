@@ -108,20 +108,25 @@ pub(super) const CURSOR_BG: Color = Color::DarkGray;
 
 /// Background for selected rows (start with `Shift+J`, extend with any movement
 /// key): a dim navy, far enough from [`USER_BG`]'s neutral gray to read as a
-/// highlight rather than as part of a message, and dark enough to sit under
-/// transcript text of any colour. The cursor row keeps [`CURSOR_BG`] even inside
-/// a selection, so the end being moved is always distinguishable.
+/// highlight rather than as part of a message. The cursor row keeps [`CURSOR_BG`]
+/// even inside a selection, so the end being moved is always distinguishable.
+///
+/// Unlike [`CURSOR_BG`] this cannot be an ANSI name — no theme color is both
+/// distinct from the message gray and light-theme safe — so a selected row
+/// additionally forces a light foreground (see the paint loop): on a light-theme
+/// terminal the default foreground is black, which would vanish on this navy.
 pub(super) const SELECT_BG: Color = Color::Rgb(35, 58, 84);
 
 /// Paint one transcript row with a solid background bar (the cursor, or a
 /// selected row).
 ///
-/// Only the background is replaced: each span keeps its foreground and
-/// modifiers, so the text under the bar still reads. The row is padded out with
+/// `bar` says what the row gives up: the cursor overrides the background only, so
+/// the text under it keeps its own colour, while a selected row also overrides
+/// the foreground (it has to stay legible on the navy — see [`SELECT_BG`]). The
+/// row is padded out with
 /// spaces because `Paragraph` paints a style only where it has glyphs — without
 /// the padding the bar stops at the last character instead of crossing the pane.
-fn paint_row(line: &mut Line<'static>, width: u16, color: Color) {
-    let bar = Style::default().bg(color);
+fn paint_row(line: &mut Line<'static>, width: u16, bar: Style) {
     for span in &mut line.spans {
         span.style = span.style.patch(bar);
     }
@@ -650,6 +655,13 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // Clamp against *this* frame too: switching topics or a resize that
     // shortened the transcript must not leave the cursor past the end.
     app.chat.cursor_line = app.chat.cursor_line.min(total_lines.saturating_sub(1));
+    // The selection belongs to the message pane alone. Focus can leave it by
+    // routes that do not go through `refocus_input` (`Tab`, a click, the
+    // explorer), and a selection left behind is invisible yet still live: it
+    // would pin the cursor against `carry_cursor` and could be yanked later.
+    if app.chat.focus != ChatFocus::MessageArea {
+        app.chat.selection_anchor = None;
+    }
     let skip = max_skip.saturating_sub(app.chat.scroll);
     // Clone only the visible window (≤ inner_height lines) — the
     // Paragraph clips anything beyond the area anyway.
@@ -669,23 +681,22 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // other pane has focus the transcript is plain text. One transcript line is
     // exactly one screen row here (the markdown renderer wraps to the pane width
     // and the `Paragraph` does not wrap again), hence the direct line -> row
-    // mapping. Both bars replace the background only, so the message text under
-    // them keeps its own colour.
+    // mapping. The cursor bar only replaces the background, so the text under it
+    // keeps its own colour; a selected row also takes a light foreground (see
+    // [`SELECT_BG`]).
     let cursor = app.chat.cursor_line;
     let selection = app.chat.selection_range();
     if app.chat.focus == ChatFocus::MessageArea {
         for (row, line) in visible_lines.iter_mut().enumerate() {
             let line_no = skip + row;
             let bar = if line_no == cursor {
-                Some(CURSOR_BG)
+                Style::default().bg(CURSOR_BG)
             } else if selection.is_some_and(|(from, to)| line_no >= from && line_no <= to) {
-                Some(SELECT_BG)
+                Style::default().bg(SELECT_BG).fg(Color::White)
             } else {
-                None
+                continue;
             };
-            if let Some(color) = bar {
-                paint_row(line, chunks[0].width, color);
-            }
+            paint_row(line, chunks[0].width, bar);
         }
     }
 

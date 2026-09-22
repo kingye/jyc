@@ -125,6 +125,11 @@ pub(super) struct ChatState {
     /// other end, so movement keeps growing (or shrinking) the range until `y`
     /// copies it or `Esc` drops it; scrolling leaves both ends alone, so a
     /// selection never changes just because the view moved.
+    ///
+    /// ponytail: both ends are absolute *row* indices, so a transcript that
+    /// reflows underneath (the streaming reply turning into history) can leave
+    /// the range on other text — clamped, never past the end. Anchoring to the
+    /// text itself is the next step if that ever bites.
     pub(super) selection_anchor: Option<usize>,
     /// Rendered transcript lines cache — rebuilt only when the message
     /// history or pane width changes (see `history_fingerprint`). Avoids
@@ -626,6 +631,7 @@ fn yank_selection(app: &mut App) {
     };
     app.chat.selection_anchor = None;
     app.chat.pending_count = 0;
+    app.chat.pending_y = false;
     let (text, rows) = copy_rows(app, start, end - start + 1);
     report_yank(app, text, rows);
 }

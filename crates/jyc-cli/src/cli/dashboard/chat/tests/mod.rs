@@ -2880,10 +2880,85 @@ fn scrolling_leaves_an_open_selection_alone() {
     assert_eq!(app.chat.selection_range(), selected, "same rows selected");
 }
 
+/// A yank armed *before* a selection must not outlive it: `y` + `J` + `y` copies
+/// the selection and spends the arm, so the next `y` starts a fresh pair instead
+/// of firing the stale one and silently yanking a second time.
+#[test]
+fn an_armed_yank_does_not_survive_a_selection() {
+    let mut app = cursor_app();
+    move_up(&mut app, 3);
+    let rows = transcript_rows(&app);
+    press(&mut app, 'y');
+    press_shift(&mut app, 'J');
+    let (from, to) = app.chat.selection_range().expect("open");
+    assert_eq!(to - from, 1, "two rows");
+    press(&mut app, 'y');
+
+    let copied = app
+        .chat
+        .pending_clipboard
+        .take()
+        .expect("a queued clipboard write");
+    assert_eq!(
+        copied,
+        rows[from..=to].join("\n"),
+        "both ends, exactly as rendered"
+    );
+    assert_eq!(status(&app), "Copied 2 lines");
+    assert!(!app.chat.pending_y, "the arm is spent with the selection");
+
+    press(&mut app, 'y');
+    assert!(
+        app.chat.pending_clipboard.is_none(),
+        "the next `y` arms, it does not copy"
+    );
+}
+
+/// At the end of the transcript there is nowhere to extend, so the selection is
+/// the single row under the cursor — and the status line counts it as one line.
+#[test]
+fn a_one_row_selection_reports_a_single_line() {
+    let mut app = cursor_app();
+    let last = app.chat.cursor_line;
+
+    press_shift(&mut app, 'J');
+    assert_eq!(app.chat.selection_range(), Some((last, last)));
+    assert_eq!(status(&app), "1 line selected");
+
+    press(&mut app, 'y');
+    assert_eq!(status(&app), "Copied 1 line");
+}
+
+/// A selection is the message pane's alone. Focus can leave it by routes that do
+/// not clear state themselves (`Tab`, a click, opening the explorer), so the
+/// render drops the selection: an invisible one must not be yankable, and must
+/// not keep pinning the cursor against the view.
+#[test]
+fn leaving_the_pane_drops_the_selection() {
+    let mut app = cursor_app();
+    move_up(&mut app, 3);
+    press_shift(&mut app, 'J');
+    assert!(app.chat.selection_range().is_some());
+
+    app.chat.focus = ChatFocus::InfoPane;
+    let _ = draw_80x24(&mut app);
+    assert_eq!(app.chat.selection_range(), None, "dropped with the focus");
+
+    app.chat.focus = ChatFocus::MessageArea;
+    let _ = draw_80x24(&mut app);
+    press(&mut app, 'y');
+    assert!(
+        app.chat.pending_clipboard.is_none(),
+        "`y` arms a fresh pair instead of copying the old range"
+    );
+}
+
 /// Selected rows get their own bar and the cursor row keeps the solid one inside
 /// the range, so both the selection and where it is being moved are readable.
 #[test]
 fn the_selection_bars_show_the_range_and_the_cursor() {
+    use ratatui::style::Color;
+
     use super::render::{CURSOR_BG, SELECT_BG};
 
     let mut app = cursor_app();
@@ -2904,6 +2979,11 @@ fn the_selection_bars_show_the_range_and_the_cursor() {
     );
     assert_eq!(bg_at(cursor - 1), Some(SELECT_BG));
     assert_eq!(bg_at(cursor - 2), Some(SELECT_BG), "the anchor end too");
+    assert_eq!(
+        buffer[(area.left(), row_of(cursor - 1))].style().fg,
+        Some(Color::White),
+        "a selected row forces a light foreground so the navy works on any theme"
+    );
     assert_ne!(
         bg_at(cursor - 3),
         Some(SELECT_BG),

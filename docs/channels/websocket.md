@@ -109,7 +109,7 @@ undo/redo, and standard readline-style editing keys.
 | `PgUp` / `PgDn` (or `Ctrl+B` / `Ctrl+F`) | Scroll focused pane. In the message pane the cursor travels with the view, so it keeps the screen row it was on |
 | Digits before a movement or yank key | Count rows: `5j` moves five, `y3y` copies three, `20k` moves twenty up (capped at 999) |
 | `yy` / `y3y` / `3yy` | Copy that many transcript rows, starting at the message cursor, to the clipboard |
-| `y` with a selection | Copy every selected row (both ends included), then leave the selection |
+| `y` with a selection | Copy every selected row (both ends included), then leave the selection with the cursor on its first row |
 | `Ctrl+P` → `a` | Toggle activity pane: hidden ↔ bottom 20% |
 | `Ctrl+P` → `e` | Toggle the topic explorer pane (left side); `Enter` in it switches the chat to the selected topic |
 | `Ctrl+P` → `s` | Toggle the bottom status bar |
@@ -129,10 +129,14 @@ area grows with content from 1 up to 10 text lines. The input prompt shows an
 always-visible agent-mode letter chip before `❯ `: `B` (green) for build mode,
 `P` (yellow) for plan mode.
 
-Scrolling with a selection open leaves it alone: the view moves under the
+The cursor row and the selected rows share one highlight bar — there is no second
+colour for the end being moved, the status line says how many rows are selected
+instead. Scrolling with a selection open leaves it alone: the view moves under the
 selected rows instead of growing them, so looking around cannot change what `y`
 will copy. `Esc`, leaving the message area, and switching topics drop the
-selection.
+selection. Exiting differs between the two: `y` puts the cursor back on the first
+row of what it copied (linewise vim), while `Esc` leaves it on the row it moved to
+— dropping a selection is not a copy, so it does not move you.
 
 Many terminals send the same bytes for `Shift+↑` as for `↑`, so `J`/`K` are the
 reliable way to start a selection — where the terminal does report Shift on the

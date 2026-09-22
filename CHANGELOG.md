@@ -2,6 +2,14 @@
 
 ### Changed
 
+- TUI selection cursor: the topic explorer, the `Select Pattern` panel and the
+  dashboard's topic table mark the focused row with the same two-column `→`
+  gutter and dim styling as the `/` command and `ask_user` popups, instead of a
+  black-on-cyan bar or reverse video. The explorer's status dot keeps its own
+  color, the gutter is reserved on every row so names never shift sideways, and
+  the pattern list no longer loses the blank gutter on its unselected rows
+  (#804)
+
 - TUI popups: the focused row is marked with a `→` in a two-column gutter and
   dimmed (`Modifier::DIM`) instead of being repainted, so it keeps the
   terminal's own foreground color. The `/` command list loses its full-width

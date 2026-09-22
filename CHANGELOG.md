@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+### Added
+
+- TUI chat message pane: focusing it (Tab, `Ctrl+P` → `c`, or the wheel over the
+  messages) shows a cursor bar on one transcript row. `j`/`k` and `↑`/`↓` move it,
+  and the view scrolls only once the cursor reaches the pane's top or bottom row;
+  digits count rows (`5j`, `20k`) and `gg`/`G` jump to the ends. `PgUp`/`PgDn`,
+  `Ctrl+B`/`Ctrl+F` and the wheel still just scroll — and carry the cursor by the
+  same distance, so it keeps the screen row it was on while the text slides
+  underneath. `yy`, `y3y` and `3yy` copy that many rows from the cursor, `Ctrl+Y`
+  copies the rows on screen, both into the *terminal's* clipboard via OSC 52
+  (tmux needs `set -g set-clipboard on`) (#806)
+
 ### Changed
 
 - TUI selection cursor: the topic explorer, the `Select Pattern` panel and the

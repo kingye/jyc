@@ -111,9 +111,10 @@ pub(super) struct ChatState {
     pub(super) pending_y: bool,
     /// Line of the rendered transcript the message-pane cursor sits on, absolute
     /// (independent of scrolling) so the view can move under it. `usize::MAX`
-    /// until the transcript is measured, which the renderer resolves to the
-    /// newest line; the renderer also keeps it inside the line count. Visible
-    /// only while `focus == ChatFocus::MessageArea`.
+    /// until the transcript is measured — the renderer resolves it to the end of
+    /// the newest message, and leaves it alone while there are no messages yet;
+    /// it also keeps it inside the line count. Visible only while
+    /// `focus == ChatFocus::MessageArea`.
     pub(super) cursor_line: usize,
     /// How many lines the transcript rendered last frame — the cursor's
     /// movement range. Written by the renderer, read by the keys.
@@ -2437,7 +2438,8 @@ impl ChatState {
     }
 
     /// Put the cursor away because the transcript is being replaced: a new
-    /// topic starts reading at its own end, with nothing selected and no
+    /// topic starts reading at the end of its newest message (the renderer places
+    /// it, once there are messages to place it on), with nothing selected and no
     /// half-finished command.
     fn reset_cursor(&mut self) {
         self.cursor_line = usize::MAX;

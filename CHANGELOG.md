@@ -50,15 +50,6 @@
   UI affordance. The question is still cancelled server-side when a new
   question replaces it or the daemon-side timeout fires (#791)
 
-### Fixed
-
-- TUI `/` command popup: a list longer than the popup's ten rows now scrolls to
-  follow the cursor, so every command is reachable. The arrow used to walk down
-  the rows and vanish below the clip, leaving the selection stuck on the last
-  visible one; the same window rule the topic explorer already uses is applied
-  here, and the list no longer wraps, which would have put the cursor's row out
-  of the window's reach (#805)
-
 ### Added
 
 - TUI `/` command popup is multi-level: the input field text *is* the path, so
@@ -157,6 +148,18 @@
 
 ### Fixed
 
+- TUI selectable lists now scroll to follow the cursor. The `/` command popup,
+  the `Select Pattern` list and the `ask_user` question box drew their whole list
+  into a fixed-height box, so the `→` walked down into the clipped rows and
+  stopped being visible: everything below the last visible row was unreachable,
+  while Enter still fired whatever index the cursor had reached. All three now
+  take their window from one shared `window_offset` rule — the one the topic
+  explorer already hand-rolled, and what ratatui's `Table` does internally for
+  the dashboard's topic table. The command and pattern lists also drop their
+  `Wrap`, which put a long entry on a second row and moved the rows out from
+  under the cursor; long entries now clip at the pane edge. The question box
+  measures the rows it draws (question, hint, spacers, capped options), so it can
+  no longer be sized a row short of its own content. (#805)
 - TUI chat pane: the round rules (`── 10:19 ──` and `──── 5s ──`) are exactly
   pane-wide — each was one column too long and relied on the renderer clipping
   the excess (#800)

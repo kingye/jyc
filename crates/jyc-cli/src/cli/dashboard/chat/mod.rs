@@ -1232,11 +1232,7 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
 
     // Scroll window: keep the selected row visible.
     let height = inner.height as usize;
-    let offset = if selected >= height {
-        selected - height + 1
-    } else {
-        0
-    };
+    let offset = window_offset(s.topics.len(), selected, height);
 
     let lines: Vec<Line> = s
         .topics
@@ -1526,28 +1522,51 @@ pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    // One row per pattern, windowed so the cursor stays on screen: `Wrap` used
+    // to sit here for long paths, but a wrapped row pushed the cursor's row out
+    // of the window [`window_offset`] picked — and it needed `trim: false` to
+    // keep the unselected rows' blank gutter, which is why the `→` was the only
+    // indented line. Long paths clip at the pane edge now, like the popups.
+    let height = inner.height as usize;
+    let offset = window_offset(app.chat.patterns.len(), app.chat.pattern_selected, height);
     let lines: Vec<Line> = app
         .chat
         .patterns
         .iter()
         .enumerate()
+        .skip(offset)
+        .take(height)
         .map(|(i, pattern)| {
-            if i == app.chat.pattern_selected {
+            let selected = i == app.chat.pattern_selected;
+            let gutter = if selected { "→ " } else { "  " };
+            if selected {
                 Line::from(vec![Span::styled(
-                    format!("→ {pattern}"),
+                    format!("{gutter}{pattern}"),
                     Style::default().add_modifier(Modifier::DIM),
                 )])
             } else {
-                Line::from(vec![Span::raw("  "), Span::raw(pattern)])
+                Line::from(vec![Span::raw(gutter), Span::raw(pattern)])
             }
         })
         .collect();
 
-    // `Wrap { trim: false }` is required so the two-column gutter on the
-    // unselected rows survives (default `trim: true` strips leading
-    // whitespace per line, leaving the `→` as the only indented row).
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, inner);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The line under an `ask_user` question box. Kept at module level because the
+/// layout has to measure its rows — see [`question_chrome_rows`].
+const QUESTION_HINT: &str =
+    "Up/Down or j/k select - 1-9 choose - Enter confirm - Esc hide, then type your answer";
+
+/// Rows a question box spends on everything but the options: the question and
+/// the hint (both wrap, so both are measured instead of assumed), the two blank
+/// spacers, and a row of slack for word-boundary wrapping. The box's own borders
+/// are not in here — the renderer gets them excluded already from `block.inner`,
+/// and the layout adds them. Both sides call this so neither can size the box
+/// short of what the other draws: a row short used to cost the hint, then the
+/// cursor.
+fn question_chrome_rows(question: &str, width: u16) -> usize {
+    count_wrapped_lines(question, width) + count_wrapped_lines(QUESTION_HINT, width) + 3
 }
 
 pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
@@ -1564,26 +1583,38 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(ratatui::widgets::Clear, area);
     frame.render_widget(block, area);
 
+    // The options get whatever rows the chrome leaves, windowed so the cursor is
+    // among them: `select_question_next` clamps only to `options.len()`, so
+    // without a window a list deeper than the box parks the `→` below the clip —
+    // selectable, invisible. `question_chrome_rows` says which rows those are.
+    let chrome = question_chrome_rows(&q.question, inner.width);
+    let room = (inner.height as usize).saturating_sub(chrome).max(1);
+    let off = window_offset(q.options.len(), q.selected, room);
+
     let mut lines: Vec<Line> = vec![Line::from(Span::styled(
         q.question.clone(),
         Style::default().add_modifier(Modifier::BOLD),
     ))];
     lines.push(Line::from(""));
-    for (i, opt) in q.options.iter().enumerate() {
-        let gutter = if i == q.selected { "→ " } else { "  " };
-        let label = format!("{gutter}{}. {opt}", i + 1);
+    for (i, opt) in q.options.iter().enumerate().skip(off).take(room) {
+        // One row per option: a wrapped one would push the rows below it — and
+        // the cursor with them — out of the box.
+        let label = truncate_to_width(
+            &format!("{}. {opt}", i + 1),
+            inner.width.saturating_sub(2) as usize,
+        );
         if i == q.selected {
             lines.push(Line::from(Span::styled(
-                label,
+                format!("→ {label}"),
                 Style::default().add_modifier(Modifier::DIM),
             )));
         } else {
-            lines.push(Line::from(Span::raw(label)));
+            lines.push(Line::from(Span::raw(format!("  {label}"))));
         }
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Up/Down or j/k select - 1-9 choose - Enter confirm - Esc hide, then type your answer",
+        QUESTION_HINT,
         Style::default().fg(Color::DarkGray),
     )));
 

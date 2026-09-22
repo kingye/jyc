@@ -462,6 +462,63 @@ fn explorer_selection_uses_arrow_gutter_and_keeps_status_dot() {
     assert!(!buffer[(4, 2)].modifier.contains(Modifier::DIM));
 }
 
+/// The explorer window follows the cursor to the bottom of the pane, so the
+/// last topic stays reachable — the same rule the popups use, with the cursor
+/// row still marked while the pane is unfocused.
+#[test]
+fn explorer_scrolls_to_keep_the_cursor_visible() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.explorer_visible = true;
+    app.chat.focus = ChatFocus::ChatPane;
+    app.state = Some(jyc_types::InspectOverview {
+        topics: (0..20)
+            .map(|i| explorer_topic(&format!("t{i:02}")))
+            .collect(),
+        ..Default::default()
+    });
+    app.chat.explorer_selected = 19;
+
+    let (width, height) = (24, 8);
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| render_explorer(frame, frame.area(), &app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let rows: Vec<String> = (0..height)
+        .map(|y| {
+            (0..width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect()
+        })
+        .collect();
+    let pane = rows.join("\n");
+
+    // One row of top padding, then the seven rows that fit: the window shows
+    // t13..=t19 with the cursor on the last one.
+    assert_eq!(
+        buffer[(0, 7)].symbol(),
+        "→",
+        "cursor on the bottom row:\n{pane}"
+    );
+    assert!(
+        rows[7].contains("t19"),
+        "the last topic is visible:\n{pane}"
+    );
+    assert!(
+        rows[1].contains("t13"),
+        "the window slides with the cursor:\n{pane}"
+    );
+    assert!(
+        !pane.contains("t0"),
+        "the topics it walked over must scroll away:\n{pane}"
+    );
+}
+
 /// Minimal idle topic for the explorer rendering tests.
 fn explorer_topic(name: &str) -> jyc_types::TopicSummary {
     jyc_types::TopicSummary {

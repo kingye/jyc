@@ -13,7 +13,7 @@
   selection at the cursor which every later movement grows, and one `y` copies
   the selected rows, ending with the cursor back on the first of them (`Esc` drops
   the selection where it stands instead). The cursor row and the selected rows
-  share one highlight bar. Everything lands in the *terminal's* clipboard via OSC
+  share one highlight colour. Everything lands in the *terminal's* clipboard via OSC
   52 (tmux needs `set -g set-clipboard on`) (#806, #807)
 
 ### Changed

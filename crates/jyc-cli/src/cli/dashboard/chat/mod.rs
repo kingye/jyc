@@ -626,7 +626,8 @@ fn report_selection(app: &mut App, rows: usize) {
 
 /// `y` while rows are selected: copy the selection, then leave visual mode with
 /// the cursor on the *first* row of what was copied — the row the selection grew
-/// out of, the way linewise vim ends a yank. (`Esc` drops the selection without
+/// out of, the way linewise vim ends a yank — following the view if that row
+/// ended up off screen. (`Esc` drops the selection without
 /// moving the cursor; see the message-pane keys.) The count is for the
 /// no-selection form (`y3y`), so a stray digit must not carry into the next
 /// command.

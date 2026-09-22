@@ -123,8 +123,10 @@ pub(super) struct ChatState {
     /// The far end of a selection started with a Shift movement key, as an
     /// absolute transcript row (`None` = nothing selected). The cursor is the
     /// other end, so movement keeps growing (or shrinking) the range until `y`
-    /// copies it or `Esc` drops it; scrolling leaves both ends alone, so a
-    /// selection never changes just because the view moved.
+    /// copies it — ending on the first row of the range, as linewise vim does —
+    /// or `Esc` drops it and leaves the cursor where it moved to; scrolling
+    /// leaves both ends alone, so a selection never changes just because the view
+    /// moved.
     ///
     /// ponytail: both ends are absolute *row* indices, so a transcript that
     /// reflows underneath (the streaming reply turning into history) can leave
@@ -622,9 +624,13 @@ fn report_selection(app: &mut App, rows: usize) {
     }
 }
 
-/// `y` while rows are selected: copy the selection and leave visual mode, the
-/// way vim drops back to normal after a yank. The count is for the no-selection
-/// form (`y3y`), so a stray digit must not carry into the next command.
+/// `y` while rows are selected: copy the selection, then leave visual mode with
+/// the cursor on the *first* row of what was copied — the row the selection grew
+/// out of, the way linewise vim ends a yank — following the view if that row
+/// ended up off screen. (`Esc` drops the selection without
+/// moving the cursor; see the message-pane keys.) The count is for the
+/// no-selection form (`y3y`), so a stray digit must not carry into the next
+/// command.
 fn yank_selection(app: &mut App) {
     let Some((start, end)) = app.chat.selection_range() else {
         return;
@@ -633,6 +639,8 @@ fn yank_selection(app: &mut App) {
     app.chat.pending_count = 0;
     app.chat.pending_y = false;
     let (text, rows) = copy_rows(app, start, end - start + 1);
+    app.chat.cursor_line = start;
+    app.chat.scroll_to_show(start);
     report_yank(app, text, rows);
 }
 

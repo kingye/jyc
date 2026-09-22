@@ -575,9 +575,11 @@ Both have the fields below, except `TopicSummary` **omits** `activity`,
 | `total_cache_creation_tokens`| u64?                  | ✓               | ✓                  |
 | `last_active_at`             | string? (RFC 3339)    | ✓               | ✓                  |
 | `skills`                     | `Vec<string>`         | ✓               | ✓                  |
+| `available_skills`           | `Vec<SkillMeta>`      | ✓               | —                  |
 | `topic_path`                | `PathBuf?`            | ✓               | ✓                  |
 | `branch`                     | string?               | ✓               | ✓                  |
 | `changed_files`              | `Vec<{path, uncommitted, change}?>` | ✓          | ✓                  |
+| `tasks`                      | `TaskList`            | ✓               | ✓                  |
 | `cost`                       | `TopicCost?`         | ✓               | ✓                  |
 | `activity`                   | `Vec<ActivityEntry>`  | ✓               | —                  |
 | `recent_messages`            | `Vec<ChatMessageEntry>`| ✓              | —                  |
@@ -592,6 +594,7 @@ Both have the fields below, except `TopicSummary` **omits** `activity`,
 - `ChannelInfo` — `name`, `channel_type`, `active_workers`, `max_concurrent`
 - `ChangedFileEntry` — `{path: string, uncommitted: bool, change: ChangeKind}`. `uncommitted` is `true` when the working tree has changes vs HEAD (i.e. the file is currently dirty — staged or unstaged). A path present in both `main...HEAD` and the working-tree diff appears once with `uncommitted: true` (the more-noisy state wins). `change` carries the branch-side status (`added` / `modified` / `deleted`); the chat info pane renders a one-column prefix glyph per row (`+`, `-`, two spaces). Resolved server-side from two `git diff` invocations (`--name-status main...HEAD` ∪ `--name-only HEAD`) on the topic's working directory; `None` when the path isn't a git repo or both invocations fail.
 - `ChangeKind` — `added` / `modified` / `deleted`. `Modified` is the default — old payloads missing the field deserialize as `Modified`. Renames, copies, type changes from `git diff --name-status` are normalized to `Modified` server-side (no separate variant for those).
+- `TaskList` — `{items: Vec<TaskItem>}`: the agent's own plan for the topic, persisted in `.jyc/tasks.json` and replaced wholesale by the next `task_create`. `TaskItem` is `{id: u32, text: string, status: TaskStatus}`; `id` is assigned by `task_create` and stable until a new list replaces it. `TaskStatus` — `pending` / `in_progress` / `completed`.
 - `TopicCost` — `session: f64` (current agent session, zeroes on reset), `today: f64` (UTC day total from billing ledger), `currency: string` (`"USD"` or `"mixed"` when today's entries span multiple currencies)
 - `GlobalStats` — `active_workers`, `total_topics`, `max_concurrent`, `available_workers`, `messages_received`, `messages_processed`, `errors`
 - `CommandInfo` — `name` (e.g. `"/model"`), `description`, `continues_to_agent`,

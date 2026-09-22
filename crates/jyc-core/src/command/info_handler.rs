@@ -32,7 +32,7 @@ impl CommandHandler for InfoCommandHandler {
     }
 
     fn description(&self) -> &str {
-        "Show topic info (mode, model, tokens, cost, files)"
+        "Show topic info (mode, model, tokens, cost, tasks, files)"
     }
 
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
@@ -118,6 +118,11 @@ fn format_topic_info(t: &TopicInfo) -> String {
             format_amount(cost.today, &cost.currency)
         ));
     }
+    // Agent task list, through the same renderer the tools return, so the ids
+    // the model prints are the ids the user reads. Omitted when there is none.
+    if !t.tasks.is_empty() {
+        lines.extend(t.tasks.render_lines());
+    }
     if let Some(files) = t.changed_files.as_deref() {
         if files.is_empty() {
             lines.push("Files: (none)".to_string());
@@ -142,11 +147,32 @@ fn format_topic_info(t: &TopicInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jyc_types::task::{TaskItem, TaskList, TaskStatus};
     use jyc_types::{ChangedFileEntry, TopicCost, TopicStatus};
     use std::path::PathBuf;
 
+    /// A task list with sequential ids, the way `task_create` assigns them.
+    fn task_list(items: &[(&str, TaskStatus)]) -> TaskList {
+        TaskList {
+            items: items
+                .iter()
+                .enumerate()
+                .map(|(i, (text, status))| TaskItem {
+                    id: (i + 1) as u32,
+                    text: (*text).to_string(),
+                    status: *status,
+                })
+                .collect(),
+        }
+    }
+
     fn full_info() -> TopicInfo {
         TopicInfo {
+            tasks: task_list(&[
+                ("inspect list_topics", TaskStatus::Completed),
+                ("wire the pane", TaskStatus::InProgress),
+                ("ship it", TaskStatus::Pending),
+            ]),
             name: "issue-42".into(),
             channel: "feishu".into(),
             pattern: Some("gh-issue".into()),
@@ -207,6 +233,10 @@ Cache hits: 987654
 Cache create: 111
 Reasoning: 4096
 Cost: $0.4200 session · $1.2300 today
+Tasks (1/3):
+  [x] 1. inspect list_topics
+  [~] 2. wire the pane
+  [ ] 3. ship it
 Files (2):
 + src/new.rs
   src/edited.rs *";
@@ -229,6 +259,7 @@ Files (2):
         t.changed_files = None;
         t.cost = None;
         t.pattern = None;
+        t.tasks = TaskList::default();
         let text = format_topic_info(&t);
         assert_eq!(
             text,
@@ -241,6 +272,20 @@ Files (2):
         let mut t = full_info();
         t.total_cache_creation_tokens = Some(0);
         assert!(!format_topic_info(&t).contains("Cache create"));
+    }
+
+    #[test]
+    fn no_task_list_omits_the_section() {
+        let mut t = full_info();
+        t.tasks = TaskList::default();
+        let text = format_topic_info(&t);
+        assert!(
+            !text.contains("Tasks"),
+            "empty list must not leave a header behind:\n{text}"
+        );
+        // Still renders the neighbours, so the omission is local.
+        assert!(text.contains("Cost:"));
+        assert!(text.contains("Files (2):"));
     }
 
     #[test]

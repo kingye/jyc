@@ -1532,7 +1532,7 @@ fn wrapped_first_row_keeps_one_spinner() {
         vec![jyc_types::ActivityEntry {
             // Not the `Tool: <name> — <json>` shape, so the entry passes
             // through as a single row of its own.
-            text: format!("tool execution ran for a while: {long}"),
+            text: format!("tool detail: {long}"),
             timestamp: None,
             severity: jyc_types::Severity::Info,
             id: 1,

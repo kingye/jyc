@@ -1312,11 +1312,14 @@ fn wheel_over_info_pane_scrolls_the_info_pane() {
         &mut app,
         mouse_event(MouseEventKind::ScrollUp, rect.x + 1, rect.y + 1),
     );
+    // The info pane has no cursor, so the wheel must scroll it *without*
+    // moving focus: pulling it away from the editor mid-typing is the failure
+    // this guards.
     assert!(
-        matches!(app.chat.focus, ChatFocus::InfoPane),
-        "the wheel takes focus to the pane it hovered"
+        matches!(app.chat.focus, ChatFocus::ChatPane),
+        "scrolling the info pane must not take focus"
     );
-    // The info pane's offset counts from the top, so wheel-up moves earlier.
+    // Its offset counts from the top, so wheel-up moves earlier.
     assert_eq!(app.chat.info_scroll, 4);
     assert_eq!(app.chat.scroll, 0, "the transcript must not move");
 
@@ -1327,6 +1330,7 @@ fn wheel_over_info_pane_scrolls_the_info_pane() {
         mouse_event(MouseEventKind::ScrollUp, rect.x + 1, rect.y + 1),
     );
     assert_eq!(app.chat.info_scroll, 4, "there is no pane there to scroll");
+    assert_eq!(app.chat.scroll, 0, "and the transcript must still not move");
 }
 
 #[test]

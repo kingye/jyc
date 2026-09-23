@@ -100,8 +100,8 @@ pub(super) struct ChatState {
     pub(super) last_message_area: Option<Rect>,
     /// Last rendered content rectangle of the topic info pane. Like
     /// [`Self::last_message_area`], lets the wheel scroll what it hovers.
-    /// Only consulted while `info_visible`, so a hidden pane's stale rect
-    /// cannot steal the wheel (nor focus) from the transcript.
+    /// Only consulted while `info_visible`, and refreshed by every render that
+    /// shows the pane, so no reset path needs to clear it.
     pub(super) last_info_area: Option<Rect>,
     /// Last rendered maximum message-area scroll offset (`max_skip`).
     /// Stored during render and used to clamp `scroll_up` / `page_up` at
@@ -1202,11 +1202,11 @@ fn sync_command_popup(app: &mut App) {
 ///
 /// Hit-testing: the wheel scrolls the pane it hovers — the message area or,
 /// when it is visible, the topic info pane. The activity log, the explorer
-/// and the input area keep absorbing the event, so wheeling next to the
-/// editor does nothing (no accidental focus theft while typing). Whichever
-/// pane is hit takes focus first, so the focus-routed `scroll_up` /
-/// `scroll_down` advance that pane's offset regardless of where the user was
-/// last navigating.
+/// and the input area keep absorbing the event, so wheeling next to the editor
+/// does nothing. Neither pane drags focus around: the info pane's offset is
+/// advanced directly (it has no cursor), while the message area takes
+/// `MessageArea` focus because its cursor and the focus-routed `scroll_up` /
+/// `scroll_down` belong together.
 pub(super) fn handle_chat_mouse(app: &mut App, mouse: MouseEvent) {
     // Defensive guard — crossterm shouldn't deliver mouse events when
     // capture is off, but if one sneaks through (e.g. a queued event
@@ -1218,15 +1218,26 @@ pub(super) fn handle_chat_mouse(app: &mut App, mouse: MouseEvent) {
         return;
     }
     let pos = Position::new(mouse.column, mouse.row);
-    let target =
-        if app.chat.info_visible && app.chat.last_info_area.is_some_and(|r| r.contains(pos)) {
-            ChatFocus::InfoPane
-        } else if app.chat.last_message_area.is_some_and(|r| r.contains(pos)) {
-            ChatFocus::MessageArea
-        } else {
-            return;
-        };
-    app.chat.focus = target;
+    if app.chat.info_visible && app.chat.last_info_area.is_some_and(|r| r.contains(pos)) {
+        // Advance the offset directly rather than routing through
+        // `scroll_up`/`scroll_down`: those go by focus, and pulling focus away
+        // from the editor mid-typing is exactly what this handler must not do.
+        // The info pane has no cursor, so nothing here needs it.
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                app.chat.info_scroll = app.chat.info_scroll.saturating_sub(1)
+            }
+            MouseEventKind::ScrollDown => app.chat.info_scroll += 1,
+            _ => {}
+        }
+        return;
+    }
+    if !app.chat.last_message_area.is_some_and(|r| r.contains(pos)) {
+        return;
+    }
+    // The message area does take focus: its cursor and the focus-routed scroll
+    // belong together, and wheeling is how the user aims at a row.
+    app.chat.focus = ChatFocus::MessageArea;
     match mouse.kind {
         MouseEventKind::ScrollUp => app.chat.scroll_up(),
         MouseEventKind::ScrollDown => app.chat.scroll_down(),
@@ -2217,7 +2228,6 @@ impl ChatState {
         self.activity_scroll = 0;
         self.info_scroll = 0;
         self.last_message_area = None;
-        self.last_info_area = None;
         self.last_max_scroll = 0;
         self.reset_cursor();
         self.render_cache = None;
@@ -2286,7 +2296,6 @@ impl ChatState {
         self.activity_scroll = 0;
         self.info_scroll = 0;
         self.last_message_area = None;
-        self.last_info_area = None;
         self.last_max_scroll = 0;
         self.reset_cursor();
         self.render_cache = None;

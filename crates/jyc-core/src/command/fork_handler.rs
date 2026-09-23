@@ -29,17 +29,17 @@ use crate::topic_manager::TopicManager;
 ///   would make the fork run the parent's jobs too. Directories are skipped.
 /// - Anything else in the state dir belongs to the user, not to the framework.
 const SEED_FILES: &[&str] = &[
-    "agent-context.json",                 // the running context: the conversation
-    session_state::TASKS_FILE,            // the task list, so the fork continues it (#810)
-    "backlog.jsonl",                      // the topic's own backlog
-    "pattern",                            // which agent pattern runs the topic
-    "mode-override",                      // plan/build mode
-    "plan-model-override",                // per-mode model choice
-    "build-model-override",               //
+    "agent-context.json",      // the running context: the conversation
+    session_state::TASKS_FILE, // the task list, so the fork continues it (#810)
+    "backlog.jsonl",           // the topic's own backlog
+    "pattern",                 // which agent pattern runs the topic
+    "mode-override",           // plan/build mode
+    "plan-model-override",     // per-mode model choice
+    "build-model-override",
     session_state::CONTEXT_STRATEGY_FILE, // `/context`
     session_state::MCP_OVERRIDE_FILE,     // `/mcp`
     session_state::SKILL_OVERRIDE_FILE,   // `/skill`
-    "skills.json",                        //
+    "skills.json",
 ];
 
 /// Chat history is one file per day, so it is matched by prefix instead of
@@ -136,20 +136,31 @@ impl ForkCommandHandler {
             seeded,
             "Topic forked"
         );
-        Ok(ok(format!(
+        let message = format!(
             "✅ Forked '{}' → '{}' at {} ({} state file(s) inherited).\n\
              /fork does not switch by itself — pick '{name}' in the topic list.",
             context.topic_name,
             name,
             new_dir.display(),
             seeded
-        )))
+        );
+        Ok(CommandResult {
+            success: true,
+            message,
+            error: None,
+            append_body: None,
+        })
     }
 
     /// `<topic>-2`, `<topic>-3`, … — the first candidate that is neither a
     /// registered topic nor a directory that already exists. If all of them
     /// are taken, return `<topic>-2` so the caller reports the duplicate
     /// rather than inventing a name nobody asked for.
+    ///
+    /// ponytail: the probe and the `create_dir_all` inside `set_topic_path` are
+    /// not one transaction, so two topics forking to the same automatic name at
+    /// the same instant would share a directory. Unreachable at typing speed; a
+    /// lock would cost more than the case it covers.
     async fn next_free_name(&self, topic: &str, agent_dir: &Path) -> String {
         for n in 2..100u32 {
             let candidate = format!("{topic}-{n}");
@@ -168,7 +179,10 @@ impl ForkCommandHandler {
 /// Keeps the shape the router itself produces (`plan-197`, `上海天气`,
 /// `英国旅行2026`): unicode is fine, path syntax is not — the name becomes a
 /// directory name and a routing key, and `/` or `..` would escape the agent
-/// subtree.
+/// subtree. Stricter than `post_topic`'s check in `jyc-inspect` (path syntax
+/// only) on purpose, because here the name also picks a parent directory; if a
+/// second creator ever needs the same rule, lift it to `jyc-types` rather than
+/// copying it.
 fn invalid_name(name: &str) -> Option<&'static str> {
     if name.is_empty() {
         return Some("the name is empty");
@@ -227,15 +241,6 @@ fn fail(message: String) -> CommandResult {
     }
 }
 
-fn ok(message: String) -> CommandResult {
-    CommandResult {
-        success: true,
-        message,
-        error: None,
-        append_body: None,
-    }
-}
-
 #[async_trait]
 impl CommandHandler for ForkCommandHandler {
     fn name(&self) -> &str {
@@ -255,6 +260,9 @@ impl CommandHandler for ForkCommandHandler {
                     .to_string(),
             ));
         }
+        // Production path only: `agents_workspace_root()` resolves the real data
+        // home, so a test that reached here would create topics inside the
+        // developer's own agents tree. Tests call `fork_under` with both roots.
         let agents_root = self.topic_manager.agents_workspace_root();
         let parent_state = jyc_dir(&context.topic_name, &context.topic_path);
         self.fork_under(&context, &parent_state, &agents_root).await
@@ -277,28 +285,10 @@ mod tests {
     fn make_topic_manager(workspace: &Path) -> Arc<TopicManager> {
         let storage = Arc::new(MessageStorage::new(workspace));
         let (metrics, _stats, _task) = MetricsCollector::new(CancellationToken::new()).start();
+        // `general`, `channels` and `agents` are all `#[serde(default)]` and no
+        // fork path touches a channel, so the manager only has to load.
         let config = Arc::new(ArcSwap::from_pointee(
-            jyc_types::load_config_from_str(
-                r#"
-[general]
-[channels.test]
-type = "email"
-[channels.test.inbound]
-host = "h"
-port = 993
-username = "u"
-password = "p"
-[channels.test.outbound]
-host = "h"
-port = 465
-username = "u"
-password = "p"
-[agent]
-enabled = true
-mode = "agent"
-"#,
-            )
-            .unwrap(),
+            jyc_types::load_config_from_str("[general]\n[agent]\nenabled = true\n").unwrap(),
         ));
         Arc::new(TopicManager::new_with_options(
             1,

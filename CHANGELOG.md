@@ -211,6 +211,14 @@
 
 ### Fixed
 
+- The TUI's topic-info pane could not be scrolled to its own bottom. It wrapped its
+  content with ratatui while clamping the scroll offset against a count of *logical*
+  lines, so in the 20%-wide pane — where a changed-file path takes two or three rows
+  — the last entries of a long file list stayed permanently clipped no matter what
+  `End`/`G` did. The pane now wraps in Rust with the same helper the message pane
+  uses, so the clamp counts the rows actually drawn. The mouse wheel follows the
+  cursor there too: hovering the info pane now scrolls it, where before only the
+  message area answered the wheel and this pane was keyboard-only (#816)
 - `/fork` was missing from the TUI's `/` command popup and from `/?`, even though
   typing it worked: the popup list and the worker's registry were two separate
   hand-maintained lists, and #814 had added the handler to one of them. Both now

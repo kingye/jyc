@@ -846,11 +846,7 @@ fn render_activity_entry(text: &str, tool_detail_expanded: bool) -> Vec<String> 
             if i == 0 {
                 // Expanded renders this same line with the summary cap lifted,
                 // so the field listing below only adds the secondary arguments.
-                lines.push(if tool_detail_expanded {
-                    reformat_tool_line_expanded(line)
-                } else {
-                    reformat_tool_line(line)
-                });
+                lines.push(reformat_tool_line(line, tool_detail_expanded));
                 if tool_detail_expanded {
                     lines.extend(format_tool_input_full(line));
                 }
@@ -969,24 +965,15 @@ fn style_diff_line(unpadded: &str, default: Style) -> Style {
     }
 }
 
-fn reformat_tool_line(text: &str) -> String {
-    tool_line_value(text, false)
-}
-
-/// Like [`reformat_tool_line`], for the expanded tool detail (`ctrl+p T`): the
-/// same line without the collapsed row's cap, so a long `bash` command is
-/// readable in place instead of repeating its truncated prefix in a field
-/// listing underneath.
-fn reformat_tool_line_expanded(text: &str) -> String {
-    tool_line_value(text, true)
-}
-
-/// Longest value the collapsed tool row shows, in terminal columns (CJK counts
-/// two); [`truncate_to_width`] appends the `…`. The expanded detail is uncapped
-/// and #811 wraps it over rows.
+/// Width the collapsed tool row caps the value to (CJK counts two, `…` appended
+/// by [`truncate_to_width`]); `ctrl+p T` is uncapped, #811 wraps it.
 const TOOL_SUMMARY_MAX_WIDTH: usize = 160;
 
-fn tool_line_value(text: &str, expanded: bool) -> String {
+/// A tool row's text: the extracted activity in place of the raw JSON input.
+/// `expanded` is the `ctrl+p T` detail, which drops this row's cap so a long
+/// `bash` command is readable in place instead of repeating its truncated
+/// prefix in the field listing underneath.
+fn reformat_tool_line(text: &str, expanded: bool) -> String {
     let Some(rest) = text.strip_prefix("Tool: ") else {
         return text.to_string();
     };
@@ -1016,7 +1003,7 @@ fn tool_line_value(text: &str, expanded: bool) -> String {
 /// `… (N more lines)` marker — same convention as the edit-diff renderer.
 /// Returns empty for non-tool lines or unparseable input.
 /// Per-tool list of field names whose values already appear in the tool row
-/// above (rendered by [`tool_line_value`]) — skipping them in
+/// above (rendered by [`reformat_tool_line`]) — skipping them in
 /// `format_tool_input_full` prevents a redundant line appearing below a row
 /// that already inlines the value.
 ///
@@ -1055,7 +1042,7 @@ fn format_tool_input_full(text: &str) -> Vec<String> {
     for (key, val) in obj {
         // The summary line above inlines the primary field, so listing it again
         // here would only repeat it; expanding lifts that line's cap instead
-        // (see `reformat_tool_line_expanded`).
+        // (see `reformat_tool_line`).
         if skip.contains(&key.as_str()) {
             continue;
         }
@@ -1101,16 +1088,17 @@ mod tests {
     #[test]
     fn reformat_tool_line_extracts_started_and_completed() {
         assert_eq!(
-            reformat_tool_line(r#"Tool: bash — {"command": "ls -la"}"#),
+            reformat_tool_line(r#"Tool: bash — {"command": "ls -la"}"#, false),
             "Tool: bash — ls -la"
         );
         assert_eq!(
-            reformat_tool_line(r#"Tool: bash (done, 3s) — {"command": "ls -la"}"#),
+            reformat_tool_line(r#"Tool: bash (done, 3s) — {"command": "ls -la"}"#, false),
             "Tool: bash (done, 3s) — ls -la"
         );
         assert_eq!(
             reformat_tool_line(
-                r#"Tool: edit — {"file_path": "/home/jiny/projects/jyc/src/tools.rs"}"#
+                r#"Tool: edit — {"file_path": "/home/jiny/projects/jyc/src/tools.rs"}"#,
+                false,
             ),
             "Tool: edit — tools.rs"
         );
@@ -1121,12 +1109,12 @@ mod tests {
         // Unknown tool / unparseable input: show the line unchanged — the
         // raw JSON still carries information in the activity view.
         let unknown = r#"Tool: context_browse — {"offset": 0}"#;
-        assert_eq!(reformat_tool_line(unknown), unknown);
+        assert_eq!(reformat_tool_line(unknown, false), unknown);
         let bad_json = "Tool: bash — not json";
-        assert_eq!(reformat_tool_line(bad_json), bad_json);
+        assert_eq!(reformat_tool_line(bad_json, false), bad_json);
         // Non-tool lines are untouched.
         let other = "Thinking... (iteration 2)";
-        assert_eq!(reformat_tool_line(other), other);
+        assert_eq!(reformat_tool_line(other, false), other);
     }
 
     #[test]
@@ -1172,13 +1160,13 @@ mod tests {
             serde_json::json!({ "command": cmd })
         );
 
-        let collapsed = reformat_tool_line(&line);
+        let collapsed = reformat_tool_line(&line, false);
         assert!(
             collapsed.ends_with('…'),
             "collapsed keeps the cap: {collapsed}"
         );
 
-        let expanded = reformat_tool_line_expanded(&line);
+        let expanded = reformat_tool_line(&line, true);
         assert!(
             expanded.contains(cmd),
             "expanded shows the whole command: {expanded}"
@@ -1193,8 +1181,8 @@ mod tests {
         // A value that fits is identical either way.
         let short = r#"Tool: bash (done, 3s) — {"command": "ls -la"}"#;
         assert_eq!(
-            reformat_tool_line(short),
-            reformat_tool_line_expanded(short)
+            reformat_tool_line(short, false),
+            reformat_tool_line(short, true)
         );
     }
 

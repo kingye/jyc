@@ -22,14 +22,6 @@ impl CancelCommandHandler {
 
 #[async_trait]
 impl CommandHandler for CancelCommandHandler {
-    fn name(&self) -> &str {
-        "/cancel"
-    }
-
-    fn description(&self) -> &str {
-        "Cancel the current AI processing for this topic"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let topic_name = context
             .topic_path

@@ -17,14 +17,6 @@ pub struct ThinkingCommandHandler;
 
 #[async_trait]
 impl CommandHandler for ThinkingCommandHandler {
-    fn name(&self) -> &str {
-        "/thinking"
-    }
-
-    fn description(&self) -> &str {
-        "Show or hide AI thinking/reasoning content"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let arg = context
             .args

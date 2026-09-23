@@ -27,10 +27,14 @@ mode = "agent"
 "#
 }
 
+/// Most tests here only exercise other rules, so they assert against an
+/// empty built-in set; the two shadowing tests pass their own fixture.
+const NO_BUILTINS: &[&str] = &[];
+
 #[test]
 fn test_valid_config_passes() {
     let config = load_config_from_str(valid_config_toml()).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
@@ -46,7 +50,7 @@ template = "self"
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.iter().any(|e| e.path == "agents.agents.agents"),
         "expected agents.agents.agents error, got: {:?}",
@@ -69,7 +73,7 @@ template = "jyc"
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.iter().any(|e| e.path == "channels.agents"),
         "expected channels.agents error, got: {:?}",
@@ -101,7 +105,7 @@ template = "jyc"
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         !errors.iter().any(|e| e.path == "channels.agents"),
         "channels.agents=email should not collide, got: {:?}",
@@ -125,7 +129,7 @@ fn test_base_url_accepts_scheme_port_and_subpath() {
             valid_config_toml()
         );
         let config = load_config_from_str(&toml).unwrap();
-        let errors = validate_config(&config);
+        let errors = validate_config(&config, NO_BUILTINS);
         assert!(
             !errors.iter().any(|e| e.path == "inspect.base_url"),
             "'{base}' must be accepted, got: {errors:?}"
@@ -143,7 +147,7 @@ fn test_base_url_rejects_missing_scheme_or_empty() {
             valid_config_toml()
         );
         let config = load_config_from_str(&toml).unwrap();
-        let errors = validate_config(&config);
+        let errors = validate_config(&config, NO_BUILTINS);
         assert!(
             errors.iter().any(|e| e.path == "inspect.base_url"),
             "'{base}' must be rejected"
@@ -159,7 +163,7 @@ fn test_base_url_may_be_omitted() {
         valid_config_toml()
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
 }
 
@@ -172,7 +176,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.iter().any(|e| e.path == "channels"));
 }
 
@@ -194,7 +198,7 @@ mode = "agent"
         config.channels.is_empty(),
         "no channel should be configured"
     );
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.is_empty(), "expected no errors, got: {errors:?}");
 }
 
@@ -221,7 +225,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.iter().any(|e| e.path.contains("monitor.mode")));
 }
 
@@ -252,7 +256,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.iter().any(|e| e.path.contains("sender.regex")));
 }
 
@@ -277,7 +281,7 @@ enabled = true
 mode = "static"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.iter().any(|e| e.path == "ai.text"));
 }
 
@@ -312,7 +316,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.iter().any(|e| e.path.contains("mcps[0].name")),
         "expected mcps[0].name error, got: {:?}",
@@ -351,7 +355,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.iter().any(|e| e.path.contains("mcps[0].command")),
         "expected mcps[0].command error, got: {:?}",
@@ -390,7 +394,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.iter().any(|e| e.path.contains("mcps[0].url")),
         "expected mcps[0].url error, got: {:?}",
@@ -429,7 +433,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     let mcp_errors: Vec<_> = errors.iter().filter(|e| e.path.contains("mcps")).collect();
     assert!(
         mcp_errors.is_empty(),
@@ -474,7 +478,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.iter().any(
             |e| e.path.contains("mcps[0].auth_header") && e.message.contains("cannot set both")
@@ -517,7 +521,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.iter().any(
             |e| e.path.contains("mcps[0].auth_header") && e.message.contains("cannot set both")
@@ -560,7 +564,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
@@ -599,7 +603,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors
             .iter()
@@ -671,7 +675,7 @@ max_per_message = 5
     assert_eq!(outbound.max_per_message, Some(5));
 
     // Test validation passes
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
@@ -715,7 +719,7 @@ max_file_size = "10mb"
 max_per_message = 5
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
 
     // Should have errors for invalid extension and max_per_message
     assert!(errors.iter().any(|e| e.path.contains("allowed_extensions")));
@@ -743,7 +747,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 }
 
@@ -759,7 +763,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.iter().any(|e| e.path.contains("wecom")));
 }
 
@@ -781,7 +785,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.iter().any(|e| e.path.contains("wecom.token")));
 }
 
@@ -803,7 +807,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.iter().any(|e| e.path.contains("wecom.corp_secret")));
 }
 
@@ -831,7 +835,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.iter().any(|e| {
             e.path.contains("disabled_tools") && e.message.contains("must not be empty")
@@ -863,7 +867,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.iter().any(|e| {
             e.path.contains("disabled_mcps") && e.message.contains("must not be empty")
@@ -903,7 +907,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors
             .iter()
@@ -942,7 +946,7 @@ enabled = true
 mode = "agent"
 "#;
     let config = load_config_from_str(toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.iter().any(|e| {
         e.path.contains("patterns[0].disabled_tools") && e.message.contains("must not be empty")
     }));
@@ -985,7 +989,7 @@ user_prompt = "Review it."
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         !errors.iter().any(|e| e.path.starts_with("commands")),
         "expected no command errors, got: {errors:?}"
@@ -1007,7 +1011,7 @@ user_prompt = "Summarize."
     assert!(config.commands[0].mode.is_none());
     assert!(config.commands[0].skills.is_none());
     assert!(
-        !validate_config(&config)
+        !validate_config(&config, NO_BUILTINS)
             .iter()
             .any(|e| e.path.starts_with("commands"))
     );
@@ -1023,7 +1027,7 @@ user_prompt = "x"
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, &["/plan"]);
     assert!(
         errors
             .iter()
@@ -1043,7 +1047,7 @@ user_prompt = "   "
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.iter().any(|e| e.path == "commands[0].mode"));
     assert!(errors.iter().any(|e| e.path == "commands[0].user_prompt"));
 }
@@ -1061,7 +1065,7 @@ shell = ["ls"]
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         !errors.iter().any(|e| e.path.starts_with("commands")),
         "shell-only command must validate, got: {errors:?}"
@@ -1084,7 +1088,7 @@ shell = []
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.iter().any(|e| e.path == "commands[0].shell"),
         "empty shell argv must be rejected, got: {errors:?}"
@@ -1104,7 +1108,7 @@ user_prompt = "list things"
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.iter().any(
             |e| e.path == "commands[0].user_prompt" && e.message.contains("mutually exclusive")
@@ -1125,7 +1129,7 @@ name = "ls"
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors
             .iter()
@@ -1152,7 +1156,7 @@ user_prompt = "c"
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors
             .iter()
@@ -1177,7 +1181,7 @@ user_prompt = "x"
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors
             .iter()
@@ -1200,7 +1204,7 @@ pipe = { topic = "inbox" }
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.iter().any(|e| e
             .message
@@ -1225,7 +1229,7 @@ user_prompt = "b"
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors
             .iter()
@@ -1253,7 +1257,7 @@ user_prompt = "b"
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors
             .iter()
@@ -1284,7 +1288,7 @@ user_prompt = "mail foo"
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.is_empty(),
         "cross-agent same name must be allowed, got: {errors:?}"
@@ -1311,7 +1315,7 @@ user_prompt = "jin foo"
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors.is_empty(),
         "global-vs-agent same name must be allowed (overwrite at runtime), got: {errors:?}"
@@ -1333,7 +1337,7 @@ user_prompt = "clobber /model"
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, &["/model"]);
     assert!(
         errors
             .iter()
@@ -1363,7 +1367,7 @@ timeout = 5
     let config = load_config_from_str(&toml).unwrap();
     assert_eq!(config.hooks.len(), 1);
     assert_eq!(config.agents["jyc"].hooks.len(), 1);
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(errors.is_empty(), "got: {errors:?}");
 }
 
@@ -1386,7 +1390,7 @@ shell = []
 "#,
     );
     let config = load_config_from_str(&toml).unwrap();
-    let errors = validate_config(&config);
+    let errors = validate_config(&config, NO_BUILTINS);
     assert!(
         errors
             .iter()

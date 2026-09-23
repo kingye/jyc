@@ -11,14 +11,6 @@ pub struct HelpCommandHandler;
 
 #[async_trait]
 impl CommandHandler for HelpCommandHandler {
-    fn name(&self) -> &str {
-        "/?"
-    }
-
-    fn description(&self) -> &str {
-        "Show available commands"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         // Generated from all_commands_with() so built-ins, user-defined
         // globals, this topic's per-agent commands and its `/skill:<name>`

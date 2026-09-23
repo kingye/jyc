@@ -46,6 +46,25 @@
 
 ### Changed
 
+- Built-in slash commands are now declared in exactly one place.
+  `crates/jyc-core/src/command/builtin.rs` holds a 22-row table whose expansion is
+  the spec list the `/` popup and `/?` render, the name set config validation
+  checks against, and the topic worker's registry — a command can no longer be
+  registered but hidden from the popup. `CommandHandler` keeps behaviour only
+  (`name()`, and `description()` which was already dead code, are gone) and
+  `CommandRegistry::register` takes its key from the caller; user-defined commands
+  normalize through `CustomCommandHandler::command_key`, now shared by dispatch and
+  display instead of each rebuilding it. The three "keep these two lists in sync"
+  tests are gone with nothing left to sync, and `config.example.toml`'s stale
+  12-name list of built-ins became a pointer to `/?`.
+- `validation::validate_config` and `validate_config_strict` take the built-in
+  command names as a parameter, and `jyc_types::config::BUILTIN_COMMAND_NAMES` is
+  deleted. `jyc-types` sits below `jyc-core`, so it used to keep its own copy of
+  the names for the "shadows a built-in" rule; callers now pass
+  `jyc_core::command::builtin::BUILTIN_COMMAND_NAMES` and the crate holds no
+  command data at all. The in-crate validation tests pass an empty set (the two
+  shadowing tests pass their own fixture), and the `config.example.toml` guards
+  live in crates that already depend on jyc-core.
 - TUI selection cursor: the topic explorer, the `Select Pattern` panel and the
   dashboard's topic table mark the focused row with the same two-column `→`
   gutter and dim styling as the `/` command and `ask_user` popups, instead of a
@@ -192,6 +211,10 @@
 
 ### Fixed
 
+- `/fork` was missing from the TUI's `/` command popup and from `/?`, even though
+  typing it worked: the popup list and the worker's registry were two separate
+  hand-maintained lists, and #814 had added the handler to one of them. Both now
+  come from the single command table, so anything registered is listed (#815)
 - A long `bash` command was unreadable in the TUI: the collapsed row caps a tool's
   primary field at 160 columns, and the expanded tool detail (`ctrl+p T`) skipped
   that field because the row "already shows" it — so the rest of the command existed

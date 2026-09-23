@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 
@@ -10,7 +11,7 @@ use super::handler::{CommandContext, CommandHandler, CommandOutput, CommandResul
 /// body stripping (topic-manager.ts) into two separate passes, JYC unifies
 /// these into a single `process_commands()` method.
 pub struct CommandRegistry {
-    handlers: HashMap<String, Box<dyn CommandHandler>>,
+    handlers: HashMap<String, Arc<dyn CommandHandler>>,
 }
 
 impl CommandRegistry {
@@ -20,18 +21,22 @@ impl CommandRegistry {
         }
     }
 
-    /// Register a command handler.
-    pub fn register(&mut self, handler: Box<dyn CommandHandler>) {
-        let name = handler.name().to_string();
-        if self.handlers.contains_key(&name) {
+    /// Register a handler under `name`.
+    ///
+    /// The caller supplies the key: built-ins pass the name from
+    /// [`crate::command::builtin`] (the same table the `/` popup rows come from),
+    /// user-defined commands pass [`CustomCommandHandler::command_key`]. A handler
+    /// cannot report its own name — that is what kept dispatch and display from
+    /// drifting apart (#814).
+    pub fn register(&mut self, name: &str, handler: Arc<dyn CommandHandler>) {
+        if self.handlers.contains_key(name) {
             tracing::warn!(command = %name, "Command handler already registered, overwriting");
         }
         tracing::debug!(command = %name, "Command handler registered");
-        self.handlers.insert(name, handler);
+        self.handlers.insert(name.to_string(), handler);
     }
 
     /// Get a handler by name.
-    #[allow(dead_code)]
     pub fn get(&self, name: &str) -> Option<&dyn CommandHandler> {
         self.handlers.get(name).map(|h| h.as_ref())
     }
@@ -229,22 +234,14 @@ mod tests {
     use std::sync::Arc;
 
     /// A simple test command handler.
-    struct TestHandler {
-        name: String,
-    }
+    struct TestHandler;
 
     #[async_trait]
     impl CommandHandler for TestHandler {
-        fn name(&self) -> &str {
-            &self.name
-        }
-        fn description(&self) -> &str {
-            "test command"
-        }
         async fn execute(&self, ctx: CommandContext) -> Result<CommandResult> {
             Ok(CommandResult {
                 success: true,
-                message: format!("{}: args={:?}", self.name, ctx.args),
+                message: format!("ok: args={:?}", ctx.args),
                 error: None,
                 append_body: None,
             })
@@ -305,9 +302,7 @@ mode = "agent"
     #[tokio::test]
     async fn test_command_at_top_with_body() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(TestHandler {
-            name: "/model".into(),
-        }));
+        registry.register("/model", Arc::new(TestHandler));
 
         let body = "/model SomeModel\n\nImplement feature X";
         let output = registry
@@ -333,9 +328,13 @@ mode = "agent"
         };
         let mut registry = CommandRegistry::new();
         for cmd in crate::command::skill_commands(&[meta]) {
-            registry.register(Box::new(
-                crate::command::custom_handler::CustomCommandHandler::new(cmd),
-            ));
+            let key = crate::command::custom_handler::CustomCommandHandler::command_key(&cmd);
+            registry.register(
+                &key,
+                Arc::new(crate::command::custom_handler::CustomCommandHandler::new(
+                    cmd,
+                )),
+            );
         }
 
         let output = registry
@@ -357,9 +356,7 @@ mode = "agent"
     #[tokio::test]
     async fn test_command_only_message() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(TestHandler {
-            name: "/model".into(),
-        }));
+        registry.register("/model", Arc::new(TestHandler));
 
         let body = "/model reset\n";
         let output = registry
@@ -374,12 +371,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_multiple_commands() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(TestHandler {
-            name: "/model".into(),
-        }));
-        registry.register(Box::new(TestHandler {
-            name: "/plan".into(),
-        }));
+        registry.register("/model", Arc::new(TestHandler));
+        registry.register("/plan", Arc::new(TestHandler));
 
         let body = "/model SomeModel\n/plan\n\nDo the work";
         let output = registry
@@ -394,9 +387,7 @@ mode = "agent"
     #[tokio::test]
     async fn test_unknown_command_errors() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(TestHandler {
-            name: "/model".into(),
-        }));
+        registry.register("/model", Arc::new(TestHandler));
 
         // /unknown is not registered: it produces an error result and its
         // line is dropped; the remaining lines become the body.
@@ -435,12 +426,6 @@ mode = "agent"
 
     #[async_trait]
     impl CommandHandler for ArgsEchoHandler {
-        fn name(&self) -> &str {
-            "/review"
-        }
-        fn description(&self) -> &str {
-            "args echo"
-        }
         async fn execute(&self, ctx: CommandContext) -> Result<CommandResult> {
             Ok(CommandResult {
                 success: true,
@@ -453,12 +438,6 @@ mode = "agent"
 
     #[async_trait]
     impl CommandHandler for InjectingHandler {
-        fn name(&self) -> &str {
-            "/review"
-        }
-        fn description(&self) -> &str {
-            "injecting"
-        }
         async fn execute(&self, _ctx: CommandContext) -> Result<CommandResult> {
             Ok(CommandResult {
                 success: true,
@@ -472,7 +451,7 @@ mode = "agent"
     #[tokio::test]
     async fn test_append_body_on_command_only_message() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(InjectingHandler));
+        registry.register("/review", Arc::new(InjectingHandler));
 
         let output = registry
             .process_commands("/review", &test_context())
@@ -488,7 +467,7 @@ mode = "agent"
     #[tokio::test]
     async fn test_append_body_appends_after_user_text() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(InjectingHandler));
+        registry.register("/review", Arc::new(InjectingHandler));
 
         let output = registry
             .process_commands(
@@ -510,9 +489,7 @@ focus on error handling",
     #[tokio::test]
     async fn test_no_append_body_leaves_body_unchanged() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(TestHandler {
-            name: "/model".into(),
-        }));
+        registry.register("/model", Arc::new(TestHandler));
 
         let output = registry
             .process_commands("/model X\n\nhello", &test_context())
@@ -554,7 +531,7 @@ focus on error handling",
     #[tokio::test]
     async fn test_same_line_args_survive_into_cleaned_body() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(ArgsEchoHandler));
+        registry.register("/review", Arc::new(ArgsEchoHandler));
 
         let output = registry
             .process_commands("/review focus on error handling", &test_context())
@@ -568,7 +545,7 @@ focus on error handling",
     #[tokio::test]
     async fn test_command_without_args_yields_empty_args() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(ArgsEchoHandler));
+        registry.register("/review", Arc::new(ArgsEchoHandler));
 
         let output = registry
             .process_commands("/review", &test_context())
@@ -586,12 +563,6 @@ focus on error handling",
 
     #[async_trait]
     impl CommandHandler for MultiLineHandler {
-        fn name(&self) -> &str {
-            "/backlog"
-        }
-        fn description(&self) -> &str {
-            "multiline opt-in"
-        }
         fn collect_subsequent_lines(&self) -> bool {
             true
         }
@@ -609,7 +580,7 @@ focus on error handling",
     #[tokio::test]
     async fn test_collect_subsequent_lines_owns_rest_of_message() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(MultiLineHandler));
+        registry.register("/backlog", Arc::new(MultiLineHandler));
 
         let body = "/backlog push\nline 1\nline 2\nline 3\n\nbody text";
         let output = registry
@@ -631,7 +602,7 @@ focus on error handling",
     #[tokio::test]
     async fn test_collect_subsequent_lines_until_end_of_body() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(MultiLineHandler));
+        registry.register("/backlog", Arc::new(MultiLineHandler));
 
         // No trailing blank line; collection runs until the body ends.
         let body = "/backlog push\nonly line";
@@ -650,7 +621,7 @@ focus on error handling",
     #[tokio::test]
     async fn test_collect_subsequent_lines_blank_immediately_owns_body() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(MultiLineHandler));
+        registry.register("/backlog", Arc::new(MultiLineHandler));
 
         // A blank line right after the command no longer separates the
         // command from the body: the collecting command owns the rest of
@@ -680,7 +651,7 @@ focus on error handling",
     #[tokio::test]
     async fn test_collect_subsequent_lines_collapses_first_line() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(MultiLineHandler));
+        registry.register("/backlog", Arc::new(MultiLineHandler));
 
         let body = "/backlog push This is a backlog issue";
         let output = registry
@@ -699,7 +670,7 @@ focus on error handling",
     #[tokio::test]
     async fn test_collect_subsequent_lines_mixes_first_line_and_continuation() {
         let mut registry = CommandRegistry::new();
-        registry.register(Box::new(MultiLineHandler));
+        registry.register("/backlog", Arc::new(MultiLineHandler));
 
         let body = "/backlog push first line\nsecond line\nthird line";
         let output = registry

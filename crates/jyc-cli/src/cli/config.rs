@@ -87,7 +87,8 @@ async fn run_validate(
     }
 
     let config = load_config_layered(resolution.global_config_path.as_deref(), config_path)?;
-    let errors = validation::validate_config(&config);
+    let errors =
+        validation::validate_config(&config, jyc_core::command::builtin::BUILTIN_COMMAND_NAMES);
 
     if errors.is_empty() {
         println!("Configuration is valid.");

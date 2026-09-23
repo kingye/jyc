@@ -200,14 +200,6 @@ fn list_grants(context: &CommandContext) -> String {
 
 #[async_trait]
 impl CommandHandler for GrantCommandHandler {
-    fn name(&self) -> &str {
-        "/grant"
-    }
-
-    fn description(&self) -> &str {
-        "Grant agent access to a path: /grant <path> (read-only, until restart) — -w write, -p persist to config; no args lists grants"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let parsed = match parse_grant_args(&context.args) {
             Ok(parsed) => parsed,
@@ -255,14 +247,6 @@ impl CommandHandler for GrantCommandHandler {
 
 #[async_trait]
 impl CommandHandler for UngrantCommandHandler {
-    fn name(&self) -> &str {
-        "/ungrant"
-    }
-
-    fn description(&self) -> &str {
-        "Revoke a runtime access grant: /ungrant <path>"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let Some(raw_path) = context.args.first() else {
             return Ok(failure("usage: /ungrant <path>".to_string()));

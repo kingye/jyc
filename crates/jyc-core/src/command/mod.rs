@@ -24,6 +24,8 @@ pub mod thinking_handler;
 pub mod toggle_handler;
 pub mod unpin_handler;
 
+use jyc_types::{CommandInfo, CustomCommand};
+
 pub use args::{ArgCtx, command_args};
 pub use model_handler::list_available_models;
 
@@ -37,8 +39,6 @@ pub use model_handler::list_available_models;
 pub fn all_commands() -> Vec<CommandInfo> {
     builtin::builtin_infos()
 }
-
-use jyc_types::{CommandInfo, CustomCommand};
 
 /// Returns built-in commands plus user-defined globals (`[[commands]]`)
 /// and the topic's per-agent commands (`[[agents.<name>.commands]]`).

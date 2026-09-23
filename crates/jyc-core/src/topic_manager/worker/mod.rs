@@ -129,7 +129,7 @@ pub(crate) async fn process_message(
 
     // Every built-in handler, from the one table the `/` popup and `/?`
     // read too — see [`crate::command::builtin`].
-    let mut command_registry = builtin_registry(&topic_manager);
+    let mut command_registry = builtin_registry(topic_manager.clone());
 
     // User-defined commands: global `[[commands]]` first, then
     // `[[agents.<name>.commands]]` for the agent the topic is routed
@@ -159,7 +159,7 @@ pub(crate) async fn process_message(
     {
         let key = CustomCommandHandler::command_key(&cmd);
         if command_registry.get(&key).is_none() {
-            command_registry.register(&key, Box::new(CustomCommandHandler::new(cmd)));
+            command_registry.register(&key, Arc::new(CustomCommandHandler::new(cmd)));
         }
     }
 
@@ -710,14 +710,14 @@ pub(crate) fn register_custom_commands(
     for custom in &cfg.commands {
         command_registry.register(
             &CustomCommandHandler::command_key(custom),
-            Box::new(CustomCommandHandler::new(custom.clone())),
+            Arc::new(CustomCommandHandler::new(custom.clone())),
         );
     }
     let per_agent = per_agent_commands(cfg, pattern_name);
     for custom in &per_agent {
         command_registry.register(
             &CustomCommandHandler::command_key(custom),
-            Box::new(CustomCommandHandler::new(custom.clone())),
+            Arc::new(CustomCommandHandler::new(custom.clone())),
         );
     }
     per_agent

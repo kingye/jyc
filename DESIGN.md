@@ -404,9 +404,17 @@ agents pin the same directory while each keeps its own state dir.
 | Agent 1:1 topic, pinned (`topic_path`) | the pinned dir (e.g. a repo) | `<data_home>/agents/<agent>/.jyc` |
 | Ad-hoc pinned topic (`jyc open -p`, non-agents pin) | the pinned dir | `<data_home>/agents/_<path-escaped>/.jyc` |
 | Dynamic pipe topic | `<data_home>/agents/<agent>/<topic>/` | `<topic_dir>/.jyc` (fallback) |
+| Forked topic (`/fork`) | the **parent's** topic dir (shared workspace) | `<data_home>/agents/<name>/.jyc` |
 
 Multiple agent rows may pin the same topic dir (e.g. one repo shared by
-`jyc` and `jyc_git_planner`); they still get one state dir per topic name.
+`jyc` and `jyc_git_planner`); they still get one state dir per topic name. A
+`/fork` is that mechanism used deliberately: the child continues the parent's
+files, so it co-pins the parent's dir while keeping its own transcript. It is
+therefore *not* subject to the "the dir is the topic" note below — its state was
+registered by name before the dir was pinned (`adopt_state_dir` →
+`set_topic_path`, and the latter keeps an existing registration). The name still
+occupies a top-level entry under `agents/`, which is why `/fork` refuses a name
+that is already a topic.
 
 - **Identity.** Registrations key on the topic *name*. Config-key agents keep
   their `[agents.<key>]` name for the state dir — TOML keys are unique by

@@ -7,7 +7,8 @@
   directory**, because a fork continues the same files; only its state is
   separate, at `<data-home>/agents/<name>/.jyc`. It starts from this topic's
   running context, chat history, task list, backlog and per-topic overrides, so
-  work can continue down a second path while both keep their own transcript. What
+  work can continue down a second path while both keep running and keep their own
+  transcript. What
   it does *not* inherit is the token/cost meter (that usage was billed to the
   parent, so the fork starts un-metered), the per-topic logs, the channel routing
   metadata, and `jobs/` — a copied schedule would fire the parent's jobs in the

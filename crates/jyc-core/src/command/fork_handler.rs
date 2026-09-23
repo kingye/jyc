@@ -101,15 +101,14 @@ impl ForkCommandHandler {
         // the fork's own name *before* pinning the path is what makes sharing
         // safe: `set_topic_path` reuses an existing registration instead of
         // deriving one from the dir — two forks of one parent would otherwise
-        // land in the same derived dir and share a transcript — and
-        // `close_topic` then deletes the state and leaves the workspace
-        // (usually a user-owned project checkout) alone.
+        // land in the same derived dir and share a transcript.
         //
-        // The state dir sits directly under the agents root because that is
-        // the depth `restore_state_registry` scans after a restart. One level
-        // deeper and the registration would be lost, `jyc_dir` would fall back
-        // to the shared dir's own `.jyc`, and a fork would write state into the
-        // user's project.
+        // One level under the agents root, not two: `restore_state_registry`
+        // scans that depth only, and a registration lost at restart would make
+        // `jyc_dir` fall back to the shared dir's own `.jyc` — state inside the
+        // user's project. `close_topic` is then safe by construction: with a
+        // registered state it deletes the state and leaves the workspace
+        // (usually a user-owned project checkout) alone.
         let state_dir = agents_root.join(&name).join(".jyc");
         if self.topic_manager.topic_path(&name).await.is_some() || agents_root.join(&name).exists()
         {
@@ -457,6 +456,12 @@ mod tests {
         );
         // The parent keeps everything — a fork must not consume its source.
         assert!(topic_dir.join(".jyc/agent-context.json").exists());
+
+        // The registry is process-global and tests run in parallel, so the
+        // child's name must not outlive this test. (This topic name and the
+        // breadcrumb assert above are also exactly what the pre-fix placement —
+        // a fresh nested dir — failed on.)
+        jyc_types::state_dir::unregister("sibling");
     }
 
     /// No argument means an automatic name, and it must step past siblings
@@ -536,9 +541,11 @@ mod tests {
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let handler = ForkCommandHandler::new(tm.clone());
-        let (_ptmp, topic_dir) = parent_topic(&[]).await;
+        // The channel gate rejects before anything reads the topic, so a bare
+        // temp dir is enough here — no need to build a whole parent.
+        let tmp = tempdir().unwrap();
 
-        let ctx = context("src-topic", &topic_dir, "email", &["whatever"]);
+        let ctx = context("src-topic", tmp.path(), "email", &["whatever"]);
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.message.contains("routing address"), "{result:?}");
@@ -584,6 +591,12 @@ mod tests {
         );
         assert_eq!(tm.topic_path("fork-a").await.unwrap(), topic_dir);
         assert_eq!(tm.topic_path("fork-b").await.unwrap(), topic_dir);
+
+        // The state registry is process-global and tests run in parallel:
+        // these names would outlive this test otherwise.
+        for n in ["fork-a", "fork-b"] {
+            jyc_types::state_dir::unregister(n);
+        }
     }
 
     /// What `/fork`'s sharing now relies on: closing the child deletes its
@@ -615,5 +628,7 @@ mod tests {
             topic_dir.is_dir(),
             "the workspace is user property; a fork must never delete it"
         );
+        // The registry is process-global; keep this test's name to itself.
+        jyc_types::state_dir::unregister("fork-close");
     }
 }

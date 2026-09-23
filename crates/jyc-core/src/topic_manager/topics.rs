@@ -48,6 +48,20 @@ impl TopicDisplayState {
     }
 }
 
+/// The directory an adopted topic last worked in, read from its own state dir's
+/// `topic-path` breadcrumb — the record that survives a restart, unlike the
+/// in-memory path map. `None` when the topic has no registered state, the
+/// breadcrumb is missing or unreadable, or the directory it names is gone.
+async fn restored_path(topic_name: &str) -> Option<PathBuf> {
+    let state = jyc_types::state_dir::registered_state(topic_name)?;
+    let raw = tokio::fs::read_to_string(state.join("topic-path"))
+        .await
+        .ok()?;
+    let recorded = PathBuf::from(raw.trim());
+    tokio::fs::metadata(&recorded).await.ok()?;
+    Some(recorded)
+}
+
 impl TopicManager {
     pub async fn topic_path(&self, topic_name: &str) -> Option<PathBuf> {
         let mut paths = self.topic_paths.lock().await;
@@ -58,13 +72,10 @@ impl TopicManager {
         // `topic-path` breadcrumb — the only surviving record of a dir that is
         // *not* `<workspace>/<name>`: a config pin, a dashboard pin, or a
         // `/fork` co-pinned with its parent. Trust it before guessing from the
-        // layout, and cache it so the read happens once per process. (Same
-        // shape as `topic_pattern`'s cold-start fallback below.)
-        else if let Some(state) = jyc_types::state_dir::registered_state(topic_name) {
-            if let Some(recorded) = read_breadcrumb(&state).await {
-                paths.insert(topic_name.to_string(), recorded.clone());
-                return Some(recorded);
-            }
+        // layout, and cache it so the read happens once per process.
+        else if let Some(recorded) = restored_path(topic_name).await {
+            paths.insert(topic_name.to_string(), recorded.clone());
+            return Some(recorded);
         }
         // Fallback: try the default workspace path
         else {

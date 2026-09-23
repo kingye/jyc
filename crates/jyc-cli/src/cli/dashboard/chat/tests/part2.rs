@@ -1517,6 +1517,72 @@ fn wrapped_first_row_keeps_one_spinner() {
     }
 }
 
+#[test]
+fn info_pane_end_reaches_the_last_wrapped_row() {
+    // The bug this guards: the pane clamped its offset against *logical* lines
+    // while ratatui wrapped them into more screen rows. This pane is 20% of the
+    // terminal width, so a changed-file path takes two rows; with a list deep
+    // enough, `End` (which stores `usize::MAX`) resolved to an offset that left
+    // the final entries clipped and the bottom of the list unreachable.
+    //
+    // The fillers are deliberately wider than this pane's content (59 columns)
+    // so each one costs a second row: the gap between logical lines and drawn
+    // rows is then about N entries, not a rounding difference. That is what
+    // makes the marker below a real regression check — under the old clamp the
+    // entry carrying it is never drawn at all.
+    let filler = "crates/jyc-cli/src/cli/dashboard/chat/tests/part2_scroll_probe.rs";
+    let mut files: Vec<jyc_types::ChangedFileEntry> = (0..19)
+        .map(|_| jyc_types::ChangedFileEntry {
+            path: filler.to_string(),
+            uncommitted: false,
+            change: jyc_types::ChangeKind::Modified,
+        })
+        .collect();
+    // Unique to the final entry, and narrow enough to stay on one row, so the
+    // assertion means "the bottom row of the list is on screen".
+    files.push(jyc_types::ChangedFileEntry {
+        path: "crates/jyc-cli/src/cli/dashboard/chat/LASTENTRY_probe.rs".to_string(),
+        uncommitted: false,
+        change: jyc_types::ChangeKind::Added,
+    });
+    let mut topic = explorer_topic("t");
+    topic.changed_files = Some(files);
+
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.phase = ChatPhase::Chatting;
+    app.chat.info_visible = true;
+    app.chat.topic = Some("t".to_string());
+    app.state = Some(jyc_types::InspectOverview {
+        topics: vec![topic],
+        ..Default::default()
+    });
+
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 14)).expect("terminal");
+    // First pass measures the pane; the renderer clamps the offset it holds.
+    terminal
+        .draw(|f| render_topic_info_pane(f, f.area(), &mut app))
+        .expect("draw");
+    app.chat.info_scroll = usize::MAX; // what `End` / `G` store
+    terminal
+        .draw(|f| render_topic_info_pane(f, f.area(), &mut app))
+        .expect("draw");
+
+    let rendered: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        rendered.contains("LASTENTRY"),
+        "`End` must reach the last wrapped row of the file list, got:\n{rendered}"
+    );
+}
+
 /// Without the toggle the entry collapses to a short summary, and the summary
 /// has to stay one row — wrapping is for what does not fit, not for everything.
 #[test]

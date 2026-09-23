@@ -94,9 +94,15 @@ pub(super) struct ChatState {
     pub(super) activity_scroll: usize,
     /// Last rendered rectangle of the scrollable message area (top chunk
     /// inside the chat pane). Stored during render and used by mouse-wheel
-    /// hit-testing so scrolling only happens when the cursor is over the
-    /// message area, not the editor / activity / explorer / info panes.
+    /// hit-testing so the wheel only acts when the cursor is over a pane it
+    /// serves — the message area or the info pane — while the editor, the
+    /// activity log and the explorer keep absorbing it.
     pub(super) last_message_area: Option<Rect>,
+    /// Last rendered content rectangle of the topic info pane. Like
+    /// [`Self::last_message_area`], lets the wheel scroll what it hovers.
+    /// Only consulted while `info_visible`, and refreshed by every render that
+    /// shows the pane, so no reset path needs to clear it.
+    pub(super) last_info_area: Option<Rect>,
     /// Last rendered maximum message-area scroll offset (`max_skip`).
     /// Stored during render and used to clamp `scroll_up` / `page_up` at
     /// the source — without this the offset overshoots the top and the
@@ -1194,14 +1200,13 @@ fn sync_command_popup(app: &mut App) {
 /// drags) are intentionally ignored to avoid hijacking the input field
 /// while the user is editing.
 ///
-/// Hit-testing: the message area is the only pane that responds to the
-/// wheel. The activity, explorer, info, and input areas silently absorb
-/// the event so wheel-over-them keeps the editor's IME-like behaviour
-/// (no accidental focus theft). When the wheel does land on the message
-/// area we move focus to `MessageArea` first, so the focus-routed
-/// `scroll_up` / `scroll_down` advance the message offset regardless of
-/// which pane the user was last navigating — otherwise `ActivityPane` /
-/// `ExplorerPane` focus would silently redirect the scroll elsewhere.
+/// Hit-testing: the wheel scrolls the pane it hovers — the message area or,
+/// when it is visible, the topic info pane. The activity log, the explorer
+/// and the input area keep absorbing the event, so wheeling next to the editor
+/// does nothing. Neither pane drags focus around: the info pane's offset is
+/// advanced directly (it has no cursor), while the message area takes
+/// `MessageArea` focus because its cursor and the focus-routed `scroll_up` /
+/// `scroll_down` belong together.
 pub(super) fn handle_chat_mouse(app: &mut App, mouse: MouseEvent) {
     // Defensive guard — crossterm shouldn't deliver mouse events when
     // capture is off, but if one sneaks through (e.g. a queued event
@@ -1212,12 +1217,26 @@ pub(super) fn handle_chat_mouse(app: &mut App, mouse: MouseEvent) {
     if app.chat.phase != ChatPhase::Chatting {
         return;
     }
-    let Some(rect) = app.chat.last_message_area else {
-        return;
-    };
-    if !rect.contains(Position::new(mouse.column, mouse.row)) {
+    let pos = Position::new(mouse.column, mouse.row);
+    if app.chat.info_visible && app.chat.last_info_area.is_some_and(|r| r.contains(pos)) {
+        // Advance the offset directly rather than routing through
+        // `scroll_up`/`scroll_down`: those go by focus, and pulling focus away
+        // from the editor mid-typing is exactly what this handler must not do.
+        // The info pane has no cursor, so nothing here needs it.
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                app.chat.info_scroll = app.chat.info_scroll.saturating_sub(1)
+            }
+            MouseEventKind::ScrollDown => app.chat.info_scroll += 1,
+            _ => {}
+        }
         return;
     }
+    if !app.chat.last_message_area.is_some_and(|r| r.contains(pos)) {
+        return;
+    }
+    // The message area does take focus: its cursor and the focus-routed scroll
+    // belong together, and wheeling is how the user aims at a row.
     app.chat.focus = ChatFocus::MessageArea;
     match mouse.kind {
         MouseEventKind::ScrollUp => app.chat.scroll_up(),
@@ -1494,6 +1513,9 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    // The content rect rather than `area`: the pane's left border separates it
+    // from the chat pane, and the wheel belongs to the chat side of that line.
+    app.chat.last_info_area = Some(inner);
 
     let lines: Vec<Line> = if let Some(t) = selected_topic_summary(app) {
         let mut out: Vec<Line> = Vec::new();
@@ -1672,27 +1694,25 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         vec![Line::from("Select a topic")]
     };
 
-    // Slice-skip in Rust (matching the activity pane's pattern) so we
-    // never feed `usize::MAX` into `Paragraph::scroll` — that overflows
-    // ratatui's `offset_y + height` math and panics the TUI.
-    // Offset-from-top: `info_scroll == 0` shows the first rows, the
-    // max shows the last. The precise upper bound
-    // (`lines.len() - inner_height`) is computed in the same scope that
-    // owns `lines`, so the clamp is exact.
-    let inner_height = inner.height as usize;
-    let max_skip = lines.len().saturating_sub(inner_height);
-    // `scroll` and `skip` are read while `lines` is still in scope
-    // (lines borrows app via the TopicSummary snapshot). Write the
-    // clamped value back after rendering, when the borrow has ended.
-    let scroll = app.chat.info_scroll;
-    let skip = scroll.min(max_skip);
-    let visible_lines: Vec<Line> = lines.into_iter().skip(skip).collect();
-    // `Wrap { trim: false }` is required so the leading 2-space prefix
-    // on `Modified` rows survives (default `trim: true` strips
-    // leading whitespace per the `Wrap` doc). Wrap is still needed
-    // for long paths that exceed the 20%-wide pane.
-    let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, inner);
+    // Wrap here rather than with `Paragraph::wrap()` so that the row count the
+    // scroll clamp uses is the count actually drawn. This pane is 20% of the
+    // width, so a changed-file path or a long topic title occupies several
+    // screen rows; clamping against logical lines understates the content and
+    // stops the scroll short of the bottom — `End`/`G` could never reach the
+    // last rows. The message pane obeys the same contract (see
+    // `wrap_styled_lines`): scroll math counts visual rows.
+    //
+    // Slice-skip in Rust (matching the activity pane's pattern) also keeps
+    // `usize::MAX` — what `End`/`G` store — out of `Paragraph::scroll`, whose
+    // `offset_y + height` math would overflow and panic the TUI.
+    // Offset-from-top: `info_scroll == 0` shows the first rows, the max the last.
+    let wrapped = wrap_styled_lines(lines, inner.width as usize);
+    let max_skip = wrapped.len().saturating_sub(inner.height as usize);
+    let skip = app.chat.info_scroll.min(max_skip);
+    frame.render_widget(
+        Paragraph::new(wrapped.into_iter().skip(skip).collect::<Vec<_>>()),
+        inner,
+    );
     app.chat.info_scroll = skip;
 }
 
@@ -2141,6 +2161,7 @@ impl ChatState {
             info_scroll: 0,
             activity_scroll: 0,
             last_message_area: None,
+            last_info_area: None,
             last_max_scroll: 0,
             pending_clipboard: None,
             pending_y: false,

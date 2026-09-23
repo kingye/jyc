@@ -46,6 +46,10 @@
 
 ### Changed
 
+- TUI mouse wheel: it now scrolls the topic info pane when the cursor hovers it,
+  instead of answering only over the messages. The activity log, the explorer and
+  the input area keep absorbing the wheel, and scrolling the info pane deliberately
+  does not take focus, so wheeling while typing is safe (#816)
 - Built-in slash commands are now declared in exactly one place.
   `crates/jyc-core/src/command/builtin.rs` holds a 22-row table whose expansion is
   the spec list the `/` popup and `/?` render, the name set config validation
@@ -211,6 +215,12 @@
 
 ### Fixed
 
+- The TUI's topic-info pane could not be scrolled to its own bottom. It wrapped its
+  content with ratatui while clamping the scroll offset against a count of *logical*
+  lines, so in the 20%-wide pane — where a changed-file path takes two or three rows
+  — the last entries of a long file list stayed permanently clipped no matter what
+  `End`/`G` did. The pane now wraps in Rust with the same helper the message pane
+  uses, so the clamp counts the rows actually drawn (#816)
 - `/fork` was missing from the TUI's `/` command popup and from `/?`, even though
   typing it worked: the popup list and the worker's registry were two separate
   hand-maintained lists, and #814 had added the handler to one of them. Both now

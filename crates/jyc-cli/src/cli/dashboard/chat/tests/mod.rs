@@ -1293,7 +1293,6 @@ fn wheel_over_info_pane_scrolls_the_info_pane() {
     app.chat.info_visible = true;
     app.chat.topic = Some("jyc".to_string());
     app.chat.focus = ChatFocus::ChatPane;
-    app.chat.info_scroll = 5;
 
     terminal
         .draw(|f| ui_chat_mode(f, f.area(), &mut app))
@@ -1302,6 +1301,12 @@ fn wheel_over_info_pane_scrolls_the_info_pane() {
         .chat
         .last_info_area
         .expect("render should cache the info-pane rect");
+
+    // Seeded after the draw on purpose: the renderer clamps the offset to the
+    // pane's content, and with no topic loaded the pane holds a single line —
+    // a pre-draw seed would be clamped away. This test is about where the wheel
+    // goes, not how far the pane can scroll.
+    app.chat.info_scroll = 5;
 
     handle_chat_mouse(
         &mut app,

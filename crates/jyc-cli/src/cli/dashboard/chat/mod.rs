@@ -1672,27 +1672,25 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         vec![Line::from("Select a topic")]
     };
 
-    // Slice-skip in Rust (matching the activity pane's pattern) so we
-    // never feed `usize::MAX` into `Paragraph::scroll` — that overflows
-    // ratatui's `offset_y + height` math and panics the TUI.
-    // Offset-from-top: `info_scroll == 0` shows the first rows, the
-    // max shows the last. The precise upper bound
-    // (`lines.len() - inner_height`) is computed in the same scope that
-    // owns `lines`, so the clamp is exact.
-    let inner_height = inner.height as usize;
-    let max_skip = lines.len().saturating_sub(inner_height);
-    // `scroll` and `skip` are read while `lines` is still in scope
-    // (lines borrows app via the TopicSummary snapshot). Write the
-    // clamped value back after rendering, when the borrow has ended.
-    let scroll = app.chat.info_scroll;
-    let skip = scroll.min(max_skip);
-    let visible_lines: Vec<Line> = lines.into_iter().skip(skip).collect();
-    // `Wrap { trim: false }` is required so the leading 2-space prefix
-    // on `Modified` rows survives (default `trim: true` strips
-    // leading whitespace per the `Wrap` doc). Wrap is still needed
-    // for long paths that exceed the 20%-wide pane.
-    let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, inner);
+    // Wrap here rather than with `Paragraph::wrap()` so that the row count the
+    // scroll clamp uses is the count actually drawn. This pane is 20% of the
+    // width, so a changed-file path or a long topic title occupies several
+    // screen rows; clamping against logical lines understates the content and
+    // stops the scroll short of the bottom — `End`/`G` could never reach the
+    // last rows. The message pane obeys the same contract (see
+    // `wrap_styled_lines`): scroll math counts visual rows.
+    //
+    // Slice-skip in Rust (matching the activity pane's pattern) also keeps
+    // `usize::MAX` — what `End`/`G` store — out of `Paragraph::scroll`, whose
+    // `offset_y + height` math would overflow and panic the TUI.
+    // Offset-from-top: `info_scroll == 0` shows the first rows, the max the last.
+    let wrapped = wrap_styled_lines(lines, inner.width as usize);
+    let max_skip = wrapped.len().saturating_sub(inner.height as usize);
+    let skip = app.chat.info_scroll.min(max_skip);
+    frame.render_widget(
+        Paragraph::new(wrapped.into_iter().skip(skip).collect::<Vec<_>>()),
+        inner,
+    );
     app.chat.info_scroll = skip;
 }
 

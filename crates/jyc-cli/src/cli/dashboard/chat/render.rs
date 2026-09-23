@@ -568,31 +568,46 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 // on the *unpadded* `line`, before the caller pads it with
                 // `"⏳ "` / `"   "` — checking the padded label would always
                 // miss because the prefix sits two columns in.
-                let rendered_lines: Vec<(Style, String)> =
+                let rendered_lines: Vec<(Style, String, &str)> =
                     render_activity_entry(&a.text, app.chat.tool_detail_expanded)
                         .into_iter()
                         .enumerate()
                         .map(|(line_idx, line)| {
-                            let label = if line_idx == 0 && is_last {
-                                if elapsed.is_empty() {
-                                    format!("⏳ {line}")
-                                } else {
-                                    format!("⏳ {line} {elapsed}")
-                                }
+                            // The row prefix stays out of the text so a wrapped
+                            // row can carry the same pad and line up under the
+                            // first one.
+                            let prefix = if line_idx == 0 && is_last {
+                                "⏳ "
                             } else {
                                 // Pad with 3 spaces to visually align with "⏳ "
-                                format!("   {line}")
+                                "   "
                             };
-                            let label_style = style_diff_line(&line, style);
-                            (label_style, label)
+                            let text = if line_idx == 0 && is_last && !elapsed.is_empty() {
+                                format!("{line} {elapsed}")
+                            } else {
+                                line
+                            };
+                            let label_style = style_diff_line(&text, style);
+                            (label_style, text, prefix)
                         })
                         .collect();
 
-                for (label_style, label) in rendered_lines {
-                    tail_lines.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(label, label_style),
-                    ]));
+                // The transcript `Paragraph` does not wrap — one line is exactly
+                // one screen row, which is what the scroll, cursor and selection
+                // maths count — so an entry that is wider than the pane is
+                // broken up here, the same way the thinking tail above does it.
+                // 5 = the two-column indent plus the three-column row prefix.
+                let avail = chunks[0].width.saturating_sub(5) as usize;
+                for (label_style, text, prefix) in rendered_lines {
+                    let rows =
+                        wrap_styled_lines(vec![Line::from(Span::styled(text, label_style))], avail);
+                    for (row_idx, row) in rows.into_iter().enumerate() {
+                        // The spinner marks the entry, not every row of it.
+                        let pad = if row_idx == 0 { prefix } else { "   " };
+                        let mut spans = vec![Span::raw("  "), Span::raw(pad)];
+                        spans.extend(row.spans);
+                        tail_lines.push(Line::from(spans));
+                    }
                 }
             }
         }

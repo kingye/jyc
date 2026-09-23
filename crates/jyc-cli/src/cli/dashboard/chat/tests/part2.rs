@@ -1410,3 +1410,164 @@ fn info_pane_omits_the_task_section_when_there_is_no_list() {
     assert!(pane.contains("Cost:"), "{pane}");
     assert!(pane.contains("Files:"), "{pane}");
 }
+
+// The progress tail is not part of the markdown-rendered history, and the
+// transcript `Paragraph` deliberately does not wrap (one line is exactly one
+// screen row, which is what the scroll maths count) — so a `ctrl+p T` tool
+// detail wider than the pane lost everything past the right edge.
+#[test]
+fn long_tool_detail_wraps_inside_the_progress_tail() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.channel = Some("github".into());
+    app.chat.topic = Some("pr-1".into());
+    // No server state, so the tail shows on the local optimistic flag.
+    app.chat.awaiting_response = true;
+    app.chat.tool_detail_expanded = true;
+    let long = "x".repeat(120);
+    app.chat.seed_live(
+        "github",
+        "pr-1",
+        vec![jyc_types::ActivityEntry {
+            text: format!(r#"{{"type":"write","file_path":"src/a.rs","content":"{long}"}}"#),
+            timestamp: None,
+            severity: jyc_types::Severity::Info,
+            id: 1,
+            is_internal: false,
+        }],
+        vec![],
+    );
+
+    let (width, height) = (40, 20);
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| render_chat_conversation(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let rows: Vec<String> = (0..height).map(|y| super::row_text(&buffer, y)).collect();
+    let pane = rows.join("\n");
+
+    // Nothing may be lost off the right edge: every column of the detail has to
+    // reach some row. (No 'x' appears anywhere else on this screen.)
+    assert_eq!(
+        rows.iter().map(|r| r.matches('x').count()).sum::<usize>(),
+        long.len(),
+        "the long tool detail must wrap, not clip:\n{pane}"
+    );
+    let detail: Vec<&String> = rows.iter().filter(|r| r.contains('x')).collect();
+    assert!(
+        detail.len() >= 3,
+        "a 120-column line needs several rows in a 40-column pane:\n{pane}"
+    );
+    // Continuation rows keep the pad so the block still reads as one entry.
+    for row in &detail[1..] {
+        assert!(
+            row.starts_with("     "),
+            "wrapped rows align under the first one: {row:?}"
+        );
+    }
+}
+
+// The same entry without the toggle collapses to one short line, so the
+// wrapping only comes into play once the user asks for detail.
+#[test]
+fn collapsed_tool_detail_stays_one_row() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.channel = Some("github".into());
+    app.chat.topic = Some("pr-1".into());
+    app.chat.awaiting_response = true;
+    app.chat.seed_live(
+        "github",
+        "pr-1",
+        vec![jyc_types::ActivityEntry {
+            text: r#"{"type":"write","file_path":"src/a.rs","content":"aaaaaaaaaaaaaaaaaaaa"}"#
+                .into(),
+            timestamp: None,
+            severity: jyc_types::Severity::Info,
+            id: 1,
+            is_internal: false,
+        }],
+        vec![],
+    );
+
+    let (width, height) = (40, 20);
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| render_chat_conversation(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let pane: String = (0..height)
+        .map(|y| super::row_text(&buffer, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        pane.contains("a.rs"),
+        "the collapsed line names the file:\n{pane}"
+    );
+    assert!(
+        !pane.contains("aaaa"),
+        "the content stays hidden until ctrl+p T:\n{pane}"
+    );
+}
+
+// The spinner belongs to the entry, not to every row of it — and a first row
+// long enough to wrap is exactly the case that used to run off the edge.
+#[test]
+fn wrapped_first_row_keeps_one_spinner() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.channel = Some("github".into());
+    app.chat.topic = Some("pr-1".into());
+    app.chat.awaiting_response = true;
+    app.chat.tool_detail_expanded = true;
+    let long = "x".repeat(120);
+    app.chat.seed_live(
+        "github",
+        "pr-1",
+        vec![jyc_types::ActivityEntry {
+            // Not the `Tool: <name> — <json>` shape, so the entry passes
+            // through as a single row of its own.
+            text: format!("tool execution ran for a while: {long}"),
+            timestamp: None,
+            severity: jyc_types::Severity::Info,
+            id: 1,
+            is_internal: false,
+        }],
+        vec![],
+    );
+
+    let (width, height) = (40, 20);
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| render_chat_conversation(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let rows: Vec<String> = (0..height).map(|y| super::row_text(&buffer, y)).collect();
+    let pane = rows.join("\n");
+
+    assert_eq!(
+        rows.iter().map(|r| r.matches('x').count()).sum::<usize>(),
+        long.len(),
+        "the whole row has to reach the screen:\n{pane}"
+    );
+    let spinner: Vec<&String> = rows.iter().filter(|r| r.contains('⏳')).collect();
+    assert_eq!(spinner.len(), 1, "one entry, one spinner row:\n{pane}");
+    let detail: Vec<&String> = rows.iter().filter(|r| r.contains('x')).collect();
+    assert!(
+        detail.len() >= 3,
+        "…and in a 40-column pane it takes several rows:\n{pane}"
+    );
+    for row in &detail[1..] {
+        assert!(
+            row.starts_with("     ") && !row.contains('⏳'),
+            "continuation rows pad instead of repeating the spinner: {row:?}"
+        );
+    }
+}

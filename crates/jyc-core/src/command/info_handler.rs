@@ -27,14 +27,6 @@ impl InfoCommandHandler {
 
 #[async_trait]
 impl CommandHandler for InfoCommandHandler {
-    fn name(&self) -> &str {
-        "/info"
-    }
-
-    fn description(&self) -> &str {
-        "Show topic info (mode, model, tokens, cost, tasks, files)"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         // Match on (channel, topic_path) rather than the directory basename:
         // a pattern with a `topic_path` override can put the topic in a

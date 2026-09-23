@@ -243,14 +243,6 @@ fn fail(message: String) -> CommandResult {
 
 #[async_trait]
 impl CommandHandler for ForkCommandHandler {
-    fn name(&self) -> &str {
-        "/fork"
-    }
-
-    fn description(&self) -> &str {
-        "Branch a sibling topic off this one, keeping its context, history and settings"
-    }
-
     #[instrument(skip(self, context), fields(topic = %context.topic_name))]
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         if context.channel_type != "websocket" {

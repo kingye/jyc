@@ -1,6 +1,7 @@
 pub mod args;
 pub mod backlog_handler;
 pub mod bill_handler;
+pub mod builtin;
 pub mod cancel_handler;
 pub mod close_handler;
 pub mod context_handler;
@@ -26,137 +27,18 @@ pub mod unpin_handler;
 pub use args::{ArgCtx, command_args};
 pub use model_handler::list_available_models;
 
-use jyc_types::{CommandInfo, CustomCommand};
-
-/// Returns the static list of built-in commands with descriptions.
+/// The built-in rows of the command list: the `/` popup (via the inspect
+/// server and the CLI fallback) and `/?`.
 ///
-/// This is the TUI's legacy fallback for older servers that don't
-/// populate `topic.commands` in the inspect API. The dashboard uses
-/// it to show at least the built-ins when the popup would otherwise
-/// be empty.
-///
-/// IMPORTANT: This list must be kept in sync with the commands actually
-/// registered in `CommandRegistry` (see `topic_manager.rs`). If you add
-/// a new command handler, add its entry here too.
+/// This is a view of [`builtin::BUILTIN_COMMANDS`], which is also what
+/// registers the handlers, so a command cannot exist in one and be missing
+/// from the other. It used to be a hand-maintained list, and `/fork` shipped
+/// registered-but-hidden because of it (#814).
 pub fn all_commands() -> Vec<CommandInfo> {
-    vec![
-        CommandInfo {
-            name: "/model".into(),
-            description: "Switch AI model for this topic".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/plan".into(),
-            description: "Switch to plan mode (read-only)".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/build".into(),
-            description: "Switch to build mode (full execution)".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/reset".into(),
-            description: "Reset session, keep chat history (requires --force)".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/new".into(),
-            description: "Reset session and clear chat history (requires --force)".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/close".into(),
-            description: "Close and delete this topic (requires --force)".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/template".into(),
-            description: "Apply or re-apply topic template".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/cancel".into(),
-            description: "Cancel current AI processing".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/?".into(),
-            description: "Show available commands".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/pin".into(),
-            description: "Pin this ad-hoc websocket topic to config.toml".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/unpin".into(),
-            description: "Remove pinned topic configuration from config.toml".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/thinking".into(),
-            description: "Show or hide AI thinking/reasoning content".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/exchange".into(),
-            description: "Show shareable URLs for this topic's published files".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/context".into(),
-            description: "View or change the context strategy / debug-dump wire payload".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/skill".into(),
-            description: "Toggle a skill for this topic: /skill on|off|reset <name>".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/mcp".into(),
-            description: "Toggle an MCP server for this topic: /mcp on|off|reset <name>".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/info".into(),
-            description: "Show topic info (mode, model, tokens, cost, tasks, files)".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/backlog".into(),
-            // `/backlog pop` injects the popped text into the agent's
-            // next turn via `append_body`, so it continues into an agent
-            // run and needs a progress indicator on piped channels
-            // (feishu). The other subcommands (`push`/`list`/`get`/`rm`/`set`)
-            // reply instantly — but the flag is set at the command level,
-            // not per-subcommand, because the channels.rs watcher spawns
-            // before dispatch and cannot inspect the subcommand.
-            description: "Save and replay user messages (push|list|get|pop|rm|set)".into(),
-            continues_to_agent: true,
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/bill".into(),
-            description: "Usage/cost across topics (today | YYYY-MM | all)".into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/grant".into(),
-            description:
-                "Grant agent access to a path (read-only, until restart; -w write, -p persist)"
-                    .into(),
-            ..Default::default()
-        },
-        CommandInfo {
-            name: "/ungrant".into(),
-            description: "Revoke a runtime access grant".into(),
-            ..Default::default()
-        },
-    ]
+    builtin::builtin_infos()
 }
+
+use jyc_types::{CommandInfo, CustomCommand};
 
 /// Returns built-in commands plus user-defined globals (`[[commands]]`)
 /// and the topic's per-agent commands (`[[agents.<name>.commands]]`).
@@ -250,9 +132,8 @@ pub fn per_agent_commands(cfg: &jyc_types::AppConfig, pattern_name: &str) -> Vec
 
 fn custom_to_info(c: &CustomCommand) -> CommandInfo {
     CommandInfo {
-        // Match CustomCommandHandler::new()'s normalization so the popup shows
-        // the name the registry actually dispatches on.
-        name: format!("/{}", c.name.trim().trim_start_matches('/').to_lowercase()),
+        // The one normalization the registry dispatches on, reused here.
+        name: crate::command::custom_handler::CustomCommandHandler::command_key(c),
         description: if c.description.trim().is_empty() {
             "(no description)".into()
         } else {
@@ -269,80 +150,6 @@ fn custom_to_info(c: &CustomCommand) -> CommandInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Verify all_commands() contains the expected set of commands.
-    /// If this test fails, update both the registry in topic_manager.rs
-    /// and the all_commands() list.
-    #[test]
-    fn test_all_commands_has_expected_names() {
-        let commands = all_commands();
-        let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
-        for expected in &[
-            "/model",
-            "/plan",
-            "/build",
-            "/reset",
-            "/new",
-            "/close",
-            "/template",
-            "/cancel",
-            "/?",
-            "/pin",
-            "/unpin",
-            "/thinking",
-            "/exchange",
-            "/context",
-            "/skill",
-            "/mcp",
-            "/info",
-            "/backlog",
-            "/bill",
-            "/grant",
-            "/ungrant",
-        ] {
-            assert!(
-                names.contains(expected),
-                "all_commands() is missing '{expected}'. Add it to keep the command popup in sync."
-            );
-        }
-        assert_eq!(
-            commands.len(),
-            21,
-            "all_commands() count changed. Update this test if intentional."
-        );
-    }
-
-    #[test]
-    fn test_all_commands_has_no_duplicates() {
-        let commands = all_commands();
-        let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
-        let mut sorted = names.clone();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(
-            names.len(),
-            sorted.len(),
-            "all_commands() contains duplicate names"
-        );
-    }
-
-    /// `jyc_types::BUILTIN_COMMAND_NAMES` drives config validation's
-    /// "shadows a built-in" check, so it must match `all_commands()`.
-    #[test]
-    fn test_builtin_names_match_all_commands() {
-        let mut from_commands: Vec<String> =
-            all_commands().iter().map(|c| c.name.clone()).collect();
-        let mut from_const: Vec<String> = jyc_types::BUILTIN_COMMAND_NAMES
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        from_commands.sort();
-        from_const.sort();
-        assert_eq!(
-            from_commands, from_const,
-            "BUILTIN_COMMAND_NAMES (jyc-types) is out of sync with all_commands()"
-        );
-    }
 
     fn custom(name: &str, description: &str) -> CustomCommand {
         CustomCommand {

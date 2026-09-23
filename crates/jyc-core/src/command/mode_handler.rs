@@ -39,14 +39,6 @@ pub struct PlanCommandHandler;
 
 #[async_trait]
 impl CommandHandler for PlanCommandHandler {
-    fn name(&self) -> &str {
-        "/plan"
-    }
-
-    fn description(&self) -> &str {
-        "Switch to plan mode (read-only)"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         set_mode(&context, "plan").await?;
 
@@ -64,14 +56,6 @@ pub struct BuildCommandHandler;
 
 #[async_trait]
 impl CommandHandler for BuildCommandHandler {
-    fn name(&self) -> &str {
-        "/build"
-    }
-
-    fn description(&self) -> &str {
-        "Switch to build mode (full execution)"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         set_mode(&context, "build").await?;
 

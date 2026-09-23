@@ -13,29 +13,12 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::AgentService;
-use crate::command::backlog_handler::BacklogCommandHandler;
-use crate::command::bill_handler::BillCommandHandler;
-use crate::command::cancel_handler::CancelCommandHandler;
-use crate::command::close_handler::CloseCommandHandler;
-use crate::command::context_handler::ContextCommandHandler;
+use crate::command::builtin::builtin_registry;
 use crate::command::custom_handler::CustomCommandHandler;
-use crate::command::exchange_handler::ExchangeCommandHandler;
-use crate::command::fork_handler::ForkCommandHandler;
-use crate::command::grant_handler::{GrantCommandHandler, UngrantCommandHandler};
 use crate::command::handler::CommandContext;
-use crate::command::help_handler::HelpCommandHandler;
-use crate::command::info_handler::InfoCommandHandler;
-use crate::command::mode_handler::{BuildCommandHandler, PlanCommandHandler};
-use crate::command::model_handler::ModelCommandHandler;
-use crate::command::new_handler::NewCommandHandler;
 use crate::command::per_agent_commands;
-use crate::command::pin_handler::PinCommandHandler;
 use crate::command::registry::CommandRegistry;
-use crate::command::reset_handler::ResetCommandHandler;
 use crate::command::skill_commands;
-use crate::command::template_handler::TemplateCommandHandler;
-use crate::command::thinking_handler::ThinkingCommandHandler;
-use crate::command::unpin_handler::UnpinCommandHandler;
 use crate::message_storage::{MessageStorage, StoreResult};
 use crate::pending_delivery::{
     json_metadata, read_signal_attachments, reply_blocked_by_hook, watch_pending_deliveries,
@@ -144,33 +127,9 @@ pub(crate) async fn process_message(
         .or(message.content.markdown.as_deref())
         .unwrap_or("");
 
-    let mut command_registry = CommandRegistry::new();
-    command_registry.register(Box::new(HelpCommandHandler));
-    command_registry.register(Box::new(ModelCommandHandler));
-    command_registry.register(Box::new(PlanCommandHandler));
-    command_registry.register(Box::new(BuildCommandHandler));
-    command_registry.register(Box::new(ResetCommandHandler));
-    command_registry.register(Box::new(NewCommandHandler));
-    command_registry.register(Box::new(TemplateCommandHandler));
-    command_registry.register(Box::new(CloseCommandHandler::new(topic_manager.clone())));
-    command_registry.register(Box::new(CancelCommandHandler::new(topic_manager.clone())));
-    command_registry.register(Box::new(ForkCommandHandler::new(topic_manager.clone())));
-    command_registry.register(Box::new(PinCommandHandler::new(topic_manager.clone())));
-    command_registry.register(Box::new(UnpinCommandHandler::new(topic_manager.clone())));
-    command_registry.register(Box::new(ThinkingCommandHandler));
-    command_registry.register(Box::new(ExchangeCommandHandler::new(topic_manager.clone())));
-    command_registry.register(Box::new(ContextCommandHandler));
-    command_registry.register(Box::new(
-        crate::command::toggle_handler::ToggleCommandHandler::skill(),
-    ));
-    command_registry.register(Box::new(
-        crate::command::toggle_handler::ToggleCommandHandler::mcp(),
-    ));
-    command_registry.register(Box::new(InfoCommandHandler::new(topic_manager.clone())));
-    command_registry.register(Box::new(BacklogCommandHandler::new()));
-    command_registry.register(Box::new(BillCommandHandler));
-    command_registry.register(Box::new(GrantCommandHandler));
-    command_registry.register(Box::new(UngrantCommandHandler));
+    // Every built-in handler, from the one table the `/` popup and `/?`
+    // read too — see [`crate::command::builtin`].
+    let mut command_registry = builtin_registry(&topic_manager);
 
     // User-defined commands: global `[[commands]]` first, then
     // `[[agents.<name>.commands]]` for the agent the topic is routed
@@ -198,8 +157,9 @@ pub(crate) async fn process_message(
     for cmd in
         skill_commands(&agent.available_skills(topic_name, &store_result.topic_path, pattern))
     {
-        if command_registry.get(&format!("/{}", cmd.name)).is_none() {
-            command_registry.register(Box::new(CustomCommandHandler::new(cmd)));
+        let key = CustomCommandHandler::command_key(&cmd);
+        if command_registry.get(&key).is_none() {
+            command_registry.register(&key, Box::new(CustomCommandHandler::new(cmd)));
         }
     }
 
@@ -748,11 +708,17 @@ pub(crate) fn register_custom_commands(
     command_registry: &mut CommandRegistry,
 ) -> Vec<jyc_types::CustomCommand> {
     for custom in &cfg.commands {
-        command_registry.register(Box::new(CustomCommandHandler::new(custom.clone())));
+        command_registry.register(
+            &CustomCommandHandler::command_key(custom),
+            Box::new(CustomCommandHandler::new(custom.clone())),
+        );
     }
     let per_agent = per_agent_commands(cfg, pattern_name);
     for custom in &per_agent {
-        command_registry.register(Box::new(CustomCommandHandler::new(custom.clone())));
+        command_registry.register(
+            &CustomCommandHandler::command_key(custom),
+            Box::new(CustomCommandHandler::new(custom.clone())),
+        );
     }
     per_agent
 }

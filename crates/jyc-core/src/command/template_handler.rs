@@ -9,14 +9,6 @@ pub struct TemplateCommandHandler;
 
 #[async_trait]
 impl CommandHandler for TemplateCommandHandler {
-    fn name(&self) -> &str {
-        "/template"
-    }
-
-    fn description(&self) -> &str {
-        "Manage topic templates. Subcommands: update (overwrite existing files)"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let subcommand = context.args.first().map(|s| s.as_str());
 

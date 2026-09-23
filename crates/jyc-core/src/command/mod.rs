@@ -6,6 +6,7 @@ pub mod close_handler;
 pub mod context_handler;
 pub mod custom_handler;
 pub mod exchange_handler;
+pub mod fork_handler;
 pub mod grant_handler;
 pub mod handler;
 pub mod help_handler;

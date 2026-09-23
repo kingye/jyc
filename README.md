@@ -206,6 +206,7 @@ body line.
 | `/skill on <name>` | Force-enable a discoverable skill for this topic, even if excluded by config; takes effect from the next message, persists until `/skill reset` |
 | `/skill off <name>` | Force-disable a skill for this topic, even if whitelisted by config |
 | `/skill reset` | Clear all runtime skill toggles for this topic |
+| `/fork [name]` | Branch a sibling topic off this one, inheriting its context, transcript, task list, backlog and settings. Websocket-only; with no name the new topic is `<this>-2`. It does not switch focus — pick it in the topic list |
 | `/skill:<name>` | Use that skill for **this one message** — no config entry, no state change. One such command exists per skill the topic can use, created at runtime and listed in `/?` and the `/` popup |
 | `/mcp` | Show this topic's runtime MCP-server toggles |
 | `/mcp on <name>` | Force-enable an MCP server defined in config (un-disables `disabled_mcps`), even if excluded by config; takes effect from the next message, persists until `/mcp reset` |

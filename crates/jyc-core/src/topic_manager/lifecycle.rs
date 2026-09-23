@@ -128,6 +128,15 @@ impl TopicManager {
         Ok(())
     }
 
+    /// The root that holds every agent's topic subtree (`<data_home>/agents/`).
+    ///
+    /// A forked topic lands at `<root>/<agent>/<name>` — the same place the
+    /// router puts runtime topics, and the same boundary
+    /// [`Self::auto_close_topic`] refuses to delete above.
+    pub fn agents_workspace_root(&self) -> std::path::PathBuf {
+        crate::topic_path::resolve_agents_workspace_root(&self.workdir)
+    }
+
     /// Close a topic in response to an upstream close event (issue/PR
     /// closed, chat disbanded, ...).
     ///
@@ -139,7 +148,7 @@ impl TopicManager {
     ///
     /// Returns `true` when the topic was actually closed.
     pub async fn auto_close_topic(&self, topic_name: &str) -> Result<bool> {
-        let agents_root = crate::topic_path::resolve_agents_workspace_root(&self.workdir);
+        let agents_root = self.agents_workspace_root();
         self.auto_close_topic_under(topic_name, &agents_root).await
     }
 

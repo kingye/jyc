@@ -382,35 +382,6 @@ impl HookEvent {
     }
 }
 
-/// Names of the built-in slash commands, including the leading slash.
-///
-/// Used to reject `[[commands]]` entries that would shadow a built-in.
-/// `jyc_core::command::all_commands()` has a test asserting it stays in
-/// sync with this list.
-pub const BUILTIN_COMMAND_NAMES: &[&str] = &[
-    "/model",
-    "/plan",
-    "/build",
-    "/reset",
-    "/new",
-    "/close",
-    "/template",
-    "/cancel",
-    "/?",
-    "/pin",
-    "/unpin",
-    "/thinking",
-    "/exchange",
-    "/context",
-    "/skill",
-    "/mcp",
-    "/info",
-    "/backlog",
-    "/bill",
-    "/grant",
-    "/ungrant",
-];
-
 /// General application settings.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

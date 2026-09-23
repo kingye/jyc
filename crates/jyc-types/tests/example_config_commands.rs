@@ -55,7 +55,12 @@ fn example_commands_parse_and_validate() {
     let config = load_config_from_str(&format!("{BASE}{EXAMPLE_COMMANDS}"))
         .expect("example [[commands]] must parse");
 
-    let errors = validate_config(&config);
+    // An empty built-in set: `jyc-types` sits below `jyc-core`, where the
+    // commands are declared, so it cannot name them. Everything this test is
+    // about still runs (parse, mode, skills, prompt); the "shadows a built-in"
+    // rule is checked against the real list by jyc-cli's `config_template`
+    // test, which validates the whole `config.example.toml`.
+    let errors = validate_config(&config, &[]);
     assert!(
         !errors.iter().any(|e| e.path.starts_with("commands")),
         "example [[commands]] must validate, got: {errors:?}"

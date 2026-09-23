@@ -15,11 +15,12 @@
 //! - [`builtin_registry`] — what the topic worker registers
 //! - [`builtin_infos`] — the built-in rows of `all_commands_with`
 //!
-//! Adding a command is therefore: one row here, plus the handler. There is no
-//! second list to remember, which is the whole point — `/fork` was registered
-//! and shipped working while silently missing from the popup (#814), because
-//! the registry and the display list lived in different files and nothing but
-//! a human kept them together.
+//! Adding a command in code is therefore: one row here, plus the handler.
+//! There is no second list to remember, which is the whole point — `/fork` was
+//! registered and shipped working while silently missing from the popup
+//! (#814), because the registry and the display list lived in different files
+//! and nothing but a human kept them together. (README's command table is
+//! prose, and `/?` remains the authoritative list.)
 //!
 //! [`BUILTIN_COMMANDS`]: BUILTIN_COMMANDS
 //! [`BUILTIN_COMMAND_NAMES`]: BUILTIN_COMMAND_NAMES

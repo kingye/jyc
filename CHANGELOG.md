@@ -2,6 +2,17 @@
 
 ### Added
 
+- `/fork [name]`: branch a sibling topic off the current one. The new topic is an
+  ordinary topic — its own directory at `<data-home>/agents/<agent>/<name>/` and its own
+  `.jyc` state — but it starts from this topic's running context, chat history, task list,
+  backlog and per-topic overrides, so work can continue down a second path while both keep
+  running and never write into each other's transcript. What it does *not* inherit is the
+  token/cost meter (that usage was billed to the parent, so the fork starts un-metered), the
+  per-topic logs, the channel routing metadata, and `jobs/` — a copied schedule would fire
+  the parent's jobs in the fork too. A name left out becomes `<topic>-2`, `<topic>-3`, …;
+  `/fork` is websocket-only, like `/pin`, because elsewhere the topic name *is* the routing
+  address; and it does not switch focus — pick it in the topic list (#814)
+
 - Agent task list: three built-in tools. `task_create` writes the plan for the current
   piece of work as one-line steps (1–20, numbered 1..N, replacing any list that was
   there), `task_update` marks one item `pending` / `in_progress` / `completed` as the

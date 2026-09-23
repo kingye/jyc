@@ -94,9 +94,15 @@ pub(super) struct ChatState {
     pub(super) activity_scroll: usize,
     /// Last rendered rectangle of the scrollable message area (top chunk
     /// inside the chat pane). Stored during render and used by mouse-wheel
-    /// hit-testing so scrolling only happens when the cursor is over the
-    /// message area, not the editor / activity / explorer / info panes.
+    /// hit-testing so the wheel only acts when the cursor is over a pane it
+    /// serves — the message area or the info pane — while the editor, the
+    /// activity log and the explorer keep absorbing it.
     pub(super) last_message_area: Option<Rect>,
+    /// Last rendered content rectangle of the topic info pane. Like
+    /// [`Self::last_message_area`], lets the wheel scroll what it hovers.
+    /// Only consulted while `info_visible`, so a hidden pane's stale rect
+    /// cannot steal the wheel (nor focus) from the transcript.
+    pub(super) last_info_area: Option<Rect>,
     /// Last rendered maximum message-area scroll offset (`max_skip`).
     /// Stored during render and used to clamp `scroll_up` / `page_up` at
     /// the source — without this the offset overshoots the top and the
@@ -1194,14 +1200,13 @@ fn sync_command_popup(app: &mut App) {
 /// drags) are intentionally ignored to avoid hijacking the input field
 /// while the user is editing.
 ///
-/// Hit-testing: the message area is the only pane that responds to the
-/// wheel. The activity, explorer, info, and input areas silently absorb
-/// the event so wheel-over-them keeps the editor's IME-like behaviour
-/// (no accidental focus theft). When the wheel does land on the message
-/// area we move focus to `MessageArea` first, so the focus-routed
-/// `scroll_up` / `scroll_down` advance the message offset regardless of
-/// which pane the user was last navigating — otherwise `ActivityPane` /
-/// `ExplorerPane` focus would silently redirect the scroll elsewhere.
+/// Hit-testing: the wheel scrolls the pane it hovers — the message area or,
+/// when it is visible, the topic info pane. The activity log, the explorer
+/// and the input area keep absorbing the event, so wheeling next to the
+/// editor does nothing (no accidental focus theft while typing). Whichever
+/// pane is hit takes focus first, so the focus-routed `scroll_up` /
+/// `scroll_down` advance that pane's offset regardless of where the user was
+/// last navigating.
 pub(super) fn handle_chat_mouse(app: &mut App, mouse: MouseEvent) {
     // Defensive guard — crossterm shouldn't deliver mouse events when
     // capture is off, but if one sneaks through (e.g. a queued event
@@ -1212,13 +1217,16 @@ pub(super) fn handle_chat_mouse(app: &mut App, mouse: MouseEvent) {
     if app.chat.phase != ChatPhase::Chatting {
         return;
     }
-    let Some(rect) = app.chat.last_message_area else {
-        return;
-    };
-    if !rect.contains(Position::new(mouse.column, mouse.row)) {
-        return;
-    }
-    app.chat.focus = ChatFocus::MessageArea;
+    let pos = Position::new(mouse.column, mouse.row);
+    let target =
+        if app.chat.info_visible && app.chat.last_info_area.is_some_and(|r| r.contains(pos)) {
+            ChatFocus::InfoPane
+        } else if app.chat.last_message_area.is_some_and(|r| r.contains(pos)) {
+            ChatFocus::MessageArea
+        } else {
+            return;
+        };
+    app.chat.focus = target;
     match mouse.kind {
         MouseEventKind::ScrollUp => app.chat.scroll_up(),
         MouseEventKind::ScrollDown => app.chat.scroll_down(),
@@ -1494,6 +1502,9 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    // The content rect rather than `area`: the pane's left border separates it
+    // from the chat pane, and the wheel belongs to the chat side of that line.
+    app.chat.last_info_area = Some(inner);
 
     let lines: Vec<Line> = if let Some(t) = selected_topic_summary(app) {
         let mut out: Vec<Line> = Vec::new();
@@ -2139,6 +2150,7 @@ impl ChatState {
             info_scroll: 0,
             activity_scroll: 0,
             last_message_area: None,
+            last_info_area: None,
             last_max_scroll: 0,
             pending_clipboard: None,
             pending_y: false,
@@ -2205,6 +2217,7 @@ impl ChatState {
         self.activity_scroll = 0;
         self.info_scroll = 0;
         self.last_message_area = None;
+        self.last_info_area = None;
         self.last_max_scroll = 0;
         self.reset_cursor();
         self.render_cache = None;
@@ -2273,6 +2286,7 @@ impl ChatState {
         self.activity_scroll = 0;
         self.info_scroll = 0;
         self.last_message_area = None;
+        self.last_info_area = None;
         self.last_max_scroll = 0;
         self.reset_cursor();
         self.render_cache = None;

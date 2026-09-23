@@ -1280,6 +1280,51 @@ fn mouse_scroll_in_message_area_advances_scroll_offset() {
 }
 
 #[test]
+fn wheel_over_info_pane_scrolls_the_info_pane() {
+    // The wheel follows the cursor: over the info column it must scroll that
+    // pane rather than silently doing nothing — and must leave the transcript
+    // alone.
+    let backend = ratatui::backend::TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.phase = ChatPhase::Chatting;
+    app.chat.info_visible = true;
+    app.chat.topic = Some("jyc".to_string());
+    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.info_scroll = 5;
+
+    terminal
+        .draw(|f| ui_chat_mode(f, f.area(), &mut app))
+        .unwrap();
+    let rect = app
+        .chat
+        .last_info_area
+        .expect("render should cache the info-pane rect");
+
+    handle_chat_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::ScrollUp, rect.x + 1, rect.y + 1),
+    );
+    assert!(
+        matches!(app.chat.focus, ChatFocus::InfoPane),
+        "the wheel takes focus to the pane it hovered"
+    );
+    // The info pane's offset counts from the top, so wheel-up moves earlier.
+    assert_eq!(app.chat.info_scroll, 4);
+    assert_eq!(app.chat.scroll, 0, "the transcript must not move");
+
+    // A hidden info pane must not steal the wheel through its stale rect.
+    app.chat.info_visible = false;
+    handle_chat_mouse(
+        &mut app,
+        mouse_event(MouseEventKind::ScrollUp, rect.x + 1, rect.y + 1),
+    );
+    assert_eq!(app.chat.info_scroll, 4, "there is no pane there to scroll");
+}
+
+#[test]
 fn mouse_scroll_ignored_outside_chatting_phase() {
     // PatternSelect has no scrollable message area; the wheel must
     // not change focus or scroll state.

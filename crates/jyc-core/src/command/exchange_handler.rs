@@ -53,14 +53,6 @@ impl ExchangeCommandHandler {
 
 #[async_trait]
 impl CommandHandler for ExchangeCommandHandler {
-    fn name(&self) -> &str {
-        "/exchange"
-    }
-
-    fn description(&self) -> &str {
-        "Show shareable URLs for this topic's published files"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
 

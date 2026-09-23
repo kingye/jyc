@@ -420,7 +420,10 @@ pub async fn post_reload_config(
     let mut new_config =
         jyc_types::load_config_layered(ctx.global_config_path.as_deref(), config_path)
             .map_err(|e| ApiError::unprocessable(format!("failed to load config: {e:#}")))?;
-    let errors = jyc_types::validation::validate_config(&new_config);
+    let errors = jyc_types::validation::validate_config(
+        &new_config,
+        jyc_core::command::builtin::BUILTIN_COMMAND_NAMES,
+    );
     if !errors.is_empty() {
         let msg = errors
             .iter()

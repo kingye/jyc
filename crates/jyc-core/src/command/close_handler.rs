@@ -26,14 +26,6 @@ impl CloseCommandHandler {
 
 #[async_trait]
 impl CommandHandler for CloseCommandHandler {
-    fn name(&self) -> &str {
-        "/close"
-    }
-
-    fn description(&self) -> &str {
-        "Close and delete this topic (requires --force)"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let topic_name = context
             .topic_path

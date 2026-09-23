@@ -165,14 +165,6 @@ impl Default for BacklogCommandHandler {
 
 #[async_trait]
 impl CommandHandler for BacklogCommandHandler {
-    fn name(&self) -> &str {
-        "/backlog"
-    }
-
-    fn description(&self) -> &str {
-        "Save and replay user messages (push|list|get|pop|rm|set)"
-    }
-
     /// `/backlog push` is followed by a free-form multi-line description.
     /// After parsing, `args[1]` holds the space-joined first-line content
     /// (empty string if none was provided) and `args[2..]` holds

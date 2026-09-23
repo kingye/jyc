@@ -646,9 +646,10 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #     focus on error handling
 #
 # `name` must be lowercase (command lookup is case-insensitive) and must not
-# shadow a built-in command (/model, /plan, /build, /reset, /new, /close,
-# /template, /cancel, /?, /pin, /unpin, /thinking). Invalid names fail
-# validation at startup rather than being silently ignored.
+# shadow a built-in command. The built-ins are exactly the commands `/?` lists
+# — they are declared once in `crates/jyc-core/src/command/builtin.rs`, so this
+# comment deliberately does not repeat them. Invalid names fail validation at
+# startup rather than being silently ignored.
 #
 # [[commands]]
 # name = "review"

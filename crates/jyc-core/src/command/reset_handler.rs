@@ -22,14 +22,6 @@ impl ResetCommandHandler {
 
 #[async_trait]
 impl CommandHandler for ResetCommandHandler {
-    fn name(&self) -> &str {
-        "/reset"
-    }
-
-    fn description(&self) -> &str {
-        "Reset agent session for this topic (requires --force)"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         // Require --force before touching anything — including the
         // exchange token rotation below, so a plain /reset cannot kill

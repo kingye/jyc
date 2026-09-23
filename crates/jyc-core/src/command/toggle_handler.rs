@@ -52,14 +52,6 @@ impl ToggleCommandHandler {
 
 #[async_trait]
 impl CommandHandler for ToggleCommandHandler {
-    fn name(&self) -> &str {
-        self.name
-    }
-
-    fn description(&self) -> &str {
-        "Toggle one name on/off for this topic: /<cmd> on|off|reset <name>"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let topic_name = context.topic_name.as_str();
         let topic_path = &context.topic_path;

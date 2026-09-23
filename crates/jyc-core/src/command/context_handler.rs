@@ -41,14 +41,6 @@ const MAX_TOOL_RESULT_CAP: usize = 1024 * 1024;
 
 #[async_trait]
 impl CommandHandler for ContextCommandHandler {
-    fn name(&self) -> &str {
-        "/context"
-    }
-
-    fn description(&self) -> &str {
-        "View or change the context strategy / debug-dump wire payload"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
         let override_path = jyc_dir.join(crate::session_state::CONTEXT_STRATEGY_FILE);

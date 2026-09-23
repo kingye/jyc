@@ -167,16 +167,13 @@ impl CommandOutput {
 
 /// Trait for command handlers (e.g., /model, /plan, /build).
 ///
-/// Each handler is registered in the CommandRegistry by name.
+/// A handler is behaviour only. Its name, description and
+/// `continues_to_agent` flag are declared once, in
+/// [`crate::command::builtin`], which also registers it — nothing on this
+/// trait identifies the command, which is exactly what stops the registry and
+/// the `/` popup list from drifting apart (#814).
 #[async_trait]
 pub trait CommandHandler: Send + Sync {
-    /// Command name including the slash (e.g., "/model")
-    fn name(&self) -> &str;
-
-    /// Short description of the command
-    #[allow(dead_code)]
-    fn description(&self) -> &str;
-
     /// Execute the command with the given context.
     async fn execute(&self, context: CommandContext) -> Result<CommandResult>;
 

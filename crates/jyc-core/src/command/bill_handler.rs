@@ -23,14 +23,6 @@ pub struct BillCommandHandler;
 
 #[async_trait]
 impl CommandHandler for BillCommandHandler {
-    fn name(&self) -> &str {
-        "/bill"
-    }
-
-    fn description(&self) -> &str {
-        "Usage/cost across topics (today | YYYY-MM | all)"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let scope = match parse_scope(&context.args) {
             Ok(scope) => scope,

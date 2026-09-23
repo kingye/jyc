@@ -52,7 +52,13 @@ fn validate_regex(pattern: &str) -> Result<Regex> {
 /// Validate the application configuration.
 ///
 /// Returns a list of validation errors. Empty list means valid.
-pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
+///
+/// `builtin_names` is the set of built-in slash commands that a user-defined
+/// `[[commands]]` entry must not shadow. It is passed in rather than listed
+/// here because those commands are declared in `jyc_core::command::builtin`,
+/// which sits above this crate: `jyc-types` holds no command data of its own,
+/// so the "shadows a built-in" rule cannot drift from the real command list.
+pub fn validate_config(config: &AppConfig, builtin_names: &[&str]) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
     // General
@@ -428,6 +434,7 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
             cmd,
             &mut seen_commands,
             &mut errors,
+            builtin_names,
         );
     }
 
@@ -440,6 +447,7 @@ pub fn validate_config(config: &AppConfig) -> Vec<ValidationError> {
                 cmd,
                 &mut seen,
                 &mut errors,
+                builtin_names,
             );
         }
     }
@@ -772,8 +780,8 @@ fn validate_outbound_attachment_config(
 
 /// Convenience: validate and return a Result.
 #[allow(dead_code)]
-pub fn validate_config_strict(config: &AppConfig) -> Result<()> {
-    let errors = validate_config(config);
+pub fn validate_config_strict(config: &AppConfig, builtin_names: &[&str]) -> Result<()> {
+    let errors = validate_config(config, builtin_names);
     if errors.is_empty() {
         Ok(())
     } else {
@@ -797,6 +805,7 @@ fn validate_custom_command(
     cmd: &CustomCommand,
     seen: &mut Vec<String>,
     errors: &mut Vec<ValidationError>,
+    builtin_names: &[&str],
 ) {
     let name = cmd.name.trim();
     if name.is_empty() {
@@ -822,7 +831,7 @@ fn validate_custom_command(
         // Compare the normalized form: `review` and `/review` both
         // register as `/review` and would collide at registration time.
         let slashed = format!("/{}", name.trim_start_matches('/'));
-        if crate::config::BUILTIN_COMMAND_NAMES.contains(&slashed.as_str()) {
+        if builtin_names.contains(&slashed.as_str()) {
             errors.push(ValidationError {
                 path: format!("{prefix}.name"),
                 message: format!("'{slashed}' shadows a built-in command"),

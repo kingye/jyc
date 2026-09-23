@@ -22,14 +22,6 @@ impl PinCommandHandler {
 
 #[async_trait]
 impl CommandHandler for PinCommandHandler {
-    fn name(&self) -> &str {
-        "/pin"
-    }
-
-    fn description(&self) -> &str {
-        "Pin this ad-hoc websocket topic to config.toml"
-    }
-
     #[instrument(skip(self, context))]
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         // Build the shared pin/unpin context (validates websocket channel type, etc.)

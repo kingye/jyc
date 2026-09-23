@@ -6,7 +6,9 @@
 //! worse than none.
 //!
 //! Inlined rather than read from disk so the test has no filesystem
-//! dependency (see AGENTS.md test-isolation rules).
+//! dependency (see AGENTS.md test-isolation rules). Lives in jyc-cli so it can
+//! validate against the real built-in command list, which `jyc-types` cannot
+//! reach.
 
 use jyc_types::load_config_from_str;
 use jyc_types::validation::validate_config;
@@ -55,7 +57,12 @@ fn example_commands_parse_and_validate() {
     let config = load_config_from_str(&format!("{BASE}{EXAMPLE_COMMANDS}"))
         .expect("example [[commands]] must parse");
 
-    let errors = validate_config(&config);
+    // This test lives in jyc-cli rather than jyc-types so it can name the real
+    // built-in list: the example's `[[commands]]` are commented out in
+    // `config.example.toml` (so `config_template` never sees them), and the
+    // "shadows a built-in" rule is exactly what would break silently if someone
+    // renamed one to e.g. `/plan`.
+    let errors = validate_config(&config, jyc_core::command::builtin::BUILTIN_COMMAND_NAMES);
     assert!(
         !errors.iter().any(|e| e.path.starts_with("commands")),
         "example [[commands]] must validate, got: {errors:?}"

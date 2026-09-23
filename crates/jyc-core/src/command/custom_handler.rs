@@ -39,8 +39,12 @@ pub struct CustomCommandHandler {
 }
 
 impl CustomCommandHandler {
-    /// Create a handler for `config`, normalizing the name to a lowercase,
-    /// slash-prefixed form.
+    /// The registry key and popup label for `config`: one leading slash,
+    /// trimmed, lowercased.
+    ///
+    /// Dispatch and display share this so they can never disagree about what a
+    /// command is called: [`Self::new`] stores it, `all_commands_with` renders
+    /// it, and the worker's `/skill:<name>` collision check asks for it.
     ///
     /// Lowercasing is required: [`CommandRegistry::process_commands`] lowercases
     /// the incoming command before looking it up, so a handler registered under
@@ -49,11 +53,17 @@ impl CustomCommandHandler {
     /// invariant true regardless of how the handler is constructed.
     ///
     /// [`CommandRegistry::process_commands`]: super::registry::CommandRegistry::process_commands
-    pub fn new(config: CustomCommand) -> Self {
-        let name = format!(
+    pub fn command_key(config: &CustomCommand) -> String {
+        format!(
             "/{}",
             config.name.trim().trim_start_matches('/').to_lowercase()
-        );
+        )
+    }
+
+    /// Create a handler for `config`. The registry keys on
+    /// [`Self::command_key`], supplied by the caller at registration.
+    pub fn new(config: CustomCommand) -> Self {
+        let name = Self::command_key(&config);
         Self { name, config }
     }
 
@@ -243,14 +253,6 @@ impl CustomCommandHandler {
 
 #[async_trait]
 impl CommandHandler for CustomCommandHandler {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn description(&self) -> &str {
-        &self.config.description
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         // Shell commands short-circuit before mode/skills: there is no LLM
         // to apply them to. mode/skills in the config are silently ignored
@@ -366,14 +368,17 @@ mode = "agent"
 
     #[test]
     fn name_gets_leading_slash() {
-        assert_eq!(CustomCommandHandler::new(cmd(None, None)).name(), "/review");
+        assert_eq!(
+            CustomCommandHandler::command_key(&cmd(None, None)),
+            "/review"
+        );
     }
 
     #[test]
     fn name_is_not_double_slashed() {
         let mut c = cmd(None, None);
         c.name = "/review".into();
-        assert_eq!(CustomCommandHandler::new(c).name(), "/review");
+        assert_eq!(CustomCommandHandler::command_key(&c), "/review");
     }
 
     #[tokio::test]
@@ -566,7 +571,7 @@ mode = "agent"
     fn name_is_lowercased() {
         let mut c = cmd(None, None);
         c.name = "Review".into();
-        assert_eq!(CustomCommandHandler::new(c).name(), "/review");
+        assert_eq!(CustomCommandHandler::command_key(&c), "/review");
     }
 
     // -- shell command path --

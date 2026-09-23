@@ -7,7 +7,10 @@ fn config_example_template_validates_clean() {
     let template = include_str!("../../../config.example.toml");
     let config = jyc_types::load_config_from_str(template)
         .expect("config.example.toml must parse and deserialize");
-    let errors = jyc_types::validation::validate_config(&config);
+    let errors = jyc_types::validation::validate_config(
+        &config,
+        jyc_core::command::builtin::BUILTIN_COMMAND_NAMES,
+    );
     assert!(
         errors.is_empty(),
         "config.example.toml failed validation:\n{}",

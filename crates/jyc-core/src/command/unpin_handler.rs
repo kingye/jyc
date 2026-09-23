@@ -21,14 +21,6 @@ impl UnpinCommandHandler {
 
 #[async_trait]
 impl CommandHandler for UnpinCommandHandler {
-    fn name(&self) -> &str {
-        "/unpin"
-    }
-
-    fn description(&self) -> &str {
-        "Remove pinned topic configuration from config.toml"
-    }
-
     #[instrument(skip(self, context))]
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         // Build the shared pin/unpin context (validates websocket channel type, etc.)

@@ -40,14 +40,6 @@ pub fn list_available_models(providers: &HashMap<String, ProviderDef>) -> Vec<Mo
 
 #[async_trait]
 impl CommandHandler for ModelCommandHandler {
-    fn name(&self) -> &str {
-        "/model"
-    }
-
-    fn description(&self) -> &str {
-        "Switch AI model or list available models"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
         tokio::fs::create_dir_all(&jyc_dir).await?;

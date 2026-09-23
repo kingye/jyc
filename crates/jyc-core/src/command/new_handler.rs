@@ -57,14 +57,6 @@ impl NewCommandHandler {
 
 #[async_trait]
 impl CommandHandler for NewCommandHandler {
-    fn name(&self) -> &str {
-        "/new"
-    }
-
-    fn description(&self) -> &str {
-        "Reset session and clear chat history (requires --force)"
-    }
-
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         // Require --force to prevent accidentally wiping the session and
         // chat history. Plain /new returns a warning instead.

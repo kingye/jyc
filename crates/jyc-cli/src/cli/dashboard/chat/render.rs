@@ -497,16 +497,16 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 }
             } else {
                 let chars: usize = blocks.iter().map(|b| b.chars().count()).sum();
-                tail_lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        format!(
-                            "💭 thinking — {} blocks · {chars} chars (ctrl+p t)",
-                            blocks.len()
-                        ),
-                        gray_style,
+                push_tail_rows(
+                    &mut tail_lines,
+                    chunks[0].width,
+                    "💭 ",
+                    format!(
+                        "thinking — {} blocks · {chars} chars (ctrl+p t)",
+                        blocks.len()
                     ),
-                ]));
+                    gray_style,
+                );
             }
         }
 
@@ -568,31 +568,32 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 // on the *unpadded* `line`, before the caller pads it with
                 // `"⏳ "` / `"   "` — checking the padded label would always
                 // miss because the prefix sits two columns in.
-                let rendered_lines: Vec<(Style, String)> =
+                let rendered_lines: Vec<(Style, String, &str)> =
                     render_activity_entry(&a.text, app.chat.tool_detail_expanded)
                         .into_iter()
                         .enumerate()
                         .map(|(line_idx, line)| {
-                            let label = if line_idx == 0 && is_last {
-                                if elapsed.is_empty() {
-                                    format!("⏳ {line}")
-                                } else {
-                                    format!("⏳ {line} {elapsed}")
-                                }
+                            // The row prefix stays out of the text so a wrapped
+                            // row can carry the same pad and line up under the
+                            // first one.
+                            let prefix = if line_idx == 0 && is_last {
+                                "⏳ "
                             } else {
                                 // Pad with 3 spaces to visually align with "⏳ "
-                                format!("   {line}")
+                                "   "
                             };
-                            let label_style = style_diff_line(&line, style);
-                            (label_style, label)
+                            let text = if line_idx == 0 && is_last && !elapsed.is_empty() {
+                                format!("{line} {elapsed}")
+                            } else {
+                                line
+                            };
+                            let label_style = style_diff_line(&text, style);
+                            (label_style, text, prefix)
                         })
                         .collect();
 
-                for (label_style, label) in rendered_lines {
-                    tail_lines.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(label, label_style),
-                    ]));
+                for (label_style, text, prefix) in rendered_lines {
+                    push_tail_rows(&mut tail_lines, chunks[0].width, prefix, text, label_style);
                 }
             }
         }
@@ -622,13 +623,13 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             .chars()
             .take(160)
             .collect::<String>();
-        tail_lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                format!("⚠ {message}"),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-        ]));
+        push_tail_rows(
+            &mut tail_lines,
+            chunks[0].width,
+            "⚠ ",
+            message,
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        );
     }
 
     let inner_height = chunks[0].height as usize;
@@ -911,6 +912,47 @@ fn render_file_tool_diff(tool_name: &str, json: &serde_json::Value) -> Vec<Strin
 /// Returns `default` for the header (`<file>:<line>`), truncation
 /// marker (`… (N more lines)`), and the empty case, so the rest of the
 /// progress tail keeps its yellow-italic styling.
+/// Push one progress-tail entry as transcript rows, wrapped to the message
+/// pane's width.
+///
+/// The transcript `Paragraph` deliberately has no `.wrap()` — one line is
+/// exactly one screen row, which is what the scroll, cursor and selection maths
+/// count — so a row wider than the pane has to be broken up here, or everything
+/// past its right edge is unreachable. `prefix` marks the entry ("⏳ ",
+/// "💭 ", "⚠ "); every wrapped row is padded by the prefix's own
+/// display width, so a tall block still reads as one entry rather than a ragged
+/// column. The two-column base indent is added here as well.
+fn push_tail_rows(
+    out: &mut Vec<Line<'static>>,
+    pane_width: u16,
+    prefix: &str,
+    text: String,
+    style: Style,
+) {
+    use unicode_width::UnicodeWidthStr;
+    let pad = prefix.width();
+    let mut rows = wrap_styled_lines(
+        vec![Line::from(Span::styled(text, style))],
+        (pane_width as usize).saturating_sub(2 + pad),
+    );
+    if rows.is_empty() {
+        // An empty entry still owns a row — `wrap_styled_lines` returns
+        // nothing for it, and dropping the row would shift the tail.
+        rows.push(Line::default());
+    }
+    let blank = " ".repeat(pad);
+    for (i, row) in rows.into_iter().enumerate() {
+        let marker = if i == 0 {
+            prefix.to_string()
+        } else {
+            blank.clone()
+        };
+        let mut spans = vec![Span::raw("  "), Span::raw(marker)];
+        spans.extend(row.spans);
+        out.push(Line::from(spans));
+    }
+}
+
 fn style_diff_line(unpadded: &str, default: Style) -> Style {
     if unpadded.starts_with(DIFF_REMOVED_PREFIX) {
         Style::default().fg(Color::Gray)
@@ -1270,5 +1312,31 @@ mod tests {
         let default = Style::default().fg(Color::Yellow);
         let s = style_diff_line("  … (5 more lines)", default);
         assert_eq!(s, default);
+    }
+
+    // `push_tail_rows` is what every progress-tail row goes through, including
+    // the two that carry a marker of their own width.
+    #[test]
+    fn push_tail_rows_pads_continuations_by_the_prefix_width() {
+        let mut out: Vec<Line<'static>> = Vec::new();
+        for (prefix, pad) in [("⏳ ", 3), ("⚠ ", 2)] {
+            out.clear();
+            push_tail_rows(&mut out, 40, prefix, "w".repeat(60), Style::default());
+            assert!(out.len() > 1, "60 columns cannot fit a 40-column pane");
+            assert_eq!(&*out[0].spans[1].content, prefix);
+            let blank = " ".repeat(pad);
+            for row in &out[1..] {
+                // The pad follows the prefix's own display width, so a narrow
+                // marker does not shove its continuation rows right.
+                assert_eq!(&*row.spans[1].content, blank, "{row:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn push_tail_rows_gives_an_empty_entry_one_row() {
+        let mut out: Vec<Line<'static>> = Vec::new();
+        push_tail_rows(&mut out, 40, "💭 ", String::new(), Style::default());
+        assert_eq!(out.len(), 1, "an entry always owns a row: {out:?}");
     }
 }

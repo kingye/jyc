@@ -58,20 +58,20 @@ impl TopicManager {
         // `topic-path` breadcrumb — the only surviving record of a dir that is
         // *not* `<workspace>/<name>`: a config pin, a dashboard pin, or a
         // `/fork` co-pinned with its parent. Trust it before guessing from the
-        // layout, and cache it so the read happens once per process.
-        if let Some(state) = jyc_types::state_dir::registered_state(topic_name) {
-            if let Ok(recorded) = tokio::fs::read_to_string(state.join("topic-path")).await {
-                let recorded = PathBuf::from(recorded.trim());
-                if tokio::fs::metadata(&recorded).await.is_ok() {
-                    paths.insert(topic_name.to_string(), recorded.clone());
-                    return Some(recorded);
-                }
+        // layout, and cache it so the read happens once per process. (Same
+        // shape as `topic_pattern`'s cold-start fallback below.)
+        else if let Some(state) = jyc_types::state_dir::registered_state(topic_name) {
+            if let Some(recorded) = read_breadcrumb(&state).await {
+                paths.insert(topic_name.to_string(), recorded.clone());
+                return Some(recorded);
             }
         }
         // Fallback: try the default workspace path
-        let default_path = self.workspace_dir.join(topic_name);
-        if tokio::fs::metadata(&default_path).await.is_ok() {
-            return Some(default_path);
+        else {
+            let default_path = self.workspace_dir.join(topic_name);
+            if tokio::fs::metadata(&default_path).await.is_ok() {
+                return Some(default_path);
+            }
         }
         None
     }

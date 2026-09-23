@@ -844,7 +844,13 @@ fn render_activity_entry(text: &str, tool_detail_expanded: bool) -> Vec<String> 
         let mut lines: Vec<String> = Vec::new();
         for (i, line) in text.split('\n').enumerate() {
             if i == 0 {
-                lines.push(reformat_tool_line(line));
+                // Expanded renders this same line with the summary cap lifted,
+                // so the field listing below only adds the secondary arguments.
+                lines.push(if tool_detail_expanded {
+                    reformat_tool_line_expanded(line)
+                } else {
+                    reformat_tool_line(line)
+                });
                 if tool_detail_expanded {
                     lines.extend(format_tool_input_full(line));
                 }
@@ -964,6 +970,23 @@ fn style_diff_line(unpadded: &str, default: Style) -> Style {
 }
 
 fn reformat_tool_line(text: &str) -> String {
+    tool_line_value(text, false)
+}
+
+/// Like [`reformat_tool_line`], for the expanded tool detail (`ctrl+p T`): the
+/// same line without the collapsed row's cap, so a long `bash` command is
+/// readable in place instead of repeating its truncated prefix in a field
+/// listing underneath.
+fn reformat_tool_line_expanded(text: &str) -> String {
+    tool_line_value(text, true)
+}
+
+/// Longest value the collapsed tool row shows, in terminal columns (CJK counts
+/// two); [`truncate_to_width`] appends the `…`. The expanded detail is uncapped
+/// and #811 wraps it over rows.
+const TOOL_SUMMARY_MAX_WIDTH: usize = 160;
+
+fn tool_line_value(text: &str, expanded: bool) -> String {
     let Some(rest) = text.strip_prefix("Tool: ") else {
         return text.to_string();
     };
@@ -973,10 +996,16 @@ fn reformat_tool_line(text: &str) -> String {
     // `prefix` is either the bare tool name ("bash") or the completion
     // variant ("bash (done, 3s)") — the extractor needs the name only.
     let name = prefix.split(" (").next().unwrap_or(prefix);
-    match jyc_types::inspect::tool_activity_summary(name, Some(input)) {
-        Some(summary) => format!("Tool: {prefix} — {summary}"),
-        None => text.to_string(),
-    }
+    let Some(value) = jyc_types::inspect::tool_activity(name, Some(input)) else {
+        return text.to_string();
+    };
+    // Capping is this row's decision, not the extractor's (#812).
+    let value = if expanded {
+        value
+    } else {
+        truncate_to_width(&value, TOOL_SUMMARY_MAX_WIDTH)
+    };
+    format!("Tool: {prefix} — {value}")
 }
 
 /// Render the raw JSON input of a `Tool: <name> — <json>` activity line as
@@ -986,14 +1015,14 @@ fn reformat_tool_line(text: &str) -> String {
 /// line in compact form. Capped at 20 lines with a trailing
 /// `… (N more lines)` marker — same convention as the edit-diff renderer.
 /// Returns empty for non-tool lines or unparseable input.
-/// Per-tool list of field names whose values already appear in the
-/// one-line summary produced by `jyc_types::inspect::tool_activity_summary`
-/// — skipping them in `format_tool_input_full` prevents a redundant line
-/// appearing below a summary that already inlines the value.
+/// Per-tool list of field names whose values already appear in the tool row
+/// above (rendered by [`tool_line_value`]) — skipping them in
+/// `format_tool_input_full` prevents a redundant line appearing below a row
+/// that already inlines the value.
 ///
-/// When `tool_activity_summary` reads either of two alternate keys for a
-/// tool (e.g. `read_image` accepts `file_path` *or* `path`), list both —
-/// the skip is a set, not a single key.
+/// When the extractor reads either of two alternate keys for a tool (e.g.
+/// `read_image` accepts `file_path` *or* `path`), list both — the skip is a
+/// set, not a single key.
 fn primary_field_keys(tool_name: &str) -> &'static [&'static str] {
     match tool_name {
         "bash" => &["command"],
@@ -1024,6 +1053,9 @@ fn format_tool_input_full(text: &str) -> Vec<String> {
     };
     let mut out: Vec<String> = Vec::new();
     for (key, val) in obj {
+        // The summary line above inlines the primary field, so listing it again
+        // here would only repeat it; expanding lifts that line's cap instead
+        // (see `reformat_tool_line_expanded`).
         if skip.contains(&key.as_str()) {
             continue;
         }
@@ -1126,6 +1158,47 @@ mod tests {
     }
 
     #[test]
+    fn expanded_tool_line_lifts_the_summary_cap_without_repeating_it() {
+        // The reported shape — a chained grep past the cap. Expanding has to
+        // make the command readable *in the line itself*; what it must not do
+        // is show the truncated prefix and then repeat it in the listing.
+        let cmd = r#"grep -rn "push_tail_rows" crates/jyc-cli/src/ --include=*.rs --exclude-dir=tests --exclude-dir=target --exclude-dir=.git --exclude=*.md --exclude=*.json --exclude=*.lock -A 2 | head -5"#;
+        assert!(
+            cmd.chars().count() > TOOL_SUMMARY_MAX_WIDTH,
+            "fixture must exceed the row cap"
+        );
+        let line = format!(
+            "Tool: bash (done, 0s) — {}",
+            serde_json::json!({ "command": cmd })
+        );
+
+        let collapsed = reformat_tool_line(&line);
+        assert!(
+            collapsed.ends_with('…'),
+            "collapsed keeps the cap: {collapsed}"
+        );
+
+        let expanded = reformat_tool_line_expanded(&line);
+        assert!(
+            expanded.contains(cmd),
+            "expanded shows the whole command: {expanded}"
+        );
+        assert!(!expanded.contains('…'), "nothing cut off");
+        let listing = format_tool_input_full(&line);
+        assert!(
+            listing.is_empty(),
+            "the listing must not repeat it: {listing:?}"
+        );
+
+        // A value that fits is identical either way.
+        let short = r#"Tool: bash (done, 3s) — {"command": "ls -la"}"#;
+        assert_eq!(
+            reformat_tool_line(short),
+            reformat_tool_line_expanded(short)
+        );
+    }
+
+    #[test]
     fn format_tool_input_full_keeps_secondary_fields_for_read() {
         // `read`'s primary field is `file_path` — only `offset` + `limit`
         // should survive the skip.
@@ -1145,7 +1218,7 @@ mod tests {
     #[test]
     fn format_tool_input_full_skips_primary_field_for_read_image() {
         // `read_image` names its argument `path`, not `file_path` (see
-        // `inspect.rs` `tool_activity_summary_extracts_basename_for_file_tools`).
+        // `inspect.rs` `tool_activity_extracts_basename_for_file_tools`).
         // Either key must be skipped when listed in `primary_field_keys`.
         let lines_path = format_tool_input_full(r#"Tool: read_image — {"path": "/tmp/x.png"}"#);
         assert!(lines_path.is_empty(), "got {lines_path:?}");

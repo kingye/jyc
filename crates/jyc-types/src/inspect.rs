@@ -493,18 +493,19 @@ pub struct ModelInfo {
 
 // ── Protocol constants ──
 
-/// Extract a short human-readable summary of a tool call from
-/// the `ToolStarted` event's JSON input: `service/tools.rs` for file tools,
-/// the command for `bash`, the pattern for `grep`/`glob`, the URL for
-/// `webfetch`. Shared by every surface that displays a tool call (Feishu
-/// status card, TUI chat progress tail).
+/// Extract the tool's primary input value from the `ToolStarted` event's JSON
+/// input: `service/tools.rs` for file tools, the command for `bash`, the
+/// pattern for `grep`/`glob`, the URL for `webfetch`. Shared by every surface
+/// that displays a tool call (feishu progress card, TUI chat progress tail).
 ///
-/// File paths are reduced to their basename; newlines/excess whitespace are
-/// collapsed so a multi-line command stays on one display line; the result
-/// is truncated to 160 chars with an ellipsis. Tools without a meaningful
-/// argument (or with sensitive args like the reply text) return `None` —
-/// callers decide whether to fall back to the raw input or show nothing.
-pub fn tool_activity_summary(tool_name: &str, input: Option<&str>) -> Option<String> {
+/// File paths are reduced to their basename; newlines and excess whitespace are
+/// collapsed so a multi-line command stays on one display line. The value comes
+/// back **uncapped** — how much of it fits a row is each display layer's own
+/// decision (`chat/render.rs` caps its collapsed tail, `feishu/progress.rs`
+/// caps its card). Tools without a meaningful argument (or with sensitive args
+/// like the reply text) return `None`; callers decide whether to fall back to
+/// the raw input or show nothing.
+pub fn tool_activity(tool_name: &str, input: Option<&str>) -> Option<String> {
     let get = |key: &str| -> Option<String> {
         serde_json::from_str::<serde_json::Value>(input?)
             .ok()?
@@ -524,13 +525,9 @@ pub fn tool_activity_summary(tool_name: &str, input: Option<&str>) -> Option<Str
         "webfetch" => get("url")?,
         _ => return None,
     };
-    let flat = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    const MAX: usize = 160;
-    if flat.chars().count() > MAX {
-        Some(flat.chars().take(MAX - 1).collect::<String>() + "…")
-    } else {
-        Some(flat)
-    }
+    // Collapse internal whitespace runs so the value stays displayable on one
+    // logical line; the caller decides whether to cap it.
+    Some(raw.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// Default TCP port for the inspect server.
@@ -786,62 +783,64 @@ mod tests {
     }
 
     #[test]
-    fn tool_activity_summary_extracts_basename_for_file_tools() {
+    fn tool_activity_extracts_basename_for_file_tools() {
         let input =
             r#"{"file_path": "/home/jiny/projects/jyc/crates/jyc-agent/src/service/tools.rs"}"#;
         assert_eq!(
-            tool_activity_summary("edit", Some(input)).as_deref(),
+            tool_activity("edit", Some(input)).as_deref(),
             Some("tools.rs")
         );
         assert_eq!(
-            tool_activity_summary("read", Some(input)).as_deref(),
+            tool_activity("read", Some(input)).as_deref(),
             Some("tools.rs")
         );
         assert_eq!(
-            tool_activity_summary("write", Some(input)).as_deref(),
+            tool_activity("write", Some(input)).as_deref(),
             Some("tools.rs")
         );
         // read_image names its argument "path", not "file_path".
         assert_eq!(
-            tool_activity_summary("read_image", Some(r#"{"path": "/tmp/x/photo.png"}"#)).as_deref(),
+            tool_activity("read_image", Some(r#"{"path": "/tmp/x/photo.png"}"#)).as_deref(),
             Some("photo.png")
         );
     }
 
     #[test]
-    fn tool_activity_summary_extracts_command_pattern_url() {
+    fn tool_activity_extracts_command_pattern_url() {
         assert_eq!(
-            tool_activity_summary("bash", Some(r#"{"command": "ls -la"}"#)).as_deref(),
+            tool_activity("bash", Some(r#"{"command": "ls -la"}"#)).as_deref(),
             Some("ls -la")
         );
         assert_eq!(
-            tool_activity_summary("grep", Some(r#"{"pattern": "fn main"}"#)).as_deref(),
+            tool_activity("grep", Some(r#"{"pattern": "fn main"}"#)).as_deref(),
             Some("fn main")
         );
         assert_eq!(
-            tool_activity_summary("webfetch", Some(r#"{"url": "https://example.com"}"#)).as_deref(),
+            tool_activity("webfetch", Some(r#"{"url": "https://example.com"}"#)).as_deref(),
             Some("https://example.com")
         );
-        // Unknown tools and tools with sensitive args produce no summary.
-        assert_eq!(tool_activity_summary("jyc_reply_message", Some("{}")), None);
-        assert_eq!(tool_activity_summary("bash", None), None);
-        assert_eq!(tool_activity_summary("bash", Some("not json")), None);
+        // Unknown tools and tools with sensitive args produce nothing.
+        assert_eq!(tool_activity("jyc_reply_message", Some("{}")), None);
+        assert_eq!(tool_activity("bash", None), None);
+        assert_eq!(tool_activity("bash", Some("not json")), None);
     }
 
     #[test]
-    fn tool_activity_summary_truncates_and_flattens() {
-        let long = "a".repeat(200);
-        let input = format!(r#"{{"command": "{long}"}}"#);
-        let got = tool_activity_summary("bash", Some(&input)).unwrap();
-        assert_eq!(got.chars().count(), 160);
-        assert!(got.ends_with('…'));
-
+    fn tool_activity_flattens_whitespace_and_stays_uncapped() {
         // Newlines collapse to spaces so a multi-line command stays on one
         // display line.
         let multi = r#"{"command": "ls\n   -la"}"#;
         assert_eq!(
-            tool_activity_summary("bash", Some(multi)).as_deref(),
+            tool_activity("bash", Some(multi)).as_deref(),
             Some("ls -la")
+        );
+        // Length is left to whichever surface displays it (#812): nothing here
+        // is cut.
+        let long = "a".repeat(200);
+        let input = format!(r#"{{"command": "{long}"}}"#);
+        assert_eq!(
+            tool_activity("bash", Some(&input)).unwrap().chars().count(),
+            200
         );
     }
 }

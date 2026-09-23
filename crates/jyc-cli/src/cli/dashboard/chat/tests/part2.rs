@@ -1524,7 +1524,13 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
     // terminal width, so a changed-file path takes two rows; with a list deep
     // enough, `End` (which stores `usize::MAX`) resolved to an offset that left
     // the final entries clipped and the bottom of the list unreachable.
-    let filler = "crates/jyc-cli/src/cli/dashboard/chat/popup_history_view.rs";
+    //
+    // The fillers are deliberately wider than this pane's content (59 columns)
+    // so each one costs a second row: the gap between logical lines and drawn
+    // rows is then about N entries, not a rounding difference. That is what
+    // makes the marker below a real regression check — under the old clamp the
+    // entry carrying it is never drawn at all.
+    let filler = "crates/jyc-cli/src/cli/dashboard/chat/tests/part2_scroll_probe.rs";
     let mut files: Vec<jyc_types::ChangedFileEntry> = (0..19)
         .map(|_| jyc_types::ChangedFileEntry {
             path: filler.to_string(),
@@ -1532,10 +1538,10 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
             change: jyc_types::ChangeKind::Modified,
         })
         .collect();
-    // A distinct tail, so the assertion is about this row and not about some
-    // earlier entry's continuation.
+    // Unique to the final entry, and narrow enough to stay on one row, so the
+    // assertion means "the bottom row of the list is on screen".
     files.push(jyc_types::ChangedFileEntry {
-        path: "crates/jyc-cli/src/cli/dashboard/chat/LASTENTRY_with_a_long_name.rs".to_string(),
+        path: "crates/jyc-cli/src/cli/dashboard/chat/LASTENTRY_probe.rs".to_string(),
         uncommitted: false,
         change: jyc_types::ChangeKind::Added,
     });

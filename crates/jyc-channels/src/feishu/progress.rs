@@ -18,9 +18,10 @@ use std::sync::Arc;
 use jyc_core::duration::{DurationStyle, format_duration_secs};
 use jyc_core::topic_event::TopicEvent;
 use jyc_core::topic_manager::{TopicDisplayState, TopicManager};
-// Shared tool-call formatter (field extraction + basename + collapse +
-// truncate) — also used by the TUI chat progress tail at render time.
-use jyc_types::inspect::tool_activity_summary as tool_activity;
+// Tool-call value extraction, shared with the TUI chat progress tail. The
+// extraction is uncapped — fitting it into one row is this card's own business.
+use jyc_types::inspect::tool_activity;
+use jyc_utils::helpers::truncate_str_ellipsis;
 
 use super::client::FeishuClient;
 
@@ -58,6 +59,11 @@ fn push_thinking_block(blocks: &mut Vec<String>, text: String) {
         _ => blocks.push(text),
     }
 }
+
+/// Longest tool activity the "最近：" line shows, in bytes (cut on a UTF-8
+/// boundary). `jyc_types::inspect::tool_activity` returns the whole value; this
+/// card is a single line, so the cap lives here (#812).
+const TOOL_ACTIVITY_MAX_BYTES: usize = 160;
 
 /// Build the finalized status card JSON: the status markdown followed by a
 /// collapsed panel (Feishu `collapsible_panel`, client ≥ V7.9) holding all
@@ -407,9 +413,12 @@ pub fn spawn_progress_watcher(
                             } => {
                                 tool_count += 1;
                                 // Keep the previous activity when the tool has
-                                // no summary (reply/MCP tools) — otherwise the
-                                // "最近：" line flickers away mid-run.
-                                if let Some(a) = tool_activity(&tool_name, input.as_deref()) {
+                                // nothing to show (reply/MCP tools) — otherwise
+                                // the "最近：" line flickers away mid-run. The cap
+                                // is this card's, not the extractor's (#812).
+                                if let Some(a) = tool_activity(&tool_name, input.as_deref())
+                                    .map(|a| truncate_str_ellipsis(&a, TOOL_ACTIVITY_MAX_BYTES))
+                                {
                                     last_activity = Some(format!("{tool_name} — {a}"));
                                 }
                             }

@@ -181,6 +181,13 @@
 
 ### Fixed
 
+- A long `bash` command was unreadable in the TUI: the collapsed row caps a tool's
+  primary field at 160 columns, and the expanded tool detail (`ctrl+p T`) skipped
+  that field because the row "already shows" it — so the rest of the command existed
+  nowhere on screen. The expanded row now renders the whole value, wrapped over rows
+  by #811, with nothing repeated. The cap itself moved out of `jyc_types::inspect`
+  (which now only extracts, uncapped) into each surface that displays a tool row, so
+  the collapsed row and the feishu progress card each set their own limit. (#812)
 - TUI chat progress tail: rows wider than the pane ran straight off the right edge
   and everything past them was unreachable, scrolling included — the transcript
   `Paragraph` deliberately does not wrap (one line is exactly one screen row, which is

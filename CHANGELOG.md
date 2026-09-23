@@ -181,6 +181,16 @@
 
 ### Fixed
 
+- TUI chat progress tail: a `ctrl+p T` tool detail wider than the pane ran straight
+  off the right edge, and everything past it was unreachable — the transcript
+  `Paragraph` deliberately does not wrap (one line is exactly one screen row, which is
+  what the scroll, cursor and selection maths count), so message bodies are pre-wrapped
+  while the tail never was. Activity rows now wrap to the pane width the way the
+  thinking tail already did, carrying the two-column indent and the three-column row
+  prefix onto each wrapped row and keeping the `⏳` marker on the entry's first row
+  only; long diff lines from the edit/write detail wrap with them. The
+  `… (N more lines)` cap on how much input gets expanded is a separate question and
+  stays as it was (#811)
 - TUI selectable lists now scroll to follow the cursor. The `/` command popup,
   the `Select Pattern` list and the `ask_user` question box drew their whole list
   into a fixed-height box, so the `→` walked down into the clipped rows and

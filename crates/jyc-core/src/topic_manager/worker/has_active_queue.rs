@@ -873,6 +873,30 @@ async fn test_topic_path_falls_back_to_default() {
     tm.shutdown().await;
 }
 
+/// The breadcrumb is the only surviving record of a topic dir that is not
+/// `<workspace>/<name>` — a `/fork` co-pinned with its parent, or any ad-hoc
+/// pin — so it must win over the workspace guess once the map is empty.
+#[tokio::test]
+async fn test_topic_path_restores_breadcrumb_after_restart() {
+    let tmp = tempdir().unwrap();
+    let agents = tmp.path().join("agents");
+    let workspace = agents.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let tm = make_test_tm(&workspace);
+
+    let recorded = tmp.path().join("projects/parent");
+    std::fs::create_dir_all(&recorded).unwrap();
+    let state = agents.join("co-pinned").join(".jyc");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(state.join("topic-path"), recorded.to_str().unwrap()).unwrap();
+    jyc_types::state_dir::register("co-pinned", &state);
+
+    assert_eq!(tm.topic_path("co-pinned").await, Some(recorded));
+
+    jyc_types::state_dir::unregister("co-pinned");
+    tm.shutdown().await;
+}
+
 #[tokio::test]
 async fn test_topic_path_returns_none_for_nonexistent() {
     let tmp = tempdir().unwrap();

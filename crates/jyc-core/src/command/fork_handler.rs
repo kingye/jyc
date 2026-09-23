@@ -46,15 +46,17 @@ const SEED_FILES: &[&str] = &[
 /// listed. A fork inherits it: the transcript is what you fork *for*.
 const CHAT_HISTORY_PREFIX: &str = "chat_history_";
 
-/// `/fork` — branch a sibling topic off this one.
+/// `/fork` — branch another topic off this one.
 ///
-/// The new topic is an ordinary topic: its own directory at
-/// `<agents-root>/<agent>/<name>` and its own `.jyc` state dir, exactly where
-/// the router puts runtime topics — which is also the boundary
-/// [`TopicManager::auto_close_topic`] checks before it dares to delete
-/// anything. What makes it a *fork* is where it starts: this topic's context,
-/// transcript, task list and settings, so work can continue down a second path
-/// while both keep running and never write into each other's history.
+/// The new topic is an ordinary topic — listed, addressable, closable — with
+/// one difference: **it works in this topic's directory**. A fork exists to
+/// continue the same work down a second path, so it has to see the same files.
+/// Only its state is separate, in `<agents-root>/<name>/.jyc` — which is what
+/// keeps the two topics out of each other's history, and the shape
+/// [`TopicManager::close_topic`] relies on: given a registered state dir it
+/// deletes the state and leaves the topic dir (usually a user-owned project
+/// checkout) alone. What makes it a *fork* rather than a new topic is where it
+/// starts: this topic's context, transcript, task list and settings.
 ///
 /// Websocket topics only, like `/pin`: on every other channel the topic name
 /// *is* the routing address, so forking one would mean inventing an address.
@@ -76,21 +78,6 @@ impl ForkCommandHandler {
         parent_state: &Path,
         agents_root: &Path,
     ) -> Result<CommandResult> {
-        // Which agent the parent runs as decides where the sibling lands. The
-        // pattern name can nest (`jyc/plan-197`); the agent is its first
-        // segment, so the new topic stays a sibling instead of nesting deeper.
-        let Some(agent) = session_state::read_pattern(&context.topic_name, &context.topic_path)
-            .await
-            .map(|p| p.split('/').next().unwrap_or(p.as_str()).to_string())
-        else {
-            return Ok(fail(
-                "/fork: this topic has no recorded pattern, so there is no agent directory to \
-                 fork into."
-                    .to_string(),
-            ));
-        };
-        let agent_dir = agents_root.join(agent);
-
         let requested = context
             .args
             .iter()
@@ -98,7 +85,7 @@ impl ForkCommandHandler {
             .find(|a| !a.is_empty());
         let name = match requested {
             Some(name) => name.to_string(),
-            None => self.next_free_name(&context.topic_name, &agent_dir).await,
+            None => self.next_free_name(&context.topic_name, agents_root).await,
         };
         if let Some(reason) = invalid_name(&name) {
             return Ok(fail(format!("/fork: {reason}. Usage: /fork [name]")));
@@ -109,39 +96,50 @@ impl ForkCommandHandler {
             )));
         }
 
-        let new_dir = agent_dir.join(&name);
-        if self.topic_manager.topic_path(&name).await.is_some() || new_dir.exists() {
+        // A fork continues this topic's work, so it runs in the *same*
+        // directory; only its state is private. Registering that state under
+        // the fork's own name *before* pinning the path is what makes sharing
+        // safe: `set_topic_path` reuses an existing registration instead of
+        // deriving one from the dir — two forks of one parent would otherwise
+        // land in the same derived dir and share a transcript.
+        //
+        // One level under the agents root, not two: `restore_state_registry`
+        // scans that depth only, and a registration lost at restart would make
+        // `jyc_dir` fall back to the shared dir's own `.jyc` — state inside the
+        // user's project. `close_topic` is then safe by construction: with a
+        // registered state it deletes the state and leaves the workspace
+        // (usually a user-owned project checkout) alone.
+        let state_dir = agents_root.join(&name).join(".jyc");
+        if self.topic_manager.topic_path(&name).await.is_some() || agents_root.join(&name).exists()
+        {
             return Ok(fail(format!(
                 "/fork: topic '{name}' already exists. Give it another name."
             )));
         }
-
-        // Creates the topic dir, its `.jyc` state dir and the `topic-name` /
-        // `topic-path` breadcrumbs, and registers the routing entry — the same
-        // primitive `POST /topics` uses, so the new topic is listed and
-        // addressable right away.
+        crate::topic_path::adopt_state_dir(&name, &context.topic_path, &state_dir)?;
+        // Creates `topic-name`, registers the routing entry and records the
+        // shared dir as this topic's path — the same primitive `POST /topics`
+        // uses, so the new topic is listed and addressable right away.
         self.topic_manager
-            .set_topic_path(&name, new_dir.clone())
+            .set_topic_path(&name, context.topic_path.clone())
             .await?;
-
-        // Resolved *after* that call: `set_topic_path` adopts the state dir,
-        // which is where `jyc_dir` points from now on.
-        let child_state = jyc_dir(&name, &new_dir);
-        let seeded = seed_state(parent_state, &child_state, &context.topic_name).await?;
+        let seeded = seed_state(parent_state, &state_dir, &context.topic_name).await?;
 
         tracing::info!(
             from = %context.topic_name,
             to = %name,
-            dir = %new_dir.display(),
+            workspace = %context.topic_path.display(),
+            state = %state_dir.display(),
             seeded,
             "Topic forked"
         );
         let message = format!(
-            "✅ Forked '{}' → '{}' at {} ({} state file(s) inherited).\n\
-             /fork does not switch by itself — pick '{name}' in the topic list.",
+            "✅ Forked '{}' → '{}' — it works in {} with its own state in {} ({} state file(s) \
+             inherited).\n/fork does not switch by itself — pick '{name}' in the topic list.",
             context.topic_name,
             name,
-            new_dir.display(),
+            context.topic_path.display(),
+            state_dir.display(),
             seeded
         );
         Ok(CommandResult {
@@ -161,11 +159,11 @@ impl ForkCommandHandler {
     /// not one transaction, so two topics forking to the same automatic name at
     /// the same instant would share a directory. Unreachable at typing speed; a
     /// lock would cost more than the case it covers.
-    async fn next_free_name(&self, topic: &str, agent_dir: &Path) -> String {
+    async fn next_free_name(&self, topic: &str, agents_root: &Path) -> String {
         for n in 2..100u32 {
             let candidate = format!("{topic}-{n}");
             if self.topic_manager.topic_path(&candidate).await.is_none()
-                && !agent_dir.join(&candidate).exists()
+                && !agents_root.join(&candidate).exists()
             {
                 return candidate;
             }
@@ -382,15 +380,14 @@ mod tests {
         }
     }
 
-    /// The happy path: a sibling topic, its own state dir, the inheritable
-    /// files and nothing that must stay behind.
+    /// The happy path: the fork works where its parent works, keeps private
+    /// state, and inherits the inheritable files and nothing else.
     #[tokio::test]
-    async fn fork_creates_a_sibling_and_seeds_only_the_inheritable_state() {
+    async fn fork_shares_the_parent_workspace_with_private_state() {
         let (_ptmp, topic_dir) = parent_topic(&[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_root = workspace.path().join("agents");
-        let agent_dir = agents_root.join("jyc");
 
         let handler = ForkCommandHandler::new(tm.clone());
         let ctx = context("src-topic", &topic_dir, "websocket", &["sibling"]);
@@ -400,10 +397,26 @@ mod tests {
             .unwrap();
 
         assert!(result.success, "{}", result.message);
-        let new_dir = tm.topic_path("sibling").await.unwrap();
-        assert_eq!(new_dir, agent_dir.join("sibling"), "a sibling, not a nest");
-
-        let child = jyc_dir("sibling", &new_dir);
+        assert_eq!(
+            tm.topic_path("sibling").await.unwrap(),
+            topic_dir,
+            "the fork works where its parent works — that is the point of a fork"
+        );
+        let child = jyc_dir("sibling", &topic_dir);
+        assert_eq!(
+            child,
+            agents_root.join("sibling").join(".jyc"),
+            "its state is private, one level under the agents root where \
+             `restore_state_registry` scans after a restart"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(child.join("topic-path"))
+                .await
+                .unwrap()
+                .trim(),
+            topic_dir.to_string_lossy().trim(),
+            "the breadcrumb must name the shared workspace, not a fresh empty dir"
+        );
         assert_eq!(
             tokio::fs::read_to_string(child.join("forked-from"))
                 .await
@@ -443,6 +456,12 @@ mod tests {
         );
         // The parent keeps everything — a fork must not consume its source.
         assert!(topic_dir.join(".jyc/agent-context.json").exists());
+
+        // The registry is process-global and tests run in parallel, so the
+        // child's name must not outlive this test. (This topic name and the
+        // breadcrumb assert above are also exactly what the pre-fix placement —
+        // a fresh nested dir — failed on.)
+        jyc_types::state_dir::unregister("sibling");
     }
 
     /// No argument means an automatic name, and it must step past siblings
@@ -453,7 +472,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_root = workspace.path().join("agents");
-        tokio::fs::create_dir_all(agents_root.join("jyc/src-topic-2"))
+        tokio::fs::create_dir_all(agents_root.join("src-topic-2"))
             .await
             .unwrap();
 
@@ -488,7 +507,7 @@ mod tests {
             assert!(!result.success, "'{bad}' must be rejected: {result:?}");
         }
         assert!(
-            !agents_root.join("jyc/escape").exists(),
+            !agents_root.join("escape").exists(),
             "nothing may be created from a rejected name"
         );
     }
@@ -500,7 +519,7 @@ mod tests {
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_root = workspace.path().join("agents");
-        let taken = agents_root.join("jyc/taken");
+        let taken = agents_root.join("taken");
         tokio::fs::create_dir_all(&taken).await.unwrap();
         tm.set_topic_path("taken", taken).await.unwrap();
 
@@ -515,26 +534,18 @@ mod tests {
         assert!(result.message.contains("already exists"));
     }
 
-    /// A topic with no pattern has no agent directory to fork into, and
-    /// `/fork` is gated to websocket topics like `/pin`.
+    /// `/fork` is gated to websocket topics like `/pin`: elsewhere the topic
+    /// name is the routing address.
     #[tokio::test]
-    async fn fork_refuses_without_a_pattern_or_channel() {
+    async fn fork_refuses_a_non_websocket_channel() {
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
-        let agents_root = workspace.path().join("agents");
         let handler = ForkCommandHandler::new(tm.clone());
+        // The channel gate rejects before anything reads the topic, so a bare
+        // temp dir is enough here — no need to build a whole parent.
+        let tmp = tempdir().unwrap();
 
-        let bare = tempdir().unwrap();
-        let ctx = context("no-pattern", bare.path(), "websocket", &["x"]);
-        let result = handler
-            .fork_under(&ctx, &bare.path().join(".jyc"), &agents_root)
-            .await
-            .unwrap();
-        assert!(!result.success);
-        assert!(result.message.contains("pattern"), "{result:?}");
-
-        let (_ptmp, topic_dir) = parent_topic(&[]).await;
-        let ctx = context("src-topic", &topic_dir, "email", &["whatever"]);
+        let ctx = context("src-topic", tmp.path(), "email", &["whatever"]);
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.message.contains("routing address"), "{result:?}");
@@ -542,5 +553,82 @@ mod tests {
             tm.topic_path("whatever").await.is_none(),
             "a refused /fork must not leave a topic behind"
         );
+    }
+
+    /// The reason the child's state is registered by name before the shared
+    /// path is pinned: deriving it from the dir would hand two forks of one
+    /// parent the same state dir, and with it one transcript.
+    #[tokio::test]
+    async fn two_forks_of_one_parent_keep_their_own_state() {
+        let (_ptmp, topic_dir) = parent_topic(&[]).await;
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_root = workspace.path().join("agents");
+        let handler = ForkCommandHandler::new(tm.clone());
+
+        let mut states = vec![];
+        for n in ["fork-a", "fork-b"] {
+            let ctx = context("src-topic", &topic_dir, "websocket", &[n]);
+            let result = handler
+                .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_root)
+                .await
+                .unwrap();
+            assert!(result.success, "{n}: {}", result.message);
+            let state = jyc_dir(n, &topic_dir);
+            assert_eq!(
+                tokio::fs::read_to_string(state.join("forked-from"))
+                    .await
+                    .unwrap()
+                    .trim(),
+                "src-topic",
+                "{n} must record where it came from"
+            );
+            states.push(state);
+        }
+        assert_ne!(
+            states[0], states[1],
+            "two forks must never share a state dir"
+        );
+        assert_eq!(tm.topic_path("fork-a").await.unwrap(), topic_dir);
+        assert_eq!(tm.topic_path("fork-b").await.unwrap(), topic_dir);
+
+        // The state registry is process-global and tests run in parallel:
+        // these names would outlive this test otherwise.
+        for n in ["fork-a", "fork-b"] {
+            jyc_types::state_dir::unregister(n);
+        }
+    }
+
+    /// What `/fork`'s sharing now relies on: closing the child deletes its
+    /// state and leaves the workspace it shares with the parent — plus the
+    /// parent's own state — untouched.
+    #[tokio::test]
+    async fn closing_a_fork_leaves_the_shared_workspace_alone() {
+        let (_ptmp, topic_dir) = parent_topic(&[]).await;
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_root = workspace.path().join("agents");
+        let handler = ForkCommandHandler::new(tm.clone());
+        let ctx = context("src-topic", &topic_dir, "websocket", &["fork-close"]);
+        handler
+            .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_root)
+            .await
+            .unwrap();
+        let state = agents_root.join("fork-close").join(".jyc");
+        assert!(state.is_dir());
+
+        tm.close_topic("fork-close").await.unwrap();
+
+        assert!(!state.exists(), "the fork's own state goes with it");
+        assert!(
+            topic_dir.join(".jyc/agent-context.json").exists(),
+            "the parent's state must survive"
+        );
+        assert!(
+            topic_dir.is_dir(),
+            "the workspace is user property; a fork must never delete it"
+        );
+        // The registry is process-global; keep this test's name to itself.
+        jyc_types::state_dir::unregister("fork-close");
     }
 }

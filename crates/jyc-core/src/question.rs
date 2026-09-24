@@ -2,12 +2,14 @@
 //!
 //! [`QuestionHub`] tracks questions currently awaiting a user answer: the
 //! `ask_user` tool registers a oneshot receiver and blocks on it, while
-//! channel inbound adapters (websocket today; feishu/wecom cards later)
-//! submit answers via [`QuestionHub::respond`]. Entries are keyed by question
-//! id (UUID), so a single hub serves all channels and topics.
+//! channel inbound adapters (websocket, feishu, and any text channel via
+//! [`QuestionHub::try_answer`]) submit answers via
+//! [`QuestionHub::respond`]. Entries are keyed by question id (UUID), so a
+//! single hub serves all channels and topics.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use jyc_types::channel::QuestionAnswer;
 
@@ -15,6 +17,13 @@ use jyc_types::channel::QuestionAnswer;
 struct PendingEntry {
     /// Topic that asked the question (for text-fallback routing).
     topic: String,
+    /// Registration stamp, to answer questions in the order they were asked.
+    ///
+    /// A multi-question `ask_user` call registers all its questions up front,
+    /// and a text-fallback reply always answers the one the user is looking
+    /// at first - the oldest. HashMap iteration order would make that a
+    /// coin flip, so entries carry their sequence number.
+    seq: u64,
     /// Channel back to the blocked `ask_user` tool call.
     sender: tokio::sync::oneshot::Sender<QuestionAnswer>,
 }
@@ -23,6 +32,7 @@ struct PendingEntry {
 #[derive(Default)]
 pub struct QuestionHub {
     pending: Mutex<HashMap<String, PendingEntry>>,
+    next_seq: AtomicU64,
 }
 
 impl QuestionHub {
@@ -43,10 +53,12 @@ impl QuestionHub {
         topic: &str,
         sender: tokio::sync::oneshot::Sender<QuestionAnswer>,
     ) -> PendingGuard<'_> {
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         self.pending.lock().unwrap().insert(
             id.to_string(),
             PendingEntry {
                 topic: topic.to_string(),
+                seq,
                 sender,
             },
         );
@@ -73,11 +85,11 @@ impl QuestionHub {
     /// topic. Returns `false` when there is no pending question, the text
     /// is a command, or the asker is already gone (answered concurrently /
     /// timed out) — the message then routes normally instead of being
-    /// dropped.
-    ///
+    /// dropped.    ///
     /// Used by text-fallback channels (email, github, feishu pipe,
     /// websocket) so a user's plain reply answers the outstanding question
-    /// instead of bouncing off the busy topic.
+    /// instead of bouncing off the busy topic. With several questions pending
+    /// for the topic, the oldest one is answered first.
     pub fn try_answer(&self, topic: &str, text: &str) -> bool {
         let text = text.trim();
         if text.is_empty() || text.starts_with('/') {
@@ -89,16 +101,21 @@ impl QuestionHub {
         self.respond(&id, QuestionAnswer::Choice(vec![text.to_string()]))
     }
 
-    /// Id of a pending question for `topic`, if any.
+    /// Id of the question a text reply should answer, if any.
     ///
-    /// Used by text-fallback channels (email, github) to route a plain user
-    /// reply to the question while one is outstanding for that topic.
+    /// Used by text-fallback channels (email, github, feishu pipe) to route a
+    /// plain user reply to the question while one is outstanding for that
+    /// topic. With several pending questions — one `ask_user` call asking
+    /// more than one — this returns the **oldest**, matching the order the
+    /// questions reached the user; answering them one reply at a time then
+    /// pairs each reply with the question it was written for.
     pub fn pending_for(&self, topic: &str) -> Option<String> {
         self.pending
             .lock()
             .unwrap()
             .iter()
-            .find(|(_, e)| e.topic == topic)
+            .filter(|(_, e)| e.topic == topic)
+            .min_by_key(|(_, e)| e.seq)
             .map(|(id, _)| id.clone())
     }
 }
@@ -230,5 +247,37 @@ mod tests {
 
         assert!(!hub.try_answer("topic-a", ""));
         assert!(!hub.try_answer("topic-a", "   "));
+    }
+
+    /// One `ask_user` call asking several questions leaves several entries
+    /// pending for the same topic. HashMap iteration order is random, so
+    /// without the registration stamp a text reply could be paired with any
+    /// of them — the user's answers would land on the wrong questions.
+    #[test]
+    fn try_answer_consumes_pending_questions_in_registration_order() {
+        let hub = QuestionHub::new();
+        let (tx1, rx1) = tokio::sync::oneshot::channel();
+        let (tx2, mut rx2) = tokio::sync::oneshot::channel();
+        let _g1 = hub.register("q1", "topic-a", tx1);
+        let _g2 = hub.register("q2", "topic-a", tx2);
+
+        assert!(hub.try_answer("topic-a", "Added only"));
+        assert_eq!(
+            rx1.blocking_recv(),
+            Ok(QuestionAnswer::Choice(vec!["Added only".into()]))
+        );
+        assert!(
+            matches!(
+                rx2.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
+            "the second question is still waiting"
+        );
+
+        assert!(hub.try_answer("topic-a", "feat/ask-user"));
+        assert_eq!(
+            rx2.blocking_recv(),
+            Ok(QuestionAnswer::Choice(vec!["feat/ask-user".into()]))
+        );
     }
 }

@@ -98,9 +98,13 @@ pub fn command_args(command: &str, ctx: &ArgCtx) -> Vec<CommandArg> {
             "update",
             "Re-apply the template, overwriting local edits",
         )],
-        // The one argument these three guards accept, in any position. Without
-        // it the popup would close on `/close ` even though `--force` exists.
-        "/close" | "/new" | "/reset" => vec![val("--force", "Skip the confirmation guard")],
+        // The only arguments these guards accept, in any position. Without
+        // them the popup would close on `/close ` even though they exist.
+        "/close" => vec![
+            val("--force", "Skip the confirmation guard"),
+            val("--purge", "Delete the topic dir too, not just its state"),
+        ],
+        "/new" | "/reset" => vec![val("--force", "Skip the confirmation guard")],
         "/bill" => {
             let mut args = recent_months();
             args.push(val("all", "Every day with recorded usage"));
@@ -235,14 +239,18 @@ mod tests {
     fn force_flag_is_offered_where_the_handlers_accept_it() {
         let cfg = AppConfig::default();
         let empty = ctx(&cfg, &[], &[]);
-        for cmd in ["/close", "/new", "/reset"] {
+        for (cmd, expected) in [
+            ("/close", vec!["--force", "--purge"]),
+            ("/new", vec!["--force"]),
+            ("/reset", vec!["--force"]),
+        ] {
             assert_eq!(
                 command_args(cmd, &empty)
                     .iter()
                     .map(|a| a.value.as_str())
                     .collect::<Vec<_>>(),
-                ["--force"],
-                "{cmd}'s only argument"
+                expected,
+                "{cmd}'s arguments"
             );
         }
     }

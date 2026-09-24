@@ -21,6 +21,7 @@ mod template;
 mod topics;
 mod worker;
 
+pub use lifecycle::PurgeOutcome;
 pub use topics::TopicDisplayState;
 
 /// Per-topic queue stats.

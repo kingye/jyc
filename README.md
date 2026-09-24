@@ -195,7 +195,8 @@ body line.
 | `/reset` | Clear AI session (requires `--force`) |
 | `/exchange` | Show shareable URLs for this topic's published files |
 | `/exchange <file>` | Show the URL of one published file |
-| `/close` | Close topic and delete directory (requires `--force`) |
+| `/close` | Close topic: state deleted; the directory goes too, unless the topic is pinned (`--force`) |
+| `/close --force --purge` | Also delete the topic directory — refused when the dir is shared with another topic (pinned or not), is another topic's parent, is one of jyc's own (`~/.local/share/jyc/agents`), or holds another topic's state |
 | `/template` | Apply template files to topic (skip existing) |
 | `/template update` | Re-apply template, overwrite existing files |
 | `/context` | Show the context management strategy (`full` / `sliding_window`) |
@@ -207,6 +208,7 @@ body line.
 | `/skill off <name>` | Force-disable a skill for this topic, even if whitelisted by config |
 | `/skill reset` | Clear all runtime skill toggles for this topic |
 | `/fork [name]` | Branch a sibling topic off this one, inheriting its context, transcript, task list, backlog and settings. Websocket-only; with no name the new topic is `<this>-2`. It does not switch focus — pick it in the topic list |
+| `/clone [name] [path]` | Copy this topic's directory into a topic of its own (the two are independent afterwards), seeding the same state `/fork` inherits. Websocket-only; a name alone lands beside this topic's dir, a path alone names itself after its last component, neither means `<this>-2`. Refuses a non-empty target, so it never merges into existing data. It does not switch focus |
 | `/skill:<name>` | Use that skill for **this one message** — no config entry, no state change. One such command exists per skill the topic can use, created at runtime and listed in `/?` and the `/` popup |
 | `/mcp` | Show this topic's runtime MCP-server toggles |
 | `/mcp on <name>` | Force-enable an MCP server defined in config (un-disables `disabled_mcps`), even if excluded by config; takes effect from the next message, persists until `/mcp reset` |

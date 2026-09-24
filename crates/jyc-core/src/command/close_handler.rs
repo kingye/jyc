@@ -3,9 +3,9 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
-use crate::topic_manager::TopicManager;
+use crate::topic_manager::{PurgeOutcome, TopicManager};
 
-/// /close command — close and delete topic directory.
+/// /close command — close a topic, and with `--purge` delete its directory too.
 pub struct CloseCommandHandler {
     topic_manager: Arc<TopicManager>,
 }
@@ -21,6 +21,14 @@ impl CloseCommandHandler {
     /// warning instead of deleting (mirrors `/new`).
     fn is_forced(args: &[String]) -> bool {
         args.iter().any(|a| a == "--force")
+    }
+
+    /// Returns `true` if the args ask for the topic directory to go as well.
+    ///
+    /// Only meaningful together with `--force`: `/close` alone never deletes
+    /// anything, whatever else it is given.
+    fn is_purged(args: &[String]) -> bool {
+        args.iter().any(|a| a == "--purge")
     }
 }
 
@@ -61,6 +69,28 @@ impl CommandHandler for CloseCommandHandler {
             });
         }
 
+        // The directory goes first, and only when it is this topic's to delete:
+        // a refusal must leave the topic open rather than half-closed.
+        if Self::is_purged(&context.args) {
+            match self.topic_manager.purge_topic_dir(topic_name).await? {
+                PurgeOutcome::Refused(reason) => {
+                    return Ok(CommandResult {
+                        success: false,
+                        message: format!(
+                            "/close --purge: nothing was deleted. {reason}\n\
+                             The topic is still open; /close --force closes it and keeps the dir."
+                        ),
+                        error: None,
+                        append_body: None,
+                    });
+                }
+                PurgeOutcome::Deleted => {
+                    tracing::info!(topic = %topic_name, dir = %context.topic_path.display(), "Purged topic dir");
+                }
+                PurgeOutcome::Nothing => {}
+            }
+        }
+
         // Notification-only; fires before deletion so a hook can archive
         // the topic directory while it still exists.
         context.session_end_hook("close").await;
@@ -68,9 +98,24 @@ impl CommandHandler for CloseCommandHandler {
         match self.topic_manager.close_topic(topic_name).await {
             Ok(()) => {
                 tracing::info!(topic = %topic_name, "Topic closed successfully via /close command");
+                // `close_topic` deletes the dir itself for a topic that keeps its
+                // state inside it, and keeps it for a pinned/cloned one. Ask the
+                // disk rather than restating that branch here.
+                let kept = tokio::fs::try_exists(&context.topic_path)
+                    .await
+                    .unwrap_or(false);
+                let message = if kept {
+                    format!(
+                        "Topic '{topic_name}' closed; its state is deleted and {} is kept. \
+                         Add --purge to delete the directory as well:\n/close --force --purge",
+                        context.topic_path.display()
+                    )
+                } else {
+                    format!("Topic '{topic_name}' closed; its directory and data are deleted.")
+                };
                 Ok(CommandResult {
                     success: true,
-                    message: format!("Topic '{}' closed and directory deleted.", topic_name),
+                    message,
                     error: None,
                     append_body: None,
                 })
@@ -115,5 +160,15 @@ mod tests {
     #[test]
     fn is_forced_accepts_flag_mixed_with_unknown_args() {
         assert!(CloseCommandHandler::is_forced(&args(&["--foo", "--force"])));
+    }
+
+    #[test]
+    fn is_purged_only_answers_for_its_own_flag() {
+        assert!(CloseCommandHandler::is_purged(&args(&[
+            "--force", "--purge"
+        ])));
+        assert!(CloseCommandHandler::is_purged(&args(&["--purge"])));
+        assert!(!CloseCommandHandler::is_purged(&args(&["--force"])));
+        assert!(!CloseCommandHandler::is_purged(&args(&[])));
     }
 }

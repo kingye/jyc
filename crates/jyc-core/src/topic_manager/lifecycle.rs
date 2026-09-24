@@ -3,7 +3,7 @@
 //! Extracted from the monolithic `topic_manager.rs`.
 
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Per-topic queue stats.
 use super::TopicManager;
@@ -94,38 +94,123 @@ impl TopicManager {
         }
 
         if topic_path.exists() {
-            // Check for symlinks (e.g., repo/) and remove them before remove_dir_all
-            // to prevent remove_dir_all from following symlinks into shared directories
-            let repo_symlink = topic_path.join("repo");
-            match tokio::fs::symlink_metadata(&repo_symlink).await {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    if let Err(e) = tokio::fs::remove_file(&repo_symlink).await {
-                        tracing::warn!(
-                            error = %e,
-                            path = %repo_symlink.display(),
-                            "Failed to remove repo symlink before topic deletion"
-                        );
-                    } else {
-                        tracing::debug!(
-                            topic = %topic_name,
-                            "Removed repo symlink before topic deletion"
-                        );
-                    }
-                }
-                _ => {}
-            }
-
-            tokio::fs::remove_dir_all(&topic_path)
-                .await
-                .context(format!(
-                    "Failed to remove topic directory: {:?}",
-                    topic_path
-                ))?;
+            remove_topic_dir(topic_name, &topic_path).await?;
             tracing::info!(topic = %topic_name, "Topic directory deleted");
         }
 
         self.cleanup_topic_state(topic_name).await;
         Ok(())
+    }
+
+    /// Delete the directory a pinned/cloned topic works in — the extra step
+    /// behind `/close --force --purge`.
+    ///
+    /// [`Self::close_topic`] deliberately keeps that directory: for `/fork` and
+    /// `/clone` siblings it is *someone else's* — a shared checkout, or a copy
+    /// the user made on purpose. Purge is the explicit "and this one too".
+    ///
+    /// Refuses (deletes nothing) when the dir is not this topic's to remove:
+    ///
+    /// - another topic works in it — pinned or not: a fork shares its
+    ///   parent's dir, and the parent may never have been pinned, so the
+    ///   workspace itself is consulted, not just the runtime pin map,
+    /// - another topic's dir lives inside it, so deleting it takes them along,
+    /// - it *is* one of jyc's own roots, contains one, or sits directly under
+    ///   one holding another topic's state (`agents/<name>/.jyc`).
+    pub async fn purge_topic_dir(&self, topic_name: &str) -> Result<PurgeOutcome> {
+        let agents_root = self.agents_workspace_root();
+        let state_root = crate::topic_path::state_root(&self.workdir);
+        self.purge_topic_dir_under(topic_name, &agents_root, &state_root)
+            .await
+    }
+
+    /// Every other topic's working dir: the runtime pins plus whatever the
+    /// workspace itself holds. Pins alone cannot answer "who else works
+    /// here?" — an unpinned topic lives at `<workspace>/<name>` and a fork
+    /// shares exactly that dir.
+    async fn other_topic_dirs(&self, self_name: &str) -> Vec<(String, PathBuf)> {
+        let mut dirs: Vec<(String, PathBuf)> = self
+            .custom_topic_paths()
+            .await
+            .into_iter()
+            .filter(|(name, _)| name != self_name)
+            .collect();
+        if let Ok(entries) = std::fs::read_dir(self.storage.workspace()) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name != self_name && entry.path().is_dir() {
+                    dirs.push((name, entry.path()));
+                }
+            }
+        }
+        dirs
+    }
+
+    /// Testable core of [`Self::purge_topic_dir`] with jyc's own roots passed
+    /// in, so no test can reach the real data home (mirrors
+    /// [`Self::auto_close_topic_under`]).
+    async fn purge_topic_dir_under(
+        &self,
+        topic_name: &str,
+        agents_root: &Path,
+        state_root: &Path,
+    ) -> Result<PurgeOutcome> {
+        // Not the kept-dir case: an unpinned topic's dir is
+        // `<workspace>/<name>`, which `close_topic` deletes on its own, and a
+        // dir that is already gone has nothing to purge. `topic_path` answers
+        // the workspace fallback for such topics, so the distinction has to be
+        // made here, not by whether the lookup returned at all.
+        let Some(topic_path) = self.topic_path(topic_name).await else {
+            return Ok(PurgeOutcome::Nothing);
+        };
+        if topic_path == self.storage.workspace().join(topic_name) || !topic_path.exists() {
+            return Ok(PurgeOutcome::Nothing);
+        }
+        let path = crate::topic_path::resolved(&topic_path);
+
+        let mut shared = Vec::new();
+        let mut nested = Vec::new();
+        for (name, pin) in self.other_topic_dirs(topic_name).await {
+            if crate::topic_path::resolved(&pin) == path {
+                shared.push(name);
+            } else if path_is_under(&pin, &path).await {
+                nested.push(name);
+            }
+        }
+        if !shared.is_empty() {
+            return Ok(PurgeOutcome::Refused(format!(
+                "{} is also the topic dir of {} — deleting it would take that topic with it.",
+                path.display(),
+                shared.join(", ")
+            )));
+        }
+        if !nested.is_empty() {
+            return Ok(PurgeOutcome::Refused(format!(
+                "{} contains the topic dir of {} — deleting it would take that topic with it.",
+                path.display(),
+                nested.join(", ")
+            )));
+        }
+        for root in [agents_root, state_root] {
+            let root = crate::topic_path::resolved(root);
+            if path.parent().is_some_and(|p| p == root.as_path()) {
+                return Ok(PurgeOutcome::Refused(format!(
+                    "{} is a state namespace — it holds another topic's `.jyc`, not a workspace.",
+                    path.display()
+                )));
+            }
+            if root.starts_with(&path) {
+                return Ok(PurgeOutcome::Refused(format!(
+                    "{} is jyc's own directory ({} lives in it) — it is not a topic dir.",
+                    path.display(),
+                    root.display()
+                )));
+            }
+        }
+
+        remove_topic_dir(topic_name, &path).await?;
+        tracing::info!(topic = %topic_name, dir = %path.display(), "Topic directory purged");
+        Ok(PurgeOutcome::Deleted)
     }
 
     /// The root that holds every agent's topic subtree (`<data_home>/agents/`).
@@ -243,13 +328,52 @@ impl TopicManager {
 /// out of the agents tree is still refused. Non-existent paths fall back
 /// to a literal comparison (nothing to delete in that case anyway).
 async fn path_is_under(path: &Path, root: &Path) -> bool {
-    let path = tokio::fs::canonicalize(path)
-        .await
-        .unwrap_or_else(|_| path.to_path_buf());
-    let root = tokio::fs::canonicalize(root)
-        .await
-        .unwrap_or_else(|_| root.to_path_buf());
+    let path = crate::topic_path::resolved(path);
+    let root = crate::topic_path::resolved(root);
     path != root && path.starts_with(&root)
+}
+
+/// What [`TopicManager::purge_topic_dir`] did, or refused to do.
+#[derive(Debug)]
+pub enum PurgeOutcome {
+    /// Nothing on disk to delete: the topic was never pinned (its dir is the
+    /// default `<workspace>/<name>`, which `close_topic` deletes on its own),
+    /// or the dir is already gone. `close_topic` still has the state to remove.
+    Nothing,
+    /// The topic dir was deleted.
+    Deleted,
+    /// Nothing was deleted; the message says why, for the user.
+    Refused(String),
+}
+
+/// Delete a topic directory: the `repo` symlink first, then the tree.
+///
+/// `remove_dir_all` follows symlinks, so a dir holding a link into a shared
+/// checkout would delete through it. The link goes first; what remains is a
+/// plain tree.
+async fn remove_topic_dir(topic_name: &str, path: &Path) -> Result<()> {
+    let repo_symlink = path.join("repo");
+    if let Ok(meta) = tokio::fs::symlink_metadata(&repo_symlink).await
+        && meta.file_type().is_symlink()
+    {
+        if let Err(e) = tokio::fs::remove_file(&repo_symlink).await {
+            tracing::warn!(
+                error = %e,
+                path = %repo_symlink.display(),
+                "Failed to remove repo symlink before topic deletion"
+            );
+        } else {
+            tracing::debug!(
+                topic = %topic_name,
+                "Removed repo symlink before topic deletion"
+            );
+        }
+    }
+
+    tokio::fs::remove_dir_all(path)
+        .await
+        .context(format!("Failed to remove topic directory: {:?}", path))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -496,6 +620,230 @@ mode = "agent"
 
         tm.close_topic("probe-plain-topic").await.unwrap();
         assert!(!topic_dir.exists());
+    }
+
+    /// `/close --force --purge` on a pinned topic: the state *and* the dir the
+    /// topic worked in go, which is the one thing `close_topic` refuses to do.
+    #[tokio::test]
+    async fn purge_deletes_a_pinned_topic_dir() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let repo = tmp.path().join("probe-purge-repo");
+        let state = tmp.path().join("agents/probe-purge/.jyc");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        jyc_types::state_dir::register("probe-purge", &state);
+        tm.set_topic_path("probe-purge", repo.clone())
+            .await
+            .unwrap();
+
+        let outcome = tm
+            .purge_topic_dir_under(
+                "probe-purge",
+                &tmp.path().join("agents"),
+                &tmp.path().join("state"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, PurgeOutcome::Deleted),
+            "the pinned dir is what purge deletes"
+        );
+        assert!(!repo.exists(), "purge is the explicit 'and this dir too'");
+    }
+
+    /// Two topics on one dir: purging from either one refuses — the other
+    /// topic's workspace is not on the table.
+    #[tokio::test]
+    async fn purge_refuses_a_dir_another_topic_also_uses() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let shared = tmp.path().join("probe-shared-repo");
+        std::fs::create_dir_all(&shared).unwrap();
+        let state = tmp.path().join("agents/probe-one/.jyc");
+        std::fs::create_dir_all(&state).unwrap();
+        jyc_types::state_dir::register("probe-one", &state);
+        tm.set_topic_path("probe-one", shared.clone())
+            .await
+            .unwrap();
+        tm.set_topic_path("probe-two", shared.clone())
+            .await
+            .unwrap();
+
+        let outcome = tm
+            .purge_topic_dir_under(
+                "probe-one",
+                &tmp.path().join("agents"),
+                &tmp.path().join("state"),
+            )
+            .await
+            .unwrap();
+        let PurgeOutcome::Refused(reason) = outcome else {
+            panic!("a co-pinned dir must be refused, got {outcome:?}");
+        };
+        assert!(reason.contains("probe-two"), "{reason}");
+        assert!(shared.exists(), "nothing may be deleted on a refusal");
+    }
+
+    /// A topic dir that contains another topic's dir is refused: deleting it
+    /// would take the nested topic with it.
+    #[tokio::test]
+    async fn purge_refuses_a_dir_that_contains_another_topic() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let outer = tmp.path().join("probe-outer");
+        let inner = outer.join("inner-project");
+        std::fs::create_dir_all(&inner).unwrap();
+        tm.set_topic_path("probe-outer", outer.clone())
+            .await
+            .unwrap();
+        tm.set_topic_path("probe-inner", inner.clone())
+            .await
+            .unwrap();
+
+        let outcome = tm
+            .purge_topic_dir_under(
+                "probe-outer",
+                &tmp.path().join("agents"),
+                &tmp.path().join("state"),
+            )
+            .await
+            .unwrap();
+        let PurgeOutcome::Refused(reason) = outcome else {
+            panic!("an ancestor of another topic dir must be refused, got {outcome:?}");
+        };
+        assert!(reason.contains("probe-inner"), "{reason}");
+        assert!(outer.exists());
+    }
+
+    /// A fork shares its parent's workspace dir, and the parent may never have
+    /// been pinned — pins alone cannot see it, so the workspace scan has to.
+    #[tokio::test]
+    async fn purge_refuses_a_dir_a_workspace_topic_also_uses() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let parent_dir = workspace.join("probe-parent");
+        std::fs::create_dir_all(parent_dir.join(".jyc")).unwrap();
+        std::fs::write(parent_dir.join("code.rs"), "x").unwrap();
+        // The fork adopts the parent's in-dir state out of the parent dir —
+        // exactly what /fork does — so no `.jyc` remains there to detect by.
+        let fork_state = tmp.path().join("agents/probe-fork/.jyc");
+        std::fs::create_dir_all(&fork_state).unwrap();
+        jyc_types::state_dir::register("probe-fork", &fork_state);
+        tm.set_topic_path("probe-fork", parent_dir.clone())
+            .await
+            .unwrap();
+
+        let outcome = tm
+            .purge_topic_dir_under(
+                "probe-fork",
+                &tmp.path().join("agents"),
+                &tmp.path().join("state"),
+            )
+            .await
+            .unwrap();
+        let PurgeOutcome::Refused(reason) = outcome else {
+            panic!("the parent's workspace dir must be refused, got {outcome:?}");
+        };
+        assert!(reason.contains("probe-parent"), "{reason}");
+        assert!(parent_dir.exists());
+        jyc_types::state_dir::unregister("probe-fork");
+    }
+
+    /// A direct child of an agents/state root is a state namespace
+    /// (`agents/jin/.jyc` is another topic's data), not a topic dir.
+    #[tokio::test]
+    async fn purge_refuses_a_state_namespace() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let agents_root = tmp.path().join("agents");
+        let namespace = agents_root.join("jin");
+        std::fs::create_dir_all(namespace.join(".jyc")).unwrap();
+        tm.set_topic_path("probe-ns", namespace.clone())
+            .await
+            .unwrap();
+
+        let outcome = tm
+            .purge_topic_dir_under("probe-ns", &agents_root, &tmp.path().join("state"))
+            .await
+            .unwrap();
+        let PurgeOutcome::Refused(reason) = outcome else {
+            panic!("a state namespace must be refused, got {outcome:?}");
+        };
+        assert!(reason.contains("state namespace"), "{reason}");
+        assert!(namespace.exists());
+        jyc_types::state_dir::unregister("probe-ns");
+    }
+
+    /// jyc's own directories are not topic dirs, however a topic got pinned to
+    /// one: the agents tree has to survive, and so does the state root.
+    #[tokio::test]
+    async fn purge_refuses_jycs_own_directories() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let agents_root = tmp.path().join("agents");
+        let state_root = tmp.path().join("state").join("agents");
+        for (name, pin) in [
+            ("probe-agents-root", agents_root.clone()),
+            ("probe-data-home", tmp.path().to_path_buf()),
+        ] {
+            std::fs::create_dir_all(&pin).unwrap();
+            tm.set_topic_path(name, pin.clone()).await.unwrap();
+
+            let outcome = tm
+                .purge_topic_dir_under(name, &agents_root, &state_root)
+                .await
+                .unwrap();
+            assert!(
+                matches!(outcome, PurgeOutcome::Refused(_)),
+                "{name} pins {} which holds jyc's own dirs, got {outcome:?}",
+                pin.display()
+            );
+            assert!(pin.exists(), "{name}: nothing may be deleted on a refusal");
+        }
+    }
+
+    /// A topic that was never pinned keeps its old behavior — the dir lives in
+    /// the workspace and `close_topic` deletes it, so purge has nothing to add.
+    #[tokio::test]
+    async fn purge_leaves_an_unpinned_topic_to_close() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let topic_dir = workspace.join("probe-plain");
+        std::fs::create_dir_all(&topic_dir).unwrap();
+
+        let outcome = tm
+            .purge_topic_dir_under(
+                "probe-plain",
+                &tmp.path().join("agents"),
+                &tmp.path().join("state"),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, PurgeOutcome::Nothing), "{outcome:?}");
+        assert!(topic_dir.exists(), "purge itself must not guess a dir");
     }
 
     /// The agents root itself must never match (guard against catastrophic

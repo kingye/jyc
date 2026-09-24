@@ -3,6 +3,7 @@ pub mod backlog_handler;
 pub mod bill_handler;
 pub mod builtin;
 pub mod cancel_handler;
+pub mod clone_handler;
 pub mod close_handler;
 pub mod context_handler;
 pub mod custom_handler;

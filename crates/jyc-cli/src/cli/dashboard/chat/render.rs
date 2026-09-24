@@ -64,12 +64,16 @@ pub(crate) struct RenderFingerprint {
     /// Thinking expand/collapse affects the rendered lines of
     /// `sender == "thinking"` pseudo-messages, so it must bust the cache.
     thinking_expanded: bool,
+    /// Minimal progress mode drops that same thinking line, so it affects the
+    /// cached history too — see [`thinking_expanded`].
+    minimal_progress: bool,
 }
 
 pub(super) fn history_fingerprint(
     messages: &[ChatMessage],
     width: usize,
     thinking_expanded: bool,
+    minimal_progress: bool,
 ) -> RenderFingerprint {
     RenderFingerprint {
         count: messages.len(),
@@ -81,6 +85,7 @@ pub(super) fn history_fingerprint(
             .filter(|m| is_user_message(&m.sender))
             .count(),
         thinking_expanded,
+        minimal_progress,
     }
 }
 
@@ -154,6 +159,7 @@ pub(super) fn render_history_lines(
     messages: &[ChatMessage],
     width: usize,
     thinking_expanded: bool,
+    minimal_progress: bool,
 ) -> Vec<Line<'static>> {
     let mut all_lines: Vec<Line<'static>> = Vec::new();
 
@@ -180,6 +186,12 @@ pub(super) fn render_history_lines(
         // default, full wrapped text when expanded. Takes no part in
         // round-rule grouping — the rules key off user/AI turns only.
         if msg.sender == "thinking" {
+            if minimal_progress {
+                // Minimal progress mode: the thinking line is a progress
+                // artifact, not conversation — leave it out, blank row and all,
+                // so no orphan gap is left where it used to sit.
+                continue;
+            }
             if thinking_expanded && !msg.text.is_empty() {
                 for line in wrap_text_to_width(&msg.text, width) {
                     all_lines.push(Line::from(Span::styled(line, thinking_style)));
@@ -317,6 +329,144 @@ pub(super) fn render_history_lines(
     all_lines
 }
 
+// ── Progress animation ──────────────────────────────────────────────────
+//
+// The live tail's spinner and the minimal progress line animate off the wall
+// clock, so they need no timer of their own: the chat loop repaints at least
+// every 50 ms, and the frame index is derived from `now_ms` — which also keeps
+// these helpers pure and testable.
+
+/// Braille spinner, one frame per [`SPINNER_STEP_MS`] — a full turn per second.
+const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+/// Spinner frame duration (10 fps).
+const SPINNER_STEP_MS: i64 = 100;
+/// Pulse ramp for the state word at the end of the line: dark gray → bright
+/// yellow → back, one round trip per second. Named ANSI colors on purpose — an
+/// RGB interpolation would look wrong on a terminal without truecolor.
+const PULSE_PHASES: [Color; 4] = [
+    Color::DarkGray,
+    Color::Gray,
+    Color::LightYellow,
+    Color::Gray,
+];
+/// Pulse phase duration (4 × 250 ms = 1 s).
+const PULSE_STEP_MS: i64 = 250;
+/// What a tool row's rendered first line starts with (see
+/// [`render_activity_entry`]).
+const TOOL_PREFIX: &str = "Tool: ";
+
+/// Wall-clock milliseconds. The epoch floor is enforced in [`step_index`] —
+/// the only place this value indexes anything.
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// Index into a frame list from an absolute timestamp. Clamped at the epoch:
+/// a clock set before 1970 would otherwise index the list with a negative
+/// number and panic on the very first frame.
+fn step_index(now_ms: i64, step_ms: i64, len: usize) -> usize {
+    ((now_ms.max(0) / step_ms) % len as i64) as usize
+}
+
+/// Current spinner glyph.
+fn spinner_frame(now_ms: i64) -> char {
+    SPINNER_FRAMES[step_index(now_ms, SPINNER_STEP_MS, SPINNER_FRAMES.len())]
+}
+
+/// Current pulse style for the state word (keeps the italics the rest of the
+/// tail is drawn with).
+fn pulse_style(now_ms: i64) -> Style {
+    Style::default()
+        .fg(PULSE_PHASES[step_index(now_ms, PULSE_STEP_MS, PULSE_PHASES.len())])
+        .add_modifier(Modifier::ITALIC)
+}
+
+/// The spinner column. Two trailing spaces, because the `⏳ ` / `💭 ` / `⚠ `
+/// prefixes it replaces measure three columns and wrapped rows pad by their
+/// width — one space would shift the text a column left.
+fn spinner_prefix(now_ms: i64) -> String {
+    format!("{}  ", spinner_frame(now_ms))
+}
+
+/// Where the tool name ends inside a line that already lost its [`TOOL_PREFIX`]:
+/// before the ` — <input>` separator, or before a ` (done, 0s)` status marker if
+/// one comes first.
+fn tool_name_end(rest: &str) -> usize {
+    let sep = rest.find(" — ").unwrap_or(rest.len());
+    rest[..sep].find(" (").unwrap_or(sep)
+}
+
+/// The state word of an activity line: `Tool: bash (done, 0s) — {…}` → `bash`.
+/// Anything that is not a tool row — the live thinking entries read
+/// `Thinking... (iteration 14)` — reports as `thinking`.
+fn activity_state(text: &str) -> &str {
+    let name = match text.strip_prefix(TOOL_PREFIX) {
+        Some(rest) => &rest[..tool_name_end(rest)],
+        None => "",
+    };
+    if name.is_empty() { "thinking" } else { name }
+}
+
+/// An activity line broken into spans, pulsing only the state word:
+/// `Tool: ` + **`bash`** + ` — {…}`. A line without a tool name (a thinking
+/// row) pulses as a whole.
+fn pulse_spans(line: &str, base: Style, now_ms: i64) -> Vec<Span<'static>> {
+    let pulse = pulse_style(now_ms);
+    let Some(rest) = line.strip_prefix(TOOL_PREFIX) else {
+        return vec![Span::styled(line.to_string(), pulse)];
+    };
+    let end = TOOL_PREFIX.len() + tool_name_end(rest);
+    let mut spans = vec![
+        Span::styled(line[..TOOL_PREFIX.len()].to_string(), base),
+        Span::styled(line[TOOL_PREFIX.len()..end].to_string(), pulse),
+    ];
+    if end < line.len() {
+        spans.push(Span::styled(line[end..].to_string(), base));
+    }
+    spans
+}
+
+/// The entire progress tail in minimal mode: `⠹  12.4s · bash`.
+///
+/// The time is the live loop ticker (1 Hz), falling back to the current
+/// entry's own age before the first tick arrives; with neither, the line is
+/// just the spinner and the state word.
+fn minimal_progress_line(
+    last: Option<&jyc_types::ActivityEntry>,
+    live_tick_ms: Option<u64>,
+    now_ms: i64,
+) -> Line<'static> {
+    let timestamp = last.and_then(|entry| entry.timestamp.clone());
+    let elapsed = match live_tick_ms {
+        Some(ms) => format_elapsed_ms(ms),
+        None => format_elapsed(&timestamp),
+    };
+    let dim = Style::default().fg(Color::Gray);
+    let mut spans = vec![Span::raw("  "), Span::styled(spinner_prefix(now_ms), dim)];
+    if !elapsed.is_empty() {
+        spans.push(Span::styled(format!("{elapsed} · "), dim));
+    }
+    let state: String = match last {
+        // One line has to say when the round is failing: in this mode the full
+        // tail — and its red error row — is off screen.
+        Some(entry) if entry.severity == jyc_types::Severity::Error => "error".into(),
+        Some(entry) => {
+            // `edit`/`write` events arrive as raw JSON and only take the
+            // `Tool: edit — foo.rs` shape inside `render_activity_entry`, so
+            // reading the state off the raw text would call a live edit
+            // "thinking". Read the same formatted row the tail draws — the
+            // collapsed shape, because that is the one that carries the
+            // `Tool: ` prefix even while `ctrl+p T` has the diff open.
+            let formatted = render_activity_entry(&entry.text, false);
+            let text = formatted.first().map(String::as_str).unwrap_or(&entry.text);
+            activity_state(text).to_string()
+        }
+        None => "thinking".into(),
+    };
+    spans.push(Span::styled(state, pulse_style(now_ms)));
+    Line::from(spans)
+}
+
 pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut App) {
     // Borderless chat pane — no outer block, no side borders, no
     // per-message `│ ` gutter. Each chat round is bounded by a horizontal
@@ -393,6 +543,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         &app.chat.messages,
         messages_width,
         app.chat.thinking_expanded,
+        app.chat.minimal_progress,
     );
     let cache_hit = matches!(&app.chat.render_cache, Some((fp, _)) if *fp == fingerprint);
     if !cache_hit {
@@ -400,6 +551,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             &app.chat.messages,
             messages_width,
             app.chat.thinking_expanded,
+            app.chat.minimal_progress,
         );
         app.chat.render_cache = Some((fingerprint, lines));
     }
@@ -445,6 +597,12 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         // source changed.
         let live_chan = app.chat.channel.clone();
         let live_topic = app.chat.topic.clone();
+        // Minimal progress mode collapses the whole tail into one animated
+        // line. The animation phase is read from the wall clock once per frame
+        // (the loop repaints at least every 50 ms, so no timer is needed) —
+        // one read keeps every animated row of the frame in step.
+        let minimal = app.chat.minimal_progress;
+        let now = now_ms();
         let activity_entries: Vec<jyc_types::ActivityEntry> = live_chan
             .as_deref()
             .zip(live_topic.as_deref())
@@ -461,10 +619,14 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             })
             .unwrap_or_default();
 
-        let thinking_blocks: Option<&[String]> = live_chan
-            .as_deref()
-            .zip(live_topic.as_deref())
-            .and_then(|(c, t)| app.chat.live_thinking_for(c, t));
+        let thinking_blocks: Option<&[String]> = if minimal {
+            None
+        } else {
+            live_chan
+                .as_deref()
+                .zip(live_topic.as_deref())
+                .and_then(|(c, t)| app.chat.live_thinking_for(c, t))
+        };
 
         // Live wall-clock ticker (1 Hz, with the first tick at t=0). When
         // present, it is the authoritative elapsed-time display for the
@@ -516,25 +678,30 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             }
         }
 
-        if activity_entries.is_empty() && !has_thinking {
+        if minimal {
+            tail_lines.push(minimal_progress_line(
+                activity_entries.last(),
+                live_tick_ms,
+                now,
+            ));
+        } else if activity_entries.is_empty() && !has_thinking {
             // Pre-activity placeholder: shown only between ProcessingStarted
             // and the first ToolStarted/LLMRequestStarted event. There's
             // no "since-event" numerator to pair with, so we display the
             // live ticker alone in `(12.4s)` form. This intentionally
             // diverges from the dual-time format below — there's literally
             // no `a.timestamp` to compute the left half from.
-            let placeholder = match live_tick_ms {
-                Some(ms) => format!("⏳ AI is thinking... ({})", format_elapsed_ms(ms)),
-                None => "⏳ AI is thinking...".to_string(),
+            //
+            // No tool name to pulse here, so the whole state sentence takes
+            // the pulse, and the spinner replaces the static `⏳`.
+            let body = match live_tick_ms {
+                Some(ms) => format!("AI is thinking... ({})", format_elapsed_ms(ms)),
+                None => "AI is thinking...".to_string(),
             };
             tail_lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(
-                    placeholder,
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::ITALIC),
-                ),
+                Span::styled(spinner_prefix(now), Style::default().fg(Color::Gray)),
+                Span::styled(body, pulse_style(now)),
             ]));
         } else {
             let total = activity_entries.len();
@@ -572,9 +739,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 //
                 // Diff-specific styling (`-` gray, `+` green) is decided here
                 // on the *unpadded* `line`, before the caller pads it with
-                // `"⏳ "` / `"   "` — checking the padded label would always
-                // miss because the prefix sits two columns in.
-                let rendered_lines: Vec<(Style, String, &str)> =
+                // the marker / `"   "` — checking the padded label would
+                // always miss because the marker sits two columns in.
+                let spinner = spinner_prefix(now);
+                let rendered_lines: Vec<(String, Vec<Span<'static>>)> =
                     render_activity_entry(&a.text, app.chat.tool_detail_expanded)
                         .into_iter()
                         .enumerate()
@@ -582,24 +750,35 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                             // The row prefix stays out of the text so a wrapped
                             // row can carry the same pad and line up under the
                             // first one.
-                            let prefix = if line_idx == 0 && is_last {
-                                "⏳ "
+                            let current = line_idx == 0 && is_last;
+                            let prefix = if current {
+                                spinner.clone()
                             } else {
-                                // Pad with 3 spaces to visually align with "⏳ "
-                                "   "
+                                // Pad with 3 spaces to visually align with the
+                                // spinner / "⏳ " column.
+                                "   ".to_string()
                             };
-                            let text = if line_idx == 0 && is_last && !elapsed.is_empty() {
+                            let text = if current && !elapsed.is_empty() {
                                 format!("{line} {elapsed}")
                             } else {
                                 line
                             };
                             let label_style = style_diff_line(&text, style);
-                            (label_style, text, prefix)
+                            // The current row animates: the spinner turns and
+                            // the state word pulses. Diff-colored rows keep
+                            // their own color — pulsing a `+`/`-` line would
+                            // throw away the only color that means anything.
+                            let spans = if current && label_style == style {
+                                pulse_spans(&text, label_style, now)
+                            } else {
+                                vec![Span::styled(text.clone(), label_style)]
+                            };
+                            (prefix, spans)
                         })
                         .collect();
 
-                for (label_style, text, prefix) in rendered_lines {
-                    push_tail_rows(&mut tail_lines, chunks[0].width, prefix, text, label_style);
+                for (prefix, spans) in rendered_lines {
+                    push_tail_rows_spans(&mut tail_lines, chunks[0].width, &prefix, spans);
                 }
             }
         }
@@ -811,7 +990,8 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
 /// keep the raw JSON. Lines that don't match, or whose input can't be
 /// summarized, pass through unchanged.
 /// Render the raw text of one activity entry into a list of display
-/// lines. The caller applies the per-line `⏳ ` / `   ` padding based on
+/// lines. The caller applies the per-line padding — the spinner on the
+/// entry being worked on, three blank columns elsewhere — based on
 /// `is_last` + `elapsed`.
 ///
 /// Edit/write events arrive as bare JSON (`{"type":"edit",...}`) carrying
@@ -865,7 +1045,7 @@ fn render_activity_entry(text: &str, tool_detail_expanded: bool) -> Vec<String> 
 }
 
 /// Rich diff view for an `edit` or `write` JSON event. Lines are bare
-/// content (no `⏳ ` prefix) — the caller applies per-line padding.
+/// content (no marker prefix) — the caller applies per-line padding.
 fn render_file_tool_diff(tool_name: &str, json: &serde_json::Value) -> Vec<String> {
     let file_path = json
         .get("file_path")
@@ -912,10 +1092,11 @@ fn render_file_tool_diff(tool_name: &str, json: &serde_json::Value) -> Vec<Strin
     out
 }
 
-/// Style one unpadded diff line. The caller pads with `"⏳ "` / `"   "`
-/// later, so the prefix check runs on the **unpadded** input — checking
-/// the padded label would always miss because the prefix sits two
-/// characters in (`"⏳ -..."` or `"   -..."`), not at column 0.
+/// Style one unpadded diff line. The caller pads with the marker
+/// (`⠹  `) / `"   "` later, so the prefix check runs on the **unpadded**
+/// input — checking the padded label would always miss because the
+/// prefix sits two characters in (`"⠹  -..."` or `"   -..."`), not at
+/// column 0.
 ///
 /// Returns `default` for the header (`<file>:<line>`), truncation
 /// marker (`… (N more lines)`), and the empty case, so the rest of the
@@ -926,8 +1107,8 @@ fn render_file_tool_diff(tool_name: &str, json: &serde_json::Value) -> Vec<Strin
 /// The transcript `Paragraph` deliberately has no `.wrap()` — one line is
 /// exactly one screen row, which is what the scroll, cursor and selection maths
 /// count — so a row wider than the pane has to be broken up here, or everything
-/// past its right edge is unreachable. `prefix` marks the entry ("⏳ ",
-/// "💭 ", "⚠ "); every wrapped row is padded by the prefix's own
+/// past its right edge is unreachable. `prefix` marks the entry (the
+/// spinner, "💭 ", "⚠ "); every wrapped row is padded by the prefix's own
 /// display width, so a tall block still reads as one entry rather than a ragged
 /// column. The two-column base indent is added here as well.
 fn push_tail_rows(
@@ -937,10 +1118,23 @@ fn push_tail_rows(
     text: String,
     style: Style,
 ) {
+    push_tail_rows_spans(out, pane_width, prefix, vec![Span::styled(text, style)]);
+}
+
+/// [`push_tail_rows`] with the row already split into styled spans — lets the
+/// current activity row pulse just its state word, and lets
+/// [`wrap_styled_lines`] handle the wrapping (it rebuilds spans from the
+/// per-character styles, so a multi-span row wraps without losing either color).
+fn push_tail_rows_spans(
+    out: &mut Vec<Line<'static>>,
+    pane_width: u16,
+    prefix: &str,
+    spans: Vec<Span<'static>>,
+) {
     use unicode_width::UnicodeWidthStr;
     let pad = prefix.width();
     let mut rows = wrap_styled_lines(
-        vec![Line::from(Span::styled(text, style))],
+        vec![Line::from(spans)],
         (pane_width as usize).saturating_sub(2 + pad),
     );
     if rows.is_empty() {
@@ -1405,5 +1599,151 @@ mod tests {
         let mut out: Vec<Line<'static>> = Vec::new();
         push_tail_rows(&mut out, 40, "💭 ", String::new(), Style::default());
         assert_eq!(out.len(), 1, "an entry always owns a row: {out:?}");
+    }
+
+    // ── Progress animation ────────────────────────────────────────────────
+
+    #[test]
+    fn spinner_frame_turns_once_a_second() {
+        assert_eq!(spinner_frame(0), '⠋');
+        assert_eq!(spinner_frame(99), '⠋', "a frame lasts 100 ms");
+        assert_eq!(spinner_frame(200), '⠹');
+        assert_eq!(spinner_frame(900), '⠏');
+        assert_eq!(spinner_frame(1000), SPINNER_FRAMES[0], "the list wraps");
+        assert_eq!(
+            spinner_frame(-150),
+            '⠋',
+            "a clock before the epoch is clamped"
+        );
+    }
+
+    #[test]
+    fn pulse_ramp_walks_gray_to_yellow_and_back() {
+        let fg = |ms| pulse_style(ms).fg.unwrap();
+        assert_eq!(fg(0), Color::DarkGray);
+        assert_eq!(fg(250), Color::Gray);
+        assert_eq!(fg(500), Color::LightYellow);
+        assert_eq!(fg(750), Color::Gray);
+        assert_eq!(fg(1000), Color::DarkGray, "one round trip per second");
+        assert!(
+            pulse_style(0).add_modifier.contains(Modifier::ITALIC),
+            "keeps the italics the rest of the tail is drawn with"
+        );
+    }
+
+    #[test]
+    fn spinner_prefix_holds_the_three_column_marker() {
+        use unicode_width::UnicodeWidthStr;
+        // `⏳ ` measures three columns and wrapped rows pad by that width; the
+        // single-column braille dot would otherwise shove the text left.
+        assert_eq!(spinner_prefix(0).width(), 3, "{:?}", spinner_prefix(0));
+    }
+
+    #[test]
+    fn activity_state_reads_the_tool_name_out_of_a_live_row() {
+        for (text, want) in [
+            ("Tool: bash — {\"command\":\"cargo check\"}", "bash"),
+            ("Tool: bash (done, 0s) — {\"command\":\"ls\"}", "bash"),
+            ("Tool: edit (failed) — old_string not found", "edit"),
+            ("Tool: read — render.rs:441", "read"),
+            ("Thinking... (iteration 14)", "thinking"),
+            ("", "thinking"),
+            ("   ", "thinking"),
+        ] {
+            assert_eq!(activity_state(text), want, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn pulse_spans_splits_a_tool_row_around_its_name() {
+        let base = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::ITALIC);
+        let spans = pulse_spans("Tool: bash — {\"command\":\"ls\"}", base, 500);
+        let texts: Vec<&str> = spans.iter().map(|sp| sp.content.as_ref()).collect();
+        assert_eq!(texts, vec!["Tool: ", "bash", " — {\"command\":\"ls\"}"]);
+        assert_eq!(
+            spans[1].style.fg,
+            Some(Color::LightYellow),
+            "the name pulses"
+        );
+        assert_eq!(spans[0].style, base, "the label stays put");
+        assert_eq!(spans[2].style, base, "so does the input");
+    }
+
+    #[test]
+    fn pulse_spans_pulses_a_line_without_a_tool_name_whole() {
+        let spans = pulse_spans("Thinking... (iteration 14)", Style::default(), 0);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), "Thinking... (iteration 14)");
+        assert_eq!(spans[0].style.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn pulse_spans_cuts_the_name_before_a_status_marker() {
+        let spans = pulse_spans("Tool: bash (done, 0s) — ok", Style::default(), 0);
+        assert_eq!(spans[1].content.as_ref(), "bash");
+        assert_eq!(spans[2].content.as_ref(), " (done, 0s) — ok");
+    }
+
+    #[test]
+    fn minimal_progress_line_is_one_animated_row() {
+        let entry = jyc_types::ActivityEntry {
+            timestamp: Some("2026-08-13T10:00:00Z".to_string()),
+            severity: jyc_types::Severity::Info,
+            text: "Tool: bash — {\"command\":\"ls\"}".to_string(),
+            id: 0,
+            is_internal: false,
+        };
+        let text_of = |line: &Line<'static>| -> String {
+            line.spans.iter().map(|sp| sp.content.as_ref()).collect()
+        };
+
+        let line = minimal_progress_line(Some(&entry), Some(12_400), 500);
+        assert_eq!(text_of(&line), "  ⠴  12.4s · bash");
+        assert_eq!(
+            line.spans.last().unwrap().style.fg,
+            Some(Color::LightYellow)
+        );
+
+        // A row with nothing to time yet: the state word, no separator.
+        let undated = jyc_types::ActivityEntry {
+            timestamp: None,
+            ..entry.clone()
+        };
+        assert_eq!(
+            text_of(&minimal_progress_line(Some(&undated), None, 500)),
+            "  ⠴  bash"
+        );
+
+        // Processing started, no activity event at all.
+        assert_eq!(
+            text_of(&minimal_progress_line(None, None, 0)),
+            "  ⠋  thinking"
+        );
+
+        // A failing round has to say so on its one line — in this mode the
+        // full tail, and its red error row, are off screen.
+        let failed = jyc_types::ActivityEntry {
+            severity: jyc_types::Severity::Error,
+            ..entry.clone()
+        };
+        assert_eq!(
+            text_of(&minimal_progress_line(Some(&failed), Some(900), 500)),
+            "  ⠴  0.9s · error"
+        );
+
+        // The shape the server actually sends for an edit: raw JSON, which only
+        // becomes `Tool: edit — foo.rs` further down the tail. Reading the state
+        // off the raw text called a live edit "thinking".
+        let raw_json = jyc_types::ActivityEntry {
+            text: edit_event("src/foo.rs", Some(42), "old", "new"),
+            timestamp: None,
+            ..entry.clone()
+        };
+        assert_eq!(
+            text_of(&minimal_progress_line(Some(&raw_json), None, 500)),
+            "  ⠴  edit"
+        );
     }
 }

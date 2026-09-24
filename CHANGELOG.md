@@ -2,6 +2,17 @@
 
 ### Added
 
+- The chat progress tail animates, and `ctrl+p p` collapses it to one line. The
+  row doing the current work — and the `AI is thinking...` placeholder shown
+  before the first event — carried a static `⏳`, so a long silent stretch of
+  tool work read exactly like a hung one: it now shows a braille spinner, and
+  the state word at the end of the row pulses dark gray to bright yellow.
+  Minimal progress mode replaces the whole tail with a single line
+  (`⠹ 12.4s · bash` — spinner, loop elapsed, state word) and leaves the
+  completed-turn `thinking` line out of the history. Session-only, like the
+  other display toggles; diff colors and the red error row survive both modes
+  (#821)
+
 - `ask_user` can ask several questions in one call: pass `questions` (up to 5
   `{question, options, allow_multiple}` items) instead of the single
   `question`/`options`, and the user settles them as one flow instead of the

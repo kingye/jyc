@@ -19,8 +19,8 @@ fn history_fingerprint_stable_for_unchanged_input() {
         history_msg("ai", "world", Some("2026-08-13T10:00:05Z")),
     ];
     assert_eq!(
-        history_fingerprint(&msgs, 80, false),
-        history_fingerprint(&msgs, 80, false)
+        history_fingerprint(&msgs, 80, false, false),
+        history_fingerprint(&msgs, 80, false, false)
     );
 }
 
@@ -30,34 +30,45 @@ fn history_fingerprint_changes_on_message_mutations() {
         history_msg("user", "hello", Some("2026-08-13T10:00:00Z")),
         history_msg("ai", "world", Some("2026-08-13T10:00:05Z")),
     ];
-    let base = history_fingerprint(&msgs, 80, false);
+    let base = history_fingerprint(&msgs, 80, false, false);
 
     // New message pushed.
     let mut pushed = msgs.clone();
     pushed.push(history_msg("user", "again", None));
-    assert_ne!(base, history_fingerprint(&pushed, 80, false));
+    assert_ne!(base, history_fingerprint(&pushed, 80, false, false));
 
     // Streaming append to the last message's text.
     let mut streamed = msgs.clone();
     streamed[1].text.push_str(" more");
-    assert_ne!(base, history_fingerprint(&streamed, 80, false));
+    assert_ne!(base, history_fingerprint(&streamed, 80, false, false));
 
     // Last message timestamp set after the fact.
     let mut stamped = msgs.clone();
     stamped[1].timestamp = Some("2026-08-13T10:00:06Z".to_string());
-    assert_ne!(base, history_fingerprint(&stamped, 80, false));
+    assert_ne!(base, history_fingerprint(&stamped, 80, false, false));
 
     // A message flipping side: same text, count and timestamps, but the
     // background block now belongs to a different line.
     let mut flipped = msgs.clone();
     flipped[0].sender = "ai".to_string();
-    assert_ne!(base, history_fingerprint(&flipped, 80, false));
+    assert_ne!(base, history_fingerprint(&flipped, 80, false, false));
 
     // Cleared history.
-    assert_ne!(base, history_fingerprint(&[], 80, false));
+    assert_ne!(base, history_fingerprint(&[], 80, false, false));
 
     // Pane resize (re-wrap needed).
-    assert_ne!(base, history_fingerprint(&msgs, 100, false));
+    assert_ne!(base, history_fingerprint(&msgs, 100, false, false));
+
+    // Minimal progress mode drops the thinking line, so flipping it has to
+    // invalidate the cache the same way `T` does — otherwise the cached
+    // history keeps the old rows and the toggle looks like a no-op.
+    let minimal = history_fingerprint(&msgs, 80, false, true);
+    assert_ne!(base, minimal);
+    assert_ne!(
+        history_fingerprint(&msgs, 80, true, true),
+        history_fingerprint(&msgs, 80, true, false),
+        "the flag joins the fingerprint alongside the thinking toggle"
+    );
 }
 
 #[test]
@@ -67,13 +78,13 @@ fn render_history_lines_deterministic_for_cache_reuse() {
         history_msg("ai", "world\nsecond line", Some("2026-08-13T10:00:05Z")),
     ];
     assert_eq!(
-        render_history_lines(&msgs, 80, false),
-        render_history_lines(&msgs, 80, false)
+        render_history_lines(&msgs, 80, false, false),
+        render_history_lines(&msgs, 80, false, false)
     );
     // Different width re-wraps — cache must not be reused.
     assert_ne!(
-        render_history_lines(&msgs, 80, false),
-        render_history_lines(&msgs, 20, false)
+        render_history_lines(&msgs, 80, false, false),
+        render_history_lines(&msgs, 20, false, false)
     );
 }
 
@@ -2088,8 +2099,8 @@ fn leader_toggle_tool_detail_flips_expanded_flag() {
 fn history_fingerprint_changes_on_thinking_expanded_flip() {
     let msgs = vec![history_msg("user", "hi", None)];
     assert_ne!(
-        history_fingerprint(&msgs, 80, false),
-        history_fingerprint(&msgs, 80, true)
+        history_fingerprint(&msgs, 80, false, false),
+        history_fingerprint(&msgs, 80, true, false)
     );
 }
 
@@ -2100,7 +2111,7 @@ fn render_history_thinking_collapsed_shows_summary_not_body() {
         history_msg("thinking", "secret chain of thought body", None),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let lines = render_history_lines(&msgs, 80, false);
+    let lines = render_history_lines(&msgs, 80, false, false);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -2130,7 +2141,7 @@ fn render_history_thinking_expanded_shows_full_text() {
         history_msg("thinking", "full chain of thought", None),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let lines = render_history_lines(&msgs, 80, true);
+    let lines = render_history_lines(&msgs, 80, true, false);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -2146,7 +2157,7 @@ fn render_history_marks_human_turns_with_background_not_labels() {
         history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let lines = render_history_lines(&msgs, 80, false);
+    let lines = render_history_lines(&msgs, 80, false, false);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -2211,7 +2222,7 @@ fn render_history_rows_fit_the_pane() {
         history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let lines = render_history_lines(&msgs, 80, false);
+    let lines = render_history_lines(&msgs, 80, false, false);
     // `dim_style` on the line is what marks a round rule.
     let rules: Vec<&Line> = lines
         .iter()
@@ -2240,7 +2251,7 @@ fn render_history_blocks_piped_channel_sender() {
         "from feishu",
         Some("2026-08-13T10:00:00Z"),
     )];
-    let lines = render_history_lines(&msgs, 40, false);
+    let lines = render_history_lines(&msgs, 40, false, false);
     assert!(
         lines
             .iter()
@@ -3311,6 +3322,81 @@ fn the_highlight_bar_covers_the_cursor_and_the_selection() {
         Some(SELECT_BG),
         "rows outside are untouched"
     );
+}
+
+/// The other half of the thinking toggle: minimal progress mode leaves no
+/// gap behind.
+#[test]
+fn render_history_minimal_progress_drops_the_thinking_line() {
+    let msgs = vec![
+        history_msg("user", "go", None),
+        history_msg("thinking", "one", None),
+        history_msg("thinking", "two", None),
+        history_msg("ai", "**reply**", None),
+    ];
+
+    let full = render_history_lines(&msgs, 80, false, false);
+    let minimal = render_history_lines(&msgs, 80, false, true);
+    let full_rows = line_texts(&full);
+    let minimal_rows = line_texts(&minimal);
+    let thinking_rows =
+        |rows: &[String]| rows.iter().filter(|l| l.starts_with("💭 thinking")).count();
+
+    // Collapsed thinking renders its summary row and never the body, so the
+    // marker is the thing that has to be there to be dropped — and dropping the
+    // block takes its blank gap row along with it.
+    assert_eq!(
+        thinking_rows(&full_rows),
+        2,
+        "one summary per thinking block is there to be dropped:\n{}",
+        full_rows.join("\n")
+    );
+    assert_eq!(
+        thinking_rows(&minimal_rows),
+        0,
+        "minimal mode renders neither thinking block:\n{}",
+        minimal_rows.join("\n")
+    );
+
+    // ...and the two rules around it still hold: the reply survives, and the
+    // user row keeps its block — which sits on the *line* style, the text span
+    // carrying only the pad's own copy of it.
+    let flat = minimal_rows.join("\n");
+    assert!(
+        flat.contains("go") && flat.contains("reply"),
+        "the round survives without its thinking line:\n{flat}"
+    );
+    let user_row = minimal
+        .iter()
+        .find(|l| l.spans.iter().any(|s| s.content.trim() == "go"));
+    assert!(
+        user_row.is_some_and(|l| l.style.bg == Some(USER_BG)),
+        "the user row is still a background block:\n{flat}"
+    );
+}
+
+/// Wiring test for the mode itself: `p` has to be a chat-scoped command whose
+/// dispatch moves the flag the render reads.
+#[test]
+fn minimal_progress_command_flips_the_flag_the_render_reads() {
+    use crate::cli::dashboard::local_commands::{CommandScope, LocalAction, local_commands};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let cmd = local_commands()
+        .iter()
+        .find(|c| c.action == LocalAction::ToggleMinimalProgress)
+        .expect("the leader popup offers the minimal progress toggle");
+    assert_eq!(cmd.scope, CommandScope::Chat, "`p` is a chat command");
+    assert_eq!(cmd.leader_keys, "p", "next to expand_tool_detail's `t`");
+
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    let mut terminal = Terminal::new(TestBackend::new(40, 20)).expect("test terminal");
+    for expected in [true, false] {
+        super::execute_local_action(&mut app, &mut terminal, cmd.action);
+        assert_eq!(app.chat.minimal_progress, expected);
+    }
 }
 
 #[cfg(test)]

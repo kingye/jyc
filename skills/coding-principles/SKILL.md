@@ -62,6 +62,9 @@ Transform tasks into verifiable goals:
 - "Fix the bug" → "Write a test that reproduces it, then make it pass"
 - "Refactor X" → "Ensure tests pass before and after"
 
+**A proxy is not a proof.** "It compiles" never stands in for "it passes". Name the tier that
+actually ran; when the real check runs somewhere else (CI), report it as pending, not verified.
+
 For multi-step tasks, state a brief plan:
 
 1. [Step] → verify: [check]

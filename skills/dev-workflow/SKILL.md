@@ -55,6 +55,20 @@ When CI owns the suite, the local obligation is: tests written and committed, co
 pushed. CI is the one that executes them. Do not block a turn waiting for CI — hand over the
 PR link and stop; red CI is fixed in a later turn.
 
+**What the compile tier proves — and what it does not.** `cargo check -p <crate> --tests` compiles
+the test targets; it never runs them. Green means "the tests compile", not "the tests pass". Never
+report or imply test results from a compile tier, in a step report, a commit message, or a PR body.
+
+**What the gate costs, and what makes it spike.** A warm gate is cheap — seconds, even for a 28k-line
+crate with thousands of lines of test code. It spikes to minutes when the dependency graph has been
+invalidated: `check` artifacts are a different kind from `build` / `test` artifacts, so one local
+`cargo test` evicts the check cache and the *next* gate re-pays for the whole graph — serially, if
+`CARGO_BUILD_JOBS=1`. A test-target invocation also adds a second unit: in a bin-only crate the
+whole crate is re-type-checked under the test cfg with all `#[cfg(test)]` code switched on. So run
+the gate ONCE per change set, never after every edit, and make the test-file edits last. Slowness is
+a cache-and-parallelism symptom, never a reason to escalate to the suite or a local build —
+escalating is what caused it.
+
 ## For Fixes
 
 1. `git checkout -b fix/<description>` from main

@@ -46,10 +46,10 @@ base_url = "https://jyc.example.com"
     )
 }
 
-fn test_context(topic_path: &Path, args: &[&str]) -> CommandContext {
+fn test_context(topic_name: &str, topic_path: &Path, args: &[&str]) -> CommandContext {
     CommandContext {
         args: args.iter().map(|s| s.to_string()).collect(),
-        topic_name: "test-topic".to_string(),
+        topic_name: topic_name.to_string(),
         topic_path: topic_path.to_path_buf(),
         config: test_config(),
         channel: "test".into(),
@@ -87,8 +87,8 @@ fn make_topic_manager(tmp: &TempDir, workspace: &Path) -> Arc<TopicManager> {
 /// Seed a published file plus the token that guards it — through the same
 /// state-dir resolver production uses (the topic's state may be adopted
 /// to data_home when the topic has been registered).
-async fn seed_published(topic_dir: &Path, name: &str, token: &str) {
-    let jyc = jyc_types::state_dir::jyc_dir("", topic_dir);
+async fn seed_published(topic_name: &str, topic_dir: &Path, name: &str, token: &str) {
+    let jyc = jyc_types::state_dir::jyc_dir(topic_name, topic_dir);
     let exchange = jyc.join("exchange");
     tokio::fs::create_dir_all(&exchange).await.unwrap();
     tokio::fs::write(exchange.join(name), b"bytes")
@@ -114,10 +114,10 @@ async fn url_uses_registered_topic_name_not_directory_basename() {
     tm.set_topic_path("issue-197", topic_dir.clone())
         .await
         .unwrap();
-    seed_published(&topic_dir, "report.pdf", "tok123").await;
+    seed_published("issue-197", &topic_dir, "report.pdf", "tok123").await;
 
     let result = ExchangeCommandHandler::new(tm)
-        .execute(test_context(&topic_dir, &[]))
+        .execute(test_context("issue-197", &topic_dir, &[]))
         .await
         .unwrap();
 
@@ -143,11 +143,13 @@ async fn lists_all_published_files_sorted() {
     std::fs::create_dir_all(&topic_dir).unwrap();
 
     let tm = make_topic_manager(&tmp, &workspace);
-    seed_published(&topic_dir, "b.txt", "tok123").await;
-    seed_published(&topic_dir, "a.txt", "tok123").await;
+    jyc_types::state_dir::register("wt-sorted", &topic_dir.join(".jyc"));
+    seed_published("wt-sorted", &topic_dir, "b.txt", "tok123").await;
+    jyc_types::state_dir::register("wt-sorted", &topic_dir.join(".jyc"));
+    seed_published("wt-sorted", &topic_dir, "a.txt", "tok123").await;
 
     let result = ExchangeCommandHandler::new(tm)
-        .execute(test_context(&topic_dir, &[]))
+        .execute(test_context("wt-sorted", &topic_dir, &[]))
         .await
         .unwrap();
 
@@ -165,11 +167,13 @@ async fn argument_narrows_output_to_one_file() {
     std::fs::create_dir_all(&topic_dir).unwrap();
 
     let tm = make_topic_manager(&tmp, &workspace);
-    seed_published(&topic_dir, "a.txt", "tok123").await;
-    seed_published(&topic_dir, "report.pdf", "tok123").await;
+    jyc_types::state_dir::register("wt-narrow", &topic_dir.join(".jyc"));
+    seed_published("wt-narrow", &topic_dir, "a.txt", "tok123").await;
+    jyc_types::state_dir::register("wt-narrow", &topic_dir.join(".jyc"));
+    seed_published("wt-narrow", &topic_dir, "report.pdf", "tok123").await;
 
     let result = ExchangeCommandHandler::new(tm)
-        .execute(test_context(&topic_dir, &["report.pdf"]))
+        .execute(test_context("wt-narrow", &topic_dir, &["report.pdf"]))
         .await
         .unwrap();
 
@@ -187,10 +191,11 @@ async fn unknown_filename_reports_what_is_published() {
     std::fs::create_dir_all(&topic_dir).unwrap();
 
     let tm = make_topic_manager(&tmp, &workspace);
-    seed_published(&topic_dir, "a.txt", "tok123").await;
+    jyc_types::state_dir::register("wt-unknown", &topic_dir.join(".jyc"));
+    seed_published("wt-unknown", &topic_dir, "a.txt", "tok123").await;
 
     let result = ExchangeCommandHandler::new(tm)
-        .execute(test_context(&topic_dir, &["missing.pdf"]))
+        .execute(test_context("wt-unknown", &topic_dir, &["missing.pdf"]))
         .await
         .unwrap();
 
@@ -208,9 +213,10 @@ async fn no_token_reports_nothing_published_and_creates_no_token() {
     std::fs::create_dir_all(topic_dir.join(".jyc")).unwrap();
 
     let tm = make_topic_manager(&tmp, &workspace);
+    jyc_types::state_dir::register("wt-no-token", &topic_dir.join(".jyc"));
 
     let result = ExchangeCommandHandler::new(tm)
-        .execute(test_context(&topic_dir, &[]))
+        .execute(test_context("wt-no-token", &topic_dir, &[]))
         .await
         .unwrap();
 

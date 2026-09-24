@@ -43,6 +43,10 @@ impl MessageStorage {
         _attachment_config: Option<&InboundAttachmentConfig>,
     ) -> Result<StoreResult> {
         let topic_path = self.workspace.join(topic_name);
+        // Activation registration (#825): the workspace is jyc-owned, so
+        // this topic's state lives in `<topic_dir>/.jyc` — registered
+        // explicitly instead of resolved through a silent fallback.
+        jyc_types::state_dir::register_if_absent(topic_name, &topic_path.join(".jyc"));
 
         // Generate a timestamp identifier for this message
         let message_dir = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
@@ -51,7 +55,7 @@ impl MessageStorage {
         // before the message reaches the MessageRouter
 
         // Append to chat log
-        self.append_to_chat_log(&topic_path, message, is_matched)
+        self.append_to_chat_log(topic_name, &topic_path, message, is_matched)
             .await?;
 
         tracing::info!(
@@ -74,11 +78,19 @@ impl MessageStorage {
     pub async fn store_at_path(
         &self,
         message: &InboundMessage,
+        topic_name: &str,
         topic_path: &Path,
         is_matched: bool,
     ) -> Result<StoreResult> {
+        // Activation registration for jyc-owned dirs only. A dir outside
+        // the workspace without a registration is a lost adoption — left
+        // unregistered so `jyc_dir` fails loudly instead of silently
+        // writing state into a user-owned directory (#825).
+        if topic_path.starts_with(&self.workspace) {
+            jyc_types::state_dir::register_if_absent(topic_name, &topic_path.join(".jyc"));
+        }
         let message_dir = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
-        self.append_to_chat_log(topic_path, message, is_matched)
+        self.append_to_chat_log(topic_name, topic_path, message, is_matched)
             .await?;
         Ok(StoreResult {
             topic_path: topic_path.to_path_buf(),
@@ -121,13 +133,14 @@ impl MessageStorage {
     /// Append a message to the chat log.
     async fn append_to_chat_log(
         &self,
+        topic_name: &str,
         topic_path: &Path,
         message: &InboundMessage,
         is_matched: bool,
     ) -> Result<()> {
         use crate::chat_log_store::ChatLogStore;
 
-        let mut chat_log = ChatLogStore::new(&message.topic, topic_path);
+        let mut chat_log = ChatLogStore::new(topic_name, topic_path);
         chat_log
             .append_message(message, is_matched)
             .with_context(|| format!("Failed to append to chat log in {}", topic_path.display()))?;
@@ -206,7 +219,7 @@ mod tests {
         let storage = MessageStorage::new(tmp.path());
         let msg = test_message();
 
-        let result = storage.store(&msg, "test-topic", None).await.unwrap();
+        let result = storage.store(&msg, "ms-store-topic", None).await.unwrap();
 
         assert!(result.topic_path.exists());
         // Log-based storage is the primary storage — verify function returns without error
@@ -222,7 +235,7 @@ mod tests {
         let storage = MessageStorage::new(tmp.path());
         let msg = test_message();
 
-        let result = storage.store(&msg, "test-topic", None).await.unwrap();
+        let result = storage.store(&msg, "ms-reply-topic", None).await.unwrap();
         storage
             .store_reply(
                 "",

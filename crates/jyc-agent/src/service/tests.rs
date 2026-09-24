@@ -772,6 +772,8 @@ async fn enabled_tools_on_mcp_server_config_does_not_panic() {
 #[tokio::test]
 async fn topic_config_with_mcps_does_not_panic() {
     let tmp = tempfile::tempdir().unwrap();
+    let topic = "pattern_model_override_is_resolved";
+    jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
     let jyc_dir = tmp.path().join(".jyc");
     std::fs::create_dir_all(&jyc_dir).unwrap();
     std::fs::write(
@@ -792,7 +794,7 @@ command = ["./topic-mcp"]
         ..ChannelPattern::default()
     }];
     let svc = service_with_exclusion(patterns, None, None);
-    let topic_cfg = jyc_types::load_topic_config("", tmp.path());
+    let topic_cfg = jyc_types::load_topic_config(topic, tmp.path());
     let registry = svc
         .build_tool_registry("test", tmp.path(), topic_cfg.as_ref(), false, Some("test"))
         .await;
@@ -815,6 +817,8 @@ fn available_skills_uses_config_filters_not_toggles() {
 
     with_temp_home(|| {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "available_skills_uses_config_filters_not_toggles";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let skills_dir = tmp.path().join(".jyc").join("skills");
         for name in &["alpha", "beta"] {
             let dir = skills_dir.join(name);
@@ -833,7 +837,7 @@ fn available_skills_uses_config_filters_not_toggles() {
         }];
         let svc = service_with_skills(patterns, None, None);
         let names = |pattern: Option<&str>| {
-            svc.available_skills("", tmp.path(), pattern)
+            svc.available_skills(topic, tmp.path(), pattern)
                 .into_iter()
                 .map(|s| s.name)
                 .collect::<Vec<_>>()
@@ -846,7 +850,7 @@ fn available_skills_uses_config_filters_not_toggles() {
         assert_eq!(names(None), vec!["alpha", "beta"]);
 
         let alpha = svc
-            .available_skills("", tmp.path(), Some("pinned"))
+            .available_skills(topic, tmp.path(), Some("pinned"))
             .into_iter()
             .next()
             .unwrap();
@@ -859,6 +863,8 @@ fn available_skills_uses_config_filters_not_toggles() {
 fn discover_skills_include_filter_retains_only_matched() {
     with_temp_home(|| {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "discover_skills_include_filter_retains_only_matched";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let skills_dir = tmp.path().join(".jyc").join("skills");
 
         // Create three skills
@@ -874,7 +880,7 @@ fn discover_skills_include_filter_retains_only_matched() {
 
         let svc = service_with_skills(vec![], None, None);
         let skills = svc.discover_skills(
-            "",
+            topic,
             tmp.path(),
             Some(&["alpha".to_string(), "gamma".to_string()]),
             None,
@@ -891,6 +897,8 @@ fn discover_skills_include_filter_retains_only_matched() {
 fn discover_skills_exclude_filter_removes_matched() {
     with_temp_home(|| {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "discover_skills_exclude_filter_removes_matched";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let skills_dir = tmp.path().join(".jyc").join("skills");
 
         for name in &["alpha", "beta", "gamma"] {
@@ -904,7 +912,7 @@ fn discover_skills_exclude_filter_removes_matched() {
         }
 
         let svc = service_with_skills(vec![], None, None);
-        let skills = svc.discover_skills("", tmp.path(), None, Some(&["beta".to_string()]));
+        let skills = svc.discover_skills(topic, tmp.path(), None, Some(&["beta".to_string()]));
 
         assert_eq!(skills.len(), 2);
         assert!(skills.iter().any(|s| s.name == "alpha"));
@@ -917,6 +925,8 @@ fn discover_skills_exclude_filter_removes_matched() {
 fn discover_skills_include_and_exclude_combined() {
     with_temp_home(|| {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "discover_skills_include_and_exclude_combined";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let skills_dir = tmp.path().join(".jyc").join("skills");
 
         for name in &["alpha", "beta", "gamma", "delta"] {
@@ -932,7 +942,7 @@ fn discover_skills_include_and_exclude_combined() {
         let svc = service_with_skills(vec![], None, None);
         // Include alpha, beta, gamma; then exclude beta
         let skills = svc.discover_skills(
-            "",
+            topic,
             tmp.path(),
             Some(&["alpha".to_string(), "beta".to_string(), "gamma".to_string()]),
             Some(&["beta".to_string()]),
@@ -950,6 +960,8 @@ fn discover_skills_include_and_exclude_combined() {
 fn channel_skills_applied_when_no_pattern_match() {
     with_temp_home(|| {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "channel_skills_applied_when_no_pattern_match";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let skills_dir = tmp.path().join(".jyc").join("skills");
 
         for name in &["alpha", "beta"] {
@@ -963,7 +975,7 @@ fn channel_skills_applied_when_no_pattern_match() {
         }
 
         let svc = service_with_skills(vec![], Some(vec!["alpha".to_string()]), None);
-        let skills = svc.discover_skills("", tmp.path(), svc.channel_skills.as_deref(), None);
+        let skills = svc.discover_skills(topic, tmp.path(), svc.channel_skills.as_deref(), None);
 
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "alpha");
@@ -974,6 +986,8 @@ fn channel_skills_applied_when_no_pattern_match() {
 fn pattern_skills_override_channel_skills() {
     with_temp_home(|| {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "pattern_skills_override_channel_skills";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let skills_dir = tmp.path().join(".jyc").join("skills");
 
         for name in &["alpha", "beta", "gamma"] {
@@ -1000,7 +1014,7 @@ fn pattern_skills_override_channel_skills() {
             .and_then(|p| p.skills.as_deref())
             .or(svc.channel_skills.as_deref());
 
-        let skills = svc.discover_skills("", tmp.path(), include, None);
+        let skills = svc.discover_skills(topic, tmp.path(), include, None);
 
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "gamma");
@@ -1011,6 +1025,8 @@ fn pattern_skills_override_channel_skills() {
 fn channel_and_pattern_disabled_skills_merged() {
     with_temp_home(|| {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "channel_and_pattern_disabled_skills_merged";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let skills_dir = tmp.path().join(".jyc").join("skills");
 
         for name in &["alpha", "beta", "gamma"] {
@@ -1054,7 +1070,7 @@ fn channel_and_pattern_disabled_skills_merged() {
             Some(&exclude_list)
         };
 
-        let skills = svc.discover_skills("", tmp.path(), None, exclude_slice);
+        let skills = svc.discover_skills(topic, tmp.path(), None, exclude_slice);
 
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "gamma");
@@ -1065,6 +1081,8 @@ fn channel_and_pattern_disabled_skills_merged() {
 fn no_filters_loads_all_skills() {
     with_temp_home(|| {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "no_filters_loads_all_skills";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let skills_dir = tmp.path().join(".jyc").join("skills");
 
         for name in &["alpha", "beta"] {
@@ -1078,7 +1096,7 @@ fn no_filters_loads_all_skills() {
         }
 
         let svc = service_with_skills(vec![], None, None);
-        let skills = svc.discover_skills("", tmp.path(), None, None);
+        let skills = svc.discover_skills(topic, tmp.path(), None, None);
 
         assert_eq!(skills.len(), 2);
     });

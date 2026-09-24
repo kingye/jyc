@@ -130,6 +130,8 @@ mod tests {
     #[tokio::test]
     async fn test_save_and_load() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_save_and_load";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let ctx = ReplyContext {
             channel: "jiny283".to_string(),
             topic_name: "weather".to_string(),
@@ -154,12 +156,16 @@ mod tests {
     #[tokio::test]
     async fn test_load_missing_file() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_missing_file";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         assert!(load_reply_context("t", tmp.path()).await.is_err());
     }
 
     #[tokio::test]
     async fn test_cleanup() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_cleanup";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let ctx = ReplyContext {
             channel: "ch".to_string(),
             topic_name: "t".to_string(),
@@ -180,6 +186,8 @@ mod tests {
     #[tokio::test]
     async fn test_load_missing_channel() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_missing_channel";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(

@@ -286,6 +286,19 @@ impl TopicManager {
                     .topic_path_override
                     .clone()
                     .unwrap_or_else(|| workspace.join(&topic_name));
+                // Activation registration (#825): a jyc-owned dir (the
+                // workspace default) gets its in-dir state registered here,
+                // covering every enqueue path — router, scheduled jobs,
+                // `jyc_send_to_topic`, the dashboard proxy. An override
+                // pointing outside the workspace must already be registered
+                // (adopted pin); if it is not, `jyc_dir` below fails loudly
+                // instead of silently writing state into a user-owned dir.
+                if topic_path.starts_with(workspace) {
+                    jyc_types::state_dir::register_if_absent(
+                        &item.topic_name,
+                        &topic_path.join(".jyc"),
+                    );
+                }
 
                 // Store the resolved topic path so it can be returned by
                 // list_topics() and used by the ActivityTracker.

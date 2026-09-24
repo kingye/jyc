@@ -198,12 +198,13 @@ impl CommandHandler for ModelCommandHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::Arc;
 
-    fn test_context(topic_path: &Path) -> CommandContext {
+    fn test_context(topic_name: &str, topic_path: &std::path::Path) -> CommandContext {
+        jyc_types::state_dir::register(topic_name, &topic_path.join(".jyc"));
         CommandContext {
-            topic_name: "test-topic".to_string(),
+            topic_name: topic_name.to_string(),
             args: vec![],
             topic_path: topic_path.to_path_buf(),
             config: Arc::new(
@@ -261,7 +262,9 @@ context_window = 200000
     #[tokio::test]
     async fn test_list_models() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut ctx = test_context(tmp.path());
+        let topic = "test_list_models";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec![];
         let handler = ModelCommandHandler;
         let result = handler.execute(ctx).await.unwrap();
@@ -275,6 +278,8 @@ context_window = 200000
     #[tokio::test]
     async fn test_list_models_empty_providers() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_list_models_empty_providers";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let ctx = CommandContext {
             topic_name: "test-topic".to_string(),
             args: vec![],
@@ -319,7 +324,9 @@ mode = "agent"
     #[tokio::test]
     async fn test_switch_model() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut ctx = test_context(tmp.path());
+        let topic = "test_switch_model";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["deepseek/deepseek-chat".into()];
         let handler = ModelCommandHandler;
         let result = handler.execute(ctx).await.unwrap();
@@ -339,6 +346,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_reset_model() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_reset_model";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
@@ -348,7 +357,7 @@ mode = "agent"
         .await
         .unwrap();
 
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["reset".into()];
         let handler = ModelCommandHandler;
         let result = handler.execute(ctx).await.unwrap();
@@ -360,7 +369,9 @@ mode = "agent"
     #[tokio::test]
     async fn test_reset_model_no_override() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut ctx = test_context(tmp.path());
+        let topic = "test_reset_model_no_override";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["reset".into()];
         let handler = ModelCommandHandler;
         let result = handler.execute(ctx).await.unwrap();
@@ -371,7 +382,9 @@ mode = "agent"
     #[tokio::test]
     async fn test_invalid_model_format() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut ctx = test_context(tmp.path());
+        let topic = "test_invalid_model_format";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["invalid-format".into()];
         let handler = ModelCommandHandler;
         let result = handler.execute(ctx).await.unwrap();
@@ -382,7 +395,9 @@ mode = "agent"
     #[tokio::test]
     async fn test_unknown_provider() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut ctx = test_context(tmp.path());
+        let topic = "test_unknown_provider";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["openai/gpt-5".into()];
         let handler = ModelCommandHandler;
         let result = handler.execute(ctx).await.unwrap();
@@ -393,7 +408,9 @@ mode = "agent"
     #[tokio::test]
     async fn test_unknown_model() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut ctx = test_context(tmp.path());
+        let topic = "test_unknown_model";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["deepseek/non-existent-model".into()];
         let handler = ModelCommandHandler;
         let result = handler.execute(ctx).await.unwrap();
@@ -404,6 +421,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_switch_model_in_plan_mode_writes_plan_override() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_switch_model_in_plan_mode_writes_plan_override";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         // Simulate plan mode
@@ -411,7 +430,7 @@ mode = "agent"
             .await
             .unwrap();
 
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["deepseek/deepseek-reasoner".into()];
         let handler = ModelCommandHandler;
         let result = handler.execute(ctx).await.unwrap();
@@ -432,6 +451,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_switch_model_with_pattern_mode_writes_plan_override() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_switch_model_with_pattern_mode_writes_plan_override";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         // Topic created by pattern "p1" (mode = "plan" in config below);
@@ -440,7 +461,7 @@ mode = "agent"
             .await
             .unwrap();
 
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.config = Arc::new(
             jyc_types::load_config_from_str(
                 r#"
@@ -493,6 +514,8 @@ context_window = 64000
     #[tokio::test]
     async fn test_switch_model_in_build_mode_writes_build_override() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_switch_model_in_build_mode_writes_build_override";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         // Simulate build mode
@@ -500,7 +523,7 @@ context_window = 64000
             .await
             .unwrap();
 
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["deepseek/deepseek-chat".into()];
         let handler = ModelCommandHandler;
         let result = handler.execute(ctx).await.unwrap();
@@ -518,6 +541,8 @@ context_window = 64000
     #[tokio::test]
     async fn test_reset_clears_all_mode_overrides() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_reset_clears_all_mode_overrides";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(jyc_dir.join("plan-model-override"), "deepseek/some\n")
@@ -530,7 +555,7 @@ context_window = 64000
             .await
             .unwrap();
 
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["reset".into()];
         let handler = ModelCommandHandler;
         let result = handler.execute(ctx).await.unwrap();
@@ -545,6 +570,8 @@ context_window = 64000
     #[tokio::test]
     async fn test_model_writes_max_input_tokens() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_model_writes_max_input_tokens";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         // Pre-existing session with a different max_input_tokens
@@ -555,7 +582,7 @@ context_window = 64000
         .await
         .unwrap();
 
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.config = Arc::new(
             jyc_types::load_config_from_str(
                 r#"

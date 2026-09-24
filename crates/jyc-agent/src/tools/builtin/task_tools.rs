@@ -226,25 +226,26 @@ mod tests {
     use super::*;
 
     /// A context pointed at a throwaway topic dir. `current_topic` is set
-    /// because `tasks_dir` uses it as the state-dir registry key; the registry
-    /// has no entry for it in tests, so the dir falls back to
-    /// `<working_dir>/.jyc`.
-    fn ctx_for(working_dir: &std::path::Path) -> ToolContext<'_> {
+    /// because `tasks_dir` uses it as the state-dir registry key; each test
+    /// passes its own topic name and registers it in-dir (#825: no silent
+    /// fallback — state must be registered before access).
+    fn ctx_for<'a>(topic: &str, working_dir: &'a std::path::Path) -> ToolContext<'a> {
+        jyc_types::state_dir::register(topic, &working_dir.join(".jyc"));
         let mut ctx = ToolContext::new(working_dir);
-        ctx.current_topic = Some("tasks-test".to_string());
+        ctx.current_topic = Some(topic.to_string());
         ctx
     }
 
-    async fn create(dir: &std::path::Path, items: Vec<&str>) -> ToolOutput {
+    async fn create(topic: &str, dir: &std::path::Path, items: Vec<&str>) -> ToolOutput {
         TaskCreateTool
-            .execute(json!({ "items": items }), &ctx_for(dir))
+            .execute(json!({ "items": items }), &ctx_for(topic, dir))
             .await
             .unwrap()
     }
 
-    async fn update(dir: &std::path::Path, id: u64, status: &str) -> ToolOutput {
+    async fn update(topic: &str, dir: &std::path::Path, id: u64, status: &str) -> ToolOutput {
         TaskUpdateTool
-            .execute(json!({ "id": id, "status": status }), &ctx_for(dir))
+            .execute(json!({ "id": id, "status": status }), &ctx_for(topic, dir))
             .await
             .unwrap()
     }
@@ -252,22 +253,46 @@ mod tests {
     #[tokio::test]
     async fn create_then_update_roundtrips_through_the_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let out = create(tmp.path(), vec!["first step", "second step"]).await;
+        let out = create(
+            "#[tokio::test]
+    async fn create_then_update_roundtrips_through_the_file() {",
+            tmp.path(),
+            vec!["first step", "second step"],
+        )
+        .await;
         assert!(!out.is_error);
         assert!(out.content.contains("Tasks (0/2):"), "{}", out.content);
 
-        let out = update(tmp.path(), 2, "in_progress").await;
+        let out = update(
+            "#[tokio::test]
+    async fn create_then_update_roundtrips_through_the_file() {",
+            tmp.path(),
+            2,
+            "in_progress",
+        )
+        .await;
         assert!(!out.is_error, "{}", out.content);
         assert!(out.content.contains("  [~] 2. second step"));
 
-        let out = update(tmp.path(), 2, "completed").await;
+        let out = update(
+            "#[tokio::test]
+    async fn create_then_update_roundtrips_through_the_file() {",
+            tmp.path(),
+            2,
+            "completed",
+        )
+        .await;
         assert!(out.content.contains("Tasks (1/2):"), "{}", out.content);
         assert!(out.content.contains("  [x] 2. second step"));
 
         // The file — what `/info` and the TUI pane read — carries the same state.
-        let stored = read_tasks_at(&tasks_dir(&ctx_for(tmp.path())))
-            .await
-            .unwrap();
+        let stored = read_tasks_at(&tasks_dir(&ctx_for(
+            "#[tokio::test]
+    async fn create_then_update_roundtrips_through_the_file() {",
+            tmp.path(),
+        )))
+        .await
+        .unwrap();
         assert_eq!(stored.progress(), (1, 2));
         assert_eq!(stored.items[0].status, TaskStatus::Pending);
     }
@@ -275,15 +300,41 @@ mod tests {
     #[tokio::test]
     async fn create_replaces_the_previous_list() {
         let tmp = tempfile::tempdir().unwrap();
-        create(tmp.path(), vec!["a", "b", "c"]).await;
-        update(tmp.path(), 1, "completed").await;
+        create(
+            "#[tokio::test]
+    async fn create_replaces_the_previous_list() {",
+            tmp.path(),
+            vec!["a", "b", "c"],
+        )
+        .await;
+        update(
+            "#[tokio::test]
+    async fn create_replaces_the_previous_list() {",
+            tmp.path(),
+            1,
+            "completed",
+        )
+        .await;
 
-        let out = create(tmp.path(), vec!["fresh start"]).await;
+        let out = create(
+            "#[tokio::test]
+    async fn create_replaces_the_previous_list() {",
+            tmp.path(),
+            vec!["fresh start"],
+        )
+        .await;
         assert!(out.content.contains("Tasks (0/1):"), "{}", out.content);
         assert!(out.content.contains("  [ ] 1. fresh start"));
 
         // The old ids are gone with the old list.
-        let out = update(tmp.path(), 2, "completed").await;
+        let out = update(
+            "#[tokio::test]
+    async fn create_replaces_the_previous_list() {",
+            tmp.path(),
+            2,
+            "completed",
+        )
+        .await;
         assert!(out.is_error);
         assert!(out.content.contains("valid: [1]"), "{}", out.content);
     }
@@ -291,7 +342,14 @@ mod tests {
     #[tokio::test]
     async fn update_without_a_list_says_create_one() {
         let tmp = tempfile::tempdir().unwrap();
-        let out = update(tmp.path(), 1, "completed").await;
+        let out = update(
+            "#[tokio::test]
+    async fn update_without_a_list_says_create_one() {",
+            tmp.path(),
+            1,
+            "completed",
+        )
+        .await;
         assert!(out.is_error);
         assert!(out.content.contains("task_create"), "{}", out.content);
     }
@@ -300,15 +358,35 @@ mod tests {
     async fn list_tool_reports_an_absent_list() {
         let tmp = tempfile::tempdir().unwrap();
         let out = TaskListTool
-            .execute(json!({}), &ctx_for(tmp.path()))
+            .execute(
+                json!({}),
+                &ctx_for(
+                    "#[tokio::test]
+    async fn list_tool_reports_an_absent_list() {",
+                    tmp.path(),
+                ),
+            )
             .await
             .unwrap();
         assert!(!out.is_error);
         assert!(out.content.contains("No task list"), "{}", out.content);
 
-        create(tmp.path(), vec!["only step"]).await;
+        create(
+            "#[tokio::test]
+    async fn list_tool_reports_an_absent_list() {",
+            tmp.path(),
+            vec!["only step"],
+        )
+        .await;
         let out = TaskListTool
-            .execute(json!({}), &ctx_for(tmp.path()))
+            .execute(
+                json!({}),
+                &ctx_for(
+                    "#[tokio::test]
+    async fn list_tool_reports_an_absent_list() {",
+                    tmp.path(),
+                ),
+            )
             .await
             .unwrap();
         assert!(out.content.contains("Tasks (0/1)"), "{}", out.content);
@@ -318,23 +396,46 @@ mod tests {
     async fn validation_rejects_bad_input() {
         let tmp = tempfile::tempdir().unwrap();
 
-        let out = create(tmp.path(), vec![]).await;
+        let out = create(
+            "#[tokio::test]
+    async fn validation_rejects_bad_input() {",
+            tmp.path(),
+            vec![],
+        )
+        .await;
         assert!(out.is_error);
         let out = TaskCreateTool
-            .execute(json!({ "items": ["   ", ""] }), &ctx_for(tmp.path()))
+            .execute(
+                json!({ "items": ["   ", ""] }),
+                &ctx_for(
+                    "#[tokio::test]
+    async fn validation_rejects_bad_input() {",
+                    tmp.path(),
+                ),
+            )
             .await
             .unwrap();
         assert!(out.is_error, "blank items must not count");
 
         let too_many = vec!["step"; MAX_ITEMS + 1];
-        let out = create(tmp.path(), too_many).await;
+        let out = create(
+            "#[tokio::test]
+    async fn validation_rejects_bad_input() {",
+            tmp.path(),
+            too_many,
+        )
+        .await;
         assert!(out.is_error);
         assert!(out.content.contains(&MAX_ITEMS.to_string()));
 
         let out = TaskCreateTool
             .execute(
                 json!({ "items": ["real step", { "text": "not a string" }] }),
-                &ctx_for(tmp.path()),
+                &ctx_for(
+                    "#[tokio::test]
+    async fn validation_rejects_bad_input() {",
+                    tmp.path(),
+                ),
             )
             .await
             .unwrap();
@@ -345,7 +446,14 @@ mod tests {
             out.content
         );
 
-        let out = update(tmp.path(), 1, "done").await;
+        let out = update(
+            "#[tokio::test]
+    async fn validation_rejects_bad_input() {",
+            tmp.path(),
+            1,
+            "done",
+        )
+        .await;
         assert!(out.is_error);
         assert!(out.content.contains("unknown status"), "{}", out.content);
     }
@@ -353,7 +461,13 @@ mod tests {
     #[tokio::test]
     async fn item_text_cannot_break_the_one_line_per_item_shape() {
         let tmp = tempfile::tempdir().unwrap();
-        let out = create(tmp.path(), vec!["first\nsecond", "plain"]).await;
+        let out = create(
+            "#[tokio::test]
+    async fn item_text_cannot_break_the_one_line_per_item_shape() {",
+            tmp.path(),
+            vec!["first\nsecond", "plain"],
+        )
+        .await;
         assert!(!out.is_error, "{}", out.content);
         assert!(
             out.content.contains("[ ] 1. first second"),
@@ -369,9 +483,22 @@ mod tests {
         // The schema advertises `TaskStatus::NAMES`; anything it lists must
         // parse, or the model can be told a value the tool then rejects.
         let tmp = tempfile::tempdir().unwrap();
-        create(tmp.path(), vec!["step"]).await;
+        create(
+            "#[tokio::test]
+    async fn status_names_in_the_schema_are_accepted() {",
+            tmp.path(),
+            vec!["step"],
+        )
+        .await;
         for name in TaskStatus::NAMES {
-            let out = update(tmp.path(), 1, name).await;
+            let out = update(
+                "#[tokio::test]
+    async fn status_names_in_the_schema_are_accepted() {",
+                tmp.path(),
+                1,
+                name,
+            )
+            .await;
             assert!(!out.is_error, "{name} should be accepted: {}", out.content);
         }
     }

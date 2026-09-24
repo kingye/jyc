@@ -274,7 +274,9 @@ mod session {
     #[tokio::test]
     async fn load_context_returns_empty_when_no_session_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let (messages, raw_context) = session::load_context("", tmp.path()).await;
+        let topic = "keeps_user_messages";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
         assert!(messages.is_empty());
         assert!(raw_context.is_empty());
     }
@@ -282,6 +284,8 @@ mod session {
     #[tokio::test]
     async fn save_and_load_raw_context() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "save_and_load_raw_context";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
@@ -296,10 +300,10 @@ mod session {
             serde_json::json!({"role": "user", "content": "hello"}),
             serde_json::json!({"role": "assistant", "content": "Hi there!"}),
         ];
-        session::save_raw_context("", tmp.path(), &context).await;
+        session::save_raw_context(topic, tmp.path(), &context).await;
 
         // Load it back
-        let (messages, raw_context) = session::load_context("", tmp.path()).await;
+        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
         assert_eq!(raw_context.len(), 2);
         assert_eq!(messages.len(), 2);
     }
@@ -307,6 +311,8 @@ mod session {
     #[tokio::test]
     async fn load_context_filters_invalid_assistant_messages() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "load_context_filters_invalid_assistant_messages";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
@@ -330,7 +336,7 @@ mod session {
         .unwrap();
 
         // Load — should filter out the invalid message
-        let (messages, raw_context) = session::load_context("", tmp.path()).await;
+        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
         assert_eq!(raw_context.len(), 2); // user + valid assistant
         assert_eq!(messages.len(), 2);
     }
@@ -338,6 +344,8 @@ mod session {
     #[tokio::test]
     async fn load_context_discards_all_user_only_context() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "load_context_discards_all_user_only_context";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
@@ -360,7 +368,7 @@ mod session {
         .unwrap();
 
         // Load — should return empty (no valid assistant messages)
-        let (messages, raw_context) = session::load_context("", tmp.path()).await;
+        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
         assert!(messages.is_empty());
         assert!(raw_context.is_empty());
     }
@@ -368,11 +376,13 @@ mod session {
     #[tokio::test]
     async fn update_tokens_creates_session_file() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "update_tokens_creates_session_file";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
 
         assert!(!jyc_dir.join("agent-session.json").exists());
         session::update_tokens(
-            "",
+            topic,
             tmp.path(),
             1000,
             1000,
@@ -409,10 +419,12 @@ mod session {
     #[tokio::test]
     async fn update_tokens_stores_latest_not_accumulated() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "update_tokens_stores_latest_not_accumulated";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
         // First call
         session::update_tokens(
-            "",
+            topic,
             tmp.path(),
             1000,
             1000,
@@ -431,7 +443,7 @@ mod session {
         // running total after call 2 is 100 + 150 = 250, which is what
         // gets passed in (not just the per-call delta of 150).
         session::update_tokens(
-            "",
+            topic,
             tmp.path(),
             2000,
             2000,
@@ -459,6 +471,8 @@ mod session {
     #[tokio::test]
     async fn reset_session_deletes_session_file() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "reset_session_deletes_session_file";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
@@ -475,7 +489,7 @@ mod session {
             mode: CompressionMode::Heuristic,
             keep_pairs: 3,
         };
-        session::reset_session("", tmp.path(), &config, None, None).await;
+        session::reset_session(topic, tmp.path(), &config, None, None).await;
 
         assert!(!jyc_dir.join("agent-session.json").exists());
         // Context should be summarized (empty in this case = deleted)
@@ -487,6 +501,8 @@ mod session {
     #[tokio::test]
     async fn update_tokens_auto_reset_with_none_mode_deletes_files() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "update_tokens_auto_reset_with_none_mode_deletes_files";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
@@ -507,7 +523,7 @@ mod session {
             keep_pairs: 3,
         };
         session::update_tokens(
-            "",
+            topic,
             tmp.path(),
             6000, // still over 1000 → auto-reset fires
             6000,
@@ -544,6 +560,8 @@ mod session {
     #[tokio::test]
     async fn maybe_reset_for_new_context_resets_when_oversized() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "maybe_reset_for_new_context_resets_when_oversized";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
@@ -564,7 +582,7 @@ mod session {
             keep_pairs: 3,
         };
         let reset = session::maybe_reset_for_new_context(
-            "",
+            topic,
             tmp.path(),
             250_000, // new max for build model (256k * ~0.95 ≈ 243k; 250k close enough)
             &config,
@@ -586,6 +604,8 @@ mod session {
     #[tokio::test]
     async fn maybe_reset_for_new_context_is_noop_when_under_threshold() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "maybe_reset_for_new_context_is_noop_when_under_threshold";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
@@ -601,7 +621,7 @@ mod session {
 
         let config = ResetCompressionConfig::default();
         let reset =
-            session::maybe_reset_for_new_context("", tmp.path(), 250_000, &config, None, None)
+            session::maybe_reset_for_new_context(topic, tmp.path(), 250_000, &config, None, None)
                 .await;
         assert!(!reset, "should not have triggered reset");
 
@@ -621,6 +641,8 @@ mod session {
     #[tokio::test]
     async fn maybe_reset_for_new_context_zero_max_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "maybe_reset_for_new_context_zero_max_is_noop";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
@@ -632,7 +654,7 @@ mod session {
         .unwrap();
 
         let reset = session::maybe_reset_for_new_context(
-            "",
+            topic,
             tmp.path(),
             0,
             &ResetCompressionConfig::default(),
@@ -653,6 +675,8 @@ mod session {
     #[tokio::test]
     async fn pre_check_ensure_then_load_returns_compacted_context() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "pre_check_ensure_then_load_returns_compacted_context";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
@@ -688,11 +712,11 @@ mod session {
 
         // The exact sequence service/mod.rs runs per message.
         let reset =
-            session::maybe_reset_for_new_context("", tmp.path(), 250_000, &config, None, None)
+            session::maybe_reset_for_new_context(topic, tmp.path(), 250_000, &config, None, None)
                 .await;
         assert!(reset, "pre-check should have triggered reset");
-        session::ensure_session_file("", tmp.path(), Some(256_000), 0.95).await;
-        let (_history, raw) = session::load_context("", tmp.path()).await;
+        session::ensure_session_file(topic, tmp.path(), Some(256_000), 0.95).await;
+        let (_history, raw) = session::load_context(topic, tmp.path()).await;
 
         // Heuristic keep_pairs=1 → only the last user+assistant pair survives.
         let texts: Vec<&str> = raw
@@ -710,6 +734,8 @@ mod session {
     #[tokio::test]
     async fn persist_tokens_does_not_trigger_reset() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "persist_tokens_does_not_trigger_reset";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
 
         // Seed a context file the reset would otherwise delete.
@@ -721,7 +747,7 @@ mod session {
 
         // Call persist_tokens with input well above the 95% threshold.
         session::persist_tokens(
-            "",
+            topic,
             tmp.path(),
             100_000,
             100_000,
@@ -759,13 +785,15 @@ mod session {
     #[tokio::test]
     async fn persist_tokens_stores_total_output_as_passed() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "persist_tokens_stores_total_output_as_passed";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
         // Simulate three LLM calls with per-call output 100, 150, 80.
         // agent_loop accumulates locally: 100, 250, 330. Each running
         // total is passed into persist_tokens.
-        session::persist_tokens("", tmp.path(), 1000, 1000, 100, 0, 0, 0, None, 0.95, 0.0).await;
-        session::persist_tokens("", tmp.path(), 1500, 1500, 250, 0, 0, 0, None, 0.95, 0.0).await;
-        session::persist_tokens("", tmp.path(), 2000, 2000, 330, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(topic, tmp.path(), 1000, 1000, 100, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(topic, tmp.path(), 1500, 1500, 250, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(topic, tmp.path(), 2000, 2000, 330, 0, 0, 0, None, 0.95, 0.0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -784,14 +812,16 @@ mod session {
     #[tokio::test]
     async fn persist_tokens_stores_total_input_as_passed() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "persist_tokens_stores_total_input_as_passed";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
         // Simulate three LLM calls with per-call `input_tokens` of
         // 1000, 2000, 3000 — agent_loop sums them to running totals of
         // 1000, 3000, 6000 and passes each running total to persist_tokens.
         // The on-disk value reflects the latest passed-in sum (= 6000).
-        session::persist_tokens("", tmp.path(), 1000, 1000, 0, 0, 0, 0, None, 0.95, 0.0).await;
-        session::persist_tokens("", tmp.path(), 2000, 3000, 0, 0, 0, 0, None, 0.95, 0.0).await;
-        session::persist_tokens("", tmp.path(), 3000, 6000, 0, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(topic, tmp.path(), 1000, 1000, 0, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(topic, tmp.path(), 2000, 3000, 0, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(topic, tmp.path(), 3000, 6000, 0, 0, 0, 0, None, 0.95, 0.0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -809,6 +839,8 @@ mod session {
     #[tokio::test]
     async fn agent_loop_token_accumulation_pattern() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "agent_loop_token_accumulation_pattern";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
         // Simulate three LLM calls as agent_loop would accumulate them.
         let mut context_input_tokens: u64 = 0;
@@ -823,7 +855,7 @@ mod session {
             total_output_tokens += per_call_output;
 
             session::persist_tokens(
-                "",
+                topic,
                 tmp.path(),
                 context_input_tokens,
                 total_input_tokens,
@@ -857,10 +889,51 @@ mod session {
     #[tokio::test]
     async fn session_cost_accumulates_across_calls() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "session_cost_accumulates_across_calls";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
-        session::persist_tokens("", tmp.path(), 1000, 1000, 100, 0, 0, 0, None, 0.95, 0.25).await;
-        session::persist_tokens("", tmp.path(), 1500, 2500, 200, 0, 0, 0, None, 0.95, 0.10).await;
-        session::persist_tokens("", tmp.path(), 2000, 4500, 300, 0, 0, 0, None, 0.95, 0.05).await;
+        session::persist_tokens(
+            topic,
+            tmp.path(),
+            1000,
+            1000,
+            100,
+            0,
+            0,
+            0,
+            None,
+            0.95,
+            0.25,
+        )
+        .await;
+        session::persist_tokens(
+            topic,
+            tmp.path(),
+            1500,
+            2500,
+            200,
+            0,
+            0,
+            0,
+            None,
+            0.95,
+            0.10,
+        )
+        .await;
+        session::persist_tokens(
+            topic,
+            tmp.path(),
+            2000,
+            4500,
+            300,
+            0,
+            0,
+            0,
+            None,
+            0.95,
+            0.05,
+        )
+        .await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -877,9 +950,24 @@ mod session {
     #[tokio::test]
     async fn zero_call_cost_preserves_existing_session_cost() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "zero_call_cost_preserves_existing_session_cost";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
-        session::persist_tokens("", tmp.path(), 1000, 1000, 100, 0, 0, 0, None, 0.95, 0.75).await;
-        session::persist_tokens("", tmp.path(), 1500, 2500, 200, 0, 0, 0, None, 0.95, 0.0).await;
+        session::persist_tokens(
+            topic,
+            tmp.path(),
+            1000,
+            1000,
+            100,
+            0,
+            0,
+            0,
+            None,
+            0.95,
+            0.75,
+        )
+        .await;
+        session::persist_tokens(topic, tmp.path(), 1500, 2500, 200, 0, 0, 0, None, 0.95, 0.0).await;
 
         let session = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
@@ -896,6 +984,8 @@ mod session {
     #[tokio::test]
     async fn legacy_session_file_without_cost_field_loads() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "legacy_session_file_without_cost_field_loads";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc).await.unwrap();
         tokio::fs::write(
@@ -908,7 +998,7 @@ mod session {
         .unwrap();
 
         // Adding cost to a legacy file starts from 0.0.
-        session::persist_tokens("", tmp.path(), 600, 1100, 90, 0, 0, 0, None, 0.95, 0.30).await;
+        session::persist_tokens(topic, tmp.path(), 600, 1100, 90, 0, 0, 0, None, 0.95, 0.30).await;
 
         let session = tokio::fs::read_to_string(jyc.join("agent-session.json"))
             .await
@@ -927,11 +1017,13 @@ mod session {
     #[tokio::test]
     async fn ensure_session_file_creates_file_when_missing() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "ensure_session_file_creates_file_when_missing";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let session_path = tmp.path().join(".jyc/agent-session.json");
 
         assert!(!session_path.exists());
 
-        session::ensure_session_file("", tmp.path(), Some(100_000), 0.95).await;
+        session::ensure_session_file(topic, tmp.path(), Some(100_000), 0.95).await;
 
         assert!(session_path.exists());
 
@@ -956,6 +1048,8 @@ mod session {
     #[tokio::test]
     async fn ensure_session_file_skips_when_file_exists() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "ensure_session_file_skips_when_file_exists";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
@@ -965,7 +1059,7 @@ mod session {
 
         // Even with a different context_window / threshold, the file must
         // remain untouched.
-        session::ensure_session_file("", tmp.path(), Some(999_999), 0.5).await;
+        session::ensure_session_file(topic, tmp.path(), Some(999_999), 0.5).await;
 
         let after = tokio::fs::read_to_string(&session_path).await.unwrap();
         assert_eq!(after, original);
@@ -977,11 +1071,13 @@ mod session {
     #[tokio::test]
     async fn ensure_session_file_creates_with_no_context_window() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "ensure_session_file_creates_with_no_context_window";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let session_path = tmp.path().join(".jyc/agent-session.json");
 
         assert!(!session_path.exists());
 
-        session::ensure_session_file("", tmp.path(), None, 0.95).await;
+        session::ensure_session_file(topic, tmp.path(), None, 0.95).await;
 
         assert!(session_path.exists());
 
@@ -1052,6 +1148,8 @@ mod tools {
     #[tokio::test]
     async fn bash_requires_command_param() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "builtin_registry_has_all_tools";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = builtin::bash::BashTool;
         let result = tool.execute(json!({}), &ctx(tmp.path())).await;
         assert!(result.is_err());
@@ -1060,6 +1158,8 @@ mod tools {
     #[tokio::test]
     async fn bash_executes_simple_command() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "bash_executes_simple_command";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = builtin::bash::BashTool;
         let result = tool
             .execute(json!({"command": "echo hello"}), &ctx(tmp.path()))
@@ -1072,6 +1172,8 @@ mod tools {
     #[tokio::test]
     async fn bash_reports_error_on_failure() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "bash_reports_error_on_failure";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = builtin::bash::BashTool;
         let result = tool
             .execute(json!({"command": "false"}), &ctx(tmp.path()))
@@ -1083,6 +1185,8 @@ mod tools {
     #[tokio::test]
     async fn read_requires_file_path() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "read_requires_file_path";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = builtin::read::ReadTool;
         let result = tool.execute(json!({}), &ctx(tmp.path())).await;
         assert!(result.is_err());
@@ -1091,6 +1195,8 @@ mod tools {
     #[tokio::test]
     async fn read_file_with_content() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "read_file_with_content";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         std::fs::write(tmp.path().join("test.txt"), "line1\nline2\nline3").unwrap();
         let tool = builtin::read::ReadTool;
         let result = tool
@@ -1105,6 +1211,8 @@ mod tools {
     #[tokio::test]
     async fn write_creates_file() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "write_creates_file";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = builtin::write::WriteTool;
         let result = tool
             .execute(
@@ -1123,6 +1231,8 @@ mod tools {
     #[tokio::test]
     async fn edit_replaces_text() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "edit_replaces_text";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         std::fs::write(tmp.path().join("file.txt"), "hello world").unwrap();
         let tool = builtin::edit::EditTool;
         let result = tool
@@ -1142,6 +1252,8 @@ mod tools {
     #[tokio::test]
     async fn edit_fails_when_old_string_not_found() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "edit_fails_when_old_string_not_found";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         std::fs::write(tmp.path().join("file.txt"), "hello world").unwrap();
         let tool = builtin::edit::EditTool;
         let result = tool
@@ -1158,6 +1270,8 @@ mod tools {
     #[tokio::test]
     async fn edit_fails_on_multiple_matches() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "edit_fails_on_multiple_matches";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         std::fs::write(tmp.path().join("file.txt"), "aaa bbb aaa").unwrap();
         let tool = builtin::edit::EditTool;
         let result = tool
@@ -1174,6 +1288,8 @@ mod tools {
     #[tokio::test]
     async fn glob_finds_files() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "glob_finds_files";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         std::fs::write(tmp.path().join("a.rs"), "").unwrap();
         std::fs::write(tmp.path().join("b.rs"), "").unwrap();
         std::fs::write(tmp.path().join("c.txt"), "").unwrap();
@@ -1191,6 +1307,8 @@ mod tools {
     #[tokio::test]
     async fn grep_finds_matches() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "grep_finds_matches";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         std::fs::write(tmp.path().join("file.rs"), "fn main() {}\nfn helper() {}").unwrap();
         let tool = builtin::grep::GrepTool;
         let result = tool
@@ -1208,6 +1326,8 @@ mod tools {
         // pattern (std::fs::read → content: Some(bytes)) has non-None
         // content, so save_attachments_to_dir will not skip it.
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "send_to_topic_attachment_has_content";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
         // Write a test file the same way send_to_topic's execute() does
         let test_data = b"hello attachment world";
@@ -1267,6 +1387,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn reply_tool_rejects_empty_message() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "send_to_topic_schema_includes_require_reply";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
@@ -1280,6 +1402,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn reply_tool_writes_signal_files() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "reply_tool_writes_signal_files";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
@@ -1401,6 +1525,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn send_message_rejects_empty_recipient() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "send_message_rejects_empty_recipient";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = SendMessageTool;
         let ctx = ToolContext::new(tmp.path());
         let result = tool
@@ -1414,6 +1540,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn send_message_rejects_empty_message() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "send_message_rejects_empty_message";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = SendMessageTool;
         let ctx = ToolContext::new(tmp.path());
         let result = tool
@@ -1430,6 +1558,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn send_message_requires_outbound() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "send_message_requires_outbound";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = SendMessageTool;
         let ctx = ToolContext::new(tmp.path());
         let result = tool
@@ -1446,6 +1576,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn send_message_sends_via_outbound() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "send_message_sends_via_outbound";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = SendMessageTool;
         let (mock, calls, _attachment_calls) = MockOutbound::new();
         let mut ctx = ToolContext::new(tmp.path());
@@ -1477,6 +1609,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn send_message_with_channel_cross_channel() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "send_message_with_channel_cross_channel";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = SendMessageTool;
         let (mock, calls, _attachment_calls) = MockOutbound::new();
         let mut ctx = ToolContext::new(tmp.path());
@@ -1512,6 +1646,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn send_message_rejects_unknown_channel() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "send_message_rejects_unknown_channel";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = SendMessageTool;
         let (mock, _calls, _attachment_calls) = MockOutbound::new();
         let mut ctx = ToolContext::new(tmp.path());
@@ -1540,6 +1676,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn send_message_rejects_missing_outbounds_map() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "send_message_rejects_missing_outbounds_map";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = SendMessageTool;
         let mut ctx = ToolContext::new(tmp.path());
         // outbounds is None (not configured)
@@ -1568,6 +1706,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn send_message_with_attachments_success() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "send_message_with_attachments_success";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = SendMessageTool;
         let (mock, _calls, attachment_calls) = MockOutbound::new();
         let mut ctx = ToolContext::new(tmp.path());
@@ -1605,6 +1745,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn send_message_attachment_not_found() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "send_message_attachment_not_found";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = SendMessageTool;
         let (mock, _calls, _attachment_calls) = MockOutbound::new();
         let mut ctx = ToolContext::new(tmp.path());
@@ -1630,6 +1772,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn send_message_cross_channel_with_attachments() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "send_message_cross_channel_with_attachments";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = SendMessageTool;
         let (mock, _calls, attachment_calls) = MockOutbound::new();
         let mut ctx = ToolContext::new(tmp.path());
@@ -1772,6 +1916,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn reply_tool_delivers_directly_when_target_present() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "reply_tool_delivers_directly_when_target_present";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         std::fs::write(tmp.path().join("report.md"), "report").unwrap();
 
         let (mock, replies) = ReplyMockOutbound::new(false);
@@ -1809,6 +1955,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn reply_tool_progress_delivers_directly_and_continues() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "reply_tool_progress_delivers_directly_and_continues";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
         let (mock, replies) = ReplyMockOutbound::new(false);
         let mut ctx = ToolContext::new(tmp.path());
@@ -1835,6 +1983,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn reply_tool_falls_back_to_file_relay_on_direct_failure() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "reply_tool_falls_back_to_file_relay_on_direct_failure";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
         let (mock, replies) = ReplyMockOutbound::new(true);
         let mut ctx = ToolContext::new(tmp.path());
@@ -1869,6 +2019,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn reply_tool_silent_delivers_nothing() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "reply_tool_silent_delivers_nothing";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
         let (mock, replies) = ReplyMockOutbound::new(false);
         let mut ctx = ToolContext::new(tmp.path());
@@ -1898,6 +2050,8 @@ mod mcp_bridge {
     #[tokio::test]
     async fn reply_tool_silent_continue() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "reply_tool_silent_continue";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let ctx = ToolContext::new(tmp.path());
 
         let result = ReplyMessageTool
@@ -1993,9 +2147,11 @@ mod skills {
     #[test]
     fn no_skills_dir_returns_empty() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "no_skills_dir_returns_empty";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills("", tmp.path(), None, None);
+            let skills = svc.discover_skills(topic, tmp.path(), None, None);
             assert!(skills.is_empty());
         });
     }
@@ -2003,6 +2159,8 @@ mod skills {
     #[test]
     fn single_skill_parsed() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "single_skill_parsed";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Create .jyc/skills/test-skill/SKILL.md
         let skill_dir = tmp.path().join(".jyc/skills/test-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
@@ -2014,7 +2172,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills("", tmp.path(), None, None);
+            let skills = svc.discover_skills(topic, tmp.path(), None, None);
             assert_eq!(skills.len(), 1);
             assert_eq!(skills[0].name, "test-skill");
             assert_eq!(skills[0].description, "A test skill");
@@ -2025,12 +2183,14 @@ mod skills {
     #[test]
     fn empty_skills_dir_handled() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "empty_skills_dir_handled";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Create the directory but leave it empty
         std::fs::create_dir_all(tmp.path().join(".jyc/skills")).unwrap();
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills("", tmp.path(), None, None);
+            let skills = svc.discover_skills(topic, tmp.path(), None, None);
             assert!(skills.is_empty());
         });
     }
@@ -2038,6 +2198,8 @@ mod skills {
     #[test]
     fn malformed_skill_skipped() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "malformed_skill_skipped";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Create a valid skill
         let good_dir = tmp.path().join(".jyc/skills/good-skill");
         std::fs::create_dir_all(&good_dir).unwrap();
@@ -2054,7 +2216,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills("", tmp.path(), None, None);
+            let skills = svc.discover_skills(topic, tmp.path(), None, None);
             assert_eq!(skills.len(), 1);
             assert_eq!(skills[0].name, "good-skill");
         });
@@ -2063,6 +2225,8 @@ mod skills {
     #[test]
     fn same_name_priority() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "same_name_priority";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Create .claude/skills/my-skill/ (lower priority — scanned earlier)
         let claude_dir = tmp.path().join(".claude/skills/my-skill");
         std::fs::create_dir_all(&claude_dir).unwrap();
@@ -2083,7 +2247,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills("", tmp.path(), None, None);
+            let skills = svc.discover_skills(topic, tmp.path(), None, None);
             assert_eq!(skills.len(), 1);
             // Should take the .jyc version (higher priority)
             assert_eq!(skills[0].description, "From JYC (overrides)");
@@ -2093,6 +2257,8 @@ mod skills {
     #[test]
     fn multi_path_discovery() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "multi_path_discovery";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Skill 1 in .jyc/skills/
         let d1 = tmp.path().join(".jyc/skills/skill-one");
         std::fs::create_dir_all(&d1).unwrap();
@@ -2113,7 +2279,7 @@ mod skills {
 
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
-            let skills = svc.discover_skills("", tmp.path(), None, None);
+            let skills = svc.discover_skills(topic, tmp.path(), None, None);
             assert_eq!(skills.len(), 2);
             let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
             assert!(names.contains(&"skill-one"));
@@ -2281,6 +2447,8 @@ mod billing_integration {
     #[tokio::test]
     async fn three_calls_produce_three_ledger_lines_and_summed_session_cost() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "format_includes_path";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let path = tmp.path();
 
         let mut expected = 0.0;
@@ -2321,6 +2489,8 @@ mod billing_integration {
     #[tokio::test]
     async fn ledger_survives_session_reset() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "ledger_survives_session_reset";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let path = tmp.path();
 
         let first = bank_one_call(path, 5000, 400, 1000).await;
@@ -2362,6 +2532,10 @@ mod billing_integration {
         use jyc_core::billing_log_store::{KIND_CALL, KIND_SUMMARY};
 
         let tmp = tempfile::tempdir().unwrap();
+
+        let topic = "summary_calls_are_billed_and_tagged";
+
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let path = tmp.path();
         let p = pricing();
 
@@ -2438,6 +2612,10 @@ mod billing_integration {
         use jyc_types::pricing::compute_cost_split_with_rates;
 
         let tmp = tempfile::tempdir().unwrap();
+
+        let topic = "banked_entry_inside_window_records_window_label_and_rates";
+
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let path = tmp.path();
 
         let p = ModelPricing {
@@ -2510,6 +2688,8 @@ mod billing_integration {
     #[tokio::test]
     async fn add_session_cost_leaves_token_counters_untouched() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "add_session_cost_leaves_token_counters_untouched";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let path = tmp.path();
 
         bank_one_call(path, 5000, 400, 1000).await;
@@ -2548,6 +2728,8 @@ mod billing_integration {
     #[tokio::test]
     async fn zero_cost_summary_writes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "zero_cost_summary_writes_nothing";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let path = tmp.path();
         jyc_agent::session::add_session_cost("", path, 0.0).await;
         assert!(

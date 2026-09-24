@@ -4,23 +4,26 @@
 //! that lived inside the topic's working directory (`<topic_dir>/.jyc`),
 //! which pollutes pinned repos and (worse) shares identity with the folder
 //! name. This module decouples them: a globally-unique **state dir**
-//! (`<agents_root>/<name>/.jyc`) can be registered for a topic *name*, and
-//! all state access resolves through [`jyc_dir`].
+//! (`<agents_root>/<name>/.jyc`) is registered for a topic *name*, and all
+//! state access resolves through [`jyc_dir`].
 //!
 //! Naming rules for state dirs:
 //! - Config-key agents (`[agents.<key>]` pins) → `<agents_root>/<key>/.jyc`.
 //!   Config keys are unique by construction, so no collisions are possible.
 //! - Ad-hoc/pinned dirs without a config key → `<agents_root>/<derived>/.jyc`
 //!   where `derived` encodes the absolute path (see [`derive_state_name`]).
-//! - Everything else (generated workspace dirs, dynamic topics) stays
-//!   `<topic_dir>/.jyc` via the fallback.
+//! - Jyc-owned workspace topics (email/dynamic topics whose dir lives under
+//!   the data home) keep `<topic_dir>/.jyc` — but as an explicit
+//!   registration made at activation, never as an implicit fallback.
 //!
 //! The registry is process-global, keyed by **topic name** — the identity
 //! that actually distinguishes topics — because several agents may pin the
 //! *same* directory (`topic_path`) while each keeping its own state dir.
-//! It is populated at startup (config pins + breadcrumb scan) and at
-//! runtime pin creation. Lookups fall back to `<topic_dir>/.jyc`, so code
-//! paths that never registered a topic behave exactly as before.
+//! It is populated at startup (config pins + breadcrumb scan), at runtime
+//! pin creation, and at topic activation. Lookups for a topic with no
+//! registration **panic**: an unregistered access is a bug, not a fallback
+//! opportunity (#825) — silently writing state into a topic's working
+//! directory is what polluted pinned user repos.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -84,14 +87,27 @@ pub fn register(topic_name: &str, state_dir: &Path) {
     map.insert(topic_name.to_string(), normalize(state_dir));
 }
 
+/// Register `state_dir` for `topic_name` only when no registration exists yet.
+///
+/// First adoption wins: a topic's state dir is chosen once (at adoption or
+/// activation) and never moved, so later candidates for the same name are
+/// ignored rather than clobbering the existing registration.
+pub fn register_if_absent(topic_name: &str, state_dir: &Path) {
+    let mut map = registry().write().unwrap_or_else(|e| e.into_inner());
+    map.entry(topic_name.to_string())
+        .or_insert_with(|| normalize(state_dir));
+}
+
 /// Return the registered state dir for `topic_name`, if any.
 pub fn registered_state(topic_name: &str) -> Option<PathBuf> {
     let map = registry().read().unwrap_or_else(|e| e.into_inner());
     map.get(topic_name).cloned()
 }
 
-/// Remove the registration for `topic_name` (used when a topic's state is
-/// destroyed, e.g. `/close` on a pinned topic). No-op if unregistered.
+/// Remove the registration for `topic_name`. No-op if unregistered.
+///
+/// Reserved for explicit state teardown and tests; `/close` deliberately
+/// keeps the registration so a reopened topic reuses the same state dir.
 pub fn unregister(topic_name: &str) {
     let mut map = registry().write().unwrap_or_else(|e| e.into_inner());
     map.remove(topic_name);
@@ -99,14 +115,22 @@ pub fn unregister(topic_name: &str) {
 
 /// Resolve the `.jyc` directory for a topic.
 ///
-/// Returns the state dir registered for `topic_name` if one exists,
-/// otherwise the legacy `topic_dir/.jyc` fallback (workspace topics).
+/// Returns the state dir registered for `topic_name`. **Panics** when the
+/// topic has no registration: every topic's state must be registered
+/// (adopted, restored, or activated) before any state access. There is
+/// deliberately no `topic_dir/.jyc` fallback — silently writing state into
+/// a topic's working directory is what polluted pinned user repos (#825).
+/// `topic_dir` is accepted only to make the panic message actionable.
 pub fn jyc_dir(topic_name: &str, topic_dir: impl AsRef<Path>) -> PathBuf {
     let topic_dir = topic_dir.as_ref();
     let map = registry().read().unwrap_or_else(|e| e.into_inner());
-    map.get(topic_name)
-        .cloned()
-        .unwrap_or_else(|| topic_dir.join(".jyc"))
+    map.get(topic_name).cloned().unwrap_or_else(|| {
+        panic!(
+            "topic '{topic_name}' has no registered state dir \
+             (topic dir: {}); state must be registered before access",
+            topic_dir.display()
+        )
+    })
 }
 
 #[cfg(test)]
@@ -142,11 +166,12 @@ mod tests {
     }
 
     #[test]
-    fn jyc_dir_falls_back_when_unregistered() {
+    #[should_panic(expected = "no registered state dir")]
+    fn jyc_dir_panics_when_unregistered() {
         let tmp = tempdir().unwrap();
         // `probe-` prefix keeps this key unique across parallel tests.
         let dir = tmp.path().join("probe-fallback");
-        assert_eq!(jyc_dir("probe-fallback-name", &dir), dir.join(".jyc"));
+        let _ = jyc_dir("probe-fallback-name", &dir);
     }
 
     #[test]
@@ -176,14 +201,33 @@ mod tests {
     #[test]
     fn unregister_clears_lookup() {
         let tmp = tempdir().unwrap();
-        let topic = tmp.path().join("probe-unreg-topic");
         let state = tmp.path().join("probe-unreg-state");
         register("probe-unreg-name", &state);
         unregister("probe-unreg-name");
         assert!(registered_state("probe-unreg-name").is_none());
-        assert_eq!(jyc_dir("probe-unreg-name", &topic), topic.join(".jyc"));
         // unregistering twice is a no-op
         unregister("probe-unreg-name");
+    }
+
+    #[test]
+    #[should_panic(expected = "no registered state dir")]
+    fn jyc_dir_panics_after_unregister() {
+        let tmp = tempdir().unwrap();
+        let topic = tmp.path().join("probe-unreg-topic");
+        let state = tmp.path().join("probe-unreg-state2");
+        register("probe-unreg-name2", &state);
+        unregister("probe-unreg-name2");
+        let _ = jyc_dir("probe-unreg-name2", &topic);
+    }
+
+    #[test]
+    fn register_if_absent_keeps_first_registration() {
+        let tmp = tempdir().unwrap();
+        let first = tmp.path().join("probe-absent-a");
+        let second = tmp.path().join("probe-absent-b");
+        register_if_absent("probe-absent-name", &first);
+        register_if_absent("probe-absent-name", &second);
+        assert_eq!(registered_state("probe-absent-name"), Some(first));
     }
 
     #[test]

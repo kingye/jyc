@@ -443,6 +443,8 @@ mod tests {
     #[tokio::test]
     async fn test_next_sleep_duration_no_jobs() {
         let tmp = tempdir().unwrap();
+        let topic = "test_disabled_scheduler_returns_immediately";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let workspace = tmp.path().join("workspace");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
@@ -454,6 +456,8 @@ mod tests {
     #[tokio::test]
     async fn test_next_sleep_duration_with_future_job() {
         let tmp = tempdir().unwrap();
+        let topic = "test_next_sleep_duration_with_future_job";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let workspace = tmp.path().join("workspace");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
@@ -474,6 +478,8 @@ mod tests {
     #[tokio::test]
     async fn test_run_cycle_skips_disabled_jobs() {
         let tmp = tempdir().unwrap();
+        let topic = "test_run_cycle_skips_disabled_jobs";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let workspace = tmp.path().join("workspace");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
@@ -494,6 +500,8 @@ mod tests {
     #[tokio::test]
     async fn test_run_cycle_skips_pending_topic_without_jobs_dir() {
         let tmp = tempdir().unwrap();
+        let topic = "test_run_cycle_skips_pending_topic_without_jobs_dir";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let workspace = tmp.path().join("workspace");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
@@ -513,6 +521,8 @@ mod tests {
     #[tokio::test]
     async fn test_run_cycle_discovery_across_topics() {
         let tmp = tempdir().unwrap();
+        let topic = "test_run_cycle_discovery_across_topics";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let workspace = tmp.path().join("workspace");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
@@ -599,6 +609,8 @@ mod tests {
     #[tokio::test]
     async fn test_run_cycle_multi_workspace_discovery() {
         let tmp = tempdir().unwrap();
+        let topic = "test_run_cycle_multi_workspace_discovery";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
         // Workspace A: one due job
         let ws_a = tmp.path().join("channel-a/workspace");
@@ -652,6 +664,8 @@ mod tests {
     #[tokio::test]
     async fn test_next_sleep_duration_earliest_across_topics() {
         let tmp = tempdir().unwrap();
+        let topic = "test_next_sleep_duration_earliest_across_topics";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let workspace = tmp.path().join("workspace");
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 

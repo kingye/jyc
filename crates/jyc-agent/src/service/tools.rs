@@ -460,6 +460,7 @@ mod tests {
     #[test]
     fn mcp_override_stamp_tracks_file() {
         let tmp = tempfile::tempdir().unwrap();
+        jyc_types::state_dir::register("stamp-test-topic", &tmp.path().join(".jyc"));
         // Absent file -> 0.
         assert_eq!(mcp_override_stamp("stamp-test-topic", tmp.path()), 0);
 

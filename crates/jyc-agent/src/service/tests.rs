@@ -456,6 +456,9 @@ fn derive_agent_config_applies_channel_overrides() {
 
 #[tokio::test]
 async fn disabled_tools_removes_builtin_and_bridge() {
+    let tname = "disabled_tools_removes_builtin_and_bridge";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     let patterns = vec![ChannelPattern {
         name: "test".to_string(),
         disabled_tools: Some(vec!["bash".to_string(), "jyc_send_message".to_string()]),
@@ -464,7 +467,7 @@ async fn disabled_tools_removes_builtin_and_bridge() {
     let svc = service_with_exclusion(patterns, None, None);
     let registry = svc
         .build_tool_registry(
-            "test",
+            tname,
             Path::new("/tmp/test-topic"),
             None,
             false,
@@ -489,6 +492,9 @@ async fn disabled_tools_removes_builtin_and_bridge() {
 
 #[tokio::test]
 async fn disabled_builtin_tools_alias_works() {
+    let tname = "disabled_builtin_tools_alias_works";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     let patterns = vec![ChannelPattern {
         name: "test".to_string(),
         disabled_builtin_tools: Some(vec!["write".to_string()]),
@@ -497,7 +503,7 @@ async fn disabled_builtin_tools_alias_works() {
     let svc = service_with_exclusion(patterns, None, None);
     let registry = svc
         .build_tool_registry(
-            "test",
+            tname,
             Path::new("/tmp/test-topic"),
             None,
             false,
@@ -517,6 +523,9 @@ async fn disabled_builtin_tools_alias_works() {
 
 #[tokio::test]
 async fn channel_and_pattern_disabled_tools_merged() {
+    let tname = "channel_and_pattern_disabled_tools_merged";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     let patterns = vec![ChannelPattern {
         name: "test".to_string(),
         disabled_tools: Some(vec!["write".to_string()]),
@@ -525,7 +534,7 @@ async fn channel_and_pattern_disabled_tools_merged() {
     let svc = service_with_exclusion(patterns, Some(vec!["bash".to_string()]), None);
     let registry = svc
         .build_tool_registry(
-            "test",
+            tname,
             Path::new("/tmp/test-topic"),
             None,
             false,
@@ -549,6 +558,9 @@ async fn channel_and_pattern_disabled_tools_merged() {
 
 #[tokio::test]
 async fn disabled_mcps_skips_matching_server() {
+    let tname = "disabled_mcps_skips_matching_server";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     // We can't easily test external MCP loading, but we can verify that
     // disabled_mcps does not cause a panic and that the registry
     // is built correctly when no MCPs are configured.
@@ -560,7 +572,7 @@ async fn disabled_mcps_skips_matching_server() {
     let svc = service_with_exclusion(patterns, None, Some(vec!["other".to_string()]));
     let registry = svc
         .build_tool_registry(
-            "test",
+            tname,
             Path::new("/tmp/test-topic"),
             None,
             false,
@@ -575,10 +587,13 @@ async fn disabled_mcps_skips_matching_server() {
 
 #[tokio::test]
 async fn channel_disabled_tools_works_without_pattern_match() {
+    let tname = "channel_disabled_tools_works_without_pattern_match";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     // channel-level disabled_tools should apply even when no pattern is matched
     let svc = service_with_exclusion(vec![], Some(vec!["bash".to_string()]), None);
     let registry = svc
-        .build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
+        .build_tool_registry(tname, Path::new("/tmp/test-topic"), None, false, None)
         .await;
 
     assert!(
@@ -590,6 +605,9 @@ async fn channel_disabled_tools_works_without_pattern_match() {
 
 #[tokio::test]
 async fn empty_disabled_tools_disables_nothing() {
+    let tname = "empty_disabled_tools_disables_nothing";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     let patterns = vec![ChannelPattern {
         name: "test".to_string(),
         disabled_tools: Some(vec![]),
@@ -599,7 +617,7 @@ async fn empty_disabled_tools_disables_nothing() {
     let svc = service_with_exclusion(patterns, Some(vec![]), Some(vec![]));
     let registry = svc
         .build_tool_registry(
-            "test",
+            tname,
             Path::new("/tmp/test-topic"),
             None,
             false,
@@ -613,6 +631,9 @@ async fn empty_disabled_tools_disables_nothing() {
 
 #[tokio::test]
 async fn disabled_tools_deduplicates_between_channel_and_pattern() {
+    let tname = "disabled_tools_deduplicates_between_channel_and_pattern";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     // When both channel and pattern disable the same tool, it should only
     // be removed once (no panic or double-remove issue).
     let patterns = vec![ChannelPattern {
@@ -623,7 +644,7 @@ async fn disabled_tools_deduplicates_between_channel_and_pattern() {
     let svc = service_with_exclusion(patterns, Some(vec!["bash".to_string()]), None);
     let registry = svc
         .build_tool_registry(
-            "test",
+            tname,
             Path::new("/tmp/test-topic"),
             None,
             false,
@@ -637,6 +658,9 @@ async fn disabled_tools_deduplicates_between_channel_and_pattern() {
 
 #[tokio::test]
 async fn disabled_mcps_filters_channel_configs() {
+    let tname = "disabled_mcps_filters_channel_configs";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     // Verify that disabled_mcps actually filters channel-level MCP configs
     // so that load_mcp_tools is not called for disabled servers.
     let patterns = vec![ChannelPattern {
@@ -656,7 +680,7 @@ async fn disabled_mcps_filters_channel_configs() {
     let svc = service_with_full_exclusion(patterns, None, None, channel_mcps);
     let registry = svc
         .build_tool_registry(
-            "test",
+            tname,
             Path::new("/tmp/test-topic"),
             None,
             false,
@@ -671,6 +695,9 @@ async fn disabled_mcps_filters_channel_configs() {
 
 #[tokio::test]
 async fn disabled_tools_server_prefix_does_not_affect_builtin() {
+    let tname = "disabled_tools_server_prefix_does_not_affect_builtin";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     // server/tool format entries should be partitioned away from plain names,
     // so built-in tools are not affected by server-prefix entries that happen
     // to share the same tool name.
@@ -682,7 +709,7 @@ async fn disabled_tools_server_prefix_does_not_affect_builtin() {
     let svc = service_with_exclusion(patterns, None, None);
     let registry = svc
         .build_tool_registry(
-            "test",
+            tname,
             Path::new("/tmp/test-topic"),
             None,
             false,
@@ -700,6 +727,9 @@ async fn disabled_tools_server_prefix_does_not_affect_builtin() {
 
 #[tokio::test]
 async fn disabled_tools_mixed_plain_and_server_prefix() {
+    let tname = "disabled_tools_mixed_plain_and_server_prefix";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     // Verify that plain names and server/tool names coexist correctly:
     // - plain names disable built-in/bridge tools via registry.remove()
     // - server/tool names are reserved for MCP tool pre-registration filtering
@@ -714,7 +744,7 @@ async fn disabled_tools_mixed_plain_and_server_prefix() {
     let svc = service_with_exclusion(patterns, None, None);
     let registry = svc
         .build_tool_registry(
-            "test",
+            tname,
             Path::new("/tmp/test-topic"),
             None,
             false,
@@ -734,6 +764,9 @@ async fn disabled_tools_mixed_plain_and_server_prefix() {
 
 #[tokio::test]
 async fn enabled_tools_on_mcp_server_config_does_not_panic() {
+    let tname = "enabled_tools_on_mcp_server_config_does_not_panic";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     // Verify that McpServerConfig with enabled_tools is accepted and
     // does not cause panic during registry build (actual filtering is
     // tested at the mcp_client level; here we verify integration).
@@ -753,7 +786,7 @@ async fn enabled_tools_on_mcp_server_config_does_not_panic() {
     let svc = service_with_full_exclusion(patterns, None, None, channel_mcps);
     let registry = svc
         .build_tool_registry(
-            "test",
+            tname,
             Path::new("/tmp/test-topic"),
             None,
             false,
@@ -772,7 +805,7 @@ async fn enabled_tools_on_mcp_server_config_does_not_panic() {
 #[tokio::test]
 async fn topic_config_with_mcps_does_not_panic() {
     let tmp = tempfile::tempdir().unwrap();
-    let topic = "pattern_model_override_is_resolved";
+    let topic = "topic_config_with_mcps_does_not_panic";
     jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
     let jyc_dir = tmp.path().join(".jyc");
     std::fs::create_dir_all(&jyc_dir).unwrap();
@@ -796,7 +829,7 @@ command = ["./topic-mcp"]
     let svc = service_with_exclusion(patterns, None, None);
     let topic_cfg = jyc_types::load_topic_config(topic, tmp.path());
     let registry = svc
-        .build_tool_registry("test", tmp.path(), topic_cfg.as_ref(), false, Some("test"))
+        .build_tool_registry(topic, tmp.path(), topic_cfg.as_ref(), false, Some("test"))
         .await;
 
     // Built-in tools still present — confirms the topic config didn't
@@ -1364,6 +1397,9 @@ fn pattern_mode_plan_injects_plan_tag_in_user_prompt() {
 
 #[tokio::test]
 async fn pattern_mcps_remote_is_registered_at_runtime() {
+    let tname = "newbee_order_bot";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     use jyc_types::{AgentConfig, McpServerConfig, McpServerKind};
 
     let agent_config = AgentConfig {
@@ -1392,7 +1428,7 @@ async fn pattern_mcps_remote_is_registered_at_runtime() {
     let svc = service_with_patterns(Some("provider/test"), vec![pattern]);
     let registry = svc
         .build_tool_registry(
-            "newbee_order_bot",
+            tname,
             Path::new("/tmp/test-topic"),
             None,
             false,
@@ -1406,6 +1442,9 @@ async fn pattern_mcps_remote_is_registered_at_runtime() {
 
 #[test]
 fn debug_print_pattern_mcps_resolution() {
+    let tname = "newbee_order_bot";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     use jyc_types::{AgentConfig, McpServerConfig, McpServerKind};
     use std::sync::OnceLock;
     use tracing_subscriber::{EnvFilter, fmt};
@@ -1447,7 +1486,7 @@ fn debug_print_pattern_mcps_resolution() {
         let svc = service_with_patterns(Some("provider/test"), vec![pattern]);
         let _registry = svc
             .build_tool_registry(
-                "newbee_order_bot",
+                tname,
                 Path::new("/tmp/test-topic"),
                 None,
                 false,
@@ -1526,6 +1565,8 @@ async fn system_prompt_enumerates_configured_access_roots() {
         matched_pattern: Some("guarded".to_string()),
     };
     let topic = Path::new("/tmp/test-topic");
+    let tname = "system_prompt_enumerates_configured_access_roots";
+    jyc_types::state_dir::register(tname, &topic.join(".jyc"));
     let reads = svc.resolve_additional_read_roots(&message, topic);
     let writes = svc.resolve_additional_write_roots(&message, topic);
     assert!(
@@ -1541,7 +1582,7 @@ async fn system_prompt_enumerates_configured_access_roots() {
     );
     let prompt = svc
         .build_system_prompt(
-            "",
+            tname,
             topic,
             message.matched_pattern.as_deref(),
             &reads,

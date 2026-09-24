@@ -89,6 +89,17 @@ pub fn state_dir_for(agents_root: &Path, topic_dir: &Path, agent_key: Option<&st
     agents_root.join(name).join(".jyc")
 }
 
+/// Register `<topic_dir>/.jyc` as the state dir for a topic whose dir lives
+/// under `workspace` (jyc-owned). No-op when the topic already has a
+/// registration (e.g. an adopted pin). A dir outside the workspace without
+/// a registration is a lost adoption: left unregistered so `jyc_dir` fails
+/// loudly instead of silently writing state into a user-owned dir (#825).
+pub fn activate_workspace_state(topic_name: &str, topic_dir: &Path, workspace: &Path) {
+    if topic_dir.starts_with(workspace) {
+        jyc_types::state_dir::register_if_absent(topic_name, &topic_dir.join(".jyc"));
+    }
+}
+
 /// Adopt `state_dir` as the `.jyc` location of topic `topic_name`, whose
 /// topic dir is `topic_dir`.
 ///

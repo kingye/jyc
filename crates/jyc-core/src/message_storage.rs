@@ -43,10 +43,9 @@ impl MessageStorage {
         _attachment_config: Option<&InboundAttachmentConfig>,
     ) -> Result<StoreResult> {
         let topic_path = self.workspace.join(topic_name);
-        // Activation registration (#825): the workspace is jyc-owned, so
-        // this topic's state lives in `<topic_dir>/.jyc` — registered
-        // explicitly instead of resolved through a silent fallback.
-        jyc_types::state_dir::register_if_absent(topic_name, &topic_path.join(".jyc"));
+        // Activation registration (#825): register this jyc-owned dir's
+        // in-dir state explicitly; never resolve through a fallback.
+        crate::topic_path::activate_workspace_state(topic_name, &topic_path, &self.workspace);
 
         // Generate a timestamp identifier for this message
         let message_dir = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
@@ -82,13 +81,9 @@ impl MessageStorage {
         topic_path: &Path,
         is_matched: bool,
     ) -> Result<StoreResult> {
-        // Activation registration for jyc-owned dirs only. A dir outside
-        // the workspace without a registration is a lost adoption — left
-        // unregistered so `jyc_dir` fails loudly instead of silently
-        // writing state into a user-owned directory (#825).
-        if topic_path.starts_with(&self.workspace) {
-            jyc_types::state_dir::register_if_absent(topic_name, &topic_path.join(".jyc"));
-        }
+        // Activation registration for jyc-owned dirs only; a user-dir pin
+        // without a registration fails loudly at `jyc_dir` (#825).
+        crate::topic_path::activate_workspace_state(topic_name, topic_path, &self.workspace);
         let message_dir = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
         self.append_to_chat_log(topic_name, topic_path, message, is_matched)
             .await?;

@@ -19,8 +19,8 @@ fn history_fingerprint_stable_for_unchanged_input() {
         history_msg("ai", "world", Some("2026-08-13T10:00:05Z")),
     ];
     assert_eq!(
-        history_fingerprint(&msgs, 80, false),
-        history_fingerprint(&msgs, 80, false)
+        history_fingerprint(&msgs, 80, false, false),
+        history_fingerprint(&msgs, 80, false, false)
     );
 }
 
@@ -30,34 +30,34 @@ fn history_fingerprint_changes_on_message_mutations() {
         history_msg("user", "hello", Some("2026-08-13T10:00:00Z")),
         history_msg("ai", "world", Some("2026-08-13T10:00:05Z")),
     ];
-    let base = history_fingerprint(&msgs, 80, false);
+    let base = history_fingerprint(&msgs, 80, false, false);
 
     // New message pushed.
     let mut pushed = msgs.clone();
     pushed.push(history_msg("user", "again", None));
-    assert_ne!(base, history_fingerprint(&pushed, 80, false));
+    assert_ne!(base, history_fingerprint(&pushed, 80, false, false));
 
     // Streaming append to the last message's text.
     let mut streamed = msgs.clone();
     streamed[1].text.push_str(" more");
-    assert_ne!(base, history_fingerprint(&streamed, 80, false));
+    assert_ne!(base, history_fingerprint(&streamed, 80, false, false));
 
     // Last message timestamp set after the fact.
     let mut stamped = msgs.clone();
     stamped[1].timestamp = Some("2026-08-13T10:00:06Z".to_string());
-    assert_ne!(base, history_fingerprint(&stamped, 80, false));
+    assert_ne!(base, history_fingerprint(&stamped, 80, false, false));
 
     // A message flipping side: same text, count and timestamps, but the
     // background block now belongs to a different line.
     let mut flipped = msgs.clone();
     flipped[0].sender = "ai".to_string();
-    assert_ne!(base, history_fingerprint(&flipped, 80, false));
+    assert_ne!(base, history_fingerprint(&flipped, 80, false, false));
 
     // Cleared history.
-    assert_ne!(base, history_fingerprint(&[], 80, false));
+    assert_ne!(base, history_fingerprint(&[], 80, false, false));
 
     // Pane resize (re-wrap needed).
-    assert_ne!(base, history_fingerprint(&msgs, 100, false));
+    assert_ne!(base, history_fingerprint(&msgs, 100, false, false));
 }
 
 #[test]
@@ -67,13 +67,13 @@ fn render_history_lines_deterministic_for_cache_reuse() {
         history_msg("ai", "world\nsecond line", Some("2026-08-13T10:00:05Z")),
     ];
     assert_eq!(
-        render_history_lines(&msgs, 80, false),
-        render_history_lines(&msgs, 80, false)
+        render_history_lines(&msgs, 80, false, false),
+        render_history_lines(&msgs, 80, false, false)
     );
     // Different width re-wraps — cache must not be reused.
     assert_ne!(
-        render_history_lines(&msgs, 80, false),
-        render_history_lines(&msgs, 20, false)
+        render_history_lines(&msgs, 80, false, false),
+        render_history_lines(&msgs, 20, false, false)
     );
 }
 
@@ -2088,8 +2088,8 @@ fn leader_toggle_tool_detail_flips_expanded_flag() {
 fn history_fingerprint_changes_on_thinking_expanded_flip() {
     let msgs = vec![history_msg("user", "hi", None)];
     assert_ne!(
-        history_fingerprint(&msgs, 80, false),
-        history_fingerprint(&msgs, 80, true)
+        history_fingerprint(&msgs, 80, false, false),
+        history_fingerprint(&msgs, 80, true, false)
     );
 }
 
@@ -2100,7 +2100,7 @@ fn render_history_thinking_collapsed_shows_summary_not_body() {
         history_msg("thinking", "secret chain of thought body", None),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let lines = render_history_lines(&msgs, 80, false);
+    let lines = render_history_lines(&msgs, 80, false, false);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -2130,7 +2130,7 @@ fn render_history_thinking_expanded_shows_full_text() {
         history_msg("thinking", "full chain of thought", None),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let lines = render_history_lines(&msgs, 80, true);
+    let lines = render_history_lines(&msgs, 80, true, false);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -2146,7 +2146,7 @@ fn render_history_marks_human_turns_with_background_not_labels() {
         history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let lines = render_history_lines(&msgs, 80, false);
+    let lines = render_history_lines(&msgs, 80, false, false);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -2211,7 +2211,7 @@ fn render_history_rows_fit_the_pane() {
         history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let lines = render_history_lines(&msgs, 80, false);
+    let lines = render_history_lines(&msgs, 80, false, false);
     // `dim_style` on the line is what marks a round rule.
     let rules: Vec<&Line> = lines
         .iter()
@@ -2240,7 +2240,7 @@ fn render_history_blocks_piped_channel_sender() {
         "from feishu",
         Some("2026-08-13T10:00:00Z"),
     )];
-    let lines = render_history_lines(&msgs, 40, false);
+    let lines = render_history_lines(&msgs, 40, false, false);
     assert!(
         lines
             .iter()

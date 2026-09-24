@@ -69,6 +69,10 @@ pub enum LocalAction {
     /// Show/hide the full multi-line tool-call input in the chat
     /// progress tail (default: one-line extracted summary).
     ToggleToolDetail,
+    /// Collapse the chat progress tail to one animated line
+    /// (`⠹ 12.4s · bash`) and leave the completed-turn thinking line out of
+    /// the history. Session-only, like the other display toggles.
+    ToggleMinimalProgress,
 }
 
 /// Static metadata for one leader entry.
@@ -193,6 +197,13 @@ pub fn local_commands() -> &'static [LocalCommand] {
             leader_keys: "T",
         },
         LocalCommand {
+            name: "minimal progress",
+            description: "Collapse the progress tail to one animated line",
+            scope: Chat,
+            action: LocalAction::ToggleMinimalProgress,
+            leader_keys: "p",
+        },
+        LocalCommand {
             name: "toggle mouse",
             description: "Toggle mouse capture",
             scope: Shared,
@@ -253,6 +264,16 @@ pub fn leader_entries_for(screen: CommandScope) -> Vec<LeaderEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimal_progress_is_a_chat_command_on_p() {
+        let cmd = local_commands()
+            .iter()
+            .find(|c| c.action == LocalAction::ToggleMinimalProgress)
+            .expect("leader entry for minimal progress");
+        assert_eq!(cmd.scope, CommandScope::Chat);
+        assert_eq!(cmd.leader_keys, "p");
+    }
 
     #[test]
     fn names_are_unique() {

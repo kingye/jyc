@@ -1234,10 +1234,10 @@ fn multi_select_enter_without_marks_cancels() {
     assert!(!chat.active_question());
 }
 
-/// Single-select is unchanged apart from the list wrapper - the guard against
-/// this feature having disturbed what already worked.
+/// `Space` is a new key: in single-select it confirms the highlighted option,
+/// which is all it can do, and the answer stays a one-element list.
 #[test]
-fn single_select_sends_one_choice_in_the_list() {
+fn single_select_space_confirms_the_highlighted_option() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
 
@@ -1306,7 +1306,9 @@ fn confirm_sends_choice_frame() {
     let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
     assert_eq!(parsed["type"], "question_response");
     assert_eq!(parsed["id"], "q1");
-    assert_eq!(parsed["choice"], "c");
+    // One frame shape for both modes: even a single pick rides in the list.
+    assert_eq!(parsed["choices"], serde_json::json!(["c"]));
+    assert!(parsed.get("choice").is_none());
     assert!(parsed.get("cancelled").is_none());
 }
 

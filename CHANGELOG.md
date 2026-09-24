@@ -2,6 +2,25 @@
 
 ### Added
 
+- `/clone [name] [path]` copies this topic's directory into a topic of its own:
+  `/fork` shares the parent's workspace (only the state is separate), `/clone`
+  gives the new topic a physical copy, so from then on the two edit different
+  files. It seeds the same state `/fork` inherits (`cloned-from` names the
+  source) and skips what must not be duplicated — scheduled jobs, the token
+  meter, the logs — while the source's state dir is never copied as content.
+  A name alone lands beside this topic's dir, a path alone takes the path's last
+  component as its name, neither means `<this>-2`. The target must be empty: a
+  clone never merges into existing data, and it refuses a dir another topic
+  works in, a dir inside the source, and a name that is already a topic. The
+  copy runs off the runtime threads, so the reply arrives when it is done.
+  Websocket-only, and it does not switch focus
+- `/close --force --purge` deletes the topic directory as well. `/close --force`
+  alone closes a pinned or cloned topic by deleting its state and keeping the
+  directory (usually someone's repo or a copy they made on purpose), which is
+  what `/fork` and `/clone` rely on; purge is the explicit "and this one too".
+  It refuses, deleting nothing and leaving the topic open, when the dir is also
+  another topic's, contains another topic's dir, or is one of jyc's own
+  (`~/.local/share/jyc/agents` and the workdir's `agents/`)
 - The chat progress tail animates, and `ctrl+p p` collapses it to one line. The
   row doing the current work — and the `AI is thinking...` placeholder shown
   before the first event — carried a static `⏳`, so a long silent stretch of
@@ -409,6 +428,15 @@
   emptied. Sending a command now clears the field instead of leaving the
   command there to be sent twice, and Enter with no matching item sends what
   you typed rather than doing nothing (#796)
+
+### Fixed
+
+- `/close` no longer claims it deleted a directory it kept: the reply says
+  whether the dir is gone or kept, and offers the exact `--purge` command for
+  the kept case
+- `/clone` and `/fork` now preserve symlinks when copying a topic dir instead of
+  following them (a link into a shared checkout used to fail the copy outright,
+  and following it would have copied the outside tree in)
 
 ## [0.3.18] - 2026-09-12
 

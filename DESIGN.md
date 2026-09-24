@@ -405,6 +405,7 @@ agents pin the same directory while each keeps its own state dir.
 | Ad-hoc pinned topic (`jyc open -p`, non-agents pin) | the pinned dir | `<data_home>/agents/_<path-escaped>/.jyc` |
 | Dynamic pipe topic | `<data_home>/agents/<agent>/<topic>/` | `<topic_dir>/.jyc` (fallback) |
 | Forked topic (`/fork`) | the **parent's** topic dir (shared workspace) | `<data_home>/agents/<name>/.jyc` |
+| Cloned topic (`/clone`) | its own copy — a sibling of the source dir by default | `<data_home>/agents/<name>/.jyc` |
 
 Multiple agent rows may pin the same topic dir (e.g. one repo shared by
 `jyc` and `jyc_git_planner`); they still get one state dir per topic name. A
@@ -415,6 +416,14 @@ registered by name before the dir was pinned (`adopt_state_dir` →
 `set_topic_path`, and the latter keeps an existing registration). The name still
 occupies a top-level entry under `agents/`, which is why `/fork` refuses a name
 that is already a topic.
+
+A `/clone` is the same mechanism pointed at a dir of its own: it copies the
+source's files into a fresh directory (the source's own `.jyc` is skipped — state
+is seeded, never copied) and then adopts/pins it exactly as `/fork` does, so the
+two topics hold separate files *and* separate state. Because that dir is a copy
+rather than a shared checkout, `close_topic` keeping it is a convenience and not
+a rule — `/close --force --purge` deletes it, refusing only when the dir is one
+another topic also uses, contains another topic's dir, or is one of jyc's own.
 
 - **Identity.** Registrations key on the topic *name*. Config-key agents keep
   their `[agents.<key>]` name for the state dir — TOML keys are unique by

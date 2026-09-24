@@ -85,7 +85,8 @@ impl QuestionHub {
     /// topic. Returns `false` when there is no pending question, the text
     /// is a command, or the asker is already gone (answered concurrently /
     /// timed out) — the message then routes normally instead of being
-    /// dropped.    ///
+    /// dropped.
+    ///
     /// Used by text-fallback channels (email, github, feishu pipe,
     /// websocket) so a user's plain reply answers the outstanding question
     /// instead of bouncing off the busy topic. With several questions pending

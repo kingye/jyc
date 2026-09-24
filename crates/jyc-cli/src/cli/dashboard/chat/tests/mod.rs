@@ -3337,41 +3337,40 @@ fn render_history_minimal_progress_drops_the_thinking_line() {
 
     let full = render_history_lines(&msgs, 80, false, false);
     let minimal = render_history_lines(&msgs, 80, false, true);
-    assert!(
-        full.iter()
-            .any(|l| l.spans.iter().any(|s| s.content == "one")),
-        "the thinking line is there to be dropped"
+    let full_rows = line_texts(&full);
+    let minimal_rows = line_texts(&minimal);
+    let thinking_rows =
+        |rows: &[String]| rows.iter().filter(|l| l.starts_with("💭 thinking")).count();
+
+    // Collapsed thinking renders its summary row and never the body, so the
+    // marker is the thing that has to be there to be dropped — and dropping the
+    // block takes its blank gap row along with it.
+    assert_eq!(
+        thinking_rows(&full_rows),
+        2,
+        "one summary per thinking block is there to be dropped:\n{}",
+        full_rows.join("\n")
     );
-    assert!(
-        !minimal.iter().any(|l| l
-            .spans
-            .iter()
-            .any(|s| s.content == "one" || s.content == "two")),
-        "minimal mode renders neither thinking block"
+    assert_eq!(
+        thinking_rows(&minimal_rows),
+        0,
+        "minimal mode renders neither thinking block:\n{}",
+        minimal_rows.join("\n")
     );
 
-    // ...and the two rules around it still hold: the user row is still a
-    // background block, and the reply line survives without its gap.
-    let flat = minimal
-        .iter()
-        .map(|l| {
-            l.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    // ...and the two rules around it still hold: the reply survives, and the
+    // user row keeps its block — which sits on the *line* style, the text span
+    // carrying only the pad's own copy of it.
+    let flat = minimal_rows.join("\n");
     assert!(
         flat.contains("go") && flat.contains("reply"),
         "the round survives without its thinking line:\n{flat}"
     );
+    let user_row = minimal
+        .iter()
+        .find(|l| l.spans.iter().any(|s| s.content.trim() == "go"));
     assert!(
-        minimal.iter().any(|l| l
-            .spans
-            .iter()
-            .any(|s| s.style.bg == Some(USER_BG) && s.content == "go ")),
+        user_row.is_some_and(|l| l.style.bg == Some(USER_BG)),
         "the user row is still a background block:\n{flat}"
     );
 }

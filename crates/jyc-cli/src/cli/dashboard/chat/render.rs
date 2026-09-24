@@ -446,14 +446,24 @@ fn minimal_progress_line(
     if !elapsed.is_empty() {
         spans.push(Span::styled(format!("{elapsed} · "), dim));
     }
-    let state = match last {
+    let state: String = match last {
         // One line has to say when the round is failing: in this mode the full
         // tail — and its red error row — is off screen.
-        Some(entry) if entry.severity == jyc_types::Severity::Error => "error",
-        Some(entry) => activity_state(&entry.text),
-        None => "thinking",
+        Some(entry) if entry.severity == jyc_types::Severity::Error => "error".into(),
+        Some(entry) => {
+            // `edit`/`write` events arrive as raw JSON and only take the
+            // `Tool: edit — foo.rs` shape inside `render_activity_entry`, so
+            // reading the state off the raw text would call a live edit
+            // "thinking". Read the same formatted row the tail draws — the
+            // collapsed shape, because that is the one that carries the
+            // `Tool: ` prefix even while `ctrl+p T` has the diff open.
+            let formatted = render_activity_entry(&entry.text, false);
+            let text = formatted.first().map(String::as_str).unwrap_or(&entry.text);
+            activity_state(text).to_string()
+        }
+        None => "thinking".into(),
     };
-    spans.push(Span::styled(state.to_string(), pulse_style(now_ms)));
+    spans.push(Span::styled(state, pulse_style(now_ms)));
     Line::from(spans)
 }
 
@@ -1721,6 +1731,19 @@ mod tests {
         assert_eq!(
             text_of(&minimal_progress_line(Some(&failed), Some(900), 500)),
             "  ⠴  0.9s · error"
+        );
+
+        // The shape the server actually sends for an edit: raw JSON, which only
+        // becomes `Tool: edit — foo.rs` further down the tail. Reading the state
+        // off the raw text called a live edit "thinking".
+        let raw_json = jyc_types::ActivityEntry {
+            text: edit_event("src/foo.rs", Some(42), "old", "new"),
+            timestamp: None,
+            ..entry.clone()
+        };
+        assert_eq!(
+            text_of(&minimal_progress_line(Some(&raw_json), None, 500)),
+            "  ⠴  edit"
         );
     }
 }

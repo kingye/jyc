@@ -135,7 +135,7 @@ async fn run_and_answer(
     let answerer = async {
         loop {
             if let Some(id) = hub.pending_for(topic) {
-                return hub.respond(&id, QuestionAnswer::Choice("按方案".to_string()));
+                return hub.respond(&id, QuestionAnswer::Choice(vec!["按方案".to_string()]));
             }
             tokio::task::yield_now().await;
         }

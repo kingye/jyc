@@ -39,9 +39,10 @@ and uses an in-process AI agent to generate replies.
 - 使用连字符（`-`）分隔单词，禁止大写字母
 
 ### PR 前检查清单
-- 本地只跑 `cargo check` 和 `cargo fmt -- --check`；**禁止**本地运行 `cargo build` / `cargo test` / `cargo clippy` / `cargo llvm-cov`（开发机资源受限，完整验证以 CI 为准）
+- 本地只跑 `cargo check -p <改动的 crate>`（改了该 crate 的测试才加 `--tests`）和 `cargo fmt -- --check`；**禁止** `--workspace` 全量 check，以及本地运行 `cargo build` / `cargo test` / `cargo clippy` / `cargo llvm-cov`（开发机资源受限：全量 check 会 OOM 并把 `target/` 撑满，完整验证以 CI 为准）
+- 跨 crate 的类型/接口变更：先用 grep 找全调用点，只 check 受影响的 crate，其余交给 CI；不为「更保险」重跑已通过的检查
 - CI（`.github/workflows/ci.yml`）自动执行：fmt、clippy -D warnings、llvm-cov（60% 阈值）
-- 改依赖时提交 `cargo check` 顺带刷新的 `Cargo.lock`
+- 改依赖时提交 `cargo check -p <crate>` 顺带刷新的 `Cargo.lock`
 - 按「文档约定」检查是否需更新相关文档
 
 ### 提交信息格式

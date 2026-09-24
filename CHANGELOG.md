@@ -436,6 +436,12 @@
 
 ### Fixed
 
+- The TUI message-pane cursor resets to the last line every time the pane
+  gains focus (the `focus chat` command or a click), instead of keeping the
+  position — and any stale selection or armed yank — from the previous visit.
+  Re-focusing while the pane already has focus is a no-op, so a wheel tick
+  cannot yank the cursor off the row being read
+
 - `/close` no longer claims it deleted a directory it kept: the reply says
   whether the dir is gone or kept, and offers the exact `--purge` command for
   the kept case

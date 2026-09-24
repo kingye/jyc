@@ -238,10 +238,17 @@ pub(super) struct ChatState {
     pub(super) leader: Option<leader::Leader>,
     /// History of sent messages for Up/Down recall (newest appended last).
     pub(super) input_history: Vec<String>,
-    /// An `ask_user` question awaiting the user's answer. Takes over the
-    /// input area while visible; Esc hides it (the question stays pending
-    /// and a typed message becomes the free-form answer).
-    pub(super) question: Option<PendingQuestion>,
+    /// The `ask_user` questions awaiting an answer here, oldest first.
+    ///
+    /// One `ask_user` call can ask several at once, so these are answered as
+    /// a flow: `question_index` is the one on screen, each carries its own
+    /// cursor and marks, and nothing is sent until the last one is confirmed —
+    /// which is what lets `←/→` go back and adjust an earlier answer. Takes
+    /// over the input area while non-empty; Esc hides the whole set (they stay
+    /// pending server-side, and typed messages answer them oldest first).
+    pub(super) questions: Vec<PendingQuestion>,
+    /// Which of [`Self::questions`] is on screen.
+    pub(super) question_index: usize,
     /// Current position in history browsing (None = not browsing).
     pub(super) history_pos: Option<usize>,
     /// Authorization token to attach to WebSocket upgrade requests.
@@ -929,19 +936,21 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         return;
     }
 
-    // A pending question owns the keyboard while visible: the agent is
-    // blocked mid-turn waiting for this answer. Esc hides it (focus back
-    // to the editor, question still pending — the next typed message
-    // becomes the free-form answer via try_answer interception).
+    // Pending questions own the keyboard while visible: the agent is blocked
+    // mid-turn waiting for these answers. Esc hides them (focus back to the
+    // editor, the questions still pending — each next typed message becomes
+    // the free-form answer of the oldest one via try_answer interception).
     if app.chat.active_question() {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => app.chat.select_question_prev(),
             KeyCode::Down | KeyCode::Char('j') => app.chat.select_question_next(),
+            KeyCode::Left => app.chat.step_question(-1),
+            KeyCode::Right => app.chat.step_question(1),
             KeyCode::Enter => app.chat.confirm_question(),
             KeyCode::Char(' ') => app.chat.space_question(),
             KeyCode::Char(c) if c.is_ascii_digit() => {
                 let idx = c as usize - '1' as usize;
-                if idx < app.chat.question.as_ref().map_or(0, |q| q.options.len()) {
+                if idx < app.chat.current_question().map_or(0, |q| q.options.len()) {
                     app.chat.pick_question_idx(idx);
                 }
             }
@@ -1799,11 +1808,25 @@ fn question_chrome_rows(question: &str, width: u16) -> usize {
 }
 
 pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(q) = app.chat.question.as_ref() else {
+    let Some(q) = app.chat.current_question() else {
         return;
     };
+    // How far into the batch the user is, and that the keys step between
+    // questions. It goes in the border rather than inside the box because the
+    // inner rows are measured (`question_chrome_rows`) - a row spent here
+    // inside would cost an option row.
+    let total = app.chat.questions.len();
+    let title = if total > 1 {
+        format!(
+            " Question {}/{} \u{b7} \u{2190}/\u{2192} \u{b7} ",
+            app.chat.question_index + 1,
+            total
+        )
+    } else {
+        " Question ".to_string()
+    };
     let block = Block::default()
-        .title(" Question ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
     let inner = block.inner(area);
@@ -2226,7 +2249,8 @@ impl ChatState {
             command_popup: None,
             leader: None,
             input_history: vec![],
-            question: None,
+            questions: vec![],
+            question_index: 0,
             history_pos: None,
             token: None,
         }
@@ -2823,16 +2847,37 @@ impl ChatState {
         self.awaiting_response = true;
     }
 
-    /// Whether a question is pending for the topic open in this pane.
+    /// The question on screen — the batch entry the cursor points at.
+    pub(super) fn current_question(&self) -> Option<&PendingQuestion> {
+        self.questions.get(self.question_index)
+    }
+
+    /// Mutable view of the question on screen.
+    fn current_question_mut(&mut self) -> Option<&mut PendingQuestion> {
+        self.questions.get_mut(self.question_index)
+    }
+
+    /// Whether questions are pending for the topic open in this pane.
     pub(super) fn active_question(&self) -> bool {
-        self.question
-            .as_ref()
+        self.current_question()
             .is_some_and(|q| self.topic.as_deref() == Some(q.topic.as_str()))
+    }
+
+    /// `←/→`: step between the questions of a batch, wrapping. Each question
+    /// keeps its own cursor and marks, so going back to adjust an answer is
+    /// free - nothing has been sent yet.
+    fn step_question(&mut self, delta: isize) {
+        let total = self.questions.len() as isize;
+        if total < 2 {
+            return;
+        }
+        let current = self.question_index as isize;
+        self.question_index = (current + delta).rem_euclid(total) as usize;
     }
 
     /// Move the question selection up (clamped at the first option).
     fn select_question_prev(&mut self) {
-        if let Some(q) = &mut self.question
+        if let Some(q) = self.current_question_mut()
             && q.selected > 0
         {
             q.selected -= 1;
@@ -2841,32 +2886,31 @@ impl ChatState {
 
     /// Move the question selection down (clamped at the last option).
     fn select_question_next(&mut self) {
-        if let Some(q) = &mut self.question
+        if let Some(q) = self.current_question_mut()
             && q.selected + 1 < q.options.len()
         {
             q.selected += 1;
         }
     }
 
-    /// Number-key shortcut: mark this option in multi mode, answer with it in
-    /// single mode.
+    /// Number-key shortcut: mark this option in multi mode; in single mode
+    /// settle the question on it, which is Enter's job - a question asked on
+    /// its own therefore still sends at once, as it always did.
     fn pick_question_idx(&mut self, idx: usize) {
-        let Some(q) = &mut self.question else {
-            return;
-        };
-        if q.multi {
-            if idx < q.options.len() {
-                toggle_marked(&mut q.marked, idx);
+        {
+            let Some(q) = self.current_question_mut() else {
+                return;
+            };
+            if idx >= q.options.len() {
+                return;
             }
-            return;
+            if q.multi {
+                toggle_marked(&mut q.marked, idx);
+                return;
+            }
+            q.selected = idx;
         }
-        let choice = match q.options.get(idx).cloned() {
-            Some(c) => c,
-            None => return,
-        };
-        let id = q.id.clone();
-        self.question = None;
-        self.send_question_response(&id, &[choice]);
+        self.confirm_question();
     }
 
     /// `Space`: mark the option under the cursor when several picks are
@@ -2876,50 +2920,64 @@ impl ChatState {
     /// panel that spells out what the keys do is a bug report waiting to
     /// happen, and confirming is what a user who just tapped Space means.
     fn space_question(&mut self) {
-        let multi = self.question.as_ref().is_some_and(|q| q.multi);
+        let multi = self.current_question().is_some_and(|q| q.multi);
         if !multi {
             self.confirm_question();
             return;
         }
-        if let Some(q) = &mut self.question {
+        if let Some(q) = self.current_question_mut() {
             toggle_marked(&mut q.marked, q.selected);
         }
     }
 
-    /// Enter: send the answer. Multi mode sends every mark and treats "not one
-    /// marked" as a cancel - the user backed out rather than picking something.
+    /// Enter: settle the current question and step to the next one; on the
+    /// last question, send every answer at once. Nothing leaves before that,
+    /// which is what keeps `←/→` able to revisit an answer.
     fn confirm_question(&mut self) {
-        let Some(q) = self.question.take() else {
-            return;
-        };
-        if !q.multi {
-            if let Some(choice) = q.options.get(q.selected) {
-                self.send_question_response(&q.id, std::slice::from_ref(choice));
-            }
+        if self.question_index + 1 < self.questions.len() {
+            self.question_index += 1;
             return;
         }
-        if q.marked.is_empty() {
-            self.send_question_cancelled(&q.id);
-            return;
-        }
-        let mut marked = q.marked.clone();
-        marked.sort_unstable();
-        let choices: Vec<String> = marked
-            .iter()
-            .filter_map(|&i| q.options.get(i).cloned())
-            .collect();
-        self.send_question_response(&q.id, &choices);
+        self.submit_questions();
     }
 
-    /// Hide the pending question (Esc) and return focus to the editor.
+    /// Send every buffered answer as its own frame, oldest question first, and
+    /// close the batch. A multi question left unmarked goes out as a cancel -
+    /// the user backed out of that one rather than picking something.
+    fn submit_questions(&mut self) {
+        let questions = std::mem::take(&mut self.questions);
+        self.question_index = 0;
+        for q in questions {
+            if !q.multi {
+                if let Some(choice) = q.options.get(q.selected) {
+                    self.send_question_response(&q.id, std::slice::from_ref(choice));
+                }
+                continue;
+            }
+            if q.marked.is_empty() {
+                self.send_question_cancelled(&q.id);
+                continue;
+            }
+            let mut marked = q.marked.clone();
+            marked.sort_unstable();
+            let choices: Vec<String> = marked
+                .iter()
+                .filter_map(|&i| q.options.get(i).cloned())
+                .collect();
+            self.send_question_response(&q.id, &choices);
+        }
+    }
+
+    /// Hide the pending questions (Esc) and return focus to the editor.
     ///
-    /// The question stays alive server-side: the next typed message is
-    /// routed to it by the websocket inbound adapter's pending-question
-    /// interception (`QuestionHub::try_answer`), making it the free-form
-    /// answer. The daemon-side timeout still bounds an unanswered
-    /// question; a replacement question cancels it as before.
+    /// They stay alive server-side: the next typed message is routed to the
+    /// oldest of them by the websocket inbound adapter's interception
+    /// (`QuestionHub::try_answer`), making it that question's free-form answer,
+    /// and the one after that answers the next. The daemon-side timeout still
+    /// bounds anything left unanswered.
     fn dismiss_question(&mut self) {
-        self.question = None;
+        self.questions.clear();
+        self.question_index = 0;
     }
 
     /// Send a `question_response` frame carrying every picked option. Even a
@@ -2976,11 +3034,11 @@ impl ChatState {
         if options.is_empty() {
             return;
         }
-        // Replacing an unanswered question cancels it server-side.
-        if let Some(prev) = self.question.take() {
-            self.send_question_cancelled(&prev.id);
-        }
-        self.question = Some(PendingQuestion {
+        // Queued rather than replacing: one `ask_user` call can ask several
+        // questions at once, and cancelling the one already on screen would
+        // tell the tool the user backed out of it. The user steps through the
+        // batch with ←/→ and the whole set goes out on the last Enter.
+        self.questions.push(PendingQuestion {
             id: id.to_string(),
             topic: topic.to_string(),
             question: parsed

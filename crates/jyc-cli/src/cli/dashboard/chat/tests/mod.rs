@@ -1066,7 +1066,7 @@ fn pattern_select_scrolls_to_keep_the_cursor_visible() {
 fn question_box_scrolls_to_keep_the_cursor_visible() {
     let mut app = chatting_app();
     app.chat.info_visible = false;
-    app.chat.question = Some(PendingQuestion {
+    app.chat.questions = vec![PendingQuestion {
         id: "q1".to_string(),
         topic: "jyc".to_string(),
         question: "Pick one?".to_string(),
@@ -1074,7 +1074,7 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
         multi: false,
         selected: 19,
         marked: Vec::new(),
-    });
+    }];
     let buffer = draw_80x24(&mut app);
 
     let rows: Vec<String> = (0..buffer.area.height)
@@ -1101,13 +1101,57 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
     );
 }
 
+/// With a batch on screen the border says which question the user is looking
+/// at and how many there are — otherwise an answer that only settles one
+/// question of three looks like the whole exchange is over.
+#[test]
+fn question_box_numbers_the_batch_in_its_title() {
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    app.chat.questions = vec![
+        PendingQuestion {
+            id: "q1".to_string(),
+            topic: "jyc".to_string(),
+            question: "Which sections?".to_string(),
+            options: vec!["Added".to_string()],
+            multi: false,
+            selected: 0,
+            marked: Vec::new(),
+        },
+        PendingQuestion {
+            id: "q2".to_string(),
+            topic: "jyc".to_string(),
+            question: "Branch name?".to_string(),
+            options: vec!["feat/x".to_string()],
+            multi: false,
+            selected: 0,
+            marked: Vec::new(),
+        },
+    ];
+    app.chat.question_index = 1;
+    let buffer = draw_80x24(&mut app);
+
+    let pane: String = (0..buffer.area.height)
+        .map(|y| row_text(&buffer, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        pane.contains("2/2"),
+        "the title must number the question:\n{pane}"
+    );
+    assert!(
+        pane.contains("Branch name?") && !pane.contains("Which sections?"),
+        "only the question under the cursor is drawn:\n{pane}"
+    );
+}
+
 /// The marks have to be readable on rows the cursor is not on, or multi-select
 /// is just single-select with extra keystrokes.
 #[test]
 fn question_box_shows_marks_for_multi_select() {
     let mut app = chatting_app();
     app.chat.info_visible = false;
-    app.chat.question = Some(PendingQuestion {
+    app.chat.questions = vec![PendingQuestion {
         id: "q1".to_string(),
         topic: "jyc".to_string(),
         question: "Which?".to_string(),
@@ -1115,7 +1159,7 @@ fn question_box_shows_marks_for_multi_select() {
         multi: true,
         selected: 0,
         marked: vec![1],
-    });
+    }];
     let buffer = draw_80x24(&mut app);
 
     let pane: String = (0..buffer.area.height)
@@ -1138,7 +1182,7 @@ fn question_box_shows_marks_for_multi_select() {
 fn question_box_marks_the_selected_option_with_an_arrow() {
     let mut app = chatting_app();
     app.chat.info_visible = false;
-    app.chat.question = Some(PendingQuestion {
+    app.chat.questions = vec![PendingQuestion {
         id: "q1".to_string(),
         topic: "jyc".to_string(),
         question: "Pick one?".to_string(),
@@ -1146,7 +1190,7 @@ fn question_box_marks_the_selected_option_with_an_arrow() {
         multi: false,
         selected: 1,
         marked: Vec::new(),
-    });
+    }];
     let buffer = draw_80x24(&mut app);
 
     let selected = (0..buffer.area.height)

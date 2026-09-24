@@ -725,8 +725,8 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 //
                 // Diff-specific styling (`-` gray, `+` green) is decided here
                 // on the *unpadded* `line`, before the caller pads it with
-                // `"⏳ "` / `"   "` — checking the padded label would always
-                // miss because the prefix sits two columns in.
+                // the marker / `"   "` — checking the padded label would
+                // always miss because the marker sits two columns in.
                 let spinner = spinner_prefix(now);
                 let rendered_lines: Vec<(String, Vec<Span<'static>>)> =
                     render_activity_entry(&a.text, app.chat.tool_detail_expanded)
@@ -976,7 +976,8 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
 /// keep the raw JSON. Lines that don't match, or whose input can't be
 /// summarized, pass through unchanged.
 /// Render the raw text of one activity entry into a list of display
-/// lines. The caller applies the per-line `⏳ ` / `   ` padding based on
+/// lines. The caller applies the per-line padding — the spinner on the
+/// entry being worked on, three blank columns elsewhere — based on
 /// `is_last` + `elapsed`.
 ///
 /// Edit/write events arrive as bare JSON (`{"type":"edit",...}`) carrying
@@ -1030,7 +1031,7 @@ fn render_activity_entry(text: &str, tool_detail_expanded: bool) -> Vec<String> 
 }
 
 /// Rich diff view for an `edit` or `write` JSON event. Lines are bare
-/// content (no `⏳ ` prefix) — the caller applies per-line padding.
+/// content (no marker prefix) — the caller applies per-line padding.
 fn render_file_tool_diff(tool_name: &str, json: &serde_json::Value) -> Vec<String> {
     let file_path = json
         .get("file_path")
@@ -1077,10 +1078,11 @@ fn render_file_tool_diff(tool_name: &str, json: &serde_json::Value) -> Vec<Strin
     out
 }
 
-/// Style one unpadded diff line. The caller pads with `"⏳ "` / `"   "`
-/// later, so the prefix check runs on the **unpadded** input — checking
-/// the padded label would always miss because the prefix sits two
-/// characters in (`"⏳ -..."` or `"   -..."`), not at column 0.
+/// Style one unpadded diff line. The caller pads with the marker
+/// (`⠹  `) / `"   "` later, so the prefix check runs on the **unpadded**
+/// input — checking the padded label would always miss because the
+/// prefix sits two characters in (`"⠹  -..."` or `"   -..."`), not at
+/// column 0.
 ///
 /// Returns `default` for the header (`<file>:<line>`), truncation
 /// marker (`… (N more lines)`), and the empty case, so the rest of the
@@ -1091,8 +1093,8 @@ fn render_file_tool_diff(tool_name: &str, json: &serde_json::Value) -> Vec<Strin
 /// The transcript `Paragraph` deliberately has no `.wrap()` — one line is
 /// exactly one screen row, which is what the scroll, cursor and selection maths
 /// count — so a row wider than the pane has to be broken up here, or everything
-/// past its right edge is unreachable. `prefix` marks the entry ("⏳ ",
-/// "💭 ", "⚠ "); every wrapped row is padded by the prefix's own
+/// past its right edge is unreachable. `prefix` marks the entry (the
+/// spinner, "💭 ", "⚠ "); every wrapped row is padded by the prefix's own
 /// display width, so a tall block still reads as one entry rather than a ragged
 /// column. The two-column base indent is added here as well.
 fn push_tail_rows(

@@ -1647,8 +1647,22 @@ fn wrapped_first_row_keeps_one_spinner() {
         long.len(),
         "the whole row has to reach the screen (total={total}):\n{pane}"
     );
-    let spinner: Vec<&String> = rows.iter().filter(|r| r.contains('⏳')).collect();
+    // The marker is now the animated braille frame rather than a static
+    // `⏳`, so match the column it occupies (two-column indent + marker)
+    // instead of one specific glyph — whichever frame the clock lands on.
+    let spinner: Vec<&String> = rows
+        .iter()
+        .filter(|r| {
+            r.chars()
+                .nth(2)
+                .is_some_and(|c| matches!(c, '\u{2800}'..='\u{28ff}'))
+        })
+        .collect();
     assert_eq!(spinner.len(), 1, "one entry, one spinner row:\n{pane}");
+    assert!(
+        !rows[..total].iter().any(|r| r.contains('⏳')),
+        "the static hourglass is gone from the tail:\n{pane}"
+    );
     let body: Vec<&String> = rows.iter().filter(|r| r.contains('x')).collect();
     for row in &body[1..] {
         assert!(

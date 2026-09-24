@@ -2859,13 +2859,13 @@ impl ChatState {
             }
             return;
         }
-        let choice = q.options.get(idx).cloned();
+        let choice = match q.options.get(idx).cloned() {
+            Some(c) => c,
+            None => return,
+        };
         let id = q.id.clone();
-        if choice.is_none() {
-            return;
-        }
         self.question = None;
-        self.send_question_response(&id, &[choice.unwrap()]);
+        self.send_question_response(&id, &[choice]);
     }
 
     /// `Space`: mark the option under the cursor when several picks are

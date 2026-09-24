@@ -45,6 +45,11 @@ and uses an in-process AI agent to generate replies.
 - 改依赖时提交 `cargo check -p <crate>` 顺带刷新的 `Cargo.lock`
 - 按「文档约定」检查是否需更新相关文档
 
+### CI 等待规则
+- **禁止**阻塞等待 CI：不得轮询 `gh pr checks` / `gh run watch`，不得用 `sleep` 重试，不得因为「CI 还没跑完」而推迟提交或推迟回复
+- push / 开 PR 之后**立即结束本轮**并把链接交给用户；CI 由远端异步执行，失败时由用户或下一次消息再驱动修复
+- 如确需状态：只查一次（`gh pr checks <branch>`），拿到输出立刻返回，不重复查询
+
 ### 提交信息格式
 遵循 [Conventional Commits](https://www.conventionalcommits.org/)：`feat:` / `fix:` / `refactor:` / `docs:` / `test:` / `chore:`（示例：`feat: add IMAP idle support for real-time email monitoring`）
 

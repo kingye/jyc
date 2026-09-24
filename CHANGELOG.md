@@ -2,6 +2,33 @@
 
 ### Added
 
+- `ask_user` can ask several questions in one call: pass `questions` (up to 5
+  `{question, options, allow_multiple}` items) instead of the single
+  `question`/`options`, and the user settles them as one flow instead of the
+  agent interrupting once per decision. In the chat question box the questions
+  queue — each keeps its own cursor and `[x]` marks, `←`/`→` step between them
+  (wrapping), `Enter` confirms one and moves to the next, and nothing is sent
+  until the last is confirmed, so going back to change an answer is free. The
+  border reads `Question 2/3 · ←/→`. Answers come back paired with what they
+  answered:
+
+  ```
+  Q1: Which sections?
+  A: Added
+
+  Q2: Branch name?
+  A: Selected: feat/x, fix/x
+  ```
+
+  A question asked on its own behaves exactly as before: `Enter` sends it
+  straight away and the answer is the bare option text. Feishu gets one card
+  per question headed `第 N/M 题` and the user answers them in order, one reply
+  each; the card is still plain text, so nothing needs a button callback. A
+  channel with no interactive support (email, wecom) fails the first push and
+  the call returns at once rather than waiting for answers nobody can give.
+  Restart the daemon alongside the chat UI: an older daemon never sends the
+  second question (#819)
+
 - `ask_user` can ask a multi-select question: pass `allow_multiple` and the user may
   pick several options. In the chat question box `Space` marks the option under the
   cursor (`1-9` mark too), marked options render as `[x]`, and `Enter` sends every mark
@@ -128,8 +155,9 @@
   the question server-side. The question stays pending — the next typed
   message becomes the free-form answer via the websocket inbound
   interception — so free-input answers are possible without a dedicated
-  UI affordance. The question is still cancelled server-side when a new
-  question replaces it or the daemon-side timeout fires (#791)
+  UI affordance. The daemon-side timeout still bounds a question left
+  unanswered; a second question no longer pushes the first out of the box, it
+  joins it (see the multi-question entry above) (#791)
 
 ### Added
 
@@ -229,6 +257,13 @@
 
 ### Fixed
 
+- **`ask_user` answers reaching the wrong question** — with more than one
+  question open for a topic, `QuestionHub::pending_for` returned the first match
+  out of a `HashMap`, so a plain text reply (feishu card, email, a hidden question
+  box) could be handed to whichever question the map happened to visit first.
+  Entries now carry a registration stamp and the oldest open question is answered
+  first — the order the questions reached the user in, which is what makes
+  answering a batch one reply at a time work (#819)
 - The TUI's topic-info pane could not be scrolled to its own bottom. It wrapped its
   content with ratatui while clamping the scroll offset against a count of *logical*
   lines, so in the 20%-wide pane — where a changed-file path takes two or three rows

@@ -338,8 +338,14 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         // a row missing here is a row the box loses, and the window would eat an
         // option for it. Both sides measure with the same helper.
         let q = app.chat.current_question().expect("active_question");
-        (question_chrome_rows(&q.question, area.width.saturating_sub(PROMPT_GUTTER_WIDTH))
-            + q.options.len()
+        // `questions.len()` because the hint says something different for a
+        // batch, and a hint that wraps to one more row is a row the options
+        // lose — both sides of this measurement have to read the same text.
+        (question_chrome_rows(
+            &q.question,
+            app.chat.questions.len(),
+            area.width.saturating_sub(PROMPT_GUTTER_WIDTH),
+        ) + q.options.len()
             + 3)
         .clamp(6, 15) as u16
     } else {

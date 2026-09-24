@@ -1301,6 +1301,29 @@ fn second_question_queues_instead_of_cancelling_the_first() {
     );
 }
 
+/// A queued batch belongs to the topic it was asked in, so switching topics
+/// leaves it behind the way Esc does. Keeping it would hide the next topic's
+/// question for good: `current_question` reads `questions[question_index]`, and
+/// a first entry from the old topic makes `active_question` false forever - no
+/// box, no keys, while the tool waits out its timeout.
+#[test]
+fn switching_topics_leaves_the_old_question_batch_behind() {
+    let (mut chat, _rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "qA1", &["x"]));
+    chat.handle_question_event(&question_payload("jyc", "qA2", &["y"]));
+    assert_eq!(chat.questions.len(), 2, "the qA batch is queued");
+
+    chat.select_pattern_inner("other".to_string());
+    chat.handle_question_event(&question_payload("other", "qB1", &["z"]));
+
+    assert!(
+        chat.active_question(),
+        "the new topic's question must reach the screen"
+    );
+    assert_eq!(chat.current_question().expect("qB1 on screen").id, "qB1");
+    assert_eq!(chat.question_index, 0);
+}
+
 /// The batch is the point: an intermediate Enter sends nothing, and the last
 /// one flushes every answer under its own question id.
 #[test]

@@ -1791,10 +1791,19 @@ fn toggle_marked(marked: &mut Vec<usize>, idx: usize) {
     }
 }
 
-/// The line under an `ask_user` question box. Kept at module level because the
-/// layout has to measure its rows — see [`question_chrome_rows`].
-const QUESTION_HINT: &str =
-    "Up/Down or j/k move - Space or 1-9 marks/picks - Enter send - Esc hide, then type your answer";
+/// The line under an `ask_user` question box. A function, not a constant: a
+/// batch changes what `Enter` does, and the layout has to measure the very text
+/// the renderer draws — see [`question_chrome_rows`].
+fn question_hint(total: usize) -> String {
+    let enter = if total > 1 {
+        "Enter next, last one sends"
+    } else {
+        "Enter send"
+    };
+    format!(
+        "Up/Down or j/k move - Space or 1-9 marks/picks - {enter} - Esc hide, then type your answer"
+    )
+}
 
 /// Rows a question box spends on everything but the options: the question and
 /// the hint (both wrap, so both are measured instead of assumed), the two blank
@@ -1803,8 +1812,8 @@ const QUESTION_HINT: &str =
 /// and the layout adds them. Both sides call this so neither can size the box
 /// short of what the other draws: a row short used to cost the hint, then the
 /// cursor.
-fn question_chrome_rows(question: &str, width: u16) -> usize {
-    count_wrapped_lines(question, width) + count_wrapped_lines(QUESTION_HINT, width) + 3
+fn question_chrome_rows(question: &str, total: usize, width: u16) -> usize {
+    count_wrapped_lines(question, width) + count_wrapped_lines(&question_hint(total), width) + 3
 }
 
 pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
@@ -1839,7 +1848,7 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
     // among them: `select_question_next` clamps only to `options.len()`, so
     // without a window a list deeper than the box parks the `→` below the clip —
     // selectable, invisible. `question_chrome_rows` says which rows those are.
-    let chrome = question_chrome_rows(&q.question, inner.width);
+    let chrome = question_chrome_rows(&q.question, total, inner.width);
     let room = (inner.height as usize).saturating_sub(chrome).max(1);
     let off = window_offset(q.options.len(), q.selected, room);
 
@@ -1877,7 +1886,7 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        QUESTION_HINT,
+        question_hint(total),
         Style::default().fg(Color::DarkGray),
     )));
 
@@ -2421,6 +2430,14 @@ impl ChatState {
         self.input_history.clear();
         self.history_pos = None;
         self.last_hydrated_key = None;
+        // A queued batch belongs to the topic being left behind. Keeping it
+        // would hide the new topic's question behind it: `current_question`
+        // reads `questions[question_index]`, and a first entry from the old
+        // topic makes `active_question` false forever, so no box is drawn.
+        // Dropping the queue is exactly what Esc does - the questions stay
+        // pending server-side, where a typed message still answers them.
+        self.questions.clear();
+        self.question_index = 0;
     }
 
     /// Cycle focus: Input → MessageArea → InfoPane → ActivityPane →

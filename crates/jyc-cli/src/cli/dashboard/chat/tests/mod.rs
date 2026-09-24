@@ -1145,6 +1145,60 @@ fn question_box_numbers_the_batch_in_its_title() {
     );
 }
 
+/// Inside a batch `Enter` advances rather than sending, and the hint is the
+/// only place that says so. A box that claims "Enter send" mid-batch is a bug
+/// report waiting to happen - the user thinks the answer left, and the tool
+/// waits on the last question's timeout.
+#[test]
+fn a_batch_hint_says_enter_only_moves_to_the_next() {
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    app.chat.questions = vec![
+        PendingQuestion {
+            id: "q1".to_string(),
+            topic: "jyc".to_string(),
+            question: "Which sections?".to_string(),
+            options: vec!["Added".to_string()],
+            multi: false,
+            selected: 0,
+            marked: Vec::new(),
+        },
+        PendingQuestion {
+            id: "q2".to_string(),
+            topic: "jyc".to_string(),
+            question: "Branch name?".to_string(),
+            options: vec!["feat/x".to_string()],
+            multi: false,
+            selected: 0,
+            marked: Vec::new(),
+        },
+    ];
+    let buffer = draw_80x24(&mut app);
+
+    let pane: String = (0..buffer.area.height)
+        .map(|y| row_text(&buffer, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        pane.contains("Enter next"),
+        "the hint must not promise a send mid-batch:\n{pane}"
+    );
+
+    // And a single question keeps its old wording - the hint is the only place
+    // a lone Enter-send is stated.
+    app.chat.questions.truncate(1);
+    app.chat.question_index = 0;
+    let single = draw_80x24(&mut app);
+    let single_pane: String = (0..single.area.height)
+        .map(|y| row_text(&single, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        single_pane.contains("Enter send"),
+        "one question still means one Enter sends it:\n{single_pane}"
+    );
+}
+
 /// The marks have to be readable on rows the cursor is not on, or multi-select
 /// is just single-select with extra keystrokes.
 #[test]

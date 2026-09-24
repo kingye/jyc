@@ -2,6 +2,15 @@
 
 ### Added
 
+- `ask_user` can ask a multi-select question: pass `allow_multiple` and the user may
+  pick several options. In the chat question box `Space` marks the option under the
+  cursor (`1-9` mark too), marked options render as `[x]`, and `Enter` sends every mark
+  in list order — Enter with nothing marked cancels the question rather than answering
+  it with nothing. One pick still reaches the model as exactly the option text, as
+  before; several come back as `Selected: a, b`. Channels whose UI cannot mark options
+  (email, plain text; feishu and wecom cards for now) answer with one option and may
+  ignore the flag (#818)
+
 - `/fork [name]`: branch another topic off the current one. The new topic is an
   ordinary topic — listed, addressable, closable — and **works in this topic's
   directory**, because a fork continues the same files; only its state is

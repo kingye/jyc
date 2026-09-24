@@ -205,8 +205,9 @@ pub(super) struct ChatState {
     /// summary. Toggled via the leader popup (`T`); default collapsed.
     pub(super) tool_detail_expanded: bool,
     /// Minimal progress mode: the live tail collapses to a single animated
-    /// line (`⠹ 12.4s · bash`) and the completed-turn thinking line is left
-    /// out of the history. Toggled via the leader popup (`p`); default off.
+    /// line (`⠹ 12.4s · thinking... | bash`) and the completed-turn thinking
+    /// line is left out of the history. Toggled via the leader popup (`p`);
+    /// default on.
     pub(super) minimal_progress: bool,
     /// Live processing status — updated by WS `processing` events.
     pub(super) live_processing: std::collections::BTreeMap<(String, String), (bool, bool)>,
@@ -2255,7 +2256,7 @@ impl ChatState {
             live_thinking: std::collections::BTreeMap::new(),
             thinking_expanded: false,
             tool_detail_expanded: false,
-            minimal_progress: false,
+            minimal_progress: true,
             live_processing: std::collections::BTreeMap::new(),
             live_tick_ms: std::collections::BTreeMap::new(),
             last_seen_id: std::collections::BTreeMap::new(),

@@ -246,6 +246,11 @@ impl Tool for AskUserTool {
         // first push, so the call returns at once instead of waiting.
         for request in &requests {
             if let Err(e) = outbound.send_question(request).await {
+                // ponytail: a push failing mid-batch leaves the questions
+                // already on screen with no hub entry behind them (the guards
+                // drop on return), so answering one is dropped silently. The
+                // upgrade is a cancel frame per pushed request here; no
+                // channel's `send_question` has ever failed after a success.
                 return Ok(ToolOutput::error(format!(
                     "channel does not support interactive questions: {e:#}. \
                      Ask the question as plain text in your reply instead."
@@ -692,6 +697,55 @@ mod tests {
             hub.pending_for("topic-a"),
             None,
             "a failed batch leaves nothing pending"
+        );
+    }
+
+    /// The batch reports what it got even when the user only settles part of
+    /// it: one question dismissed and one left to the deadline must still come
+    /// back paired with its question, or the model cannot tell which decision
+    /// is still open.
+    #[tokio::test]
+    async fn batch_reports_dismissed_and_unanswered_questions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hub = Arc::new(jyc_core::question::QuestionHub::new());
+        let sent = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let outbound = Arc::new(MockOutbound {
+            broadcast: sent.clone(),
+        });
+        let ctx = ctx_with(tmp.path(), hub.clone(), outbound);
+
+        let input = json!({
+            "questions": [
+                { "question": "Which sections?", "options": ["Added"] },
+                { "question": "Branch name?", "options": ["feat/x"] },
+            ],
+            "timeout_seconds": 1,
+        });
+        let answerer = async {
+            loop {
+                let reqs = sent.lock().await.clone();
+                if reqs.len() == 2 {
+                    return reqs;
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+
+        let tool = AskUserTool;
+        tokio::pin!(let out = tool.execute(input, &ctx););
+        let out = tokio::select! {
+            finished = &mut out => panic!("tool finished before the batch could be answered: {finished:?}"),
+            reqs = answerer => {
+                assert!(hub.respond(&reqs[0].id, QuestionAnswer::Cancelled));
+                out.await.unwrap()
+            }
+        };
+
+        assert!(!out.is_error);
+        assert_eq!(
+            out.content,
+            "Q1: Which sections?\nA: The user dismissed this question.\n\n\
+             Q2: Branch name?\nA: (no answer)"
         );
     }
 }

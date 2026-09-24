@@ -24,7 +24,8 @@ When asked to plan a solution, follow this structure:
 
 ### 2. Create Implementation Plan
 Break the solution into the smallest possible steps. Each step must:
-- Be independently verifiable (passes check + tests)
+- Be independently verifiable: `{check_command}` passes locally; tests pass wherever the
+  project runs them (CI if it has one — see `dev-workflow` → "Local vs CI")
 - Leave the codebase in a working state
 - Build on the previous step
 
@@ -35,12 +36,12 @@ Format:
 ### Step 1: <title>
 - Files: <list files to change>
 - Change: <what to do>
-- Verify: run check + test commands (per project type)
+- Verify: `{check_command}` locally; test suite at the project's tier (CI if it has one)
 
 ### Step 2: <title>
 - Files: <list files to change>
 - Change: <what to do>
-- Verify: run check + test commands (per project type)
+- Verify: `{check_command}` locally; test suite at the project's tier (CI if it has one)
 ```
 
 Use the project's actual check/test commands (from AGENTS.md, README.md, or

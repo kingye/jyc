@@ -87,6 +87,10 @@
 
 ### Changed
 
+- Agent skills validate in tiers instead of mandating a local test run: the local gate is
+  the project's check command plus the formatter, and the test suite runs where the project
+  puts it — CI when it has one, locally only when nothing else covers it. Also stops the
+  dev-loop skills from blocking a turn waiting for CI to finish
 - TUI mouse wheel: it now scrolls the topic info pane when the cursor hovers it,
   instead of answering only over the messages. The activity log, the explorer and
   the input area keep absorbing the wheel, and scrolling the info pane deliberately

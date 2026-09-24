@@ -22,8 +22,10 @@ This applies to both implementation AND planning.
 
 Break every task into the smallest possible steps. Each step must be:
 1. **Self-contained** — ONE change, never a batch or a large diff; passes
-   `{check_command}` + `{test_command}` independently
-2. **Validated** — fix any failure in the SAME step before proceeding
+   `{check_command}` independently
+2. **Validated** — at the tier the project owns (see `dev-workflow` → "Local vs CI"):
+   `{check_command}` locally on every step; `{test_command}` locally only when no CI runs
+   it. Fix any failure the chosen tier surfaces in the SAME step before proceeding
 3. **Approved** — user confirms before the next step (interactive mode only)
 
 Commit and push after each validated step — one commit per step.
@@ -42,7 +44,7 @@ request review only when all steps are done.
 ### Report After Each Step
 
     ✅ Step N/Total: <what was done>
-    Check: ✅ | Tests: ✅ N pass | Commit: <hash>
+    Check: ✅ | Tests: ✅ N pass (local) or → CI (when CI owns the suite) | Commit: <hash>
     Next: <brief description>
     Proceed? (yes/no)          ← interactive mode only
 

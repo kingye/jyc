@@ -58,6 +58,17 @@ fn history_fingerprint_changes_on_message_mutations() {
 
     // Pane resize (re-wrap needed).
     assert_ne!(base, history_fingerprint(&msgs, 100, false, false));
+
+    // Minimal progress mode drops the thinking line, so flipping it has to
+    // invalidate the cache the same way `T` does — otherwise the cached
+    // history keeps the old rows and the toggle looks like a no-op.
+    let minimal = history_fingerprint(&msgs, 80, false, true);
+    assert_ne!(base, minimal);
+    assert_ne!(
+        history_fingerprint(&msgs, 80, true, true),
+        history_fingerprint(&msgs, 80, true, false),
+        "the flag joins the fingerprint alongside the thinking toggle"
+    );
 }
 
 #[test]
@@ -3311,6 +3322,82 @@ fn the_highlight_bar_covers_the_cursor_and_the_selection() {
         Some(SELECT_BG),
         "rows outside are untouched"
     );
+}
+
+/// The other half of the thinking toggle: minimal progress mode leaves no
+/// gap behind.
+#[test]
+fn render_history_minimal_progress_drops_the_thinking_line() {
+    let msgs = vec![
+        history_msg("user", "go", None),
+        history_msg("thinking", "one", None),
+        history_msg("thinking", "two", None),
+        history_msg("ai", "**reply**", None),
+    ];
+
+    let full = render_history_lines(&msgs, 80, false, false);
+    let minimal = render_history_lines(&msgs, 80, false, true);
+    assert!(
+        full.iter()
+            .any(|l| l.spans.iter().any(|s| s.content == "one")),
+        "the thinking line is there to be dropped"
+    );
+    assert!(
+        !minimal.iter().any(|l| l
+            .spans
+            .iter()
+            .any(|s| s.content == "one" || s.content == "two")),
+        "minimal mode renders neither thinking block"
+    );
+
+    // ...and the two rules around it still hold: the user row is still a
+    // background block, and the reply line survives without its gap.
+    let flat = minimal
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        flat.contains("go") && flat.contains("reply"),
+        "the round survives without its thinking line:\n{flat}"
+    );
+    assert!(
+        minimal.iter().any(|l| l
+            .spans
+            .iter()
+            .any(|s| s.style.bg == Some(USER_BG) && s.content == "go ")),
+        "the user row is still a background block:\n{flat}"
+    );
+}
+
+/// Wiring test for the mode itself: `p` has to be a chat-scoped command whose
+/// dispatch moves the flag the render reads.
+#[test]
+fn minimal_progress_command_flips_the_flag_the_render_reads() {
+    use crate::cli::dashboard::local_commands::{CommandScope, LocalAction, local_commands};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let cmd = local_commands()
+        .iter()
+        .find(|c| c.action == LocalAction::ToggleMinimalProgress)
+        .expect("the leader popup offers the minimal progress toggle");
+    assert_eq!(cmd.scope, CommandScope::Chat, "`p` is a chat command");
+    assert_eq!(cmd.leader_keys, "p", "next to expand_tool_detail's `t`");
+
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    let mut terminal = Terminal::new(TestBackend::new(40, 20)).expect("test terminal");
+    for expected in [true, false] {
+        super::execute_local_action(&mut app, &mut terminal, cmd.action);
+        assert_eq!(app.chat.minimal_progress, expected);
+    }
 }
 
 #[cfg(test)]

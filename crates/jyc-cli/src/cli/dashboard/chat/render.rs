@@ -355,10 +355,10 @@ const PULSE_STEP_MS: i64 = 250;
 /// [`render_activity_entry`]).
 const TOOL_PREFIX: &str = "Tool: ";
 
-/// Wall-clock milliseconds, clamped at the epoch — a clock set before 1970
-/// would otherwise index a frame list with a negative number.
+/// Wall-clock milliseconds. The epoch floor is enforced in [`step_index`] —
+/// the only place this value indexes anything.
 fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis().max(0)
+    chrono::Utc::now().timestamp_millis()
 }
 
 /// Index into a frame list from an absolute timestamp. Clamped at the epoch:
@@ -446,9 +446,13 @@ fn minimal_progress_line(
     if !elapsed.is_empty() {
         spans.push(Span::styled(format!("{elapsed} · "), dim));
     }
-    let state = last
-        .map(|entry| activity_state(&entry.text))
-        .unwrap_or("thinking");
+    let state = match last {
+        // One line has to say when the round is failing: in this mode the full
+        // tail — and its red error row — is off screen.
+        Some(entry) if entry.severity == jyc_types::Severity::Error => "error",
+        Some(entry) => activity_state(&entry.text),
+        None => "thinking",
+    };
     spans.push(Span::styled(state.to_string(), pulse_style(now_ms)));
     Line::from(spans)
 }
@@ -1706,6 +1710,17 @@ mod tests {
         assert_eq!(
             text_of(&minimal_progress_line(None, None, 0)),
             "  ⠋  thinking"
+        );
+
+        // A failing round has to say so on its one line — in this mode the
+        // full tail, and its red error row, are off screen.
+        let failed = jyc_types::ActivityEntry {
+            severity: jyc_types::Severity::Error,
+            ..entry.clone()
+        };
+        assert_eq!(
+            text_of(&minimal_progress_line(Some(&failed), Some(900), 500)),
+            "  ⠴  0.9s · error"
         );
     }
 }

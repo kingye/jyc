@@ -39,8 +39,14 @@ pub(super) struct PendingQuestion {
     pub question: String,
     /// Selectable options.
     pub options: Vec<String>,
-    /// Currently highlighted option.
+    /// Whether more than one option may be picked (the daemon's
+    /// `allow_multiple`).
+    pub multi: bool,
+    /// Currently highlighted option - the cursor `Space` marks under.
     pub selected: usize,
+    /// Marked option indices, in multi mode; single mode answers with the
+    /// cursor directly.
+    pub marked: Vec<usize>,
 }
 
 /// Which pane has focus in chat mode.
@@ -932,10 +938,11 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
             KeyCode::Up | KeyCode::Char('k') => app.chat.select_question_prev(),
             KeyCode::Down | KeyCode::Char('j') => app.chat.select_question_next(),
             KeyCode::Enter => app.chat.confirm_question(),
+            KeyCode::Char(' ') => app.chat.space_question(),
             KeyCode::Char(c) if c.is_ascii_digit() => {
                 let idx = c as usize - '1' as usize;
                 if idx < app.chat.question.as_ref().map_or(0, |q| q.options.len()) {
-                    app.chat.confirm_question_idx(idx);
+                    app.chat.pick_question_idx(idx);
                 }
             }
             KeyCode::Esc => app.chat.dismiss_question(),
@@ -1764,10 +1771,21 @@ pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Toggle `idx` in a mark list. Order is irrelevant while marking - the submit
+/// sorts, so the answer follows the option list's own order.
+fn toggle_marked(marked: &mut Vec<usize>, idx: usize) {
+    match marked.iter().position(|&i| i == idx) {
+        Some(at) => {
+            marked.remove(at);
+        }
+        None => marked.push(idx),
+    }
+}
+
 /// The line under an `ask_user` question box. Kept at module level because the
 /// layout has to measure its rows — see [`question_chrome_rows`].
 const QUESTION_HINT: &str =
-    "Up/Down or j/k select - 1-9 choose - Enter confirm - Esc hide, then type your answer";
+    "Up/Down or j/k move - Space or 1-9 marks/picks - Enter send - Esc hide, then type your answer";
 
 /// Rows a question box spends on everything but the options: the question and
 /// the hint (both wrap, so both are measured instead of assumed), the two blank
@@ -1810,9 +1828,20 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
     for (i, opt) in q.options.iter().enumerate().skip(off).take(room) {
         // One row per option: a wrapped one would push the rows below it — and
         // the cursor with them — out of the box.
+        // A marked option leads with a box, so it still reads as picked on the
+        // dimmed rows that do not carry the cursor.
+        let mark = if q.multi {
+            if q.marked.contains(&i) {
+                "[x] "
+            } else {
+                "[ ] "
+            }
+        } else {
+            ""
+        };
         let label = truncate_to_width(
-            &format!("{}. {opt}", i + 1),
-            inner.width.saturating_sub(2) as usize,
+            &format!("{mark}{}. {opt}", i + 1),
+            inner.width.saturating_sub(2 + mark.chars().count() as u16) as usize,
         );
         if i == q.selected {
             lines.push(Line::from(Span::styled(
@@ -2819,20 +2848,67 @@ impl ChatState {
         }
     }
 
-    /// Confirm the pending question with the option at `idx` (0-based).
-    fn confirm_question_idx(&mut self, idx: usize) {
-        let Some(q) = self.question.take() else {
+    /// Number-key shortcut: mark this option in multi mode, answer with it in
+    /// single mode.
+    fn pick_question_idx(&mut self, idx: usize) {
+        let Some(q) = &mut self.question else {
             return;
         };
-        if let Some(choice) = q.options.get(idx) {
-            self.send_question_response(&q.id, choice);
+        if q.multi {
+            if idx < q.options.len() {
+                toggle_marked(&mut q.marked, idx);
+            }
+            return;
+        }
+        let choice = match q.options.get(idx).cloned() {
+            Some(c) => c,
+            None => return,
+        };
+        let id = q.id.clone();
+        self.question = None;
+        self.send_question_response(&id, &[choice]);
+    }
+
+    /// `Space`: mark the option under the cursor when several picks are
+    /// allowed; otherwise confirm the highlighted one outright.
+    ///
+    /// Single-select confirms rather than ignoring the key: an inert key in a
+    /// panel that spells out what the keys do is a bug report waiting to
+    /// happen, and confirming is what a user who just tapped Space means.
+    fn space_question(&mut self) {
+        let multi = self.question.as_ref().is_some_and(|q| q.multi);
+        if !multi {
+            self.confirm_question();
+            return;
+        }
+        if let Some(q) = &mut self.question {
+            toggle_marked(&mut q.marked, q.selected);
         }
     }
 
-    /// Confirm the pending question with the highlighted option.
+    /// Enter: send the answer. Multi mode sends every mark and treats "not one
+    /// marked" as a cancel - the user backed out rather than picking something.
     fn confirm_question(&mut self) {
-        let idx = self.question.as_ref().map_or(0, |q| q.selected);
-        self.confirm_question_idx(idx);
+        let Some(q) = self.question.take() else {
+            return;
+        };
+        if !q.multi {
+            if let Some(choice) = q.options.get(q.selected) {
+                self.send_question_response(&q.id, std::slice::from_ref(choice));
+            }
+            return;
+        }
+        if q.marked.is_empty() {
+            self.send_question_cancelled(&q.id);
+            return;
+        }
+        let mut marked = q.marked.clone();
+        marked.sort_unstable();
+        let choices: Vec<String> = marked
+            .iter()
+            .filter_map(|&i| q.options.get(i).cloned())
+            .collect();
+        self.send_question_response(&q.id, &choices);
     }
 
     /// Hide the pending question (Esc) and return focus to the editor.
@@ -2846,12 +2922,13 @@ impl ChatState {
         self.question = None;
     }
 
-    /// Send a `question_response` frame with the picked option.
-    fn send_question_response(&self, id: &str, choice: &str) {
+    /// Send a `question_response` frame carrying every picked option. Even a
+    /// single pick goes out as a list, so there is one frame shape.
+    fn send_question_response(&self, id: &str, choices: &[String]) {
         let msg = serde_json::json!({
             "type": "question_response",
             "id": id,
-            "choice": choice,
+            "choices": choices,
         })
         .to_string();
         if let Some(tx) = &self.ws_tx {
@@ -2912,7 +2989,12 @@ impl ChatState {
                 .unwrap_or_default()
                 .to_string(),
             options,
+            multi: parsed
+                .get("allow_multiple")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             selected: 0,
+            marked: Vec::new(),
         });
     }
 

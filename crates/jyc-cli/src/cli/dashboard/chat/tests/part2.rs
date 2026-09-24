@@ -1190,6 +1190,65 @@ fn question_payload(topic: &str, id: &str, options: &[&str]) -> serde_json::Valu
     })
 }
 
+/// The same frame with `allow_multiple` set - what the daemon sends for a
+/// question the user may answer with several options.
+fn question_payload_multi(topic: &str, id: &str, options: &[&str]) -> serde_json::Value {
+    let mut payload = question_payload(topic, id, options);
+    payload["allow_multiple"] = serde_json::json!(true);
+    payload
+}
+
+/// Multi-select: `Space` marks under the cursor, digits mark too, and Enter
+/// sends every mark in the option list's own order.
+#[test]
+fn multi_select_marks_then_sends_every_mark() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload_multi("jyc", "q1", &["a", "b", "c"]));
+    assert!(chat.question.as_ref().unwrap().multi);
+
+    chat.select_question_next(); // -> b
+    chat.space_question(); // mark b
+    chat.select_question_next(); // -> c
+    chat.space_question(); // mark c
+    chat.pick_question_idx(1); // digits mark too, and toggle back off
+    assert_eq!(chat.question.as_ref().unwrap().marked, vec![2]);
+
+    chat.confirm_question();
+    let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+    assert_eq!(frame["choices"], serde_json::json!(["c"]));
+    assert!(frame.get("choice").is_none(), "one frame shape");
+    assert!(!chat.active_question());
+}
+
+/// Not one marked is the user backing out, not an empty answer.
+#[test]
+fn multi_select_enter_without_marks_cancels() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload_multi("jyc", "q1", &["a", "b"]));
+
+    chat.confirm_question();
+
+    let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+    assert_eq!(frame["cancelled"], serde_json::json!(true));
+    assert!(frame.get("choices").is_none());
+    assert!(!chat.active_question());
+}
+
+/// `Space` is a new key: in single-select it confirms the highlighted option,
+/// which is all it can do, and the answer stays a one-element list.
+#[test]
+fn single_select_space_confirms_the_highlighted_option() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
+
+    chat.select_question_next();
+    chat.space_question(); // Space still confirms when only one may be picked
+
+    let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+    assert_eq!(frame["choices"], serde_json::json!(["b"]));
+    assert!(!chat.active_question());
+}
+
 #[test]
 fn question_event_surfaces_for_matching_topic() {
     let (mut chat, _rx) = chat_for_topic("jyc");
@@ -1247,7 +1306,9 @@ fn confirm_sends_choice_frame() {
     let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
     assert_eq!(parsed["type"], "question_response");
     assert_eq!(parsed["id"], "q1");
-    assert_eq!(parsed["choice"], "c");
+    // One frame shape for both modes: even a single pick rides in the list.
+    assert_eq!(parsed["choices"], serde_json::json!(["c"]));
+    assert!(parsed.get("choice").is_none());
     assert!(parsed.get("cancelled").is_none());
 }
 
@@ -1289,7 +1350,7 @@ fn confirm_out_of_range_digit_is_noop() {
     // Simulate the digit guard: idx 5 >= 2 options → no frame, question stays.
     let idx = 5_usize;
     if idx < chat.question.as_ref().map_or(0, |q| q.options.len()) {
-        chat.confirm_question_idx(idx);
+        chat.pick_question_idx(idx);
     }
     assert!(chat.active_question());
     assert!(rx.try_recv().is_err());

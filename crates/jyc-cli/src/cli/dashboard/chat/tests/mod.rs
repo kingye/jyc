@@ -1071,7 +1071,9 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
         topic: "jyc".to_string(),
         question: "Pick one?".to_string(),
         options: (0..20).map(|i| format!("opt{i:02}")).collect(),
+        multi: false,
         selected: 19,
+        marked: Vec::new(),
     });
     let buffer = draw_80x24(&mut app);
 
@@ -1099,6 +1101,37 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
     );
 }
 
+/// The marks have to be readable on rows the cursor is not on, or multi-select
+/// is just single-select with extra keystrokes.
+#[test]
+fn question_box_shows_marks_for_multi_select() {
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    app.chat.question = Some(PendingQuestion {
+        id: "q1".to_string(),
+        topic: "jyc".to_string(),
+        question: "Which?".to_string(),
+        options: vec!["alpha".to_string(), "beta".to_string()],
+        multi: true,
+        selected: 0,
+        marked: vec![1],
+    });
+    let buffer = draw_80x24(&mut app);
+
+    let pane: String = (0..buffer.area.height)
+        .map(|y| row_text(&buffer, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        pane.contains("[x] 2. beta"),
+        "a marked option carries a box even without the cursor:\n{pane}"
+    );
+    assert!(
+        pane.contains("[ ] 1. alpha"),
+        "an unmarked option says so:\n{pane}"
+    );
+}
+
 /// The question box marks its selected option the same way, and follows the
 /// cursor instead of always marking the first option.
 #[test]
@@ -1110,7 +1143,9 @@ fn question_box_marks_the_selected_option_with_an_arrow() {
         topic: "jyc".to_string(),
         question: "Pick one?".to_string(),
         options: vec!["alpha".to_string(), "beta".to_string()],
+        multi: false,
         selected: 1,
+        marked: Vec::new(),
     });
     let buffer = draw_80x24(&mut app);
 

@@ -160,10 +160,13 @@ enum ClientMessage {
     QuestionResponse {
         /// Id of the question being answered (from the `question` payload).
         id: String,
-        /// The picked option. `None` together with `cancelled: false` is
-        /// treated as a dismissal.
+        /// The picked option, for clients that send one choice at a time.
         #[serde(default)]
         choice: Option<String>,
+        /// Every picked option, for a question that allowed multiple. Wins
+        /// over `choice` when non-empty.
+        #[serde(default)]
+        choices: Vec<String>,
         /// Whether the user dismissed the question without choosing.
         #[serde(default)]
         cancelled: bool,
@@ -470,6 +473,7 @@ async fn handle_connection_impl(
                             ClientMessage::QuestionResponse {
                                 id,
                                 choice,
+                                choices,
                                 cancelled,
                             } => {
                                 let Some(hub) = question_hub.clone() else {
@@ -481,13 +485,13 @@ async fn handle_connection_impl(
                                 };
                                 let answer = if cancelled {
                                     jyc_types::channel::QuestionAnswer::Cancelled
+                                } else if !choices.is_empty() {
+                                    jyc_types::channel::QuestionAnswer::Choice(choices)
                                 } else {
-                                    // A response without a choice counts as
-                                    // a dismissal.
-                                    choice.map_or(
-                                        jyc_types::channel::QuestionAnswer::Cancelled,
-                                        jyc_types::channel::QuestionAnswer::Choice,
-                                    )
+                                    // A response without any pick is a dismissal.
+                                    choice
+                                        .map(|c| jyc_types::channel::QuestionAnswer::Choice(vec![c]))
+                                        .unwrap_or(jyc_types::channel::QuestionAnswer::Cancelled)
                                 };
                                 if !hub.respond(&id, answer) {
                                     // Unknown id or asker gone (timed out /
@@ -914,10 +918,12 @@ mod tests {
             ClientMessage::QuestionResponse {
                 id,
                 choice,
+                choices,
                 cancelled,
             } => {
                 assert_eq!(id, "q1");
                 assert_eq!(choice.as_deref(), Some("option B"));
+                assert!(choices.is_empty());
                 assert!(!cancelled);
             }
             _ => panic!("expected QuestionResponse"),
@@ -934,11 +940,36 @@ mod tests {
             ClientMessage::QuestionResponse {
                 id,
                 choice,
+                choices,
                 cancelled,
             } => {
                 assert_eq!(id, "q1");
                 assert!(choice.is_none());
+                assert!(choices.is_empty());
                 assert!(cancelled);
+            }
+            _ => panic!("expected QuestionResponse"),
+        }
+    }
+
+    /// A multi-select answer arrives as a list and `choice` stays absent - the
+    /// shape the question box sends for both modes.
+    #[test]
+    fn test_client_message_question_response_choices() {
+        let msg: ClientMessage =
+            serde_json::from_str(r#"{"type":"question_response","id":"q1","choices":["a","b"]}"#)
+                .unwrap();
+        match msg {
+            ClientMessage::QuestionResponse {
+                id,
+                choice,
+                choices,
+                cancelled,
+            } => {
+                assert_eq!(id, "q1");
+                assert!(choice.is_none(), "one frame shape wins");
+                assert_eq!(choices, vec!["a".to_string(), "b".to_string()]);
+                assert!(!cancelled);
             }
             _ => panic!("expected QuestionResponse"),
         }

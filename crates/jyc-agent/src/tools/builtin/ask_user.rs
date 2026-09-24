@@ -58,6 +58,11 @@ impl Tool for AskUserTool {
                     "type": "integer",
                     "description": "How long to wait for an answer before giving up. \
                                     Default: 300."
+                },
+                "allow_multiple": {
+                    "type": "boolean",
+                    "description": "Whether the user may pick more than one option. \
+                                    Default: false."
                 }
             },
             "required": ["question", "options"]
@@ -84,6 +89,10 @@ impl Tool for AskUserTool {
             .get("timeout_seconds")
             .and_then(|t| t.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
+        let allow_multiple = input
+            .get("allow_multiple")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let (Some(hub), Some(outbound)) = (&ctx.question_hub, &ctx.outbound) else {
             return Ok(ToolOutput::error(
@@ -103,6 +112,7 @@ impl Tool for AskUserTool {
             topic: topic.clone(),
             question: question.to_string(),
             options,
+            allow_multiple,
             timeout_seconds: Some(timeout_secs),
         };
         if let Err(e) = outbound.send_question(&request).await {
@@ -113,7 +123,14 @@ impl Tool for AskUserTool {
         }
 
         match tokio::time::timeout(Duration::from_secs(timeout_secs), rx).await {
-            Ok(Ok(QuestionAnswer::Choice(choice))) => Ok(ToolOutput::success(choice)),
+            Ok(Ok(QuestionAnswer::Choice(choices))) => {
+                Ok(ToolOutput::success(match choices.len() {
+                    0 => String::new(),
+                    // One pick reads exactly as it did before multi-select existed.
+                    1 => choices.into_iter().next().unwrap_or_default(),
+                    _ => format!("Selected: {}", choices.join(", ")),
+                }))
+            }
             Ok(Ok(QuestionAnswer::Cancelled)) => {
                 Ok(ToolOutput::success("The user dismissed the question."))
             }
@@ -233,6 +250,47 @@ mod tests {
         })
     }
 
+    /// `allow_multiple` must reach the channel, and two picks come back as one
+    /// readable line (one pick staying verbatim - see `answer_returns_choice`).
+    #[tokio::test]
+    async fn answer_returns_multiple_choices() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hub = Arc::new(jyc_core::question::QuestionHub::new());
+        let sent = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let outbound = Arc::new(MockOutbound {
+            broadcast: sent.clone(),
+        });
+        let ctx = ctx_with(tmp.path(), hub.clone(), outbound);
+
+        let mut input = input("Which?", &["a", "b", "c"], Some(5));
+        input["allow_multiple"] = json!(true);
+        let answerer = async {
+            loop {
+                if let Some(req) = sent.lock().await.first().cloned() {
+                    return req;
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+
+        let tool = AskUserTool;
+        tokio::pin!(let out = tool.execute(input, &ctx););
+        let out = tokio::select! {
+            finished = &mut out => panic!("tool finished before the answer: {finished:?}"),
+            req = answerer => {
+                assert!(req.allow_multiple, "the flag must reach the channel");
+                assert!(hub.respond(
+                    &req.id,
+                    QuestionAnswer::Choice(vec!["a".to_string(), "c".to_string()])
+                ));
+                out.await.unwrap()
+            }
+        };
+
+        assert!(!out.is_error);
+        assert_eq!(out.content, "Selected: a, c");
+    }
+
     #[tokio::test]
     async fn answer_returns_choice() {
         let tmp = tempfile::tempdir().unwrap();
@@ -261,7 +319,7 @@ mod tests {
         let out = tokio::select! {
             finished = &mut out => panic!("tool finished before the answer: {finished:?}"),
             id = answerer => {
-                assert!(hub.respond(&id, QuestionAnswer::Choice("b".to_string())));
+                assert!(hub.respond(&id, QuestionAnswer::Choice(vec!["b".to_string()])));
                 out.await.unwrap()
             }
         };

@@ -172,6 +172,7 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
             "topic": request.topic,
             "question": request.question,
             "options": request.options,
+            "allow_multiple": request.allow_multiple,
             "timeout_seconds": request.timeout_seconds,
         });
         // Same no-receiver tolerance as `broadcast_reply`.
@@ -184,6 +185,34 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The question frame is assembled field by field, so anything the UI
+    /// needs has to be listed here. `allow_multiple` is the one the question
+    /// box switches its whole input mode on - dropping it fails silently.
+    #[tokio::test]
+    async fn test_send_question_broadcasts_allow_multiple() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let storage = Arc::new(MessageStorage::new(tmp.path()));
+        let adapter = WebsocketOutboundAdapter::new(tx, storage);
+        let request = jyc_types::channel::QuestionRequest {
+            id: "q1".to_string(),
+            channel: "websocket".to_string(),
+            topic: "general".to_string(),
+            question: "Which?".to_string(),
+            options: vec!["a".to_string(), "b".to_string()],
+            allow_multiple: true,
+            timeout_seconds: None,
+        };
+
+        adapter.send_question(&request).await.unwrap();
+
+        let frame = rx.recv().await.unwrap();
+        assert!(
+            frame.contains("\"allow_multiple\":true"),
+            "the question box cannot guess the mode: {frame}"
+        );
+    }
 
     #[tokio::test]
     async fn test_send_reply_broadcasts() {

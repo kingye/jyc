@@ -40,6 +40,9 @@ and uses an in-process AI agent to generate replies.
 
 ### PR 前检查清单
 - 本地只跑 `cargo check -p <改动的 crate>`（改了该 crate 的测试才加 `--tests`）和 `cargo fmt -- --check`；**禁止** `--workspace` 全量 check，以及本地运行 `cargo build` / `cargo test` / `cargo clippy` / `cargo llvm-cov`（开发机资源受限：全量 check 会 OOM 并把 `target/` 撑满，完整验证以 CI 为准）
+- `cargo check --tests` **只编译不执行**：绿灯只证明测试能编译，禁止据此声称测试通过；测试结论只能来自 CI 的测试运行
+- 本地 gate 每个变更集只跑一次：批量改完再跑，测试文件放最后改（`#[cfg(test)]` / `tests/*.rs` 一旦改动，test cfg 单元必然整包重编）
+- 本地 gate 是编译级检查，热缓存下只需数秒；若突然变慢，通常是 `check` 缓存被打脏（`cargo build` / `cargo test` 的产物与 `check` 不同一类，本地跑一次就会让下一次 gate 重付整个依赖图，`CARGO_BUILD_JOBS=1` 时逐 crate 串行）。**禁止**以「太慢所以换更重的命令」为理由跑 `cargo test` / `cargo build`——那条命令正是把缓存打脏的元凶
 - 跨 crate 的类型/接口变更：先用 grep 找全调用点，只 check 受影响的 crate，其余交给 CI；不为「更保险」重跑已通过的检查
 - CI（`.github/workflows/ci.yml`）自动执行：fmt、clippy -D warnings、llvm-cov（60% 阈值）
 - 改依赖时提交 `cargo check -p <crate>` 顺带刷新的 `Cargo.lock`

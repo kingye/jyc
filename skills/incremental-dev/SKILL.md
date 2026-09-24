@@ -24,7 +24,9 @@ Break every task into the smallest possible steps. Each step must be:
 1. **Self-contained** — ONE change, never a batch or a large diff; passes
    `{check_command}` independently
 2. **Validated** — at the tier the project owns (see `dev-workflow` → "Local vs CI"):
-   `{check_command}` locally on every step; `{test_command}` locally only when no CI runs
+   `{check_command}` locally on every step — a compile tier proves the step *type-checks*, never
+   that tests pass; the test-target variant (`--tests`) and the full local gate run ONCE per change
+   set before commit, not after every edit. `{test_command}` locally only when no CI runs
    it. Fix any failure the chosen tier surfaces in the SAME step before proceeding
 3. **Approved** — user confirms before the next step (interactive mode only)
 
@@ -44,9 +46,11 @@ request review only when all steps are done.
 ### Report After Each Step
 
     ✅ Step N/Total: <what was done>
-    Check: ✅ | Tests: ✅ N pass (local) or → CI (when CI owns the suite) | Commit: <hash>
+    Check: ✅ compile | Tests: compiled (CI owns execution) | Commit: <hash>
     Next: <brief description>
     Proceed? (yes/no)          ← interactive mode only
+
+Never write "Tests: ✅ N pass" unless a test run actually produced N.
 
 On failure: report the step, the issue, what was fixed or needs changing,
 and check/test status — then ask whether to retry or adjust.

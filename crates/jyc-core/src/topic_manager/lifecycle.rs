@@ -111,15 +111,39 @@ impl TopicManager {
     ///
     /// Refuses (deletes nothing) when the dir is not this topic's to remove:
     ///
-    /// - another topic is pinned to the very same dir (co-pinned siblings —
-    ///   `/home/jiny/projects/jyc` carries two topics today),
+    /// - another topic works in it — pinned or not: a fork shares its
+    ///   parent's dir, and the parent may never have been pinned, so the
+    ///   workspace itself is consulted, not just the runtime pin map,
     /// - another topic's dir lives inside it, so deleting it takes them along,
-    /// - it *is* one of jyc's own roots, or contains one.
+    /// - it *is* one of jyc's own roots, contains one, or sits directly under
+    ///   one holding another topic's state (`agents/<name>/.jyc`).
     pub async fn purge_topic_dir(&self, topic_name: &str) -> Result<PurgeOutcome> {
         let agents_root = self.agents_workspace_root();
         let state_root = crate::topic_path::state_root(&self.workdir);
         self.purge_topic_dir_under(topic_name, &agents_root, &state_root)
             .await
+    }
+
+    /// Every other topic's working dir: the runtime pins plus whatever the
+    /// workspace itself holds. Pins alone cannot answer "who else works
+    /// here?" — an unpinned topic lives at `<workspace>/<name>` and a fork
+    /// shares exactly that dir.
+    async fn other_topic_dirs(&self, self_name: &str) -> Vec<(String, PathBuf)> {
+        let mut dirs: Vec<(String, PathBuf)> = self
+            .custom_topic_paths()
+            .await
+            .into_iter()
+            .filter(|(name, _)| name != self_name)
+            .collect();
+        if let Ok(entries) = std::fs::read_dir(self.storage.workspace()) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name != self_name && entry.path().is_dir() {
+                    dirs.push((name, entry.path()));
+                }
+            }
+        }
+        dirs
     }
 
     /// Testable core of [`Self::purge_topic_dir`] with jyc's own roots passed
@@ -143,10 +167,7 @@ impl TopicManager {
 
         let mut shared = Vec::new();
         let mut nested = Vec::new();
-        for (name, pin) in self.custom_topic_paths().await {
-            if name == topic_name {
-                continue;
-            }
+        for (name, pin) in self.other_topic_dirs(topic_name).await {
             if crate::topic_path::resolved(&pin) == path {
                 shared.push(name);
             } else if path_is_under(&pin, &path).await {
@@ -168,18 +189,25 @@ impl TopicManager {
             )));
         }
         for root in [agents_root, state_root] {
-            if crate::topic_path::resolved(root).starts_with(&path) {
+            let root = crate::topic_path::resolved(root);
+            if path.parent().is_some_and(|p| p == root.as_path()) {
+                return Ok(PurgeOutcome::Refused(format!(
+                    "{} is a state namespace — it holds another topic's `.jyc`, not a workspace.",
+                    path.display()
+                )));
+            }
+            if root.starts_with(&path) {
                 return Ok(PurgeOutcome::Refused(format!(
                     "{} is jyc's own directory ({} lives in it) — it is not a topic dir.",
                     path.display(),
-                    crate::topic_path::resolved(root).display()
+                    root.display()
                 )));
             }
         }
 
         remove_topic_dir(topic_name, &path).await?;
         tracing::info!(topic = %topic_name, dir = %path.display(), "Topic directory purged");
-        Ok(PurgeOutcome::Deleted(path))
+        Ok(PurgeOutcome::Deleted)
     }
 
     /// The root that holds every agent's topic subtree (`<data_home>/agents/`).
@@ -309,7 +337,7 @@ pub enum PurgeOutcome {
     /// already gone). `close_topic` still has the state to remove.
     Nothing,
     /// The topic dir was deleted.
-    Deleted(PathBuf),
+    Deleted,
     /// Nothing was deleted; the message says why, for the user.
     Refused(String),
 }
@@ -618,7 +646,7 @@ mode = "agent"
             .await
             .unwrap();
         assert!(
-            matches!(outcome, PurgeOutcome::Deleted(dir) if dir == crate::topic_path::resolved(&repo)),
+            matches!(outcome, PurgeOutcome::Deleted),
             "the pinned dir is what purge deletes"
         );
         assert!(!repo.exists(), "purge is the explicit 'and this dir too'");
@@ -692,6 +720,71 @@ mode = "agent"
         };
         assert!(reason.contains("probe-inner"), "{reason}");
         assert!(outer.exists());
+    }
+
+    /// A fork shares its parent's workspace dir, and the parent may never have
+    /// been pinned — pins alone cannot see it, so the workspace scan has to.
+    #[tokio::test]
+    async fn purge_refuses_a_dir_a_workspace_topic_also_uses() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let parent_dir = workspace.join("probe-parent");
+        std::fs::create_dir_all(parent_dir.join(".jyc")).unwrap();
+        std::fs::write(parent_dir.join("code.rs"), "x").unwrap();
+        // The fork adopts the parent's in-dir state out of the parent dir —
+        // exactly what /fork does — so no `.jyc` remains there to detect by.
+        let fork_state = tmp.path().join("agents/probe-fork/.jyc");
+        std::fs::create_dir_all(&fork_state).unwrap();
+        jyc_types::state_dir::register("probe-fork", &fork_state);
+        tm.set_topic_path("probe-fork", parent_dir.clone())
+            .await
+            .unwrap();
+
+        let outcome = tm
+            .purge_topic_dir_under(
+                "probe-fork",
+                &tmp.path().join("agents"),
+                &tmp.path().join("state"),
+            )
+            .await
+            .unwrap();
+        let PurgeOutcome::Refused(reason) = outcome else {
+            panic!("the parent's workspace dir must be refused, got {outcome:?}");
+        };
+        assert!(reason.contains("probe-parent"), "{reason}");
+        assert!(parent_dir.exists());
+        jyc_types::state_dir::unregister("probe-fork");
+    }
+
+    /// A direct child of an agents/state root is a state namespace
+    /// (`agents/jin/.jyc` is another topic's data), not a topic dir.
+    #[tokio::test]
+    async fn purge_refuses_a_state_namespace() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let agents_root = tmp.path().join("agents");
+        let namespace = agents_root.join("jin");
+        std::fs::create_dir_all(namespace.join(".jyc")).unwrap();
+        tm.set_topic_path("probe-ns", namespace.clone())
+            .await
+            .unwrap();
+
+        let outcome = tm
+            .purge_topic_dir_under("probe-ns", &agents_root, &tmp.path().join("state"))
+            .await
+            .unwrap();
+        let PurgeOutcome::Refused(reason) = outcome else {
+            panic!("a state namespace must be refused, got {outcome:?}");
+        };
+        assert!(reason.contains("state namespace"), "{reason}");
+        assert!(namespace.exists());
+        jyc_types::state_dir::unregister("probe-ns");
     }
 
     /// jyc's own directories are not topic dirs, however a topic got pinned to

@@ -84,8 +84,8 @@ impl CommandHandler for CloseCommandHandler {
                         append_body: None,
                     });
                 }
-                PurgeOutcome::Deleted(dir) => {
-                    tracing::info!(topic = %topic_name, dir = %dir.display(), "Purged topic dir");
+                PurgeOutcome::Deleted => {
+                    tracing::info!(topic = %topic_name, dir = %context.topic_path.display(), "Purged topic dir");
                 }
                 PurgeOutcome::Nothing => {}
             }

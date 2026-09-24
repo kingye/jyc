@@ -19,8 +19,10 @@
   directory (usually someone's repo or a copy they made on purpose), which is
   what `/fork` and `/clone` rely on; purge is the explicit "and this one too".
   It refuses, deleting nothing and leaving the topic open, when the dir is also
-  another topic's, contains another topic's dir, or is one of jyc's own
-  (`~/.local/share/jyc/agents` and the workdir's `agents/`)
+  another topic's (pinned or merely living in the workspace — a fork shares its
+  parent's), contains another topic's dir, is one of jyc's own
+  (`~/.local/share/jyc/agents` and the workdir's `agents/`), or holds another
+  topic's state directly under one of those roots
 - The chat progress tail animates, and `ctrl+p p` collapses it to one line. The
   row doing the current work — and the `AI is thinking...` placeholder shown
   before the first event — carried a static `⏳`, so a long silent stretch of

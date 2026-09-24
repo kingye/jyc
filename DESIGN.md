@@ -422,8 +422,10 @@ source's files into a fresh directory (the source's own `.jyc` is skipped — st
 is seeded, never copied) and then adopts/pins it exactly as `/fork` does, so the
 two topics hold separate files *and* separate state. Because that dir is a copy
 rather than a shared checkout, `close_topic` keeping it is a convenience and not
-a rule — `/close --force --purge` deletes it, refusing only when the dir is one
-another topic also uses, contains another topic's dir, or is one of jyc's own.
+a rule — `/close --force --purge` deletes it, refusing only when the dir is one another
+topic also uses (a workspace topic counts, not just a runtime pin — a fork
+shares its parent's dir), contains another topic's dir, is one of jyc's own, or
+holds another topic's state directly under one of those roots.
 
 - **Identity.** Registrations key on the topic *name*. Config-key agents keep
   their `[agents.<key>]` name for the state dir — TOML keys are unique by

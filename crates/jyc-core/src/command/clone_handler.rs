@@ -83,6 +83,12 @@ impl CloneCommandHandler {
         }
 
         let source = context.topic_path.clone();
+        if !source.is_dir() {
+            return Ok(fail(format!(
+                "/clone: this topic's directory {} is gone — there is nothing to copy from.",
+                source.display()
+            )));
+        }
         let Some(source_parent) = source.parent() else {
             return Ok(fail(format!(
                 "/clone: {:?} has no parent directory to put a copy beside.",
@@ -157,7 +163,16 @@ impl CloneCommandHandler {
             }
             Err(_) => {}
         }
-        if let Some(owner) = self.pinning(&context.topic_name, &dest_dir).await {
+        if let Some(owner) = self
+            .topic_manager
+            .custom_topic_paths()
+            .await
+            .into_iter()
+            .find(|(name, pin)| {
+                name.as_str() != context.topic_name.as_str() && resolved(pin) == dest_dir
+            })
+            .map(|(name, _)| name)
+        {
             return Ok(fail(format!(
                 "/clone: {} is the topic dir of '{owner}'.",
                 dest.display()
@@ -214,18 +229,6 @@ impl CloneCommandHandler {
             error: None,
             append_body: None,
         })
-    }
-
-    /// The topic that already works in `dir`, if any — so a clone cannot adopt
-    /// a directory another topic is pinned to (the runtime pin map is what
-    /// `topic_path` resolves through).
-    async fn pinning(&self, self_name: &str, dir: &Path) -> Option<String> {
-        self.topic_manager
-            .custom_topic_paths()
-            .await
-            .into_iter()
-            .find(|(name, pin)| name != self_name && resolved(pin.as_path()) == dir)
-            .map(|(name, _)| name)
     }
 }
 
@@ -648,6 +651,36 @@ mod tests {
         for n in ["clone-a", "clone-b"] {
             jyc_types::state_dir::unregister(n);
         }
+    }
+
+    /// The source dir being gone refuses before anything is created — no
+    /// empty destination is left behind.
+    #[tokio::test]
+    async fn clone_refuses_a_missing_source_dir() {
+        let tmp = tempdir().unwrap();
+        let gone = tmp.path().join("gone");
+        std::fs::create_dir_all(&gone).unwrap();
+        std::fs::remove_dir_all(&gone).unwrap();
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let handler = CloneCommandHandler::new(tm.clone());
+
+        let ctx = context("src-topic", &gone, "websocket", &["ghost"]);
+        let result = handler
+            .clone_under(
+                &ctx,
+                &gone.join(".jyc"),
+                &workspace.path().join("agents"),
+                workspace.path(),
+            )
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.message.contains("gone"), "{}", result.message);
+        assert!(
+            !gone.parent().unwrap().join("ghost").exists(),
+            "a refused /clone must not create the destination"
+        );
     }
 
     /// `/clone` is gated to websocket topics like `/fork`.

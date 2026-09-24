@@ -155,12 +155,15 @@ impl TopicManager {
         agents_root: &Path,
         state_root: &Path,
     ) -> Result<PurgeOutcome> {
-        // Not pinned: the dir is inside the workspace and `close_topic` already
-        // deletes it, so there is nothing extra to do.
+        // Not the kept-dir case: an unpinned topic's dir is
+        // `<workspace>/<name>`, which `close_topic` deletes on its own, and a
+        // dir that is already gone has nothing to purge. `topic_path` answers
+        // the workspace fallback for such topics, so the distinction has to be
+        // made here, not by whether the lookup returned at all.
         let Some(topic_path) = self.topic_path(topic_name).await else {
             return Ok(PurgeOutcome::Nothing);
         };
-        if !topic_path.exists() {
+        if topic_path == self.storage.workspace().join(topic_name) || !topic_path.exists() {
             return Ok(PurgeOutcome::Nothing);
         }
         let path = crate::topic_path::resolved(&topic_path);
@@ -333,8 +336,9 @@ async fn path_is_under(path: &Path, root: &Path) -> bool {
 /// What [`TopicManager::purge_topic_dir`] did, or refused to do.
 #[derive(Debug)]
 pub enum PurgeOutcome {
-    /// Nothing on disk to delete (the topic was never pinned, or the dir is
-    /// already gone). `close_topic` still has the state to remove.
+    /// Nothing on disk to delete: the topic was never pinned (its dir is the
+    /// default `<workspace>/<name>`, which `close_topic` deletes on its own),
+    /// or the dir is already gone. `close_topic` still has the state to remove.
     Nothing,
     /// The topic dir was deleted.
     Deleted,

@@ -252,6 +252,9 @@ pub trait OutboundAdapter: Send + Sync {
     /// cards later) override this. The default fails gracefully so the
     /// `ask_user` tool can tell the model to fall back to asking in plain
     /// text within its reply.
+    ///
+    /// `allow_multiple` is a rendering concern: a channel that cannot mark
+    /// options may ignore it, and its answer then carries one option.
     async fn send_question(&self, _request: &QuestionRequest) -> Result<()> {
         Err(anyhow::anyhow!(
             "channel '{}' does not support interactive questions",
@@ -276,6 +279,11 @@ pub struct QuestionRequest {
     pub question: String,
     /// Selectable options.
     pub options: Vec<String>,
+    /// Whether the user may pick more than one option. Each channel renders
+    /// this its own way (and is free to ignore it); the answer simply carries
+    /// however many options were picked.
+    #[serde(default)]
+    pub allow_multiple: bool,
     /// Server-side timeout in seconds; `None` waits indefinitely.
     pub timeout_seconds: Option<u64>,
 }
@@ -283,8 +291,9 @@ pub struct QuestionRequest {
 /// The user's answer to a pending [`QuestionRequest`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuestionAnswer {
-    /// The user picked one of the options.
-    Choice(String),
+    /// The picked options' texts. A single-select answer carries exactly one,
+    /// so `len()` is the only trace of whether multiple were allowed.
+    Choice(Vec<String>),
     /// The user dismissed the question without choosing.
     Cancelled,
 }

@@ -86,7 +86,7 @@ impl QuestionHub {
         let Some(id) = self.pending_for(topic) else {
             return false;
         };
-        self.respond(&id, QuestionAnswer::Choice(text.to_string()))
+        self.respond(&id, QuestionAnswer::Choice(vec![text.to_string()]))
     }
 
     /// Id of a pending question for `topic`, if any.
@@ -125,8 +125,11 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _guard = hub.register("q1", "topic-a", tx);
 
-        assert!(hub.respond("q1", QuestionAnswer::Choice("yes".into())));
-        assert_eq!(rx.blocking_recv(), Ok(QuestionAnswer::Choice("yes".into())));
+        assert!(hub.respond("q1", QuestionAnswer::Choice(vec!["yes".into()])));
+        assert_eq!(
+            rx.blocking_recv(),
+            Ok(QuestionAnswer::Choice(vec!["yes".into()]))
+        );
     }
 
     #[test]
@@ -182,7 +185,10 @@ mod tests {
         let _guard = hub.register("q1", "topic-a", tx);
 
         assert!(hub.try_answer("topic-a", "2"));
-        assert_eq!(rx.blocking_recv(), Ok(QuestionAnswer::Choice("2".into())));
+        assert_eq!(
+            rx.blocking_recv(),
+            Ok(QuestionAnswer::Choice(vec!["2".into()]))
+        );
         // Consumed — a second reply routes normally.
         assert!(!hub.try_answer("topic-a", "2"));
     }
@@ -202,7 +208,10 @@ mod tests {
         assert!(!hub.try_answer("topic-a", "/cancel"));
         // Not consumed — the question is still answerable.
         assert!(hub.try_answer("topic-a", "1"));
-        assert_eq!(rx.blocking_recv(), Ok(QuestionAnswer::Choice("1".into())));
+        assert_eq!(
+            rx.blocking_recv(),
+            Ok(QuestionAnswer::Choice(vec!["1".into()]))
+        );
     }
 
     #[test]

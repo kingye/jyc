@@ -236,8 +236,8 @@ JSON envelope over WebSocket:
 address, default the connection address). Bridge processes use them to
 carry the remote user's identity (e.g. a feishu user name / open_id).
 | Server→Client | `{"type":"reply","topic":"general","text":"AI reply..."}` | Broadcast reply |
-| Server→Client | `{"type":"question","id":"…","topic":"general","question":"Deploy?","options":["yes","no"],"timeout_seconds":300}` | Interactive `ask_user` question (broadcast channel-wide; filter by `topic`) |
-| Client→Server | `{"type":"question_response","id":"…","choice":"yes"}` / `{"type":"question_response","id":"…","cancelled":true}` | Answer / dismiss a question (routed to the agent's pending tool call, never enqueued as a topic message) |
+| Server→Client | `{"type":"question","id":"…","topic":"general","question":"Deploy?","options":["yes","no"],"allow_multiple":false,"position":[2,3],"timeout_seconds":300}` | Interactive `ask_user` question (broadcast channel-wide; filter by `topic`). `allow_multiple` means several options may be picked; `position` is the question's 1-based place inside a multi-question call, `null` when it was asked alone — one `ask_user` call pushes one frame per question, oldest first, and the client answers each under its own `id` |
+| Client→Server | `{"type":"question_response","id":"…","choices":["yes"]}` / `{"type":"question_response","id":"…","cancelled":true}` | Answer / dismiss a question (routed to the agent's pending tool call, never enqueued as a topic message). `choices` carries every picked option; the older singular `choice` is still accepted |
 
 `reply` frames may carry an optional `attachments` array when the agent
 replied with files. Entries contain `filename`, `content_type`, and

@@ -284,6 +284,13 @@ pub struct QuestionRequest {
     /// however many options were picked.
     #[serde(default)]
     pub allow_multiple: bool,
+    /// Position within a multi-question request, as 1-based `(index, total)`.
+    ///
+    /// `None` for a single question. Channels that show one question at a
+    /// time (a feishu card) label which one the user is looking at; a UI that
+    /// holds the whole batch numbers it from its own queue instead.
+    #[serde(default)]
+    pub position: Option<(u32, u32)>,
     /// Server-side timeout in seconds; `None` waits indefinitely.
     pub timeout_seconds: Option<u64>,
 }

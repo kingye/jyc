@@ -183,6 +183,13 @@ options. The user answers by **replying in the chat with the number or the
 option text** (e.g. `1` or `option text`) — the pipe routes that reply to the
 question hub and the agent continues. Slash commands are never intercepted.
 
+A single `ask_user` call may ask up to five questions at once. Feishu gets one
+card per question, headed `第 N/M 题`, all of them arriving together; **answer
+them in order, one reply each** — every reply is matched to the oldest question
+still open. Multi-select questions have no marks to tick, so answer them with
+the numbers written out (`1,3`); the text reaches the agent as typed, and
+JYC does not resolve numbers into option text on this channel.
+
 > **Why no clickable buttons?** Feishu button callbacks (`card.action.trigger`)
 > are dropped by openlark-client's WebSocket frame handler, so JYC cannot
 > receive them over the long connection. Numbered-reply keeps everything on

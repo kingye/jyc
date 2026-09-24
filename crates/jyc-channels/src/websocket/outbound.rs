@@ -173,6 +173,7 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
             "question": request.question,
             "options": request.options,
             "allow_multiple": request.allow_multiple,
+            "position": request.position,
             "timeout_seconds": request.timeout_seconds,
         });
         // Same no-receiver tolerance as `broadcast_reply`.
@@ -188,9 +189,11 @@ mod tests {
 
     /// The question frame is assembled field by field, so anything the UI
     /// needs has to be listed here. `allow_multiple` is the one the question
-    /// box switches its whole input mode on - dropping it fails silently.
+    /// box switches its whole input mode on - dropping it fails silently, and
+    /// so does dropping `position`, which is the only place a card-per-question
+    /// channel learns which question of a batch it is rendering.
     #[tokio::test]
-    async fn test_send_question_broadcasts_allow_multiple() {
+    async fn test_send_question_broadcasts_render_fields() {
         let (tx, mut rx) = broadcast::channel(16);
         let tmp = tempfile::TempDir::new().unwrap();
         let storage = Arc::new(MessageStorage::new(tmp.path()));
@@ -202,6 +205,7 @@ mod tests {
             question: "Which?".to_string(),
             options: vec!["a".to_string(), "b".to_string()],
             allow_multiple: true,
+            position: Some((2, 3)),
             timeout_seconds: None,
         };
 
@@ -211,6 +215,10 @@ mod tests {
         assert!(
             frame.contains("\"allow_multiple\":true"),
             "the question box cannot guess the mode: {frame}"
+        );
+        assert!(
+            frame.contains("\"position\":[2,3]"),
+            "the card cannot tell which question it shows: {frame}"
         );
     }
 

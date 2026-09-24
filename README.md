@@ -376,7 +376,7 @@ JYC provides several MCP (Model Context Protocol) tools that the AI agent uses i
 | `reply_message` | Send reply via the channel's outbound adapter. Reads routing info from `reply-context.json`, appends to chat log, writes signal file for delivery. |
 | `jyc_send_message` | Send proactive out-of-topic messages to any recipient via the pre-warmed outbound adapter. Used for alerts and notifications only, not for in-topic replies. |
 | `analyze_image` | Analyze images using an OpenAI-compatible vision API. Accepts absolute file paths or HTTP(S) URLs. Configure via `[[mcps]]` in `config.toml` (see `config.example.toml`). |
-| `ask_user` | Ask the user a question and wait for their reply (up to 5 minutes). The question is delivered immediately via background delivery watcher. |
+| `ask_user` | Ask the user a question and wait for their reply (up to 5 minutes). The question is delivered immediately via background delivery watcher. Pass `questions` instead of a single `question` to settle up to 5 decisions in one flow; the answers come back paired with the question each answered. |
 
 These are internal tools used by the AI, not user-facing commands.
 

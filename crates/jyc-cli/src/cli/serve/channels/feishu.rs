@@ -144,6 +144,12 @@ pub(crate) fn spawn_feishu_adapter(
                                         .collect()
                                 })
                                 .unwrap_or_default();
+                            // Which question of a multi-question call this is,
+                            // so the card header can say 第 N/M 题 and the user
+                            // knows how many replies are still expected.
+                            let position = v.get("position").and_then(|p| {
+                                serde_json::from_value::<(u32, u32)>(p.clone()).ok()
+                            });
                             let Some(chat_id) = topic_chat.lock().unwrap().get(topic).cloned()
                             else {
                                 tracing::debug!(topic = %topic, "feishu pipe: no chat mapping for question, skipping");
@@ -152,6 +158,7 @@ pub(crate) fn spawn_feishu_adapter(
                             let card = jyc_channels::feishu::question_card::build_question_card(
                                 question,
                                 &options,
+                                position,
                             );
                             if let Err(e) = feishu_client.send_card_message(&chat_id, &card).await
                             {

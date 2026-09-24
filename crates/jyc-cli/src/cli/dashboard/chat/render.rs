@@ -1685,7 +1685,7 @@ mod tests {
         };
 
         // A tool is the phase: its name alone, no pipe.
-        let line = minimal_progress_line(&[entry.clone()], Some(12_400), 500);
+        let line = minimal_progress_line(std::slice::from_ref(&entry), Some(12_400), 500);
         assert_eq!(text_of(&line), "  ⠴  12.4s · bash");
         assert_eq!(
             line.spans.last().unwrap().style.fg,

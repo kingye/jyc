@@ -29,7 +29,9 @@
   tool work read exactly like a hung one: it now shows a braille spinner in
   bright yellow, the only moving, colored thing on the tail — the text around
   it sits still, no blinking. Minimal progress mode replaces the whole tail
-  with a single line (`⠹ 12.4s · bash` — spinner, loop elapsed, state word),
+  with a single line (`⠹ 12.4s · thinking... | bash` — spinner, loop elapsed,
+  current phase, with the most recent tool kept after ` | ` so a thinking
+  streak does not overwrite it; a failing round shows a static red `error`),
   leaves the completed-turn `thinking` line out of the history, and is on by
   default for a restarted TUI (`ctrl+p p` expands it again). Session-only,
   like the other display toggles; diff colors and the red error row survive

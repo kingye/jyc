@@ -368,9 +368,9 @@ fn spinner_style() -> Style {
     Style::default().fg(Color::LightYellow)
 }
 
-/// The spinner column. Two trailing spaces, because the `⏳ ` / `💭 ` / `⚠ `
-/// prefixes it replaces measure three columns and wrapped rows pad by their
-/// width — one space would shift the text a column left.
+/// The spinner column. Two trailing spaces, because the `💭 ` / `⚠ ` prefixes
+/// it replaces measure three columns and wrapped rows pad by their width —
+/// one space would shift the text a column left.
 fn spinner_prefix(now_ms: i64) -> String {
     format!("{}  ", spinner_frame(now_ms))
 }
@@ -394,16 +394,34 @@ fn activity_state(text: &str) -> &str {
     if name.is_empty() { "thinking" } else { name }
 }
 
-/// The entire progress tail in minimal mode: `⠹  12.4s · bash`.
+/// The name of the tool an entry reports, if its formatted row is a tool row.
+/// `edit`/`write` events arrive as raw JSON and only take the
+/// `Tool: edit — foo.rs` shape inside `render_activity_entry`, so reading the
+/// name off the raw text would call a live edit "no tool". Read the same
+/// formatted row the tail draws — the collapsed shape, because that is the
+/// one that carries the `Tool: ` prefix even while `ctrl+p T` has the diff
+/// open.
+fn entry_tool_name(entry: &jyc_types::ActivityEntry) -> Option<String> {
+    let formatted = render_activity_entry(&entry.text, false);
+    let text = formatted.first().map(String::as_str).unwrap_or(&entry.text);
+    let name = activity_state(text);
+    (name != "thinking").then(|| name.to_string())
+}
+
+/// The entire progress tail in minimal mode: `⠹  12.4s · thinking... | bash`.
 ///
-/// The time is the live loop ticker (1 Hz), falling back to the current
-/// entry's own age before the first tick arrives; with neither, the line is
-/// just the spinner and the state word.
+/// The state word names the current phase; when the phase is not a tool of
+/// its own (thinking, error), the most recent tool entry rides after ` | ` so
+/// a thinking streak does not push the tool name off the line. The time is
+/// the live loop ticker (1 Hz), falling back to the current entry's own age
+/// before the first tick arrives; with neither, the line is just the spinner
+/// and the phase word.
 fn minimal_progress_line(
-    last: Option<&jyc_types::ActivityEntry>,
+    entries: &[jyc_types::ActivityEntry],
     live_tick_ms: Option<u64>,
     now_ms: i64,
 ) -> Line<'static> {
+    let last = entries.last();
     let timestamp = last.and_then(|entry| entry.timestamp.clone());
     let elapsed = match live_tick_ms {
         Some(ms) => format_elapsed_ms(ms),
@@ -417,24 +435,36 @@ fn minimal_progress_line(
     if !elapsed.is_empty() {
         spans.push(Span::styled(format!("{elapsed} · "), dim));
     }
-    let state: String = match last {
-        // One line has to say when the round is failing: in this mode the full
-        // tail — and its red error row — is off screen.
-        Some(entry) if entry.severity == jyc_types::Severity::Error => "error".into(),
-        Some(entry) => {
-            // `edit`/`write` events arrive as raw JSON and only take the
-            // `Tool: edit — foo.rs` shape inside `render_activity_entry`, so
-            // reading the state off the raw text would call a live edit
-            // "thinking". Read the same formatted row the tail draws — the
-            // collapsed shape, because that is the one that carries the
-            // `Tool: ` prefix even while `ctrl+p T` has the diff open.
-            let formatted = render_activity_entry(&entry.text, false);
-            let text = formatted.first().map(String::as_str).unwrap_or(&entry.text);
-            activity_state(text).to_string()
+    let (state, failed, is_tool) = match last {
+        // One line has to say when the round is failing: in this mode the
+        // full tail — and its red error row — is off screen.
+        Some(entry) if entry.severity == jyc_types::Severity::Error => {
+            ("error".to_string(), true, false)
         }
-        None => "thinking".into(),
+        Some(entry) => match entry_tool_name(entry) {
+            Some(name) => (name, false, true),
+            None => ("thinking...".to_string(), false, false),
+        },
+        None => ("thinking...".to_string(), false, false),
     };
-    spans.push(Span::styled(state, dim));
+    let last_tool = if is_tool {
+        None
+    } else {
+        entries.iter().rev().find_map(entry_tool_name)
+    };
+    spans.push(Span::styled(
+        state,
+        if failed {
+            Style::default().fg(Color::Red)
+        } else {
+            dim
+        },
+    ));
+    if let Some(name) = last_tool {
+        // The phase is not a tool of its own — keep the most recent tool on
+        // the line after ` | `.
+        spans.push(Span::styled(format!(" | {name}"), dim));
+    }
     Line::from(spans)
 }
 
@@ -651,11 +681,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         }
 
         if minimal {
-            tail_lines.push(minimal_progress_line(
-                activity_entries.last(),
-                live_tick_ms,
-                now,
-            ));
+            tail_lines.push(minimal_progress_line(&activity_entries, live_tick_ms, now));
         } else if activity_entries.is_empty() && !has_thinking {
             // Pre-activity placeholder: shown only between ProcessingStarted
             // and the first ToolStarted/LLMRequestStarted event. There's
@@ -719,7 +745,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 // the marker / `"   "` — checking the padded label would
                 // always miss because the marker sits two columns in.
                 let spinner = spinner_prefix(now);
-                let rendered_lines: Vec<(String, Style, Vec<Span<'static>>)> =
+                let rendered_lines: Vec<(String, Vec<Span<'static>>)> =
                     render_activity_entry(&a.text, app.chat.tool_detail_expanded)
                         .into_iter()
                         .enumerate()
@@ -745,21 +771,16 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                             // tail: its spinner turns in bright yellow. The
                             // text is static, so a diff-colored row (`+`/`-`)
                             // keeps the only color that means anything.
-                            let prefix_style = if current {
-                                spinner_style()
-                            } else {
-                                Style::default()
-                            };
-                            (prefix, prefix_style, vec![Span::styled(text, label_style)])
+                            (prefix, vec![Span::styled(text, label_style)])
                         })
                         .collect();
 
-                for (prefix, prefix_style, spans) in rendered_lines {
+                for (prefix, spans) in rendered_lines {
                     push_tail_rows_spans(
                         &mut tail_lines,
                         chunks[0].width,
                         &prefix,
-                        prefix_style,
+                        spinner_style(),
                         spans,
                     );
                 }
@@ -1663,7 +1684,8 @@ mod tests {
             line.spans.iter().map(|sp| sp.content.as_ref()).collect()
         };
 
-        let line = minimal_progress_line(Some(&entry), Some(12_400), 500);
+        // A tool is the phase: its name alone, no pipe.
+        let line = minimal_progress_line(&[entry.clone()], Some(12_400), 500);
         assert_eq!(text_of(&line), "  ⠴  12.4s · bash");
         assert_eq!(
             line.spans.last().unwrap().style.fg,
@@ -1682,26 +1704,51 @@ mod tests {
             ..entry.clone()
         };
         assert_eq!(
-            text_of(&minimal_progress_line(Some(&undated), None, 500)),
+            text_of(&minimal_progress_line(&[undated], None, 500)),
             "  ⠴  bash"
         );
 
         // Processing started, no activity event at all.
         assert_eq!(
-            text_of(&minimal_progress_line(None, None, 0)),
-            "  ⠋  thinking"
+            text_of(&minimal_progress_line(&[], None, 0)),
+            "  ⠋  thinking..."
         );
+
+        // A thinking streak keeps the most recent tool on the line instead of
+        // overwriting it — this row's whole point.
+        let thinking = jyc_types::ActivityEntry {
+            text: "Thinking... (iteration 14)".to_string(),
+            timestamp: Some("2026-08-13T10:00:02Z".to_string()),
+            ..entry.clone()
+        };
+        let line = minimal_progress_line(&[entry.clone(), thinking], Some(12_400), 500);
+        assert_eq!(text_of(&line), "  ⠴  12.4s · thinking... | bash");
 
         // A failing round has to say so on its one line — in this mode the
         // full tail, and its red error row, are off screen.
         let failed = jyc_types::ActivityEntry {
             severity: jyc_types::Severity::Error,
+            text: "call failed: rate limited".to_string(),
+            timestamp: None,
             ..entry.clone()
         };
+        let line = minimal_progress_line(&[failed], None, 500);
+        assert_eq!(text_of(&line), "  ⠴  error");
         assert_eq!(
-            text_of(&minimal_progress_line(Some(&failed), Some(900), 500)),
-            "  ⠴  0.9s · error"
+            line.spans.last().unwrap().style.fg,
+            Some(Color::Red),
+            "the failure word is the static red the error row would have had"
         );
+
+        // ...and a failure after tool work still names the tool.
+        let failed = jyc_types::ActivityEntry {
+            severity: jyc_types::Severity::Error,
+            text: "call failed: rate limited".to_string(),
+            timestamp: None,
+            ..entry.clone()
+        };
+        let line = minimal_progress_line(&[entry.clone(), failed], None, 500);
+        assert_eq!(text_of(&line), "  ⠴  error | bash");
 
         // The shape the server actually sends for an edit: raw JSON, which only
         // becomes `Tool: edit — foo.rs` further down the tail. Reading the state
@@ -1712,7 +1759,7 @@ mod tests {
             ..entry.clone()
         };
         assert_eq!(
-            text_of(&minimal_progress_line(Some(&raw_json), None, 500)),
+            text_of(&minimal_progress_line(&[raw_json], None, 500)),
             "  ⠴  edit"
         );
     }

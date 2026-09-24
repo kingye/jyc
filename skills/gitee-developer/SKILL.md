@@ -187,10 +187,20 @@ Read the triggering comment at the bottom of the incoming message.
    - `docs: <what>` for documentation tasks
    - Other semantic commit types as appropriate
 
-#### 4. Run tests (MANDATORY)
+#### 4. Validate before handoff (MANDATORY, tiered)
 
-Before handing off, you MUST run `{test_command}` and include the full output in your PR comment.
-If any tests fail, fix them and re-run before proceeding.
+Read the project's own rules first (`AGENTS.md` / `CLAUDE.md`) — they decide where tests run.
+
+- `{check_command}` always runs locally, before each commit.
+- **CI owns the test suite** (pipeline/workflow files exist, or AGENTS.md says CI runs tests):
+  do NOT run `{test_command}` locally. Write/update the tests, commit, push, and in the PR
+  comment name the pipeline run that validates the change. Burning 30 minutes of a weak
+  machine on a local suite is a mistake, not diligence.
+- **No CI covering the suite:** `{test_command}` is mandatory before handoff — run it, paste
+  the full output in the PR comment, fix failures and re-run.
+
+CI found red later is a separate turn: check the pipeline status once, fix, push. Never poll
+or block a turn waiting for it.
 
 #### 5. Hand off to Reviewer
 
@@ -233,7 +243,10 @@ When the triggering message indicates a CI failure on the PR, fix the failing ch
 - ALWAYS run commands from the topic directory (it is the checkout — there is no `repo/` subdirectory)
 - ALWAYS use the git fetch+checkout pattern to get the existing PR branch
 - ALWAYS run `{check_command}` before each commit
-- **MANDATORY: You MUST run `{test_command}` after ANY code change and include the full test output in your PR comment. A PR without test results is NOT complete and will NOT be approved.**
+- **MANDATORY: every code change is validated before handoff — `{check_command}` locally on
+  every commit; the test suite where the project runs it. CI owns it → do NOT run
+  `{test_command}` locally, point the PR comment at the pipeline run instead. No CI → run it
+  and paste the full output.** An unvalidated change is NOT complete.
 - ALWAYS commit and push after EACH plan step
 - ALWAYS prefix PR comments with `[Developer]`
 - NEVER implement multiple plan steps before committing

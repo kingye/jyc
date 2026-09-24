@@ -39,11 +39,27 @@ the defaults in Step 2.
 
 After detection, you have: `{test_command}`, `{build_command}`, `{version_file}`.
 
+### Local vs CI — where validation runs
+
+Read the project's own rules (`AGENTS.md` / `CLAUDE.md`, plus its CI workflow files) and
+pick the cheapest tier that matches the risk of the change. Heavier tiers are not "safer",
+they are only slower and they cost the machine.
+
+| Tier | What | Run locally when |
+|------|------|------------------|
+| compile | `{check_command}` (e.g. `cargo check -p <crate>`) | always — this is the per-step gate |
+| local gate | formatter + compile of test targets (e.g. `cargo fmt -- --check`, `cargo check -p <crate> --tests`) | always, before commit |
+| suite | `{test_command}` / `{lint_command}` / coverage | only when nothing else runs them (no CI, or CI doesn't cover this) |
+
+When CI owns the suite, the local obligation is: tests written and committed, compile clean,
+pushed. CI is the one that executes them. Do not block a turn waiting for CI — hand over the
+PR link and stop; red CI is fixed in a later turn.
+
 ## For Fixes
 
 1. `git checkout -b fix/<description>` from main
 2. Fix the issue
-3. Run tests: `{test_command}`
+3. Validate at the tier the project owns (see "Local vs CI" above)
 4. Build clean: `{build_command}` (zero warnings)
 5. Commit with `fix:` prefix
 6. Summarize work done and ask for user approval before merging to main
@@ -56,7 +72,7 @@ After detection, you have: `{test_command}`, `{build_command}`, `{version_file}`
 1. `git checkout -b feat/<description>` from main
 2. Develop in small increments, commit frequently
 3. If main has new commits, rebase: `git rebase main`
-4. Run tests and build clean before merge
+4. Validate before merge per "Local vs CI" above; keep `{build_command}` clean
 5. Summarize work done and ask for user approval before merging to main
 6. Merge to main: `git checkout main && git merge feat/<name> --no-ff`
 7. Push
@@ -110,7 +126,8 @@ Phase 2 — After user confirms, execute ALL steps in sequence:
    - Group changes: Added, Fixed, Changed, Removed
    - Include date: `## [X.Y.Z] - YYYY-MM-DD`
 3. Update `DESIGN.md` if architecture changed
-4. Run `{test_command}` to verify
+4. Verify at the project's tier: local gate always; `{test_command}` locally only if CI does
+   not gate the release (otherwise require CI green on the release commit)
 5. Commit ALL changes: `chore: prepare release vX.Y.Z`
 6. Tag: `git tag -a vX.Y.Z -m "vX.Y.Z: summary of key changes"`
 7. Push with tags: `git push origin main --tags`
@@ -124,7 +141,8 @@ Do NOT stop after updating files — complete all steps through push.
 - Feature branches rebase on main regularly — don't let them diverge
 - Keep feature branches short (1-2 days) — break large features into smaller merges
 - Every commit on main must build with zero warnings
-- Run `{test_command}` before every merge to main
+- Before every merge to main the change must be validated at the project's tier:
+  local gate always; the test suite by CI, or locally only when nothing else runs it
 - Never force-push to main
 - NEVER run `git config user.name` or `git config user.email`
 

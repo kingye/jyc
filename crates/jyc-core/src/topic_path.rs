@@ -181,18 +181,55 @@ pub fn adopt_state_dir(
     Ok(moved)
 }
 
-fn copy_dir_all(from: &Path, to: &Path) -> std::io::Result<()> {
+/// Canonicalize when the path exists, else use it as given.
+///
+/// The guards that compare topic dirs run on paths that may not exist yet (a
+/// state root nothing has adopted into, a destination about to be created), and
+/// a literal fallback is the right answer there.
+pub(crate) fn resolved(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Recursively copy `from` into `to` (creating `to`), state dirs excluded.
+///
+/// Two deliberate exclusions, both because the caller copies a *topic dir*:
+///
+/// - A `.jyc` directory is state, not content. `/clone` seeds the copy's
+///   state from the source topic's state dir on purpose, and re-using a
+///   copied one would hand the clone a second live state dir.
+/// - A symlink is recreated as a symlink rather than followed: a topic dir
+///   may hold links into a shared checkout (`close_topic` guards the same
+///   shape), and following them would copy the outside tree into the clone.
+pub(crate) fn copy_dir_all(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
         let target = to.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            copy_symlink(&entry.path(), &target)?;
+        } else if file_type.is_dir() {
+            if entry.file_name() == ".jyc" {
+                continue;
+            }
             copy_dir_all(&entry.path(), &target)?;
         } else {
             std::fs::copy(entry.path(), &target)?;
         }
     }
     Ok(())
+}
+
+/// Recreate one symlink. Windows needs a privilege for symlinks, so there it
+/// degrades to following the link rather than failing the whole copy.
+#[cfg(unix)]
+fn copy_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(std::fs::read_link(from)?, to)
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::copy(from, to).map(|_| ())
 }
 
 /// Re-register state dirs of previously adopted topics at startup.

@@ -85,7 +85,7 @@ impl ForkCommandHandler {
             .find(|a| !a.is_empty());
         let name = match requested {
             Some(name) => name.to_string(),
-            None => self.next_free_name(&context.topic_name, agents_root).await,
+            None => next_free_name(&self.topic_manager, &context.topic_name, agents_root).await,
         };
         if let Some(reason) = invalid_name(&name) {
             return Ok(fail(format!("/fork: {reason}. Usage: /fork [name]")));
@@ -123,7 +123,8 @@ impl ForkCommandHandler {
         self.topic_manager
             .set_topic_path(&name, context.topic_path.clone())
             .await?;
-        let seeded = seed_state(parent_state, &state_dir, &context.topic_name).await?;
+        let seeded =
+            seed_state(parent_state, &state_dir, &context.topic_name, "forked-from").await?;
 
         tracing::info!(
             from = %context.topic_name,
@@ -149,27 +150,26 @@ impl ForkCommandHandler {
             append_body: None,
         })
     }
+}
 
-    /// `<topic>-2`, `<topic>-3`, … — the first candidate that is neither a
-    /// registered topic nor a directory that already exists. If all of them
-    /// are taken, return `<topic>-2` so the caller reports the duplicate
-    /// rather than inventing a name nobody asked for.
-    ///
-    /// ponytail: the probe and the `create_dir_all` inside `set_topic_path` are
-    /// not one transaction, so two topics forking to the same automatic name at
-    /// the same instant would share a directory. Unreachable at typing speed; a
-    /// lock would cost more than the case it covers.
-    async fn next_free_name(&self, topic: &str, agents_root: &Path) -> String {
-        for n in 2..100u32 {
-            let candidate = format!("{topic}-{n}");
-            if self.topic_manager.topic_path(&candidate).await.is_none()
-                && !agents_root.join(&candidate).exists()
-            {
-                return candidate;
-            }
+/// `dir/<topic>-2`, `dir/<topic>-3`, … — the first candidate that is neither a
+/// registered topic nor a directory that already exists under `dir`. If all of
+/// them are taken, return `<topic>-2` so the caller reports the duplicate
+/// rather than inventing a name nobody asked for. `/fork` passes its agents
+/// root as `dir` (fork dirs live there), `/clone` the source dir's parent.
+///
+/// ponytail: the probe and the `create_dir_all` inside `set_topic_path` are
+/// not one transaction, so two topics forking to the same automatic name at
+/// the same instant would share a directory. Unreachable at typing speed; a
+/// lock would cost more than the case it covers.
+pub(super) async fn next_free_name(tm: &TopicManager, topic: &str, dir: &Path) -> String {
+    for n in 2..100u32 {
+        let candidate = format!("{topic}-{n}");
+        if tm.topic_path(&candidate).await.is_none() && !dir.join(&candidate).exists() {
+            return candidate;
         }
-        format!("{topic}-2")
     }
+    format!("{topic}-2")
 }
 
 /// Why `name` cannot be a topic name, if it cannot.
@@ -178,10 +178,10 @@ impl ForkCommandHandler {
 /// `英国旅行2026`): unicode is fine, path syntax is not — the name becomes a
 /// directory name and a routing key, and `/` or `..` would escape the agent
 /// subtree. Stricter than `post_topic`'s check in `jyc-inspect` (path syntax
-/// only) on purpose, because here the name also picks a parent directory; if a
-/// second creator ever needs the same rule, lift it to `jyc-types` rather than
-/// copying it.
-fn invalid_name(name: &str) -> Option<&'static str> {
+/// only) on purpose, because here the name also picks a parent directory; if
+/// anything outside `command` ever needs the same rule, lift it to
+/// `jyc-types` rather than copying it. `/clone` shares it via `pub(super)`.
+pub(super) fn invalid_name(name: &str) -> Option<&'static str> {
     if name.is_empty() {
         return Some("the name is empty");
     }
@@ -207,9 +207,15 @@ fn invalid_name(name: &str) -> Option<&'static str> {
 }
 
 /// Copy the inheritable state of `parent` into `child` and record where the
-/// fork came from. Parent files that do not exist are simply not copied — a
-/// young topic has few of them.
-async fn seed_state(parent: &Path, child: &Path, from: &str) -> Result<usize> {
+/// new topic came from under `marker` (`forked-from` / `cloned-from`). Parent
+/// files that do not exist are simply not copied — a young topic has few of
+/// them.
+pub(super) async fn seed_state(
+    parent: &Path,
+    child: &Path,
+    from: &str,
+    marker: &str,
+) -> Result<usize> {
     let mut copied = 0;
     let mut entries = tokio::fs::read_dir(parent).await?;
     while let Some(entry) = entries.next_entry().await? {
@@ -226,11 +232,13 @@ async fn seed_state(parent: &Path, child: &Path, from: &str) -> Result<usize> {
             copied += 1;
         }
     }
-    tokio::fs::write(child.join("forked-from"), from).await?;
+    tokio::fs::write(child.join(marker), from).await?;
     Ok(copied)
 }
 
-fn fail(message: String) -> CommandResult {
+/// A refused command: reported to the user, never an `error` (nothing broke).
+/// Shared with `/clone`, which refuses the same way.
+pub(super) fn fail(message: String) -> CommandResult {
     CommandResult {
         success: false,
         message,

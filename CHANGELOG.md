@@ -9,7 +9,9 @@
   it with nothing. One pick still reaches the model as exactly the option text, as
   before; several come back as `Selected: a, b`. Channels whose UI cannot mark options
   (email, plain text; feishu and wecom cards for now) answer with one option and may
-  ignore the flag (#818)
+  ignore the flag. The question box and the daemon must be the same build: an older
+  daemon still parses the new list-shaped answer, finds no `choice` in it, and reports a
+  dismissal — no error, no log — so restart the daemon after pulling (#818)
 
 - `/fork [name]`: branch another topic off the current one. The new topic is an
   ordinary topic — listed, addressable, closable — and **works in this topic's

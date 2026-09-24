@@ -1784,7 +1784,8 @@ fn toggle_marked(marked: &mut Vec<usize>, idx: usize) {
 
 /// The line under an `ask_user` question box. Kept at module level because the
 /// layout has to measure its rows — see [`question_chrome_rows`].
-const QUESTION_HINT: &str = "Up/Down or j/k move - Space marks (multi) - 1-9 or Enter send - Esc hide, then type your answer";
+const QUESTION_HINT: &str =
+    "Up/Down or j/k move - Space or 1-9 marks/picks - Enter send - Esc hide, then type your answer";
 
 /// Rows a question box spends on everything but the options: the question and
 /// the hint (both wrap, so both are measured instead of assumed), the two blank
@@ -2869,7 +2870,11 @@ impl ChatState {
     }
 
     /// `Space`: mark the option under the cursor when several picks are
-    /// allowed, otherwise confirm the highlighted one.
+    /// allowed; otherwise confirm the highlighted one outright.
+    ///
+    /// Single-select confirms rather than ignoring the key: an inert key in a
+    /// panel that spells out what the keys do is a bug report waiting to
+    /// happen, and confirming is what a user who just tapped Space means.
     fn space_question(&mut self) {
         let multi = self.question.as_ref().is_some_and(|q| q.multi);
         if !multi {

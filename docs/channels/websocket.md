@@ -116,6 +116,8 @@ undo/redo, and standard readline-style editing keys.
 | `Ctrl+P` → `i` | Toggle the topic info pane (right side) |
 | `Ctrl+P` → `c` | Focus the chat message area, which shows the cursor bar (j/k/arrows move it, Shift selects, `y` copies); pressing any other key returns focus to the input (the key itself is consumed) |
 | `Ctrl+P` → `z` | Toggle zen mode: snapshot and hide all aux panes (activity, topic info, status bar, explorer); pressing again restores the exact pre-zen state |
+| `Ctrl+P` → `p` | Toggle minimal progress mode: the chat progress tail collapses to a single animated line (`⠹ 12.4s · bash` — spinner, loop elapsed, current tool), and the completed-turn thinking line is left out of the history |
+| `Ctrl+P` → `t` / `T` | Expand/collapse the thinking display (live tail and completed turns) / show the full multi-line tool-call input instead of the one-line summary |
 | `Ctrl+C` | Cancel current AI processing |
 | `Shift+Tab` | Toggle plan / build mode |
 | `Ctrl+Q` | Quit the dashboard |

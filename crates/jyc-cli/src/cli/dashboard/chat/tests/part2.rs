@@ -1558,12 +1558,17 @@ fn info_pane_omits_the_task_section_when_there_is_no_list() {
 
 /// Draw the conversation with one seeded progress-tail entry and return the
 /// screen rows plus `last_total_lines` — the row count the scroll, cursor and
-/// yank maths address. `expanded` is the `ctrl+p T` tool-detail toggle.
+/// yank maths address. `expanded` is the `ctrl+p T` tool-detail toggle,
+/// `minimal` the `ctrl+p p` minimal progress mode.
 ///
 /// A test that counts a filler character has to seed text with no other
 /// instance of it, and count only within `rows[..total]`: that window is the
 /// rows the tail claims to occupy.
 fn tail_screen(text: &str, expanded: bool) -> (Vec<String>, usize) {
+    tail_screen_mode(text, expanded, false)
+}
+
+fn tail_screen_mode(text: &str, expanded: bool, minimal: bool) -> (Vec<String>, usize) {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.channel = Some("github".into());
@@ -1571,6 +1576,7 @@ fn tail_screen(text: &str, expanded: bool) -> (Vec<String>, usize) {
     // No server state, so the tail shows on the local optimistic flag.
     app.chat.awaiting_response = true;
     app.chat.tool_detail_expanded = expanded;
+    app.chat.minimal_progress = minimal;
     app.chat.seed_live(
         "github",
         "pr-1",
@@ -1647,8 +1653,22 @@ fn wrapped_first_row_keeps_one_spinner() {
         long.len(),
         "the whole row has to reach the screen (total={total}):\n{pane}"
     );
-    let spinner: Vec<&String> = rows.iter().filter(|r| r.contains('⏳')).collect();
+    // The marker is now the animated braille frame rather than a static
+    // `⏳`, so match the column it occupies (two-column indent + marker)
+    // instead of one specific glyph — whichever frame the clock lands on.
+    let spinner: Vec<&String> = rows
+        .iter()
+        .filter(|r| {
+            r.chars()
+                .nth(2)
+                .is_some_and(|c| matches!(c, '\u{2800}'..='\u{28ff}'))
+        })
+        .collect();
     assert_eq!(spinner.len(), 1, "one entry, one spinner row:\n{pane}");
+    assert!(
+        !rows[..total].iter().any(|r| r.contains('⏳')),
+        "the static hourglass is gone from the tail:\n{pane}"
+    );
     let body: Vec<&String> = rows.iter().filter(|r| r.contains('x')).collect();
     for row in &body[1..] {
         assert!(
@@ -1745,5 +1765,31 @@ fn collapsed_tool_detail_stays_one_row() {
         rows.iter().filter(|r| r.contains("a.rs")).count(),
         1,
         "one summary, one row:\n{pane}"
+    );
+}
+
+/// Minimal progress mode, end to end: the live round is one animated row and
+/// nothing else — no diff block, no thinking row, no orphan gap.
+#[test]
+fn minimal_progress_mode_renders_one_animated_row() {
+    let entry = r#"{"type":"edit","file_path":"src/a.rs","diff":"--- a\n+++ b\n+x"}"#;
+    let (rows, total) = tail_screen_mode(entry, true, true);
+    let pane = rows[..total].join("\n");
+
+    assert_eq!(total, 1, "one row for the whole live round:\n{pane}");
+    assert!(
+        pane.contains("edit"),
+        "the state word carries the tool name:\n{pane}"
+    );
+    assert!(
+        pane.chars().any(|c| matches!(c, '\u{2800}'..='\u{28ff}')),
+        "that row is animated, not a static marker:\n{pane}"
+    );
+    assert!(
+        !rows
+            .iter()
+            .any(|r| r.contains('💭') || r.contains("a.rs") || r.contains('x')),
+        "no thinking row and no tool detail reaches the screen:\n{}",
+        rows.join("\n")
     );
 }

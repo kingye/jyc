@@ -22,6 +22,9 @@ description: |
 2. Check each claim in the developer's comment — is it actually implemented in the code?
 3. If a claim is not verifiable from the diff, flag it as **Critical** severity
 4. Do NOT approve if the diff does not match the developer's stated work
+5. **Test evidence must come from an actual test run** (CI). "Compiles with `cargo check --tests`"
+   or "the local gate is green" proves the tests compile, not that they pass — flag the claim
+   rather than accepting it
 
 This rule is **BLOCKING** — violating it means approving changes you haven't verified, which defeats the purpose of review.
 

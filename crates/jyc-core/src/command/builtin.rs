@@ -38,6 +38,7 @@ use jyc_types::CommandInfo;
 use super::backlog_handler::BacklogCommandHandler;
 use super::bill_handler::BillCommandHandler;
 use super::cancel_handler::CancelCommandHandler;
+use super::clone_handler::CloneCommandHandler;
 use super::close_handler::CloseCommandHandler;
 use super::context_handler::ContextCommandHandler;
 use super::exchange_handler::ExchangeCommandHandler;
@@ -166,8 +167,12 @@ builtin_commands! {
         desc: "Cancel current AI processing",
         make: |tm| Arc::new(CancelCommandHandler::new(tm))
     },
+    "/clone" => {
+        desc: "Copy this topic's directory into a topic of its own",
+        make: |tm| Arc::new(CloneCommandHandler::new(tm))
+    },
     "/close" => {
-        desc: "Close and delete this topic (requires --force)",
+        desc: "Close this topic (requires --force; --purge deletes its directory too)",
         make: |tm| Arc::new(CloseCommandHandler::new(tm))
     },
     "/context" => {

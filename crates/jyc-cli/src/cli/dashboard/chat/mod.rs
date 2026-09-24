@@ -126,7 +126,9 @@ pub(super) struct ChatState {
     /// until the transcript is measured — the renderer resolves it to the end of
     /// the newest message, and leaves it alone while there are no messages yet;
     /// it also keeps it inside the line count. Visible only while
-    /// `focus == ChatFocus::MessageArea`.
+    /// `focus == ChatFocus::MessageArea`. Every entry into the pane re-arms the
+    /// sentinel (`focus_message_area`), so the cursor starts from the last line
+    /// each time the pane gains focus.
     pub(super) cursor_line: usize,
     /// How many lines the transcript rendered last frame — the cursor's
     /// movement range. Written by the renderer, read by the keys.
@@ -786,7 +788,7 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
                 app.set_status(format!("Editor error: {e:#}"));
             }
         }
-        LocalAction::FocusChat => app.chat.focus = ChatFocus::MessageArea,
+        LocalAction::FocusChat => app.chat.focus_message_area(),
         LocalAction::ScrollTop => app.chat.scroll_to_top(),
         LocalAction::ScrollBottom => app.chat.scroll_to_bottom(),
         LocalAction::ToggleMouseCapture => super::toggle_mouse_capture(app),
@@ -1261,7 +1263,7 @@ pub(super) fn handle_chat_mouse(app: &mut App, mouse: MouseEvent) {
     }
     // The message area does take focus: its cursor and the focus-routed scroll
     // belong together, and wheeling is how the user aims at a row.
-    app.chat.focus = ChatFocus::MessageArea;
+    app.chat.focus_message_area();
     match mouse.kind {
         MouseEventKind::ScrollUp => app.chat.scroll_up(),
         MouseEventKind::ScrollDown => app.chat.scroll_down(),
@@ -2571,6 +2573,19 @@ impl ChatState {
         self.selection_anchor = None;
         self.pending_count = 0;
         self.pending_y = false;
+    }
+
+    /// Focus the scrollable message area, cursor reset to the newest content:
+    /// every entry into the pane starts reading from the last line, the way
+    /// `reset_cursor` leaves a freshly loaded transcript. A no-op when the
+    /// pane already has focus — a wheel tick or a repeated key must not yank
+    /// the cursor off the row the user is reading.
+    fn focus_message_area(&mut self) {
+        if self.focus == ChatFocus::MessageArea {
+            return;
+        }
+        self.focus = ChatFocus::MessageArea;
+        self.reset_cursor();
     }
 
     /// Transcript line the viewport starts at. `scroll` counts lines from the

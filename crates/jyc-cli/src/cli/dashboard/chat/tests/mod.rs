@@ -2702,6 +2702,47 @@ fn message_cursor_starts_on_the_newest_message_row() {
     );
 }
 
+/// Entering the message pane starts the cursor at the newest content no matter
+/// where a previous visit left it: the focus transition re-arms the sentinel
+/// and the renderer lands the cursor on the last row with text. A stale
+/// selection and armed yank/count from that visit do not carry over either.
+#[test]
+fn focusing_the_message_area_resets_the_cursor() {
+    let mut app = cursor_app();
+    // Leave the pane with the cursor mid-transcript and half-finished commands.
+    app.chat.cursor_line = 5;
+    app.chat.selection_anchor = Some(2);
+    app.chat.pending_y = true;
+    app.chat.pending_count = 3;
+    app.chat.focus = ChatFocus::ChatPane;
+
+    app.chat.focus_message_area();
+    draw_80x24(&mut app);
+
+    let rows = transcript_rows(&app);
+    assert_eq!(
+        Some(app.chat.cursor_line),
+        rows.iter().rposition(|r| !r.trim().is_empty()),
+        "the cursor is back on the last row that carries text"
+    );
+    assert!(app.chat.selection_anchor.is_none());
+    assert!(!app.chat.pending_y);
+    assert_eq!(app.chat.pending_count, 0);
+}
+
+/// The transition guard: while the pane already has focus, `focus_message_area`
+/// is a no-op — a wheel tick or a repeated key must not yank the cursor off the
+/// row the user is reading.
+#[test]
+fn refocusing_the_message_area_keeps_the_cursor() {
+    let mut app = cursor_app();
+    app.chat.cursor_line = 5;
+
+    app.chat.focus_message_area();
+
+    assert_eq!(app.chat.cursor_line, 5);
+}
+
 /// A topic's messages reach the pane a frame or two after the switch (the REST
 /// hydrate), so the unplaced cursor has to wait: resolving it against the empty
 /// transcript would park it on row 0 for the rest of the session, which is what

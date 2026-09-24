@@ -340,17 +340,6 @@ pub(super) fn render_history_lines(
 const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 /// Spinner frame duration (10 fps).
 const SPINNER_STEP_MS: i64 = 100;
-/// Pulse ramp for the state word at the end of the line: dark gray → bright
-/// yellow → back, one round trip per second. Named ANSI colors on purpose — an
-/// RGB interpolation would look wrong on a terminal without truecolor.
-const PULSE_PHASES: [Color; 4] = [
-    Color::DarkGray,
-    Color::Gray,
-    Color::LightYellow,
-    Color::Gray,
-];
-/// Pulse phase duration (4 × 250 ms = 1 s).
-const PULSE_STEP_MS: i64 = 250;
 /// What a tool row's rendered first line starts with (see
 /// [`render_activity_entry`]).
 const TOOL_PREFIX: &str = "Tool: ";
@@ -373,12 +362,10 @@ fn spinner_frame(now_ms: i64) -> char {
     SPINNER_FRAMES[step_index(now_ms, SPINNER_STEP_MS, SPINNER_FRAMES.len())]
 }
 
-/// Current pulse style for the state word (keeps the italics the rest of the
-/// tail is drawn with).
-fn pulse_style(now_ms: i64) -> Style {
-    Style::default()
-        .fg(PULSE_PHASES[step_index(now_ms, PULSE_STEP_MS, PULSE_PHASES.len())])
-        .add_modifier(Modifier::ITALIC)
+/// The spinner's color — the one bright spot on the progress tail. Everything
+/// else on the tail is static; only the glyph itself turns.
+fn spinner_style() -> Style {
+    Style::default().fg(Color::LightYellow)
 }
 
 /// The spinner column. Two trailing spaces, because the `⏳ ` / `💭 ` / `⚠ `
@@ -407,25 +394,6 @@ fn activity_state(text: &str) -> &str {
     if name.is_empty() { "thinking" } else { name }
 }
 
-/// An activity line broken into spans, pulsing only the state word:
-/// `Tool: ` + **`bash`** + ` — {…}`. A line without a tool name (a thinking
-/// row) pulses as a whole.
-fn pulse_spans(line: &str, base: Style, now_ms: i64) -> Vec<Span<'static>> {
-    let pulse = pulse_style(now_ms);
-    let Some(rest) = line.strip_prefix(TOOL_PREFIX) else {
-        return vec![Span::styled(line.to_string(), pulse)];
-    };
-    let end = TOOL_PREFIX.len() + tool_name_end(rest);
-    let mut spans = vec![
-        Span::styled(line[..TOOL_PREFIX.len()].to_string(), base),
-        Span::styled(line[TOOL_PREFIX.len()..end].to_string(), pulse),
-    ];
-    if end < line.len() {
-        spans.push(Span::styled(line[end..].to_string(), base));
-    }
-    spans
-}
-
 /// The entire progress tail in minimal mode: `⠹  12.4s · bash`.
 ///
 /// The time is the live loop ticker (1 Hz), falling back to the current
@@ -442,7 +410,10 @@ fn minimal_progress_line(
         None => format_elapsed(&timestamp),
     };
     let dim = Style::default().fg(Color::Gray);
-    let mut spans = vec![Span::raw("  "), Span::styled(spinner_prefix(now_ms), dim)];
+    let mut spans = vec![
+        Span::raw("  "),
+        Span::styled(spinner_prefix(now_ms), spinner_style()),
+    ];
     if !elapsed.is_empty() {
         spans.push(Span::styled(format!("{elapsed} · "), dim));
     }
@@ -463,7 +434,7 @@ fn minimal_progress_line(
         }
         None => "thinking".into(),
     };
-    spans.push(Span::styled(state, pulse_style(now_ms)));
+    spans.push(Span::styled(state, dim));
     Line::from(spans)
 }
 
@@ -669,6 +640,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                     &mut tail_lines,
                     chunks[0].width,
                     "💭 ",
+                    Style::default(),
                     format!(
                         "thinking — {} blocks · {chars} chars (ctrl+p t)",
                         blocks.len()
@@ -692,16 +664,21 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             // diverges from the dual-time format below — there's literally
             // no `a.timestamp` to compute the left half from.
             //
-            // No tool name to pulse here, so the whole state sentence takes
-            // the pulse, and the spinner replaces the static `⏳`.
+            // No tool name here — the whole sentence is the label, in the
+            // same yellow italic as the in-progress rows below.
             let body = match live_tick_ms {
                 Some(ms) => format!("AI is thinking... ({})", format_elapsed_ms(ms)),
                 None => "AI is thinking...".to_string(),
             };
             tail_lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(spinner_prefix(now), Style::default().fg(Color::Gray)),
-                Span::styled(body, pulse_style(now)),
+                Span::styled(spinner_prefix(now), spinner_style()),
+                Span::styled(
+                    body,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::ITALIC),
+                ),
             ]));
         } else {
             let total = activity_entries.len();
@@ -742,7 +719,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 // the marker / `"   "` — checking the padded label would
                 // always miss because the marker sits two columns in.
                 let spinner = spinner_prefix(now);
-                let rendered_lines: Vec<(String, Vec<Span<'static>>)> =
+                let rendered_lines: Vec<(String, Style, Vec<Span<'static>>)> =
                     render_activity_entry(&a.text, app.chat.tool_detail_expanded)
                         .into_iter()
                         .enumerate()
@@ -755,7 +732,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                                 spinner.clone()
                             } else {
                                 // Pad with 3 spaces to visually align with the
-                                // spinner / "⏳ " column.
+                                // spinner column.
                                 "   ".to_string()
                             };
                             let text = if current && !elapsed.is_empty() {
@@ -764,21 +741,27 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                                 line
                             };
                             let label_style = style_diff_line(&text, style);
-                            // The current row animates: the spinner turns and
-                            // the state word pulses. Diff-colored rows keep
-                            // their own color — pulsing a `+`/`-` line would
-                            // throw away the only color that means anything.
-                            let spans = if current && label_style == style {
-                                pulse_spans(&text, label_style, now)
+                            // The current row is the only animated thing on the
+                            // tail: its spinner turns in bright yellow. The
+                            // text is static, so a diff-colored row (`+`/`-`)
+                            // keeps the only color that means anything.
+                            let prefix_style = if current {
+                                spinner_style()
                             } else {
-                                vec![Span::styled(text.clone(), label_style)]
+                                Style::default()
                             };
-                            (prefix, spans)
+                            (prefix, prefix_style, vec![Span::styled(text, label_style)])
                         })
                         .collect();
 
-                for (prefix, spans) in rendered_lines {
-                    push_tail_rows_spans(&mut tail_lines, chunks[0].width, &prefix, spans);
+                for (prefix, prefix_style, spans) in rendered_lines {
+                    push_tail_rows_spans(
+                        &mut tail_lines,
+                        chunks[0].width,
+                        &prefix,
+                        prefix_style,
+                        spans,
+                    );
                 }
             }
         }
@@ -812,6 +795,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             &mut tail_lines,
             chunks[0].width,
             "⚠ ",
+            Style::default(),
             message,
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         );
@@ -1115,20 +1099,27 @@ fn push_tail_rows(
     out: &mut Vec<Line<'static>>,
     pane_width: u16,
     prefix: &str,
+    prefix_style: Style,
     text: String,
     style: Style,
 ) {
-    push_tail_rows_spans(out, pane_width, prefix, vec![Span::styled(text, style)]);
+    push_tail_rows_spans(
+        out,
+        pane_width,
+        prefix,
+        prefix_style,
+        vec![Span::styled(text, style)],
+    );
 }
 
-/// [`push_tail_rows`] with the row already split into styled spans — lets the
-/// current activity row pulse just its state word, and lets
+/// [`push_tail_rows`] with the row already split into styled spans — lets
 /// [`wrap_styled_lines`] handle the wrapping (it rebuilds spans from the
 /// per-character styles, so a multi-span row wraps without losing either color).
 fn push_tail_rows_spans(
     out: &mut Vec<Line<'static>>,
     pane_width: u16,
     prefix: &str,
+    prefix_style: Style,
     spans: Vec<Span<'static>>,
 ) {
     use unicode_width::UnicodeWidthStr;
@@ -1149,7 +1140,7 @@ fn push_tail_rows_spans(
         } else {
             blank.clone()
         };
-        let mut spans = vec![Span::raw("  "), Span::raw(marker)];
+        let mut spans = vec![Span::raw("  "), Span::styled(marker, prefix_style)];
         spans.extend(row.spans);
         out.push(Line::from(spans));
     }
@@ -1582,7 +1573,14 @@ mod tests {
         let mut out: Vec<Line<'static>> = Vec::new();
         for (prefix, pad) in [("⏳ ", 3), ("⚠ ", 2)] {
             out.clear();
-            push_tail_rows(&mut out, 40, prefix, "w".repeat(60), Style::default());
+            push_tail_rows(
+                &mut out,
+                40,
+                prefix,
+                Style::default(),
+                "w".repeat(60),
+                Style::default(),
+            );
             assert!(out.len() > 1, "60 columns cannot fit a 40-column pane");
             assert_eq!(&*out[0].spans[1].content, prefix);
             let blank = " ".repeat(pad);
@@ -1597,7 +1595,14 @@ mod tests {
     #[test]
     fn push_tail_rows_gives_an_empty_entry_one_row() {
         let mut out: Vec<Line<'static>> = Vec::new();
-        push_tail_rows(&mut out, 40, "💭 ", String::new(), Style::default());
+        push_tail_rows(
+            &mut out,
+            40,
+            "💭 ",
+            Style::default(),
+            String::new(),
+            Style::default(),
+        );
         assert_eq!(out.len(), 1, "an entry always owns a row: {out:?}");
     }
 
@@ -1618,17 +1623,8 @@ mod tests {
     }
 
     #[test]
-    fn pulse_ramp_walks_gray_to_yellow_and_back() {
-        let fg = |ms| pulse_style(ms).fg.unwrap();
-        assert_eq!(fg(0), Color::DarkGray);
-        assert_eq!(fg(250), Color::Gray);
-        assert_eq!(fg(500), Color::LightYellow);
-        assert_eq!(fg(750), Color::Gray);
-        assert_eq!(fg(1000), Color::DarkGray, "one round trip per second");
-        assert!(
-            pulse_style(0).add_modifier.contains(Modifier::ITALIC),
-            "keeps the italics the rest of the tail is drawn with"
-        );
+    fn spinner_is_the_one_bright_spot_on_the_tail() {
+        assert_eq!(spinner_style().fg, Some(Color::LightYellow));
     }
 
     #[test]
@@ -1655,38 +1651,6 @@ mod tests {
     }
 
     #[test]
-    fn pulse_spans_splits_a_tool_row_around_its_name() {
-        let base = Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::ITALIC);
-        let spans = pulse_spans("Tool: bash — {\"command\":\"ls\"}", base, 500);
-        let texts: Vec<&str> = spans.iter().map(|sp| sp.content.as_ref()).collect();
-        assert_eq!(texts, vec!["Tool: ", "bash", " — {\"command\":\"ls\"}"]);
-        assert_eq!(
-            spans[1].style.fg,
-            Some(Color::LightYellow),
-            "the name pulses"
-        );
-        assert_eq!(spans[0].style, base, "the label stays put");
-        assert_eq!(spans[2].style, base, "so does the input");
-    }
-
-    #[test]
-    fn pulse_spans_pulses_a_line_without_a_tool_name_whole() {
-        let spans = pulse_spans("Thinking... (iteration 14)", Style::default(), 0);
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content.as_ref(), "Thinking... (iteration 14)");
-        assert_eq!(spans[0].style.fg, Some(Color::DarkGray));
-    }
-
-    #[test]
-    fn pulse_spans_cuts_the_name_before_a_status_marker() {
-        let spans = pulse_spans("Tool: bash (done, 0s) — ok", Style::default(), 0);
-        assert_eq!(spans[1].content.as_ref(), "bash");
-        assert_eq!(spans[2].content.as_ref(), " (done, 0s) — ok");
-    }
-
-    #[test]
     fn minimal_progress_line_is_one_animated_row() {
         let entry = jyc_types::ActivityEntry {
             timestamp: Some("2026-08-13T10:00:00Z".to_string()),
@@ -1703,7 +1667,13 @@ mod tests {
         assert_eq!(text_of(&line), "  ⠴  12.4s · bash");
         assert_eq!(
             line.spans.last().unwrap().style.fg,
-            Some(Color::LightYellow)
+            Some(Color::Gray),
+            "the state word sits in the row's gray — it does not blink"
+        );
+        assert_eq!(
+            line.spans[1].style.fg,
+            Some(Color::LightYellow),
+            "the spinner is the one bright spot"
         );
 
         // A row with nothing to time yet: the state word, no separator.

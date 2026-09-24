@@ -3,7 +3,7 @@
 //! Extracted from the monolithic `topic_manager.rs`.
 
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Per-topic queue stats.
 use super::TopicManager;
@@ -94,33 +94,7 @@ impl TopicManager {
         }
 
         if topic_path.exists() {
-            // Check for symlinks (e.g., repo/) and remove them before remove_dir_all
-            // to prevent remove_dir_all from following symlinks into shared directories
-            let repo_symlink = topic_path.join("repo");
-            match tokio::fs::symlink_metadata(&repo_symlink).await {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    if let Err(e) = tokio::fs::remove_file(&repo_symlink).await {
-                        tracing::warn!(
-                            error = %e,
-                            path = %repo_symlink.display(),
-                            "Failed to remove repo symlink before topic deletion"
-                        );
-                    } else {
-                        tracing::debug!(
-                            topic = %topic_name,
-                            "Removed repo symlink before topic deletion"
-                        );
-                    }
-                }
-                _ => {}
-            }
-
-            tokio::fs::remove_dir_all(&topic_path)
-                .await
-                .context(format!(
-                    "Failed to remove topic directory: {:?}",
-                    topic_path
-                ))?;
+            remove_topic_dir(topic_name, &topic_path).await?;
             tracing::info!(topic = %topic_name, "Topic directory deleted");
         }
 
@@ -243,13 +217,39 @@ impl TopicManager {
 /// out of the agents tree is still refused. Non-existent paths fall back
 /// to a literal comparison (nothing to delete in that case anyway).
 async fn path_is_under(path: &Path, root: &Path) -> bool {
-    let path = tokio::fs::canonicalize(path)
-        .await
-        .unwrap_or_else(|_| path.to_path_buf());
-    let root = tokio::fs::canonicalize(root)
-        .await
-        .unwrap_or_else(|_| root.to_path_buf());
+    let path = crate::topic_path::resolved(path);
+    let root = crate::topic_path::resolved(root);
     path != root && path.starts_with(&root)
+}
+
+/// Delete a topic directory: the `repo` symlink first, then the tree.
+///
+/// `remove_dir_all` follows symlinks, so a dir holding a link into a shared
+/// checkout would delete through it. The link goes first; what remains is a
+/// plain tree.
+async fn remove_topic_dir(topic_name: &str, path: &Path) -> Result<()> {
+    let repo_symlink = path.join("repo");
+    if let Ok(meta) = tokio::fs::symlink_metadata(&repo_symlink).await
+        && meta.file_type().is_symlink()
+    {
+        if let Err(e) = tokio::fs::remove_file(&repo_symlink).await {
+            tracing::warn!(
+                error = %e,
+                path = %repo_symlink.display(),
+                "Failed to remove repo symlink before topic deletion"
+            );
+        } else {
+            tracing::debug!(
+                topic = %topic_name,
+                "Removed repo symlink before topic deletion"
+            );
+        }
+    }
+
+    tokio::fs::remove_dir_all(path)
+        .await
+        .context(format!("Failed to remove topic directory: {:?}", path))?;
+    Ok(())
 }
 
 #[cfg(test)]

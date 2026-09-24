@@ -3376,7 +3376,8 @@ fn render_history_minimal_progress_drops_the_thinking_line() {
 }
 
 /// Wiring test for the mode itself: `p` has to be a chat-scoped command whose
-/// dispatch moves the flag the render reads.
+/// dispatch moves the flag the render reads. The mode starts minimal — a
+/// restarted TUI should not need re-toggling — so the first toggle expands.
 #[test]
 fn minimal_progress_command_flips_the_flag_the_render_reads() {
     use crate::cli::dashboard::local_commands::{CommandScope, LocalAction, local_commands};
@@ -3393,7 +3394,7 @@ fn minimal_progress_command_flips_the_flag_the_render_reads() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     let mut terminal = Terminal::new(TestBackend::new(40, 20)).expect("test terminal");
-    for expected in [true, false] {
+    for expected in [false, true] {
         super::execute_local_action(&mut app, &mut terminal, cmd.action);
         assert_eq!(app.chat.minimal_progress, expected);
     }

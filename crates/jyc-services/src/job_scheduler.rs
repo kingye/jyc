@@ -298,10 +298,11 @@ impl JobScheduler {
             sender: "scheduler".to_string(),
             sender_address: "scheduler@jyc".to_string(),
             recipients: vec![],
-            topic: format!(
-                "Scheduled job: {}",
-                job.prompt.chars().take(80).collect::<String>()
-            ),
+            // Use the real topic name so the message is stored and rendered
+            // under the topic it belongs to (chat history, TUI pane, event
+            // routing). A descriptive label here would file the message
+            // under a phantom topic invisible to clients.
+            topic: job.topic_name.clone(),
             content: MessageContent {
                 text: Some(job.prompt.clone()),
                 html: None,

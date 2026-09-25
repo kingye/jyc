@@ -1625,11 +1625,11 @@ fn test_resolve_turn_mode() {
         let got = super::resolve_turn_mode(
             file_mode.map(|s| s.to_string()),
             pattern_mode.map(|s| s.to_string()),
-            *scheduled,
+            scheduled,
         );
         assert_eq!(
             got.as_deref(),
-            *expected,
+            expected,
             "scheduled={scheduled} file={file_mode:?} pattern={pattern_mode:?}"
         );
     }

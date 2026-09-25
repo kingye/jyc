@@ -1604,3 +1604,33 @@ async fn system_prompt_enumerates_configured_access_roots() {
         "blanket prohibition must not appear when roots are configured"
     );
 }
+
+#[test]
+fn test_resolve_turn_mode() {
+    // Mode resolution: file > pattern > default build (None downstream).
+    // Scheduled-job turns are non-interactive automation — no user will ever
+    // approve a plan — so they always resolve to build (None), ignoring both
+    // the .jyc/mode-override file and pattern.mode.
+    let cases = [
+        // (scheduled, file_mode, pattern_mode, expected)
+        (false, Some("plan"), None, Some("plan")),
+        (false, None, Some("plan"), Some("plan")),
+        (false, Some("plan"), Some("build"), Some("plan")), // file wins
+        (false, None, None, None),                          // default: build
+        (true, Some("plan"), None, None),
+        (true, None, Some("plan"), None),
+        (true, Some("plan"), Some("plan"), None),
+    ];
+    for (scheduled, file_mode, pattern_mode, expected) in cases {
+        let got = super::resolve_turn_mode(
+            file_mode.map(|s| s.to_string()),
+            pattern_mode.map(|s| s.to_string()),
+            scheduled,
+        );
+        assert_eq!(
+            got.as_deref(),
+            expected,
+            "scheduled={scheduled} file={file_mode:?} pattern={pattern_mode:?}"
+        );
+    }
+}

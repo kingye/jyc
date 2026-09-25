@@ -2,6 +2,13 @@
 
 ### Changed
 
+- TUI chat: refocusing the message pane (the `focus chat` command, a click,
+  or the Tab cycle) now parks the cursor at the end of the *visible page* —
+  the bottom visible row — instead of always at the end of the transcript,
+  so a refocus while scrolled up in history continues reading where the user
+  is looking. Pinned to the bottom the landing is unchanged (the last row
+  with text), and an empty transcript still waits for content (#828)
+
 - Topic state resolution no longer has a silent fallback: `jyc_dir` panics
   when a topic has no registered state dir instead of quietly writing into
   `<topic_dir>/.jyc`. Every topic's state is now registered before any
@@ -448,6 +455,13 @@
   you typed rather than doing nothing (#796)
 
 ### Fixed
+
+- Startup no longer panics on channel-infrastructure directories under the
+  agents root: the scheduled-jobs discovery scans every channel workspace's
+  children as topics, and the email channel's `.imap` mailbox-cursor dir is
+  not a topic (it has no registered state dir), so both scan passes tripped
+  the `jyc_dir` no-fallback invariant. Discovery now skips workspace
+  children that are not registered topics (#828)
 
 - The TUI message-pane cursor resets to the last line every time the pane
   gains focus (the `focus chat` command or a click), instead of keeping the

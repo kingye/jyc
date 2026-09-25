@@ -172,6 +172,14 @@ impl JobScheduler {
                     None => continue,
                 };
 
+                // A workspace child that is not a registered topic is channel
+                // infrastructure (e.g. the email channel's `.imap` cursor dir
+                // under the agents-root workspace), not a topic — only
+                // registered names may go through `jyc_dir`.
+                if jyc_types::state_dir::registered_state(&topic_name).is_none() {
+                    continue;
+                }
+
                 let jobs_dir = jyc_dir(&topic_name, &topic_path).join("jobs");
                 if !jobs_dir.exists() {
                     continue;
@@ -364,6 +372,10 @@ impl JobScheduler {
                 let Some(topic_name) = topic_path.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
+                // Skip non-topic children (see `discover_due_jobs`).
+                if jyc_types::state_dir::registered_state(topic_name).is_none() {
+                    continue;
+                }
                 let jobs_dir = jyc_dir(topic_name, &topic_path).join("jobs");
                 if !jobs_dir.exists() {
                     continue;
@@ -517,6 +529,43 @@ mod tests {
         let scheduler = create_test_scheduler(vec![workspace], true).await;
         // Should not panic
         scheduler.run_cycle().await;
+    }
+
+    /// A workspace child that is not a registered topic (e.g. the email
+    /// channel's `.imap` cursor dir under the agents-root workspace) must be
+    /// skipped by discovery, not panicked on. The decoy even carries a
+    /// jobs-looking dir to prove the guard is the registry, not the
+    /// jobs-dir existence check.
+    #[tokio::test]
+    async fn test_discovery_skips_unregistered_workspace_children() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let due_job = jyc_types::JobConfig::new_one_time(
+            Utc::now() - chrono::Duration::hours(1),
+            "email".to_string(),
+            "default".to_string(),
+            "scan-skip-topic".to_string(),
+            "past task".to_string(),
+        );
+        make_topic_with_jobs(&workspace, "scan-skip-topic", vec![due_job]).await;
+
+        let infra = workspace.join(".imap");
+        tokio::fs::create_dir_all(infra.join(".jyc/jobs"))
+            .await
+            .unwrap();
+
+        let scheduler = create_test_scheduler(vec![workspace], true).await;
+        let due = scheduler.discover_due_jobs().await;
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].topic_name, "scan-skip-topic");
+
+        // The next-sleep scan walks the same children and must not panic
+        // either; the past job contributes no future next_fire_at, so the
+        // scan interval is returned.
+        let dur = scheduler.next_sleep_duration().await;
+        assert_eq!(dur, std::time::Duration::from_secs(60));
     }
 
     /// Happy path: multiple topics with a mix of due, future, and disabled jobs.

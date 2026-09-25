@@ -455,6 +455,10 @@
   Re-focusing while the pane already has focus is a no-op, so a wheel tick
   cannot yank the cursor off the row being read
 
+- The same reset now also applies when the Tab focus cycle lands on the
+  message pane: the cycle used to switch panes without the reset, so the
+  cursor reappeared at the position left by the previous visit (#827)
+
 - `/close` no longer claims it deleted a directory it kept: the reply says
   whether the dir is gone or kept, and offers the exact `--purge` command for
   the kept case

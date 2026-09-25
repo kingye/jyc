@@ -127,8 +127,7 @@ impl Tool for JobCreateTool {
         let cron = input.get("cron").and_then(|c| c.as_str());
         let at_str = input.get("at").and_then(|a| a.as_str());
 
-        // Extract topic/channel info from working directory path.
-        // Directory structure: <workdir>/<channel_name>/workspace/<topic_name>/
+        // The topic name is the working directory's name (the topic dir).
         let topic_name = ctx
             .working_dir
             .file_name()
@@ -136,19 +135,19 @@ impl Tool for JobCreateTool {
             .unwrap_or("unknown")
             .to_string();
 
-        let channel_name = ctx
-            .working_dir
-            .parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+        // The channel name comes from the live turn context. It is NOT
+        // derivable from the directory path: the agents-root channel's
+        // workspace is the agents root itself, so path-walking walked past
+        // the channel level and stamped the OS username as the channel.
+        // The scheduler delivers fired messages via
+        // `topic_managers[job.channel_name]`, so a wrong name makes the job
+        // undeliverable.
+        let Some(channel_name) = ctx.current_channel.clone() else {
+            return Ok(ToolOutput::error(
+                "job scheduling requires a channel context".to_string(),
+            ));
+        };
 
-        // The channel type (e.g. "email", "github") is not directly derivable
-        // from the directory path — only the channel config name is. Use the
-        // channel_name as the channel value; the channel_name is the key field
-        // for TopicManager lookup when the job fires.
         let channel = channel_name.clone();
 
         let job = if let Some(cron_expr) = cron {
@@ -306,5 +305,60 @@ impl Tool for JobToggleTool {
             "Job '{}' is now {}",
             id, status
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Job creation must stamp the channel from the live turn context, not
+    /// derive it from the directory layout: the agents-root channel's
+    /// workspace is the agents root itself, so path-walking walked past the
+    /// channel level and stamped the OS username — and the scheduler delivers
+    /// fired messages via `topic_managers[job.channel_name]`, so a wrong name
+    /// makes the job undeliverable.
+    #[tokio::test]
+    async fn test_job_create_stamps_channel_from_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic_dir = tmp.path().join("stamp-topic");
+        tokio::fs::create_dir_all(&topic_dir).await.unwrap();
+        // JobStore resolves the state dir through the registry; in production
+        // the topic registers at activation, tests register explicitly.
+        jyc_types::state_dir::register("stamp-topic", &topic_dir.join(".jyc"));
+
+        let tool = JobCreateTool;
+        let at = (Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+        let input = json!({
+            "at": at,
+            "prompt": "smoke",
+        });
+
+        // Without a channel in context: a loud error, never a silently
+        // mis-stamped job.
+        let mut ctx = ToolContext::new(&topic_dir);
+        ctx.current_topic = Some("stamp-topic".to_string());
+        let out = tool.execute(input.clone(), &ctx).await.unwrap();
+        assert!(
+            out.is_error && out.content.contains("channel"),
+            "unexpected output: {}",
+            out.content
+        );
+
+        // With a channel: the job is stamped with exactly that channel.
+        ctx.current_channel = Some("agents".to_string());
+        let out = tool.execute(input, &ctx).await.unwrap();
+        assert!(
+            !out.is_error && out.content.contains("Job created successfully"),
+            "unexpected output: {}",
+            out.content
+        );
+
+        let store = store_from_ctx(&ctx).await.unwrap();
+        let jobs = store.list().await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].channel_name, "agents");
+        assert_eq!(jobs[0].channel, "agents");
+        assert_eq!(jobs[0].topic_name, "stamp-topic");
     }
 }

@@ -2,6 +2,11 @@
 
 ### Fixed
 
+- Scheduled-job turns always run in build mode: a job turn no longer
+  inherits the topic's interactive plan-mode override (from `.jyc/mode-override`
+  or `pattern.mode`). A plan-mode job turn waits for a user approval that can
+  never arrive and silently emits no output (#830)
+
 - Scheduled jobs are now stamped with the channel from the live turn context
   instead of a name guessed from the directory layout — on channels whose
   workspace is the agents root the guess produced a bogus name (the OS

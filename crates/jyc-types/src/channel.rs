@@ -50,6 +50,21 @@ pub struct InboundMessage {
     pub matched_pattern: Option<String>,
 }
 
+/// Sender address stamped on messages injected by the job scheduler
+/// (`job_scheduler::fire_job`).
+pub const SCHEDULER_SENDER_ADDRESS: &str = "scheduler@jyc";
+
+impl InboundMessage {
+    /// Returns true when this message was injected by the job scheduler.
+    ///
+    /// Scheduled-job turns are non-interactive automation: there is no user
+    /// at the other end to approve anything. Call sites use this to keep
+    /// them out of interactive-only behavior such as plan mode.
+    pub fn is_scheduled_job(&self) -> bool {
+        self.sender_address == SCHEDULER_SENDER_ADDRESS
+    }
+}
+
 /// Message content in multiple formats.
 /// At least one format should be present.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -966,5 +981,37 @@ topic_path = "~/projects/jyc"
         let cfg2: ContextStrategyConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(cfg2.tool_result_cap, Some(0));
         assert_ne!(cfg2.tool_result_cap, None);
+    }
+
+    fn message_with_sender(sender_address: &str) -> InboundMessage {
+        InboundMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            channel: "websocket".to_string(),
+            channel_uid: "uid-1".to_string(),
+            sender: "tester".to_string(),
+            sender_address: sender_address.to_string(),
+            recipients: vec![],
+            topic: "test".to_string(),
+            content: MessageContent {
+                text: Some("hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: Utc::now(),
+            references: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: HashMap::new(),
+            matched_pattern: None,
+        }
+    }
+
+    #[test]
+    fn test_is_scheduled_job() {
+        // fire_job stamps scheduler messages with SCHEDULER_SENDER_ADDRESS.
+        assert!(message_with_sender(SCHEDULER_SENDER_ADDRESS).is_scheduled_job());
+        assert!(!message_with_sender("user@example.com").is_scheduled_job());
+        assert!(!message_with_sender("").is_scheduled_job());
     }
 }

@@ -2,6 +2,11 @@
 
 ### Fixed
 
+- `job_create` no longer accepts both `cron` and `at` in one call (cron
+  silently won); the tool description and schema now state up front that
+  exactly one of them is required, and mention `job_delete`/`job_toggle` for
+  stopping a recurring job later
+
 - Scheduled-job turns always run in build mode: a job turn no longer
   inherits the topic's interactive plan-mode override (from `.jyc/mode-override`
   or `pattern.mode`). A plan-mode job turn waits for a user approval that can

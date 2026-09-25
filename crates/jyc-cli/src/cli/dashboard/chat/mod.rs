@@ -2458,7 +2458,13 @@ impl ChatState {
     /// `self.activity_split == 0`.
     pub(super) fn toggle_focus(&mut self) {
         self.focus = match self.focus {
-            ChatFocus::ChatPane => ChatFocus::MessageArea,
+            ChatFocus::ChatPane => {
+                // Entering the message pane resets the cursor (as
+                // `focus_message_area` does) so the Tab cycle starts reading
+                // at the last line, not where a previous visit left it.
+                self.reset_cursor();
+                ChatFocus::MessageArea
+            }
             ChatFocus::MessageArea => {
                 if self.info_visible {
                     ChatFocus::InfoPane

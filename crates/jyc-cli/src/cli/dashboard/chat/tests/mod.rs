@@ -2759,6 +2759,36 @@ fn tab_cycling_into_the_message_area_resets_the_cursor() {
     assert_eq!(app.chat.pending_count, 0);
 }
 
+/// Refocus parks the cursor at the end of the *visible page*, not the end of
+/// the transcript: scrolled up five rows, re-entering the pane lands on the
+/// bottom visible row, so reading continues where the user is looking.
+#[test]
+fn refocus_while_scrolled_up_lands_on_the_bottom_visible_row() {
+    let mut app = cursor_app();
+    app.chat.scroll = 5;
+    app.chat.focus = ChatFocus::ChatPane;
+
+    app.chat.focus_message_area();
+    draw_80x24(&mut app);
+
+    let last_text = transcript_rows(&app)
+        .iter()
+        .rposition(|r| !r.trim().is_empty())
+        .expect("fixture has text rows");
+    // Bottom visible row: `last_total_lines - scroll - 1` — the sentinel
+    // landing clamps the last-text row against the page bottom in render.rs.
+    let page_bottom = app.chat.last_total_lines - app.chat.scroll - 1;
+    assert!(
+        page_bottom < last_text,
+        "fixture must scroll the transcript end off-screen: \
+         page_bottom={page_bottom} last_text={last_text}"
+    );
+    assert_eq!(
+        app.chat.cursor_line, page_bottom,
+        "refocus while scrolled up parks the cursor on the bottom visible row"
+    );
+}
+
 /// The transition guard: while the pane already has focus, `focus_message_area`
 /// is a no-op — a wheel tick or a repeated key must not yank the cursor off the
 /// row the user is reading.

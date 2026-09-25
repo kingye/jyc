@@ -269,8 +269,7 @@ mode = "agent"
             .unwrap();
 
         let handler = TemplateCommandHandler;
-        let mut ctx = test_context(tmp.path());
-        ctx.topic_path = topic_dir.clone();
+        let ctx = test_context(&topic_dir);
 
         println!("Template dir in ctx: {:?}", ctx.template_dirs);
 

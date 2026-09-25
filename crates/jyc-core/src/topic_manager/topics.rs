@@ -1025,6 +1025,10 @@ mode = "agent"
         .await
         .unwrap();
         let tm = make_tm(&workspace);
+        jyc_types::state_dir::register(
+            "topic_display_state_resolves_mode_model_and_context",
+            &topic_path.join(".jyc"),
+        );
 
         let state = tm
             .topic_display_state("topic_display_state_resolves_mode_model_and_context")
@@ -1097,24 +1101,41 @@ mode = "agent"
     async fn topic_pattern_disk_fallback_on_cold_start() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
-        let topic_path = workspace.join("jyc");
+        let topic_path = workspace.join("topic_pattern_disk_fallback_on_cold_start");
         tokio::fs::create_dir_all(topic_path.join(".jyc"))
             .await
             .unwrap();
-        tokio::fs::write(topic_path.join(".jyc").join("pattern"), "jyc\n")
-            .await
-            .unwrap();
+        tokio::fs::write(
+            topic_path.join(".jyc").join("pattern"),
+            "topic_pattern_disk_fallback_on_cold_start\n",
+        )
+        .await
+        .unwrap();
 
+        jyc_types::state_dir::register(
+            "topic_pattern_disk_fallback_on_cold_start",
+            &topic_path.join(".jyc"),
+        );
         let tm = make_tm(&workspace);
         // First read: from disk.
-        assert_eq!(tm.topic_pattern("jyc").await.as_deref(), Some("jyc"));
+        assert_eq!(
+            tm.topic_pattern("topic_pattern_disk_fallback_on_cold_start")
+                .await
+                .as_deref(),
+            Some("topic_pattern_disk_fallback_on_cold_start")
+        );
         // Disk fallback only triggers when the file exists; removing
-        // it now and re-reading must NOT return "jyc" — the cache
+        // it now and re-reading must NOT return "topic_pattern_disk_fallback_on_cold_start" — the cache
         // should already have been populated by the first read.
         tokio::fs::remove_file(topic_path.join(".jyc").join("pattern"))
             .await
             .unwrap();
-        assert_eq!(tm.topic_pattern("jyc").await.as_deref(), Some("jyc"));
+        assert_eq!(
+            tm.topic_pattern("topic_pattern_disk_fallback_on_cold_start")
+                .await
+                .as_deref(),
+            Some("topic_pattern_disk_fallback_on_cold_start")
+        );
     }
 
     /// `set_topic_pattern` with an empty name must NOT overwrite an

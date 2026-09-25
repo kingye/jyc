@@ -316,7 +316,7 @@ async fn test_empty_pattern_name_does_not_clobber_pattern_file() {
     .await;
     let topic_path = workspace.join(tname);
     assert!(
-        wait_for_history_lines(&topic_path, 1).await,
+        wait_for_history_lines(tname, &topic_path, 1).await,
         "worker did not process the first message in time"
     );
     let pattern_file = state_dir(tname, &topic_path).join("pattern");
@@ -339,7 +339,7 @@ async fn test_empty_pattern_name_does_not_clobber_pattern_file() {
     )
     .await;
     assert!(
-        wait_for_history_lines(&topic_path, 2).await,
+        wait_for_history_lines(tname, &topic_path, 2).await,
         "worker did not process the injected message in time"
     );
     assert_eq!(
@@ -352,9 +352,9 @@ async fn test_empty_pattern_name_does_not_clobber_pattern_file() {
 
 /// Poll until the topic's chat history holds at least `n` lines
 /// (i.e. the worker processed `n` messages). ~2s timeout.
-async fn wait_for_history_lines(topic_path: &std::path::Path, n: usize) -> bool {
+async fn wait_for_history_lines(topic: &str, topic_path: &std::path::Path, n: usize) -> bool {
     for _ in 0..40 {
-        let (files, _) = crate::chat_log_store::list_chat_history_files("", topic_path);
+        let (files, _) = crate::chat_log_store::list_chat_history_files(topic, topic_path);
         let mut count = 0;
         for f in files {
             if let Ok(content) = tokio::fs::read_to_string(&f).await {
@@ -2010,7 +2010,7 @@ shell = ["sh", "-c", "echo seen >> hook-ran.log; echo nope >&2; exit 2"]
             "message_received hook did not run"
         );
         // Message was stored before the gate...
-        assert!(wait_for_history_lines(&topic_path, 1).await);
+        assert!(wait_for_history_lines("hr-block", &topic_path, 1).await);
         // ...but exit-2 stopped dispatch: the agent never produced a reply.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(

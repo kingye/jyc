@@ -95,6 +95,7 @@ mod template_init_tests {
         make_template(&template_dir, "github-planner", "PLANNER").await;
 
         let topic_path = workspace.join("issue-1");
+        jyc_types::state_dir::register("fresh_topic_writes_marker", &topic_path.join(".jyc"));
         initialize_topic_from_template(
             "fresh_topic_writes_marker",
             &topic_path,
@@ -125,6 +126,7 @@ mod template_init_tests {
         make_template(&template_dir, "github-planner", "PLANNER").await;
 
         let topic_path = workspace.join("issue-1");
+        jyc_types::state_dir::register("matching_template_is_idempotent", &topic_path.join(".jyc"));
         initialize_topic_from_template(
             "matching_template_is_idempotent",
             &topic_path,
@@ -155,6 +157,7 @@ mod template_init_tests {
         make_template(&template_dir, "github-planner", "PLANNER").await;
 
         let topic_path = workspace.join("issue-1");
+        jyc_types::state_dir::register("template_mismatch_is_refused", &topic_path.join(".jyc"));
         // First, init with HLP.
         initialize_topic_from_template(
             "template_mismatch_is_refused",

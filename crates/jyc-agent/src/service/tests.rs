@@ -1567,6 +1567,8 @@ async fn system_prompt_enumerates_configured_access_roots() {
     let topic = Path::new("/tmp/test-topic");
     let tname = "system_prompt_enumerates_configured_access_roots";
     jyc_types::state_dir::register(tname, &topic.join(".jyc"));
+    // `resolve_additional_read_roots` keys state on `message.topic`.
+    jyc_types::state_dir::register("test", &topic.join(".jyc"));
     let reads = svc.resolve_additional_read_roots(&message, topic);
     let writes = svc.resolve_additional_write_roots(&message, topic);
     assert!(

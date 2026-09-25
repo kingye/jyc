@@ -1611,7 +1611,7 @@ fn test_resolve_turn_mode() {
     // Scheduled-job turns are non-interactive automation — no user will ever
     // approve a plan — so they always resolve to build (None), ignoring both
     // the .jyc/mode-override file and pattern.mode.
-    let cases: &[(bool, Option<&str>, Option<&str>, Option<&str>)] = &[
+    let cases = [
         // (scheduled, file_mode, pattern_mode, expected)
         (false, Some("plan"), None, Some("plan")),
         (false, None, Some("plan"), Some("plan")),

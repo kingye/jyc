@@ -154,6 +154,10 @@ impl JobScheduler {
     async fn discover_due_jobs(&self) -> Vec<DueJob> {
         let now = Utc::now();
         let mut due = Vec::new();
+        // The same job can be reachable through more than one path (a
+        // workspace scan plus a topic manager's custom paths, or two
+        // workspace dirs overlapping). Each job must fire only once.
+        let mut seen = std::collections::HashSet::new();
 
         for workspace_dir in &self.workspace_dirs {
             let mut topic_entries = match tokio::fs::read_dir(workspace_dir).await {
@@ -184,17 +188,6 @@ impl JobScheduler {
                 if !jobs_dir.exists() {
                     continue;
                 }
-
-                // Extract channel_name from workspace directory structure:
-                // <workdir>/<channel_name>/workspace/<topic_name>/
-                let channel_name = match workspace_dir.parent() {
-                    Some(p) => p
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_default(),
-                    None => String::new(),
-                };
 
                 // Build scoped JobStore for this topic
                 let store =
@@ -229,11 +222,16 @@ impl JobScheduler {
                     if job.next_fire_at.is_none_or(|t| t > now) {
                         continue;
                     }
+                    if !seen.insert(job.id.clone()) {
+                        continue;
+                    }
                     due.push(DueJob {
                         job: job.clone(),
                         store: store.clone(),
                         topic_name: topic_name.clone(),
-                        channel_name: channel_name.clone(),
+                        // The stamped channel — not derivable from the
+                        // directory layout (see job_create).
+                        channel_name: job.channel_name.clone(),
                     });
                 }
             }
@@ -242,7 +240,7 @@ impl JobScheduler {
         // Also scan custom topic paths from pattern `topic_path` overrides.
         // These are not under any workspace_dir so the standard scan misses them.
         let tms = self.topic_managers.lock().await;
-        for (channel_name, tm) in tms.iter() {
+        for tm in tms.values() {
             let custom_paths = tm.custom_topic_paths().await;
             for (topic_name, topic_path) in &custom_paths {
                 let jobs_dir = jyc_dir(topic_name, topic_path).join("jobs");
@@ -269,11 +267,14 @@ impl JobScheduler {
                     if !job.enabled || job.next_fire_at.is_none_or(|t| t > now) {
                         continue;
                     }
+                    if !seen.insert(job.id.clone()) {
+                        continue;
+                    }
                     due.push(DueJob {
                         job: job.clone(),
                         store: store.clone(),
                         topic_name: topic_name.clone(),
-                        channel_name: channel_name.clone(),
+                        channel_name: job.channel_name.clone(),
                     });
                 }
             }
@@ -544,9 +545,9 @@ mod tests {
 
         let due_job = jyc_types::JobConfig::new_one_time(
             Utc::now() - chrono::Duration::hours(1),
-            "email".to_string(),
-            "default".to_string(),
             "scan-skip-topic".to_string(),
+            "email".to_string(),
+            "agents".to_string(),
             "past task".to_string(),
         );
         make_topic_with_jobs(&workspace, "scan-skip-topic", vec![due_job]).await;
@@ -560,12 +561,47 @@ mod tests {
         let due = scheduler.discover_due_jobs().await;
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].topic_name, "scan-skip-topic");
+        assert_eq!(due[0].channel_name, "agents");
 
         // The next-sleep scan walks the same children and must not panic
         // either; the past job contributes no future next_fire_at, so the
         // scan interval is returned.
         let dur = scheduler.next_sleep_duration().await;
         assert_eq!(dur, std::time::Duration::from_secs(60));
+    }
+
+    /// The same job can be reachable through more than one discovery path —
+    /// overlapping workspace dirs, or a workspace scan plus a topic manager's
+    /// custom paths. It must be discovered (and therefore fired) only once.
+    /// The second workspace dir here stands in for any second path.
+    #[tokio::test]
+    async fn test_discovery_dedupes_jobs_seen_through_multiple_paths() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let due_job = jyc_types::JobConfig::new_one_time(
+            Utc::now() - chrono::Duration::hours(1),
+            "dedupe-topic".to_string(),
+            "email".to_string(),
+            "dedupe-channel".to_string(),
+            "past task".to_string(),
+        );
+        make_topic_with_jobs(&workspace, "dedupe-topic", vec![due_job]).await;
+
+        let scheduler = JobScheduler::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            vec![workspace.clone(), workspace],
+            60,
+            10,
+            true,
+        );
+        let due = scheduler.discover_due_jobs().await;
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].job.topic_name, "dedupe-topic");
+        // The channel carried into discovery is the stamped one, not anything
+        // derived from the directory layout.
+        assert_eq!(due[0].channel_name, "dedupe-channel");
     }
 
     /// Happy path: multiple topics with a mix of due, future, and disabled jobs.

@@ -1,5 +1,18 @@
 ## [Unreleased]
 
+### Fixed
+
+- Scheduled jobs are now stamped with the channel from the live turn context
+  instead of a name guessed from the directory layout — on channels whose
+  workspace is the agents root the guess produced a bogus name (the OS
+  username), so firing failed with `topic manager not found` and the job
+  retried forever (#829)
+
+- The job scheduler discovers each due job only once: a job reachable
+  through both the workspace scan and a topic manager's custom paths
+  (or overlapping workspace dirs) was previously discovered twice and
+  double-fired (#829)
+
 ### Changed
 
 - TUI chat: refocusing the message pane (the `focus chat` command, a click,

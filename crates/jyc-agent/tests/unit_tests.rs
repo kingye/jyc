@@ -2155,7 +2155,7 @@ mod skills {
     #[test]
     fn no_skills_dir_returns_empty() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "reply_tool_silent_continue";
+        let topic = "no_skills_dir_returns_empty";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
@@ -2167,7 +2167,7 @@ mod skills {
     #[test]
     fn single_skill_parsed() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "reply_tool_silent_continue";
+        let topic = "single_skill_parsed";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Create .jyc/skills/test-skill/SKILL.md
         let skill_dir = tmp.path().join(".jyc/skills/test-skill");
@@ -2191,7 +2191,7 @@ mod skills {
     #[test]
     fn empty_skills_dir_handled() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "reply_tool_silent_continue";
+        let topic = "empty_skills_dir_handled";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Create the directory but leave it empty
         std::fs::create_dir_all(tmp.path().join(".jyc/skills")).unwrap();
@@ -2206,7 +2206,7 @@ mod skills {
     #[test]
     fn malformed_skill_skipped() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "reply_tool_silent_continue";
+        let topic = "malformed_skill_skipped";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Create a valid skill
         let good_dir = tmp.path().join(".jyc/skills/good-skill");
@@ -2233,7 +2233,7 @@ mod skills {
     #[test]
     fn same_name_priority() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "reply_tool_silent_continue";
+        let topic = "same_name_priority";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Create .claude/skills/my-skill/ (lower priority — scanned earlier)
         let claude_dir = tmp.path().join(".claude/skills/my-skill");
@@ -2265,7 +2265,7 @@ mod skills {
     #[test]
     fn multi_path_discovery() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "reply_tool_silent_continue";
+        let topic = "multi_path_discovery";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Skill 1 in .jyc/skills/
         let d1 = tmp.path().join(".jyc/skills/skill-one");

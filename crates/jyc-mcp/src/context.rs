@@ -142,8 +142,8 @@ mod tests {
             created_at: "2026-03-27T10:00:00Z".to_string(),
         };
 
-        save_reply_context("t", tmp.path(), &ctx).await.unwrap();
-        let loaded = load_reply_context("t", tmp.path()).await.unwrap();
+        save_reply_context(topic, tmp.path(), &ctx).await.unwrap();
+        let loaded = load_reply_context(topic, tmp.path()).await.unwrap();
 
         assert_eq!(loaded.channel, "jiny283");
         assert_eq!(loaded.topic_name, "weather");
@@ -158,7 +158,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_load_missing_file";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        assert!(load_reply_context("t", tmp.path()).await.is_err());
+        assert!(load_reply_context(topic, tmp.path()).await.is_err());
     }
 
     #[tokio::test]
@@ -176,10 +176,10 @@ mod tests {
             created_at: "now".to_string(),
         };
 
-        save_reply_context("t", tmp.path(), &ctx).await.unwrap();
+        save_reply_context(topic, tmp.path(), &ctx).await.unwrap();
         assert!(tmp.path().join(".jyc/reply-context.json").exists());
 
-        cleanup_reply_context("t", tmp.path()).await;
+        cleanup_reply_context(topic, tmp.path()).await;
         assert!(!tmp.path().join(".jyc/reply-context.json").exists());
     }
 
@@ -194,6 +194,6 @@ mod tests {
             jyc_dir.join("reply-context.json"),
             r#"{"channel":"","topicName":"t","incomingMessageDir":"d","uid":"1","createdAt":"now"}"#,
         ).await.unwrap();
-        assert!(load_reply_context("t", tmp.path()).await.is_err());
+        assert!(load_reply_context(topic, tmp.path()).await.is_err());
     }
 }

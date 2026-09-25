@@ -719,8 +719,10 @@ mod next_id_tests {
             serde_json::to_string(&entry).unwrap(),
         )
         .unwrap();
+        let topic = "seed_next_id_falls_back_to_disk_when_memory_is_empty";
+        jyc_types::state_dir::register(topic, &jyc_dir);
         let mut state = TopicActivityState::default();
-        seed_next_id_from_disk(&mut state, "", Some(&topic_path));
+        seed_next_id_from_disk(&mut state, topic, Some(&topic_path));
         assert_eq!(state.next_id, 8);
     }
 

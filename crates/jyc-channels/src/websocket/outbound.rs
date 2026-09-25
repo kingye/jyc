@@ -227,6 +227,7 @@ mod tests {
         let (tx, mut rx) = broadcast::channel(16);
         let tmp = tempfile::TempDir::new().unwrap();
         let topic_path = tmp.path().join("general");
+        jyc_types::state_dir::register("general", &topic_path.join(".jyc"));
         tokio::fs::create_dir_all(&topic_path).await.unwrap();
         let storage = Arc::new(MessageStorage::new(&topic_path));
         let adapter = WebsocketOutboundAdapter::new(tx, storage);
@@ -274,6 +275,7 @@ mod tests {
         let (tx, mut rx) = broadcast::channel(16);
         let tmp = tempfile::TempDir::new().unwrap();
         let topic_path = tmp.path().join("general");
+        jyc_types::state_dir::register("general", &topic_path.join(".jyc"));
         tokio::fs::create_dir_all(&topic_path).await.unwrap();
         let storage = Arc::new(MessageStorage::new(&topic_path));
         let adapter = WebsocketOutboundAdapter::new(tx, storage);
@@ -332,6 +334,7 @@ mod tests {
         let (tx, mut rx) = broadcast::channel(16);
         let tmp = tempfile::TempDir::new().unwrap();
         let topic_path = tmp.path().join("dev");
+        jyc_types::state_dir::register("dev", &topic_path.join(".jyc"));
         tokio::fs::create_dir_all(&topic_path).await.unwrap();
         let storage = Arc::new(MessageStorage::new(&topic_path));
         let adapter = WebsocketOutboundAdapter::new(tx, storage);
@@ -378,6 +381,7 @@ mod tests {
         let tx = broadcast::channel(16).0;
         let tmp = tempfile::TempDir::new().unwrap();
         let topic_path = tmp.path().join("general");
+        jyc_types::state_dir::register("general", &topic_path.join(".jyc"));
         tokio::fs::create_dir_all(&topic_path).await.unwrap();
         let storage = Arc::new(MessageStorage::new(&topic_path));
         let adapter = WebsocketOutboundAdapter::new(tx, storage);
@@ -414,6 +418,7 @@ mod tests {
     fn test_clean_body_passthrough() {
         let tmp = tempfile::TempDir::new().unwrap();
         let topic_path = tmp.path().join("general");
+        jyc_types::state_dir::register("general", &topic_path.join(".jyc"));
         std::fs::create_dir_all(&topic_path).unwrap();
         let storage = Arc::new(MessageStorage::new(&topic_path));
         let adapter = WebsocketOutboundAdapter::new(broadcast::channel(16).0, storage);

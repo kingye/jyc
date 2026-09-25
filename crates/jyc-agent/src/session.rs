@@ -2270,8 +2270,9 @@ mod tests {
     #[tokio::test]
     async fn wire_payload_dump_flag_off_by_default() {
         let tmp = tempfile::TempDir::new().unwrap();
+        jyc_types::state_dir::register("wire-flag-default", &tmp.path().join(".jyc"));
         assert!(
-            !super::read_wire_payload_dump_enabled("", tmp.path()).await,
+            !super::read_wire_payload_dump_enabled("wire-flag-default", tmp.path()).await,
             "no flag file → enabled=false"
         );
     }
@@ -2279,6 +2280,7 @@ mod tests {
     #[tokio::test]
     async fn wire_payload_dump_flag_roundtrip() {
         let tmp = tempfile::TempDir::new().unwrap();
+        jyc_types::state_dir::register("wire-flag-roundtrip", &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
@@ -2287,7 +2289,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(super::read_wire_payload_dump_enabled("", tmp.path()).await);
+        assert!(super::read_wire_payload_dump_enabled("wire-flag-roundtrip", tmp.path()).await);
 
         tokio::fs::write(
             jyc_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE),
@@ -2295,7 +2297,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!super::read_wire_payload_dump_enabled("", tmp.path()).await);
+        assert!(!super::read_wire_payload_dump_enabled("wire-flag-roundtrip", tmp.path()).await);
 
         // Malformed JSON must be tolerated as "off", not panic.
         tokio::fs::write(
@@ -2304,7 +2306,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!super::read_wire_payload_dump_enabled("", tmp.path()).await);
+        assert!(!super::read_wire_payload_dump_enabled("wire-flag-roundtrip", tmp.path()).await);
     }
 
     #[tokio::test]
@@ -2312,6 +2314,7 @@ mod tests {
         use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
 
         let tmp = tempfile::TempDir::new().unwrap();
+        jyc_types::state_dir::register("wire-dump-caps", &tmp.path().join(".jyc"));
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 5,
@@ -2324,7 +2327,8 @@ mod tests {
         // Write WIRE_PAYLOAD_DUMP_MAX_LINES + 5 entries.
         let total = jyc_core::session_state::WIRE_PAYLOAD_DUMP_MAX_LINES + 5;
         for i in 0..total {
-            super::append_wire_payload_dump("", tmp.path(), i, &cfg, &regions, &wire).await;
+            super::append_wire_payload_dump("wire-dump-caps", tmp.path(), i, &cfg, &regions, &wire)
+                .await;
         }
 
         let body = tokio::fs::read_to_string(
@@ -2365,6 +2369,7 @@ mod tests {
         use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
 
         let tmp = tempfile::TempDir::new().unwrap();
+        jyc_types::state_dir::register("wire-dump-empty", &tmp.path().join(".jyc"));
         let cfg = ContextStrategyConfig {
             mode: ContextStrategy::Full,
             window: 10,
@@ -2373,7 +2378,15 @@ mod tests {
         };
         let empty_wire: Vec<serde_json::Value> = vec![];
         let empty_regions: Vec<u8> = vec![];
-        super::append_wire_payload_dump("", tmp.path(), 0, &cfg, &empty_regions, &empty_wire).await;
+        super::append_wire_payload_dump(
+            "wire-dump-empty",
+            tmp.path(),
+            0,
+            &cfg,
+            &empty_regions,
+            &empty_wire,
+        )
+        .await;
 
         let body = tokio::fs::read_to_string(
             tmp.path()

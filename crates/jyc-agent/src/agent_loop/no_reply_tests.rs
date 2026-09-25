@@ -86,6 +86,7 @@ async fn no_reply_emits_event_and_reminds_once_then_exits() {
     };
     let tmp = TempDir::new().unwrap();
     let working_dir = tmp.path().to_path_buf();
+    jyc_types::state_dir::register("no-reply-test", &working_dir.join(".jyc"));
     let tools = crate::tools::builtin::create_builtin_registry();
     let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));
     let mut rx = bus.subscribe().await.unwrap();
@@ -172,6 +173,7 @@ async fn no_reply_reminds_once_when_reply_tool_available() {
     };
     let tmp = TempDir::new().unwrap();
     let working_dir = tmp.path().to_path_buf();
+    jyc_types::state_dir::register("no-reply-with-tool-test", &working_dir.join(".jyc"));
     let mut tools = crate::tools::builtin::create_builtin_registry();
     crate::tools::mcp_bridge::register_mcp_tools(&mut tools);
     let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(32));

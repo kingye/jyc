@@ -170,10 +170,12 @@ fn load_or_create_token(jyc_dir: &Path) -> Result<String> {
 mod tests {
     use super::*;
 
-    fn test_ctx(working_dir: &Path) -> ToolContext<'_> {
+    fn test_ctx<'a>(topic: &str, working_dir: &'a Path) -> ToolContext<'a> {
+        // Publish resolves the exchange dir via the state registry (#825).
+        jyc_types::state_dir::register(topic, &working_dir.join(".jyc"));
         let mut ctx = ToolContext::new(working_dir);
         ctx.current_channel = Some("email".into());
-        ctx.current_topic = Some("weather".into());
+        ctx.current_topic = Some(topic.into());
         ctx
     }
 
@@ -187,7 +189,10 @@ mod tests {
         std::fs::write(tmp.path().join("report.pdf"), b"pdf-bytes").unwrap();
 
         let out = tool()
-            .execute(json!({"path": "report.pdf"}), &test_ctx(tmp.path()))
+            .execute(
+                json!({"path": "report.pdf"}),
+                &test_ctx("publish-copies", tmp.path()),
+            )
             .await
             .unwrap();
 
@@ -199,7 +204,7 @@ mod tests {
         let token = token.trim();
         assert!(!out.content.contains("error"), "{}", out.content);
         assert!(out.content.contains(&format!(
-            "https://jyc.example.com/exchange/email/weather/report.pdf?token={token}"
+            "https://jyc.example.com/exchange/email/publish-copies/report.pdf?token={token}"
         )));
     }
 
@@ -211,7 +216,7 @@ mod tests {
         tool()
             .execute(
                 json!({"path": "chart.png", "move": true}),
-                &test_ctx(tmp.path()),
+                &test_ctx("publish-move", tmp.path()),
             )
             .await
             .unwrap();
@@ -227,11 +232,17 @@ mod tests {
         std::fs::write(tmp.path().join("b.txt"), b"b").unwrap();
 
         let out1 = tool()
-            .execute(json!({"path": "a.txt"}), &test_ctx(tmp.path()))
+            .execute(
+                json!({"path": "a.txt"}),
+                &test_ctx("publish-token", tmp.path()),
+            )
             .await
             .unwrap();
         let out2 = tool()
-            .execute(json!({"path": "b.txt"}), &test_ctx(tmp.path()))
+            .execute(
+                json!({"path": "b.txt"}),
+                &test_ctx("publish-token", tmp.path()),
+            )
             .await
             .unwrap();
 
@@ -250,7 +261,10 @@ mod tests {
         std::fs::write(outer.path().join("secret.txt"), b"secret").unwrap();
 
         let out = tool()
-            .execute(json!({"path": "../secret.txt"}), &test_ctx(&work))
+            .execute(
+                json!({"path": "../secret.txt"}),
+                &test_ctx("publish-traversal", &work),
+            )
             .await
             .unwrap();
 
@@ -266,13 +280,13 @@ mod tests {
         let out = tool()
             .execute(
                 json!({"path": "a.txt", "name": "report (2) #final.pdf"}),
-                &test_ctx(tmp.path()),
+                &test_ctx("publish-url", tmp.path()),
             )
             .await
             .unwrap();
 
         assert!(out.content.contains(
-            "https://jyc.example.com/exchange/email/weather/report%20%282%29%20%23final.pdf?token="
+            "https://jyc.example.com/exchange/email/publish-url/report%20%282%29%20%23final.pdf?token="
         ));
         // On disk the file keeps its real name.
         assert!(
@@ -290,7 +304,7 @@ mod tests {
         let out = tool()
             .execute(
                 json!({"path": "a.txt", "name": "sub/dir.txt"}),
-                &test_ctx(tmp.path()),
+                &test_ctx("publish-bad-name", tmp.path()),
             )
             .await
             .unwrap();

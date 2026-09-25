@@ -806,7 +806,9 @@ mode = "static"
     #[test]
     fn test_load_topic_config_missing_file() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(load_topic_config("", tmp.path()).is_none());
+        let topic = "test_load_topic_config_missing_file";
+        crate::state_dir::register(topic, &tmp.path().join(".jyc"));
+        assert!(load_topic_config(topic, tmp.path()).is_none());
     }
 
     /// `[agents.<name>]` table parses; behavior fields mirror the legacy
@@ -939,6 +941,8 @@ mode = "agent"
     #[test]
     fn test_load_topic_config_agent_overrides() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_topic_config_agent_overrides";
+        crate::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
         std::fs::write(
@@ -952,7 +956,7 @@ small_model = "provider/small-model"
         )
         .unwrap();
 
-        let cfg = load_topic_config("", tmp.path()).unwrap();
+        let cfg = load_topic_config(topic, tmp.path()).unwrap();
         let agent = cfg.ai.unwrap();
         assert_eq!(agent.model.as_deref(), Some("provider/topic-model"));
         assert_eq!(agent.plan_model.as_deref(), Some("provider/plan-model"));
@@ -963,15 +967,19 @@ small_model = "provider/small-model"
     #[test]
     fn test_load_topic_config_invalid_toml_ignored() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_topic_config_invalid_toml_ignored";
+        crate::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
         std::fs::write(jyc_dir.join("config.toml"), "not [valid toml").unwrap();
-        assert!(load_topic_config("", tmp.path()).is_none());
+        assert!(load_topic_config(topic, tmp.path()).is_none());
     }
 
     #[test]
     fn test_load_topic_config_mcps_parsed() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_topic_config_mcps_parsed";
+        crate::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
         std::fs::write(
@@ -988,7 +996,7 @@ model = "anthropic/claude-opus-4-7"
         )
         .unwrap();
 
-        let cfg = load_topic_config("", tmp.path()).unwrap();
+        let cfg = load_topic_config(topic, tmp.path()).unwrap();
         let mcps = cfg.mcps.expect("mcps field should be present");
         assert_eq!(mcps.len(), 1);
         assert_eq!(mcps[0].name, "local-only");
@@ -1000,6 +1008,8 @@ model = "anthropic/claude-opus-4-7"
     #[test]
     fn test_load_topic_config_mcps_replace_flag_explicit() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_topic_config_mcps_replace_flag_explicit";
+        crate::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
         std::fs::write(
@@ -1015,7 +1025,7 @@ url = "https://example.com/mcp"
         )
         .unwrap();
 
-        let cfg = load_topic_config("", tmp.path()).unwrap();
+        let cfg = load_topic_config(topic, tmp.path()).unwrap();
         assert!(cfg.mcps_replace);
         let mcps = cfg.mcps.unwrap();
         assert_eq!(mcps[0].name, "totally-different");
@@ -1034,6 +1044,8 @@ url = "https://example.com/mcp"
             std::env::set_var("JYC_LOAD_THREAD_MODEL", "anthropic/claude-opus-4-7");
         }
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_topic_config_expands_env_vars_in_agent_model";
+        crate::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
         std::fs::write(
@@ -1045,7 +1057,7 @@ model = "${JYC_LOAD_THREAD_MODEL}"
         )
         .unwrap();
 
-        let cfg = load_topic_config("", tmp.path()).unwrap();
+        let cfg = load_topic_config(topic, tmp.path()).unwrap();
         let agent = cfg.ai.unwrap();
         assert_eq!(
             agent.model.as_deref(),
@@ -1067,6 +1079,8 @@ model = "${JYC_LOAD_THREAD_MODEL}"
             std::env::set_var("JYC_LOAD_THREAD_MCP_TOKEN", "secret-token");
         }
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_topic_config_expands_env_vars_in_mcp_command";
+        crate::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
         std::fs::write(
@@ -1083,7 +1097,7 @@ TOKEN = "${JYC_LOAD_THREAD_MCP_TOKEN}"
         )
         .unwrap();
 
-        let cfg = load_topic_config("", tmp.path()).unwrap();
+        let cfg = load_topic_config(topic, tmp.path()).unwrap();
         let mcps = cfg.mcps.expect("mcps field should be present");
         assert_eq!(mcps.len(), 1);
         match &mcps[0].kind {
@@ -1116,6 +1130,8 @@ TOKEN = "${JYC_LOAD_THREAD_MCP_TOKEN}"
             std::env::remove_var("JYC_LOAD_THREAD_DEFINITELY_UNSET");
         }
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_topic_config_missing_env_var_yields_empty";
+        crate::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
         std::fs::write(
@@ -1127,7 +1143,7 @@ model = "${JYC_LOAD_THREAD_DEFINITELY_UNSET}"
         )
         .unwrap();
 
-        let cfg = load_topic_config("", tmp.path()).unwrap();
+        let cfg = load_topic_config(topic, tmp.path()).unwrap();
         let agent = cfg.ai.unwrap();
         assert_eq!(
             agent.model.as_deref(),

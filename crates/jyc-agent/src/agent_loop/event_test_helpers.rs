@@ -12,6 +12,9 @@ pub(super) fn test_config<'a>(
     cancel: tokio_util::sync::CancellationToken,
     topic_name: &'a str,
 ) -> super::AgentLoopConfig<'a> {
+    // The loop persists token state under the topic's state dir; register
+    // it in-dir for the test's throwaway working dir (#825).
+    jyc_types::state_dir::register(topic_name, &working_dir.join(".jyc"));
     super::AgentLoopConfig {
         provider,
         small_provider: None,

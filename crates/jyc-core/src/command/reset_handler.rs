@@ -110,9 +110,10 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    fn test_context(topic_path: &Path) -> CommandContext {
+    fn test_context(topic_name: &str, topic_path: &Path) -> CommandContext {
+        jyc_types::state_dir::register(topic_name, &topic_path.join(".jyc"));
         CommandContext {
-            topic_name: "test-topic".to_string(),
+            topic_name: topic_name.to_string(),
             // Pass --force by default so the reset tests exercise the real
             // path; guard tests override `args`.
             args: vec!["--force".to_string()],
@@ -153,6 +154,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_reset_without_force_warns_and_keeps_session() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_reset_without_force_warns_and_keeps_session";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         let session = jyc_dir.join("agent-session.json");
@@ -164,7 +167,7 @@ mode = "agent"
         .unwrap();
 
         let handler = ResetCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec![];
 
         let result = handler.execute(ctx).await.unwrap();
@@ -180,6 +183,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_reset_existing_session() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_reset_existing_session";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
@@ -203,7 +208,7 @@ mode = "agent"
         .unwrap();
 
         let handler = ResetCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -224,6 +229,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_reset_clears_exchange_files_and_token() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_reset_clears_exchange_files_and_token";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         let exchange_dir = jyc_dir.join(crate::EXCHANGE_DIR_NAME);
         tokio::fs::create_dir_all(&exchange_dir).await.unwrap();
@@ -235,7 +242,7 @@ mode = "agent"
             .unwrap();
 
         let handler = ResetCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -246,9 +253,11 @@ mode = "agent"
     #[tokio::test]
     async fn test_reset_no_existing_session() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_reset_no_existing_session";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
         let handler = ResetCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);

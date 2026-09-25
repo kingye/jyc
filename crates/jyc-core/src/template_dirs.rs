@@ -100,8 +100,10 @@ mod tests {
     #[test]
     fn test_resolve_with_topic_level_first() {
         let tmp = tempfile::tempdir().unwrap();
+        let tname = "test_resolve_with_topic_level_first";
         let workdir = tmp.path().join("workdir");
         let topic = tmp.path().join("topic");
+        jyc_types::state_dir::register(tname, &topic.join(".jyc"));
         make_template(&workdir, "alpha");
         make_template(&topic.join(".jyc").join("templates"), "alpha");
         make_template(&topic.join(".jyc").join("templates"), "gamma");
@@ -109,18 +111,18 @@ mod tests {
         let dirs = TemplateDirs::single(workdir.clone());
         // Topic level wins over workdir
         assert_eq!(
-            dirs.resolve_with_topic("", &topic, "alpha"),
+            dirs.resolve_with_topic(tname, &topic, "alpha"),
             Some(topic.join(".jyc/templates/alpha"))
         );
         // Only at topic level
         assert_eq!(
-            dirs.resolve_with_topic("", &topic, "gamma"),
+            dirs.resolve_with_topic(tname, &topic, "gamma"),
             Some(topic.join(".jyc/templates/gamma"))
         );
         // Only at workdir level
         make_template(&workdir, "beta");
         assert_eq!(
-            dirs.resolve_with_topic("", &topic, "beta"),
+            dirs.resolve_with_topic(tname, &topic, "beta"),
             Some(workdir.join("beta"))
         );
     }

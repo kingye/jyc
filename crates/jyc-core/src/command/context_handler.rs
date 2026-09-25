@@ -313,9 +313,10 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    fn test_context(topic_path: &Path) -> CommandContext {
+    fn test_context(topic_name: &str, topic_path: &Path) -> CommandContext {
+        jyc_types::state_dir::register(topic_name, &topic_path.join(".jyc"));
         CommandContext {
-            topic_name: "test-topic".to_string(),
+            topic_name: topic_name.to_string(),
             args: vec![],
             topic_path: topic_path.to_path_buf(),
             config: Arc::new(
@@ -354,8 +355,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_show_default() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_show_default";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         // Default strategy is now sliding_window (per #656).
@@ -366,8 +369,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_full_switch() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_full_switch";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["full".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -384,8 +389,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_sliding_with_window() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_with_window";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["sliding".into(), "7".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -401,8 +408,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_sliding_with_note_window() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_with_note_window";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["sliding".into(), "10".into(), "3".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -419,8 +428,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_sliding_note_window_zero_allowed() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_note_window_zero_allowed";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["sliding".into(), "10".into(), "0".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -434,8 +445,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_sliding_note_window_invalid_arg() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_note_window_invalid_arg";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["sliding".into(), "10".into(), "abc".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
@@ -445,8 +458,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_sliding_without_note_window_uses_default_5() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_without_note_window_uses_default_5";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["sliding".into(), "7".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -464,8 +479,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_sliding_default_window() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_default_window";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["sliding_window".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -481,8 +498,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_sliding_window_rejects_zero() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_window_rejects_zero";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["sliding".into(), "0".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
@@ -492,8 +511,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_sliding_window_rejects_above_max() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_window_rejects_above_max";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["sliding".into(), "9999".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
@@ -503,8 +524,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_sliding_window_invalid_arg() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_window_invalid_arg";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["sliding".into(), "abc".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
@@ -514,6 +537,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_reset_clears_override() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_reset_clears_override";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
@@ -524,7 +549,7 @@ mode = "agent"
         .unwrap();
 
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["reset".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -534,6 +559,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_show_after_override() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_show_after_override";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
@@ -544,7 +571,7 @@ mode = "agent"
         .unwrap();
 
         let handler = ContextCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(result.message.contains("sliding_window"));
@@ -555,8 +582,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_unknown_subcommand() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_unknown_subcommand";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["bogus".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
@@ -566,8 +595,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_dump_off_by_default() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_dump_off_by_default";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["dump".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -578,11 +609,13 @@ mode = "agent"
     #[tokio::test]
     async fn test_dump_on_off_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_dump_on_off_roundtrip";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
         let flag = tmp.path().join(".jyc").join("wire-payload-dump.json");
 
         // /context dump on → flag file written, message mentions enabled
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["dump".into(), "on".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -594,14 +627,14 @@ mode = "agent"
         );
 
         // /context dump (no args) → reports on
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["dump".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(result.message.contains("on"));
 
         // /context dump off → flag file removed
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["dump".into(), "off".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -609,7 +642,7 @@ mode = "agent"
         assert!(!flag.exists());
 
         // /context dump (no args) → reports off
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["dump".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -619,8 +652,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_sliding_with_tool_result_cap() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_with_tool_result_cap";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["sliding".into(), "10".into(), "3".into(), "5000".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -639,8 +674,10 @@ mode = "agent"
         // Some(0) is the "explicit off" sentinel — must round-trip as 0,
         // not be confused with the configured default (None).
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_cap_zero_is_explicit_off";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["sliding".into(), "10".into(), "3".into(), "0".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -654,8 +691,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_sliding_cap_above_max_rejected() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_cap_above_max_rejected";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec![
             "sliding".into(),
             "10".into(),
@@ -670,8 +709,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_sliding_cap_invalid_arg() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_cap_invalid_arg";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["sliding".into(), "10".into(), "3".into(), "abc".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
@@ -683,8 +724,10 @@ mode = "agent"
         // No CAP arg → falls back to the configured default
         // (`Some(2048)`, per #656).
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_sliding_without_tool_result_cap_uses_default_2048";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["sliding".into(), "10".into(), "3".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -703,6 +746,8 @@ mode = "agent"
         // source, NOT from the prior override. So pre-setting an override with
         // a cap does not "leak" into the new full-mode override.
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_full_uses_configured_tool_result_cap_not_prior_override";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
@@ -713,7 +758,7 @@ mode = "agent"
         .unwrap();
 
         let handler = ContextCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["full".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);

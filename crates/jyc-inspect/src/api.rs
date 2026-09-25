@@ -474,9 +474,11 @@ mod exchange_file_tests {
     #[tokio::test]
     async fn serves_file_with_valid_token() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "serves_file_with_valid_token";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         seed(&tmp, "notes.txt", b"hello", Some("tok123"));
 
-        let res = serve_exchange_file("t", tmp.path(), Some("tok123"), "notes.txt")
+        let res = serve_exchange_file(topic, tmp.path(), Some("tok123"), "notes.txt")
             .await
             .unwrap();
 
@@ -494,9 +496,11 @@ mod exchange_file_tests {
     #[tokio::test]
     async fn serves_nested_file() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "serves_nested_file";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         seed(&tmp, "sub/a.json", b"{}", Some("t"));
 
-        let res = serve_exchange_file("t", tmp.path(), Some("t"), "sub/a.json")
+        let res = serve_exchange_file(topic, tmp.path(), Some("t"), "sub/a.json")
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -509,14 +513,16 @@ mod exchange_file_tests {
     #[tokio::test]
     async fn rejects_missing_or_wrong_token() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "rejects_missing_or_wrong_token";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         seed(&tmp, "f.txt", b"x", Some("right"));
 
-        let err = serve_exchange_file("t", tmp.path(), None, "f.txt")
+        let err = serve_exchange_file(topic, tmp.path(), None, "f.txt")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::FORBIDDEN);
 
-        let err = serve_exchange_file("t", tmp.path(), Some("wrong"), "f.txt")
+        let err = serve_exchange_file(topic, tmp.path(), Some("wrong"), "f.txt")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::FORBIDDEN);
@@ -525,9 +531,11 @@ mod exchange_file_tests {
     #[tokio::test]
     async fn rejects_when_token_file_missing() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "rejects_when_token_file_missing";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         seed(&tmp, "f.txt", b"x", None);
 
-        let err = serve_exchange_file("t", tmp.path(), Some("any"), "f.txt")
+        let err = serve_exchange_file(topic, tmp.path(), Some("any"), "f.txt")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::FORBIDDEN);
@@ -536,9 +544,11 @@ mod exchange_file_tests {
     #[tokio::test]
     async fn rejects_unknown_file() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "rejects_unknown_file";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         seed(&tmp, "f.txt", b"x", Some("t"));
 
-        let err = serve_exchange_file("t", tmp.path(), Some("t"), "nope.txt")
+        let err = serve_exchange_file(topic, tmp.path(), Some("t"), "nope.txt")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::NOT_FOUND);
@@ -547,9 +557,11 @@ mod exchange_file_tests {
     #[tokio::test]
     async fn rejects_traversal() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "rejects_traversal";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         seed(&tmp, "f.txt", b"x", Some("t"));
 
-        let err = serve_exchange_file("t", tmp.path(), Some("t"), "../exchange-token")
+        let err = serve_exchange_file(topic, tmp.path(), Some("t"), "../exchange-token")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
@@ -558,10 +570,12 @@ mod exchange_file_tests {
     #[tokio::test]
     async fn rejects_directory() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "rejects_directory";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         seed(&tmp, "f.txt", b"x", Some("t"));
 
         // No directory listing: the base dir itself is not a file.
-        let err = serve_exchange_file("t", tmp.path(), Some("t"), "")
+        let err = serve_exchange_file(topic, tmp.path(), Some("t"), "")
             .await
             .unwrap_err();
         assert_eq!(err.status, StatusCode::NOT_FOUND);

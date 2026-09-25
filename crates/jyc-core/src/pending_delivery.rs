@@ -352,6 +352,8 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
+        let topic = "%s";
+        jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
         let tp = topic_path.clone();
         let handle = tokio::spawn(async move {
             watch_pending_deliveries(
@@ -362,7 +364,7 @@ mod tests {
                 std::sync::Arc::new(HookSet::default()),
                 cancel_clone,
                 None,
-                "test",
+                topic,
             )
             .await;
         });
@@ -409,6 +411,8 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
+        let topic = "%s";
+        jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
         let tp = topic_path.clone();
         let handle = tokio::spawn(async move {
             watch_pending_deliveries(
@@ -419,7 +423,7 @@ mod tests {
                 std::sync::Arc::new(HookSet::default()),
                 cancel_clone,
                 None,
-                "test",
+                topic,
             )
             .await;
         });
@@ -451,6 +455,8 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
+        let topic = "%s";
+        jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
         let tp = topic_path.clone();
         let handle = tokio::spawn(async move {
             watch_pending_deliveries(
@@ -461,7 +467,7 @@ mod tests {
                 std::sync::Arc::new(HookSet::default()),
                 cancel_clone,
                 None,
-                "test",
+                topic,
             )
             .await;
         });
@@ -493,6 +499,8 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
+        let topic = "%s";
+        jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
         let tp = topic_path.clone();
         let handle = tokio::spawn(async move {
             watch_pending_deliveries(
@@ -503,7 +511,7 @@ mod tests {
                 std::sync::Arc::new(HookSet::default()),
                 cancel_clone,
                 None,
-                "test",
+                topic,
             )
             .await;
         });
@@ -520,6 +528,8 @@ mod tests {
         let tmp = tempdir().unwrap();
         let topic_path = tmp.path().to_path_buf();
         let message_dir = "2026-01-01_00-00-00";
+        let topic = "test_cancellation_stops_watcher";
+        jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
 
         tokio::fs::create_dir_all(topic_path.join(".jyc"))
             .await
@@ -538,7 +548,7 @@ mod tests {
                 std::sync::Arc::new(HookSet::default()),
                 cancel_clone,
                 None,
-                "test",
+                topic,
             )
             .await;
         });
@@ -570,6 +580,8 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
+        let topic = "%s";
+        jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
         let tp = topic_path.clone();
         let bus_for_watcher = bus.clone();
         let handle = tokio::spawn(async move {
@@ -581,7 +593,7 @@ mod tests {
                 std::sync::Arc::new(HookSet::default()),
                 cancel_clone,
                 Some(bus_for_watcher),
-                "test-topic",
+                topic,
             )
             .await;
         });

@@ -120,14 +120,16 @@ mod tests {
     fn test_append_and_load_recent() {
         let dir = tempdir().unwrap();
         let topic_path = dir.path().join("test-topic");
+        let topic = "test_append_and_load_recent";
+        jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
         std::fs::create_dir_all(topic_path.join(".jyc")).unwrap();
 
         for i in 0..5 {
             let entry = make_entry(&format!("entry {i}"));
-            ActivityLogStore::append("", &topic_path, &entry).unwrap();
+            ActivityLogStore::append(topic, &topic_path, &entry).unwrap();
         }
 
-        let loaded = ActivityLogStore::load_recent("", &topic_path, 3).unwrap();
+        let loaded = ActivityLogStore::load_recent(topic, &topic_path, 3).unwrap();
         assert_eq!(loaded.len(), 3);
         assert!(loaded[0].text.contains("entry 2"));
         assert!(loaded[1].text.contains("entry 3"));
@@ -138,7 +140,9 @@ mod tests {
     fn test_load_empty_file() {
         let dir = tempdir().unwrap();
         let topic_path = dir.path().join("no-such-topic");
-        let loaded = ActivityLogStore::load_recent("", &topic_path, 10).unwrap();
+        let topic = "test_load_empty_file";
+        jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
+        let loaded = ActivityLogStore::load_recent(topic, &topic_path, 10).unwrap();
         assert!(loaded.is_empty());
     }
 
@@ -146,15 +150,17 @@ mod tests {
     fn test_rotation() {
         let dir = tempdir().unwrap();
         let topic_path = dir.path().join("rot-test");
+        let topic = "test_rotation";
+        jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
         std::fs::create_dir_all(topic_path.join(".jyc")).unwrap();
 
         for i in 0..300 {
             let entry = make_entry(&format!("entry {i}"));
-            ActivityLogStore::append("", &topic_path, &entry).unwrap();
+            ActivityLogStore::append(topic, &topic_path, &entry).unwrap();
         }
 
-        ActivityLogStore::rotate_if_needed_with_max("", &topic_path, 200).unwrap();
-        let loaded = ActivityLogStore::load_recent("", &topic_path, 1000).unwrap();
+        ActivityLogStore::rotate_if_needed_with_max(topic, &topic_path, 200).unwrap();
+        let loaded = ActivityLogStore::load_recent(topic, &topic_path, 1000).unwrap();
         assert_eq!(loaded.len(), 200);
         assert!(loaded[0].text.contains("entry 100"));
     }

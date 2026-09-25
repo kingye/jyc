@@ -194,9 +194,10 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    fn ctx(topic_path: PathBuf) -> CommandContext {
+    fn ctx(topic: &str, topic_path: PathBuf) -> CommandContext {
+        jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
         CommandContext {
-            topic_name: "t".into(),
+            topic_name: topic.into(),
             topic_path,
             ..Default::default()
         }
@@ -237,19 +238,21 @@ mod tests {
     #[tokio::test]
     async fn on_off_reset_roundtrip() {
         let tmp = TempDir::new().unwrap();
-        let context = ctx(tmp.path().to_path_buf());
+        let topic = "on_off_reset_roundtrip";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let context = ctx(topic, tmp.path().to_path_buf());
         let h = handler(MCP_OVERRIDE_FILE);
 
         let r = run(&h, &["on", "srv"], &context).await;
         assert!(r.success);
-        let ovr = read_toggle_override("t", tmp.path(), MCP_OVERRIDE_FILE)
+        let ovr = read_toggle_override(topic, tmp.path(), MCP_OVERRIDE_FILE)
             .await
             .unwrap();
         assert_eq!(ovr.on, vec!["srv".to_string()]);
 
         // Toggling the same name to off moves it across lists.
         run(&h, &["off", "srv"], &context).await;
-        let ovr = read_toggle_override("t", tmp.path(), MCP_OVERRIDE_FILE)
+        let ovr = read_toggle_override(topic, tmp.path(), MCP_OVERRIDE_FILE)
             .await
             .unwrap();
         assert!(ovr.on.is_empty() && ovr.off == vec!["srv".to_string()]);
@@ -258,7 +261,7 @@ mod tests {
         let r = run(&h, &["reset"], &context).await;
         assert!(r.success);
         assert!(
-            read_toggle_override("t", tmp.path(), MCP_OVERRIDE_FILE)
+            read_toggle_override(topic, tmp.path(), MCP_OVERRIDE_FILE)
                 .await
                 .is_none()
         );
@@ -267,7 +270,9 @@ mod tests {
     #[tokio::test]
     async fn unknown_name_gets_hint_but_toggle_persists() {
         let tmp = TempDir::new().unwrap();
-        let context = ctx(tmp.path().to_path_buf());
+        let topic = "unknown_name_gets_hint_but_toggle_persists";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let context = ctx(topic, tmp.path().to_path_buf());
         let h = ToggleCommandHandler {
             name: "/test",
             noun: "thing",
@@ -278,7 +283,7 @@ mod tests {
         assert!(r.success);
         assert!(r.message.contains("double-check the name"), "{}", r.message);
         // The toggle is still written — harmless until the name materializes.
-        let ovr = read_toggle_override("t", tmp.path(), MCP_OVERRIDE_FILE)
+        let ovr = read_toggle_override(topic, tmp.path(), MCP_OVERRIDE_FILE)
             .await
             .unwrap();
         assert_eq!(ovr.on, vec!["x".to_string()]);
@@ -287,7 +292,9 @@ mod tests {
     #[tokio::test]
     async fn missing_name_and_unknown_subcommand_error() {
         let tmp = TempDir::new().unwrap();
-        let context = ctx(tmp.path().to_path_buf());
+        let topic = "missing_name_and_unknown_subcommand_error";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let context = ctx(topic, tmp.path().to_path_buf());
         let h = handler(MCP_OVERRIDE_FILE);
         let e = try_run(&h, &["on"], &context).await.unwrap_err();
         assert!(e.to_string().contains("missing <name>"), "{e}");
@@ -297,7 +304,7 @@ mod tests {
         assert!(e.to_string().contains("unknown subcommand"), "{e}");
         // Neither wrote anything.
         assert!(
-            read_toggle_override("t", tmp.path(), MCP_OVERRIDE_FILE)
+            read_toggle_override(topic, tmp.path(), MCP_OVERRIDE_FILE)
                 .await
                 .is_none()
         );
@@ -306,7 +313,9 @@ mod tests {
     #[tokio::test]
     async fn no_args_shows_state() {
         let tmp = TempDir::new().unwrap();
-        let context = ctx(tmp.path().to_path_buf());
+        let topic = "no_args_shows_state";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let context = ctx(topic, tmp.path().to_path_buf());
         let h = handler(MCP_OVERRIDE_FILE);
         run(&h, &["on", "a"], &context).await;
         let r = run(&h, &[], &context).await;
@@ -344,14 +353,17 @@ command = ["true"]
         .unwrap();
         // A topic L3 overlay server (`.jyc/config.toml`) must count as known too.
         let tmp = TempDir::new().unwrap();
-        let dir = jyc_types::state_dir::jyc_dir("t", tmp.path());
+        let topic = "apply_toggle_semantics";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        jyc_types::state_dir::register("toggle-mcp-known", &tmp.path().join(".jyc"));
+        let dir = jyc_types::state_dir::jyc_dir("toggle-mcp-known", tmp.path());
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("config.toml"),
             "[[mcps]]\nname = \"l3_srv\"\ntype = \"local\"\ncommand = [\"true\"]\n",
         )
         .unwrap();
-        let mut context = ctx(tmp.path().to_path_buf());
+        let mut context = ctx(topic, tmp.path().to_path_buf());
         context.config = Arc::new(config);
         assert!(mcp_known(&context, "global_srv"));
         assert!(mcp_known(&context, "agent_srv"));
@@ -362,6 +374,8 @@ command = ["true"]
     #[test]
     fn skill_known_finds_topic_dir_skill() {
         let tmp = TempDir::new().unwrap();
+        let topic = "skill_known_finds_topic_dir_skill";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let skill_dir = tmp.path().join(".claude/skills/ztest-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
@@ -369,7 +383,7 @@ command = ["true"]
             "---\nname: ztest-skill\ndescription: d\n---\nbody",
         )
         .unwrap();
-        let context = ctx(tmp.path().to_path_buf());
+        let context = ctx(topic, tmp.path().to_path_buf());
         // Unique miss-name so HOME-dir pollution cannot flip it.
         assert!(!skill_known(&context, "zz-absent-skill-9k7"));
         assert!(skill_known(&context, "ztest-skill"));

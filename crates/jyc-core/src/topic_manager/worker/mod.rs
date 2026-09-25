@@ -48,7 +48,7 @@ pub(crate) async fn process_message(
     let store_result: StoreResult = match &item.topic_path_override {
         Some(path) => {
             storage
-                .store_at_path(&item.message, path, is_matched)
+                .store_at_path(&item.message, topic_name, path, is_matched)
                 .await?
         }
         None => {

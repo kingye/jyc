@@ -76,6 +76,20 @@ impl TopicManager {
             .cloned()
             .or(topic_path_override);
 
+        // Activation registration (#825) at the single enqueue funnel —
+        // covers the router, scheduled jobs, `jyc_send_to_topic`, and the
+        // dashboard proxy. A user-dir pin without a registration fails
+        // loudly at `jyc_dir` instead of polluting the dir. Must run
+        // before the worker spawn below: worker code resolves `jyc_dir`
+        // immediately.
+        {
+            let workspace = self.storage.workspace();
+            let topic_path = topic_path_override
+                .clone()
+                .unwrap_or_else(|| workspace.join(&topic_name));
+            crate::topic_path::activate_workspace_state(&topic_name, &topic_path, workspace);
+        }
+
         let item = QueueItem {
             topic_name: topic_name.clone(),
             message,
@@ -286,11 +300,6 @@ impl TopicManager {
                     .topic_path_override
                     .clone()
                     .unwrap_or_else(|| workspace.join(&topic_name));
-                // Activation registration (#825): covers every enqueue path
-                // — router, scheduled jobs, `jyc_send_to_topic`, the
-                // dashboard proxy. A user-dir pin without a registration
-                // fails loudly below instead of polluting the dir.
-                crate::topic_path::activate_workspace_state(&item.topic_name, &topic_path, workspace);
 
                 // Store the resolved topic path so it can be returned by
                 // list_topics() and used by the ActivityTracker.

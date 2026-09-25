@@ -269,7 +269,10 @@ mode = "agent"
             .unwrap();
 
         let handler = TemplateCommandHandler;
-        let ctx = test_context(&topic_dir);
+        let mut ctx = test_context(&topic_dir);
+        // test_context derives the template layer from its argument; the
+        // fixtures live at <tmp>/templates, not <topic_dir>/templates.
+        ctx.template_dirs = tmp.path().join("templates").into();
 
         println!("Template dir in ctx: {:?}", ctx.template_dirs);
 

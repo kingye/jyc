@@ -695,6 +695,13 @@ mod tests {
     async fn rmcp_client_round_trip_with_inprocess_server() {
         use rmcp::ServiceExt;
 
+        // The spawned server resolves the topic state dir through the
+        // registry; with JYC_TOPIC_NAME unset the topic name is the empty
+        // fallback, so register it at a throwaway dir — an unregistered
+        // access panics inside the server task and the client hangs (#825).
+        let state_tmp = tempfile::tempdir().unwrap();
+        jyc_types::state_dir::register("", &state_tmp.path().join(".jyc"));
+
         let (a, b) = tokio::io::duplex(1 << 16);
         let (ar, aw) = tokio::io::split(a);
         let (br, bw) = tokio::io::split(b);

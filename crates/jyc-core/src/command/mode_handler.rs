@@ -89,12 +89,13 @@ async fn refresh_max_input_tokens(context: &CommandContext) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::Arc;
 
-    fn test_context(topic_path: &Path) -> CommandContext {
+    fn test_context(topic_name: &str, topic_path: &std::path::Path) -> CommandContext {
+        jyc_types::state_dir::register(topic_name, &topic_path.join(".jyc"));
         CommandContext {
-            topic_name: "test-topic".to_string(),
+            topic_name: topic_name.to_string(),
             args: vec![],
             topic_path: topic_path.to_path_buf(),
             config: Arc::new(
@@ -133,8 +134,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_plan_mode() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_plan_mode";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = PlanCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -148,6 +151,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_build_mode() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_build_mode";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(jyc_dir.join("mode-override"), "plan")
@@ -155,7 +160,7 @@ mode = "agent"
             .unwrap();
 
         let handler = BuildCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -165,6 +170,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_plan_preserves_session() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_plan_preserves_session";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(jyc_dir.join("agent-session.json"), r#"{"created_at":"2026-01-01","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#)
@@ -172,7 +179,7 @@ mode = "agent"
             .unwrap();
 
         let handler = PlanCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
         handler.execute(ctx).await.unwrap();
 
         // Session file should still exist
@@ -182,7 +189,9 @@ mode = "agent"
     #[tokio::test]
     async fn test_plan_writes_max_input_tokens() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut ctx = test_context(tmp.path());
+        let topic = "test_plan_writes_max_input_tokens";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let mut ctx = test_context(topic, tmp.path());
         // Add a plan_model with a known context_window
         ctx.config = Arc::new(
             jyc_types::load_config_from_str(
@@ -235,6 +244,8 @@ context_window = 256000
     #[tokio::test]
     async fn test_build_writes_max_input_tokens() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_build_writes_max_input_tokens";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         // Start in plan mode (so /build transitions away from it)
@@ -249,7 +260,7 @@ context_window = 256000
         .await
         .unwrap();
 
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.config = Arc::new(
             jyc_types::load_config_from_str(
                 r#"

@@ -95,8 +95,9 @@ mod template_init_tests {
         make_template(&template_dir, "github-planner", "PLANNER").await;
 
         let topic_path = workspace.join("issue-1");
+        jyc_types::state_dir::register("fresh_topic_writes_marker", &topic_path.join(".jyc"));
         initialize_topic_from_template(
-            "tpl-test",
+            "fresh_topic_writes_marker",
             &topic_path,
             "github-planner",
             &template_dir.clone().into(),
@@ -125,8 +126,9 @@ mod template_init_tests {
         make_template(&template_dir, "github-planner", "PLANNER").await;
 
         let topic_path = workspace.join("issue-1");
+        jyc_types::state_dir::register("matching_template_is_idempotent", &topic_path.join(".jyc"));
         initialize_topic_from_template(
-            "tpl-test",
+            "matching_template_is_idempotent",
             &topic_path,
             "github-planner",
             &template_dir.clone().into(),
@@ -136,7 +138,7 @@ mod template_init_tests {
 
         // Second call with the same template is a no-op.
         initialize_topic_from_template(
-            "tpl-test",
+            "matching_template_is_idempotent",
             &topic_path,
             "github-planner",
             &template_dir.clone().into(),
@@ -155,9 +157,10 @@ mod template_init_tests {
         make_template(&template_dir, "github-planner", "PLANNER").await;
 
         let topic_path = workspace.join("issue-1");
+        jyc_types::state_dir::register("template_mismatch_is_refused", &topic_path.join(".jyc"));
         // First, init with HLP.
         initialize_topic_from_template(
-            "tpl-test",
+            "template_mismatch_is_refused",
             &topic_path,
             "github-high-level-planner",
             &template_dir.clone().into(),
@@ -167,7 +170,7 @@ mod template_init_tests {
 
         // Then, request a different template for the same topic → must error.
         let err = initialize_topic_from_template(
-            "tpl-test",
+            "template_mismatch_is_refused",
             &topic_path,
             "github-planner",
             &template_dir.clone().into(),

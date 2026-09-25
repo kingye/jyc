@@ -296,17 +296,16 @@ impl TopicManager {
     /// entry and `wait_for_topic` times out for fresh ad-hoc topics.
     pub async fn set_topic_path(&self, topic_name: &str, path: PathBuf) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&path).await?;
-        // Reuse an existing registration (config pins adopt at startup under
-        // their topic name); otherwise this runtime pin is ad-hoc and gets
-        // the path-derived state name.
-        if jyc_types::state_dir::registered_state(topic_name).is_none() {
-            let state = crate::topic_path::state_dir_for(
-                &crate::topic_path::state_root(&self.workdir),
-                &path,
-                None,
-            );
-            crate::topic_path::adopt_state_dir(topic_name, &path, &state)?;
-        }
+        // Adopt a state dir under the agents root when this pin is the
+        // topic's first registration; `adopt_state_dir` keeps an existing
+        // one (config pins adopt at startup under their topic name) — a
+        // topic's state location is chosen once and never moved.
+        let state = crate::topic_path::state_dir_for(
+            &crate::topic_path::state_root(&self.workdir),
+            &path,
+            None,
+        );
+        crate::topic_path::adopt_state_dir(topic_name, &path, &state)?;
         let jyc_dir = jyc_dir(topic_name, &path);
         tokio::fs::create_dir_all(&jyc_dir).await?;
         tokio::fs::write(jyc_dir.join("topic-name"), topic_name)
@@ -407,14 +406,18 @@ impl TopicManager {
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| pin_name.to_string());
                 if let Err(e) = crate::topic_path::adopt_state_dir(&name, &resolved, &state) {
-                    tracing::warn!(
+                    tracing::error!(
                         error = %e,
                         path = %resolved.display(),
-                        "Failed to adopt topic state dir; falling back to in-dir .jyc"
+                        "Failed to adopt topic state dir; topic state unregistered"
                     );
                 }
                 name
             } else {
+                // Unpinned agents-channel topic: its dir under the agents
+                // root is jyc-owned, so state lives in-dir — registered
+                // explicitly here (activation registration, no fallback).
+                jyc_types::state_dir::register_if_absent(pin_name, &resolved.join(".jyc"));
                 pin_name.to_string()
             };
             let jyc_dir = jyc_dir(&jyc_name, &resolved);
@@ -493,21 +496,22 @@ impl TopicManager {
             if !path.is_dir() {
                 continue;
             }
-            let dir_name = path
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let jyc_dir = jyc_dir(&dir_name, &path);
-            if !jyc_dir.is_dir() {
+            // Scanning jyc-owned dirs: the in-dir `.jyc` IS the state dir
+            // by definition here — no registry lookup needed.
+            let state_dir = path.join(".jyc");
+            if !state_dir.is_dir() {
                 continue;
             }
-            let topic_name_file = jyc_dir.join("topic-name");
+            let topic_name_file = state_dir.join("topic-name");
             match tokio::fs::read_to_string(&topic_name_file).await {
                 Ok(name) => {
                     let name = name.trim().to_string();
                     if name.is_empty() {
                         continue;
                     }
+                    // Explicit activation registration: a discovered
+                    // sub-topic's state is its in-dir `.jyc` (#825).
+                    jyc_types::state_dir::register_if_absent(&name, &state_dir);
                     self.register_custom_path(&name, path.clone()).await;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -542,12 +546,16 @@ impl TopicManager {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
                 if path.is_dir()
-                    && path
-                        .file_name()
-                        .is_some_and(|n| jyc_dir(&n.to_string_lossy(), &path).is_dir())
                     && let Some(name) = entry.file_name().to_str()
                 {
-                    topic_names.push(name.to_string());
+                    // Workspace subdirs are jyc-owned, so a `.jyc` inside
+                    // one is that topic's state dir — register it (idempotent;
+                    // pinned topics already resolve elsewhere).
+                    let state_dir = path.join(".jyc");
+                    if state_dir.is_dir() {
+                        jyc_types::state_dir::register_if_absent(name, &state_dir);
+                        topic_names.push(name.to_string());
+                    }
                 }
             }
         }
@@ -931,10 +939,14 @@ mode = "agent"
             Some(state_b.clone())
         );
 
-        // /close alpha: only alpha's state and registration die.
+        // /close alpha: alpha's state dies; its registration survives so a
+        // reopen reuses the same (re-provisioned) state dir.
         tm.close_topic("co-alpha").await.unwrap();
         assert!(!state_a.exists(), "closed state deleted");
-        assert!(jyc_types::state_dir::registered_state("co-alpha").is_none());
+        assert_eq!(
+            jyc_types::state_dir::registered_state("co-alpha"),
+            Some(state_a.clone())
+        );
         assert!(state_b.is_dir(), "beta state untouched");
         assert!(jyc_types::state_dir::registered_state("co-beta").is_some());
         assert!(repo.exists(), "shared dir is user property, kept");
@@ -947,7 +959,7 @@ mode = "agent"
     async fn list_topics_resolves_mode_from_pattern_config() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
-        let topic_path = workspace.join("plan-615");
+        let topic_path = workspace.join("list_topics_resolves_mode_from_pattern_config");
         tokio::fs::create_dir_all(topic_path.join(".jyc"))
             .await
             .unwrap();
@@ -959,7 +971,7 @@ mode = "agent"
         let topics = tm.list_topics().await;
         let info = topics
             .iter()
-            .find(|t| t.name == "plan-615")
+            .find(|t| t.name == "list_topics_resolves_mode_from_pattern_config")
             .expect("topic should be listed");
         assert_eq!(info.mode.as_deref(), Some("plan"));
         assert_eq!(info.model.as_deref(), Some("deepseek/deepseek-reasoner"));
@@ -971,7 +983,7 @@ mode = "agent"
     async fn list_topics_mode_override_wins_over_pattern_config() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
-        let topic_path = workspace.join("plan-615");
+        let topic_path = workspace.join("list_topics_mode_override_wins_over_pattern_config");
         tokio::fs::create_dir_all(topic_path.join(".jyc"))
             .await
             .unwrap();
@@ -986,7 +998,7 @@ mode = "agent"
         let topics = tm.list_topics().await;
         let info = topics
             .iter()
-            .find(|t| t.name == "plan-615")
+            .find(|t| t.name == "list_topics_mode_override_wins_over_pattern_config")
             .expect("topic should be listed");
         assert_eq!(info.mode.as_deref(), Some("build"));
         assert_eq!(info.model.as_deref(), Some("deepseek/deepseek-chat"));
@@ -999,7 +1011,7 @@ mode = "agent"
     async fn topic_display_state_resolves_mode_model_and_context() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
-        let topic_path = workspace.join("plan-615");
+        let topic_path = workspace.join("topic_display_state_resolves_mode_model_and_context");
         tokio::fs::create_dir_all(topic_path.join(".jyc"))
             .await
             .unwrap();
@@ -1013,8 +1025,14 @@ mode = "agent"
         .await
         .unwrap();
         let tm = make_tm(&workspace);
+        jyc_types::state_dir::register(
+            "topic_display_state_resolves_mode_model_and_context",
+            &topic_path.join(".jyc"),
+        );
 
-        let state = tm.topic_display_state("plan-615").await;
+        let state = tm
+            .topic_display_state("topic_display_state_resolves_mode_model_and_context")
+            .await;
         assert_eq!(state.mode.as_deref(), Some("plan"));
         assert_eq!(state.model.as_deref(), Some("deepseek/deepseek-reasoner"));
         assert_eq!(state.input_tokens, Some(1500));
@@ -1025,7 +1043,9 @@ mode = "agent"
         tokio::fs::write(topic_path.join(".jyc").join("mode-override"), "build\n")
             .await
             .unwrap();
-        let state = tm.topic_display_state("plan-615").await;
+        let state = tm
+            .topic_display_state("topic_display_state_resolves_mode_model_and_context")
+            .await;
         assert_eq!(state.mode.as_deref(), Some("build"));
         assert_eq!(state.model.as_deref(), Some("deepseek/deepseek-chat"));
 
@@ -1038,7 +1058,9 @@ mode = "agent"
         tokio::fs::write(topic_path.join(".jyc").join("pattern"), "")
             .await
             .unwrap();
-        let state = tm.topic_display_state("plan-615").await;
+        let state = tm
+            .topic_display_state("topic_display_state_resolves_mode_model_and_context")
+            .await;
         assert_eq!(state.mode.as_deref(), Some("build"));
 
         // Unknown topic → all fields None (no directory, no state files).
@@ -1079,24 +1101,41 @@ mode = "agent"
     async fn topic_pattern_disk_fallback_on_cold_start() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
-        let topic_path = workspace.join("jyc");
+        let topic_path = workspace.join("topic_pattern_disk_fallback_on_cold_start");
         tokio::fs::create_dir_all(topic_path.join(".jyc"))
             .await
             .unwrap();
-        tokio::fs::write(topic_path.join(".jyc").join("pattern"), "jyc\n")
-            .await
-            .unwrap();
+        tokio::fs::write(
+            topic_path.join(".jyc").join("pattern"),
+            "topic_pattern_disk_fallback_on_cold_start\n",
+        )
+        .await
+        .unwrap();
 
+        jyc_types::state_dir::register(
+            "topic_pattern_disk_fallback_on_cold_start",
+            &topic_path.join(".jyc"),
+        );
         let tm = make_tm(&workspace);
         // First read: from disk.
-        assert_eq!(tm.topic_pattern("jyc").await.as_deref(), Some("jyc"));
+        assert_eq!(
+            tm.topic_pattern("topic_pattern_disk_fallback_on_cold_start")
+                .await
+                .as_deref(),
+            Some("topic_pattern_disk_fallback_on_cold_start")
+        );
         // Disk fallback only triggers when the file exists; removing
-        // it now and re-reading must NOT return "jyc" — the cache
+        // it now and re-reading must NOT return "topic_pattern_disk_fallback_on_cold_start" — the cache
         // should already have been populated by the first read.
         tokio::fs::remove_file(topic_path.join(".jyc").join("pattern"))
             .await
             .unwrap();
-        assert_eq!(tm.topic_pattern("jyc").await.as_deref(), Some("jyc"));
+        assert_eq!(
+            tm.topic_pattern("topic_pattern_disk_fallback_on_cold_start")
+                .await
+                .as_deref(),
+            Some("topic_pattern_disk_fallback_on_cold_start")
+        );
     }
 
     /// `set_topic_pattern` with an empty name must NOT overwrite an

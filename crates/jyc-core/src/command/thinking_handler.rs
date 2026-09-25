@@ -67,9 +67,10 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    fn test_context(topic_path: &std::path::Path) -> CommandContext {
+    fn test_context(topic_name: &str, topic_path: &std::path::Path) -> CommandContext {
+        jyc_types::state_dir::register(topic_name, &topic_path.join(".jyc"));
         CommandContext {
-            topic_name: "test-topic".to_string(),
+            topic_name: topic_name.to_string(),
             args: vec![],
             topic_path: topic_path.to_path_buf(),
             config: Arc::new(
@@ -108,8 +109,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_thinking_hide() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_thinking_hide";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ThinkingCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["hide".to_string()];
 
         let result = handler.execute(ctx).await.unwrap();
@@ -124,8 +127,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_thinking_show() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_thinking_show";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ThinkingCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["show".to_string()];
 
         let result = handler.execute(ctx).await.unwrap();
@@ -140,8 +145,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_thinking_default_is_show() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_thinking_default_is_show";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ThinkingCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -155,8 +162,10 @@ mode = "agent"
     #[tokio::test]
     async fn test_thinking_invalid_arg() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_thinking_invalid_arg";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let handler = ThinkingCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec!["banana".to_string()];
 
         let result = handler.execute(ctx).await.unwrap();

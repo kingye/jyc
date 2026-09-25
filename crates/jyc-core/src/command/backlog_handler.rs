@@ -443,10 +443,19 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
+    /// Unique-per-tmpdir topic name: several ctx_for calls in one test must
+    /// share the registration, and parallel tests must not race (#825).
+    fn test_topic_name(path: &Path) -> String {
+        let topic_name = format!("backlog-test-{}", path.display());
+        jyc_types::state_dir::register(&topic_name, &path.join(".jyc"));
+        topic_name
+    }
+
     /// Build a `CommandContext` pointing at the given temp dir as the topic path.
     fn ctx_for(path: &Path) -> CommandContext {
+        let topic_name = test_topic_name(path);
         CommandContext {
-            topic_name: "test-topic".to_string(),
+            topic_name,
             args: vec![],
             topic_path: path.to_path_buf(),
             config: Arc::new(
@@ -508,9 +517,11 @@ mode = "agent"
         assert!(r.success, "{:?}", r.error);
         assert_eq!(r.message, "Backlog: pushed item 1");
 
-        let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap();
+        let items = BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+            &test_topic_name(dir.path()),
+            dir.path(),
+        ))
+        .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "hello world");
     }
@@ -530,9 +541,11 @@ mode = "agent"
         .await;
         assert!(r.success, "{:?}", r.error);
 
-        let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap();
+        let items = BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+            &test_topic_name(dir.path()),
+            dir.path(),
+        ))
+        .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "line one\nline two\nline three");
     }
@@ -553,9 +566,11 @@ mode = "agent"
         .await;
         assert!(r.success, "{:?}", r.error);
 
-        let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap();
+        let items = BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+            &test_topic_name(dir.path()),
+            dir.path(),
+        ))
+        .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "first line\nsecond line\nthird line");
     }
@@ -571,9 +586,11 @@ mode = "agent"
         let r = run(&h, dir.path(), &["push", "para one", "", "para two", ""]).await;
         assert!(r.success, "{:?}", r.error);
 
-        let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap();
+        let items = BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+            &test_topic_name(dir.path()),
+            dir.path(),
+        ))
+        .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "para one\n\npara two");
     }
@@ -594,9 +611,12 @@ mode = "agent"
         assert!(!r.success);
         assert!(r.message.contains("description required"));
         assert!(
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap()
-                .is_empty(),
+            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+                &test_topic_name(dir.path()),
+                dir.path()
+            ))
+            .unwrap()
+            .is_empty(),
             "no blank item may be stored"
         );
     }
@@ -610,7 +630,9 @@ mode = "agent"
         assert!(!r.success);
         assert!(r.error.unwrap().contains("empty description"));
         // Nothing should be persisted.
-        assert!(!BacklogCommandHandler::backlog_path("", dir.path()).exists());
+        assert!(
+            !BacklogCommandHandler::backlog_path(&test_topic_name(dir.path()), dir.path()).exists()
+        );
     }
 
     #[tokio::test]
@@ -706,9 +728,11 @@ mode = "agent"
         assert_eq!(r.message, "Backlog: popped item 1: first");
         assert_eq!(r.append_body.as_deref(), Some("first"));
 
-        let remaining =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap();
+        let remaining = BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+            &test_topic_name(dir.path()),
+            dir.path(),
+        ))
+        .unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].text, "second");
     }
@@ -764,9 +788,11 @@ mode = "agent"
         assert!(r.success);
         assert_eq!(r.append_body.as_deref(), Some("b"));
 
-        let remaining =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap();
+        let remaining = BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+            &test_topic_name(dir.path()),
+            dir.path(),
+        ))
+        .unwrap();
         assert_eq!(
             remaining
                 .iter()
@@ -788,9 +814,11 @@ mode = "agent"
         assert!(r.append_body.is_none());
 
         // File unchanged.
-        let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap();
+        let items = BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+            &test_topic_name(dir.path()),
+            dir.path(),
+        ))
+        .unwrap();
         assert_eq!(items.len(), 1);
     }
 
@@ -807,9 +835,11 @@ mode = "agent"
         assert_eq!(r.message, "Backlog: removed item 1");
         assert!(r.append_body.is_none());
 
-        let remaining =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap();
+        let remaining = BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+            &test_topic_name(dir.path()),
+            dir.path(),
+        ))
+        .unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].text, "y");
     }
@@ -847,9 +877,11 @@ mode = "agent"
         assert_eq!(r.message, "Backlog: set item 2");
         assert!(r.append_body.is_none());
 
-        let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap();
+        let items = BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+            &test_topic_name(dir.path()),
+            dir.path(),
+        ))
+        .unwrap();
         assert_eq!(items[0].text, "keep me");
         assert_eq!(items[1].text, "fix the typo");
     }
@@ -863,9 +895,11 @@ mode = "agent"
         // Pure continuation form for `/backlog set 1` + two lines.
         let r = run(&h, dir.path(), &["set", "1", "line a", "line b"]).await;
         assert!(r.success, "{:?}", r.error);
-        let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap();
+        let items = BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+            &test_topic_name(dir.path()),
+            dir.path(),
+        ))
+        .unwrap();
         assert_eq!(items[0].text, "line a\nline b");
     }
 
@@ -877,9 +911,11 @@ mode = "agent"
 
         let r = run(&h, dir.path(), &["set", "1 first", "second"]).await;
         assert!(r.success, "{:?}", r.error);
-        let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap();
+        let items = BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+            &test_topic_name(dir.path()),
+            dir.path(),
+        ))
+        .unwrap();
         assert_eq!(items[0].text, "first\nsecond");
     }
 
@@ -893,9 +929,11 @@ mode = "agent"
         // trailing "" trimmed.
         let r = run(&h, dir.path(), &["set", "1 para one", "", "para two", ""]).await;
         assert!(r.success, "{:?}", r.error);
-        let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap();
+        let items = BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+            &test_topic_name(dir.path()),
+            dir.path(),
+        ))
+        .unwrap();
         assert_eq!(items[0].text, "para one\n\npara two");
     }
 
@@ -940,9 +978,11 @@ mode = "agent"
         let r = run(&h, dir.path(), &["set", "1"]).await;
         assert!(!r.success);
         assert!(r.message.contains("new text required"));
-        let items =
-            BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path("", dir.path()))
-                .unwrap();
+        let items = BacklogCommandHandler::read_items(&BacklogCommandHandler::backlog_path(
+            &test_topic_name(dir.path()),
+            dir.path(),
+        ))
+        .unwrap();
         assert_eq!(items[0].text, "keep");
     }
 
@@ -1041,7 +1081,7 @@ mode = "agent"
 
         run(&h, dir.path(), &["push", "x"]).await;
 
-        let path = BacklogCommandHandler::backlog_path("", dir.path());
+        let path = BacklogCommandHandler::backlog_path(&test_topic_name(dir.path()), dir.path());
         assert!(path.exists(), "backlog.jsonl should exist after push");
         let tmp = path.with_extension("jsonl.tmp");
         assert!(
@@ -1057,7 +1097,7 @@ mode = "agent"
         let h = BacklogCommandHandler::new();
 
         // Pre-plant a stale tmp from a previous interrupted write.
-        let path = BacklogCommandHandler::backlog_path("", dir.path());
+        let path = BacklogCommandHandler::backlog_path(&test_topic_name(dir.path()), dir.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let tmp = path.with_extension("jsonl.tmp");
         std::fs::write(&tmp, b"stale garbage\n").unwrap();

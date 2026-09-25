@@ -159,6 +159,7 @@ async fn cancel_during_llm_call_publishes_processing_completed() {
 
     let tmp = TempDir::new().unwrap();
     let working_dir = tmp.path().to_path_buf();
+    jyc_types::state_dir::register("cancel-during-llm", &working_dir.join(".jyc"));
     let provider = HangingProvider;
     let tools: ToolRegistry = create_builtin_registry();
     let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(256));
@@ -250,6 +251,7 @@ async fn cancel_during_llm_call_publishes_processing_completed() {
 async fn cancel_during_long_running_tool_returns_quickly() {
     let tmp = TempDir::new().unwrap();
     let working_dir = tmp.path().to_path_buf();
+    jyc_types::state_dir::register("cancel-during-tool", &working_dir.join(".jyc"));
     let provider = BashSleepProvider;
     let mut tools: ToolRegistry = create_builtin_registry();
     // Sanity-check: bash must be registered so the tool call can resolve.

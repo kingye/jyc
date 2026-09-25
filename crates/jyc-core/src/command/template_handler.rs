@@ -187,8 +187,12 @@ mod tests {
     use std::sync::Arc;
 
     fn test_context(tmp_dir: &Path) -> CommandContext {
+        // Unique-per-tmpdir topic name: parallel tests must not share a
+        // registry key, and repeated calls in one test must agree (#825).
+        let topic_name = format!("template-test-{}", tmp_dir.display());
+        jyc_types::state_dir::register(&topic_name, &tmp_dir.join(".jyc"));
         CommandContext {
-            topic_name: "test-topic".to_string(),
+            topic_name,
             args: vec![],
             topic_path: tmp_dir.to_path_buf(),
             config: Arc::new(
@@ -265,8 +269,10 @@ mode = "agent"
             .unwrap();
 
         let handler = TemplateCommandHandler;
-        let mut ctx = test_context(tmp.path());
-        ctx.topic_path = topic_dir.clone();
+        let mut ctx = test_context(&topic_dir);
+        // test_context derives the template layer from its argument; the
+        // fixtures live at <tmp>/templates, not <topic_dir>/templates.
+        ctx.template_dirs = tmp.path().join("templates").into();
 
         println!("Template dir in ctx: {:?}", ctx.template_dirs);
 

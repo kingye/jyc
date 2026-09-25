@@ -151,9 +151,9 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
-    fn test_context(topic_path: &Path) -> CommandContext {
+    fn test_context(topic_name: &str, topic_path: &Path) -> CommandContext {
         CommandContext {
-            topic_name: "test-topic".to_string(),
+            topic_name: topic_name.to_string(),
             // Pass --force by default so the destructive-action tests
             // exercise the real path; guard tests override `args`.
             args: vec!["--force".to_string()],
@@ -220,11 +220,13 @@ mode = "agent"
     #[tokio::test]
     async fn test_new_without_force_warns_and_keeps_files() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_new_without_force_warns_and_keeps_files";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         setup_session(&tmp).await;
         setup_chat_history(&tmp).await;
 
         let handler = NewCommandHandler;
-        let mut ctx = test_context(tmp.path());
+        let mut ctx = test_context(topic, tmp.path());
         ctx.args = vec![];
 
         let result = handler.execute(ctx).await.unwrap();
@@ -241,6 +243,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_new_with_session_and_history() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_new_with_session_and_history";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         setup_session(&tmp).await;
         setup_chat_history(&tmp).await;
         crate::session_state::write_tasks_at(
@@ -257,7 +261,7 @@ mode = "agent"
         .unwrap();
 
         let handler = NewCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -277,9 +281,11 @@ mode = "agent"
     #[tokio::test]
     async fn test_new_with_no_session_or_history() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_new_with_no_session_or_history";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
         let handler = NewCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -289,10 +295,12 @@ mode = "agent"
     #[tokio::test]
     async fn test_new_with_session_only() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_new_with_session_only";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         setup_session(&tmp).await;
 
         let handler = NewCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -304,10 +312,12 @@ mode = "agent"
     #[tokio::test]
     async fn test_new_with_history_only() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_new_with_history_only";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         setup_chat_history(&tmp).await;
 
         let handler = NewCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -320,6 +330,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_new_deletes_activity_log() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_new_deletes_activity_log";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         tokio::fs::write(
@@ -330,7 +342,7 @@ mode = "agent"
         .unwrap();
 
         let handler = NewCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
@@ -343,6 +355,8 @@ mode = "agent"
     #[tokio::test]
     async fn test_new_clears_exchange_files_and_token() {
         let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_new_clears_exchange_files_and_token";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         let exchange_dir = jyc_dir.join(crate::EXCHANGE_DIR_NAME);
         tokio::fs::create_dir_all(&exchange_dir).await.unwrap();
@@ -354,7 +368,7 @@ mode = "agent"
             .unwrap();
 
         let handler = NewCommandHandler;
-        let ctx = test_context(tmp.path());
+        let ctx = test_context(topic, tmp.path());
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);

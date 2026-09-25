@@ -59,8 +59,10 @@ impl TopicManager {
     ///
     /// This is channel-agnostic — all topics use the same cleanup logic.
     /// For adopted/pinned topics (a registered state dir outside the topic
-    /// dir), the *state dir* is deleted and unregistered while the topic
-    /// dir itself — typically a user-owned project checkout — is kept.
+    /// dir), the *state dir* is deleted while the topic dir itself —
+    /// typically a user-owned project checkout — is kept. The registration
+    /// is deliberately kept: a reopened topic reuses the same state dir
+    /// instead of ever falling back to `<topic_dir>/.jyc` (#825).
     /// Unregistered topics keep the legacy behavior: the whole directory
     /// (with its in-dir `.jyc`) is removed. In-memory state is cleaned up
     /// in both cases.
@@ -82,7 +84,6 @@ impl TopicManager {
                     .await
                     .context(format!("Failed to remove topic state dir: {:?}", state))?;
             }
-            jyc_types::state_dir::unregister(topic_name);
             tracing::info!(
                 topic = %topic_name,
                 state = %state.display(),
@@ -540,7 +541,8 @@ mode = "agent"
     }
 
     /// Pinned topic with a registered state dir: close deletes the state
-    /// dir and unregisters, but the topic dir (user-owned repo) survives.
+    /// dir but keeps the registration (a reopen reuses the same state
+    /// dir) and the topic dir (user-owned repo) survives.
     #[tokio::test]
     async fn close_pinned_topic_removes_state_keeps_dir() {
         let tmp = tempdir().unwrap();
@@ -571,11 +573,12 @@ mode = "agent"
             "no state should be recreated in dir"
         );
         assert!(!state.exists(), "relocated state dir must be deleted");
-        assert!(jyc_types::state_dir::registered_state("probe-pin-app").is_none());
         assert_eq!(
-            jyc_types::state_dir::jyc_dir("probe-pin-app", &repo),
-            repo.join(".jyc")
+            jyc_types::state_dir::registered_state("probe-pin-app"),
+            Some(state.clone()),
+            "registration kept so a reopen reuses the same state dir"
         );
+        assert_eq!(jyc_types::state_dir::jyc_dir("probe-pin-app", &repo), state);
     }
 
     /// Two topics pinning the same dir: closing one deletes only its own

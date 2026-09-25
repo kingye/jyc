@@ -1,5 +1,18 @@
 ## [Unreleased]
 
+### Changed
+
+- Topic state resolution no longer has a silent fallback: `jyc_dir` panics
+  when a topic has no registered state dir instead of quietly writing into
+  `<topic_dir>/.jyc`. Every topic's state is now registered before any
+  state access — config pins adopt at startup, jyc-owned workspace topics
+  register their in-dir `.jyc` at activation (router, scheduled jobs,
+  `jyc_send_to_topic`, dashboard proxy), fork/clone adopt as before — so a
+  pinned user repo can never accumulate state again. A topic's state dir is
+  also chosen once and never moved: adoption is first-wins (the re-pin carry
+  that relocated state between dirs is gone), and `/close` keeps the
+  registration so a reopened topic reuses the same state location (#825)
+
 ### Added
 
 - `/clone [name] [path]` copies this topic's directory into a topic of its own:

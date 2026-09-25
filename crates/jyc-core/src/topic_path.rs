@@ -89,27 +89,39 @@ pub fn state_dir_for(agents_root: &Path, topic_dir: &Path, agent_key: Option<&st
     agents_root.join(name).join(".jyc")
 }
 
+/// Register `<topic_dir>/.jyc` as the state dir for a topic whose dir lives
+/// under `workspace` (jyc-owned). No-op when the topic already has a
+/// registration (e.g. an adopted pin). A dir outside the workspace without
+/// a registration is a lost adoption: left unregistered so `jyc_dir` fails
+/// loudly instead of silently writing state into a user-owned dir (#825).
+pub fn activate_workspace_state(topic_name: &str, topic_dir: &Path, workspace: &Path) {
+    if topic_dir.starts_with(workspace) {
+        jyc_types::state_dir::register_if_absent(topic_name, &topic_dir.join(".jyc"));
+    }
+}
+
 /// Adopt `state_dir` as the `.jyc` location of topic `topic_name`, whose
 /// topic dir is `topic_dir`.
 ///
-/// Registers the name→state mapping and, when the topic was previously
-/// adopted under a different state dir (re-pin), carries that state into
-/// place (rename, cross-device copy fallback). Always (re)writes the
-/// `topic-path` breadcrumb; `topic-name` is restamped only where one
-/// already exists (carried state or a previously initialized topic) —
-/// restore discovery keys on that file to tell a used topic from a fresh
-/// empty pin, so it is never created here.
+/// First adoption wins: a topic's state dir is chosen once and never moved.
+/// When the topic already has a registration (a runtime pin adopted before
+/// the config restore ran, or the reverse), the existing state dir is kept
+/// and `state_dir` is ignored — the old re-pin carry moved state between
+/// dirs and could leave it split across two (#825).
+///
+/// On adoption, registers the name→state mapping, creates `state_dir`, and
+/// writes the `topic-path` breadcrumb; `topic-name` is restamped only where
+/// one already exists — restore discovery keys on that file to tell a used
+/// topic from a fresh empty pin, so it is never created here.
 /// [`restore_state_registry`] rebuilds the name-keyed mapping after a
 /// restart even in processes without config access (subprocesses), where
 /// several agents may share one `topic_dir`: registrations depend on the
 /// name, never on the dir.
-///
-/// Returns Ok(true) if state was physically moved.
 pub fn adopt_state_dir(
     topic_name: &str,
     topic_dir: &Path,
     state_dir: &Path,
-) -> std::io::Result<bool> {
+) -> std::io::Result<()> {
     let legacy = topic_dir.join(".jyc");
     if legacy.exists() && state_dir != legacy {
         // In-dir state is no longer migrated (all deployments moved long ago),
@@ -125,60 +137,24 @@ pub fn adopt_state_dir(
              state — it belongs to whoever pinned this dir first"
         );
     }
-    let prev = jyc_types::state_dir::registered_state(topic_name);
-    jyc_types::state_dir::register(topic_name, state_dir);
-    let mut moved = false;
-    // Re-pin carry: state was already adopted elsewhere (e.g. runtime
-    // ad-hoc name -> later config-key name, or the reverse).
-    let source = if state_dir.exists() {
-        None
-    } else if let Some(prev) = prev.filter(|p| p != state_dir && p.is_dir()) {
-        tracing::info!(
-            topic_dir = %topic_dir.display(),
-            from = %prev.display(),
-            to = %state_dir.display(),
-            "Carrying topic state to newly adopted state dir"
-        );
-        Some(prev)
-    } else {
-        None
-    };
-    if let Some(src) = source {
-        if let Some(parent) = state_dir.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        match std::fs::rename(&src, state_dir) {
-            Ok(()) => moved = true,
-            Err(_) => {
-                // Cross-device (or transient): copy then remove the source.
-                copy_dir_all(&src, state_dir)?;
-                let _ = std::fs::remove_dir_all(&src);
-                moved = true;
-            }
-        }
-        // Drop the now-empty old namespace folder (agents/<old-name>/).
-        if let Some(src_parent) = src.parent()
-            && src_parent
-                .file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with('_'))
-        {
-            let _ = std::fs::remove_dir(src_parent);
-        }
+    if jyc_types::state_dir::registered_state(topic_name).is_some() {
+        return Ok(());
     }
+    jyc_types::state_dir::register(topic_name, state_dir);
     std::fs::create_dir_all(state_dir)?;
     std::fs::write(
         state_dir.join("topic-path"),
         topic_dir.to_string_lossy().as_bytes(),
     )?;
     // Restamp the identity breadcrumb only where one already exists (a
-    // carried re-pin dir or a previously initialized topic). Never CREATE
-    // it: restore discovery keys on this file to tell "used topic" from a
-    // fresh empty pin, and `set_topic_path` writes it on first real open.
+    // previously initialized topic). Never CREATE it: restore discovery
+    // keys on this file to tell "used topic" from a fresh empty pin, and
+    // `set_topic_path` writes it on first real open.
     let name_file = state_dir.join("topic-name");
     if name_file.exists() {
         std::fs::write(&name_file, topic_name.as_bytes())?;
     }
-    Ok(moved)
+    Ok(())
 }
 
 /// Canonicalize when the path exists, else use it as given.
@@ -345,10 +321,7 @@ mod tests {
         std::fs::create_dir_all(&topic).unwrap();
         let state = tmp.path().join("agents").join("_adopt");
 
-        assert!(
-            !adopt_state_dir("adopt-name", &topic, &state).unwrap(),
-            "fresh adopt has nothing to move"
-        );
+        adopt_state_dir("adopt-name", &topic, &state).unwrap();
         assert_eq!(
             std::fs::read_to_string(state.join("topic-path")).unwrap(),
             topic.to_string_lossy()
@@ -359,8 +332,9 @@ mod tests {
         );
         assert_eq!(jyc_types::state_dir::jyc_dir("adopt-name", &topic), state);
 
-        // second adopt is a no-op (registered, nothing to move)
-        assert!(!adopt_state_dir("adopt-name", &topic, &state).unwrap());
+        // second adopt is a no-op (already registered)
+        adopt_state_dir("adopt-name", &topic, &state).unwrap();
+        assert_eq!(jyc_types::state_dir::jyc_dir("adopt-name", &topic), state);
     }
 
     #[test]
@@ -373,15 +347,15 @@ mod tests {
         let state_a = state_dir_for(&root, &dir, Some("alpha"));
         let state_b = state_dir_for(&root, &dir, Some("beta"));
 
-        assert!(!adopt_state_dir("alpha", &dir, &state_a).unwrap());
-        assert!(!adopt_state_dir("beta", &dir, &state_b).unwrap());
+        adopt_state_dir("alpha", &dir, &state_a).unwrap();
+        adopt_state_dir("beta", &dir, &state_b).unwrap();
 
         assert_ne!(state_a, state_b, "each topic gets its own state dir");
         let jyc = |n: &str| jyc_types::state_dir::jyc_dir(n, &dir);
         assert_eq!(jyc("alpha"), state_a);
         assert_eq!(jyc("beta"), state_b);
 
-        // Closing one topic's registration must not disturb the other's.
+        // Removing one topic's registration must not disturb the other's.
         jyc_types::state_dir::unregister("alpha");
         assert!(jyc_types::state_dir::registered_state("alpha").is_none());
         assert_eq!(jyc("beta"), state_b);
@@ -446,7 +420,9 @@ mod tests {
     }
 
     #[test]
-    fn adopt_repin_carries_existing_state() {
+    fn adopt_repin_keeps_first_adoption() {
+        // A topic's state dir is chosen once and never moved: a second
+        // adopt under a different candidate dir is a no-op (#825).
         let tmp = tempdir().unwrap();
         let topic = tmp.path().join("repin-topic");
         std::fs::create_dir_all(&topic).unwrap();
@@ -455,35 +431,19 @@ mod tests {
         std::fs::write(first.join("marker"), b"payload").unwrap();
 
         let second = tmp.path().join("agents").join("key").join(".jyc");
+        adopt_state_dir("repin-name", &topic, &second).unwrap();
+        assert!(first.join("marker").exists(), "first state dir untouched");
         assert!(
-            adopt_state_dir("repin-name", &topic, &second).unwrap(),
-            "carry moves prior state"
+            !second.exists(),
+            "candidate dir not provisioned when a registration exists"
         );
-        assert!(second.join("marker").exists());
-        assert!(!first.exists(), "old state dir consumed");
-        assert!(
-            !first.parent().unwrap().exists(),
-            "empty old namespace folder removed"
-        );
-        assert_eq!(jyc_types::state_dir::jyc_dir("repin-name", &topic), second);
+        assert_eq!(jyc_types::state_dir::jyc_dir("repin-name", &topic), first);
 
         // A DIFFERENT name pinning the same dir gets its own clean state.
         let other = tmp.path().join("agents").join("other").join(".jyc");
-        assert!(
-            !adopt_state_dir("other-name", &topic, &other).unwrap(),
-            "other name must not carry repin-name's state"
-        );
-        assert!(second.join("marker").exists(), "repin state untouched");
+        adopt_state_dir("other-name", &topic, &other).unwrap();
+        assert!(first.join("marker").exists(), "repin state untouched");
         assert!(!other.join("marker").exists(), "clean state for other");
-
-        // Carrying away from a CONFIG-KEY dir must NOT remove its parent:
-        // agents/<key>/ doubles as the agent's canonical topic dir.
-        let third = tmp.path().join("agents").join("_third").join(".jyc");
-        assert!(adopt_state_dir("repin-name", &topic, &third).unwrap());
-        assert!(
-            second.parent().unwrap().exists(),
-            "config-key topic dir preserved after carry"
-        );
     }
 
     #[test]
@@ -494,7 +454,7 @@ mod tests {
         let topic = tmp.path().join("conflict-topic");
         std::fs::create_dir_all(topic.join(".jyc")).unwrap();
         let state = tmp.path().join("conflict-state");
-        assert!(!adopt_state_dir("conflict-name", &topic, &state).unwrap());
+        adopt_state_dir("conflict-name", &topic, &state).unwrap();
         assert!(topic.join(".jyc").exists(), "legacy dir left in place");
         assert!(
             !state.join("topic-name").exists(),
@@ -628,20 +588,20 @@ mod tests {
 
         let pattern = ChannelPattern {
             name: "invoices".to_string(),
-            topic_name: Some("invoice-processing".to_string()),
+            topic_name: Some("invoice-processing-feishu".to_string()),
             ..Default::default()
         };
 
         // Feishu chat_name would be "发票群" but config overrides
         let topic_name = pattern.topic_name.as_deref().unwrap_or("发票群");
-        assert_eq!(topic_name, "invoice-processing");
+        assert_eq!(topic_name, "invoice-processing-feishu");
 
         let msg = make_feishu_message("发票群", "group");
         let result = storage
             .store_with_match(&msg, topic_name, true, None)
             .await
             .unwrap();
-        assert_eq!(result.topic_path, ws.join("invoice-processing"));
+        assert_eq!(result.topic_path, ws.join("invoice-processing-feishu"));
     }
 
     // === Attachment path (real production path) ===
@@ -685,20 +645,27 @@ mod tests {
     // === store_at_path (custom topic_path override) ===
 
     #[tokio::test]
-    async fn test_store_at_path_writes_to_custom_directory() {
+    async fn test_store_at_path_writes_to_registered_state_dir() {
         let tmp = tempdir().unwrap();
         let ws = resolve_workspace(tmp.path(), "jiny283a");
         tokio::fs::create_dir_all(&ws).await.unwrap();
 
         let storage = MessageStorage::new(&ws);
 
-        // Custom topic path OUTSIDE the workspace
+        // Custom topic path OUTSIDE the workspace — a pinned topic. State
+        // was adopted at pin time (#825: never in-dir for user-owned dirs).
         let custom_path = tmp.path().join("custom-projects").join("my-project");
         tokio::fs::create_dir_all(&custom_path).await.unwrap();
+        let state = tmp
+            .path()
+            .join("agents")
+            .join("at-path-writes")
+            .join(".jyc");
+        jyc_types::state_dir::register("at-path-writes", &state);
 
         let msg = make_message("jiny283a", "Test Subject");
         let result = storage
-            .store_at_path(&msg, &custom_path, true)
+            .store_at_path(&msg, "at-path-writes", &custom_path, true)
             .await
             .unwrap();
 
@@ -706,9 +673,8 @@ mod tests {
         assert_eq!(result.topic_path, custom_path);
         assert!(result.topic_path.exists());
 
-        // Chat log should be inside the custom path .jyc/ directory
-        let jyc_dir = custom_path.join(".jyc");
-        let entries: Vec<_> = std::fs::read_dir(&jyc_dir).unwrap().collect();
+        // Chat log goes to the registered state dir, not the topic dir
+        let entries: Vec<_> = std::fs::read_dir(&state).unwrap().collect();
         let has_chat_log = entries.iter().any(|e| {
             e.as_ref()
                 .unwrap()
@@ -716,7 +682,11 @@ mod tests {
                 .to_string_lossy()
                 .starts_with("chat_history_")
         });
-        assert!(has_chat_log, "chat log file should exist in .jyc/");
+        assert!(has_chat_log, "chat log file should exist in the state dir");
+        assert!(
+            !custom_path.join(".jyc").exists(),
+            "no state written into the user-owned topic dir"
+        );
 
         // Should NOT be under workspace
         assert!(
@@ -726,25 +696,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_store_at_path_creates_topic_dir_if_missing() {
+    #[should_panic(expected = "no registered state dir")]
+    async fn test_store_at_path_unregistered_outside_workspace_panics() {
+        // A user-owned dir without a registration is a lost adoption: state
+        // access must fail loudly, never write into the topic dir (#825).
         let tmp = tempdir().unwrap();
         let ws = resolve_workspace(tmp.path(), "jiny283a");
         tokio::fs::create_dir_all(&ws).await.unwrap();
 
         let storage = MessageStorage::new(&ws);
-
-        // Custom path that doesn't exist yet
-        let custom_path = tmp.path().join("new-external-dir").join("topic-1");
+        let custom_path = tmp.path().join("unregistered-project");
+        tokio::fs::create_dir_all(&custom_path).await.unwrap();
 
         let msg = make_message("jiny283a", "Test Subject");
-        let result = storage
-            .store_at_path(&msg, &custom_path, true)
+        storage
+            .store_at_path(&msg, "at-path-unregistered", &custom_path, true)
             .await
             .unwrap();
-
-        assert_eq!(result.topic_path, custom_path);
-        assert!(result.topic_path.exists());
-        assert!(result.topic_path.is_dir());
     }
 
     // === resolve_topic_path edge cases ===
@@ -777,8 +745,17 @@ mod tests {
         tokio::fs::create_dir_all(&custom).await.unwrap();
 
         let storage = MessageStorage::new(&ws);
+        let state = tmp
+            .path()
+            .join("agents")
+            .join("at-path-elsewhere")
+            .join(".jyc");
+        jyc_types::state_dir::register("at-path-elsewhere", &state);
         let msg = make_feishu_message("发票群", "group");
-        let result = storage.store_at_path(&msg, &custom, true).await.unwrap();
+        let result = storage
+            .store_at_path(&msg, "at-path-elsewhere", &custom, true)
+            .await
+            .unwrap();
 
         assert_eq!(result.topic_path, custom);
         // Ensure path doesn't contain "workspace" segment at all

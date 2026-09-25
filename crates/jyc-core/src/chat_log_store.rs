@@ -332,7 +332,9 @@ mod tests {
     #[test]
     fn test_chat_log_store_creation() {
         let temp_dir = tempdir().unwrap();
-        let store = ChatLogStore::new("", temp_dir.path());
+        let topic = "test_chat_log_store_creation";
+        jyc_types::state_dir::register(topic, &temp_dir.path().join(".jyc"));
+        let store = ChatLogStore::new(topic, temp_dir.path());
 
         assert_eq!(store.topic_path, temp_dir.path());
         assert!(store.current_file.read().unwrap().is_none());
@@ -341,7 +343,9 @@ mod tests {
     #[test]
     fn test_append_message() {
         let temp_dir = tempdir().unwrap();
-        let mut store = ChatLogStore::new("", temp_dir.path());
+        let topic = "test_append_message";
+        jyc_types::state_dir::register(topic, &temp_dir.path().join(".jyc"));
+        let mut store = ChatLogStore::new(topic, temp_dir.path());
 
         let message = create_test_message();
         let result = store.append_message(&message, true);
@@ -369,7 +373,9 @@ mod tests {
     #[test]
     fn test_append_reply() {
         let temp_dir = tempdir().unwrap();
-        let mut store = ChatLogStore::new("", temp_dir.path());
+        let topic = "test_append_reply";
+        jyc_types::state_dir::register(topic, &temp_dir.path().join(".jyc"));
+        let mut store = ChatLogStore::new(topic, temp_dir.path());
 
         let metadata = ReplyMetadata {
             sender: "jyc-bot".to_string(),
@@ -397,7 +403,9 @@ mod tests {
     #[test]
     fn test_multiple_appends() {
         let temp_dir = tempdir().unwrap();
-        let mut store = ChatLogStore::new("", temp_dir.path());
+        let topic = "test_multiple_appends";
+        jyc_types::state_dir::register(topic, &temp_dir.path().join(".jyc"));
+        let mut store = ChatLogStore::new(topic, temp_dir.path());
 
         let message = create_test_message();
         store.append_message(&message, true).unwrap();
@@ -448,13 +456,17 @@ mod tests {
     #[test]
     fn test_load_recent_chat_history_empty_dir() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let entries = load_recent_chat_history("", tmp.path(), 100);
+        let topic = "test_load_recent_chat_history_empty_dir";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let entries = load_recent_chat_history(topic, tmp.path(), 100);
         assert!(entries.is_empty());
     }
 
     #[test]
     fn test_load_recent_chat_history_reads_jyc_subdir() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let topic = "test_load_recent_chat_history_reads_jyc_subdir";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
         std::fs::write(
@@ -463,7 +475,7 @@ mod tests {
         )
         .unwrap();
 
-        let entries = load_recent_chat_history("", tmp.path(), 100);
+        let entries = load_recent_chat_history(topic, tmp.path(), 100);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].sender, "user");
         assert_eq!(entries[0].text, "hello");
@@ -472,6 +484,8 @@ mod tests {
     #[test]
     fn test_load_recent_chat_history_reads_reply() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let topic = "test_load_recent_chat_history_reads_reply";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
         std::fs::write(
@@ -480,7 +494,7 @@ mod tests {
         )
         .unwrap();
 
-        let entries = load_recent_chat_history("", tmp.path(), 100);
+        let entries = load_recent_chat_history(topic, tmp.path(), 100);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].sender, "ai");
         assert_eq!(entries[0].text, "AI reply");
@@ -489,6 +503,8 @@ mod tests {
     #[test]
     fn test_load_recent_chat_history_respects_max() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let topic = "test_load_recent_chat_history_respects_max";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
         let mut lines = String::new();
@@ -501,7 +517,7 @@ mod tests {
         }
         std::fs::write(jyc_dir.join("chat_history_2026-07-22.jsonl"), lines).unwrap();
 
-        let entries = load_recent_chat_history("", tmp.path(), 3);
+        let entries = load_recent_chat_history(topic, tmp.path(), 3);
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].text, "msg 7");
         assert_eq!(entries[2].text, "msg 9");
@@ -510,6 +526,8 @@ mod tests {
     #[test]
     fn test_load_recent_chat_history_skips_unknown_types() {
         let tmp = tempfile::TempDir::new().unwrap();
+        let topic = "test_load_recent_chat_history_skips_unknown_types";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         std::fs::create_dir_all(&jyc_dir).unwrap();
         std::fs::write(
@@ -524,7 +542,7 @@ mod tests {
         )
         .unwrap();
 
-        let entries = load_recent_chat_history("", tmp.path(), 100);
+        let entries = load_recent_chat_history(topic, tmp.path(), 100);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].text, "hello");
         assert_eq!(entries[1].text, "world");

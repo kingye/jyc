@@ -84,13 +84,16 @@ fn service_with_hanging_mcp(timeout_ms: u64) -> Arc<JycAgentService> {
 /// the timeout budget.
 #[tokio::test]
 async fn hanging_mcp_does_not_block_registry_build() {
+    let tname = "hanging_mcp_does_not_block_registry_build";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     // 300ms timeout is plenty: the connect attempt will hang in the
     // rmcp handshake; tokio::time::timeout must fire well before
     // CI gets impatient.
     let svc = service_with_hanging_mcp(300);
     let start = Instant::now();
     let arc = svc
-        .get_or_build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
+        .get_or_build_tool_registry(tname, Path::new("/tmp/test-topic"), None, false, None)
         .await;
     let elapsed = start.elapsed();
 
@@ -114,6 +117,9 @@ async fn hanging_mcp_does_not_block_registry_build() {
 /// roughly max(timeout) time, not N×timeout.
 #[tokio::test]
 async fn concurrent_mcp_load_respects_bounded_parallelism() {
+    let tname = "concurrent_mcp_load_respects_bounded_parallelism";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     // 5 hanging MCPs, each cut off at 300ms. With `buffer_unordered(4)`,
     // wall time should be ~300ms (first wave) + 300ms (second wave)
     // ≈ 600ms. Sequential would be 5 × 300ms = 1.5s.
@@ -122,7 +128,7 @@ async fn concurrent_mcp_load_respects_bounded_parallelism() {
 
     let start = Instant::now();
     let _arc = svc
-        .get_or_build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
+        .get_or_build_tool_registry(tname, Path::new("/tmp/test-topic"), None, false, None)
         .await;
     let elapsed = start.elapsed();
 
@@ -143,17 +149,20 @@ async fn concurrent_mcp_load_respects_bounded_parallelism() {
 /// a side channel (the cache itself is private).
 #[tokio::test]
 async fn cache_hit_avoids_reloading_mcps() {
+    let tname = "cache_hit_avoids_reloading_mcps";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     let svc = service_with_hanging_mcp(300);
 
     // First call: cache miss → MCP load (which times out at 300ms).
     let first = svc
-        .get_or_build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
+        .get_or_build_tool_registry(tname, Path::new("/tmp/test-topic"), None, false, None)
         .await;
     let start = Instant::now();
     // Second call: same (topic, config_ptr) → cache hit, must be
     // effectively instant (no MCP re-spawn).
     let second = svc
-        .get_or_build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
+        .get_or_build_tool_registry(tname, Path::new("/tmp/test-topic"), None, false, None)
         .await;
     let elapsed = start.elapsed();
 
@@ -173,6 +182,9 @@ async fn cache_hit_avoids_reloading_mcps() {
 /// the stale cache.
 #[tokio::test]
 async fn cache_invalidates_on_config_swap() {
+    let tname = "cache_invalidates_on_config_swap";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     let mut hanger = hanging_mcp("hanger");
     hanger.timeout_ms = Some(300);
     let config = app_config_with_mcps(None, vec![hanger]);
@@ -192,7 +204,7 @@ async fn cache_invalidates_on_config_swap() {
     // First call: cache miss → MCP load (which times out at ~300ms).
     // We don't care about its duration — just that it ran.
     let _first = svc
-        .get_or_build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
+        .get_or_build_tool_registry(tname, Path::new("/tmp/test-topic"), None, false, None)
         .await;
 
     // Swap config to a fresh snapshot (same mcps, different Arc pointer).
@@ -203,7 +215,7 @@ async fn cache_invalidates_on_config_swap() {
 
     let start = Instant::now();
     let _second = svc
-        .get_or_build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
+        .get_or_build_tool_registry(tname, Path::new("/tmp/test-topic"), None, false, None)
         .await;
     let elapsed = start.elapsed();
 
@@ -233,6 +245,9 @@ async fn cache_invalidates_on_config_swap() {
 /// new MCP was never resolved or loaded.
 #[tokio::test]
 async fn reload_picks_up_newly_added_global_mcp() {
+    let tname = "reload_picks_up_newly_added_global_mcp";
+    jyc_types::state_dir::register(tname, Path::new("/tmp/test-topic/.jyc"));
+
     // Start with a config that has NO mcps.
     let config = app_config_with_mcps(None, vec![]);
     let svc = JycAgentService::new(
@@ -251,7 +266,7 @@ async fn reload_picks_up_newly_added_global_mcp() {
     // First build: no MCPs → must be instant (no subprocess spawn).
     let t0 = Instant::now();
     let _first = svc
-        .get_or_build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
+        .get_or_build_tool_registry(tname, Path::new("/tmp/test-topic"), None, false, None)
         .await;
     assert!(
         t0.elapsed() < Duration::from_millis(100),
@@ -272,7 +287,7 @@ async fn reload_picks_up_newly_added_global_mcp() {
     // see the original (empty) mcp list and return instantly.
     let t1 = Instant::now();
     let _second = svc
-        .get_or_build_tool_registry("test", Path::new("/tmp/test-topic"), None, false, None)
+        .get_or_build_tool_registry(tname, Path::new("/tmp/test-topic"), None, false, None)
         .await;
     let elapsed = t1.elapsed();
 

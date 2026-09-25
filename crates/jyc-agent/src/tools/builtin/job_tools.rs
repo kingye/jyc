@@ -89,11 +89,13 @@ impl Tool for JobCreateTool {
     }
 
     fn description(&self) -> &str {
-        "Create a new scheduled job. Provide either a 'cron' expression for \
-         recurring jobs (7-field format: 'sec min hour dom mon dow year', e.g. \
-         '0 0 8 * * * *' for daily at 8 AM) or an 'at' timestamp for one-time \
-         jobs (ISO 8601 format). The job fires by injecting the provided prompt \
-         into the originating topic. Returns the created job ID."
+        "Create a new scheduled job. Exactly one of 'cron' or 'at' is required — \
+         providing both or neither is an error. 'cron' is a 7-field expression for \
+         recurring jobs ('sec min hour dom mon dow year', e.g. '0 0 8 * * * *' for \
+         daily at 8 AM); 'at' is an ISO 8601 timestamp for one-time jobs (e.g. \
+         '2026-06-22T08:00:00Z'). The job fires by injecting the provided prompt \
+         into the originating topic. Returns the created job ID. Stop a job later \
+         with job_delete (remove) or job_toggle (pause/keep)."
     }
 
     fn input_schema(&self) -> Value {
@@ -102,11 +104,11 @@ impl Tool for JobCreateTool {
             "properties": {
                 "cron": {
                     "type": "string",
-                    "description": "Cron expression for recurring jobs (7-field format: 'sec min hour dom mon dow year'). Exactly one of cron or at must be provided."
+                    "description": "Cron expression for a RECURRING job (7-field format: 'sec min hour dom mon dow year', e.g. '0 0 8 * * * *'). Provide either this or 'at', never both."
                 },
                 "at": {
                     "type": "string",
-                    "description": "ISO 8601 timestamp for one-time jobs (e.g. '2026-06-22T08:00:00Z'). Exactly one of cron or at must be provided."
+                    "description": "ISO 8601 timestamp for a ONE-TIME job (e.g. '2026-06-22T08:00:00Z'). Provide either this or 'cron', never both."
                 },
                 "prompt": {
                     "type": "string",
@@ -126,6 +128,11 @@ impl Tool for JobCreateTool {
 
         let cron = input.get("cron").and_then(|c| c.as_str());
         let at_str = input.get("at").and_then(|a| a.as_str());
+        if cron.is_some() && at_str.is_some() {
+            return Ok(ToolOutput::error(
+                "provide either 'cron' or 'at', not both".to_string(),
+            ));
+        }
 
         // The topic name is the working directory's name (the topic dir).
         let topic_name = ctx
@@ -360,5 +367,36 @@ mod tests {
         assert_eq!(jobs[0].channel_name, "agents");
         assert_eq!(jobs[0].channel, "agents");
         assert_eq!(jobs[0].topic_name, "stamp-topic");
+    }
+
+    /// 'cron' and 'at' are mutually exclusive: both at once must be rejected
+    /// instead of silently preferring cron.
+    #[tokio::test]
+    async fn test_job_create_rejects_cron_and_at_together() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic_dir = tmp.path().join("xor-topic");
+        tokio::fs::create_dir_all(&topic_dir).await.unwrap();
+        jyc_types::state_dir::register("xor-topic", &topic_dir.join(".jyc"));
+
+        let tool = JobCreateTool;
+        let at = (Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+        let input = json!({
+            "cron": "0 0 8 * * * *",
+            "at": at,
+            "prompt": "smoke",
+        });
+
+        let mut ctx = ToolContext::new(&topic_dir);
+        ctx.current_topic = Some("xor-topic".to_string());
+        ctx.current_channel = Some("agents".to_string());
+        let out = tool.execute(input, &ctx).await.unwrap();
+        assert!(
+            out.is_error && out.content.contains("not both"),
+            "unexpected output: {}",
+            out.content
+        );
+
+        let store = store_from_ctx(&ctx).await.unwrap();
+        assert!(store.list().await.unwrap().is_empty());
     }
 }

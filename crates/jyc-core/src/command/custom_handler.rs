@@ -329,8 +329,12 @@ mod tests {
     }
 
     fn test_context_with_args(topic_path: &Path, args: Vec<&str>) -> CommandContext {
+        // Unique-per-tmpdir topic name: parallel tests must not share a
+        // registry key, and repeated calls in one test must agree (#825).
+        let topic_name = format!("custom-test-{}", topic_path.display());
+        jyc_types::state_dir::register(&topic_name, &topic_path.join(".jyc"));
         CommandContext {
-            topic_name: "test-topic".to_string(),
+            topic_name,
             args: args.into_iter().map(|s| s.to_string()).collect(),
             topic_path: topic_path.to_path_buf(),
             config: Arc::new(

@@ -986,7 +986,7 @@ mode = "agent"
             .await
             .unwrap();
         let config = config_with_pattern_mode("p1", Some("plan"));
-        let result = resolve_effective_mode("", tmp.path(), &config, "c").await;
+        let result = resolve_effective_mode(topic, tmp.path(), &config, "c").await;
         assert_eq!(result, Some("build".to_string()));
     }
 
@@ -1001,7 +1001,7 @@ mode = "agent"
             .await
             .unwrap();
         let config = config_with_pattern_mode("p1", Some("plan"));
-        let result = resolve_effective_mode("", tmp.path(), &config, "c").await;
+        let result = resolve_effective_mode(topic, tmp.path(), &config, "c").await;
         assert_eq!(result, Some("plan".to_string()));
     }
 
@@ -1013,7 +1013,7 @@ mode = "agent"
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
         let config = config_with_pattern_mode("p1", Some("plan"));
-        let result = resolve_effective_mode("", tmp.path(), &config, "c").await;
+        let result = resolve_effective_mode(topic, tmp.path(), &config, "c").await;
         assert_eq!(result, None);
     }
 
@@ -1028,7 +1028,7 @@ mode = "agent"
             .await
             .unwrap();
         let config = config_with_pattern_mode("p1", Some("plan"));
-        let result = resolve_effective_mode("", tmp.path(), &config, "c").await;
+        let result = resolve_effective_mode(topic, tmp.path(), &config, "c").await;
         assert_eq!(result, None);
     }
 
@@ -1043,7 +1043,7 @@ mode = "agent"
             .await
             .unwrap();
         let config = config_with_pattern_mode("p1", None);
-        let result = resolve_effective_mode("", tmp.path(), &config, "c").await;
+        let result = resolve_effective_mode(topic, tmp.path(), &config, "c").await;
         assert_eq!(result, None);
     }
 
@@ -1058,7 +1058,7 @@ mode = "agent"
             .await
             .unwrap();
         let config = config_with_pattern_mode("p1", Some("plan"));
-        let result = resolve_effective_mode("", tmp.path(), &config, "other").await;
+        let result = resolve_effective_mode(topic, tmp.path(), &config, "other").await;
         assert_eq!(result, None);
     }
 
@@ -1182,7 +1182,7 @@ auto_reset_threshold = 0.95
         let tmp = tempfile::tempdir().unwrap();
         let topic = "resolve_reset_compression_uses_matched_pattern";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        write_max_input_tokens("", tmp.path(), 12345).await;
+        write_max_input_tokens(topic, tmp.path(), 12345).await;
         let content = tokio::fs::read_to_string(tmp.path().join(".jyc/agent-session.json"))
             .await
             .unwrap();
@@ -1203,7 +1203,7 @@ auto_reset_threshold = 0.95
         )
         .await
         .unwrap();
-        write_max_input_tokens("", tmp.path(), 250000).await;
+        write_max_input_tokens(topic, tmp.path(), 250000).await;
         let content = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
             .await
             .unwrap();
@@ -1218,7 +1218,7 @@ auto_reset_threshold = 0.95
         let tmp = tempfile::tempdir().unwrap();
         let topic = "write_max_input_tokens_is_idempotent";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        write_max_input_tokens("", tmp.path(), 12345).await;
+        write_max_input_tokens(topic, tmp.path(), 12345).await;
         let first_mtime = tokio::fs::metadata(tmp.path().join(".jyc/agent-session.json"))
             .await
             .unwrap()
@@ -1226,7 +1226,7 @@ auto_reset_threshold = 0.95
             .unwrap();
         // Sleep a beat so mtime would change if we rewrote
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        write_max_input_tokens("", tmp.path(), 12345).await;
+        write_max_input_tokens(topic, tmp.path(), 12345).await;
         let second_mtime = tokio::fs::metadata(tmp.path().join(".jyc/agent-session.json"))
             .await
             .unwrap()

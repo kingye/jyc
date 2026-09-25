@@ -445,8 +445,12 @@ mod tests {
 
     /// Build a `CommandContext` pointing at the given temp dir as the topic path.
     fn ctx_for(path: &Path) -> CommandContext {
+        // Unique-per-tmpdir topic name: several ctx_for calls in one test must
+        // share the registration, and parallel tests must not race (#825).
+        let topic_name = format!("backlog-test-{}", path.display());
+        jyc_types::state_dir::register(&topic_name, &path.join(".jyc"));
         CommandContext {
-            topic_name: "test-topic".to_string(),
+            topic_name,
             args: vec![],
             topic_path: path.to_path_buf(),
             config: Arc::new(

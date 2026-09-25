@@ -214,8 +214,7 @@ async fn test_has_active_queue_true_after_enqueue() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let tname = "#[tokio::test]
-async fn test_has_active_queue_true_after_enqueue() {";
+    let tname = "test_has_active_queue_true_after_enqueue";
     let tm = make_test_tm(&workspace);
 
     // Create a topic directory so list_topics finds it
@@ -232,7 +231,7 @@ async fn test_has_active_queue_true_after_enqueue() {";
         sender: "user".to_string(),
         sender_address: "user".to_string(),
         recipients: vec![],
-        topic: "test".to_string(),
+        topic: "test_has_active_queue_true_after_enqueue".to_string(),
         content: jyc_types::MessageContent {
             text: Some("hello".to_string()),
             html: None,
@@ -275,8 +274,7 @@ async fn test_empty_pattern_name_does_not_clobber_pattern_file() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let tname = "#[tokio::test]
-async fn test_empty_pattern_name_does_not_clobber_pattern_file() {";
+    let tname = "test_empty_pattern_name_does_not_clobber_pattern_file";
     let tm = make_test_tm(&workspace);
 
     let make_msg = || InboundMessage {
@@ -286,7 +284,7 @@ async fn test_empty_pattern_name_does_not_clobber_pattern_file() {";
         sender: "user".to_string(),
         sender_address: "user".to_string(),
         recipients: vec![],
-        topic: "test".to_string(),
+        topic: "test_empty_pattern_name_does_not_clobber_pattern_file".to_string(),
         content: jyc_types::MessageContent {
             text: Some("hello".to_string()),
             html: None,
@@ -427,8 +425,7 @@ async fn test_cancel_topic_via_worker_clone_really_cancels() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let tname = "#[tokio::test]
-async fn test_cancel_topic_via_worker_clone_really_cancels() {";
+    let tname = "test_cancel_topic_via_worker_clone_really_cancels";
     let tm = make_test_tm(&workspace);
 
     // Simulate an active worker token registered in the shared map
@@ -461,8 +458,7 @@ async fn test_worker_respawn_after_cancel_keeps_event_bus() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let tname = "#[tokio::test]
-async fn test_worker_respawn_after_cancel_keeps_event_bus() {";
+    let tname = "test_worker_respawn_after_cancel_keeps_event_bus";
     let tm = make_test_tm(&workspace);
     tokio::fs::create_dir_all(state_dir(tname, &workspace.join(tname)))
         .await
@@ -484,7 +480,7 @@ async fn test_worker_respawn_after_cancel_keeps_event_bus() {";
                 sender: "user".to_string(),
                 sender_address: "user".to_string(),
                 recipients: vec![],
-                topic: "test".to_string(),
+                topic: "test_worker_respawn_after_cancel_keeps_event_bus".to_string(),
                 content: jyc_types::MessageContent {
                     text: Some(text),
                     html: None,
@@ -560,8 +556,7 @@ async fn test_publish_incoming_message_on_event_bus() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let tname = "#[tokio::test]
-async fn test_publish_incoming_message_on_event_bus() {";
+    let tname = "test_publish_incoming_message_on_event_bus";
     let tm = make_test_tm(&workspace);
 
     // Create event bus manually so we can subscribe
@@ -599,8 +594,7 @@ async fn test_publish_reply_sent_on_event_bus() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let tname = "#[tokio::test]
-async fn test_publish_reply_sent_on_event_bus() {";
+    let tname = "test_publish_reply_sent_on_event_bus";
     let tm = make_test_tm(&workspace);
 
     // Create event bus manually so we can subscribe
@@ -633,8 +627,7 @@ async fn test_publish_incoming_message_noop_without_event_bus() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let tname = "#[tokio::test]
-async fn test_publish_incoming_message_noop_without_event_bus() {";
+    let tname = "test_publish_incoming_message_noop_without_event_bus";
     let tm = make_test_tm(&workspace);
 
     // No event bus created — publish should silently succeed (no panic)
@@ -648,8 +641,7 @@ async fn test_topic_meta_written_on_first_message() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let tname = "#[tokio::test]
-async fn test_topic_meta_written_on_first_message() {";
+    let tname = "test_topic_meta_written_on_first_message";
     let tm = make_test_tm(&workspace);
 
     let topic_path = workspace.join(tname);
@@ -667,7 +659,7 @@ async fn test_topic_meta_written_on_first_message() {";
         sender: "user".to_string(),
         sender_address: "user".to_string(),
         recipients: vec![],
-        topic: "test".to_string(),
+        topic: "test_topic_meta_written_on_first_message".to_string(),
         content: jyc_types::MessageContent {
             text: Some("hello".to_string()),
             html: None,
@@ -711,8 +703,7 @@ async fn test_topic_meta_not_overwritten_on_second_message() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let tname = "#[tokio::test]
-async fn test_topic_meta_not_overwritten_on_second_message() {";
+    let tname = "test_topic_meta_not_overwritten_on_second_message";
     let tm = make_test_tm(&workspace);
 
     let topic_path = workspace.join(tname);
@@ -735,7 +726,7 @@ async fn test_topic_meta_not_overwritten_on_second_message() {";
         sender: "user".to_string(),
         sender_address: "user".to_string(),
         recipients: vec![],
-        topic: "test".to_string(),
+        topic: "test_topic_meta_not_overwritten_on_second_message".to_string(),
         content: jyc_types::MessageContent {
             text: Some("hello".to_string()),
             html: None,
@@ -777,8 +768,7 @@ async fn test_topic_meta_not_written_for_dashboard_channel_uid() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let tname = "#[tokio::test]
-async fn test_topic_meta_not_written_for_dashboard_channel_uid() {";
+    let tname = "test_topic_meta_not_written_for_dashboard_channel_uid";
     let tm = make_test_tm(&workspace);
 
     let topic_path = workspace.join(tname);
@@ -792,7 +782,7 @@ async fn test_topic_meta_not_written_for_dashboard_channel_uid() {";
         sender: "user".to_string(),
         sender_address: "user".to_string(),
         recipients: vec![],
-        topic: "test".to_string(),
+        topic: "test_topic_meta_not_written_for_dashboard_channel_uid".to_string(),
         content: jyc_types::MessageContent {
             text: Some("hello".to_string()),
             html: None,
@@ -1160,8 +1150,7 @@ async fn test_list_topics_cleans_stale_custom_path() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let tname = "#[tokio::test]
-async fn test_list_topics_cleans_stale_custom_path() {";
+    let tname = "test_list_topics_cleans_stale_custom_path";
     let tm = make_test_tm(&workspace);
 
     // Insert a custom path that doesn't exist on disk
@@ -1211,8 +1200,6 @@ async fn test_restore_multi_topic_per_agent_layout() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let tname = "#[tokio::test]
-async fn test_restore_multi_topic_per_agent_layout() {";
 
     // Agent root sits OUTSIDE the workspace (it's the
     // `<data_home>/agents/<agent_name>/` dir).
@@ -1220,11 +1207,11 @@ async fn test_restore_multi_topic_per_agent_layout() {";
     let topic_a = agent_root.join("topic-a");
     let topic_b = agent_root.join("topic-b");
     for t in [&topic_a, &topic_b] {
-        tokio::fs::create_dir_all(state_dir(tname, t))
+        tokio::fs::create_dir_all(state_dir(t.file_name().unwrap().to_str().unwrap(), t))
             .await
             .unwrap();
         tokio::fs::write(
-            state_dir(tname, t).join("topic-name"),
+            state_dir(t.file_name().unwrap().to_str().unwrap(), t).join("topic-name"),
             t.file_name().unwrap().to_str().unwrap(),
         )
         .await
@@ -1309,8 +1296,7 @@ mode = "agent"
 #[tokio::test]
 async fn test_restore_agent_default_root_without_topic_path() {
     let tmp = tempdir().unwrap();
-    let tname = "#[tokio::test]
-async fn test_restore_agent_default_root_without_topic_path() {";
+    let tname = "test_restore_agent_default_root_without_topic_path";
     // The agents channel's workspace is `<data_home>/agents/`.
     let workspace = tmp.path().join("agents");
     let agent_root = workspace.join("planner");
@@ -1434,8 +1420,7 @@ pricing = { input_per_million = 3.0, output_per_million = 4.0, cache_hit_per_mil
 #[tokio::test]
 async fn list_topics_currency_from_config_when_ledger_empty() {
     let tmp = tempdir().unwrap();
-    let tname = "#[tokio::test]
-async fn list_topics_currency_from_config_when_ledger_empty() {";
+    let tname = "list_topics_currency_from_config_when_ledger_empty";
     let workspace = tmp.path().join("workspace");
     let topic = workspace.join("t1");
     std::fs::create_dir_all(state_dir(tname, &topic)).unwrap();
@@ -1471,8 +1456,7 @@ async fn list_topics_preserves_mixed_currency_from_ledger() {
     use crate::billing_log_store::{BillingEntry, BillingLogStore, MIXED_CURRENCY};
 
     let tmp = tempdir().unwrap();
-    let tname = "#[tokio::test]
-async fn list_topics_preserves_mixed_currency_from_ledger() {";
+    let tname = "list_topics_preserves_mixed_currency_from_ledger";
     let workspace = tmp.path().join("workspace");
     let topic = workspace.join("t1");
     std::fs::create_dir_all(state_dir(tname, &topic)).unwrap();
@@ -1531,20 +1515,18 @@ async fn list_topics_preserves_mixed_currency_from_ledger() {";
 #[tokio::test]
 async fn list_topics_populates_branch_from_dot_git_head() {
     let tmp = tempdir().unwrap();
-    let tname = "#[tokio::test]
-async fn list_topics_populates_branch_from_dot_git_head() {";
     let workspace = tmp.path().join("workspace");
 
-    // Topic "main-test" with a symbolic-ref HEAD pointing at main.
-    let t1 = workspace.join("main-test");
-    std::fs::create_dir_all(state_dir(tname, &t1)).unwrap();
+    // Topic "br-main" with a symbolic-ref HEAD pointing at main.
+    let t1 = workspace.join("br-main");
+    std::fs::create_dir_all(state_dir("br-main", &t1)).unwrap();
     std::fs::create_dir_all(t1.join(".git")).unwrap();
     std::fs::write(t1.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
 
-    // Topic "detached-test" with a raw 40-char SHA — should appear
+    // Topic "br-detached" with a raw 40-char SHA — should appear
     // as "(detached)" rather than as `None`.
-    let t2 = workspace.join("detached-test");
-    std::fs::create_dir_all(state_dir(tname, &t2)).unwrap();
+    let t2 = workspace.join("br-detached");
+    std::fs::create_dir_all(state_dir("br-detached", &t2)).unwrap();
     std::fs::create_dir_all(t2.join(".git")).unwrap();
     std::fs::write(
         t2.join(".git/HEAD"),
@@ -1552,10 +1534,10 @@ async fn list_topics_populates_branch_from_dot_git_head() {";
     )
     .unwrap();
 
-    // Topic "no-git" — `.jyc` exists but no `.git/HEAD`. Branch
+    // Topic "br-nogit" — `.jyc` exists but no `.git/HEAD`. Branch
     // should be `None` (renderer skips the row).
-    let t3 = workspace.join("no-git");
-    std::fs::create_dir_all(state_dir(tname, &t3)).unwrap();
+    let t3 = workspace.join("br-nogit");
+    std::fs::create_dir_all(state_dir("br-nogit", &t3)).unwrap();
 
     let tm = make_test_tm(&workspace);
     let topics = tm.list_topics().await;
@@ -1568,17 +1550,17 @@ async fn list_topics_populates_branch_from_dot_git_head() {";
     };
 
     assert_eq!(
-        by_name("main-test").branch.as_deref(),
+        by_name("br-main").branch.as_deref(),
         Some("main"),
         "symbolic-ref branch must be resolved"
     );
     assert_eq!(
-        by_name("detached-test").branch.as_deref(),
+        by_name("br-detached").branch.as_deref(),
         Some("(detached)"),
         "raw SHA must surface as (detached)"
     );
     assert!(
-        by_name("no-git").branch.is_none(),
+        by_name("br-nogit").branch.is_none(),
         "non-git topic must have branch=None"
     );
 
@@ -1594,14 +1576,12 @@ async fn list_topics_populates_branch_from_dot_git_head() {";
 #[tokio::test]
 async fn list_topics_populates_changed_files_from_git_diff() {
     let tmp = tempdir().unwrap();
-    let tname = "#[tokio::test]
-async fn list_topics_populates_changed_files_from_git_diff() {";
     let workspace = tmp.path().join("workspace");
 
-    // Topic "clean": real git repo on `main` with no commits ahead.
+    // Topic "diff-clean": real git repo on `main` with no commits ahead.
     // Expect `Some(vec![])`.
-    let clean = workspace.join("clean");
-    std::fs::create_dir_all(state_dir(tname, &clean)).unwrap();
+    let clean = workspace.join("diff-clean");
+    std::fs::create_dir_all(state_dir("diff-clean", &clean)).unwrap();
     let run = |args: &[&str]| {
         std::process::Command::new("git")
             .args(args)
@@ -1622,9 +1602,9 @@ async fn list_topics_populates_changed_files_from_git_diff() {";
         "init",
     ]);
 
-    // Topic "ahead": feature branch with one commit adding "x.rs".
-    let ahead = workspace.join("ahead");
-    std::fs::create_dir_all(state_dir(tname, &ahead)).unwrap();
+    // Topic "diff-ahead": feature branch with one commit adding "x.rs".
+    let ahead = workspace.join("diff-ahead");
+    std::fs::create_dir_all(state_dir("diff-ahead", &ahead)).unwrap();
     let run_ahead = |args: &[&str]| {
         std::process::Command::new("git")
             .args(args)
@@ -1658,9 +1638,9 @@ async fn list_topics_populates_changed_files_from_git_diff() {";
         "x",
     ]);
 
-    // Topic "no-git": no `.git` at all → `changed_files == None`.
-    let no_git = workspace.join("no-git");
-    std::fs::create_dir_all(state_dir(tname, &no_git)).unwrap();
+    // Topic "diff-nogit": no `.git` at all → `changed_files == None`.
+    let no_git = workspace.join("diff-nogit");
+    std::fs::create_dir_all(state_dir("diff-nogit", &no_git)).unwrap();
 
     let tm = make_test_tm(&workspace);
     let topics = tm.list_topics().await;
@@ -1673,12 +1653,12 @@ async fn list_topics_populates_changed_files_from_git_diff() {";
     };
 
     assert_eq!(
-        by_name("clean").changed_files.as_deref(),
+        by_name("diff-clean").changed_files.as_deref(),
         Some(&[][..]),
         "branch == main must surface as Some(vec![])"
     );
     assert_eq!(
-        by_name("ahead").changed_files.as_deref(),
+        by_name("diff-ahead").changed_files.as_deref(),
         Some(
             &[ChangedFileEntry {
                 path: "x.rs".into(),
@@ -1689,7 +1669,7 @@ async fn list_topics_populates_changed_files_from_git_diff() {";
         "feature branch with one new file must list it"
     );
     assert!(
-        by_name("no-git").changed_files.is_none(),
+        by_name("diff-nogit").changed_files.is_none(),
         "non-git topic must have changed_files=None"
     );
 
@@ -1701,8 +1681,7 @@ async fn test_processing_error_sends_failure_notice() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    let tname = "#[tokio::test]
-async fn test_processing_error_sends_failure_notice() {";
+    let tname = "test_processing_error_sends_failure_notice";
 
     let recording = Arc::new(RecordingOutbound::default());
     let outbound: Arc<dyn jyc_types::OutboundAdapter> = Arc::clone(&recording) as _;
@@ -1743,7 +1722,7 @@ mode = "agent"
         sender: "user".to_string(),
         sender_address: "user".to_string(),
         recipients: vec![],
-        topic: "test".to_string(),
+        topic: "test_processing_error_sends_failure_notice".to_string(),
         content: jyc_types::MessageContent {
             text: Some("hello".to_string()),
             html: None,

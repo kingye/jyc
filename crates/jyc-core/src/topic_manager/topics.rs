@@ -959,7 +959,7 @@ mode = "agent"
     async fn list_topics_resolves_mode_from_pattern_config() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
-        let topic_path = workspace.join("plan-615");
+        let topic_path = workspace.join("list_topics_resolves_mode_from_pattern_config");
         tokio::fs::create_dir_all(topic_path.join(".jyc"))
             .await
             .unwrap();
@@ -971,7 +971,7 @@ mode = "agent"
         let topics = tm.list_topics().await;
         let info = topics
             .iter()
-            .find(|t| t.name == "plan-615")
+            .find(|t| t.name == "list_topics_resolves_mode_from_pattern_config")
             .expect("topic should be listed");
         assert_eq!(info.mode.as_deref(), Some("plan"));
         assert_eq!(info.model.as_deref(), Some("deepseek/deepseek-reasoner"));
@@ -983,7 +983,7 @@ mode = "agent"
     async fn list_topics_mode_override_wins_over_pattern_config() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
-        let topic_path = workspace.join("plan-615");
+        let topic_path = workspace.join("list_topics_mode_override_wins_over_pattern_config");
         tokio::fs::create_dir_all(topic_path.join(".jyc"))
             .await
             .unwrap();
@@ -998,7 +998,7 @@ mode = "agent"
         let topics = tm.list_topics().await;
         let info = topics
             .iter()
-            .find(|t| t.name == "plan-615")
+            .find(|t| t.name == "list_topics_mode_override_wins_over_pattern_config")
             .expect("topic should be listed");
         assert_eq!(info.mode.as_deref(), Some("build"));
         assert_eq!(info.model.as_deref(), Some("deepseek/deepseek-chat"));
@@ -1011,7 +1011,7 @@ mode = "agent"
     async fn topic_display_state_resolves_mode_model_and_context() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
-        let topic_path = workspace.join("plan-615");
+        let topic_path = workspace.join("topic_display_state_resolves_mode_model_and_context");
         tokio::fs::create_dir_all(topic_path.join(".jyc"))
             .await
             .unwrap();
@@ -1026,7 +1026,9 @@ mode = "agent"
         .unwrap();
         let tm = make_tm(&workspace);
 
-        let state = tm.topic_display_state("plan-615").await;
+        let state = tm
+            .topic_display_state("topic_display_state_resolves_mode_model_and_context")
+            .await;
         assert_eq!(state.mode.as_deref(), Some("plan"));
         assert_eq!(state.model.as_deref(), Some("deepseek/deepseek-reasoner"));
         assert_eq!(state.input_tokens, Some(1500));
@@ -1037,7 +1039,9 @@ mode = "agent"
         tokio::fs::write(topic_path.join(".jyc").join("mode-override"), "build\n")
             .await
             .unwrap();
-        let state = tm.topic_display_state("plan-615").await;
+        let state = tm
+            .topic_display_state("topic_display_state_resolves_mode_model_and_context")
+            .await;
         assert_eq!(state.mode.as_deref(), Some("build"));
         assert_eq!(state.model.as_deref(), Some("deepseek/deepseek-chat"));
 
@@ -1050,7 +1054,9 @@ mode = "agent"
         tokio::fs::write(topic_path.join(".jyc").join("pattern"), "")
             .await
             .unwrap();
-        let state = tm.topic_display_state("plan-615").await;
+        let state = tm
+            .topic_display_state("topic_display_state_resolves_mode_model_and_context")
+            .await;
         assert_eq!(state.mode.as_deref(), Some("build"));
 
         // Unknown topic → all fields None (no directory, no state files).

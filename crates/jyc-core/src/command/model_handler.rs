@@ -281,7 +281,7 @@ context_window = 200000
         let topic = "test_list_models_empty_providers";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let ctx = CommandContext {
-            topic_name: "test-topic".to_string(),
+            topic_name: topic.to_string(),
             args: vec![],
             topic_path: tmp.path().to_path_buf(),
             config: Arc::new(

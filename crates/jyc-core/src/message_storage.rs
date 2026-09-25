@@ -233,7 +233,7 @@ mod tests {
         let result = storage.store(&msg, "ms-reply-topic", None).await.unwrap();
         storage
             .store_reply(
-                "",
+                "ms-reply-topic",
                 &result.topic_path,
                 "Here is my reply.",
                 &result.message_dir,

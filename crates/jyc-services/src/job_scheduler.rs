@@ -568,6 +568,8 @@ mod tests {
         // Topic 4: no jobs dir at all (should be silently skipped)
         let no_jobs_topic = workspace.join("disco-topic-4");
         tokio::fs::create_dir_all(&no_jobs_topic).await.unwrap();
+        // Discovery resolves jyc_dir before its jobs-dir existence check.
+        jyc_types::state_dir::register("disco-topic-4", &no_jobs_topic.join(".jyc"));
 
         let scheduler = create_test_scheduler(vec![workspace], true).await;
         scheduler.run_cycle().await;

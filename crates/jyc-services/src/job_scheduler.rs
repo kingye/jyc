@@ -424,7 +424,10 @@ mod tests {
     ) {
         let topic_path = workspace.join(topic_name);
         tokio::fs::create_dir_all(&topic_path).await.unwrap();
-        let store = JobStore::new("", &topic_path, 10).await.unwrap();
+        // Discovery resolves jyc_dir(dir_basename, dir) — register it (#825).
+        // Topic names are unique per test (parallel registry, first-wins).
+        jyc_types::state_dir::register(topic_name, &topic_path.join(".jyc"));
+        let store = JobStore::new(topic_name, &topic_path, 10).await.unwrap();
         for job in jobs {
             store.create(&job).await.unwrap();
         }
@@ -468,7 +471,7 @@ mod tests {
             "work".to_string(),
             "future task".to_string(),
         );
-        make_topic_with_jobs(&workspace, "topic-1", vec![job]).await;
+        make_topic_with_jobs(&workspace, "nsd-fut-topic-1", vec![job]).await;
 
         let scheduler = create_test_scheduler(vec![workspace], true).await;
         let dur = scheduler.next_sleep_duration().await;
@@ -491,7 +494,7 @@ mod tests {
             "Should not fire".to_string(),
         );
         job.enabled = false;
-        make_topic_with_jobs(&workspace, "topic-1", vec![job]).await;
+        make_topic_with_jobs(&workspace, "dis-topic-1", vec![job]).await;
 
         let scheduler = create_test_scheduler(vec![workspace], true).await;
         scheduler.run_cycle().await;
@@ -506,8 +509,10 @@ mod tests {
         tokio::fs::create_dir_all(&workspace).await.unwrap();
 
         // Create a topic directory WITHOUT .jyc/jobs/ — should be silently skipped
-        let topic_path = workspace.join("no-jobs-topic");
+        let topic_path = workspace.join("pend-no-jobs-topic");
         tokio::fs::create_dir_all(&topic_path).await.unwrap();
+        // Discovery resolves jyc_dir before its jobs-dir existence check.
+        jyc_types::state_dir::register("pend-no-jobs-topic", &topic_path.join(".jyc"));
 
         let scheduler = create_test_scheduler(vec![workspace], true).await;
         // Should not panic
@@ -529,39 +534,39 @@ mod tests {
         // Topic 1: one due job (one-time, now)
         let due_job = jyc_types::JobConfig::new_one_time(
             Utc::now(),
-            "topic-1".to_string(),
+            "disco-topic-1".to_string(),
             "email".to_string(),
             "ch-1".to_string(),
             "due job".to_string(),
         );
         let due_id = due_job.id.clone();
-        make_topic_with_jobs(&workspace, "topic-1", vec![due_job]).await;
+        make_topic_with_jobs(&workspace, "disco-topic-1", vec![due_job]).await;
 
         // Topic 2: one future job (should not be due)
         let future_job = jyc_types::JobConfig::new_one_time(
             Utc::now() + chrono::Duration::hours(2),
-            "topic-2".to_string(),
+            "disco-topic-2".to_string(),
             "email".to_string(),
             "ch-2".to_string(),
             "future job".to_string(),
         );
         let future_id = future_job.id.clone();
-        make_topic_with_jobs(&workspace, "topic-2", vec![future_job]).await;
+        make_topic_with_jobs(&workspace, "disco-topic-2", vec![future_job]).await;
 
         // Topic 3: one disabled due job (should be skipped)
         let mut disabled_job = jyc_types::JobConfig::new_one_time(
             Utc::now(),
-            "topic-3".to_string(),
+            "disco-topic-3".to_string(),
             "email".to_string(),
             "ch-3".to_string(),
             "disabled due job".to_string(),
         );
         disabled_job.enabled = false;
         let disabled_id = disabled_job.id.clone();
-        make_topic_with_jobs(&workspace, "topic-3", vec![disabled_job]).await;
+        make_topic_with_jobs(&workspace, "disco-topic-3", vec![disabled_job]).await;
 
         // Topic 4: no jobs dir at all (should be silently skipped)
-        let no_jobs_topic = workspace.join("topic-4");
+        let no_jobs_topic = workspace.join("disco-topic-4");
         tokio::fs::create_dir_all(&no_jobs_topic).await.unwrap();
 
         let scheduler = create_test_scheduler(vec![workspace], true).await;
@@ -569,7 +574,9 @@ mod tests {
 
         // Due job in topic-1: fire_job fails (no TM), so it stays unchanged
         let topic1_path = tmp.path().join("workspace/topic-1");
-        let store1 = JobStore::new("", &topic1_path, 10).await.unwrap();
+        let store1 = JobStore::new("disco-topic-1", &topic1_path, 10)
+            .await
+            .unwrap();
         let updated_due = store1.get(&due_id).await.unwrap().unwrap();
         assert!(
             updated_due.enabled,
@@ -582,7 +589,9 @@ mod tests {
 
         // Future job in topic-2: untouched
         let topic2_path = tmp.path().join("workspace/topic-2");
-        let store2 = JobStore::new("", &topic2_path, 10).await.unwrap();
+        let store2 = JobStore::new("disco-topic-2", &topic2_path, 10)
+            .await
+            .unwrap();
         let updated_future = store2.get(&future_id).await.unwrap().unwrap();
         assert!(updated_future.enabled, "Future job should remain enabled");
         assert!(
@@ -592,7 +601,9 @@ mod tests {
 
         // Disabled job in topic-3: untouched
         let topic3_path = tmp.path().join("workspace/topic-3");
-        let store3 = JobStore::new("", &topic3_path, 10).await.unwrap();
+        let store3 = JobStore::new("disco-topic-3", &topic3_path, 10)
+            .await
+            .unwrap();
         let updated_disabled = store3.get(&disabled_id).await.unwrap().unwrap();
         assert!(
             !updated_disabled.enabled,
@@ -617,41 +628,49 @@ mod tests {
         tokio::fs::create_dir_all(&ws_a).await.unwrap();
         let due = jyc_types::JobConfig::new_one_time(
             Utc::now(),
-            "topic-a1".to_string(),
+            "mwd-topic-a1".to_string(),
             "email".to_string(),
             "channel-a".to_string(),
             "A-due".to_string(),
         );
         let due_id_a = due.id.clone();
-        make_topic_with_jobs(&ws_a, "topic-a1", vec![due]).await;
+        make_topic_with_jobs(&ws_a, "mwd-topic-a1", vec![due]).await;
 
         // Workspace B: one future job
         let ws_b = tmp.path().join("channel-b/workspace");
         tokio::fs::create_dir_all(&ws_b).await.unwrap();
         let future = jyc_types::JobConfig::new_one_time(
             Utc::now() + chrono::Duration::hours(3),
-            "topic-b1".to_string(),
+            "mwd-topic-b1".to_string(),
             "email".to_string(),
             "channel-b".to_string(),
             "B-future".to_string(),
         );
         let future_id_b = future.id.clone();
-        make_topic_with_jobs(&ws_b, "topic-b1", vec![future]).await;
+        make_topic_with_jobs(&ws_b, "mwd-topic-b1", vec![future]).await;
 
         let scheduler = create_test_scheduler(vec![ws_a, ws_b], true).await;
         scheduler.run_cycle().await;
 
         // A's due job should have been discovered (but fire_job fails)
-        let store_a = JobStore::new("", &tmp.path().join("channel-a/workspace/topic-a1"), 10)
-            .await
-            .unwrap();
+        let store_a = JobStore::new(
+            "mwd-topic-a1",
+            &tmp.path().join("channel-a/workspace/mwd-topic-a1"),
+            10,
+        )
+        .await
+        .unwrap();
         let a_job = store_a.get(&due_id_a).await.unwrap().unwrap();
         assert!(a_job.enabled, "A's job stays enabled (no TM)");
 
         // B's future job should be untouched
-        let store_b = JobStore::new("", &tmp.path().join("channel-b/workspace/topic-b1"), 10)
-            .await
-            .unwrap();
+        let store_b = JobStore::new(
+            "mwd-topic-b1",
+            &tmp.path().join("channel-b/workspace/mwd-topic-b1"),
+            10,
+        )
+        .await
+        .unwrap();
         let b_job = store_b.get(&future_id_b).await.unwrap().unwrap();
         assert!(b_job.enabled, "B's job stays enabled");
         assert!(
@@ -672,22 +691,22 @@ mod tests {
         // Job in topic-1 fires in 30 minutes
         let soon = jyc_types::JobConfig::new_one_time(
             Utc::now() + chrono::Duration::minutes(30),
-            "topic-1".to_string(),
+            "nsd-ear-topic-1".to_string(),
             "email".to_string(),
             "work".to_string(),
             "soon".to_string(),
         );
-        make_topic_with_jobs(&workspace, "topic-1", vec![soon]).await;
+        make_topic_with_jobs(&workspace, "nsd-ear-topic-1", vec![soon]).await;
 
         // Job in topic-2 fires in 2 hours
         let later = jyc_types::JobConfig::new_one_time(
             Utc::now() + chrono::Duration::hours(2),
-            "topic-2".to_string(),
+            "nsd-ear-topic-2".to_string(),
             "email".to_string(),
             "work".to_string(),
             "later".to_string(),
         );
-        make_topic_with_jobs(&workspace, "topic-2", vec![later]).await;
+        make_topic_with_jobs(&workspace, "nsd-ear-topic-2", vec![later]).await;
 
         let scheduler = create_test_scheduler(vec![workspace], true).await;
         let dur = scheduler.next_sleep_duration().await;

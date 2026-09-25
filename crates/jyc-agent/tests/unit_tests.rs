@@ -274,7 +274,7 @@ mod session {
     #[tokio::test]
     async fn load_context_returns_empty_when_no_session_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "keeps_user_messages";
+        let topic = "load_context_returns_empty_when_no_session_file";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
         assert!(messages.is_empty());
@@ -1148,7 +1148,7 @@ mod tools {
     #[tokio::test]
     async fn bash_requires_command_param() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "builtin_registry_has_all_tools";
+        let topic = "bash_requires_command_param";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let tool = builtin::bash::BashTool;
         let result = tool.execute(json!({}), &ctx(tmp.path())).await;
@@ -1387,7 +1387,7 @@ mod mcp_bridge {
     #[tokio::test]
     async fn reply_tool_rejects_empty_message() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "send_to_topic_schema_includes_require_reply";
+        let topic = "reply_tool_rejects_empty_message";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let jyc_dir = tmp.path().join(".jyc");
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
@@ -1408,7 +1408,9 @@ mod mcp_bridge {
         tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
 
         let tool = ReplyMessageTool;
-        let ctx = ToolContext::new(tmp.path());
+        let mut ctx = ToolContext::new(tmp.path());
+        // Reply tools resolve the state dir via ctx.current_topic (#825).
+        ctx.current_topic = Some(topic.into());
         let result = tool
             .execute(json!({"message": "Hello user!"}), &ctx)
             .await
@@ -1922,6 +1924,8 @@ mod mcp_bridge {
 
         let (mock, replies) = ReplyMockOutbound::new(false);
         let mut ctx = ToolContext::new(tmp.path());
+        // Reply tools resolve the state dir via ctx.current_topic (#825).
+        ctx.current_topic = Some(topic.into());
         ctx.outbound = Some(Arc::new(mock));
         ctx.reply_target = Some(jyc_agent::tools::ReplyTarget {
             original: reply_test_message(),
@@ -1960,6 +1964,8 @@ mod mcp_bridge {
 
         let (mock, replies) = ReplyMockOutbound::new(false);
         let mut ctx = ToolContext::new(tmp.path());
+        // Reply tools resolve the state dir via ctx.current_topic (#825).
+        ctx.current_topic = Some(topic.into());
         ctx.outbound = Some(Arc::new(mock));
         ctx.reply_target = Some(jyc_agent::tools::ReplyTarget {
             original: reply_test_message(),
@@ -1988,6 +1994,8 @@ mod mcp_bridge {
 
         let (mock, replies) = ReplyMockOutbound::new(true);
         let mut ctx = ToolContext::new(tmp.path());
+        // Reply tools resolve the state dir via ctx.current_topic (#825).
+        ctx.current_topic = Some(topic.into());
         ctx.outbound = Some(Arc::new(mock));
         ctx.reply_target = Some(jyc_agent::tools::ReplyTarget {
             original: reply_test_message(),
@@ -2147,7 +2155,7 @@ mod skills {
     #[test]
     fn no_skills_dir_returns_empty() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "no_skills_dir_returns_empty";
+        let topic = "reply_tool_silent_continue";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         with_temp_home(tmp.path(), || {
             let svc = make_service(tmp.path().to_path_buf());
@@ -2159,7 +2167,7 @@ mod skills {
     #[test]
     fn single_skill_parsed() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "single_skill_parsed";
+        let topic = "reply_tool_silent_continue";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Create .jyc/skills/test-skill/SKILL.md
         let skill_dir = tmp.path().join(".jyc/skills/test-skill");
@@ -2183,7 +2191,7 @@ mod skills {
     #[test]
     fn empty_skills_dir_handled() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "empty_skills_dir_handled";
+        let topic = "reply_tool_silent_continue";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Create the directory but leave it empty
         std::fs::create_dir_all(tmp.path().join(".jyc/skills")).unwrap();
@@ -2198,7 +2206,7 @@ mod skills {
     #[test]
     fn malformed_skill_skipped() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "malformed_skill_skipped";
+        let topic = "reply_tool_silent_continue";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Create a valid skill
         let good_dir = tmp.path().join(".jyc/skills/good-skill");
@@ -2225,7 +2233,7 @@ mod skills {
     #[test]
     fn same_name_priority() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "same_name_priority";
+        let topic = "reply_tool_silent_continue";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Create .claude/skills/my-skill/ (lower priority — scanned earlier)
         let claude_dir = tmp.path().join(".claude/skills/my-skill");
@@ -2257,7 +2265,7 @@ mod skills {
     #[test]
     fn multi_path_discovery() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "multi_path_discovery";
+        let topic = "reply_tool_silent_continue";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         // Skill 1 in .jyc/skills/
         let d1 = tmp.path().join(".jyc/skills/skill-one");
@@ -2394,6 +2402,7 @@ mod billing_integration {
 
     /// Simulate one LLM call the way `agent_loop` does.
     async fn bank_one_call(
+        topic: &str,
         topic_path: &std::path::Path,
         input: u64,
         output: u64,
@@ -2425,7 +2434,7 @@ mod billing_integration {
         )
         .unwrap();
         jyc_agent::session::persist_tokens(
-            "",
+            topic,
             topic_path,
             input,
             input,
@@ -2447,13 +2456,13 @@ mod billing_integration {
     #[tokio::test]
     async fn three_calls_produce_three_ledger_lines_and_summed_session_cost() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "format_includes_path";
+        let topic = "three_calls_produce_three_ledger_lines_and_summed_session_cost";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let path = tmp.path();
 
         let mut expected = 0.0;
         for (input, output, cache) in [(1000, 100, 0), (2500, 250, 800), (4000, 90, 3200)] {
-            expected += bank_one_call(path, input, output, cache).await;
+            expected += bank_one_call(topic, path, input, output, cache).await;
         }
 
         // Ledger: one line per call.
@@ -2493,7 +2502,7 @@ mod billing_integration {
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let path = tmp.path();
 
-        let first = bank_one_call(path, 5000, 400, 1000).await;
+        let first = bank_one_call(topic, path, 5000, 400, 1000).await;
 
         // Reset semantics, matching `reset_session`: the session file is
         // deleted, then rebuilt with zeroed counters by the auto-reset
@@ -2501,7 +2510,7 @@ mod billing_integration {
         tokio::fs::remove_file(path.join(".jyc/agent-session.json"))
             .await
             .unwrap();
-        jyc_agent::session::persist_tokens("", path, 0, 0, 0, 0, 0, 0, Some(200_000), 0.95, 0.0)
+        jyc_agent::session::persist_tokens(topic, path, 0, 0, 0, 0, 0, 0, Some(200_000), 0.95, 0.0)
             .await;
 
         let after: serde_json::Value = serde_json::from_str(
@@ -2540,7 +2549,7 @@ mod billing_integration {
         let p = pricing();
 
         // One normal call...
-        bank_one_call(path, 1000, 100, 0).await;
+        bank_one_call(topic, path, 1000, 100, 0).await;
 
         // ...and one summary call, billed the way the agent loop does it.
         let summary_cost = jyc_types::pricing::compute_cost(&p, 40_000, 300, 0);
@@ -2567,7 +2576,7 @@ mod billing_integration {
             },
         )
         .unwrap();
-        jyc_agent::session::add_session_cost("", path, summary_cost).await;
+        jyc_agent::session::add_session_cost(topic, path, summary_cost).await;
 
         let entries =
             BillingLogStore::load_date(path, &chrono::Utc::now().format("%Y-%m-%d").to_string());
@@ -2692,7 +2701,7 @@ mod billing_integration {
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let path = tmp.path();
 
-        bank_one_call(path, 5000, 400, 1000).await;
+        bank_one_call(topic, path, 5000, 400, 1000).await;
         let before: serde_json::Value = serde_json::from_str(
             &tokio::fs::read_to_string(path.join(".jyc/agent-session.json"))
                 .await
@@ -2700,7 +2709,7 @@ mod billing_integration {
         )
         .unwrap();
 
-        jyc_agent::session::add_session_cost("", path, 0.25).await;
+        jyc_agent::session::add_session_cost(topic, path, 0.25).await;
 
         let after: serde_json::Value = serde_json::from_str(
             &tokio::fs::read_to_string(path.join(".jyc/agent-session.json"))
@@ -2731,7 +2740,7 @@ mod billing_integration {
         let topic = "zero_cost_summary_writes_nothing";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let path = tmp.path();
-        jyc_agent::session::add_session_cost("", path, 0.0).await;
+        jyc_agent::session::add_session_cost(topic, path, 0.0).await;
         assert!(
             BillingLogStore::today_total(path, "t").is_none(),
             "no ledger entry for a zero-cost call"

@@ -321,8 +321,11 @@ mod tests {
     #[tokio::test]
     async fn test_job_create_stamps_channel_from_context() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic_dir = tmp.path().join("jyc");
+        let topic_dir = tmp.path().join("stamp-topic");
         tokio::fs::create_dir_all(&topic_dir).await.unwrap();
+        // JobStore resolves the state dir through the registry; in production
+        // the topic registers at activation, tests register explicitly.
+        jyc_types::state_dir::register("stamp-topic", &topic_dir.join(".jyc"));
 
         let tool = JobCreateTool;
         let at = (Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
@@ -334,7 +337,7 @@ mod tests {
         // Without a channel in context: a loud error, never a silently
         // mis-stamped job.
         let mut ctx = ToolContext::new(&topic_dir);
-        ctx.current_topic = Some("jyc".to_string());
+        ctx.current_topic = Some("stamp-topic".to_string());
         let out = tool.execute(input.clone(), &ctx).await.unwrap();
         assert!(
             out.is_error && out.content.contains("channel"),
@@ -356,6 +359,6 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].channel_name, "agents");
         assert_eq!(jobs[0].channel, "agents");
-        assert_eq!(jobs[0].topic_name, "jyc");
+        assert_eq!(jobs[0].topic_name, "stamp-topic");
     }
 }

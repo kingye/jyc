@@ -430,8 +430,10 @@ that is already a topic.
 
 A `/clone` is the same mechanism pointed at a dir of its own: it copies the
 source's files into a fresh directory (the source's own `.jyc` is skipped — state
-is seeded, never copied) and then adopts/pins it exactly as `/fork` does, so the
-two topics hold separate files *and* separate state. Because that dir is a copy
+is seeded, never copied; so are regenerable build/dependency dirs such as
+`target/` and `node_modules/`, with the count reported in the reply) and then
+adopts/pins it exactly as `/fork` does, so the two topics hold separate files *and*
+separate state. Because that dir is a copy
 rather than a shared checkout, `close_topic` keeping it is a convenience and not
 a rule — `/close --force --purge` deletes it, refusing only when the dir is one another
 topic also uses (a workspace topic counts, not just a runtime pin — a fork

@@ -2,6 +2,11 @@
 
 ### Changed
 
+- `/clone` skips regenerable build/dependency directories (`target/`,
+  `node_modules/`, `dist/`, `build/`, `__pycache__/`, virtualenvs, caches —
+  matched by name at any depth) instead of copying them, and says how many
+  it skipped — cloning a project workspace is no longer dominated by
+  artifact copy
 - The agent's final message at the end of a turn is now the reply, matching
   the convention of other code agents (Claude Code, Codex, etc.) — the
   `jyc_reply_message` tool, its `stop_after`/`silent` modes, progress

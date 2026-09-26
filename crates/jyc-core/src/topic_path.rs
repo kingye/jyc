@@ -176,7 +176,25 @@ pub(crate) fn resolved(path: &Path) -> PathBuf {
 /// - A symlink is recreated as a symlink rather than followed: a topic dir
 ///   may hold links into a shared checkout (`close_topic` guards the same
 ///   shape), and following them would copy the outside tree into the clone.
-pub(crate) fn copy_dir_all(from: &Path, to: &Path) -> std::io::Result<()> {
+/// - Build/dependency artifact dirs (`target/`, `node_modules/`, …) are
+///   regenerable and can dwarf the actual content, so they are skipped at any
+///   depth. Returns how many dirs were skipped so the caller can say so.
+pub(crate) fn copy_dir_all(from: &Path, to: &Path) -> std::io::Result<usize> {
+    const SKIPPED_ARTIFACT_DIRS: &[&str] = &[
+        "target",
+        "node_modules",
+        "dist",
+        "build",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".next",
+        ".turbo",
+        ".cache",
+        ".pytest_cache",
+        ".mypy_cache",
+    ];
+    let mut skipped = 0;
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
@@ -188,12 +206,16 @@ pub(crate) fn copy_dir_all(from: &Path, to: &Path) -> std::io::Result<()> {
             if entry.file_name() == ".jyc" {
                 continue;
             }
-            copy_dir_all(&entry.path(), &target)?;
+            if SKIPPED_ARTIFACT_DIRS.contains(&entry.file_name().to_string_lossy().as_ref()) {
+                skipped += 1;
+                continue;
+            }
+            skipped += copy_dir_all(&entry.path(), &target)?;
         } else {
             std::fs::copy(entry.path(), &target)?;
         }
     }
-    Ok(())
+    Ok(skipped)
 }
 
 /// Recreate one symlink. Windows needs a privilege for symlinks, so there it

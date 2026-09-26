@@ -628,6 +628,38 @@ pub(crate) async fn process_message(
                 }
             }
         }
+    } else if let Some(text) = result
+        .reply_text
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+    {
+        // The agent returned text without delivering it (e.g. `mode =
+        // "static"` auto-replies, which never touch the delivery paths in
+        // the agent loop). Deliver here, gated by reply_send hooks.
+        tracing::info!(text_len = text.len(), "Delivering AI text via outbound");
+        if let Some(reason) =
+            reply_blocked_by_hook(&hooks, topic_name, &store_result.topic_path, &message, text)
+                .await
+        {
+            tracing::warn!(
+                topic = %topic_name,
+                reason = %reason,
+                "reply_send hook suppressed reply"
+            );
+        } else {
+            outbound
+                .send_reply(
+                    &message,
+                    text,
+                    &store_result.topic_path,
+                    &store_result.message_dir,
+                    None,
+                )
+                .await?;
+            tracing::info!("Reply sent");
+            topic_manager.publish_reply_sent(topic_name, text).await;
+            topic_manager.metrics.reply_by_fallback(topic_name);
+        }
     } else {
         tracing::warn!("No reply delivered from AI");
     }

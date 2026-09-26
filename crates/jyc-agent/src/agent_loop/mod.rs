@@ -244,11 +244,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         None
     };
 
-    // No-reply tracking: when the model exits with no text and no tool call,
-    // the user receives nothing — surface a SessionStatus event so the
-    // activity pane can flag it.
-    let mut no_reply_event_sent = false;
-
     // Cycle tracking: when iter_in_cycle reaches max_iter, send a heartbeat
     // reply, reset the counter, and continue. No upper bound on cycles.
     let mut iter_in_cycle: usize = 0;
@@ -530,28 +525,25 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             let text_len = response.text.trim().len();
 
             // No-reply state: the model produced no text and no tool call,
-            // so the user will see nothing. Surface it once via a
-            // SessionStatus event (common with thinking models that end a
-            // long tool sequence with an empty response).
+            // so the user will see nothing. Surface it via a SessionStatus
+            // event (common with thinking models that end a long tool
+            // sequence with an empty response).
             if text_len == 0 {
-                if !no_reply_event_sent {
-                    no_reply_event_sent = true;
-                    tracing::warn!(total_iterations, "Agent loop: no-reply, exiting");
-                    publish_event(
-                        event_bus,
-                        TopicEvent::SessionStatus {
-                            topic_name: topic_name.to_string(),
-                            status_type: "no_reply".to_string(),
-                            attempt: None,
-                            message: Some(format!(
-                                "AI produced no text and no tool call in final iteration \
-                                 (total_iterations={total_iterations}) — user will see no reply"
-                            )),
-                            timestamp: Utc::now(),
-                        },
-                    )
-                    .await;
-                }
+                tracing::warn!(total_iterations, "Agent loop: no-reply, exiting");
+                publish_event(
+                    event_bus,
+                    TopicEvent::SessionStatus {
+                        topic_name: topic_name.to_string(),
+                        status_type: "no_reply".to_string(),
+                        attempt: None,
+                        message: Some(format!(
+                            "AI produced no text and no tool call in final iteration \
+                             (total_iterations={total_iterations}) — user will see no reply"
+                        )),
+                        timestamp: Utc::now(),
+                    },
+                )
+                .await;
             } else {
                 tracing::info!(
                     total_iterations,
@@ -624,7 +616,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, "Final reply delivery failed");
+                        if e.to_string().contains("suppressed by reply_send hook") {
+                            tracing::info!(reason = %e, "Final reply suppressed by hook");
+                        } else {
+                            tracing::warn!(error = %e, "Final reply delivery failed");
+                        }
                     }
                 }
             }
@@ -942,7 +938,13 @@ async fn deliver_progress_text(
                 publish_reply_sent(event_bus, topic_name, text).await;
             }
         }
-        Err(e) => tracing::warn!(error = %e, "Mid-turn reply delivery failed"),
+        Err(e) => {
+            if e.to_string().contains("suppressed by reply_send hook") {
+                tracing::info!(reason = %e, "Mid-turn reply suppressed by hook");
+            } else {
+                tracing::warn!(error = %e, "Mid-turn reply delivery failed");
+            }
+        }
     }
 }
 

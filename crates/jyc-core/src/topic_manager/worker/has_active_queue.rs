@@ -124,7 +124,7 @@ impl AgentService for RelayWritingAgent {
         _pending_rx: &mut mpsc::Receiver<jyc_types::QueueItem>,
         _topic_cancel: CancellationToken,
     ) -> Result<AgentResult> {
-        let jyc_dir = jyc_core_test_jyc_dir(topic_name, topic_path);
+        let jyc_dir = jyc_dir(topic_name, topic_path);
         std::fs::create_dir_all(&jyc_dir)?;
         std::fs::write(jyc_dir.join("reply.md"), "ok")?;
         std::fs::write(
@@ -145,10 +145,6 @@ impl AgentService for RelayWritingAgent {
     ) -> Result<()> {
         Ok(())
     }
-}
-
-fn jyc_core_test_jyc_dir(topic_name: &str, topic_path: &Path) -> std::path::PathBuf {
-    jyc_types::state_dir::jyc_dir(topic_name, topic_path)
 }
 
 /// Agent service that always fails with a predictable message.

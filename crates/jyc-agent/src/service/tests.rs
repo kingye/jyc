@@ -484,10 +484,6 @@ async fn disabled_tools_removes_builtin_and_bridge() {
         "jyc_send_message should be disabled"
     );
     assert!(names.contains(&"read"), "read should still be available");
-    assert!(
-        names.contains(&"jyc_send_message"),
-        "jyc_send_message should still be available"
-    );
 }
 
 #[tokio::test]

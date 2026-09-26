@@ -11,7 +11,7 @@ This document lists all tools available to the AI agent in JYC, including built-
 | Category | Description | Configuration |
 |----------|-------------|---------------|
 | **Built-in** | Core file system and execution tools. Always available unless explicitly disabled. | Hardcoded in `jyc-agent` |
-| **MCP Bridge** | In-process wrappers for JYC-specific MCP tools (reply, send message). | Always registered |
+| **MCP Bridge** | In-process JYC-specific tools (send message). | Always registered |
 | **Cross-Topic** | Cross-channel topic communication tool. | Registered when cross-channel `topic_managers` available |
 | **External MCP** | Optional tools provided by external MCP servers configured in `config.toml`. | `[[mcps]]` config |
 
@@ -219,30 +219,15 @@ Re-planning means a new `task_create` (which renumbers), not patching a stale li
 
 These are JYC-specific tools implemented as in-process bridges (not external MCP subprocesses). They are always registered unless excluded via `disabled_tools`.
 
-### `jyc_reply_message`
+### Reply Delivery (no tool)
 
-Send a reply back through the originating channel. This is the standard way for the agent to respond to the user.
+There is no reply tool. The agent's final message at the end of a turn IS the in-topic reply:
 
-**Parameters:**
-- `message` (string, required): The reply text to send
-- `attachments` (string[], optional): List of filenames within the topic directory to attach
-- `stop_after` (boolean, optional, default true): Whether to stop working after this reply
-
-**Behavior:** Writes `reply.md` and `reply-sent.flag` signal files; the monitor process detects the signal and delivers the message via the pre-warmed outbound adapter.
-
-**Usage modes:**
-- **Final reply** (`stop_after: true` or omitted): Agent stops immediately after sending. Use for the definitive response to the user.
-- **Progress update** (`stop_after: false`): Agent sends the message as a checkpoint and continues working. Use for long-running tasks to keep the user informed.
-
-**Constraints:** The agent must use this tool for in-topic replies.
-
-**Examples:**
-```json
-{"message": "The fix has been applied. Let me know if you see any issues."}
-```
-```json
-{"message": "Still working — 3 of 5 tests passing. Will continue.", "stop_after": false}
-```
+- Delivered synchronously through the pre-warmed outbound adapter when a reply target is live; otherwise queued via the `.jyc/reply.md` + `reply-sent.flag` file relay.
+- Text written alongside tool calls is internal narration and is NOT delivered.
+- A turn that ends with no text sends nothing.
+- Long turns emit a canned heartbeat at each iteration-cycle boundary.
+- Optional `[[hooks]]` with `event = "reply_send"` can inspect or suppress each delivery.
 
 ---
 
@@ -262,7 +247,7 @@ Send a proactive out-of-topic message to an arbitrary recipient.
 
 **Constraints:**
 - Use ONLY for alerts and notifications
-- NEVER use for in-topic replies (use `jyc_reply_message` instead)
+- NEVER use for in-topic replies (the final message of the turn is the reply)
 - Requires a pre-warmed outbound adapter (`ToolContext.outbound`)
 
 **Example:**

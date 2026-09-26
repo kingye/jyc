@@ -5,7 +5,6 @@ pub mod config;
 pub mod dashboard;
 pub mod install;
 pub mod mcp;
-pub mod mcp_reply;
 pub mod patterns;
 pub mod resolve;
 pub mod serve;

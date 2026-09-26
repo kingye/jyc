@@ -114,7 +114,10 @@ impl JycAgentService {
              - `silent` (boolean, default false): Close the turn WITHOUT sending anything —\n\
              use when nothing needs to reach the user (e.g. your reply was already delivered,\n\
              or a system reminder fired but you have nothing to say)\n\
-             CRITICAL: Always use the jyc_reply_message tool to send your reply.\n\n\
+             CRITICAL: Always use the jyc_reply_message tool to send your reply.\n\
+             Ending your turn with plain text does NOT send a reply — it is auto-sent\n\
+             as a degraded fallback, marked `— auto-delivered`. Never write that marker\n\
+             yourself.\n\n\
              **Final reply**: Set `stop_after: true` (or omit it). After a successful reply with\n\
              stop_after=true, STOP immediately. Do NOT call any other tools.\n\
              **Progress update**: For long-running tasks, send periodic progress replies with\n\

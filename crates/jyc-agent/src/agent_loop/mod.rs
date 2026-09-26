@@ -12,6 +12,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing;
 
+use jyc_core::message_storage::AUTO_DELIVERED_TRACE as AUTO_REPLY_TRACE;
 use jyc_core::topic_event::TopicEvent;
 use jyc_core::topic_event_bus::TopicEventBusRef;
 
@@ -54,13 +55,13 @@ const REMINDER_REPLY_FAILED: &str = "[System reminder] Your `jyc_reply_message` 
     call FAILED and the reply was NOT delivered: {error}. Fix the arguments and \
     call `jyc_reply_message` again now — do not finish with plain text.";
 
-/// Subtle trace appended to an auto-delivered fallback reply: the reply
-/// tool was available but never called, so the text was delivered IN THE
-/// AGENT'S NAME via a synthetic `jyc_reply_message` execution (see the
-/// post-loop fallback). Kept unobtrusive so the delivery is not mistaken
-/// for an error, but present so it is never mistaken for a reply the model
-/// consciously authored.
-const AUTO_REPLY_TRACE: &str = "\n\n— auto-delivered";
+// Subtle trace appended to an auto-delivered fallback reply: the reply
+// tool was available but never called, so the text was delivered IN THE
+// AGENT'S NAME via a synthetic `jyc_reply_message` execution (see the
+// post-loop fallback). Kept unobtrusive so the delivery is not mistaken
+// for an error, but present so it is never mistaken for a reply the model
+// consciously authored. Shared with `jyc_core::message_storage`, which
+// strips it before persisting to the chat log.
 
 /// Configuration for the agent loop.
 pub struct AgentLoopConfig<'a> {

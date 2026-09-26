@@ -687,27 +687,39 @@ mod tests {
         assert!(err.to_string().contains("OAuth token request"));
     }
 
-    /// Round-trip test against jyc-mcp's own reply server over an in-process
-    /// duplex pipe. Validates the rmcp client API (`serve_client`,
+    /// Round-trip test against a minimal in-process rmcp fixture server over
+    /// a duplex pipe. Validates the rmcp client API (`serve_client`,
     /// `list_all_tools`, `call_tool`) against the current rmcp major — fails
     /// if an rmcp upgrade breaks the client handshake or tool-call path.
     #[tokio::test]
     async fn rmcp_client_round_trip_with_inprocess_server() {
+        use rmcp::ServerHandler;
         use rmcp::ServiceExt;
+        use rmcp::model::CallToolResult;
 
-        // The spawned server resolves the topic state dir through the
-        // registry; with JYC_TOPIC_NAME unset the topic name is the empty
-        // fallback, so register it at a throwaway dir — an unregistered
-        // access panics inside the server task and the client hangs (#825).
-        let state_tmp = tempfile::tempdir().unwrap();
-        jyc_types::state_dir::register("", &state_tmp.path().join(".jyc"));
+        /// Smallest possible rmcp server: one no-op tool.
+        #[derive(Debug, Clone, Default)]
+        struct FixtureServer;
+
+        #[rmcp::tool_router]
+        impl FixtureServer {
+            #[rmcp::tool(description = "Fixture tool for client round-trip tests")]
+            fn ping(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+                Ok(CallToolResult::success(vec![
+                    rmcp::model::ContentBlock::text("pong"),
+                ]))
+            }
+        }
+
+        #[rmcp::tool_handler]
+        impl ServerHandler for FixtureServer {}
 
         let (a, b) = tokio::io::duplex(1 << 16);
         let (ar, aw) = tokio::io::split(a);
         let (br, bw) = tokio::io::split(b);
 
         let server_handle = tokio::spawn(async move {
-            let service = jyc_mcp::reply_tool::ReplyToolHandler
+            let service = FixtureServer
                 .serve((ar, aw))
                 .await
                 .expect("server init failed");
@@ -720,22 +732,17 @@ mod tests {
 
         let tools = service.list_all_tools().await.expect("list tools failed");
         assert!(
-            tools.iter().any(|t| t.name.as_ref() == "reply_message"),
-            "reply_message must be listed, got: {tools:?}"
+            tools.iter().any(|t| t.name.as_ref() == "ping"),
+            "ping must be listed, got: {tools:?}"
         );
 
-        // Empty message -> clean error response; no reply files are written.
-        let mut params = CallToolRequestParams::new("reply_message");
-        params.arguments = Some(
-            serde_json::json!({ "message": "" })
-                .as_object()
-                .expect("static object")
-                .clone(),
-        );
-        let result = service.call_tool(params).await.expect("call tool failed");
+        let result = service
+            .call_tool(CallToolRequestParams::new("ping"))
+            .await
+            .expect("call tool failed");
         assert!(
-            result.is_error == Some(true) || !result.content.is_empty(),
-            "expected an error/content response, got: {result:?}"
+            result.is_error != Some(true) && !result.content.is_empty(),
+            "expected a successful content response, got: {result:?}"
         );
 
         server_handle.abort();

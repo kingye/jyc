@@ -1384,13 +1384,16 @@ mod mcp_bridge {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
+    /// Recorded (reply text, attachment filenames) pairs, shared with the test.
+    type RecordedReplies = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+
     struct ReplyMockOutbound {
         fail: bool,
-        replies: Arc<Mutex<Vec<(String, Vec<String>)>>>,
+        replies: RecordedReplies,
     }
 
     impl ReplyMockOutbound {
-        fn new(fail: bool) -> (Self, Arc<Mutex<Vec<(String, Vec<String>)>>>) {
+        fn new(fail: bool) -> (Self, RecordedReplies) {
             let replies = Arc::new(Mutex::new(Vec::new()));
             (
                 Self {

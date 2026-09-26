@@ -2,6 +2,9 @@
 
 ### Changed
 
+- TUI chat header shows the topic name instead of channel and pattern
+  (`╭─ plan · jyc · branch`) — the topic is the identity that matters when
+  working with agents; channel/pattern remain routing metadata
 - `/clone` skips regenerable build/dependency directories (`target/`,
   `node_modules/`, `dist/`, `build/`, `__pycache__/`, virtualenvs, caches —
   matched by name at any depth) instead of copying them, and says how many

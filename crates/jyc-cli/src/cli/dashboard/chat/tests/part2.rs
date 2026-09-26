@@ -866,8 +866,7 @@ fn info_scroll_is_clamped_after_render() {
 fn ctx_with_full_data() -> ChatHeaderCtx<'static> {
     ChatHeaderCtx {
         mode: "plan",
-        channel: Some("local_dev"),
-        pattern: Some("jyc"),
+        topic: Some("jyc"),
         branch: None,
         model: Some("claude-opus-4-6"),
         pct: Some(10),
@@ -922,13 +921,13 @@ fn header_line_box_drawing_uses_line_color() {
 }
 
 #[test]
-fn header_line_includes_mode_channel_pattern_and_chip() {
+fn header_line_includes_mode_topic_and_chip() {
     let ctx = ctx_with_full_data();
     let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
     let text = line_text(&line);
-    // Left segment includes mode + channel + pattern.
+    // Left segment includes mode + topic.
     assert!(
-        text.contains("╭─ plan · local_dev · jyc"),
+        text.contains("╭─ plan · jyc"),
         "missing left segment in: {text:?}"
     );
     // Right chip includes model + context-window percentage. The
@@ -946,14 +945,14 @@ fn header_line_includes_mode_channel_pattern_and_chip() {
 }
 
 #[test]
-fn header_line_omits_pattern_when_missing() {
+fn header_line_omits_topic_when_missing() {
     let mut ctx = ctx_with_full_data();
-    ctx.pattern = None;
+    ctx.topic = None;
     let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
     let text = line_text(&line);
     assert!(
-        text.starts_with("╭─ plan · local_dev"),
-        "missing channel segment in: {text:?}"
+        text.starts_with("╭─ plan"),
+        "missing mode segment in: {text:?}"
     );
     assert!(!text.contains("· jyc"));
 }
@@ -962,15 +961,14 @@ fn header_line_omits_pattern_when_missing() {
 fn header_line_with_no_state_is_just_mode_and_padding() {
     let ctx = ChatHeaderCtx {
         mode: "build",
-        channel: None,
-        pattern: None,
+        topic: None,
         branch: None,
         model: None,
         pct: None,
     };
     let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
     let text = line_text(&line);
-    // Defaults: mode = "build", channel/pattern/branch all absent.
+    // Defaults: mode = "build", topic/branch all absent.
     assert!(
         text.starts_with("╭─ build"),
         "missing default mode in: {text:?}"
@@ -987,12 +985,11 @@ fn header_line_with_no_state_is_just_mode_and_padding() {
 #[test]
 fn header_line_truncates_left_when_too_narrow() {
     let mut ctx = ctx_with_full_data();
-    ctx.channel = Some("a-very-long-channel-name");
-    ctx.pattern = Some("a-very-long-pattern-name");
-    // Width so tight that even truncating channel to 3 chars barely fits.
+    ctx.topic = Some("a-very-long-topic-name");
+    // Width so tight that even truncating topic to 3 chars barely fits.
     let line = build_chat_header_line(20, &ctx, test_header_style(), LINE_DRAWING);
     let text = line_text(&line);
-    // Channel must be truncated to fit; no chip ever rendered.
+    // Topic must be truncated to fit; no chip ever rendered.
     assert!(
         !text.contains('['),
         "should not contain a chip, got: {text:?}"
@@ -1014,13 +1011,13 @@ fn header_line_appends_branch_when_present() {
     let text = line_text(&line);
     assert!(
         text.contains("· jyc · feat/issue-512-show-branch"),
-        "branch segment should be appended after pattern, got: {text:?}"
+        "branch segment should be appended after topic, got: {text:?}"
     );
 }
 
 #[test]
 fn header_line_omits_branch_segment_when_none() {
-    // Same ctx as `header_line_includes_mode_channel_pattern`
+    // Same ctx as `header_line_includes_mode_topic`
     // but with branch=None — the left segment must end at "· jyc"
     // without a dangling separator.
     let ctx = ctx_with_full_data();
@@ -1028,7 +1025,7 @@ fn header_line_omits_branch_segment_when_none() {
     let text = line_text(&line);
     assert!(
         text.contains("· jyc "),
-        "pattern should still render, got: {text:?}"
+        "topic should still render, got: {text:?}"
     );
     assert!(
         !text.contains("· · "),
@@ -1059,30 +1056,29 @@ fn header_line_drops_chip_when_narrow() {
     // Width that fits the left segment but not the chip — chip
     // should be dropped, left segment preserved (with dash padding).
     let ctx = ctx_with_full_data();
-    // Left "╭─ plan · local_dev · jyc" = 26 display cols.
+    // Left "╭─ plan · jyc" = 13 display cols.
     // Chip "[ claude-opus-4-6 · 10% ]" = 23 display cols.
-    // total = 49 cols + 2 padding spaces. Width 48 forces dropping
+    // total = 35 cols + 2 padding spaces. Width 34 forces dropping
     // the chip and falls back to dash padding only.
-    let line = build_chat_header_line(48, &ctx, test_header_style(), LINE_DRAWING);
+    let line = build_chat_header_line(34, &ctx, test_header_style(), LINE_DRAWING);
     let text = line_text(&line);
     assert!(
         !text.contains('['),
         "chip should be dropped when narrow, got: {text:?}"
     );
     assert!(
-        text.contains("╭─ plan · local_dev · jyc"),
+        text.contains("╭─ plan · jyc"),
         "left segment should still render: {text:?}"
     );
-    assert!(text.width() <= 48);
+    assert!(text.width() <= 34);
 }
 
 #[test]
 fn header_line_never_emits_dangling_separator() {
-    // Width fits "╭─ plan · " (10 cols) but no room for channel content.
+    // Width fits "╭─ plan · " (10 cols) but no room for topic content.
     let ctx = ChatHeaderCtx {
         mode: "plan",
-        channel: Some("ch"),
-        pattern: None,
+        topic: Some("ch"),
         branch: None,
         model: None,
         pct: None,

@@ -911,7 +911,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // --- Input area (text editor, at bottom) ---
     // The editor renders its own wrapping and scroll-follow. A two-line
     // prompt gutter sits left of the editor: the header row shows
-    // "╭─ {mode} · {channel} · {pattern}[ · {branch}]", and "╰─❯" on the
+    // "╭─ {mode} · {topic}[ · {branch}]", and "╰─❯" on the
     // first editor row; both dim when the input field loses focus.
     // The cursor is a blinking underline when the input has focus and
     // invisible when another pane does (a default-styled cursor cell is

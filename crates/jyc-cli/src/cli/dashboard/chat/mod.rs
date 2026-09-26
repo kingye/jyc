@@ -1911,11 +1911,10 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
 /// Zero-alloc snapshot of the data the chat header needs. All fields
 /// borrow directly from the polled `InspectOverview`. Missing fields
 /// fall back to placeholders so the header still reads as
-/// `╭─ build · local_dev · pattern` before the first poll.
+/// `╭─ build · jyc` before the first poll.
 struct ChatHeaderCtx<'a> {
     mode: &'a str,
-    channel: Option<&'a str>,
-    pattern: Option<&'a str>,
+    topic: Option<&'a str>,
     branch: Option<&'a str>,
     model: Option<&'a str>,
     pct: Option<u32>,
@@ -1925,8 +1924,7 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
     let t = selected_topic_summary(app);
     ChatHeaderCtx {
         mode: t.and_then(|t| t.mode.as_deref()).unwrap_or("build"),
-        channel: t.map(|t| t.channel.as_str()),
-        pattern: t.and_then(|t| t.pattern.as_deref()),
+        topic: t.map(|t| t.name.as_str()),
         // Server resolves branch per poll — read it straight off the summary.
         branch: t.and_then(|t| t.branch.as_deref()),
         model: t.and_then(|t| t.model.as_deref()),
@@ -1934,7 +1932,7 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
     }
 }
 
-/// Build the chat header row: "╭─ {mode} · {channel} · {pattern}[ · {branch}]"
+/// Build the chat header row: "╭─ {mode} · {topic}[ · {branch}]"
 /// left-aligned, ─ padding filling the rest of the chat-pane width, and
 /// a right-aligned "[ {model} · {pct}% ]" chip showing the current model
 /// and context-window usage. No bottom or right border. Falls back
@@ -1946,20 +1944,14 @@ fn build_chat_header_line(
     header_style: Style,
     line_style: Style,
 ) -> Line<'static> {
-    // --- Left segment: "╭─ {mode} · {channel} · {pattern}[ · {branch}]" ---
-    // Divergence from the Topic Info pane: when `pattern` is `None`
-    // we omit the segment entirely instead of rendering "-". The
-    // header is width-constrained, so omitting the segment looks
-    // cleaner than `╭─ plan · local_dev · -`.
+    // --- Left segment: "╭─ {mode} · {topic}[ · {branch}]" ---
+    // The topic name is the identity that matters here; channel and
+    // pattern are routing metadata and are intentionally not shown.
     let mut left = String::with_capacity(48);
     left.push_str(ctx.mode);
-    if let Some(ch) = ctx.channel {
+    if let Some(topic) = ctx.topic {
         left.push_str(" · ");
-        left.push_str(ch);
-    }
-    if let Some(pat) = ctx.pattern {
-        left.push_str(" · ");
-        left.push_str(pat);
+        left.push_str(topic);
     }
     if let Some(branch) = ctx.branch {
         left.push_str(" · ");
@@ -1995,10 +1987,10 @@ fn build_chat_header_line(
             ]);
         }
         // Left itself doesn't fit; best-effort segments over
-        // [channel, pattern, branch], adding the separator only when there is
+        // [topic, branch], adding the separator only when there is
         // room for at least one column of content after it.
         let mut compact = ctx.mode.to_string();
-        for seg in [ctx.channel, ctx.pattern, ctx.branch].into_iter().flatten() {
+        for seg in [ctx.topic, ctx.branch].into_iter().flatten() {
             // +3 accounts for the "╭─ " prefix.
             let used = 3 + compact.width();
             // Need room for " · " (3 cols) plus at least 1 col of content.

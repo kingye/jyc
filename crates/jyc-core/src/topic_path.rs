@@ -214,9 +214,9 @@ fn copy_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
 /// and registers **topic name → state dir** from its `topic-name`
 /// breadcrumb (falling back to the folder name for config-key state dirs
 /// written before the breadcrumb existed). Pure `jyc_dir` bootstrap for
-/// processes without config access (e.g. the external `jyc
-/// mcp-reply-tool`); several agents may share one topic dir, so the
-/// mapping is keyed by name, never by dir. Derived (`_`-prefixed) state
+/// processes without config access (e.g. per-topic hook commands);
+/// several agents may share one topic dir, so the mapping is keyed by
+/// name, never by dir. Derived (`_`-prefixed) state
 /// dirs with no readable `topic-name` are skipped — they are
 /// deterministically re-adopted under their topic name whenever the
 /// dashboard or `/pin` re-opens the dir. Config-pin processes additionally

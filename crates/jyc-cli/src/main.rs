@@ -85,10 +85,6 @@ enum Commands {
         action: cli::mcp::McpAction,
     },
 
-    /// MCP reply tool server (internal — spawned by agent)
-    #[command(hide = true)]
-    McpReplyTool,
-
     /// Stop a running jyc serve process
     Stop(cli::stop::StopArgs),
 
@@ -239,7 +235,6 @@ async fn main() -> Result<()> {
         Commands::Agents { action } => cli::agents::run(action).await,
         Commands::Skills { action } => cli::skills::run(action).await,
         Commands::Mcp { action } => cli::mcp::run(action, &workdir, cli.workdir.is_some()).await,
-        Commands::McpReplyTool => cli::mcp_reply::run().await,
         Commands::Stop(args) => cli::stop::run(args, &workdir).await,
         Commands::Token(args) => cli::token::run(args, &workdir),
     };

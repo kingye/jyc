@@ -220,7 +220,7 @@ async fn cancel_during_llm_call_publishes_processing_completed() {
         .expect("agent loop must exit within 5s")
         .expect("cancellation must not surface as an error");
     assert_eq!(result.text, "", "no reply text after cancellation");
-    assert!(!result.reply_sent_by_tool);
+    assert!(!result.reply_delivered);
 
     // Drain the bus: a completion event with success=false must be there.
     let mut saw_completed = false;
@@ -327,7 +327,7 @@ async fn cancel_during_long_running_tool_returns_quickly() {
     );
     let result = result.expect("agent loop should return Ok after cancellation");
     assert_eq!(result.text, "", "no reply text after cancellation");
-    assert!(!result.reply_sent_by_tool);
+    assert!(!result.reply_delivered);
     // Keep `tools` and `provider` alive across the borrow at the call
     // site; both are dropped at end of scope.
     let _ = (&mut tools, &provider);

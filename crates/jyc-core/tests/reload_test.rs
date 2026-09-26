@@ -25,8 +25,7 @@ impl jyc_core::agent::AgentService for MockAgent {
         _topic_cancel: CancellationToken,
     ) -> anyhow::Result<jyc_core::agent::AgentResult> {
         Ok(jyc_core::agent::AgentResult {
-            reply_sent_by_tool: false,
-            reply_auto_delivered: false,
+            reply_delivered: false,
             reply_text: None,
         })
     }

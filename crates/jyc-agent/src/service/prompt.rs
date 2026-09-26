@@ -107,19 +107,11 @@ impl JycAgentService {
         // Reply instructions
         prompt.push_str(
             "## Reply Instructions\n\
-             When you have your answer ready, use the jyc_reply_message tool:\n\
-             - `message`: Your reply text\n\
-             - `attachments`: Optional filenames to attach from the working directory\n\
-             - `stop_after` (boolean, default true): Whether to stop working after this reply\n\
-             - `silent` (boolean, default false): Close the turn WITHOUT sending anything —\n\
-             use when nothing needs to reach the user (e.g. your reply was already delivered,\n\
-             or a system reminder fired but you have nothing to say)\n\
-             CRITICAL: Always use the jyc_reply_message tool to send your reply.\n\n\
-             **Final reply**: Set `stop_after: true` (or omit it). After a successful reply with\n\
-             stop_after=true, STOP immediately. Do NOT call any other tools.\n\
-             **Progress update**: For long-running tasks, send periodic progress replies with\n\
-             `stop_after: false`. Each reply is a checkpoint — you will continue working\n\
-             afterward. Use this when you have substantive progress to report.\n\n",
+             Your final message at the end of the turn IS the reply — it is\n\
+             delivered to the user automatically. Text written alongside tool\n\
+             calls is internal narration and is NOT delivered.\n\
+             - To tell the user something, finish your turn with that text.\n\
+             - If nothing needs to reach the user, end the turn with no text.\n\n",
         );
 
         // History format guardrail: the sliding window summarizes each past
@@ -183,7 +175,7 @@ impl JycAgentService {
                  You can send messages to topics in other channels using the `jyc_send_to_topic` tool.\n\
                  Set `require_reply=true` when you need the target agent to send results back to you.\n\n\
                  When you receive a message with a **Source:** header, it came from another topic. \
-                 Process the content normally and use `jyc_reply_message` to display results in the \
+                 Process the content normally — your final message displays the results in the \
                  current topic. If it includes \"⚠️ Reply requested\", you MUST ALSO use \
                  `jyc_send_to_topic` to send your results back to the source channel/topic.\n",
             );
@@ -262,8 +254,8 @@ impl JycAgentService {
                      ⚠️ ACTION REQUIRED — DO THIS FIRST:\n\
                      1. Call `jyc_send_to_topic` with channel=\"{}\", topic=\"{}\" \
                      to send your results back to the source topic.\n\
-                     2. Then call `jyc_reply_message` with `stop_after=true` to \
-                     display results in this topic.\n\
+                     2. Then finish your turn with a final message displaying \
+                     the results in this topic.\n\
                      CRITICAL: Do NOT miss step 1. The source topic is waiting for \
                      your reply.\n",
                     src_ch, src_th, src_ch, src_th

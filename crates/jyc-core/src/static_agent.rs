@@ -45,8 +45,7 @@ impl AgentService for StaticAgentService {
         tracing::info!("Static reply generated");
 
         Ok(AgentResult {
-            reply_sent_by_tool: false,
-            reply_auto_delivered: false,
+            reply_delivered: false,
             reply_text: Some(self.reply_text.clone()),
         })
     }
@@ -149,7 +148,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(!result.reply_sent_by_tool);
+        assert!(!result.reply_delivered);
         assert_eq!(result.reply_text, Some("hello world".to_string()));
     }
 

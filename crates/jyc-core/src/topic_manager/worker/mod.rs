@@ -296,9 +296,9 @@ pub(crate) async fn process_message(
     }
 
     // Spawn a background task to watch for pending reply deliveries.
-    // Synchronously-delivered tools (e.g. `jyc_reply_message` with a
-    // reply_target) write reply.md + reply-sent.flag during the SSE stream.
-    // This watcher detects them and delivers immediately via the outbound
+    // When the agent loop cannot deliver directly (no live reply target, or
+    // the direct send failed), it writes reply.md + reply-sent.flag. This
+    // watcher detects them and delivers immediately via the outbound
     // adapter, without waiting for the SSE stream to complete.
     let delivery_cancel = tokio_util::sync::CancellationToken::new();
     let delivery_cancel_child = delivery_cancel.clone();
@@ -520,21 +520,21 @@ pub(crate) async fn process_message(
     }
 
     // ── 6. HANDLE AGENT RESULT ────────────────────────────────────────
-    // The MCP reply tool stores the reply in the chat log and writes a signal file.
-    // The monitor process (this code) handles actual delivery using its
-    // pre-warmed outbound adapter with cached connections/tokens.
-    if result.reply_sent_by_tool {
-        // Check if the background delivery watcher already delivered the reply.
-        // The watcher deletes reply-sent.flag after successful delivery.
+    // The agent loop delivers the reply itself when it can (direct adapter
+    // delivery, signal files never written). Otherwise it queued the reply
+    // via the `.jyc/reply.md` + `.jyc/reply-sent.flag` file relay, which
+    // this code delivers using the pre-warmed outbound adapter.
+    if result.reply_delivered {
+        // The background delivery watcher deletes reply-sent.flag after
+        // successful delivery.
         let signal_path = jyc_dir(topic_name, &store_result.topic_path).join("reply-sent.flag");
         if !signal_path.exists() {
             tracing::info!(
-                "Reply already delivered (direct adapter delivery or background watcher), \
-                 skipping post-loop delivery"
+                "Reply already delivered directly by the agent loop (or by the \
+                 background watcher), skipping post-loop delivery"
             );
         } else {
-            // Reply text comes from the SSE tool input (extracted by service
-            // layer). If not available, fall back to reply.md.
+            // Prefer the text carried in the result; fall back to reply.md.
             let reply_text = result
                 .reply_text
                 .as_deref()
@@ -544,7 +544,6 @@ pub(crate) async fn process_message(
             let reply_text = match reply_text {
                 Some(t) => Some(t),
                 None => {
-                    // Fallback: read from .jyc/reply.md (written by question tool or other MCP tools)
                     let reply_md = jyc_dir(topic_name, &store_result.topic_path).join("reply.md");
                     if reply_md.exists() {
                         tokio::fs::read_to_string(&reply_md)
@@ -581,7 +580,7 @@ pub(crate) async fn process_message(
                 } else {
                     tracing::info!(
                         text_len = reply_text.len(),
-                        "Delivering reply from MCP tool"
+                        "Delivering queued reply via outbound adapter"
                     );
 
                     // Read signal file for attachment info
@@ -606,22 +605,15 @@ pub(crate) async fn process_message(
                     let reply_md_path =
                         jyc_dir(topic_name, &store_result.topic_path).join("reply.md");
                     tokio::fs::remove_file(&reply_md_path).await.ok();
-                    if result.reply_auto_delivered {
-                        topic_manager.metrics.reply_by_auto(topic_name);
-                    } else {
-                        topic_manager.metrics.reply_by_tool(topic_name);
-                    }
+                    topic_manager.metrics.reply_by_tool(topic_name);
                 }
             } else {
-                // The reply tool ran (reply_sent_by_tool=true) but its text
-                // was lost before delivery. Distinct from the text-only
-                // fallback below: the agent DID call the tool, so the generic
-                // "finished without calling jyc_reply_message" warning would
-                // mislead debugging. Tell the user what actually happened.
-                tracing::warn!("MCP tool signaled reply but no reply text available");
-                let warning = "⚠️ [The agent called the reply tool, but its reply \
-                    content was lost before delivery. Please ask again if you are \
-                    waiting for an answer.]";
+                // Signal file exists but no reply text — tell the user what
+                // happened instead of going silent.
+                tracing::warn!("Reply signal present but no reply text available");
+                let warning = "⚠️ [The agent finished, but its reply content was \
+                    lost before delivery. Please ask again if you are waiting \
+                    for an answer.]";
                 if let Err(e) = outbound
                     .send_reply(
                         &message,
@@ -636,11 +628,15 @@ pub(crate) async fn process_message(
                 }
             }
         }
-    } else if let Some(ref text) = result.reply_text {
-        tracing::info!(
-            text_len = text.len(),
-            "Fallback: sending AI text via outbound"
-        );
+    } else if let Some(text) = result
+        .reply_text
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+    {
+        // The agent returned text without delivering it (e.g. `mode =
+        // "static"` auto-replies, which never touch the delivery paths in
+        // the agent loop). Deliver here, gated by reply_send hooks.
+        tracing::info!(text_len = text.len(), "Delivering AI text via outbound");
         if let Some(reason) =
             reply_blocked_by_hook(&hooks, topic_name, &store_result.topic_path, &message, text)
                 .await
@@ -648,7 +644,7 @@ pub(crate) async fn process_message(
             tracing::warn!(
                 topic = %topic_name,
                 reason = %reason,
-                "reply_send hook suppressed fallback reply"
+                "reply_send hook suppressed reply"
             );
         } else {
             outbound
@@ -660,12 +656,12 @@ pub(crate) async fn process_message(
                     None,
                 )
                 .await?;
-            tracing::info!("Fallback reply sent");
+            tracing::info!("Reply sent");
             topic_manager.publish_reply_sent(topic_name, text).await;
             topic_manager.metrics.reply_by_fallback(topic_name);
         }
     } else {
-        tracing::warn!("No reply text from AI");
+        tracing::warn!("No reply delivered from AI");
     }
 
     Ok(())

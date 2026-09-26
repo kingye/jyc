@@ -1277,10 +1277,9 @@ fn tool_call_summary(
     let mut used = 0usize;
     let mut omitted = 0usize;
     for (id, name, args) in &calls {
-        // jyc_reply_message is excluded from the annotation: its `message`
-        // is the text the user already saw, and exposing the call invites
-        // the model to mimic the `[History note] assistant tool calls: …`
-        // format as narration instead of invoking the tool.
+        // Legacy `jyc_reply_message` calls (from transcripts persisted
+        // before replies became plain final text) are excluded from the
+        // annotation: their `message` is the text the user already saw.
         if name == "jyc_reply_message" {
             continue;
         }
@@ -1355,8 +1354,9 @@ fn flush_turn(
     }
     // Drop only when the assistant truly had nothing — no text AND no
     // tool calls. `summaries` can be empty while `had_tool_calls` is true
-    // when every call was the filtered `jyc_reply_message`; the trigger
-    // user message still matters to the prior context, so keep the pair.
+    // when every call was a filtered legacy `jyc_reply_message`; the
+    // trigger user message still matters to the prior context, so keep
+    // the pair.
     if texts.is_empty() && summaries.is_empty() && !had_tool_calls {
         return;
     }
@@ -1391,9 +1391,9 @@ fn flush_turn(
 /// context). Every assistant message in between — intermediate tool-call
 /// steps and the final reply alike — is merged into one assistant entry
 /// (see [`flush_turn`]), so the windowed view never loses the turn's
-/// conclusion. `jyc_reply_message` calls are merged into the assistant
-/// text but intentionally excluded from the history-note annotation
-/// (see [`tool_call_summary`]).
+/// conclusion. Legacy `jyc_reply_message` calls (pre-final-text-reply
+/// transcripts) are merged into the assistant text but intentionally
+/// excluded from the history-note annotation (see [`tool_call_summary`]).
 ///
 /// Assistant messages are cleaned to only role + content (strip
 /// reasoning_content, tool_calls); bare tool calls are summarized into the
@@ -2187,9 +2187,9 @@ mod tests {
         );
     }
 
-    /// `jyc_reply_message` is filtered out of the annotation: a turn that
-    /// called only the reply tool produces no note at all (the message the
-    /// user saw is already in the assistant's own text).
+    /// Legacy `jyc_reply_message` calls are filtered out of the annotation:
+    /// a turn that called only the reply tool produces no note at all (the
+    /// message the user saw is already in the assistant's own text).
     #[test]
     fn extract_pairs_no_note_when_only_reply_was_called() {
         let ctx = vec![
@@ -2207,9 +2207,10 @@ mod tests {
         );
     }
 
-    /// A mixed turn (real work + a reply call) keeps the real work in the
-    /// note and drops the reply call — the reply's message is already in
-    /// the assistant text, so the annotation must not duplicate it.
+    /// A mixed turn (real work + a legacy reply call) keeps the real work
+    /// in the note and drops the reply call — the reply's message is
+    /// already in the assistant text, so the annotation must not duplicate
+    /// it.
     #[test]
     fn extract_pairs_drops_reply_call_but_keeps_real_work() {
         let ctx = vec![

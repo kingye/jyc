@@ -36,32 +36,6 @@ const DEFAULT_MAX_ITERATIONS: usize = 100;
 /// `run_ticker`), so a short sub-second loop still produces one event.
 const LOOP_TICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Legacy system-reminder injected when the model ends a turn with **no text
-/// and no tool call** (`text_len == 0`) and the reply tool is NOT available.
-/// Mirrors the pre-existing `no_reply` guard wording.
-const REMINDER_NO_TEXT: &str = "[System reminder] Your last turn produced no \
-    text and no tool call, so the user will see no reply. If you have a final \
-    response, call `jyc_reply_message` with it now; if nothing needs to be \
-    sent (e.g. your reply was already delivered), call `jyc_reply_message` \
-    with `silent: true`.";
-
-/// Reminder injected when the model's `jyc_reply_message` call FAILED and the
-/// model then tries to finish text-only: the delivery is still owed and a
-/// plain-text finish would hit the degraded fallback path. The `{error}`
-/// slot is filled with the tool's error message so the model can correct
-/// its arguments instead of guessing.
-const REMINDER_REPLY_FAILED: &str = "[System reminder] Your `jyc_reply_message` \
-    call FAILED and the reply was NOT delivered: {error}. Fix the arguments and \
-    call `jyc_reply_message` again now — do not finish with plain text.";
-
-/// Subtle trace appended to an auto-delivered fallback reply: the reply
-/// tool was available but never called, so the text was delivered IN THE
-/// AGENT'S NAME via a synthetic `jyc_reply_message` execution (see the
-/// post-loop fallback). Kept unobtrusive so the delivery is not mistaken
-/// for an error, but present so it is never mistaken for a reply the model
-/// consciously authored.
-const AUTO_REPLY_TRACE: &str = "\n\n— auto-delivered";
-
 /// Configuration for the agent loop.
 pub struct AgentLoopConfig<'a> {
     pub provider: &'a dyn Provider,
@@ -162,114 +136,15 @@ pub struct AgentLoopConfig<'a> {
     pub question_hub: Option<std::sync::Arc<jyc_core::question::QuestionHub>>,
 }
 
-/// Execute `jyc_reply_message` "in the agent's name" — synthetically, on
-/// behalf of the model — publishing the same `ToolStarted`/`ToolCompleted`
-/// events and `history` entries as a real tool call. Shared by the
-/// cycle-boundary progress reply and the final text-only auto-delivery.
-///
-/// Deliberately does NOT inject a synthetic assistant turn into
-/// `raw_context`: that would replay a turn the model never produced (and
-/// which has no `reasoning_content`), violating DeepSeek's thinking-mode
-/// contract on the next request.
-///
-/// Returns the tool output so the caller can react to success/failure.
-#[allow(clippy::too_many_arguments)]
-async fn execute_reply_tool_synthetic(
-    tools: &ToolRegistry,
-    ctx: &ToolContext<'_>,
-    event_bus: Option<&TopicEventBusRef>,
-    topic_name: &str,
-    call_id: &str,
-    message: &str,
-    stop_after: bool,
-    history: &mut Vec<Message>,
-) -> ToolOutput {
-    let input = serde_json::json!({"message": message, "stop_after": stop_after});
-    let input_str = input.to_string();
-
-    publish_event(
-        event_bus,
-        TopicEvent::ToolStarted {
-            topic_name: topic_name.to_string(),
-            tool_name: "jyc_reply_message".to_string(),
-            input: Some(input_str.clone()),
-            timestamp: Utc::now(),
-        },
-    )
-    .await;
-
-    let tool_start = Instant::now();
-    let output = match tools.execute("jyc_reply_message", input, ctx).await {
-        Ok(output) => output,
-        Err(e) => {
-            tracing::warn!(error = %e, "Synthetic jyc_reply_message execution failed");
-            ToolOutput::error(format!("Tool error: {e}"))
-        }
-    };
-
-    publish_event(
-        event_bus,
-        TopicEvent::ToolCompleted {
-            topic_name: topic_name.to_string(),
-            tool_name: "jyc_reply_message".to_string(),
-            success: !output.is_error,
-            duration_secs: tool_start.elapsed().as_secs(),
-            output: if output.is_error {
-                Some(output.content.clone())
-            } else {
-                None
-            },
-            input: Some(input_str),
-            timestamp: Utc::now(),
-        },
-    )
-    .await;
-
-    // Synchronous delivery bypasses the file relay, so neither the watcher
-    // nor the post-loop worker publishes `ReplySent` — do it here, mirroring
-    // the real tool-call path (exactly once per delivery). Without it, the
-    // dashboard chat pane never renders the reply (it ignores the raw
-    // per-channel `reply` broadcast and only renders `chat_message` events
-    // fanned out from `ReplySent`).
-    if !output.is_error && output.delivered {
-        publish_event(
-            event_bus,
-            TopicEvent::ReplySent {
-                topic_name: topic_name.to_string(),
-                text: message.to_string(),
-                timestamp: Utc::now(),
-            },
-        )
-        .await;
-    }
-
-    // Record the synthetic call in internal `history` for chat-log rendering
-    // only — never replayed to the LLM (same rule as the progress reply).
-    // Failures are recorded too, so a failed auto-delivery is not lost.
-    history.push(Message {
-        role: Role::Assistant,
-        content: vec![ContentBlock::ToolUse {
-            id: call_id.to_string(),
-            name: "jyc_reply_message".to_string(),
-            input: serde_json::json!({"message": message, "stop_after": stop_after}),
-        }],
-    });
-    history.push(Message::tool_result(
-        call_id,
-        &output.content,
-        output.is_error,
-    ));
-
-    output
-}
-
 /// Run the agent loop to completion.
 ///
 /// Returns the final text response and metadata about tool usage.
 pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let AgentLoopConfig {
         provider,
-        small_provider,
+        small_provider: _,
+        // `small_provider` is consumed by the service (context-reset
+        // summaries), not by the loop itself.
         tools,
         system_prompt,
         user_blocks,
@@ -305,11 +180,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     let billing_label =
         jyc_core::billing_log_store::BillingLogStore::label_for(topic_name, topic_path);
 
-    // Provider used for the cycle-boundary progress summary. Falls back to
-    // the main provider when `small_model` is unconfigured or its provider
-    // failed to construct (logged at construction time in the service).
-    let summary_provider: &dyn Provider = small_provider.unwrap_or(provider);
-
     let max_iter = max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS);
 
     // Build internal history: prior context + current message
@@ -339,14 +209,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // Sum of every LLM call's reasoning (thinking) tokens in this round.
     // Informational only — already included in `total_output_tokens`.
     let mut total_reasoning_tokens: u64 = 0;
-    let mut reply_sent_by_tool = false;
-    let mut reply_auto_delivered = false;
-    let mut reply_text_from_tool: Option<String> = None;
+    let mut reply_delivered = false;
 
-    // Shared ToolContext for tool execution and synthetic `jyc_reply_message`
-    // deliveries (cycle-boundary progress reply + final auto-delivery). Built
-    // once: every field is static for the duration of the loop. The
-    // `context_browse` snapshot below mutates `ctx.raw_context` per batch.
+    // Shared ToolContext for tool execution. Built once: every field is
+    // static for the duration of the loop. The `context_browse` snapshot
+    // below mutates `ctx.raw_context` per batch.
     let mut ctx = ToolContext::with_roots(working_dir, additional_read_roots.clone());
     ctx.additional_write_roots = additional_write_roots.clone();
     ctx.pattern_inject_images = pattern_inject_images;
@@ -377,29 +244,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         None
     };
 
-    // No-reply guard: if the model exits with no text and no tool call, the
-    // user receives nothing. We give the model a single system-reminder
-    // nudge to recover via `jyc_reply_message`; if it still fails, we exit
-    // and surface a SessionStatus event so the activity pane can flag it.
-    let mut no_reply_reminded = false;
-
-    // Tool-restricted recovery: when any reply reminder is injected, the
-    // NEXT LLM call offers only `jyc_reply_message` — with a single tool on
-    // the table the model cannot wander back into narration or other tools.
-    // Set at reminder injection, consumed at the LLM call site.
-    let mut restrict_to_reply_tool = false;
-
-    // Failure-aware recovery: a FAILED `jyc_reply_message` call means the
-    // delivery is still owed. If the model then finishes text-only, remind
-    // it with the concrete tool error. Capped so a deterministically
-    // failing tool (e.g. a persistent bad attachment name) cannot nudge
-    // forever — past the cap we fall through to the fallback path.
-    const MAX_REPLY_FAILURE_NUDGES: u32 = 2;
-    let mut last_reply_error: Option<String> = None;
-    let mut reply_failure_nudges: u32 = 0;
-
-    // Cycle tracking: when iter_in_cycle reaches max_iter, send a progress reply,
-    // reset the counter, and continue. No upper bound on cycles.
+    // Cycle tracking: when iter_in_cycle reaches max_iter, send a heartbeat
+    // reply, reset the counter, and continue. No upper bound on cycles.
     let mut iter_in_cycle: usize = 0;
     let mut cycle_count: usize = 0;
     let mut total_iterations: usize = 0;
@@ -429,92 +275,39 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             break;
         }
 
-        // Check for cycle boundary: send progress reply and reset counter
+        // Check for cycle boundary: send a heartbeat reply and reset the
+        // counter. Canned text on purpose — the LLM must not be interrupted
+        // mid-task, and the heartbeat only signals liveness on long turns.
         if iter_in_cycle >= max_iter {
             cycle_count += 1;
             tracing::info!(
                 cycle = cycle_count,
                 total_iterations,
                 input_tokens = context_input_tokens,
-                "Cycle boundary reached, sending progress reply and continuing"
+                "Cycle boundary reached, sending heartbeat reply and continuing"
             );
 
-            // 1. Generate the progress text via a separate, isolated LLM call.
-            //    This call joins raw_context into a single plain-text
-            //    transcript and asks the model to summarize. It is fully
-            //    out-of-band: the main loop's `raw_context` is NEVER mutated
-            //    by it. That preserves the reasoning_content contract that
-            //    DeepSeek's thinking mode requires (every assistant turn that
-            //    came from the model must be replayed with its
-            //    reasoning_content intact on subsequent requests).
-            //
-            //    `summary_provider` is the small/fast model from
-            //    `[agent].small_model` if configured, else the main provider.
-            let (progress_text, summary_usage) = generate_summary_from_joined_history(
-                summary_provider,
-                &raw_context,
-                cycle_count,
-                total_iterations,
-                topic_name,
-                event_bus,
-                sse_read_timeout,
-            ).await.unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "Failed to generate progress summary, using fallback");
-                (
-                    format!(
-                        "Still working on this task. Cycle {}, ~{} iterations completed. Will continue.",
-                        cycle_count, total_iterations
-                    ),
-                    // The call failed, so there is nothing to bill.
-                    CallUsage::default(),
-                )
-            });
-
-            // Bill the summary call. It summarizes the whole transcript, so
-            // its input is on the order of the context window -- far from
-            // free, and previously invisible in the ledger. `summary_provider`
-            // is `small_model` when configured but falls back to the main
-            // model, so on a default setup this bills at main-model rates.
-            let summary_cost = bill_call(
-                pricing.as_ref(),
-                billing_mode,
-                billing_dir.as_deref(),
-                &billing_label,
-                model_label,
-                jyc_core::billing_log_store::KIND_SUMMARY,
-                summary_usage.input_tokens,
-                summary_usage.output_tokens,
-                summary_usage.cache_hit_tokens,
-                summary_usage.cache_creation_tokens,
+            let heartbeat = format!(
+                "Still working on this task — cycle {cycle_count}, \
+                 ~{total_iterations} tool iterations completed. \
+                 I will send the full reply when done."
             );
-            if summary_cost > 0.0 {
-                crate::session::add_session_cost(topic_name, topic_path, summary_cost).await;
+            match crate::tools::deliver_reply(&ctx, tools.hooks(), topic_name, &heartbeat).await {
+                Ok(delivery) => {
+                    if delivery.direct {
+                        publish_reply_sent(event_bus, topic_name, &heartbeat).await;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Heartbeat reply delivery failed");
+                }
             }
 
-            // 2. Post the progress reply to the user via the reply tool.
-            //    This sends the GitHub comment / IM message. We do NOT push
-            //    a synthetic assistant turn into `raw_context` — doing so
-            //    would inject an assistant turn the model never produced
-            //    (and thus has no reasoning_content), violating DeepSeek's
-            //    thinking-mode contract on the next request.
-            let synthetic_call_id = format!("progress-cycle-{}", cycle_count);
-            execute_reply_tool_synthetic(
-                tools,
-                &ctx,
-                event_bus,
-                topic_name,
-                &synthetic_call_id,
-                &progress_text,
-                false,
-                &mut history,
-            )
-            .await;
-
-            // 4. Reset iteration counter for next cycle. raw_context is
-            //    intentionally left unchanged so the next API call replays
-            //    the model's own last assistant turn (with reasoning_content)
-            //    followed by its tool_result, and the model continues from
-            //    where it left off.
+            // Reset the iteration counter for the next cycle. raw_context is
+            // intentionally left unchanged so the next API call replays the
+            // model's own last assistant turn (with reasoning_content)
+            // followed by its tool_result, and the model continues from
+            // where it left off.
             iter_in_cycle = 0;
             continue;
         }
@@ -582,21 +375,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // `/cancel`, not an error: break so the post-loop
         // `ProcessingCompleted` event still fires (the dashboard clears its
         // "AI thinking" state only on that event).
-        // Reply-recovery turns run with a single tool on the table: after a
-        // reminder injection, only `jyc_reply_message` is offered, so the
-        // model's only available action is delivering the reply (or going
-        // silent). Text-only pleading alone proved insufficient — models
-        // often re-emit the text instead of calling the tool.
-        let recovery_turn = std::mem::take(&mut restrict_to_reply_tool);
-        let tool_defs = if recovery_turn {
-            tools
-                .definitions()
-                .into_iter()
-                .filter(|d| d.name == "jyc_reply_message")
-                .collect::<Vec<_>>()
-        } else {
-            tools.definitions()
-        };
+        let tool_defs = tools.definitions();
 
         let mut response = match complete_with_retry(
             provider,
@@ -738,41 +517,19 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             raw_context.push(response.to_raw_message(provider));
         }
 
-        // 5. If no tool calls, we're done
+        // 5. If no tool calls, the turn is over: the final assistant text
+        //    IS the reply — deliver it (directly or via the file relay).
         if response.tool_calls.is_empty() {
-            // Trimmed, so whitespace-only narration counts as empty: it gets
-            // the no-text reminder, and no fallback warning (nothing to deliver).
+            // Trimmed, so whitespace-only narration counts as empty: nothing
+            // is delivered.
             let text_len = response.text.trim().len();
-            let reply_tool_available = tools.has_tool("jyc_reply_message");
 
-            // Failure-aware recovery: a failed `jyc_reply_message` attempt
-            // means the reply is still owed, and the concrete error tells
-            // the model what to fix. Capped (MAX_REPLY_FAILURE_NUDGES) so a
-            // deterministically failing tool cannot spin forever.
-            if !reply_sent_by_tool
-                && reply_tool_available
-                && last_reply_error.is_some()
-                && reply_failure_nudges < MAX_REPLY_FAILURE_NUDGES
-            {
-                let error = last_reply_error.take().unwrap_or_default();
-                reply_failure_nudges += 1;
-                restrict_to_reply_tool = true;
-                tracing::warn!(
-                    total_iterations,
-                    error = %error,
-                    nudge = reply_failure_nudges,
-                    "Agent loop: reply tool failed and model finished text-only, \
-                     injecting failure-aware reminder"
-                );
-                raw_context.push(provider.format_user_message(&[ContentBlock::Text {
-                    text: REMINDER_REPLY_FAILED.replace("{error}", &error),
-                }]));
-                continue;
-            }
-
-            // No-reply state: model produced no text and no tool call.
-            // Neither the tool path nor the fallback path will deliver text.
-            if text_len == 0 && !reply_sent_by_tool {
+            // No-reply state: the model produced no text and no tool call,
+            // so the user will see nothing. Surface it via a SessionStatus
+            // event (common with thinking models that end a long tool
+            // sequence with an empty response).
+            if text_len == 0 {
+                tracing::warn!(total_iterations, "Agent loop: no-reply, exiting");
                 publish_event(
                     event_bus,
                     TopicEvent::SessionStatus {
@@ -787,29 +544,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     },
                 )
                 .await;
-
-                // Inject the no-reply reminder once regardless of whether
-                // `jyc_reply_message` is registered. The fallback auto-delivery
-                // below only fires when the model wrote non-empty text; when the
-                // model makes tool calls across several iterations and then
-                // returns an empty response on the final one (common with
-                // thinking models — MiniMax, DeepSeek), the loop would
-                // otherwise exit silently with no reply delivered. The
-                // `no_reply_reminded` flag keeps the nudge single-shot so a
-                // deterministically silent model cannot loop forever.
-                if !no_reply_reminded {
-                    no_reply_reminded = true;
-                    tracing::warn!(
-                        total_iterations,
-                        "Agent loop: no-reply detected, injecting system reminder once"
-                    );
-                    raw_context.push(provider.format_user_message(&[ContentBlock::Text {
-                        text: REMINDER_NO_TEXT.to_string(),
-                    }]));
-                    continue;
-                }
-
-                tracing::warn!(total_iterations, "Agent loop: no-reply, exiting");
             } else {
                 tracing::info!(
                     total_iterations,
@@ -841,24 +575,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             }) = embedded_ask::find_embedded_ask(&response.text)
             {
                 let prose = embedded_ask::remove_span(&response.text, span);
-                if !prose.trim().is_empty() && reply_tool_available {
-                    let output = execute_reply_tool_synthetic(
-                        tools,
-                        &ctx,
-                        event_bus,
-                        topic_name,
-                        &format!("pre-ask-{total_iterations}"),
-                        &prose,
-                        false,
-                        &mut history,
-                    )
-                    .await;
-                    if output.is_error {
-                        tracing::warn!(
-                            error = %output.content,
-                            "Pre-ask prose delivery failed; asking anyway"
-                        );
-                    }
+                if !prose.trim().is_empty() {
+                    deliver_progress_text(tools, &ctx, event_bus, topic_name, &prose).await;
                 }
                 let input = serde_json::json!({
                     "question": question,
@@ -885,39 +603,25 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 continue;
             }
 
-            // Fallback delivery: the reply tool exists but was never called.
-            // Instead of returning the raw text for the worker's
-            // degraded-fallback path, deliver it IN THE AGENT'S NAME by
-            // executing `jyc_reply_message` synthetically — the same
-            // mechanism as the cycle-boundary progress reply — so delivery,
-            // chat-log entry and metrics are identical to a real tool call.
-            // A subtle trace is appended so an auto-delivered reply is never
-            // mistaken for one the model consciously authored.
-            let mut final_text = response.text;
-            if !reply_sent_by_tool && reply_tool_available && !final_text.trim().is_empty() {
-                final_text.push_str(AUTO_REPLY_TRACE);
-                let synthetic_call_id = format!("auto-reply-{}", total_iterations);
-                let synthetic_output = execute_reply_tool_synthetic(
-                    tools,
-                    &ctx,
-                    event_bus,
-                    topic_name,
-                    &synthetic_call_id,
-                    &final_text,
-                    true,
-                    &mut history,
-                )
-                .await;
-
-                if !synthetic_output.is_error {
-                    reply_sent_by_tool = true;
-                    reply_auto_delivered = true;
-                    reply_text_from_tool = Some(final_text.clone());
-                } else {
-                    tracing::warn!(
-                        error = %synthetic_output.content,
-                        "Synthetic auto-reply failed; falling back to plain text return"
-                    );
+            // Deliver the final text as the turn's reply.
+            let final_text = response.text;
+            if !final_text.trim().is_empty() {
+                match crate::tools::deliver_reply(&ctx, tools.hooks(), topic_name, &final_text)
+                    .await
+                {
+                    Ok(delivery) => {
+                        reply_delivered = true;
+                        if delivery.direct {
+                            publish_reply_sent(event_bus, topic_name, &final_text).await;
+                        }
+                    }
+                    Err(e) => {
+                        if e.to_string().contains("suppressed by reply_send hook") {
+                            tracing::info!(reason = %e, "Final reply suppressed by hook");
+                        } else {
+                            tracing::warn!(error = %e, "Final reply delivery failed");
+                        }
+                    }
                 }
             }
 
@@ -936,9 +640,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
             return Ok(AgentLoopResult {
                 text: final_text,
-                reply_sent_by_tool,
-                reply_auto_delivered,
-                reply_text_from_tool,
+                reply_delivered,
                 input_tokens: context_input_tokens,
                 total_input_tokens,
                 output_tokens: total_output_tokens,
@@ -983,9 +685,8 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
         // Question ordering: when this batch includes a blocking `ask_user`,
         // deliver the narration text first — the user must read the message
-        // before the question card arrives. Progress-style delivery
-        // (stop_after=false): the final auto-delivery still fires when the
-        // run ends, so the post-answer conclusion is not lost.
+        // before the question card arrives. The final auto-delivery still
+        // fires when the run ends, so the post-answer conclusion is not lost.
         if response.tool_calls.iter().any(|tc| tc.name == "ask_user")
             && !response.text.trim().is_empty()
         {
@@ -999,23 +700,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 || response.text.clone(),
                 |span| embedded_ask::remove_span(&response.text, span),
             );
-            let output = execute_reply_tool_synthetic(
-                tools,
-                &ctx,
-                event_bus,
-                topic_name,
-                &format!("pre-ask-{total_iterations}"),
-                &narration,
-                false,
-                &mut history,
-            )
-            .await;
-            if output.is_error {
-                tracing::warn!(
-                    error = %output.content,
-                    "Pre-ask narration delivery failed; continuing to the question"
-                );
-            }
+            deliver_progress_text(tools, &ctx, event_bus, topic_name, &narration).await;
         }
 
         // Snapshot for `context_browse` — only when the tool is actually in
@@ -1114,49 +799,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 "Tool executed"
             );
 
-            // Check if this was the reply_message tool
-            if (tool_call.name.contains("reply_message") || tool_call.name.contains("jyc_reply"))
-                && !output.is_error
-            {
-                if output.stop_after {
-                    reply_sent_by_tool = true;
-                    // Extract the message text from the tool input
-                    if let Some(msg) = input.get("message").and_then(|m| m.as_str()) {
-                        reply_text_from_tool = Some(msg.to_string());
-                    }
-                } else {
-                    tracing::info!(
-                        tool = %tool_call.name,
-                        "Progress reply sent by tool (stop_after=false), continuing loop"
-                    );
-                }
-
-                // Synchronous delivery bypasses the file relay, so neither
-                // the watcher nor the post-loop worker publishes ReplySent —
-                // do it here (exactly once per delivery).
-                if output.delivered
-                    && let Some(msg) = input.get("message").and_then(|m| m.as_str())
-                {
-                    publish_event(
-                        event_bus,
-                        TopicEvent::ReplySent {
-                            topic_name: topic_name.to_string(),
-                            text: msg.to_string(),
-                            timestamp: Utc::now(),
-                        },
-                    )
-                    .await;
-                }
-            } else if (tool_call.name.contains("reply_message")
-                || tool_call.name.contains("jyc_reply"))
-                && output.is_error
-            {
-                // Reply delivery FAILED — remember the error. If the model
-                // now tries to finish text-only, the failure-aware reminder
-                // quotes this so the model can correct its arguments.
-                last_reply_error = Some(output.content.clone());
-            }
-
             // Add tool result to internal history AND raw context
             history.push(Message::tool_result(
                 &tool_call.id,
@@ -1226,39 +868,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             raw_context.push(provider.format_user_message(&blocks));
         }
 
-        // If reply was sent by tool, we can stop early
-        if reply_sent_by_tool {
-            tracing::info!(total_iterations, "Reply sent by MCP tool, stopping loop");
-
-            let duration = start_time.elapsed();
-            publish_event(
-                event_bus,
-                TopicEvent::ProcessingCompleted {
-                    topic_name: topic_name.to_string(),
-                    message_id: "agent-loop".to_string(),
-                    success: true,
-                    duration_secs: duration.as_secs(),
-                    timestamp: Utc::now(),
-                },
-            )
-            .await;
-
-            return Ok(AgentLoopResult {
-                text: String::new(),
-                reply_sent_by_tool: true,
-                reply_auto_delivered,
-                reply_text_from_tool,
-                input_tokens: context_input_tokens,
-                total_input_tokens,
-                output_tokens: total_output_tokens,
-                total_cache_hit_tokens,
-                total_cache_creation_tokens,
-                total_reasoning_tokens,
-                history,
-                raw_context,
-            });
-        }
-
         // Publish progress (only when continuing the loop)
         let elapsed = start_time.elapsed();
         publish_event(
@@ -1301,9 +910,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
     Ok(AgentLoopResult {
         text: String::new(),
-        reply_sent_by_tool,
-        reply_auto_delivered,
-        reply_text_from_tool,
+        reply_delivered,
         input_tokens: context_input_tokens,
         total_input_tokens,
         output_tokens: total_output_tokens,
@@ -1315,21 +922,30 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     })
 }
 
-/// Token usage of a single LLM call, carried back from helpers that make
-/// their own calls so the caller can bill them.
-#[derive(Debug, Clone, Copy, Default)]
-struct CallUsage {
-    input_tokens: u64,
-    output_tokens: u64,
-    /// Per-call cache **read** tokens (= what Anthropic reports in
-    /// `cache_read_input_tokens`, or the single `cached_tokens` field
-    /// for every other provider).
-    cache_hit_tokens: u64,
-    /// Per-call cache **creation** (write) tokens. Anthropic is the
-    /// only provider that reports this separately; `0` for everyone
-    /// else. Billed at `cache_creation_per_million` when configured,
-    /// otherwise folded into the read rate.
-    cache_creation_tokens: u64,
+/// Deliver a mid-turn user-visible message (cycle-boundary heartbeat,
+/// pre-question narration) and publish `ReplySent` on direct delivery.
+/// Delivery failures are logged, never fatal — the turn continues.
+async fn deliver_progress_text(
+    tools: &ToolRegistry,
+    ctx: &ToolContext<'_>,
+    event_bus: Option<&TopicEventBusRef>,
+    topic_name: &str,
+    text: &str,
+) {
+    match crate::tools::deliver_reply(ctx, tools.hooks(), topic_name, text).await {
+        Ok(delivery) => {
+            if delivery.direct {
+                publish_reply_sent(event_bus, topic_name, text).await;
+            }
+        }
+        Err(e) => {
+            if e.to_string().contains("suppressed by reply_send hook") {
+                tracing::info!(reason = %e, "Mid-turn reply suppressed by hook");
+            } else {
+                tracing::warn!(error = %e, "Mid-turn reply delivery failed");
+            }
+        }
+    }
 }
 
 /// Compute and record the cost of one LLM call, returning the amount so
@@ -1405,80 +1021,29 @@ fn bill_call(
     cost
 }
 
-/// Generate a progress summary using a separate, isolated LLM call.
-///
-/// The conversation transcript is rendered into a single plain-text string
-/// and sent as a single user message. This is intentionally NOT a replay of
-/// `raw_context`'s structured messages — that would replay assistant turns
-/// with their `reasoning_content` fields, alternation rules, and tool-call
-/// schema, which couples the summary call to the main loop's contract.
-///
-/// Joining to text decouples the call:
-/// - No `tool_calls` in the request, so no schema dependency.
-/// - No prior assistant turns, so no `reasoning_content` replay requirements
-///   (DeepSeek `thinking = enabled` mode requires reasoning_content to be
-///   round-tripped on every assistant turn it produced; an isolated text
-///   call sidesteps that contract entirely).
-/// - The main loop's `raw_context` is untouched.
-///
-/// Used at cycle boundaries to inform the user that work is still in progress.
-async fn generate_summary_from_joined_history(
-    provider: &dyn Provider,
-    raw_context: &[serde_json::Value],
-    cycle_count: usize,
-    total_iterations: usize,
-    topic_name: &str,
-    event_bus: Option<&TopicEventBusRef>,
-    sse_read_timeout: std::time::Duration,
-) -> Result<(String, CallUsage)> {
-    let summary_system = format!(
-        "You are summarizing in-progress work for the user. Based on the transcript below, \
-         write a concise 2-3 sentence progress update in the user's language. Format:\n\
-         - What you've done (e.g., \"Implemented X, Y, refactored Z\")\n\
-         - What you're still working on\n\
-         - End with: \"Will continue and reply again when complete.\" (or equivalent in user's language)\n\n\
-         This is progress update #{} after {} iterations of work.\n\n\
-         Reply with ONLY the progress text. No preamble, no markdown headers, no tool calls.",
-        cycle_count, total_iterations
-    );
-
-    let joined = render_raw_context_as_text(raw_context);
-    let user_msg = provider.format_user_message(&[ContentBlock::Text { text: joined }]);
-
-    // Same transient-SSE-retry policy as the main loop call.
-    // Use a dummy cancel token — progress summaries don't need cancellation.
-    let dummy_cancel = CancellationToken::new();
-    let response = complete_with_retry(
-        provider,
-        &[user_msg],
-        &[],
-        &summary_system,
-        topic_name,
-        event_bus,
-        sse_read_timeout,
-        &dummy_cancel,
-        false, // progress summaries don't publish thinking events
-        SSE_RETRY_BACKOFF_MS,
-    )
-    .await?;
-
-    if response.text.is_empty() {
-        anyhow::bail!("LLM returned empty progress summary");
-    }
-
-    let usage = CallUsage {
-        input_tokens: response.input_tokens,
-        output_tokens: response.output_tokens,
-        cache_hit_tokens: response.cache_hit_tokens,
-        cache_creation_tokens: response.cache_creation_tokens,
-    };
-    Ok((response.text, usage))
-}
-
 pub(crate) async fn publish_event(event_bus: Option<&TopicEventBusRef>, event: TopicEvent) {
     if let Some(bus) = event_bus {
         let _ = bus.publish(event).await;
     }
+}
+
+/// Publish the `ReplySent` dashboard event for a synchronous (direct
+/// adapter) delivery. The file-relay watcher/worker publish it for relayed
+/// deliveries, so exactly one `ReplySent` fires per delivered reply.
+pub(crate) async fn publish_reply_sent(
+    event_bus: Option<&TopicEventBusRef>,
+    topic_name: &str,
+    text: &str,
+) {
+    publish_event(
+        event_bus,
+        TopicEvent::ReplySent {
+            topic_name: topic_name.to_string(),
+            text: text.to_string(),
+            timestamp: Utc::now(),
+        },
+    )
+    .await;
 }
 
 /// Spawn the live-duration ticker. While the agent loop is alive, the
@@ -1581,12 +1146,6 @@ fn all_tool_calls_empty(tool_calls: &[ToolCall]) -> bool {
 #[cfg(test)]
 mod no_reply_tests;
 
-/// Tests for the reply-tool guard: when `jyc_reply_message` is registered,
-/// a text-only finish without calling it must nudge the model once, then
-/// fall back to text delivery with a visible warning marker.
-#[cfg(test)]
-mod reply_tool_tests;
-
 /// Shared test helpers for agent_loop integration tests. Available to
 /// sibling `#[cfg(test)]` mods via `pub(super)`.
 #[cfg(test)]
@@ -1622,7 +1181,5 @@ mod embedded_ask;
 mod response;
 mod retry;
 
-use context::{
-    compact_history_heuristic, compact_raw_context_heuristic, render_raw_context_as_text,
-};
+use context::{compact_history_heuristic, compact_raw_context_heuristic};
 use retry::{SSE_RETRY_BACKOFF_MS, complete_with_retry};

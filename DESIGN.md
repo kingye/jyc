@@ -180,8 +180,8 @@ User sends message (any channel) → Pattern Match → Topic Queue → Worker (A
 5. **Topic Event Bus** — Topic-isolated event bus for publishing and subscribing to processing events (SSE → TopicEvent conversion)
 6. **Topic Event System** — Per-topic isolated event bus for progress events (ProcessingStarted/Progress/Completed, ToolStarted/Completed, Thinking, SessionStatus). Used by the inspect dashboard for realtime monitoring.
 7. **Prompt Builder** — Builds channel-agnostic prompts from InboundMessage; supports multimodal first turns with ContentBlock::Image
-8. **MCP Reply Tool** — `reply_message` in-process bridge. Delivers synchronously via the channel's pre-warmed outbound adapter (real delivery result returned to the model); on failure or when no adapter/target is injected, falls back to writing `reply.md` + signal file for the watcher/monitor to deliver
-9. **MCP SendMessage Tool** — `jyc_send_message` tool via `rmcp`, sends proactive out-of-topic messages to any recipient via the pre-warmed outbound adapter. Used for alerts and notifications only, not for in-topic replies
+8. **Reply Delivery** — the agent's final message at the end of the turn IS the reply (no reply tool). `deliver_reply` sends it synchronously via the channel's pre-warmed outbound adapter when a reply target is live; otherwise (or on send failure) it writes `reply.md` + signal file for the watcher/monitor to deliver
+9. **MCP SendMessage Tool** — `jyc_send_message` in-process tool, sends proactive out-of-topic messages to any recipient via the pre-warmed outbound adapter. Used for alerts and notifications only, never for in-topic replies
 10. **MCP Vision Tool** — `analyze_image` tool via `rmcp`, analyzes images using OpenAI-compatible vision API. Configure via `[[mcps]]` in `config.toml`
 11. **MCP Question Tool** — `ask_user` tool via `rmcp`, sends question to user and waits for reply (up to 5 minutes). It can ask up to 5 questions in one call: every question is registered in the shared `QuestionHub` before any is pushed, and a text reply answers the oldest open question of that topic first (registration order, not map order), so the answers come back paired with what they answered.
 12. **Pending Delivery Watcher** — Background task that runs alongside SSE stream, watches for signal files and delivers messages immediately
@@ -1858,9 +1858,9 @@ JYC uses the following subset of the agent service API:
 │    4. Activity-based timeout: 30 min of silence (60 min when tool running)
 │    5. Progress log every 10s (elapsed, parts, model, activity, silence)
 │         ↓
-│  in-process agent calls jyc_reply_message
+│  in-process agent finishes: the final assistant text IS the reply
 │         ↓
-│  In-process reply tool (jyc-agent/src/tools/mcp_bridge.rs):
+│  Agent loop delivers it (crates/jyc-agent/src/tools/mod.rs::deliver_reply):
 │    1. With a live reply target: build full_reply_text = AI reply +
 │       quoted history (email only), send directly via the pre-warmed
 │       outbound adapter (eliminates cold-start timeouts)
@@ -1869,12 +1869,12 @@ JYC uses the following subset of the agent service API:
 │    3. MessageStorage::store_reply() → append to chat log
 │         ↓
 │  Handle result → return GenerateReplyResult:
-│    - reply_sent_by_tool: true (SSE tool detection OR signal file) → done
+│    - reply_delivered: true (direct send, or signal file queued) → done
 │    - Stale session (tool reported success, signal file missing)
 │        → delete session, create new, retry once
 │    - ContextOverflow → new session + blocking retry
 │    - SSE failure → blocking prompt fallback
-│    - No tool used → return reply_text for TopicManager fallback
+│    - No reply text → nothing to deliver
 │
 └─ Returns GenerateReplyResult to TopicManager ──────────────────────────
 ```
@@ -2153,40 +2153,38 @@ jyc binary
 └── jyc dashboard          ← live TUI dashboard (connects to running jyc serve)
 ```
 
-The reply tool shares types with the main binary (same Rust crate), eliminating the type drift risk of the two-binary TypeScript approach.
+The reply delivery path shares types with the main binary (same Rust crate), eliminating the type drift risk of the two-binary TypeScript approach.
 
 ### Reply Delivery Context
 
-`jyc_reply_message` receives its routing context in-process via
-`ToolContext::reply_target` (`ReplyTarget`: channel name + pre-warmed
-outbound adapter, injected by the service before the prompt is sent) — no
-context file, and the AI never sees or touches routing metadata. When no
-reply target is live (background turns, tests), the tool falls back to the
-`.jyc/reply.md` + `.jyc/reply-sent.flag` file relay, watched by the
-monitor.
+There is no reply tool: the agent's final message at the end of the turn
+IS the reply (the norm for code agents — Claude Code, Codex, etc.). The
+loop receives its routing context in-process via `ToolContext::reply_target`
+(`ReplyTarget`: the inbound message + pre-warmed outbound adapter, injected
+by the service before the prompt is sent) — no context file, and the AI
+never sees or touches routing metadata. Mid-turn text alongside tool calls
+is internal narration and is never delivered.
 
-### Tool: `jyc_reply_message` (in-process)
+### Reply delivery (`deliver_reply` in `tools/mod.rs`)
 
-Registered in the tool registry by `register_mcp_tools()`; executes inside
-the agent process — no subprocess, no signal-file contract with the model.
+Called by the agent loop for the final text, pre-question narration, and
+the cycle-boundary heartbeat — the single delivery path, no tool involved.
 
-```
-Tool schema: message (string), attachments (string[] optional),
-             stop_after (bool, default true), silent (bool, default false)
-
-  1. With a reply target: deliver directly through the pre-warmed outbound
-     adapter (eliminates cold-start timeouts)
-  2. Without one: validate attachments (exclude .agent/, .jyc/), write
-     .jyc/reply.md + .jyc/reply-sent.flag for the file relay
-  3. Return success message
-```
+  1. With a live reply target: gated by `reply_send` hooks, then sent
+     directly through the pre-warmed outbound adapter (eliminates
+     cold-start timeouts); the caller publishes the `ReplySent` event
+  2. Without one (background turns, tests), or when the direct send
+     failed: write `.jyc/reply.md` + `.jyc/reply-sent.flag` for the
+     file relay (worker/background watcher delivers, gated by
+     `reply_send` hooks there)
+  3. Empty final text → nothing is sent (absorbs the old `silent` mode)
 
 ### MCP Tool: `jyc_send_message`
 
 Sends a proactive out-of-topic message to any recipient. Unlike `reply_message` which replies within the current topic context, this tool is for alerts, notifications, and other proactive messaging.
 
 ```
-MCP Server (rmcp, stdio transport):
+In-process tool (jyc-agent/src/tools/mcp_bridge.rs):
   Tool schema: recipient (string), subject (string, optional), message (string)
 
   1. Validate recipient format (channel-specific, e.g. "wecomkf:kf001:wmE8OcHAAA...")

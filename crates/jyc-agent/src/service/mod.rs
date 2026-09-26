@@ -590,7 +590,7 @@ impl AgentService for JycAgentService {
         .await?;
 
         tracing::info!(
-            reply_sent_by_tool = result.reply_sent_by_tool,
+            reply_delivered = result.reply_delivered,
             text_len = result.text.len(),
             input_tokens = result.input_tokens,
             output_tokens = result.output_tokens,
@@ -627,23 +627,14 @@ impl AgentService for JycAgentService {
         .await;
 
         // 9. Return result
-        if result.reply_sent_by_tool {
-            Ok(AgentResult {
-                reply_sent_by_tool: true,
-                reply_auto_delivered: result.reply_auto_delivered,
-                reply_text: result.reply_text_from_tool,
-            })
-        } else {
-            Ok(AgentResult {
-                reply_sent_by_tool: false,
-                reply_auto_delivered: false,
-                reply_text: if result.text.is_empty() {
-                    None
-                } else {
-                    Some(result.text)
-                },
-            })
-        }
+        Ok(AgentResult {
+            reply_delivered: result.reply_delivered,
+            reply_text: if result.text.is_empty() {
+                None
+            } else {
+                Some(result.text)
+            },
+        })
     }
 
     async fn set_topic_event_bus(&self, topic_name: &str, event_bus: Option<TopicEventBusRef>) {

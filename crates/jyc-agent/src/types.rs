@@ -185,16 +185,9 @@ pub struct ToolDefinition {
 pub struct AgentLoopResult {
     /// Final text response from the assistant.
     pub text: String,
-    /// Whether the reply_message tool was called successfully.
-    pub reply_sent_by_tool: bool,
-    /// Whether the reply was auto-delivered in the agent's name: the model
-    /// finished text-only without calling `jyc_reply_message`, so the loop
-    /// executed it synthetically with the final text. Surfaces to metrics
-    /// so this degradation rate stays measurable separately from real tool
-    /// calls.
-    pub reply_auto_delivered: bool,
-    /// Reply text extracted from the reply_message tool call (if used).
-    pub reply_text_from_tool: Option<String>,
+    /// Whether the final text was delivered (directly through the outbound
+    /// adapter, or queued via the `reply.md`/`reply-sent.flag` file relay).
+    pub reply_delivered: bool,
     /// Input tokens from the last LLM call in this round (= current
     /// context size). For the cumulative sum across calls in this round,
     /// see `total_input_tokens`.

@@ -110,7 +110,7 @@ async fn hanging_mcp_does_not_block_registry_build() {
     let registry = &*arc;
     assert!(registry.has_tool("bash"));
     assert!(registry.has_tool("read"));
-    assert!(registry.has_tool("jyc_reply_message"));
+    assert!(registry.has_tool("jyc_send_message"));
 }
 
 /// Layer 2 — concurrent loading. N hanging MCPs must finish in

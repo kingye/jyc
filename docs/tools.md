@@ -446,7 +446,6 @@ disabled_mcps = ["*"]  # Disables all external MCP servers
 | `webfetch` | None (network tool) | HTTPS only; 30s default timeout |
 | `read_image` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | URL mode requires http(s) |
 | `context_browse` | None (in-memory transcript only) | Read-only; never touches the filesystem |
-| `jyc_reply_message` | Attachment path validation | Must be within topic directory |
 | `jyc_send_message` | Recipient format validation | Channel-specific format check |
 | `jyc_send_to_topic` | Attachment path validation | Must be within topic directory; target channel must exist |
 
@@ -533,7 +532,7 @@ build_tool_registry()
   ├─ Register built-in tools: bash, read, write, edit, glob, grep, webfetch, context_browse
   ├─ Register read_image (when model supports images OR vision_client configured)
   ├─ Register jyc_publish_file (base URL from [inspect] base_url)
-  ├─ Register MCP bridge tools: jyc_reply_message, jyc_send_message
+  ├─ Register MCP bridge tools: jyc_send_message
   ├─ Register jyc_send_to_topic (when cross-channel topic_managers available)
   ├─ Load external MCP tools (filtered by disabled_mcps)
   └─ Apply exclusions: remove tools matching disabled_tools

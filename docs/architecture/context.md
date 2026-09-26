@@ -164,11 +164,10 @@ to treat the note as a fresh instruction):
   `tool_use_id`) within a **turn-scoped map**, so an id reused in a later
   turn can never misattach to an earlier call.
 - Failed calls are prefixed `[error] `.
-- `jyc_reply_message` calls are excluded. The reply's `message` is the
-  text the user already saw and is preserved in the assistant's own
-  text; exposing the call here would give the model a pattern to mimic
-  as narration instead of actually invoking the tool. A turn that called
-  only the reply tool emits no note at all.
+- Legacy `jyc_reply_message` calls (from transcripts persisted before the
+  tool was removed) are excluded. The reply text was already delivered to
+  the user and needs no replay into model context. A turn that contained
+  only such calls emits no note at all.
 - The assistant's own text stays pure — models were observed mimicking
   the older in-text annotation format and emitting fake tool-call text as
   their reply; the system prompt's "History Format" section states the

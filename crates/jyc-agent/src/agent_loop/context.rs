@@ -9,14 +9,6 @@ use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
 use crate::provider::Provider;
 use crate::types::{ContentBlock, Message, Role};
 
-/// Render the raw context as a plain-text transcript for one-shot
-/// summarization (cycle-boundary progress updates). Thin wrapper over
-/// `session::render_raw_context_as_text` — single implementation shared
-/// with the sliding-window view.
-pub(crate) fn render_raw_context_as_text(raw_context: &[serde_json::Value]) -> String {
-    crate::session::render_raw_context_as_text(raw_context)
-}
-
 pub(crate) fn compact_raw_context_heuristic(
     raw_context: &[serde_json::Value],
     keep_pairs: usize,
@@ -528,7 +520,7 @@ mod render_raw_context_tests {
             json!({"role": "tool", "tool_call_id": "1", "content": "output"}),
             json!({"role": "assistant", "content": "Done."}),
         ];
-        let rendered = render_raw_context_as_text(&ctx);
+        let rendered = crate::session::render_raw_context_as_text(&ctx);
         assert!(rendered.contains("USER: fix bug"));
         // One turn → one merged ASSISTANT block: first step's text, the
         // folded tool-call annotation with its result, then the reply.
@@ -548,7 +540,7 @@ mod render_raw_context_tests {
             }]}),
             json!({"role": "tool", "tool_call_id": "1", "content": long}),
         ];
-        let rendered = render_raw_context_as_text(&ctx);
+        let rendered = crate::session::render_raw_context_as_text(&ctx);
         // Result cap is 500 + "…", inside the annotation, plus the
         // header and USER/ASSISTANT framing.
         assert!(rendered.len() < 700);
@@ -563,7 +555,7 @@ mod render_raw_context_tests {
             json!({"role": "user", "content": "real"}),
             json!({"role": "assistant", "content": "reply"}),
         ];
-        let rendered = render_raw_context_as_text(&ctx);
+        let rendered = crate::session::render_raw_context_as_text(&ctx);
         assert!(!rendered.contains("ignored"));
         assert!(rendered.contains("USER: real"));
         assert!(rendered.contains("ASSISTANT: reply"));

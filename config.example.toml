@@ -741,13 +741,6 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # Tools from each MCP server are dynamically discovered and registered in the agent.
 
 # [[mcps]]
-# name = "jyc_reply"
-# type = "local"
-# command = ["jyc", "mcp-reply-tool"]
-# # environment = { "JYC_THREAD_DIR" = "/path/to/topic" }
-# # timeout_ms = 5000          # optional; max connect+list_tools time. Default 10000.
-
-# [[mcps]]
 # name = "invoice"
 # type = "local"
 # command = ["invoice", "mcp"]

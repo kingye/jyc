@@ -19,12 +19,15 @@ use crate::types::{ImageSource, ToolDefinition};
 use jyc_core::topic_manager::TopicManager;
 use jyc_types::InboundMessage;
 use jyc_types::channel::OutboundAdapter;
+use jyc_types::config::HookEvent;
+use jyc_types::state_dir::jyc_dir;
+use jyc_utils::hooks::{HookCtx, HookOutcome, HookSet};
 
-/// Everything `jyc_reply_message` needs to deliver a reply synchronously
+/// Everything the reply delivery path needs to send a reply synchronously
 /// through the channel's outbound adapter, bypassing the
 /// `reply.md`/`reply-sent.flag` file relay. Injected by the agent loop from
 /// the message currently being processed; `None` in contexts without a live
-/// inbound message (unit tests, sub-agents), where the tool falls back to
+/// inbound message (unit tests, sub-agents), where delivery falls back to
 /// the file relay.
 #[derive(Debug, Clone)]
 pub struct ReplyTarget {
@@ -33,6 +36,104 @@ pub struct ReplyTarget {
     /// Message directory name, used by the outbound adapter for chat-log
     /// storage.
     pub message_dir: String,
+}
+
+/// Outcome of a [`deliver_reply`] call.
+#[derive(Debug)]
+pub struct ReplyDelivery {
+    /// Sent synchronously through the channel's outbound adapter.
+    pub direct: bool,
+    /// Channel message id (direct deliveries only).
+    pub message_id: Option<String>,
+}
+
+/// Deliver `text` as a user-visible reply — the single delivery path shared
+/// by the final assistant message, pre-question narration, and the
+/// cycle-boundary heartbeat.
+///
+/// With a live reply target the reply is sent synchronously through the
+/// pre-warmed outbound adapter, gated by `reply_send` hooks; the caller
+/// publishes the `ReplySent` dashboard event when `direct` comes back true.
+/// On send failure — or when no target is live (tests, sub-agents) — the
+/// reply is queued through the `.jyc/reply.md` + `.jyc/reply-sent.flag`
+/// file relay for the worker/watcher to deliver.
+pub async fn deliver_reply(
+    ctx: &ToolContext<'_>,
+    hooks: Option<&HookSet>,
+    topic_name: &str,
+    text: &str,
+) -> Result<ReplyDelivery> {
+    if let (Some(outbound), Some(target)) = (&ctx.outbound, &ctx.reply_target) {
+        if let Some(hooks) = hooks {
+            let mut hctx = HookCtx {
+                topic: topic_name.to_string(),
+                cwd: ctx.working_dir.display().to_string(),
+                channel: ctx.current_channel.clone(),
+                reply_text: Some(text.to_string()),
+                ..Default::default()
+            };
+            hctx.message_content = None; // this is an output, not an intake
+            if let HookOutcome::Block(reason) = hooks
+                .run(HookEvent::ReplySend, Some(topic_name), &hctx)
+                .await
+            {
+                anyhow::bail!("reply suppressed by reply_send hook: {reason}");
+            }
+        }
+        match outbound
+            .send_reply(
+                &target.original,
+                text,
+                ctx.working_dir,
+                &target.message_dir,
+                None,
+            )
+            .await
+        {
+            Ok(result) => {
+                tracing::info!(
+                    message_len = text.len(),
+                    message_id = %result.message_id,
+                    "Reply delivered synchronously via outbound adapter"
+                );
+                return Ok(ReplyDelivery {
+                    direct: true,
+                    message_id: Some(result.message_id),
+                });
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Direct reply delivery failed, falling back to file relay"
+                );
+            }
+        }
+    }
+
+    // File relay: queue for the background delivery watcher / post-loop
+    // worker delivery.
+    let jyc_dir = jyc_dir(topic_name, ctx.working_dir);
+    tokio::fs::create_dir_all(&jyc_dir).await.ok();
+    tokio::fs::write(jyc_dir.join("reply.md"), text)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to write reply.md: {e}"))?;
+    let signal = serde_json::json!({
+        "sent_at": chrono::Utc::now().to_rfc3339(),
+        "message_len": text.len(),
+        "attachment_count": 0,
+        "attachments": Vec::<String>::new(),
+    });
+    tokio::fs::write(
+        jyc_dir.join("reply-sent.flag"),
+        serde_json::to_string_pretty(&signal)?,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to write signal file: {e}"))?;
+    tracing::info!(message_len = text.len(), "Reply signal written");
+    Ok(ReplyDelivery {
+        direct: false,
+        message_id: None,
+    })
 }
 
 /// Shared topic managers map keyed by channel name.
@@ -307,41 +408,14 @@ pub struct ToolOutput {
     pub content: String,
     /// Whether the execution resulted in an error.
     pub is_error: bool,
-    /// Whether the agent loop should stop after this tool call.
-    ///
-    /// Defaults to `true` for backward compatibility. Tools that want the
-    /// agent to continue (e.g. progress-update replies with `stop_after:
-    /// false`) set this to `false` via [`ToolOutput::success_continue`].
-    pub stop_after: bool,
-    /// Set by `jyc_reply_message` when the reply was delivered synchronously
-    /// through the channel's outbound adapter (no file relay involved). The
-    /// agent loop uses this to publish the `ReplySent` dashboard event
-    /// exactly once — the watcher/worker only publish it for file-relay
-    /// deliveries.
-    pub delivered: bool,
 }
 
 impl ToolOutput {
-    /// Create a successful output. The agent loop will stop after this
-    /// tool call (unless the caller overrides based on tool-specific logic).
+    /// Create a successful output.
     pub fn success(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
             is_error: false,
-            stop_after: true,
-            delivered: false,
-        }
-    }
-
-    /// Create a successful output that signals the agent loop to **continue**
-    /// working. Used by tools like `jyc_reply_message` with `stop_after: false`
-    /// (progress updates).
-    pub fn success_continue(content: impl Into<String>) -> Self {
-        Self {
-            content: content.into(),
-            is_error: false,
-            stop_after: false,
-            delivered: false,
         }
     }
 
@@ -350,15 +424,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: true,
-            stop_after: true,
-            delivered: false,
         }
-    }
-
-    /// Mark this output as synchronously delivered (see [`ToolOutput::delivered`]).
-    pub fn mark_delivered(mut self) -> Self {
-        self.delivered = true;
-        self
     }
 }
 

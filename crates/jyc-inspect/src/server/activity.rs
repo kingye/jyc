@@ -482,7 +482,7 @@ pub(crate) fn event_to_activity(event: &TopicEvent) -> ActivityEntry {
     let severity = match event {
         TopicEvent::SessionStatus { status_type, .. } => match status_type.as_str() {
             "error" | "timeout" => Severity::Error,
-            "retry" | "rate_limit" | "no_reply" | "reply_tool_missing" => Severity::Warning,
+            "retry" | "rate_limit" | "no_reply" => Severity::Warning,
             _ => Severity::Info,
         },
         TopicEvent::ToolCompleted { success: false, .. } => Severity::Error,
@@ -690,7 +690,6 @@ pub(crate) fn event_to_activity(event: &TopicEvent) -> ActivityEntry {
                 "rate_limit" => "RATE LIMITED",
                 "timeout" => "TIMEOUT",
                 "no_reply" => "NO REPLY",
-                "reply_tool_missing" => "REPLY TOOL MISSING",
                 other => other,
             };
             let mut text = match attempt {

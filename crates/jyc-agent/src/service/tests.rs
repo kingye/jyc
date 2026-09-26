@@ -484,10 +484,6 @@ async fn disabled_tools_removes_builtin_and_bridge() {
         "jyc_send_message should be disabled"
     );
     assert!(names.contains(&"read"), "read should still be available");
-    assert!(
-        names.contains(&"jyc_reply_message"),
-        "reply_message should still be available"
-    );
 }
 
 #[tokio::test]
@@ -582,7 +578,7 @@ async fn disabled_mcps_skips_matching_server() {
 
     // Registry should still contain built-in tools
     assert!(registry.has_tool("bash"));
-    assert!(registry.has_tool("jyc_reply_message"));
+    assert!(registry.has_tool("jyc_send_message"));
 }
 
 #[tokio::test]
@@ -626,7 +622,7 @@ async fn empty_disabled_tools_disables_nothing() {
         .await;
 
     assert!(registry.has_tool("bash"), "bash should still be available");
-    assert!(registry.has_tool("jyc_reply_message"));
+    assert!(registry.has_tool("jyc_send_message"));
 }
 
 #[tokio::test]
@@ -690,7 +686,7 @@ async fn disabled_mcps_filters_channel_configs() {
 
     // Registry should contain built-in tools (no panic from MCP loading)
     assert!(registry.has_tool("bash"));
-    assert!(registry.has_tool("jyc_reply_message"));
+    assert!(registry.has_tool("jyc_send_message"));
 }
 
 #[tokio::test]

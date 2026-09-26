@@ -1,6 +1,31 @@
 ## [Unreleased]
 
+### Changed
+
+- The agent's final message at the end of a turn is now the reply, matching
+  the convention of other code agents (Claude Code, Codex, etc.) — the
+  `jyc_reply_message` tool, its `stop_after`/`silent` modes, progress
+  replies, and the entire auto-delivery fallback machinery (synthetic tool
+  execution, `— auto-delivered` trace, reminder nudges, reply-restricted
+  recovery loops) have been removed. Text written alongside tool calls
+  stays internal narration; empty final text sends nothing
+- Replies are delivered by the agent loop itself (`deliver_reply`): direct
+  send through the pre-warmed outbound adapter when a reply target is
+  live, otherwise queued via the `reply.md`/`reply-sent.flag` file relay;
+  `reply_send` hooks gate direct sends at the delivery site
+
+### Removed
+
+- The `jyc_reply_message` tool and the `jyc mcp-reply-tool` hidden
+  subcommand (with the `jyc-mcp` crate) are gone — nothing registered the
+  tool, and the subprocess MCP server had no remaining consumers
+
 ### Fixed
+
+- `job_create` no longer accepts both `cron` and `at` in one call (cron
+  silently won); the tool description and schema now state up front that
+  exactly one of them is required, and mention `job_delete`/`job_toggle` for
+  stopping a recurring job later
 
 - Scheduled-job turns always run in build mode: a job turn no longer
   inherits the topic's interactive plan-mode override (from `.jyc/mode-override`

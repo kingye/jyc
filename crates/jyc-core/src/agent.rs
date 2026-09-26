@@ -14,14 +14,12 @@ use jyc_types::QueueItem;
 /// The outbound adapter handles formatting, sending, and storing.
 #[derive(Debug)]
 pub struct AgentResult {
-    /// Whether reply was already sent by MCP tool
-    pub reply_sent_by_tool: bool,
-    /// Whether the reply was auto-delivered in the agent's name (synthetic
-    /// `jyc_reply_message` execution after a nudged text-only finish).
-    /// Surfaces to metrics so this degradation is distinguishable from
-    /// real tool calls.
-    pub reply_auto_delivered: bool,
-    /// Raw AI response text (for outbound adapter to format + send + store)
+    /// Whether the agent already delivered the reply: directly through the
+    /// outbound adapter, or queued via the `reply.md`/`reply-sent.flag`
+    /// file relay (the signal files are still on disk in that case).
+    pub reply_delivered: bool,
+    /// Raw AI response text (for logging/metrics; delivery already happened
+    /// inside the agent loop)
     pub reply_text: Option<String>,
 }
 
@@ -50,9 +48,9 @@ pub trait AgentService: Send + Sync {
     /// `pending_rx` allows the agent to monitor for new messages arriving
     /// during AI processing (live message injection).
     ///
-    /// Returns `AgentResult` with either:
-    /// - `reply_sent_by_tool: true` — MCP tool already sent the reply
-    /// - `reply_text: Some(text)` — raw AI text for outbound adapter to handle
+    /// Returns `AgentResult` carrying whether the reply was already
+    /// delivered (directly or queued via the file relay) and the reply
+    /// text itself for logging/metrics.
     async fn process(
         &self,
         message: &InboundMessage,

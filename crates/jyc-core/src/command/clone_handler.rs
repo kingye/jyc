@@ -184,7 +184,7 @@ impl CloneCommandHandler {
         // progress reporting, so the reply arrives when the copy is done.
         let from = source.clone();
         let to = dest.clone();
-        tokio::task::spawn_blocking(move || copy_dir_all(&from, &to))
+        let skipped = tokio::task::spawn_blocking(move || copy_dir_all(&from, &to))
             .await
             .context("/clone: the copy did not finish")?
             .with_context(|| {
@@ -213,7 +213,7 @@ impl CloneCommandHandler {
             seeded,
             "Topic cloned"
         );
-        let message = format!(
+        let mut message = format!(
             "✅ Cloned '{}' → '{}' — it works in its own copy at {} with state in {} ({} state \
              file(s) inherited).\n/clone does not switch by itself — pick '{name}' in the topic \
              list.",
@@ -223,6 +223,12 @@ impl CloneCommandHandler {
             state_dir.display(),
             seeded
         );
+        if skipped > 0 {
+            message.push_str(&format!(
+                "\n{skipped} regenerable build/dependency dir(s) (target/, node_modules/, …) \
+                 skipped — the first build starts cold."
+            ));
+        }
         Ok(CommandResult {
             success: true,
             message,
@@ -341,15 +347,32 @@ mod tests {
     }
 
     /// A source topic dir with content, an in-dir state dir (the pinned-topic
-    /// shape), plus a `jobs/` dir and files a clone must not inherit.
+    /// shape), plus `jobs/`, artifact dirs, and files a clone must not inherit.
     async fn source_topic() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempdir().unwrap();
         let dir = tmp.path().join("projects").join("src-topic");
-        tokio::fs::create_dir_all(dir.join("src")).await.unwrap();
+        tokio::fs::create_dir_all(dir.join("src").join("node_modules"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(dir.join("target").join("debug"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(dir.join("node_modules").join("foo"))
+            .await
+            .unwrap();
         tokio::fs::create_dir_all(dir.join(".jyc").join("jobs"))
             .await
             .unwrap();
         tokio::fs::write(dir.join("src/main.rs"), "fn main() {}")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join("src/node_modules/dep.js"), "js")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join("target/debug/app"), "elf")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join("node_modules/foo/index.js"), "js")
             .await
             .unwrap();
         tokio::fs::write(dir.join("README.md"), "hello")
@@ -415,6 +438,19 @@ mod tests {
         assert!(
             !dest.join(".jyc").is_dir(),
             "the source's state dir is not copied as content"
+        );
+        for artifact in ["target", "node_modules", "src/node_modules"] {
+            assert!(
+                !dest.join(artifact).exists(),
+                "{artifact} is a regenerable artifact dir and must not be copied"
+            );
+        }
+        assert!(
+            result
+                .message
+                .contains("3 regenerable build/dependency dir(s)"),
+            "the reply says what was skipped: {}",
+            result.message
         );
 
         let state = agents_root.join("src-topic-2").join(".jyc");

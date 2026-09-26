@@ -13,7 +13,6 @@
 use super::event_test_helpers::scripted::ScriptedProvider;
 use super::event_test_helpers::test_config;
 use super::*;
-use crate::tools::mcp_bridge::register_mcp_tools;
 use crate::types::StreamEvent;
 use jyc_core::question::QuestionHub;
 use jyc_types::channel::{
@@ -120,9 +119,7 @@ fn test_reply_target() -> crate::tools::ReplyTarget {
 }
 
 fn registry_with_reply_tool() -> crate::tools::registry::ToolRegistry {
-    let mut registry = crate::tools::builtin::create_builtin_registry();
-    register_mcp_tools(&mut registry);
-    registry
+    crate::tools::builtin::create_builtin_registry()
 }
 
 /// Drive the loop while polling the hub; answer the pending question as
@@ -193,13 +190,10 @@ async fn embedded_tag_recovers_question_with_message_first() {
     // The answer unblocked the question and the loop continued.
     assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     assert!(
-        result.reply_auto_delivered,
-        "the post-answer conclusion must auto-deliver"
+        result.reply_delivered,
+        "the post-answer conclusion must be delivered"
     );
-    assert_eq!(
-        result.reply_text_from_tool.as_deref(),
-        Some("收到，按方案开工。\n\n— auto-delivered")
-    );
+    assert_eq!(result.text, "收到，按方案开工。");
     // The answer reached the transcript as the embedded question's result.
     let tool_msgs: Vec<String> = result
         .raw_context
@@ -281,8 +275,8 @@ async fn native_ask_delivers_narration_before_question() {
 
     assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     assert!(
-        result.reply_auto_delivered,
-        "the post-answer conclusion must auto-deliver"
+        result.reply_delivered,
+        "the post-answer conclusion must be delivered"
     );
     let log = log.snapshot();
     assert_eq!(
@@ -349,7 +343,7 @@ async fn native_ask_strips_embedded_tag_from_narration() {
     .await;
 
     assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
-    assert!(result.reply_auto_delivered);
+    assert!(result.reply_delivered);
     let log = log.snapshot();
     assert_eq!(
         log[0],
@@ -384,6 +378,7 @@ async fn malformed_tag_is_stripped_from_delivery() {
 
     let result = run(AgentLoopConfig {
         outbound: Some(outbound),
+        reply_target: Some(test_reply_target()),
         current_channel: Some("mock".to_string()),
         question_hub: Some(hub.clone()),
         ..test_config(&provider, &tools, tmp.path(), cancel, "malformed-ask")
@@ -392,11 +387,11 @@ async fn malformed_tag_is_stripped_from_delivery() {
     .expect("agent loop should run to completion");
 
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert!(result.reply_delivered);
     assert_eq!(
-        result.reply_text_from_tool.as_deref(),
-        Some("结论先行。\n\n— auto-delivered"),
+        result.text, "结论先行。",
         "malformed tag must be stripped from the delivered reply, got: {:?}",
-        result.reply_text_from_tool
+        result.text
     );
     let log = log.snapshot();
     assert!(

@@ -83,8 +83,8 @@ and uses an in-process AI agent to generate replies.
 ## Agent Behavior Rules
 
 ### Reply vs. SendMessage
-- Agent must use `reply_message` for in-topic responses; `jyc_send_message` only for out-of-topic proactive messages.
-- Agent must not use `jyc_send_message` to spam users; limit to alerts and notifications.
+- The agent's final message at the end of a turn IS the in-topic reply; no reply tool exists.
+- `jyc_send_message` is only for out-of-topic proactive messages; never use it to spam users — limit to alerts and notifications.
 
 ### Task List
 - Multi-step work (a plan, an implementation, a cross-file fix) must start with `task_create`; the list is the topic's single plan of record.

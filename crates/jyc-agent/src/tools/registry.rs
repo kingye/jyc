@@ -71,10 +71,9 @@ impl ToolRegistry {
     /// to the model); a `post_tool_use` hook that exits 2 marks the
     /// (already executed) result as error with the stderr appended.
     /// `post_tool_use_failure` is notification-only and fires whenever the
-    /// TOOL itself failed. A `jyc_reply_message` call that delivers
-    /// synchronously also fires `reply_send` just before the send. Without
-    /// hooks configured this is the same zero-cost pass-through it always
-    /// was.
+    /// TOOL itself failed. Synchronous reply deliveries fire `reply_send`
+    /// at their send site in `deliver_reply` instead. Without hooks
+    /// configured this is the same zero-cost pass-through it always was.
     pub async fn execute(
         &self,
         name: &str,
@@ -113,38 +112,6 @@ impl ToolRegistry {
             return Err(anyhow::anyhow!("blocked by pre_tool_use hook: {reason}"));
         }
 
-        // ── reply_send (synchronous tool delivery) ─────────────────────
-        // When this call WILL deliver through the adapter directly — the
-        // exact condition `mcp_bridge` uses for its synchronous send — the
-        // real delivery point is here, so `reply_send` gates it now. File
-        // relay deliveries (no reply_target, or the post-failure relay retry)
-        // are gated at their send sites in `jyc-core` instead, so the event
-        // fires exactly once per delivery attempt either way. Silent replies
-        // send nothing and are not gated.
-        if name == "jyc_reply_message"
-            && ctx.outbound.is_some()
-            && ctx.reply_target.is_some()
-            && !input
-                .get("silent")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            && let Some(text) = input.get("message").and_then(Value::as_str)
-        {
-            let mut rctx = hook_ctx(None);
-            rctx.message_content = None; // this is an output, not an intake
-            rctx.reply_text = Some(text.to_string());
-            if let HookOutcome::Block(reason) = hooks
-                .run(HookEvent::ReplySend, ctx.current_topic.as_deref(), &rctx)
-                .await
-            {
-                // Suppress the send and end the turn (`error` defaults to
-                // stop_after), so the model can't loop retrying it.
-                return Ok(ToolOutput::error(format!(
-                    "reply suppressed by reply_send hook: {reason}"
-                )));
-            }
-        }
-
         let mut output = match tool.execute(input, ctx).await {
             Ok(output) => output,
             Err(e) => {
@@ -173,8 +140,7 @@ impl ToolRegistry {
             .await
         {
             // The tool already ran; surface the hook's reason to the model
-            // as an error result while preserving the output's other
-            // semantics (`stop_after`, delivery flags).
+            // as an error result.
             output.is_error = true;
             output.content.push_str("\n\n[post_tool_use hook: ");
             output.content.push_str(reason.trim());
@@ -196,6 +162,12 @@ impl ToolRegistry {
     /// Check if a tool exists.
     pub fn has_tool(&self, name: &str) -> bool {
         self.tools.contains_key(name)
+    }
+
+    /// Attached agent hooks, if any. Used by delivery paths outside tool
+    /// execution (e.g. `deliver_reply`) that gate on hooks themselves.
+    pub fn hooks(&self) -> Option<&HookSet> {
+        self.hooks.as_deref()
     }
 
     /// Number of registered tools.
@@ -408,150 +380,6 @@ mod tests {
         let ctx = ToolContext::new(std::path::Path::new("/tmp"));
         // "mock" doesn't match "^other$" → proceeds unblocked.
         let out = reg.execute("mock", Value::Null, &ctx).await.unwrap();
-        assert_eq!(out.content, "executed");
-    }
-
-    /// Outbound adapter that does nothing (sync-delivery presence check only).
-    struct NoopOut;
-
-    #[async_trait]
-    impl jyc_types::OutboundAdapter for NoopOut {
-        fn channel_type(&self) -> &str {
-            "test"
-        }
-        async fn connect(&self) -> Result<()> {
-            Ok(())
-        }
-        async fn disconnect(&self) -> Result<()> {
-            Ok(())
-        }
-        fn clean_body(&self, raw_body: &str) -> String {
-            raw_body.to_string()
-        }
-        async fn send_reply(
-            &self,
-            _original: &jyc_types::InboundMessage,
-            _reply_text: &str,
-            _topic_path: &std::path::Path,
-            _message_dir: &str,
-            _attachments: Option<&[jyc_types::OutboundAttachment]>,
-        ) -> Result<jyc_types::SendResult> {
-            Ok(jyc_types::SendResult {
-                message_id: "test".to_string(),
-            })
-        }
-        async fn send_message(
-            &self,
-            _recipient: &str,
-            _subject: &str,
-            _body: &str,
-        ) -> Result<jyc_types::SendResult> {
-            Ok(jyc_types::SendResult {
-                message_id: "test".to_string(),
-            })
-        }
-    }
-
-    /// Wire the synchronous-delivery fields (the exact pair `mcp_bridge`
-    /// checks before sending inline instead of relaying via file).
-    fn sync_reply_ctx(ctx: &mut ToolContext<'_>) {
-        ctx.outbound = Some(Arc::new(NoopOut));
-        ctx.reply_target = Some(crate::tools::ReplyTarget {
-            original: jyc_types::InboundMessage {
-                id: "m1".into(),
-                channel: "test".into(),
-                channel_uid: "t".into(),
-                sender: "s".into(),
-                sender_address: "s@x".into(),
-                recipients: vec![],
-                topic: "rt".into(),
-                content: jyc_types::MessageContent {
-                    text: Some("q".into()),
-                    html: None,
-                    markdown: None,
-                },
-                timestamp: chrono::Utc::now(),
-                references: None,
-                reply_to_id: None,
-                external_id: None,
-                attachments: vec![],
-                metadata: Default::default(),
-                matched_pattern: None,
-            },
-            message_dir: "d".into(),
-        });
-    }
-
-    #[tokio::test]
-    async fn reply_send_gates_synchronous_tool_delivery() {
-        let mut reg = ToolRegistry::new();
-        reg.register(Box::new(MockTool {
-            name: "jyc_reply_message".into(),
-        }));
-        reg.set_hooks(hook(
-            "reply_send",
-            "grep -q reply_text - && echo rs >> markers; exit 2",
-        ));
-        let tmp = tempfile::tempdir().unwrap();
-        let mut ctx = ToolContext::new(tmp.path());
-        sync_reply_ctx(&mut ctx);
-        ctx.current_topic = Some("rt".into());
-        let out = reg
-            .execute(
-                "jyc_reply_message",
-                serde_json::json!({"message": "secret reply"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        // Suppressed: error result (ends the turn), tool never ran.
-        assert!(out.is_error);
-        assert!(out.content.contains("suppressed"), "got: {}", out.content);
-        let markers = std::fs::read_to_string(tmp.path().join("markers")).unwrap();
-        assert!(markers.contains("rs"), "hook must see reply_text");
-    }
-
-    #[tokio::test]
-    async fn silent_reply_is_not_gated_by_reply_send() {
-        let mut reg = ToolRegistry::new();
-        reg.register(Box::new(MockTool {
-            name: "jyc_reply_message".into(),
-        }));
-        reg.set_hooks(hook("reply_send", "exit 2"));
-        let tmp = tempfile::tempdir().unwrap();
-        let mut ctx = ToolContext::new(tmp.path());
-        sync_reply_ctx(&mut ctx);
-        let out = reg
-            .execute(
-                "jyc_reply_message",
-                serde_json::json!({"message": "x", "silent": true}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        assert_eq!(out.content, "executed", "silent reply sends nothing");
-    }
-
-    #[tokio::test]
-    async fn relay_reply_is_not_gated_at_tool_level() {
-        // Without reply_target/outbound the tool writes the file relay;
-        // reply_send must fire at the delivery sites in jyc-core instead.
-        let mut reg = reg_with_mock();
-        reg.register(Box::new(MockTool {
-            name: "jyc_reply_message".into(),
-        }));
-        reg.set_hooks(hook("reply_send", "exit 2"));
-        let tmp = tempfile::tempdir().unwrap();
-        let mut ctx = ToolContext::new(tmp.path());
-        ctx.current_topic = Some("rt".into());
-        let out = reg
-            .execute(
-                "jyc_reply_message",
-                serde_json::json!({"message": "x"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
         assert_eq!(out.content, "executed");
     }
 

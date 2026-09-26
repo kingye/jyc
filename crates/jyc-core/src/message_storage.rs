@@ -5,12 +5,6 @@ use std::path::{Path, PathBuf};
 use jyc_types::InboundAttachmentConfig;
 use jyc_types::InboundMessage;
 
-/// Trace suffix the agent loop appends to an auto-delivered fallback reply
-/// (a reply shipped in the agent's name without a conscious tool call). It
-/// is UI metadata only: the chat log must persist the reply WITHOUT it, or
-/// the marker re-enters model context and gets imitated.
-pub const AUTO_DELIVERED_TRACE: &str = "\n\n— auto-delivered";
-
 /// Result of storing a message.
 #[derive(Debug, Clone)]
 pub struct StoreResult {
@@ -160,11 +154,6 @@ impl MessageStorage {
     ) -> Result<()> {
         use crate::chat_log_store::{ChatLogStore, ReplyMetadata};
 
-        // The chat log is model-facing context: strip the auto-delivery
-        // trace so a stamped fallback reply is never re-read by the model
-        // (it would imitate the marker in its own tool calls).
-        let reply_text = reply_text.trim_end_matches(AUTO_DELIVERED_TRACE);
-
         // For now, use simple metadata
         let metadata = ReplyMetadata {
             sender: "jyc-bot".to_string(),
@@ -253,47 +242,5 @@ mod tests {
             .unwrap();
 
         // Reply is appended to chat log — verify function returns without error
-    }
-
-    #[tokio::test]
-    async fn test_store_reply_strips_auto_delivered_trace() {
-        let tmp = tempfile::tempdir().unwrap();
-        let storage = MessageStorage::new(tmp.path());
-        let msg = test_message();
-
-        let result = storage.store(&msg, "ms-trace-topic", None).await.unwrap();
-        let stamped = format!("Fallback reply.{}", AUTO_DELIVERED_TRACE);
-        storage
-            .store_reply(
-                "ms-trace-topic",
-                &result.topic_path,
-                &stamped,
-                &result.message_dir,
-            )
-            .await
-            .unwrap();
-        // Clean replies are persisted verbatim
-        storage
-            .store_reply(
-                "ms-trace-topic",
-                &result.topic_path,
-                "Clean reply.",
-                &result.message_dir,
-            )
-            .await
-            .unwrap();
-
-        // The chat log is model-facing context: it must persist the reply
-        // text without the UI-only auto-delivery trace.
-        let log: String = std::fs::read_dir(result.topic_path.join(".jyc"))
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with("chat_history_"))
-            .map(|e| std::fs::read_to_string(e.path()).unwrap())
-            .collect();
-
-        assert!(log.contains("Fallback reply."));
-        assert!(log.contains("Clean reply."));
-        assert!(!log.contains("auto-delivered"));
     }
 }

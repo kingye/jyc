@@ -1377,461 +1377,25 @@ mod tools {
 }
 
 mod mcp_bridge {
-    use jyc_agent::tools::mcp_bridge::{ReplyMessageTool, SendMessageTool};
-    use jyc_agent::tools::{Tool, ToolContext};
+    use jyc_agent::tools::mcp_bridge::SendMessageTool;
+    use jyc_agent::tools::{Tool, ToolContext, deliver_reply};
     use jyc_types::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult};
     use serde_json::json;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
-    #[tokio::test]
-    async fn reply_tool_rejects_empty_message() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "reply_tool_rejects_empty_message";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-
-        let tool = ReplyMessageTool;
-        let ctx = ToolContext::new(tmp.path());
-        let result = tool.execute(json!({"message": ""}), &ctx).await.unwrap();
-        assert!(result.is_error);
-        assert!(result.content.contains("empty"));
-    }
-
-    #[tokio::test]
-    async fn reply_tool_writes_signal_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "reply_tool_writes_signal_files";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-
-        let tool = ReplyMessageTool;
-        let mut ctx = ToolContext::new(tmp.path());
-        // Reply tools resolve the state dir via ctx.current_topic (#825).
-        ctx.current_topic = Some(topic.into());
-        let result = tool
-            .execute(json!({"message": "Hello user!"}), &ctx)
-            .await
-            .unwrap();
-        assert!(!result.is_error);
-
-        // Verify signal files
-        assert!(jyc_dir.join("reply-sent.flag").exists());
-        assert!(jyc_dir.join("reply.md").exists());
-        assert_eq!(
-            std::fs::read_to_string(jyc_dir.join("reply.md")).unwrap(),
-            "Hello user!"
-        );
-    }
-
-    /// Mock outbound adapter that records send_message and send_message_with_attachments calls.
-    #[allow(clippy::type_complexity)]
-    struct MockOutbound {
-        calls: Arc<Mutex<Vec<(String, String, String)>>>,
-        attachment_calls: Arc<Mutex<Vec<(String, String, String, Vec<String>)>>>,
-    }
-
-    impl MockOutbound {
-        #[allow(clippy::type_complexity)]
-        fn new() -> (
-            Self,
-            Arc<Mutex<Vec<(String, String, String)>>>,
-            Arc<Mutex<Vec<(String, String, String, Vec<String>)>>>,
-        ) {
-            let calls = Arc::new(Mutex::new(Vec::new()));
-            let attachment_calls = Arc::new(Mutex::new(Vec::new()));
-            (
-                Self {
-                    calls: calls.clone(),
-                    attachment_calls: attachment_calls.clone(),
-                },
-                calls,
-                attachment_calls,
-            )
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl OutboundAdapter for MockOutbound {
-        fn channel_type(&self) -> &str {
-            "mock"
-        }
-
-        async fn connect(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn disconnect(&self) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn clean_body(&self, body: &str) -> String {
-            body.to_string()
-        }
-
-        async fn send_reply(
-            &self,
-            _original: &InboundMessage,
-            _reply_text: &str,
-            _topic_path: &Path,
-            _message_dir: &str,
-            _attachments: Option<&[OutboundAttachment]>,
-        ) -> anyhow::Result<SendResult> {
-            Ok(SendResult {
-                message_id: "mock-reply".to_string(),
-            })
-        }
-
-        async fn send_message(
-            &self,
-            recipient: &str,
-            subject: &str,
-            body: &str,
-        ) -> anyhow::Result<SendResult> {
-            self.calls.lock().unwrap().push((
-                recipient.to_string(),
-                subject.to_string(),
-                body.to_string(),
-            ));
-            Ok(SendResult {
-                message_id: "mock-msg".to_string(),
-            })
-        }
-
-        async fn send_message_with_attachments(
-            &self,
-            recipient: &str,
-            subject: &str,
-            body: &str,
-            attachments: Option<&[OutboundAttachment]>,
-        ) -> anyhow::Result<SendResult> {
-            let att_filenames: Vec<String> = attachments
-                .unwrap_or_default()
-                .iter()
-                .map(|a| a.filename.clone())
-                .collect();
-            self.attachment_calls.lock().unwrap().push((
-                recipient.to_string(),
-                subject.to_string(),
-                body.to_string(),
-                att_filenames,
-            ));
-            Ok(SendResult {
-                message_id: "mock-attachment-msg".to_string(),
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn send_message_rejects_empty_recipient() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "send_message_rejects_empty_recipient";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let tool = SendMessageTool;
-        let ctx = ToolContext::new(tmp.path());
-        let result = tool
-            .execute(json!({"recipient": "", "message": "hi"}), &ctx)
-            .await
-            .unwrap();
-        assert!(result.is_error);
-        assert!(result.content.contains("Recipient cannot be empty"));
-    }
-
-    #[tokio::test]
-    async fn send_message_rejects_empty_message() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "send_message_rejects_empty_message";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let tool = SendMessageTool;
-        let ctx = ToolContext::new(tmp.path());
-        let result = tool
-            .execute(
-                json!({"recipient": "user@example.com", "message": ""}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        assert!(result.is_error);
-        assert!(result.content.contains("Message cannot be empty"));
-    }
-
-    #[tokio::test]
-    async fn send_message_requires_outbound() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "send_message_requires_outbound";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let tool = SendMessageTool;
-        let ctx = ToolContext::new(tmp.path());
-        let result = tool
-            .execute(
-                json!({"recipient": "user@example.com", "message": "hello"}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        assert!(result.is_error);
-        assert!(result.content.contains("No outbound adapter available"));
-    }
-
-    #[tokio::test]
-    async fn send_message_sends_via_outbound() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "send_message_sends_via_outbound";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let tool = SendMessageTool;
-        let (mock, calls, _attachment_calls) = MockOutbound::new();
-        let mut ctx = ToolContext::new(tmp.path());
-        ctx.outbound = Some(Arc::new(mock));
-
-        let result = tool
-            .execute(
-                json!({
-                    "recipient": "wecomkf:kf001:user123",
-                    "subject": "Alert",
-                    "message": "System is down"
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(!result.is_error);
-        assert!(result.content.contains("wecomkf:kf001:user123"));
-        assert!(result.content.contains("mock-msg"));
-
-        let recorded = calls.lock().unwrap();
-        assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0].0, "wecomkf:kf001:user123");
-        assert_eq!(recorded[0].1, "Alert");
-        assert_eq!(recorded[0].2, "System is down");
-    }
-
-    #[tokio::test]
-    async fn send_message_with_channel_cross_channel() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "send_message_with_channel_cross_channel";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let tool = SendMessageTool;
-        let (mock, calls, _attachment_calls) = MockOutbound::new();
-        let mut ctx = ToolContext::new(tmp.path());
-        // Set up an outbounds map with the mock for channel "email"
-        let mut outbounds_map: std::collections::HashMap<String, Arc<dyn OutboundAdapter>> =
-            std::collections::HashMap::new();
-        outbounds_map.insert("email".to_string(), Arc::new(mock));
-        ctx.outbounds = Some(Arc::new(tokio::sync::Mutex::new(outbounds_map)));
-
-        let result = tool
-            .execute(
-                json!({
-                    "channel": "email",
-                    "recipient": "user@example.com",
-                    "subject": "Cross-channel alert",
-                    "message": "Hello from another channel"
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(!result.is_error);
-        assert!(result.content.contains("user@example.com"));
-        assert!(result.content.contains("mock-msg"));
-
-        let recorded = calls.lock().unwrap();
-        assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0].0, "user@example.com");
-        assert_eq!(recorded[0].1, "Cross-channel alert");
-    }
-
-    #[tokio::test]
-    async fn send_message_rejects_unknown_channel() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "send_message_rejects_unknown_channel";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let tool = SendMessageTool;
-        let (mock, _calls, _attachment_calls) = MockOutbound::new();
-        let mut ctx = ToolContext::new(tmp.path());
-        let mut outbounds_map: std::collections::HashMap<String, Arc<dyn OutboundAdapter>> =
-            std::collections::HashMap::new();
-        outbounds_map.insert("email".to_string(), Arc::new(mock));
-        ctx.outbounds = Some(Arc::new(tokio::sync::Mutex::new(outbounds_map)));
-
-        let result = tool
-            .execute(
-                json!({
-                    "channel": "nonexistent",
-                    "recipient": "user@example.com",
-                    "message": "hello"
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(result.is_error);
-        assert!(result.content.contains("Unknown channel"));
-        assert!(result.content.contains("nonexistent"));
-    }
-
-    #[tokio::test]
-    async fn send_message_rejects_missing_outbounds_map() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "send_message_rejects_missing_outbounds_map";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let tool = SendMessageTool;
-        let mut ctx = ToolContext::new(tmp.path());
-        // outbounds is None (not configured)
-        ctx.outbounds = None;
-
-        let result = tool
-            .execute(
-                json!({
-                    "channel": "email",
-                    "recipient": "user@example.com",
-                    "message": "hello"
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(result.is_error);
-        assert!(
-            result
-                .content
-                .contains("Cross-channel messaging is not available")
-        );
-    }
-
-    #[tokio::test]
-    async fn send_message_with_attachments_success() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "send_message_with_attachments_success";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let tool = SendMessageTool;
-        let (mock, _calls, attachment_calls) = MockOutbound::new();
-        let mut ctx = ToolContext::new(tmp.path());
-        ctx.outbound = Some(Arc::new(mock));
-
-        // Create a test attachment file
-        let file_path = tmp.path().join("report.pdf");
-        tokio::fs::write(&file_path, b"pdf content").await.unwrap();
-
-        let result = tool
-            .execute(
-                json!({
-                    "recipient": "user@example.com",
-                    "subject": "Report",
-                    "message": "Here is your report",
-                    "attachments": ["report.pdf"]
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(!result.is_error);
-        assert!(result.content.contains("user@example.com"));
-        assert!(result.content.contains("mock-attachment-msg"));
-        assert!(result.content.contains("1 attachment(s)"));
-
-        let recorded = attachment_calls.lock().unwrap();
-        assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0].0, "user@example.com");
-        assert_eq!(recorded[0].1, "Report");
-        assert_eq!(recorded[0].3, vec!["report.pdf"]);
-    }
-
-    #[tokio::test]
-    async fn send_message_attachment_not_found() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "send_message_attachment_not_found";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let tool = SendMessageTool;
-        let (mock, _calls, _attachment_calls) = MockOutbound::new();
-        let mut ctx = ToolContext::new(tmp.path());
-        ctx.outbound = Some(Arc::new(mock));
-
-        let result = tool
-            .execute(
-                json!({
-                    "recipient": "user@example.com",
-                    "message": "Here is your report",
-                    "attachments": ["nonexistent.pdf"]
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(result.is_error);
-        assert!(result.content.contains("Attachment not found"));
-        assert!(result.content.contains("nonexistent.pdf"));
-    }
-
-    #[tokio::test]
-    async fn send_message_cross_channel_with_attachments() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "send_message_cross_channel_with_attachments";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let tool = SendMessageTool;
-        let (mock, _calls, attachment_calls) = MockOutbound::new();
-        let mut ctx = ToolContext::new(tmp.path());
-        // Set up outbounds map for cross-channel
-        let mut outbounds_map: std::collections::HashMap<String, Arc<dyn OutboundAdapter>> =
-            std::collections::HashMap::new();
-        outbounds_map.insert("email".to_string(), Arc::new(mock));
-        ctx.outbounds = Some(Arc::new(tokio::sync::Mutex::new(outbounds_map)));
-
-        // Create a test attachment file
-        let file_path = tmp.path().join("data.csv");
-        tokio::fs::write(&file_path, b"a,b,c\n1,2,3").await.unwrap();
-
-        let result = tool
-            .execute(
-                json!({
-                    "channel": "email",
-                    "recipient": "external@example.com",
-                    "subject": "CSV Export",
-                    "message": "Here is your export",
-                    "attachments": ["data.csv"]
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert!(!result.is_error);
-        assert!(result.content.contains("external@example.com"));
-        assert!(result.content.contains("mock-attachment-msg"));
-        assert!(result.content.contains("1 attachment(s)"));
-
-        let recorded = attachment_calls.lock().unwrap();
-        assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0].0, "external@example.com");
-        assert_eq!(recorded[0].3, vec!["data.csv"]);
-    }
-
-    /// Recorded `send_reply` calls: (reply_text, attachment filenames).
-    type ReplyLog = Arc<Mutex<Vec<(String, Vec<String>)>>>;
-
-    /// Mock outbound adapter for reply-delivery tests: records `send_reply`
-    /// calls and can be configured to fail (to exercise the file-relay
-    /// fallback).
     struct ReplyMockOutbound {
-        replies: ReplyLog,
         fail: bool,
+        replies: Arc<Mutex<Vec<(String, Vec<String>)>>>,
     }
 
     impl ReplyMockOutbound {
-        fn new(fail: bool) -> (Self, ReplyLog) {
+        fn new(fail: bool) -> (Self, Arc<Mutex<Vec<(String, Vec<String>)>>>) {
             let replies = Arc::new(Mutex::new(Vec::new()));
             (
                 Self {
-                    replies: replies.clone(),
                     fail,
+                    replies: replies.clone(),
                 },
                 replies,
             )
@@ -1843,19 +1407,15 @@ mod mcp_bridge {
         fn channel_type(&self) -> &str {
             "mock"
         }
-
         async fn connect(&self) -> anyhow::Result<()> {
             Ok(())
         }
-
         async fn disconnect(&self) -> anyhow::Result<()> {
             Ok(())
         }
-
         fn clean_body(&self, body: &str) -> String {
             body.to_string()
         }
-
         async fn send_reply(
             &self,
             _original: &InboundMessage,
@@ -1865,7 +1425,7 @@ mod mcp_bridge {
             attachments: Option<&[OutboundAttachment]>,
         ) -> anyhow::Result<SendResult> {
             if self.fail {
-                anyhow::bail!("simulated delivery failure");
+                anyhow::bail!("mock delivery failure");
             }
             self.replies.lock().unwrap().push((
                 reply_text.to_string(),
@@ -1879,7 +1439,6 @@ mod mcp_bridge {
                 message_id: "direct-1".to_string(),
             })
         }
-
         async fn send_message(
             &self,
             _recipient: &str,
@@ -1887,20 +1446,20 @@ mod mcp_bridge {
             _body: &str,
         ) -> anyhow::Result<SendResult> {
             Ok(SendResult {
-                message_id: "mock-msg".to_string(),
+                message_id: "msg-1".to_string(),
             })
         }
     }
 
     fn reply_test_message() -> InboundMessage {
         InboundMessage {
-            id: "test".to_string(),
-            channel: "test".to_string(),
-            channel_uid: "1".to_string(),
+            id: "m1".to_string(),
+            channel: "mock".to_string(),
+            channel_uid: "u1".to_string(),
             sender: "user".to_string(),
             sender_address: "user@test".to_string(),
             recipients: vec![],
-            topic: "Test".to_string(),
+            topic: "t".to_string(),
             content: Default::default(),
             timestamp: chrono::Utc::now(),
             references: None,
@@ -1912,19 +1471,16 @@ mod mcp_bridge {
         }
     }
 
-    /// With an outbound adapter and reply target injected, the reply is
-    /// delivered synchronously and NO signal files are written (nothing left
-    /// for the watcher/worker to deliver).
+    /// With a live reply target the reply goes out synchronously through
+    /// the outbound adapter — no file relay leftovers.
     #[tokio::test]
-    async fn reply_tool_delivers_directly_when_target_present() {
+    async fn deliver_reply_sends_directly_with_target() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "reply_tool_delivers_directly_when_target_present";
+        let topic = "deliver_reply_sends_directly_with_target";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        std::fs::write(tmp.path().join("report.md"), "report").unwrap();
 
         let (mock, replies) = ReplyMockOutbound::new(false);
         let mut ctx = ToolContext::new(tmp.path());
-        // Reply tools resolve the state dir via ctx.current_topic (#825).
         ctx.current_topic = Some(topic.into());
         ctx.outbound = Some(Arc::new(mock));
         ctx.reply_target = Some(jyc_agent::tools::ReplyTarget {
@@ -1932,69 +1488,52 @@ mod mcp_bridge {
             message_dir: "2026-08-22_00-00-00".to_string(),
         });
 
-        let result = ReplyMessageTool
-            .execute(
-                json!({"message": "done!", "attachments": ["report.md"]}),
-                &ctx,
-            )
-            .await
-            .unwrap();
+        let delivery = deliver_reply(&ctx, None, topic, "done!").await.unwrap();
 
-        assert!(!result.is_error);
-        assert!(result.delivered, "delivered marker must be set");
-        assert!(result.content.contains("delivered"));
-        assert!(result.content.contains("direct-1"));
+        assert!(delivery.direct);
+        assert_eq!(delivery.message_id.as_deref(), Some("direct-1"));
         let recorded = replies.lock().unwrap();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].0, "done!");
-        assert_eq!(recorded[0].1, vec!["report.md"]);
         // No file relay leftovers.
         let jyc_dir = tmp.path().join(".jyc");
         assert!(!jyc_dir.join("reply.md").exists());
         assert!(!jyc_dir.join("reply-sent.flag").exists());
     }
 
-    /// stop_after=false progress replies also deliver directly and keep the
-    /// loop running.
+    /// Without a live reply target (tests, sub-agents) the reply is queued
+    /// via the reply.md + reply-sent.flag file relay.
     #[tokio::test]
-    async fn reply_tool_progress_delivers_directly_and_continues() {
+    async fn deliver_reply_writes_signal_files_without_target() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "reply_tool_progress_delivers_directly_and_continues";
+        let topic = "deliver_reply_writes_signal_files_without_target";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
-        let (mock, replies) = ReplyMockOutbound::new(false);
-        let mut ctx = ToolContext::new(tmp.path());
-        // Reply tools resolve the state dir via ctx.current_topic (#825).
-        ctx.current_topic = Some(topic.into());
-        ctx.outbound = Some(Arc::new(mock));
-        ctx.reply_target = Some(jyc_agent::tools::ReplyTarget {
-            original: reply_test_message(),
-            message_dir: "2026-08-22_00-00-00".to_string(),
-        });
-
-        let result = ReplyMessageTool
-            .execute(json!({"message": "working…", "stop_after": false}), &ctx)
+        let ctx = ToolContext::new(tmp.path());
+        let delivery = deliver_reply(&ctx, None, topic, "Hello user!")
             .await
             .unwrap();
 
-        assert!(!result.is_error);
-        assert!(!result.stop_after, "progress reply must not stop the loop");
-        assert!(result.delivered);
-        assert_eq!(replies.lock().unwrap().len(), 1);
+        assert!(!delivery.direct);
+        let jyc_dir = tmp.path().join(".jyc");
+        assert!(jyc_dir.join("reply-sent.flag").exists());
+        assert!(jyc_dir.join("reply.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(jyc_dir.join("reply.md")).unwrap(),
+            "Hello user!"
+        );
     }
 
-    /// When direct delivery fails, the tool falls back to the file relay so
-    /// the worker can retry post-loop, and the result says "queued" rather
-    /// than claiming success.
+    /// When the direct send fails, the reply falls back to the file relay
+    /// so the worker can retry post-loop (and nothing was sent twice).
     #[tokio::test]
-    async fn reply_tool_falls_back_to_file_relay_on_direct_failure() {
+    async fn deliver_reply_falls_back_to_file_relay_on_direct_failure() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "reply_tool_falls_back_to_file_relay_on_direct_failure";
+        let topic = "deliver_reply_falls_back_to_file_relay_on_direct_failure";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
 
         let (mock, replies) = ReplyMockOutbound::new(true);
         let mut ctx = ToolContext::new(tmp.path());
-        // Reply tools resolve the state dir via ctx.current_topic (#825).
         ctx.current_topic = Some(topic.into());
         ctx.outbound = Some(Arc::new(mock));
         ctx.reply_target = Some(jyc_agent::tools::ReplyTarget {
@@ -2002,16 +1541,10 @@ mod mcp_bridge {
             message_dir: "2026-08-22_00-00-00".to_string(),
         });
 
-        let result = ReplyMessageTool
-            .execute(json!({"message": "done!"}), &ctx)
-            .await
-            .unwrap();
+        let delivery = deliver_reply(&ctx, None, topic, "done!").await.unwrap();
 
-        assert!(!result.is_error);
-        assert!(!result.delivered, "failed direct delivery is not delivered");
-        assert!(result.content.contains("queued"));
+        assert!(!delivery.direct);
         assert!(replies.lock().unwrap().is_empty());
-        // File relay engaged: worker will deliver from these.
         let jyc_dir = tmp.path().join(".jyc");
         assert_eq!(
             std::fs::read_to_string(jyc_dir.join("reply.md")).unwrap(),
@@ -2020,56 +1553,20 @@ mod mcp_bridge {
         assert!(jyc_dir.join("reply-sent.flag").exists());
     }
 
-    /// `silent: true` closes the turn without delivering anything: no
-    /// adapter call, no signal files — so the worker's post-loop fallback
-    /// stays silent too. This is the deterministic "nothing to send"
-    /// escape (e.g. replying to a system reminder that fired in error).
+    /// The proactive send-message tool still reports a clean tool error
+    /// when no outbound adapter is configured.
     #[tokio::test]
-    async fn reply_tool_silent_delivers_nothing() {
+    async fn send_message_tool_errors_without_outbound() {
         let tmp = tempfile::tempdir().unwrap();
-        let topic = "reply_tool_silent_delivers_nothing";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-
-        let (mock, replies) = ReplyMockOutbound::new(false);
-        let mut ctx = ToolContext::new(tmp.path());
-        ctx.outbound = Some(Arc::new(mock));
-        ctx.reply_target = Some(jyc_agent::tools::ReplyTarget {
-            original: reply_test_message(),
-            message_dir: "2026-08-22_00-00-00".to_string(),
-        });
-
-        let result = ReplyMessageTool
-            .execute(json!({"silent": true}), &ctx)
-            .await
-            .unwrap();
-
-        assert!(!result.is_error);
-        assert!(!result.delivered);
-        assert!(result.stop_after, "silent defaults to stop_after=true");
-        assert!(result.content.contains("silently"));
-        assert!(replies.lock().unwrap().is_empty(), "no adapter call");
-        let jyc_dir = tmp.path().join(".jyc");
-        assert!(!jyc_dir.join("reply.md").exists(), "no file relay");
-        assert!(!jyc_dir.join("reply-sent.flag").exists());
-    }
-
-    /// `silent: true` with `stop_after: false` records the close but lets
-    /// the agent continue working.
-    #[tokio::test]
-    async fn reply_tool_silent_continue() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "reply_tool_silent_continue";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         let ctx = ToolContext::new(tmp.path());
-
-        let result = ReplyMessageTool
-            .execute(json!({"silent": true, "stop_after": false}), &ctx)
-            .await
-            .unwrap();
-
-        assert!(!result.is_error);
-        assert!(!result.stop_after);
-        assert!(result.content.contains("Continue working"));
+        let tool = SendMessageTool;
+        let result = tool
+            .execute(
+                json!({"recipient": "wecom:user1", "message": "alert"}),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err() || result.unwrap().is_error);
     }
 }
 

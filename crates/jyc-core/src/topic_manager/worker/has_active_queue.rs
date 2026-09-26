@@ -105,6 +105,52 @@ impl jyc_types::OutboundAdapter for RecordingOutbound {
     }
 }
 
+/// Agent service that queues its reply via the `.jyc/reply.md` +
+/// `reply-sent.flag` file relay (like the real loop does when no live
+/// reply target exists), reporting `reply_delivered: true`.
+struct RelayWritingAgent;
+
+#[async_trait::async_trait]
+impl AgentService for RelayWritingAgent {
+    async fn base_url(&self) -> Result<String> {
+        Ok("".to_string())
+    }
+    async fn process(
+        &self,
+        _message: &InboundMessage,
+        topic_name: &str,
+        topic_path: &Path,
+        _message_dir: &str,
+        _pending_rx: &mut mpsc::Receiver<jyc_types::QueueItem>,
+        _topic_cancel: CancellationToken,
+    ) -> Result<AgentResult> {
+        let jyc_dir = jyc_core_test_jyc_dir(topic_name, topic_path);
+        std::fs::create_dir_all(&jyc_dir)?;
+        std::fs::write(jyc_dir.join("reply.md"), "ok")?;
+        std::fs::write(
+            jyc_dir.join("reply-sent.flag"),
+            r#"{"sent_at": "2026-09-26T00:00:00Z", "message_len": 2,
+                "attachment_count": 0, "attachments": []}"#,
+        )?;
+        Ok(AgentResult {
+            reply_delivered: true,
+            reply_text: Some("ok".to_string()),
+        })
+    }
+    async fn reset_session(
+        &self,
+        _topic_path: &Path,
+        _topic_name: &str,
+        _config: &jyc_types::channel::ResetCompressionConfig,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+fn jyc_core_test_jyc_dir(topic_name: &str, topic_path: &Path) -> std::path::PathBuf {
+    jyc_types::state_dir::jyc_dir(topic_name, topic_path)
+}
+
 /// Agent service that always fails with a predictable message.
 struct FailingAgent;
 
@@ -2105,7 +2151,8 @@ shell = ["sh", "-c", "grep -q startup - && echo ss >> hook-ran.log"]
         let workspace = tmp.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
         let recording = Arc::new(RecordingOutbound::default());
-        // AI reply carries reply_text; exit-2 suppresses the delivery.
+        // The agent queues its reply via the file relay; the exit-2
+        // reply_send hook suppresses the worker's relay delivery.
         let cfg = hook_tm_config(
             r#"
 [[hooks]]
@@ -2117,7 +2164,7 @@ shell = ["sh", "-c", "grep -q reply_text - && echo rs >> hook-ran.log; exit 2"]
             &workspace,
             &cfg,
             recording.clone(),
-            Arc::new(StaticAgentService::new("ok")),
+            Arc::new(RelayWritingAgent),
         );
         let topic_path = workspace.join("hr-reply");
         tm.enqueue(

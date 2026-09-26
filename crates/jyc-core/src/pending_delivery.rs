@@ -177,7 +177,7 @@ pub async fn watch_pending_deliveries(
         }
 
         // Deliver via outbound adapter (channel-agnostic), carrying any
-        // attachments the reply tool recorded in the signal file.
+        // attachments the agent recorded in the signal file.
         let attachments = read_signal_attachments(&signal_path, topic_path).await;
         if let Err(e) = outbound
             .send_reply(

@@ -1,11 +1,30 @@
 ## [Unreleased]
 
+### Changed
+
+- The `jyc_reply_message` tool description now states the contract in the
+  first lines: anything the user should see must go through the tool
+  (leftover text is auto-sent as a degraded fallback, not a real reply),
+  and the `— auto-delivered` marker is added by the system only — never
+  write it yourself; the system prompt's Reply Instructions say the same
+
+### Removed
+
+- The `jyc mcp-reply-tool` hidden subcommand and the `jyc-mcp` crate are
+  gone. The in-process agent uses the in-process `jyc_reply_message` tool;
+  the subprocess MCP server had no remaining consumers
+
 ### Fixed
 
 - `job_create` no longer accepts both `cron` and `at` in one call (cron
   silently won); the tool description and schema now state up front that
   exactly one of them is required, and mention `job_delete`/`job_toggle` for
   stopping a recurring job later
+
+- The `— auto-delivered` trace on fallback replies is stripped before a
+  reply is persisted to the chat log. The marker is UI metadata, but it
+  round-tripped into model context via chat history — models imitated it
+  and typed the marker into their own `jyc_reply_message` calls
 
 - Scheduled-job turns always run in build mode: a job turn no longer
   inherits the topic's interactive plan-mode override (from `.jyc/mode-override`

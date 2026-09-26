@@ -466,7 +466,7 @@ holds another topic's state directly under one of those roots.
   config-key dirs predating the breadcrumb; derived `_` dirs with no
   breadcrumb are skipped — they are re-adopted deterministically when the
   dir is re-opened). Runs before channels start and also bootstraps
-  config-less external subprocesses like `jyc mcp-reply-tool` (which
+  config-less external subprocesses (hooks and CLI-spawned helpers, which
   receive the topic name via `JYC_TOPIC_NAME` at spawn); config pins
   additionally adopt from config — identical mappings, idempotent.
 - **Close.** `/close --force` on an adopted topic deletes the state dir
@@ -482,12 +482,6 @@ holds another topic's state directly under one of those roots.
   appended to the agent's additional read/write roots (parity with the
   pre-refactor in-dir `.jyc`), and the system prompt's Chat History
   section shows the absolute path.
-- **External MCP subprocesses** start with an empty registry;
-  `jyc mcp-reply-tool` self-bootstraps it by scanning
-  `state_root(JYC_WORKDIR | data_home)` breadcrumbs. Custom `--workdir`
-  instances must pass `JYC_WORKDIR` in that server's `environment` for
-  relocated state to resolve.
-
 ## Lifecycle Hooks
 
 Operator-configured external commands (`[[hooks]]` global +
@@ -1864,19 +1858,15 @@ JYC uses the following subset of the agent service API:
 │    4. Activity-based timeout: 30 min of silence (60 min when tool running)
 │    5. Progress log every 10s (elapsed, parts, model, activity, silence)
 │         ↓
-│  in-process agent calls reply_message MCP tool
+│  in-process agent calls jyc_reply_message
 │         ↓
-│  MCP Tool (jyc mcp-reply-tool subprocess):
-│    1. Load .jyc/reply-context.json → get channel name + message timestamp
-│    2. Load config from JYC_ROOT/config.toml
-│    3. Write reply text to .jyc/reply.md
-│    4. Write .jyc/reply-sent.flag (signal file)
-│         ↓
-│  Monitor detects signal file:
-│    1. Read .jyc/reply.md
-│    2. Build full_reply_text = AI reply + quoted history (email only)
-│    3. Send via pre-warmed outbound adapter (eliminates cold-start timeouts)
-│    4. MessageStorage::store_reply() → append to chat log
+│  In-process reply tool (jyc-agent/src/tools/mcp_bridge.rs):
+│    1. With a live reply target: build full_reply_text = AI reply +
+│       quoted history (email only), send directly via the pre-warmed
+│       outbound adapter (eliminates cold-start timeouts)
+│    2. Without one (background turns, tests): write .jyc/reply.md +
+│       .jyc/reply-sent.flag signal files for the file relay
+│    3. MessageStorage::store_reply() → append to chat log
 │         ↓
 │  Handle result → return GenerateReplyResult:
 │    - reply_sent_by_tool: true (SSE tool detection OR signal file) → done
@@ -2160,68 +2150,35 @@ jyc binary
 ├── jyc config validate
 ├── jyc state              ← show monitoring state
 ├── jyc patterns list      ← list patterns (shows all rule fields)
-├── jyc dashboard          ← live TUI dashboard (connects to running jyc serve)
-├── jyc mcp-reply-tool     ← hidden subcommand (MCP stdio server)
-├── jyc mcp-vision-tool    ← hidden subcommand (vision analysis MCP server)
-└── jyc mcp-question-tool  ← hidden subcommand (ask_user MCP server)
-                              All MCP tools spawned by in-process agent as subprocesses
+└── jyc dashboard          ← live TUI dashboard (connects to running jyc serve)
 ```
 
 The reply tool shares types with the main binary (same Rust crate), eliminating the type drift risk of the two-binary TypeScript approach.
 
-### Reply Context File (Disk-Based)
+### Reply Delivery Context
 
-The reply context is saved to `.jyc/reply-context.json` per-topic before the AI prompt is sent. The MCP reply tool reads it from disk — the AI never sees or touches the context.
+`jyc_reply_message` receives its routing context in-process via
+`ToolContext::reply_target` (`ReplyTarget`: channel name + pre-warmed
+outbound adapter, injected by the service before the prompt is sent) — no
+context file, and the AI never sees or touches routing metadata. When no
+reply target is live (background turns, tests), the tool falls back to the
+`.jyc/reply.md` + `.jyc/reply-sent.flag` file relay, watched by the
+monitor.
 
-This replaces the old `reply-context.json=<base64>` approach where context was passed through the AI in the prompt text (prone to corruption by AI models).
+### Tool: `jyc_reply_message` (in-process)
 
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReplyContext {
-    pub channel: String,              // Config channel name (routing key)
-    pub topic_name: String,          // Topic directory name
-    pub incoming_message_dir: String, // Timestamp identifier (e.g., "2026-03-19_23-02-20")
-    pub uid: String,                  // Channel-specific message ID
-    pub model: Option<String>,        // AI model used (e.g., "ark/deepseek-v3.2")
-    pub mode: Option<String>,         // AI mode used (e.g., "build", "plan")
-    pub created_at: String,           // When context was created
-}
-
-/// Save to .jyc/reply-context.json (called by AgentService before prompt)
-pub async fn save_reply_context(topic_path: &Path, ctx: &ReplyContext) -> Result<()>
-
-/// Load from .jyc/reply-context.json (called by MCP reply tool from cwd)
-pub async fn load_reply_context(topic_path: &Path) -> Result<ReplyContext>
-
-/// Delete reply context file (used for tests and manual cleanup)
-pub async fn cleanup_reply_context(topic_path: &Path)
-```
-
-**Lifecycle:**
-
-1. `AgentService` saves `.jyc/reply-context.json` before sending the prompt
-2. AI calls `reply_message(message, attachments)` — no token parameter
-3. MCP reply tool reads `.jyc/reply-context.json` from cwd (= topic directory)
-4. After successful send, context file persists (not deleted) to allow multiple replies in same topic
-5. Context file is overwritten on each new incoming message
-6. `cleanup_reply_context()` is only used for tests and manual cleanup operations
-
-**Why disk-based?** Zero corruption risk — the context never passes through the AI. The AI only receives the prompt text (incoming message body). All routing and metadata is on disk.
-
-### MCP Tool: `reply_message`
+Registered in the tool registry by `register_mcp_tools()`; executes inside
+the agent process — no subprocess, no signal-file contract with the model.
 
 ```
-MCP Server (rmcp, stdio transport, cwd = topic dir):
-  Tool schema: message (string), attachments (string[] optional)
+Tool schema: message (string), attachments (string[] optional),
+             stop_after (bool, default true), silent (bool, default false)
 
-  1. Load .jyc/reply-context.json from cwd → get channel, message timestamp
-  2. Load config from JYC_ROOT/config.toml
-  3. Validate attachments (exclude .agent/, .jyc/)
-  4. Write reply text to .jyc/reply.md
-  5. Write .jyc/reply-sent.flag (signal file)
-  6. Return success message
-  (Monitor process reads .jyc/reply.md and sends via pre-warmed outbound adapter.
-   This eliminates cold-start timeouts for Feishu API calls.)
+  1. With a reply target: deliver directly through the pre-warmed outbound
+     adapter (eliminates cold-start timeouts)
+  2. Without one: validate attachments (exclude .agent/, .jyc/), write
+     .jyc/reply.md + .jyc/reply-sent.flag for the file relay
+  3. Return success message
 ```
 
 ### MCP Tool: `jyc_send_message`
@@ -2298,40 +2255,6 @@ Topic A receives results
 - **Per-entry truncation**: Each quoted history entry is capped at 1024 characters (`MAX_QUOTED_BODY_CHARS`)
 - **Limit**: `MAX_HISTORY_QUOTE = 6` entries for reply email quoted history
 - **Timestamp format**: `YYYY-MM-DD HH:MM` in both quoted history headers and prompt context
-
-### Per-Topic in-process agent Config (`agent config`)
-
-Written by `ensure_topic_agent_setup()` in each topic directory:
-
-```json
-{
-  "$schema": "https://agent.ai/config.json",
-  "model": "SiliconFlow/Pro/zai-org/GLM-4.7",
-  "small_model": "SiliconFlow/Qwen/Qwen2.5-7B-Instruct",
-  "permission": {
-    "*": "allow",
-    "question": "deny",
-    "external_directory": "deny"
-  },
-  "mcp": {
-    "jiny_reply": {
-      "type": "local",
-      "command": ["/path/to/jyc", "mcp-reply-tool"],
-      "environment": { "JYC_ROOT": "<root-dir>" },
-      "enabled": true,
-      "timeout": 60000
-    }
-  }
-}
-```
-
-**Tool command resolution** (`get_reply_tool_command()`):
-
-1. Use `std::env::current_exe()` to get current binary path
-2. Return `["/path/to/jyc", "mcp-reply-tool"]`
-3. Fallback: check common paths `/usr/local/bin/jyc`, `/usr/bin/jyc`
-
-**Staleness check**: Rewrites `agent config` if model, tool path, JYC_ROOT, or permissions changed. Session is NOT deleted — model and mode are passed per-prompt.
 
 ## Configuration (TOML)
 
@@ -3090,9 +3013,7 @@ jyc/
 │   │   ├── config.rs                    # `jyc config init/validate`
 │   │   ├── patterns.rs                  # `jyc patterns list` (all rule fields)
 │   │   ├── state.rs                     # `jyc state`
-│   │   ├── mcp_reply.rs                 # `jyc mcp-reply-tool` (hidden)
-│   │   ├── mcp_vision.rs               # `jyc mcp-vision-tool` (hidden)
-│   │   └── mcp_question.rs             # `jyc mcp-question-tool` (hidden)
+│   │   └── mcp.rs                       # `jyc mcp` — MCP server probing
 │   ├── config/
 │   │   ├── mod.rs
 │   │   ├── types.rs                     # Config structs (serde + toml)

@@ -27,8 +27,12 @@ impl Tool for ReplyMessageTool {
     }
 
     fn description(&self) -> &str {
-        "Send a reply message back through the originating channel. \
-         The reply will be delivered by the monitor process. \
+        "Send a reply message back to the user through the originating channel. \
+         Anything the user should see must be sent via this tool — leftover text at \
+         the end of your turn is auto-sent as a degraded fallback (marked \
+         `— auto-delivered`), not a real reply. \
+         Never append `— auto-delivered` yourself; the system adds that marker only \
+         to fallback deliveries. \
          Use `stop_after: false` for progress/status updates where you intend to \
          continue working. Use `stop_after: true` (or omit it) for the final reply \
          — after a successful reply with stop_after=true, STOP immediately. \

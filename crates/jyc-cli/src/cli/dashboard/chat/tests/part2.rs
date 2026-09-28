@@ -1537,33 +1537,25 @@ fn info_pane_left_border_runs_the_full_column() {
     let pane = info_pane_text(&mut app, 60, 24);
     let rows: Vec<&str> = pane.lines().collect();
     // The status sub-pane's top border is the row directly above the version
-    // line. Its `─` run starts at the left edge of the pane interior — at
-    // width 60 the 20%-wide info column starts at x=48, so the interior (and
-    // the border run) starts at x=49.
+    // line; the pane's left border column joins it with a `├` junction. The
+    // helper renders the pane over the whole frame, so the border column is
+    // wherever the junction sits, not the real UI's 20%-from-right offset.
     let version_row = rows
         .iter()
         .position(|r| r.contains("JYC AI"))
         .expect("version line");
     let junction_row = version_row - 1;
     let border_x = rows[junction_row]
-        .char_indices()
-        .find(|(x, c)| *x >= 48 && *c == '─')
-        .map(|(x, _)| x)
-        .expect("status sub-pane top border inside the info column");
-    let mut saw_junction = false;
+        .find('├')
+        .expect("junction between the left border and the sub-pane border");
     for (y, row) in rows.iter().enumerate() {
-        match row.chars().nth(border_x - 1) {
-            Some('│') => {}
-            Some('├') if y == junction_row => saw_junction = true,
-            other => panic!(
-                "row {y}: expected the info pane's left border left of x={border_x}, got {other:?}:\n{pane}"
-            ),
-        }
+        let expected = if y == junction_row { '├' } else { '│' };
+        assert_eq!(
+            row.chars().nth(border_x),
+            Some(expected),
+            "row {y}: expected {expected:?} at x={border_x}:\n{pane}"
+        );
     }
-    assert!(
-        saw_junction,
-        "the status sub-pane border must join the left border with `├`:\n{pane}"
-    );
 }
 
 #[test]

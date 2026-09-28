@@ -3548,10 +3548,17 @@ fn minimal_progress_command_flips_the_flag_the_render_reads() {
 }
 
 #[test]
-fn protect_leading_whitespace_replaces_one_to_three_spaces() {
+fn protect_leading_whitespace_replaces_all_leading_spaces() {
+    let nbsp = |n: usize| "\u{00A0}".repeat(n);
     assert_eq!(
-        protect_leading_whitespace("  two\n   three\n    four\nnone"),
-        "\u{00A0}\u{00A0}two\n\u{00A0}\u{00A0}\u{00A0}three\n    four\nnone"
+        protect_leading_whitespace("  two\n   three\n    four\n          ten\nnone"),
+        format!(
+            "{}two\n{}three\n{}four\n{}ten\nnone",
+            nbsp(2),
+            nbsp(3),
+            nbsp(4),
+            nbsp(10)
+        )
     );
 }
 
@@ -3581,6 +3588,21 @@ fn user_message_leading_spaces_survive_markdown_rendering() {
         "leading spaces must survive as NBSP, got: {text:?}"
     );
     assert!(text.contains("indented"));
+}
+
+#[test]
+fn user_message_deep_indent_renders_without_code_fence() {
+    let messages = vec![history_msg("user", "    Hello", None)];
+    let (lines, _) = render_history_lines(&messages, 40, false, false);
+    let text = rendered_text(&lines);
+    assert!(
+        text.contains('\u{00A0}'),
+        "deep indent must be preserved, got: {text:?}"
+    );
+    assert!(
+        !text.contains("```"),
+        "indented text must not render as a code block, got: {text:?}"
+    );
 }
 
 #[test]

@@ -2,6 +2,17 @@
 
 ### Fixed
 
+- Leaked tool-call syntax no longer reaches users as a reply, and legitimate
+  prose about it is no longer mistaken for a leak: the leaked block is
+  stripped and the surrounding prose delivered (a reply used to be failed
+  outright, burning up to 3 regenerations and ending with nothing delivered),
+  a response that is nothing but syntax is retried with a repair note telling
+  the model that its call never reached the tool interface (the retry used to
+  re-send the identical request), and the dialect detection now covers the
+  Anthropic XML form actually emitted (`tool_use` / `invoke` / `parameter`,
+  opening and closing, truncated mid-tag included) plus the legacy
+  `functions.foo(` and bare `{"name":` forms — mentions inside prose or code
+  fences stay deliverable (#786)
 - Info pane left border runs the full column height again and joins the
   status sub-pane's top border with a `├` junction — the border no longer
   stops where the status sub-pane begins (#843)

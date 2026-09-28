@@ -2,9 +2,13 @@
 //!
 //! Extracted from the monolithic `agent_loop.rs`.
 
+use std::ops::Range;
+use std::sync::LazyLock;
+
 use anyhow::Result;
 use chrono::Utc;
 use futures::StreamExt;
+use regex::Regex;
 
 use jyc_core::topic_event::TopicEvent;
 use jyc_core::topic_event_bus::TopicEventBusRef;
@@ -237,73 +241,106 @@ pub(crate) async fn collect_response(
     Ok(response)
 }
 
-/// Markers of raw tool-call syntax leaking into the text channel. Models
-/// with weak function-calling (via OpenAI-compat adapters) sometimes emit
-/// these instead of structured `tool_calls`; left unchecked, the text-only
-/// auto-delivery fallback would ship the syntax to the user as a "reply".
+/// Tool-call syntax models leak into the text channel when their function
+/// calling is weak. Covers the dialects seen in the wild: Anthropic XML
+/// (`tool_use` / `invoke` / `parameter`, plus the `antml:` prefix), the
+/// `<call tool=` / `<argument key=` gateway wrapper, the legacy OpenAI
+/// `functions.foo(` text call, and a bare `{"name":` JSON call.
 ///
-/// Detection is start-anchored (after leading whitespace): real leaks BEGIN
-/// with the raw syntax, while legit replies only ever QUOTE it inside prose
-/// or code blocks — rejecting those would break meta-discussion (#786
-/// review). Cut-mid-leak fragments with a prose preamble are still caught
-/// by the truncated-stream check above (no `Done` marker). A response that
-/// matches with no parsed tool calls is a provider format failure, so the
-/// iteration is retried rather than delivered.
-const LEAKED_TOOL_CALL_MARKERS: &[&str] = &[
-    "<call tool=",
-    "<parameter name=",
-    "<argument key=",
-    "</call>",
-    "<tool_call>",
-    "<antml:invoke",
-    // Gateway-wrapped leak: `<response tools="<call tool=...>">`.
-    "<response tools=",
-    // Underscore wrapper variant emitted by some runtimes.
-    "<response_tools>",
-    "</response_tools>",
-    "<invoke",
-];
+/// Opening and closing forms both match, the plural spellings too, and the
+/// separator after a tag name is optional — the observed leaks are truncated
+/// mid-tag (`<parameter name="command" type="string`), so nothing may be
+/// required after the name.
+static TOOL_CALL_SYNTAX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"</?\s*(?:tool_use|tool_calls?|function_calls?|invoke|parameter",
+        r"|response_tools?|response\s+tools?)\b",
+        r"|</?\s*(?:call\s+tool=|argument\s+key=)",
+        r"|</call>",
+        r"|antml:(?:invoke|parameter)\b",
+        r"|functions\.\w+\s*\(",
+        r#"|\{\s*"name"\s*:"#,
+    ))
+    .unwrap()
+});
 
-/// Whether `text` looks like leaked tool-call syntax rather than a
-/// user-facing reply.
+/// Byte range of `text` occupied by leaked tool-call syntax, or `None` when
+/// the text carries none.
 ///
-/// Detection: (1) start-anchored markers (after leading whitespace);
-/// (2) a mid-text CLOSING tag (`</response_tools>`, `</invoke>`) — real
-/// leaks ship whole blocks, while legit replies only ever QUOTE
-/// opening-tag fragments inside prose; (3) repetition — degenerate
-/// streams emit the same bare opener dozens of times with no closing
-/// tag at all (preamble prose followed by pages of `<response_tools>`
-/// fragments), which (1) and (2) both miss. Prose quotes a tag once or
-/// twice, so a single marker appearing 4+ times is a machine dump.
-pub(crate) fn looks_like_leaked_tool_call(text: &str) -> bool {
-    let trimmed = text.trim_start();
-    if LEAKED_TOOL_CALL_MARKERS
-        .iter()
-        .any(|m| trimmed.starts_with(m))
-    {
-        return true;
+/// A *leak line* is a line that IS tool-call syntax: after leading whitespace it
+/// begins with one of the dialects, and it sits outside a fenced code block.
+/// Prose keeps a dialect mention inline, or fences it — a reply documenting
+/// these very tags does both — so neither counts, which is what keeps
+/// meta-discussion deliverable (#786 review). For the same reason an inline
+/// closing tag in prose is *not* a signal: that check used to kill replies that
+/// quoted one. The two generic alternatives (`functions.foo(`, `{"name":`) are
+/// only safe because of that line-start rule.
+///
+/// A run of two or more leak lines, or a single leak line with nothing but
+/// blanks after it, is a *block*: the range runs to the end of the text, because
+/// the observed leaks are truncated mid-tag and their tail (the half-written
+/// argument) is not itself syntax. A single leak line with content after it is a
+/// quoted line inside a reply: only that line is returned, so the prose around
+/// it survives.
+pub(crate) fn leaked_syntax_range(text: &str) -> Option<Range<usize>> {
+    let mut offsets = Vec::new();
+    let mut offset = 0;
+    let mut fences = 0;
+    for raw in text.split_inclusive('\n') {
+        let line = raw.strip_suffix('\n').unwrap_or(raw);
+        if line.trim_start().starts_with("```") {
+            fences += 1;
+        }
+        offsets.push((offset, line));
+        offset += raw.len();
     }
-    looks_like_leak_in_text_body(text)
+    // An unbalanced fence means a truncated reply, whose fence state is
+    // unknown — scan again ignoring fences rather than treat the whole tail
+    // as code.
+    let fenced = fences % 2 == 0;
+    let first = first_leak_line(&offsets, true).or_else(|| {
+        if fenced {
+            None
+        } else {
+            first_leak_line(&offsets, false)
+        }
+    })?;
+
+    let leak_lines = offsets[first..]
+        .iter()
+        .filter(|(_, line)| is_leak_line(line))
+        .count();
+    let content_after = offsets[first + 1..]
+        .iter()
+        .any(|(_, line)| !line.trim().is_empty() && !is_leak_line(line));
+    if leak_lines > 1 || !content_after {
+        Some(offsets[first].0..text.len())
+    } else {
+        Some(offsets[first].0..offsets[first + 1].0)
+    }
 }
 
-/// Mixed-mode variant, used when the response already parsed valid
-/// structured tool calls: the start-anchored check is skipped, because
-/// legit meta-discussion prose can itself BEGIN with a quoted marker, and
-/// killing a valid tool call over one quoted tag is worse than letting a
-/// single ambiguous fragment through. Real mixed-mode leaks still trip
-/// the remaining checks — a machine dump never ships exactly one opener
-/// with no closer.
-pub(crate) fn looks_like_leak_in_mixed_response(text: &str) -> bool {
-    looks_like_leak_in_text_body(text)
+/// Index of the first line that IS tool-call syntax, skipping fenced code
+/// blocks while `respect_fences`.
+fn first_leak_line(offsets: &[(usize, &str)], respect_fences: bool) -> Option<usize> {
+    let mut in_fence = false;
+    for (idx, (_, line)) in offsets.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if respect_fences && trimmed.starts_with("```") {
+            in_fence = !in_fence;
+        } else if !in_fence && is_leak_line(line) {
+            return Some(idx);
+        }
+    }
+    None
 }
 
-fn looks_like_leak_in_text_body(text: &str) -> bool {
-    if text.contains("</response_tools>") || text.contains("</invoke>") {
-        return true;
-    }
-    LEAKED_TOOL_CALL_MARKERS
-        .iter()
-        .any(|m| text.matches(m).count() >= 4)
+/// Whether the line starts with tool-call syntax.
+fn is_leak_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    TOOL_CALL_SYNTAX
+        .find(trimmed)
+        .is_some_and(|m| m.start() == 0)
 }
 
 #[cfg(test)]
@@ -370,61 +407,80 @@ mod tests {
     }
 
     #[test]
-    fn leaked_tool_call_detection() {
-        // Real leaks BEGIN with the raw syntax (after optional whitespace).
-        assert!(looks_like_leaked_tool_call(
-            "<response tools=\"<call tool=\"bash\""
-        ));
-        assert!(looks_like_leaked_tool_call(
-            "  \n\t<call tool=\"bash\" index=\"1\">"
-        ));
-        assert!(looks_like_leaked_tool_call("</call> trailing"));
-        // Legit replies may QUOTE the syntax mid-prose — the gate must not
-        // reject meta-discussion (start-anchored detection).
-        assert!(!looks_like_leaked_tool_call(
-            "看日志：\n<call tool=\"bash\" index=\"1\">"
-        ));
-        assert!(!looks_like_leaked_tool_call(
-            "比如 `<parameter name=\"command\">` 这种写法。"
-        ));
-        assert!(!looks_like_leaked_tool_call("普通回复，没有工具调用语法。"));
-        assert!(!looks_like_leaked_tool_call(""));
-        // Underscore-wrapper leak: preamble prose followed by complete
-        // blocks — caught by the closing-tag check.
-        assert!(looks_like_leaked_tool_call(
-            "先说结论。\n<response_tools>\n<invoke name=\"bash\">x</invoke>\n</response_tools>"
-        ));
-        assert!(looks_like_leaked_tool_call(
-            "<response_tools>\n<invoke name=\"bash\">x</invoke>"
-        ));
-        // Quoted OPENING tag in prose without a closer stays deliverable.
-        assert!(!looks_like_leaked_tool_call(
-            "报错输出里有 `<response_tools>` 标签。"
-        ));
-        // Fragment storm: preamble prose followed by pages of bare openers
-        // with NO closing tags at all (observed in production) — caught by
-        // the repetition check, not the closing-tag check.
-        let storm = format!("先说结论。\n{}", "<response_tools>\n".repeat(6));
-        assert!(looks_like_leaked_tool_call(&storm));
-        // Legit meta-discussion may quote the same tag a few times — under
-        // the repetition threshold it stays deliverable.
-        assert!(!looks_like_leaked_tool_call(
-            "报错输出里有 `<response_tools>`，重试后又出现 `<response_tools>`，最后还有 `<response_tools>`。"
-        ));
+    fn leaked_syntax_range_covers_the_observed_shapes() {
+        // Truncated markup-only reply, cut mid-tag (observed 2026-09-28):
+        // everything goes.
+        let whole = "<tool_use>\n<invoke name=\"bash\">\n<parameter name=\"command\" type=\"string";
+        assert_eq!(leaked_syntax_range(whole), Some(0..whole.len()));
+
+        // Same leak appended after real prose: the prose is kept, and the
+        // block runs to the end because its truncated tail (the half-written
+        // argument) is not itself syntax.
+        let prose = "顺手再查一次 CI 状态：";
+        let tail = format!("{prose}\n{whole}");
+        assert_eq!(
+            leaked_syntax_range(&tail),
+            Some(prose.len() + 1..tail.len())
+        );
+
+        // Complete block, closing tags included.
+        let complete = "<response_tools>\n<invoke name=\"bash\">x\n</response_tools>";
+        assert_eq!(leaked_syntax_range(complete), Some(0..complete.len()));
+
+        // Gateway wrapper and the other dialects.
+        let gateway = "<response tools=\"<call tool=\"bash\"";
+        assert_eq!(leaked_syntax_range(gateway), Some(0..gateway.len()));
+        let funcs = "functions.bash(\"ls\")";
+        assert_eq!(leaked_syntax_range(funcs), Some(0..funcs.len()));
+        let json = "{\"name\": \"bash\", \"arguments\": {}}";
+        assert_eq!(leaked_syntax_range(json), Some(0..json.len()));
+
+        // Degenerate dump: bare openers, no closing tags.
+        let dump = format!("先说结论。\n{}", "<response_tools>\n".repeat(6));
+        assert_eq!(
+            leaked_syntax_range(&dump),
+            Some("先说结论。\n".len()..dump.len())
+        );
+
+        // A LONE leak line with content after it is a quote inside a reply:
+        // only that line goes, so the prose around it survives.
+        assert_eq!(
+            leaked_syntax_range("<response_tools>\n这是正文里引用一次标签。"),
+            Some(0.."<response_tools>\n".len())
+        );
+        assert_eq!(
+            leaked_syntax_range("先说结论。\n</call>\n后面还有正文。"),
+            Some("先说结论。\n".len().."先说结论。\n</call>\n".len())
+        );
     }
 
     #[test]
-    fn mixed_mode_leak_detection_skips_start_anchor() {
-        // Mixed mode (structured tool calls present) must NOT flag a single
-        // start-anchored marker quote — legit meta-discussion prose can
-        // begin with one — but must still flag real leak signatures.
-        assert!(!looks_like_leak_in_mixed_response(
-            "<response_tools>\n这是正文里引用一次标签。"
-        ));
-        assert!(looks_like_leak_in_mixed_response(
-            "结论。\n<response_tools>\n<invoke name=\"bash\">x</invoke>\n</response_tools>"
-        ));
-        let storm = format!("先说结论。\n{}", "<response_tools>\n".repeat(6));
-        assert!(looks_like_leak_in_mixed_response(&storm));
+    fn leaked_syntax_range_ignores_prose_about_the_dialects() {
+        assert_eq!(leaked_syntax_range("普通回复，没有工具调用语法。"), None);
+        assert_eq!(leaked_syntax_range(""), None);
+        // Inline quote inside prose (#786 review: meta-discussion stays
+        // deliverable).
+        assert_eq!(
+            leaked_syntax_range("比如 `<parameter name=\"command\">` 这种写法。"),
+            None
+        );
+        assert_eq!(
+            leaked_syntax_range("报错输出里有 `<response_tools>` 标签，重试后还会出现。"),
+            None
+        );
+        // …and inside a fenced block, the way this guard is documented.
+        assert_eq!(
+            leaked_syntax_range(
+                "两个方言：\n```\n<tool_use>\n<invoke name=\"bash\">\n</tool_use>\n```\n就这样。"
+            ),
+            None
+        );
+        // An unbalanced fence means a truncated reply whose fence state is
+        // unknown: scan again ignoring fences instead of hiding the leak.
+        let truncated = "说明：\n```\n<tool_use>\n<invoke name=\"bash\">";
+        assert_eq!(
+            leaked_syntax_range(truncated),
+            Some("说明：\n```\n".len()..truncated.len())
+        );
     }
 }

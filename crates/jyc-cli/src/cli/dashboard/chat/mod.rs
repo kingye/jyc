@@ -452,6 +452,38 @@ pub(super) fn softbreaks_to_hardbreaks(md: &str) -> String {
     out
 }
 
+/// Replace 1–3 leading spaces of each non-fence line with U+00A0 so the
+/// markdown renderer (CommonMark strips up-to-3-space paragraph indentation)
+/// preserves the user's visual indentation. Four-plus spaces still form an
+/// indented code block and are left alone; fence contents keep real spaces so
+/// copied code is byte-clean.
+pub(super) fn protect_leading_whitespace(md: &str) -> String {
+    let mut out = String::with_capacity(md.len());
+    let mut in_fence = false;
+    for line in md.split_inclusive('\n') {
+        let stripped = line.trim_start();
+        if stripped.starts_with("```") || stripped.starts_with("~~~") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            continue;
+        }
+        if in_fence || line.trim().is_empty() {
+            out.push_str(line);
+            continue;
+        }
+        // Only 1–3 leading spaces: markdown would strip them. Runs of 4+
+        // form an indented code block and must pass through untouched.
+        let n = line.len() - line.trim_start_matches(' ').len();
+        if (1..=3).contains(&n) {
+            out.push_str(&"\u{00A0}".repeat(n));
+            out.push_str(&line[n..]);
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
 /// Word-wrap styled `lines` to `max_width` display columns, preserving span
 /// styles and the line-level style (tui-markdown puts heading and
 /// blockquote styling there, not on the spans), and return owned lines —
@@ -2675,7 +2707,9 @@ impl ChatState {
     }
 
     pub(super) fn send_message(&mut self) {
-        let text = self.text().trim().to_string();
+        // `trim_end` only: leading whitespace is user content (indentation),
+        // and `send_message_inner` no-ops on empty text.
+        let text = self.text().trim_end().to_string();
         self.send_message_inner(text);
         // Normal send clears the editor input field.
         self.editor = empty_chat_editor();

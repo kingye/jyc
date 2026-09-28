@@ -1371,11 +1371,7 @@ fn sync_explorer_selection(app: &mut App) {
 /// rebuilt from `app.state` on every render, so it stays live.
 pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
     let focused = app.chat.focus == ChatFocus::ExplorerPane;
-    let border_style = if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let border_style = pane_border_style(focused);
     // Only the right edge (against the chat pane) gets a border — no
     // title, no top edge — with one row of top padding so the topic
     // list breathes a little.
@@ -1471,11 +1467,11 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     // The left edge (against the chat pane) gets a vertical border, and the
     // top edge carries the title inline with the top border so the title
     // row acts as a separator between the heading and the content below.
-    // When focused, paint the border yellow so the user knows they own
-    // the scroll keys (mirrors render_activity_log_inner).
+    // While this pane owns the scroll keys its border lights up in the focus
+    // colour, like every other pane (see `pane_border_style`).
     // Chat screen: the title and top border are removed, leaving only the
     // left border to separate the pane from the chat content.
-    let mut block = if app.chat.visible {
+    let block = if app.chat.visible {
         // One row of top padding so the content does not hug the pane top.
         Block::default()
             .borders(Borders::LEFT)
@@ -1484,14 +1480,8 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         Block::default()
             .title("── Topic Info ")
             .borders(Borders::TOP | Borders::LEFT)
-    };
-    if focused {
-        block = block.border_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
     }
+    .border_style(pane_border_style(focused));
     // Chat screen: the status block (version + gray stats, or a transient
     // message) gets its own sub-pane pinned to the bottom of the info
     // column, separated by a gray top border. It never scrolls — wheel and
@@ -1520,7 +1510,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     if let Some(status_area) = status_area {
         let status_block = Block::default()
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(Color::DarkGray));
+            .border_style(pane_border_style(false));
         let status_inner = status_block.inner(status_area);
         frame.render_widget(status_block, status_area);
         frame.render_widget(Paragraph::new(status), status_inner);
@@ -2072,18 +2062,12 @@ pub(super) fn render_activity_log_inner(
     // border, using the same plain ` Text ` format as the other dashboard
     // panes (Channels / Topics / Details). See chat/mod.rs vs
     // dashboard/mod.rs call sites.
-    let mut block = if titled {
+    let block = if titled {
         Block::default().title(" Activity ").borders(borders)
     } else {
         Block::default().borders(borders)
-    };
-    if focused {
-        block = block.border_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
     }
+    .border_style(pane_border_style(focused));
 
     if activity.is_empty() {
         let text = Paragraph::new(Span::styled(

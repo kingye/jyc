@@ -1884,3 +1884,125 @@ fn minimal_progress_mode_renders_one_animated_row() {
         rows.join("\n")
     );
 }
+
+// ── Pane border palette ──────────────────────────────────────────────────────
+
+use super::super::super::{PANE_BORDER, PANE_BORDER_FOCUSED};
+use ratatui::Frame;
+use ratatui::layout::Rect;
+
+/// The fg of the buffer cell at `(x, y)` after drawing `draw` into a fresh test
+/// terminal of the given size.
+fn border_fg_at(
+    width: u16,
+    height: u16,
+    x: u16,
+    y: u16,
+    mut draw: impl FnMut(&mut Frame, Rect),
+) -> Color {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            draw(frame, area);
+        })
+        .expect("draw");
+    terminal.backend().buffer().clone()[(x, y)].fg
+}
+
+/// Every pane border uses the shared palette: `PANE_BORDER` at rest,
+/// `PANE_BORDER_FOCUSED` on the pane that owns the keys. Each renderer fills
+/// the whole test area, so its single bordered edge sits at a known position
+/// and only the colour is in question.
+#[test]
+fn pane_borders_share_the_palette_resting_and_focused() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    let (w, h) = (40, 12);
+
+    // Explorer: bordered on its right edge only.
+    app.chat.focus = ChatFocus::ChatPane;
+    assert_eq!(
+        border_fg_at(w, h, w - 1, 3, |f, a| render_explorer(f, a, &app)),
+        PANE_BORDER,
+        "the resting explorer border carries the shared colour"
+    );
+    app.chat.focus = ChatFocus::ExplorerPane;
+    assert_eq!(
+        border_fg_at(w, h, w - 1, 3, |f, a| render_explorer(f, a, &app)),
+        PANE_BORDER_FOCUSED,
+        "the focused pane lights up in the shared focus colour"
+    );
+
+    // Topic info pane: bordered on its left edge only on the chat screen.
+    app.chat.focus = ChatFocus::ChatPane;
+    assert_eq!(
+        border_fg_at(w, h, 0, 3, |f, a| render_topic_info_pane(f, a, &mut app)),
+        PANE_BORDER,
+        "the info pane used to inherit the terminal default here"
+    );
+    app.chat.focus = ChatFocus::InfoPane;
+    assert_eq!(
+        border_fg_at(w, h, 0, 3, |f, a| render_topic_info_pane(f, a, &mut app)),
+        PANE_BORDER_FOCUSED
+    );
+
+    // Activity pane: bordered on its top edge only on the chat screen.
+    for (focused, want) in [(false, PANE_BORDER), (true, PANE_BORDER_FOCUSED)] {
+        assert_eq!(
+            border_fg_at(w, h, w / 2, 0, |f, a| render_activity_log_inner(
+                f,
+                a,
+                &[],
+                0,
+                0,
+                focused,
+                Borders::TOP,
+                false,
+            )),
+            want,
+            "activity border should be {want:?} when focused={focused}"
+        );
+    }
+}
+
+/// The three separators on a live chat screen rest in one colour, so the split
+/// does not read as three unrelated widgets. Positions are derived from the same
+/// layout percentages `ui_chat_mode` applies, and every cell is checked for the
+/// box-drawing glyph it should carry before its colour is.
+#[test]
+fn chat_screen_separators_all_rest_in_one_colour() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.explorer_visible = true;
+    app.chat.toggle_activity(); // bottom 20%
+    app.chat.focus = ChatFocus::ChatPane;
+
+    // Explorer = 20% of the width; info pane = 20% of the remaining 80%;
+    // activity pane = the bottom 20% of the right column.
+    let (w, h) = (100, 30);
+    let separators = [
+        (w / 5 - 1, h / 2, "│", "explorer right border"),
+        (w - (w - w / 5) / 5, h / 4, "│", "info pane left border"),
+        (w / 5 + 4, h - h / 5, "─", "activity pane top border"),
+    ];
+
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("terminal");
+    terminal
+        .draw(|f| ui_chat_mode(f, f.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+
+    for (x, y, glyph, what) in separators {
+        let cell = &buffer[(x, y)];
+        assert_eq!(cell.symbol(), glyph, "{what} is not where the layout says");
+        assert_eq!(cell.fg, PANE_BORDER, "{what} carries another colour");
+    }
+}

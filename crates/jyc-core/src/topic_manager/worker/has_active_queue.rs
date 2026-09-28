@@ -1610,8 +1610,8 @@ async fn list_topics_populates_branch_from_dot_git_head() {
 }
 
 /// Regression for #220: `TopicManager::list_topics` must populate
-/// `TopicInfo::changed_files` by running `git diff --name-only
-/// main...HEAD` under each topic's path. Without this test, a
+/// `TopicInfo::changed_files` by running the default-branch diff under
+/// each topic's path. Without this test, a
 /// future refactor that drops the call to
 /// `changed_files_for_topic_path` at the `topics.push(...)` site
 /// would silently leave `changed_files == None` on every payload.

@@ -1259,8 +1259,32 @@ fn ui_normal_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
+/// Resting colour of every pane border, on both the chat and the overview
+/// screen. The explorer's right border and the chat status block already drew
+/// with it; the panes that left the style unset inherited the terminal default,
+/// which made the separators on one screen disagree.
+pub(super) const PANE_BORDER: Color = Color::DarkGray;
+
+/// Border colour of the pane that currently owns the keys.
+pub(super) const PANE_BORDER_FOCUSED: Color = Color::Cyan;
+
+/// Border style for a pane: [`PANE_BORDER_FOCUSED`] while it has focus,
+/// [`PANE_BORDER`] otherwise. The only place pane border colours are decided —
+/// a pane that skipped it inherited the terminal default and drifted from its
+/// neighbours.
+pub(super) fn pane_border_style(focused: bool) -> Style {
+    Style::default().fg(if focused {
+        PANE_BORDER_FOCUSED
+    } else {
+        PANE_BORDER
+    })
+}
+
 fn render_channels(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default().title(" Channels ").borders(Borders::ALL);
+    let block = Block::default()
+        .title(" Channels ")
+        .borders(Borders::ALL)
+        .border_style(pane_border_style(false));
 
     if let Some(ref error) = app.error {
         let text = Paragraph::new(Line::from(vec![
@@ -1318,7 +1342,10 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
     let state = match &app.state {
         Some(s) => s,
         None => {
-            let block = Block::default().title(" Topics ").borders(Borders::ALL);
+            let block = Block::default()
+                .title(" Topics ")
+                .borders(Borders::ALL)
+                .border_style(pane_border_style(false));
             frame.render_widget(block, area);
             return;
         }
@@ -1377,7 +1404,8 @@ fn render_topics(frame: &mut Frame, area: Rect, app: &mut App) {
         .block(
             Block::default()
                 .title(format!(" Topics ({}) ", state.topics.len()))
-                .borders(Borders::ALL),
+                .borders(Borders::ALL)
+                .border_style(pane_border_style(false)),
         )
         .row_highlight_style(Style::default().add_modifier(Modifier::DIM))
         .highlight_symbol("→ ");
@@ -1389,7 +1417,10 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     let state = match &app.state {
         Some(s) => s,
         None => {
-            let block = Block::default().title(" Details ").borders(Borders::ALL);
+            let block = Block::default()
+                .title(" Details ")
+                .borders(Borders::ALL)
+                .border_style(pane_border_style(false));
             frame.render_widget(block, area);
             return;
         }
@@ -1400,7 +1431,10 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     let selected = match selected {
         Some(t) => t,
         None => {
-            let block = Block::default().title(" Details ").borders(Borders::ALL);
+            let block = Block::default()
+                .title(" Details ")
+                .borders(Borders::ALL)
+                .border_style(pane_border_style(false));
             let text = Paragraph::new("Select a topic with ↑/↓").block(block);
             frame.render_widget(text, area);
             return;
@@ -1421,7 +1455,8 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     // the activity panel below.
     let info_block = Block::default()
         .title(format!(" {} ", selected.name))
-        .borders(Borders::ALL);
+        .borders(Borders::ALL)
+        .border_style(pane_border_style(false));
 
     let mut info_lines = vec![];
 

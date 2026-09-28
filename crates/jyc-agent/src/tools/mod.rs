@@ -269,26 +269,6 @@ impl<'a> ToolContext<'a> {
         }
     }
 
-    /// The channel the user's message actually arrived on, when a pipe moved
-    /// it into this channel's topic (e.g. `feishu_work` → the `agents` hub).
-    /// `None` when the message came from this channel directly, or when there
-    /// is no live inbound message (unit tests, sub-agents).
-    ///
-    /// Read from the inbound message's metadata, stamped by the pipe retarget
-    /// path just before it overwrites `InboundMessage::channel` — so a tool
-    /// can still tell who it is really talking to.
-    pub fn origin_channel(&self) -> Option<&str> {
-        self.reply_target
-            .as_ref()
-            .and_then(|target| {
-                target
-                    .original
-                    .metadata
-                    .get(jyc_types::ORIGIN_CHANNEL_METADATA_KEY)
-            })
-            .and_then(|value| value.as_str())
-    }
-
     /// Drain and return any pending image sources accumulated during the
     /// current tool-execution batch. Called by the agent loop after the
     /// batch completes.

@@ -94,7 +94,7 @@
   topic as its own turn again. The TUI answers through the question box, so the
   hijack only ever turned an unrelated message into an answer while the rest of
   the batch stayed unreachable (#848). The feishu pipe's version of the same
-  routing goes with it (#849, below)
+  routing goes with it (#849)
 - Feishu pipe: interactive questions are gone — the numbered-options question
   card, the relay of `ask_user` question frames, and the plain-reply answer
   routing (`QuestionHub::try_answer` / `pending_for`, and the `seq` ordering they

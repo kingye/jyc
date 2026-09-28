@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+### Added
+
+- TUI message-area `[` / `]` jumps the cursor (and view) to the previous /
+  next user turn — one turn being the user's message plus the agent's
+  replies up to the next one; `Shift` grows a selection and a count repeats
+  (`3]` jumps three turns)
+
 ### Changed
 
 - TUI chat header shows the topic name instead of channel and pattern

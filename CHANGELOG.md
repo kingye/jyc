@@ -24,12 +24,22 @@
 
 ### Removed
 
+- TUI "new chat" flow: the leader-key `new chat` action (`Ctrl+P` → `n`) and
+  the plain `c` key on the dashboard, which opened the same pattern-select
+  screen. Chat is now entered only on an existing topic (Enter / leader
+  `open chat`); the `ChatPhase` machinery behind the pattern-select screen
+  is gone. New topics come from `jyc open`, `/clone`, `send_to_topic`, or
+  the REST API — the inspect `list_patterns` endpoint itself is unchanged
 - The `jyc_reply_message` tool and the `jyc mcp-reply-tool` hidden
   subcommand (with the `jyc-mcp` crate) are gone — nothing registered the
   tool, and the subprocess MCP server had no remaining consumers
 
 ### Fixed
 
+- Switching topics in the TUI chat (explorer or topic list) now drops the
+  previous topic's pending `ask_user` question batch — same as Esc — so a
+  queued question from the old topic can no longer suppress the new topic's
+  question box
 - `job_create` no longer accepts both `cron` and `at` in one call (cron
   silently won); the tool description and schema now state up front that
   exactly one of them is required, and mention `job_delete`/`job_toggle` for

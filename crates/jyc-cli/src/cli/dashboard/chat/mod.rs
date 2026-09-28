@@ -20,15 +20,6 @@ const PROMPT_GUTTER_WIDTH: u16 = 4;
 /// ("╭─", "╰─", and the "─" padding run). The ❮/❯ arrows are yellow.
 const LINE_DRAWING: Style = Style::new().fg(Color::Rgb(0x39, 0x35, 0x52));
 
-/// Phase of the chat pane UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ChatPhase {
-    /// User is selecting a pattern to chat with.
-    PatternSelect,
-    /// User is actively chatting in a topic.
-    Chatting,
-}
-
 /// An `ask_user` question pushed by the daemon, awaiting the user's answer.
 pub(super) struct PendingQuestion {
     /// Question id — the response frame references it.
@@ -86,9 +77,6 @@ pub(super) struct ZenSnapshot {
 pub(super) struct ChatState {
     // Chat pane state
     pub(super) visible: bool,
-    pub(super) phase: ChatPhase,
-    pub(super) patterns: Vec<String>,
-    pub(super) pattern_selected: usize,
     pub(super) topic: Option<String>,
     pub(super) channel: Option<String>,
     pub(super) messages: Vec<ChatMessage>,
@@ -232,8 +220,7 @@ pub(super) struct ChatState {
     /// Used to avoid re-hydrating the same topic on every poll when the
     /// user is browsing the overview.
     pub(super) last_hydrated_key: Option<(String, String)>,
-    /// Address stash for `select_pattern` to call back into `open` when
-    /// the user picks a pattern from the `c`-key pattern-select UI.
+    /// Address stash so the explorer pane can switch topics later.
     pub(super) open_addr: Option<String>,
     // Command popup state. `/model` and every other command's nested levels
     // come from `CommandInfo::args` (the inspect payload), so the popup needs
@@ -747,7 +734,7 @@ fn explorer_open_selected(app: &mut App) {
     match app.chat.open_addr.clone() {
         Some(addr) => {
             let token = app.chat.token.clone();
-            app.chat.open(&addr, Some(&channel), Some(&name), token);
+            app.chat.open(&addr, Some(&channel), &name, token);
             // Hydration runs on the async poll loop (sync key handler
             // can't await on InspectClient).
             app.pending_hydrate = Some((channel, name));
@@ -773,7 +760,6 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
         LocalAction::OpenDashboard => app.chat.close(),
         // Dashboard-scoped; never offered on the chat screen.
         LocalAction::OpenChat => {}
-        LocalAction::NewChat => app.pending_new_chat = true,
         LocalAction::ReloadConfig => app.pending_reload_config = true,
         LocalAction::Quit => app.should_quit = true,
         LocalAction::ToggleExplorer => toggle_explorer_snapped(app),
@@ -794,15 +780,12 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
         LocalAction::ToggleMouseCapture => super::toggle_mouse_capture(app),
         // Same popup as typing `/`, but the input field stays untouched —
         // so the popup filters off whatever the field already holds.
-        // Chatting-only: the popup is meaningless in PatternSelect.
         LocalAction::OpenCommandPopup => {
-            if app.chat.phase == ChatPhase::Chatting {
-                app.chat.focus = ChatFocus::ChatPane;
-                // Same just-in-time refresh as the `/` key: without it the
-                // popup shows "Loading..." until the user types a slash.
-                app.refresh_chat_commands();
-                app.chat.command_popup = Some(CommandPopupState::new());
-            }
+            app.chat.focus = ChatFocus::ChatPane;
+            // Same just-in-time refresh as the `/` key: without it the
+            // popup shows "Loading..." until the user types a slash.
+            app.refresh_chat_commands();
+            app.chat.command_popup = Some(CommandPopupState::new());
         }
         LocalAction::ToggleThinking => {
             app.chat.thinking_expanded = !app.chat.thinking_expanded;
@@ -857,10 +840,10 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     // `send_message`) so the editor is untouched. The worker's
     // `pending_rx` select! arm in topic_manager.rs intercepts the
     // leading "/" and runs CancelCommandHandler, which fires the
-    // per-topic CancellationToken. Restrict to Chatting — there is
-    // no topic to cancel in PatternSelect.
+    // per-topic CancellationToken. Restrict to an open chat — there is
+    // no topic to cancel otherwise.
     let is_ctrl_c = key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_ctrl_c && app.chat.phase == ChatPhase::Chatting {
+    if is_ctrl_c && app.chat.visible {
         // Close any open command popup so the cancel path runs cleanly.
         app.chat.command_popup = None;
         app.chat.leader = None;
@@ -884,8 +867,8 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         return;
     }
 
-    // Ctrl+P is the leader (works in any chat phase — it is the only way
-    // back to the dashboard from PatternSelect).
+    // Ctrl+P is the leader (works on the chat screen; `open dashboard`
+    // inside it is the way back).
     let is_ctrl_p = key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL);
     if is_ctrl_p {
         app.chat.command_popup = None;
@@ -930,11 +913,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     // "/" opens the command popup as the first char of an empty input.
     // The slash also lands in the input field — the popup filters off it.
     let is_slash = key.code == KeyCode::Char('/') && !key.modifiers.contains(KeyModifiers::CONTROL);
-    if is_slash
-        && app.chat.phase == ChatPhase::Chatting
-        && app.chat.focus == ChatFocus::ChatPane
-        && app.chat.text().trim().is_empty()
-    {
+    if is_slash && app.chat.focus == ChatFocus::ChatPane && app.chat.text().trim().is_empty() {
         // Compute commands for the chat topic just-in-time so the popup
         // reflects the topic the user is typing into (not whichever row
         // is highlighted in the table).
@@ -970,227 +949,200 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         return;
     }
 
-    match app.chat.phase {
-        ChatPhase::PatternSelect => match key.code {
-            // No Esc-back here: returning to the dashboard is done via the
-            // leader-key popup (`open dashboard`, Ctrl+P).
-            KeyCode::Up | KeyCode::Char('k') => {
-                if app.chat.pattern_selected > 0 {
-                    app.chat.pattern_selected -= 1;
-                }
+    {
+        // `gg` sequence: a second consecutive `g` jumps to the top; any
+        // other key resets the sequence state.
+        let gg_jump = app.chat.gg_step(key.code == KeyCode::Char('g'));
+
+        // App-level keys take precedence over the editor.
+        match key.code {
+            KeyCode::Tab => {
+                app.chat.toggle_focus();
+                return;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if app.chat.pattern_selected + 1 < app.chat.patterns.len() {
-                    app.chat.pattern_selected += 1;
+            KeyCode::PageUp => {
+                if app.chat.focus == ChatFocus::ExplorerPane {
+                    explorer_move(app, -10);
+                } else {
+                    app.chat.page_up();
                 }
+                return;
             }
-            KeyCode::Enter => {
-                if let Some(pattern) = app.chat.patterns.get(app.chat.pattern_selected) {
-                    let pattern = pattern.clone();
-                    app.chat.select_pattern(pattern);
+            KeyCode::PageDown => {
+                if app.chat.focus == ChatFocus::ExplorerPane {
+                    explorer_move(app, 10);
+                } else {
+                    app.chat.page_down();
                 }
+                return;
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if app.chat.focus == ChatFocus::ExplorerPane {
+                    explorer_move(app, -10);
+                } else {
+                    app.chat.page_up();
+                }
+                return;
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if app.chat.focus == ChatFocus::ExplorerPane {
+                    explorer_move(app, 10);
+                } else {
+                    app.chat.page_down();
+                }
+                return;
             }
             _ => {}
-        },
-        ChatPhase::Chatting => {
-            // `gg` sequence: a second consecutive `g` jumps to the top; any
-            // other key resets the sequence state.
-            let gg_jump = app.chat.gg_step(key.code == KeyCode::Char('g'));
-
-            // App-level keys take precedence over the editor.
-            match key.code {
-                KeyCode::Tab => {
-                    app.chat.toggle_focus();
-                    return;
-                }
-                KeyCode::PageUp => {
-                    if app.chat.focus == ChatFocus::ExplorerPane {
-                        explorer_move(app, -10);
-                    } else {
-                        app.chat.page_up();
-                    }
-                    return;
-                }
-                KeyCode::PageDown => {
-                    if app.chat.focus == ChatFocus::ExplorerPane {
-                        explorer_move(app, 10);
-                    } else {
-                        app.chat.page_down();
-                    }
-                    return;
-                }
-                KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.chat.focus == ChatFocus::ExplorerPane {
-                        explorer_move(app, -10);
-                    } else {
-                        app.chat.page_up();
-                    }
-                    return;
-                }
-                KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if app.chat.focus == ChatFocus::ExplorerPane {
-                        explorer_move(app, 10);
-                    } else {
-                        app.chat.page_down();
-                    }
-                    return;
-                }
-                _ => {}
-            }
-
-            // Explorer pane: navigate the topic list; Enter switches the
-            // chat to the selected topic. Esc returns focus to the input.
-            // Any other key refocuses the input (consumed, not forwarded),
-            // so the user can browse then just start typing.
-            if app.chat.focus == ChatFocus::ExplorerPane {
-                match key.code {
-                    KeyCode::Esc => {
-                        app.chat.focus = ChatFocus::ChatPane;
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => explorer_move(app, -1),
-                    KeyCode::Down | KeyCode::Char('j') => explorer_move(app, 1),
-                    KeyCode::Char('g') if gg_jump => explorer_move(app, i64::MIN),
-                    KeyCode::Char('G') => explorer_move(app, i64::MAX),
-                    KeyCode::Enter => explorer_open_selected(app),
-                    _ => refocus_input(app),
-                }
-                return;
-            }
-
-            if app.chat.focus == ChatFocus::InfoPane {
-                // Vertical scroll only — file paths are short enough
-                // that horizontal overflow isn't a concern. No Esc-back:
-                // leaving the info pane is via Tab (focus cycle) or
-                // the leader-key popup, same as ActivityPane. Any other
-                // key refocuses the input (consumed, not forwarded), so
-                // the user can scroll then just start typing.
-                match key.code {
-                    KeyCode::Esc => {}
-                    KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
-                    KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
-                    KeyCode::Char('G') => app.chat.scroll_to_bottom(),
-                    KeyCode::Char('g') if gg_jump => app.chat.scroll_to_top(),
-                    KeyCode::Char('g') => {}
-                    // PageUp/PageDown never reach here: the app-level
-                    // match above intercepts them for every pane.
-                    _ => refocus_input(app),
-                }
-                return;
-            }
-
-            if app.chat.focus == ChatFocus::ActivityPane {
-                match key.code {
-                    // No Esc-back here: returning to the dashboard is done
-                    // via the leader-key popup (`open dashboard`, Ctrl+P).
-                    // Any other key refocuses the input, consumed (same
-                    // as MessageArea).
-                    KeyCode::Esc => {}
-                    KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
-                    KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
-                    KeyCode::Char('G') => app.chat.scroll_to_bottom(),
-                    KeyCode::Char('g') if gg_jump => app.chat.scroll_to_top(),
-                    KeyCode::Char('g') => {}
-                    KeyCode::Left => {
-                        app.chat.activity_hscroll = app.chat.activity_hscroll.saturating_sub(1)
-                    }
-                    KeyCode::Right => {
-                        app.chat.activity_hscroll = app.chat.activity_hscroll.saturating_add(1)
-                    }
-                    _ => refocus_input(app),
-                }
-                return;
-            }
-
-            // Message area: the cursor is showing here, so these keys move the
-            // cursor rather than scrolling (the wheel and PgUp/PgDn still
-            // scroll, and the cursor rides along — see `carry_cursor`). Digits
-            // before a key count lines: `5j`, `y3y`. A Shifted movement key
-            // opens a selection that every later movement grows, and `y` copies
-            // it. `Esc` drops the selection first and only then returns focus to
-            // the input field (it never exits the chat); any other key refocuses
-            // the input, so the user can move around and then just start typing.
-            if app.chat.focus == ChatFocus::MessageArea {
-                // Terminals differ in whether they report Shift+arrow at all
-                // (many send the same bytes as the plain key), so Shift+J/K is
-                // the reliable way to start a selection; Shift+arrow works
-                // wherever the terminal can tell them apart.
-                let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-                match key.code {
-                    KeyCode::Esc => {
-                        // Dropping an open selection comes first, and the next
-                        // `Esc` returns to the input — leaving both at once
-                        // would throw a selection away by accident. Staying in
-                        // the pane is how `Esc` leaves visual mode in vim.
-                        if app.chat.selection_anchor.take().is_none() {
-                            refocus_input(app)
-                        }
-                    }
-                    KeyCode::Up => step_cursor(app, -1, shift),
-                    KeyCode::Down => step_cursor(app, 1, shift),
-                    // Uppercase means Shift was held (that is how a terminal
-                    // reports it), so `J`/`K` are the selection-friendly forms.
-                    KeyCode::Char('k') => step_cursor(app, -1, false),
-                    KeyCode::Char('K') => step_cursor(app, -1, true),
-                    KeyCode::Char('j') => step_cursor(app, 1, false),
-                    KeyCode::Char('J') => step_cursor(app, 1, true),
-                    KeyCode::Char('G') => jump_cursor(app, false),
-                    KeyCode::Char('g') if gg_jump => jump_cursor(app, true),
-                    KeyCode::Char('g') => {}
-                    // With rows selected, one `y` copies them. Without a
-                    // selection `y` is the first half of a yank: arming it lets
-                    // a count sit between the halves, so `yy`, `y3y` and `3yy`
-                    // all mean the same thing.
-                    KeyCode::Char('y') if app.chat.selection_anchor.is_some() => {
-                        yank_selection(app)
-                    }
-                    KeyCode::Char('y') if app.chat.pending_y => {
-                        app.chat.pending_y = false;
-                        let count = app.chat.take_count();
-                        yank_from_cursor(app, count)
-                    }
-                    KeyCode::Char('y') => app.chat.pending_y = true,
-                    KeyCode::Char(c) if c.is_ascii_digit() => app.chat.push_count_digit(c),
-                    _ => refocus_input(app),
-                }
-                return;
-            }
-
-            // Chat input field. Everything not matched here is delegated
-            // to the textarea (character input, editing keys, undo/redo).
-            match key.code {
-                // Esc does not leave the topic: returning to the dashboard
-                // is done via the leader-key popup (`open dashboard`, Ctrl+P).
-                // Plain Enter sends the message. Pasted multi-line text
-                // goes through insert_str (not key events), so no paste
-                // debounce is needed.
-                KeyCode::Enter
-                    if !key.modifiers.contains(KeyModifiers::SHIFT)
-                        && !key.modifiers.contains(KeyModifiers::ALT) =>
-                {
-                    app.chat.send_message()
-                }
-                // Shift/Alt+Enter inserts a newline.
-                KeyCode::Enter => {
-                    app.chat.editor.insert_newline();
-                }
-                // Up/Down, when input is empty or browsing history, recall history.
-                KeyCode::Up
-                    if app.chat.text().trim().is_empty() || app.chat.history_pos.is_some() =>
-                {
-                    app.chat.recall_older()
-                }
-                KeyCode::Down
-                    if app.chat.text().trim().is_empty() || app.chat.history_pos.is_some() =>
-                {
-                    app.chat.recall_newer()
-                }
-                _ => {
-                    app.chat.editor.input(key);
-                }
-            }
-            // The command popup filters off this field — refresh or drop it.
-            sync_command_popup(app);
         }
+
+        // Explorer pane: navigate the topic list; Enter switches the
+        // chat to the selected topic. Esc returns focus to the input.
+        // Any other key refocuses the input (consumed, not forwarded),
+        // so the user can browse then just start typing.
+        if app.chat.focus == ChatFocus::ExplorerPane {
+            match key.code {
+                KeyCode::Esc => {
+                    app.chat.focus = ChatFocus::ChatPane;
+                }
+                KeyCode::Up | KeyCode::Char('k') => explorer_move(app, -1),
+                KeyCode::Down | KeyCode::Char('j') => explorer_move(app, 1),
+                KeyCode::Char('g') if gg_jump => explorer_move(app, i64::MIN),
+                KeyCode::Char('G') => explorer_move(app, i64::MAX),
+                KeyCode::Enter => explorer_open_selected(app),
+                _ => refocus_input(app),
+            }
+            return;
+        }
+
+        if app.chat.focus == ChatFocus::InfoPane {
+            // Vertical scroll only — file paths are short enough
+            // that horizontal overflow isn't a concern. No Esc-back:
+            // leaving the info pane is via Tab (focus cycle) or
+            // the leader-key popup, same as ActivityPane. Any other
+            // key refocuses the input (consumed, not forwarded), so
+            // the user can scroll then just start typing.
+            match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
+                KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
+                KeyCode::Char('G') => app.chat.scroll_to_bottom(),
+                KeyCode::Char('g') if gg_jump => app.chat.scroll_to_top(),
+                KeyCode::Char('g') => {}
+                // PageUp/PageDown never reach here: the app-level
+                // match above intercepts them for every pane.
+                _ => refocus_input(app),
+            }
+            return;
+        }
+
+        if app.chat.focus == ChatFocus::ActivityPane {
+            match key.code {
+                // No Esc-back here: returning to the dashboard is done
+                // via the leader-key popup (`open dashboard`, Ctrl+P).
+                // Any other key refocuses the input, consumed (same
+                // as MessageArea).
+                KeyCode::Esc => {}
+                KeyCode::Up | KeyCode::Char('k') => app.chat.scroll_up(),
+                KeyCode::Down | KeyCode::Char('j') => app.chat.scroll_down(),
+                KeyCode::Char('G') => app.chat.scroll_to_bottom(),
+                KeyCode::Char('g') if gg_jump => app.chat.scroll_to_top(),
+                KeyCode::Char('g') => {}
+                KeyCode::Left => {
+                    app.chat.activity_hscroll = app.chat.activity_hscroll.saturating_sub(1)
+                }
+                KeyCode::Right => {
+                    app.chat.activity_hscroll = app.chat.activity_hscroll.saturating_add(1)
+                }
+                _ => refocus_input(app),
+            }
+            return;
+        }
+
+        // Message area: the cursor is showing here, so these keys move the
+        // cursor rather than scrolling (the wheel and PgUp/PgDn still
+        // scroll, and the cursor rides along — see `carry_cursor`). Digits
+        // before a key count lines: `5j`, `y3y`. A Shifted movement key
+        // opens a selection that every later movement grows, and `y` copies
+        // it. `Esc` drops the selection first and only then returns focus to
+        // the input field (it never exits the chat); any other key refocuses
+        // the input, so the user can move around and then just start typing.
+        if app.chat.focus == ChatFocus::MessageArea {
+            // Terminals differ in whether they report Shift+arrow at all
+            // (many send the same bytes as the plain key), so Shift+J/K is
+            // the reliable way to start a selection; Shift+arrow works
+            // wherever the terminal can tell them apart.
+            let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+            match key.code {
+                KeyCode::Esc => {
+                    // Dropping an open selection comes first, and the next
+                    // `Esc` returns to the input — leaving both at once
+                    // would throw a selection away by accident. Staying in
+                    // the pane is how `Esc` leaves visual mode in vim.
+                    if app.chat.selection_anchor.take().is_none() {
+                        refocus_input(app)
+                    }
+                }
+                KeyCode::Up => step_cursor(app, -1, shift),
+                KeyCode::Down => step_cursor(app, 1, shift),
+                // Uppercase means Shift was held (that is how a terminal
+                // reports it), so `J`/`K` are the selection-friendly forms.
+                KeyCode::Char('k') => step_cursor(app, -1, false),
+                KeyCode::Char('K') => step_cursor(app, -1, true),
+                KeyCode::Char('j') => step_cursor(app, 1, false),
+                KeyCode::Char('J') => step_cursor(app, 1, true),
+                KeyCode::Char('G') => jump_cursor(app, false),
+                KeyCode::Char('g') if gg_jump => jump_cursor(app, true),
+                KeyCode::Char('g') => {}
+                // With rows selected, one `y` copies them. Without a
+                // selection `y` is the first half of a yank: arming it lets
+                // a count sit between the halves, so `yy`, `y3y` and `3yy`
+                // all mean the same thing.
+                KeyCode::Char('y') if app.chat.selection_anchor.is_some() => yank_selection(app),
+                KeyCode::Char('y') if app.chat.pending_y => {
+                    app.chat.pending_y = false;
+                    let count = app.chat.take_count();
+                    yank_from_cursor(app, count)
+                }
+                KeyCode::Char('y') => app.chat.pending_y = true,
+                KeyCode::Char(c) if c.is_ascii_digit() => app.chat.push_count_digit(c),
+                _ => refocus_input(app),
+            }
+            return;
+        }
+
+        // Chat input field. Everything not matched here is delegated
+        // to the textarea (character input, editing keys, undo/redo).
+        match key.code {
+            // Esc does not leave the topic: returning to the dashboard
+            // is done via the leader-key popup (`open dashboard`, Ctrl+P).
+            // Plain Enter sends the message. Pasted multi-line text
+            // goes through insert_str (not key events), so no paste
+            // debounce is needed.
+            KeyCode::Enter
+                if !key.modifiers.contains(KeyModifiers::SHIFT)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                app.chat.send_message()
+            }
+            // Shift/Alt+Enter inserts a newline.
+            KeyCode::Enter => {
+                app.chat.editor.insert_newline();
+            }
+            // Up/Down, when input is empty or browsing history, recall history.
+            KeyCode::Up if app.chat.text().trim().is_empty() || app.chat.history_pos.is_some() => {
+                app.chat.recall_older()
+            }
+            KeyCode::Down
+                if app.chat.text().trim().is_empty() || app.chat.history_pos.is_some() =>
+            {
+                app.chat.recall_newer()
+            }
+            _ => {
+                app.chat.editor.input(key);
+            }
+        }
+        // The command popup filters off this field — refresh or drop it.
+        sync_command_popup(app);
     }
 }
 
@@ -1240,7 +1192,7 @@ pub(super) fn handle_chat_mouse(app: &mut App, mouse: MouseEvent) {
     if !app.mouse_capture_enabled {
         return;
     }
-    if app.chat.phase != ChatPhase::Chatting {
+    if !app.chat.visible {
         return;
     }
     let pos = Position::new(mouse.column, mouse.row);
@@ -1287,34 +1239,6 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     // Status bar and topic info pane have independent visibility flags
     // (leader `s` / `i`); zen mode hides both.
 
-    if app.chat.phase == ChatPhase::PatternSelect {
-        // Pattern select is the initial screen when no topic is chosen.
-        // Info row and status row are independent; zen hides both.
-        let mut constraints = Vec::with_capacity(3);
-        if app.chat.info_visible {
-            constraints.push(Constraint::Length(1)); // Topic info pane
-        }
-        constraints.push(Constraint::Min(0)); // Pattern select
-        if app.chat.status_visible {
-            constraints.push(Constraint::Length(1)); // Status bar
-        }
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(constraints)
-            .split(area);
-        let mut i = 0;
-        if app.chat.info_visible {
-            render_topic_info_pane(frame, chunks[i], app);
-            i += 1;
-        }
-        render_pattern_select(frame, chunks[i], app);
-        if app.chat.status_visible {
-            render_status_bar(frame, chunks[i + 1], app);
-        }
-        return;
-    }
-
-    // Chatting phase.
     let show_status = app.chat.status_visible;
     let show_activity = app.chat.activity_split != 0;
     let show_explorer = app.chat.explorer_visible;
@@ -1520,7 +1444,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     // the scroll keys (mirrors render_activity_log_inner).
     // Chat screen: the title and top border are removed, leaving only the
     // left border to separate the pane from the chat content.
-    let mut block = if app.chat.phase == ChatPhase::Chatting {
+    let mut block = if app.chat.visible {
         // One row of top padding so the content does not hug the pane top.
         Block::default()
             .borders(Borders::LEFT)
@@ -1740,54 +1664,6 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         inner,
     );
     app.chat.info_scroll = skip;
-}
-
-pub(super) fn render_pattern_select(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .title(" Select Pattern ")
-        .borders(Borders::ALL);
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if app.chat.patterns.is_empty() {
-        let text = Paragraph::new(Span::styled(
-            "  No patterns available",
-            Style::default().fg(Color::DarkGray),
-        ));
-        frame.render_widget(text, inner);
-        return;
-    }
-
-    // One row per pattern, windowed so the cursor stays on screen: `Wrap` used
-    // to sit here for long paths, but a wrapped row pushed the cursor's row out
-    // of the window [`window_offset`] picked — and it needed `trim: false` to
-    // keep the unselected rows' blank gutter, which is why the `→` was the only
-    // indented line. Long paths clip at the pane edge now, like the popups.
-    let height = inner.height as usize;
-    let offset = window_offset(app.chat.patterns.len(), app.chat.pattern_selected, height);
-    let lines: Vec<Line> = app
-        .chat
-        .patterns
-        .iter()
-        .enumerate()
-        .skip(offset)
-        .take(height)
-        .map(|(i, pattern)| {
-            let selected = i == app.chat.pattern_selected;
-            let gutter = if selected { "→ " } else { "  " };
-            if selected {
-                Line::from(vec![Span::styled(
-                    format!("{gutter}{pattern}"),
-                    Style::default().add_modifier(Modifier::DIM),
-                )])
-            } else {
-                Line::from(vec![Span::raw(gutter), Span::raw(pattern)])
-            }
-        })
-        .collect();
-
-    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Toggle `idx` in a mark list. Order is irrelevant while marking - the submit
@@ -2057,32 +1933,31 @@ pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) 
     // Activity pane source-of-truth: WS-fed `live_activity` buffer for the
     // currently focused topic. Falls back to empty slice if no live data
     // has been seeded yet (transient state during hydrate).
-    let activity_vec: Vec<jyc_types::ActivityEntry> =
-        if app.chat.visible && app.chat.phase == ChatPhase::Chatting {
-            let (chan, topic) = (app.chat.channel.clone(), app.chat.topic.clone());
-            match (chan, topic) {
-                (Some(c), Some(t)) => app.chat.live_activity_for(&c, &t).cloned().collect(),
-                _ => Vec::new(),
-            }
-        } else if let Some(state) = &app.state {
-            // Overview mode: show the activity for the table-selected topic
-            // (also pulled from live buffers, hydrated when the row is selected).
-            let selected_idx = app.table_state.selected();
-            if let Some(idx) = selected_idx {
-                if let Some(t) = state.topics.get(idx) {
-                    app.chat
-                        .live_activity_for(&t.channel, &t.name)
-                        .cloned()
-                        .collect()
-                } else {
-                    Vec::new()
-                }
+    let activity_vec: Vec<jyc_types::ActivityEntry> = if app.chat.visible {
+        let (chan, topic) = (app.chat.channel.clone(), app.chat.topic.clone());
+        match (chan, topic) {
+            (Some(c), Some(t)) => app.chat.live_activity_for(&c, &t).cloned().collect(),
+            _ => Vec::new(),
+        }
+    } else if let Some(state) = &app.state {
+        // Overview mode: show the activity for the table-selected topic
+        // (also pulled from live buffers, hydrated when the row is selected).
+        let selected_idx = app.table_state.selected();
+        if let Some(idx) = selected_idx {
+            if let Some(t) = state.topics.get(idx) {
+                app.chat
+                    .live_activity_for(&t.channel, &t.name)
+                    .cloned()
+                    .collect()
             } else {
                 Vec::new()
             }
         } else {
             Vec::new()
-        };
+        }
+    } else {
+        Vec::new()
+    };
 
     let focused = app.chat.visible && app.chat.focus == ChatFocus::ActivityPane;
     // Borders::TOP subtracts one row from the inner area.
@@ -2212,9 +2087,6 @@ impl ChatState {
     pub(super) fn new(ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>) -> Self {
         Self {
             visible: false,
-            phase: ChatPhase::PatternSelect,
-            patterns: vec![],
-            pattern_selected: 0,
             topic: None,
             channel: None,
             messages: vec![],
@@ -2272,20 +2144,34 @@ impl ChatState {
         &mut self,
         addr: &str,
         channel: Option<&str>,
-        initial_topic: Option<&str>,
+        topic: &str,
         token: Option<String>,
     ) {
         self.visible = true;
-        self.phase = if initial_topic.is_some() {
-            ChatPhase::Chatting
-        } else {
-            ChatPhase::PatternSelect
-        };
-        self.patterns.clear();
-        self.pattern_selected = 0;
         self.channel = channel.map(|s| s.to_string());
-        self.topic = initial_topic.map(|s| s.to_string());
         self.token = token;
+        self.reset_chat_state(topic);
+        // Stash addr so the explorer pane can switch topics later.
+        self.open_addr = Some(addr.to_string());
+
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+        self.ws_tx = Some(cmd_tx);
+        // Replace the old receiver with the new one
+        self.ws_rx = event_rx;
+
+        let url = match channel {
+            Some(ch) => format!("ws://{}/ws/{}/{}", addr, ch, topic),
+            None => format!("ws://{}/ws", addr),
+        };
+        tokio::spawn(ws_client_task(url, cmd_rx, event_tx, self.token.clone()));
+    }
+
+    /// Clear per-topic state for a switch to `topic`. Used by `open()` and
+    /// directly by tests (open() also stashes addr/channel/token and spawns
+    /// the WS task, which needs a tokio runtime).
+    fn reset_chat_state(&mut self, topic: &str) {
+        self.topic = Some(topic.to_string());
         self.messages.clear();
         self.editor = empty_chat_editor();
         self.focus = ChatFocus::ChatPane;
@@ -2308,131 +2194,6 @@ impl ChatState {
         // Clear the poll-loop's last-hydrated key so it doesn't skip hydrate
         // when we switch back to overview later.
         self.last_hydrated_key = None;
-        // Stash addr so the explorer pane can switch topics later.
-        self.open_addr = Some(addr.to_string());
-
-        // No WS yet — the chat starts in PatternSelect (if no initial topic)
-        // and opens a scoped WS only after the user picks a pattern
-        // (see `open_pattern_select` + `select_pattern`).
-        if initial_topic.is_none() {
-            // Drop any stale WS connection from a prior chat.
-            if let Some(tx) = self.ws_tx.take() {
-                let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
-            }
-            return;
-        }
-
-        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        self.ws_tx = Some(cmd_tx);
-        // Replace the old receiver with the new one
-        self.ws_rx = event_rx;
-
-        let url = match (channel, initial_topic) {
-            (Some(ch), Some(th)) => format!("ws://{}/ws/{}/{}", addr, ch, th),
-            (Some(ch), None) => format!("ws://{}/ws/{}", addr, ch),
-            (None, _) => format!("ws://{}/ws", addr),
-        };
-        tokio::spawn(ws_client_task(url, cmd_rx, event_tx, self.token.clone()));
-    }
-
-    /// Open the chat pane in PatternSelect mode for the `c` key.
-    /// Fetches enabled pattern names via REST (replaces the old WebSocket
-    /// `list_patterns` command). No WS is opened until the user picks a
-    /// pattern (then `select_pattern` opens a scoped WS).
-    pub(super) async fn open_pattern_select(
-        &mut self,
-        addr: &str,
-        channel: &str,
-        client: &InspectClient,
-        token: Option<String>,
-    ) {
-        self.visible = true;
-        self.phase = ChatPhase::PatternSelect;
-        self.channel = Some(channel.to_string());
-        self.topic = None;
-        self.token = token;
-        self.patterns = client.list_patterns(channel).await.unwrap_or_default();
-        self.pattern_selected = 0;
-        self.messages.clear();
-        self.editor = empty_chat_editor();
-        self.focus = ChatFocus::ChatPane;
-        self.scroll = 0;
-        self.activity_scroll = 0;
-        self.info_scroll = 0;
-        self.last_message_area = None;
-        self.last_max_scroll = 0;
-        self.reset_cursor();
-        self.render_cache = None;
-        self.activity_hscroll = 0;
-        self.pending_g = false;
-        self.activity_split = 0;
-        self.info_visible = true;
-        self.status_visible = true;
-        self.zen_saved = None;
-        self.ws_connected = false;
-        self.input_history.clear();
-        self.history_pos = None;
-        self.last_hydrated_key = None;
-        // Drop any stale WS connection from a prior chat.
-        if let Some(tx) = self.ws_tx.take() {
-            let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
-        }
-        // Stash addr for the eventual `select_pattern` call. The polling
-        // loop in mod.rs owns the actual `addr` parameter; here we just
-        // store it so select_pattern can call back into open.
-        self.open_addr = Some(addr.to_string());
-    }
-
-    pub(super) fn close(&mut self) {
-        self.visible = false;
-        self.phase = ChatPhase::PatternSelect;
-        self.ws_connected = false;
-        self.command_popup = None;
-        self.last_hydrated_key = None;
-        if let Some(tx) = self.ws_tx.take() {
-            // Best-effort disconnect signal
-            let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
-        }
-    }
-
-    pub(super) fn select_pattern(&mut self, pattern: String) {
-        let channel = match &self.channel {
-            Some(c) => c.clone(),
-            None => return,
-        };
-        let addr = match &self.open_addr {
-            Some(a) => a.clone(),
-            None => return,
-        };
-
-        self.select_pattern_inner(pattern.clone());
-
-        let url = format!("ws://{}/ws/{}/{}", addr, channel, pattern);
-        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-        self.ws_tx = Some(cmd_tx);
-        self.ws_rx = event_rx;
-        tokio::spawn(super::ws::ws_client_task(
-            url,
-            cmd_rx,
-            event_tx,
-            self.token.clone(),
-        ));
-    }
-
-    /// Clear state and set topic — used by `select_pattern` for the WS flow
-    /// and directly by tests to verify state-clearing without a tokio runtime.
-    fn select_pattern_inner(&mut self, pattern: String) {
-        self.phase = ChatPhase::Chatting;
-        self.topic = Some(pattern);
-        self.editor = empty_chat_editor();
-        self.scroll = 0;
-        self.reset_cursor();
-        self.messages.clear();
-        self.input_history.clear();
-        self.history_pos = None;
-        self.last_hydrated_key = None;
         // A queued batch belongs to the topic being left behind. Keeping it
         // would hide the new topic's question behind it: `current_question`
         // reads `questions[question_index]`, and a first entry from the old
@@ -2441,6 +2202,17 @@ impl ChatState {
         // pending server-side, where a typed message still answers them.
         self.questions.clear();
         self.question_index = 0;
+    }
+
+    pub(super) fn close(&mut self) {
+        self.visible = false;
+        self.ws_connected = false;
+        self.command_popup = None;
+        self.last_hydrated_key = None;
+        if let Some(tx) = self.ws_tx.take() {
+            // Best-effort disconnect signal
+            let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
+        }
     }
 
     /// Cycle focus: Input → MessageArea → InfoPane → ActivityPane →
@@ -3203,10 +2975,10 @@ impl ChatState {
         self.live_chat.insert(key.clone(), chat_buf);
         self.last_seen_id.insert(key.clone(), max_id);
         // Reset the egress tracker for the freshly-seeded topic. `messages`
-        // was cleared by `open()` / `open_pattern_select()` /
-        // `select_pattern_inner()` and the freshly-hydrated `live_chat` must
-        // be re-pushed in full — leaving the previous visit's max id here
-        // would skip every hydrated historical row whose id ≤ old max.
+        // was cleared by `open()` (via `reset_chat_state`) and the
+        // freshly-hydrated `live_chat` must be re-pushed in full — leaving
+        // the previous visit's max id here would skip every hydrated
+        // historical row whose id ≤ old max.
         self.last_pushed_chat_id.insert(key, 0);
     }
 

@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+### Fixed
+
+- Topic-info diff probes (`base_ref`) inherit `git rev-parse` stdout, leaking
+  commit SHAs into jyc's own output at startup (#840)
+
 ### Added
 
 - TUI message-area `[` / `]` jumps the cursor (and view) to the previous /

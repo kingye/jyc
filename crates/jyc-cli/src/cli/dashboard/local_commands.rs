@@ -40,7 +40,7 @@ pub enum LocalAction {
     ToggleZen,
     /// Show/hide the activity pane (bottom 20% on, hidden off).
     ToggleActivity,
-    /// Show/hide the bottom status bar.
+    /// Show/hide the chat status block in the topic info pane.
     ToggleStatus,
     /// Show/hide the topic info pane (right side).
     ToggleInfo,
@@ -154,7 +154,7 @@ pub fn local_commands() -> &'static [LocalCommand] {
         },
         LocalCommand {
             name: "toggle status",
-            description: "Show/hide the bottom status bar",
+            description: "Show/hide status info in the topic info pane",
             scope: Chat,
             action: LocalAction::ToggleStatus,
             leader_keys: "s",

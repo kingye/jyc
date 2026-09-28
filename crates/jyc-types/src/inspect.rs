@@ -116,14 +116,17 @@ pub struct TopicSummary {
     /// `#[serde(default)]` so old payloads (pre-this-field) still load.
     #[serde(default)]
     pub branch: Option<String>,
-    /// Files changed relative to `main`. Each path appears at most once,
+    /// Files changed relative to the repo's default branch (resolved
+    /// server-side: `origin/HEAD`, falling back to `main`, then
+    /// `master`). Each path appears at most once,
     /// even when it is both committed on the branch and dirty in the
     /// working tree — when both, `uncommitted` is `true` (the more-noisy
     /// state wins, matches the yellow-render rule in the chat info pane).
-    /// Resolved server-side via `git diff --name-only main...HEAD` and
-    /// `git diff --name-only HEAD`, then unioned. `None` when the
+    /// Resolved server-side via `git diff --name-only <base>...HEAD`
+    /// (base = default branch) and `git diff --name-only HEAD`, then
+    /// unioned. `None` when the
     /// topic's working directory is not a git repo, or when the `git`
-    /// invocations fail (no `main` ref, missing binary). `Some(vec![])`
+    /// invocations fail (no resolvable base ref, missing binary). `Some(vec![])`
     /// when both lists come back empty.
     /// `#[serde(default)]` so old payloads (pre-this-field) deserialize
     /// as `None` and the section is simply omitted in the renderer.
@@ -158,8 +161,8 @@ pub struct TopicSummary {
     pub cost: Option<TopicCost>,
 }
 
-/// Per-file change kind relative to `main`, derived from the status
-/// letter in `git diff --name-status main...HEAD`. `Modified` is the
+/// Per-file change kind relative to the repo's default branch, derived
+/// from the status letter in the default-branch `git diff --name-status`. `Modified` is the
 /// default so old payloads (pre-this-field) and absent-on-wire copies
 /// fall through as the most common case. The chat info pane renders a
 /// one-column prefix glyph per row: `+` for Added, `-` for Deleted,

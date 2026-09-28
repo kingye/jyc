@@ -96,7 +96,6 @@ undo/redo, and standard readline-style editing keys.
 | `↑` / `↓` or `j` / `k` | Move the message cursor (message-area focus — the view scrolls only once the cursor hits its top or bottom row); move the text cursor / recall history (input, when empty) |
 | `J` / `K` or `Shift+↑` / `Shift+↓` | With message-area focus: open a selection at the cursor and extend it by that many rows; every movement afterwards (with or without Shift) keeps growing it |
 | `gg` / `G` | Jump to top / bottom of the focused pane; in the message pane the cursor goes to the first / last row with the view, taking an open selection with it |
-| `Enter` | Send message (chat input) |
 | `Shift+Enter` / `Alt+Enter` | Insert a newline in the chat input |
 | `/` popup: `Tab` | Complete the highlighted row — writes it into the input followed by one space, which opens the next level (or closes the popup when nothing is left to complete) |
 | `/` popup: `Enter` | Sends the command at the first (command) level. Below it `Enter` behaves like `Tab`, so sending a command with arguments takes a second `Enter`; with nothing to select it sends what was typed |

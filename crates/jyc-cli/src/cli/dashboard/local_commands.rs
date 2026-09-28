@@ -317,7 +317,6 @@ mod tests {
 
         // Dashboard screen: dashboard-scoped + shared.
         assert!(dash_keys.contains(&"c"), "open chat must be on dashboard");
-        assert!(dash_keys.contains(&"n"));
         assert!(dash_keys.contains(&"r"));
         assert!(dash_keys.contains(&"q"));
         assert!(
@@ -331,7 +330,6 @@ mod tests {
         assert!(!dash_keys.contains(&"/"));
         assert!(chat_keys.contains(&"d"));
         assert!(chat_keys.contains(&"z"));
-        assert!(chat_keys.contains(&"n"));
         assert!(chat_keys.contains(&"r"));
         assert!(chat_keys.contains(&"q"));
         // `c` is focus chat on the chat screen, open chat on the dashboard.

@@ -584,7 +584,6 @@ fn esc_does_not_close_chat_with_input_focused() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
     app.chat.focus = ChatFocus::ChatPane;
 
@@ -597,7 +596,6 @@ fn esc_does_not_close_chat_in_activity_pane() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
     app.chat.focus = ChatFocus::ActivityPane;
 
@@ -609,7 +607,6 @@ fn esc_does_not_close_chat_in_activity_pane() {
 fn chatting_app() -> App {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    app.chat.visible = true;
     app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
     app
@@ -1336,7 +1333,6 @@ fn mouse_scroll_in_message_area_advances_scroll_offset() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
     // Focus the input so the wheel hit-test is the only thing moving
     // focus, mirroring the user experience of scrolling with the
@@ -1390,7 +1386,6 @@ fn wheel_over_info_pane_scrolls_the_info_pane() {
     let mut terminal = Terminal::new(backend).unwrap();
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    app.chat.visible = true;
     app.chat.visible = true;
     app.chat.info_visible = true;
     app.chat.topic = Some("jyc".to_string());
@@ -1487,7 +1482,6 @@ fn mouse_scroll_ignored_when_capture_disabled() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
     app.chat.focus = ChatFocus::ChatPane;
     app.chat.scroll = 0;
@@ -1561,7 +1555,6 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
     let mut terminal = Terminal::new(backend).unwrap();
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    app.chat.visible = true;
     app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
     // Enough messages to overflow the pane, so the rendered scroll
@@ -1946,7 +1939,6 @@ fn processing_complete_folds_thinking_into_pseudo_message() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.visible = true;
     app.chat.channel = Some("chan".to_string());
     app.chat.topic = Some("t1".to_string());
 
@@ -1981,7 +1973,6 @@ fn processing_complete_folds_thinking_into_pseudo_message() {
 fn processing_complete_drops_thinking_when_topic_not_open() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    app.chat.visible = true;
     app.chat.visible = true;
     app.chat.channel = Some("chan".to_string());
     app.chat.topic = Some("other".to_string());

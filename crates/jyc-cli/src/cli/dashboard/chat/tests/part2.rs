@@ -1612,6 +1612,84 @@ fn info_pane_hides_status_block_when_status_toggled() {
     );
 }
 
+/// A narrow info column wraps the stats across rows instead of cutting a chip
+/// mid-word: at 19 usable cells the old single row showed `2 active / 5 t`, now
+/// the five chips spread over three whole-chip rows — and the `active / thread`
+/// pair keeps its slash while the two share a row.
+#[test]
+fn status_block_wraps_chips_instead_of_clipping_them() {
+    let mut app = status_block_app();
+    let pane = info_pane_text(&mut app, 20, 24);
+    let rows: Vec<&str> = pane.split('\n').collect();
+    // The greedy rows themselves, not just "the text appears somewhere": a
+    // chip that had to move down must sit on a row of its own.
+    for row in ["2 active / 5 thread", "12 recv · 0 err", "up 38m"] {
+        assert!(
+            rows.iter().any(|r| r.contains(row)),
+            "expected a stats row {row:?}:\n{pane}"
+        );
+    }
+}
+
+/// The floor is all-or-nothing at its boundary: a column one row short of the
+/// block's border plus every wrapped row (five here) drops the whole block
+/// instead of showing the version line with the stats cut off, and the topic
+/// info keeps the six rows it is owed. Heights count the *pane*, whose inner
+/// region loses a row to its own top padding — the boundary is at 12, not 11.
+#[test]
+fn status_block_hides_rather_than_clipping_its_own_rows() {
+    let mut app = status_block_app();
+    // 12 rows: inner 11 = five for the sub-pane plus the six the topic info keeps.
+    let pane = info_pane_text(&mut app, 20, 12);
+    assert!(
+        pane.contains("up 38m"),
+        "the last wrapped row must show when the block fits:\n{pane}"
+    );
+    // 11 rows: inner 10, one short of what the block needs, so none of it renders.
+    let pane = info_pane_text(&mut app, 20, 11);
+    assert!(
+        !pane.contains("JYC AI") && !pane.contains("2 active"),
+        "a column too short for the whole block must show none of it:\n{pane}"
+    );
+    assert!(
+        pane.contains("Topic: jyc"),
+        "the topic info keeps the column:\n{pane}"
+    );
+}
+
+/// `pack_chips` is greedy and atomic: chips join the current row only while they
+/// fit, a chip too wide to join takes a row alone (which also closes that row to
+/// the chips after it), and a chip that starts a row drops its joining separator.
+#[test]
+fn pack_chips_is_greedy_and_atomic() {
+    use crate::cli::dashboard::pack_chips;
+    let chips = vec![
+        ("", "aa".to_string()),
+        (" · ", "bbbbbbbbbb".to_string()),
+        (" · ", "cc".to_string()),
+    ];
+    // 5 cells: nothing joins, every chip stands alone.
+    assert_eq!(
+        pack_chips(&chips, 5),
+        vec!["aa".to_string(), "bbbbbbbbbb".to_string(), "cc".to_string()]
+    );
+    // 15 cells: `aa · bbbbbbbbbb` fits exactly, `cc` cannot follow it.
+    assert_eq!(
+        pack_chips(&chips, 15),
+        vec!["aa · bbbbbbbbbb".to_string(), "cc".to_string()]
+    );
+    // A chip pushed onto a new row does not lead that row with its separator.
+    let pair = vec![
+        ("", "2 active".to_string()),
+        (" / ", "5 thread".to_string()),
+    ];
+    assert_eq!(
+        pack_chips(&pair, 6),
+        vec!["2 active".to_string(), "5 thread".to_string()]
+    );
+    assert_eq!(pack_chips(&[], 12), Vec::<String>::new());
+}
+
 #[test]
 fn chat_screen_renders_no_bottom_status_bar() {
     use ratatui::Terminal;

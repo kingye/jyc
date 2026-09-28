@@ -1062,7 +1062,7 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
         "the options above the window must scroll away:\n{pane}"
     );
     assert!(
-        pane.contains("Esc hide"),
+        pane.contains("Esc discards"),
         "the hint must still fit under the window:\n{pane}"
     );
 }

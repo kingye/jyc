@@ -2,9 +2,10 @@
 //!
 //! [`QuestionHub`] tracks questions currently awaiting a user answer: the
 //! `ask_user` tool registers a oneshot receiver and blocks on it, while
-//! channel inbound adapters (websocket, feishu, and any text channel via
-//! [`QuestionHub::try_answer`]) submit answers via
-//! [`QuestionHub::respond`]. Entries are keyed by question id (UUID), so a
+//! channel inbound adapters submit answers via [`QuestionHub::respond`] (the
+//! websocket client sends a `question_response` frame) or, for text-fallback
+//! channels with no question box (feishu pipe, email, github), via
+//! [`QuestionHub::try_answer`]. Entries are keyed by question id (UUID), so a
 //! single hub serves all channels and topics.
 
 use std::collections::HashMap;
@@ -87,10 +88,11 @@ impl QuestionHub {
     /// timed out) — the message then routes normally instead of being
     /// dropped.
     ///
-    /// Used by text-fallback channels (email, github, feishu pipe,
-    /// websocket) so a user's plain reply answers the outstanding question
-    /// instead of bouncing off the busy topic. With several questions pending
-    /// for the topic, the oldest one is answered first.
+    /// Used by text-fallback channels (email, github, feishu pipe) so a
+    /// user's plain reply answers the outstanding question instead of bouncing
+    /// off the busy topic — the websocket client has a question box and
+    /// answers through `question_response` frames instead. With several
+    /// questions pending for the topic, the oldest one is answered first.
     pub fn try_answer(&self, topic: &str, text: &str) -> bool {
         let text = text.trim();
         if text.is_empty() || text.starts_with('/') {

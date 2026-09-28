@@ -1250,18 +1250,23 @@ fn second_question_queues_instead_of_cancelling_the_first() {
 }
 
 /// A queued batch belongs to the topic it was asked in, so switching topics
-/// leaves it behind the way Esc does. Keeping it would hide the next topic's
+/// discards it the way Esc does. Keeping it would hide the next topic's
 /// question for good: `current_question` reads `questions[question_index]`, and
 /// a first entry from the old topic makes `active_question` false forever - no
 /// box, no keys, while the tool waits out its timeout.
 #[test]
 fn switching_topics_leaves_the_old_question_batch_behind() {
-    let (mut chat, _rx) = chat_for_topic("jyc");
+    let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload("jyc", "qA1", &["x"]));
     chat.handle_question_event(&question_payload("jyc", "qA2", &["y"]));
     assert_eq!(chat.questions.len(), 2, "the qA batch is queued");
 
     chat.reset_chat_state("other");
+    for id in ["qA1", "qA2"] {
+        let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+        assert_eq!(frame["id"], id, "leaving settles the batch, as Esc does");
+        assert_eq!(frame["cancelled"], serde_json::json!(true));
+    }
     chat.handle_question_event(&question_payload("other", "qB1", &["z"]));
 
     assert!(
@@ -1340,21 +1345,37 @@ fn confirm_sends_choice_frame() {
     assert!(parsed.get("cancelled").is_none());
 }
 
+/// Esc discards the whole batch: every pending question gets its own cancel
+/// frame, so the blocked `ask_user` call settles at once. Hiding the box
+/// instead used to leave the questions pending with nothing on screen to
+/// answer them, and the next typed message was hijacked as a free-form answer.
 #[test]
-fn dismiss_hides_question_without_sending_a_frame() {
+fn esc_discards_the_batch_with_a_cancel_per_question() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload("jyc", "q1", &["a"]));
-    chat.dismiss_question();
+    chat.handle_question_event(&question_payload("jyc", "q2", &["b", "c"]));
+    assert_eq!(chat.questions.len(), 2);
 
-    // Esc only hides the box locally: the question stays pending
-    // server-side so the next typed message answers it via the
-    // websocket inbound adapter's try_answer interception. No
-    // question_response frame may be sent.
+    chat.discard_questions();
+
     assert!(!chat.active_question());
     assert!(chat.questions.is_empty());
+    for id in ["q1", "q2"] {
+        let frame = rx
+            .try_recv()
+            .unwrap_or_else(|_| panic!("a cancel frame for {id}"));
+        let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        assert_eq!(parsed["type"], "question_response");
+        assert_eq!(parsed["id"], id);
+        assert_eq!(
+            parsed["cancelled"],
+            serde_json::json!(true),
+            "a discard answers with a dismissal, not a pick"
+        );
+    }
     assert!(
         rx.try_recv().is_err(),
-        "no frame expected: the question stays pending server-side"
+        "exactly one frame per pending question"
     );
 }
 

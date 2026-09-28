@@ -237,12 +237,13 @@ pub(super) struct ChatState {
     pub(super) input_history: Vec<String>,
     /// The `ask_user` questions awaiting an answer here, oldest first.
     ///
-    /// One `ask_user` call can ask several at once, so these are answered as
-    /// a flow: `question_index` is the one on screen, each carries its own
-    /// cursor and marks, and nothing is sent until the last one is confirmed —
-    /// which is what lets `←/→` go back and adjust an earlier answer. Takes
-    /// over the input area while non-empty; Esc hides the whole set (they stay
-    /// pending server-side, and typed messages answer them oldest first).
+    /// One `ask_user` call can ask several at once, so they are answered as a
+    /// form: `question_index` is the one on screen, each carries its own cursor
+    /// and marks, and nothing is sent until the last one is confirmed — which
+    /// is what lets `←/→` go back and adjust an earlier answer. Takes over the
+    /// input area while non-empty; Esc discards the whole set (a cancel per
+    /// question), which settles the blocked `ask_user` call and frees the next
+    /// message as an ordinary turn.
     pub(super) questions: Vec<PendingQuestion>,
     /// Which of [`Self::questions`] is on screen.
     pub(super) question_index: usize,
@@ -881,7 +882,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         // Close any open command popup so the cancel path runs cleanly.
         app.chat.command_popup = None;
         app.chat.leader = None;
-        app.chat.dismiss_question();
+        app.chat.discard_questions();
         app.chat.send_message_inner("/cancel".to_string());
         return;
     }
@@ -960,9 +961,9 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     }
 
     // Pending questions own the keyboard while visible: the agent is blocked
-    // mid-turn waiting for these answers. Esc hides them (focus back to the
-    // editor, the questions still pending — each next typed message becomes
-    // the free-form answer of the oldest one via try_answer interception).
+    // mid-turn waiting for these answers. Esc discards the whole set (a cancel
+    // per question), which settles that call and hands the next message back
+    // to the editor as an ordinary turn.
     if app.chat.active_question() {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => app.chat.select_question_prev(),
@@ -977,7 +978,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     app.chat.pick_question_idx(idx);
                 }
             }
-            KeyCode::Esc => app.chat.dismiss_question(),
+            KeyCode::Esc => app.chat.discard_questions(),
             _ => {}
         }
         return;
@@ -1757,9 +1758,7 @@ fn question_hint(total: usize) -> String {
     } else {
         "Enter send"
     };
-    format!(
-        "Up/Down or j/k move - Space or 1-9 marks/picks - {enter} - Esc hide, then type your answer"
-    )
+    format!("Up/Down or j/k move - Space or 1-9 marks/picks - {enter} - Esc discards all")
 }
 
 /// Rows a question box spends on everything but the options: the question and
@@ -2259,14 +2258,13 @@ impl ChatState {
         // Clear the poll-loop's last-hydrated key so it doesn't skip hydrate
         // when we switch back to overview later.
         self.last_hydrated_key = None;
-        // A queued batch belongs to the topic being left behind. Keeping it
-        // would hide the new topic's question behind it: `current_question`
-        // reads `questions[question_index]`, and a first entry from the old
-        // topic makes `active_question` false forever, so no box is drawn.
-        // Dropping the queue is exactly what Esc does - the questions stay
-        // pending server-side, where a typed message still answers them.
-        self.questions.clear();
-        self.question_index = 0;
+        // A queued batch belongs to the topic being left behind, and this pane
+        // can no longer show it: `current_question` reads
+        // `questions[question_index]`, so a first entry from the old topic
+        // makes `active_question` false forever and no box is drawn. Discard it
+        // exactly as Esc does, rather than leaving the agent blocked on
+        // questions this pane has lost sight of.
+        self.discard_questions();
     }
 
     pub(super) fn close(&mut self) {
@@ -2897,16 +2895,21 @@ impl ChatState {
         }
     }
 
-    /// Hide the pending questions (Esc) and return focus to the editor.
+    /// Esc: discard the whole pending batch - tell the daemon every question
+    /// was dismissed, then drop them locally.
     ///
-    /// They stay alive server-side: the next typed message is routed to the
-    /// oldest of them by the websocket inbound adapter's interception
-    /// (`QuestionHub::try_answer`), making it that question's free-form answer,
-    /// and the one after that answers the next. The daemon-side timeout still
-    /// bounds anything left unanswered.
-    fn dismiss_question(&mut self) {
-        self.questions.clear();
+    /// Discard, not hide: the blocked `ask_user` call settles at once, so the
+    /// message the user types next is an ordinary turn that gets an ordinary
+    /// answer. A hidden box would leave the questions pending with no way to
+    /// reach them - the next message used to be hijacked as a free-form answer
+    /// to the oldest, and anything left unanswered stalled the turn until the
+    /// daemon's timeout.
+    fn discard_questions(&mut self) {
+        let questions = std::mem::take(&mut self.questions);
         self.question_index = 0;
+        for q in questions {
+            self.send_question_cancelled(&q.id);
+        }
     }
 
     /// Send a `question_response` frame carrying every picked option. Even a

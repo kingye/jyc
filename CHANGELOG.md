@@ -44,10 +44,11 @@
 ### Fixed
 
 - TUI chat no longer strips the leading spaces of a sent message's lines:
-  CommonMark paragraph de-indentation is neutralized for human turns (1–3
-  leading spaces survive as non-breaking spaces; fenced code is untouched)
-  and sending trims trailing whitespace only, so indented text, pasted
-  code, and ASCII art keep their shape
+  CommonMark indentation handling (paragraph de-indentation, indented code
+  blocks) is neutralized for human turns at any depth — leading spaces survive
+  as non-breaking spaces; fenced code is untouched — and sending trims
+  trailing whitespace only, so indented text, pasted code, and ASCII art
+  keep their shape (#837, #838)
 - Switching topics in the TUI chat (explorer or topic list) now drops the
   previous topic's pending `ask_user` question batch — same as Esc — so a
   queued question from the old topic can no longer suppress the new topic's

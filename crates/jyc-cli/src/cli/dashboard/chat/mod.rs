@@ -452,11 +452,10 @@ pub(super) fn softbreaks_to_hardbreaks(md: &str) -> String {
     out
 }
 
-/// Replace 1–3 leading spaces of each non-fence line with U+00A0 so the
-/// markdown renderer (CommonMark strips up-to-3-space paragraph indentation)
-/// preserves the user's visual indentation. Four-plus spaces still form an
-/// indented code block and are left alone; fence contents keep real spaces so
-/// copied code is byte-clean.
+/// Replace leading spaces of each non-fence line with U+00A0 so the markdown
+/// renderer (CommonMark rewrites indentation: up to 3 spaces are stripped, 4+
+/// become a code block) preserves the user's visual indentation at any depth.
+/// Fence contents keep real spaces so copied code is byte-clean.
 pub(super) fn protect_leading_whitespace(md: &str) -> String {
     let mut out = String::with_capacity(md.len());
     let mut in_fence = false;
@@ -471,15 +470,9 @@ pub(super) fn protect_leading_whitespace(md: &str) -> String {
             out.push_str(line);
             continue;
         }
-        // Only 1–3 leading spaces: markdown would strip them. Runs of 4+
-        // form an indented code block and must pass through untouched.
         let n = line.len() - line.trim_start_matches(' ').len();
-        if (1..=3).contains(&n) {
-            out.push_str(&"\u{00A0}".repeat(n));
-            out.push_str(&line[n..]);
-        } else {
-            out.push_str(line);
-        }
+        out.push_str(&"\u{00A0}".repeat(n));
+        out.push_str(&line[n..]);
     }
     out
 }

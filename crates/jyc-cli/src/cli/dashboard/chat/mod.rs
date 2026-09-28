@@ -1276,9 +1276,10 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     //   └───────────────────────────────────────────────────────────────┘
     //
     // No bottom status bar on the chat screen: status info (version,
-    // stats, transient messages) renders at the top of the topic info
-    // pane instead (leader `s` toggles it). Zen mode hides the info
-    // pane, which hides the status info with it.
+    // stats, transient messages) renders in a sub-pane pinned to the
+    // bottom of the topic info pane instead (leader `s` toggles it). The
+    // sub-pane never scrolls. Zen mode hides the info pane, which hides
+    // the status info with it.
 
     let show_activity = app.chat.activity_split != 0;
     let show_explorer = app.chat.explorer_visible;
@@ -1459,8 +1460,10 @@ fn selected_topic_summary(app: &App) -> Option<&jyc_types::TopicSummary> {
 /// Displays topic name, channel, pattern, model, mode, tokens, a
 /// processing indicator, and the changed-files list (which can scroll
 /// when it overflows the pane). Wraps content in a bordered `Block`
-/// so it is visually separable from the borderless chat pane. Takes
-/// `&mut App` because the changed-files section owns
+/// so it is visually separable from the borderless chat pane. On the
+/// chat screen the status block additionally gets a fixed sub-pane at
+/// the bottom of the column (see [`chat_status_block`]) that does not
+/// scroll. Takes `&mut App` because the changed-files section owns
 /// `app.chat.info_scroll`, which is clamped on every render.
 pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.chat.focus == ChatFocus::InfoPane;
@@ -1488,10 +1491,38 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
                 .add_modifier(Modifier::BOLD),
         );
     }
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    // The content rect rather than `area`: the pane's left border separates it
-    // from the chat pane, and the wheel belongs to the chat side of that line.
+    // Chat screen: the status block (version + gray stats, or a transient
+    // message) gets its own sub-pane pinned to the bottom of the info
+    // column, separated by a gray top border. It never scrolls — wheel and
+    // keys only move the topic info above it (leader `s` hides the block,
+    // handing the whole column back to the topic info). The overview
+    // screen keeps its own status bar and renders no sub-pane here.
+    let status = if app.chat.visible && app.chat.status_visible {
+        chat_status_block(app)
+    } else {
+        Vec::new()
+    };
+    let (info_area, status_area) = if status.is_empty() {
+        (area, None)
+    } else {
+        let status_h = (status.len() as u16 + 1).min(area.height);
+        let cols = Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(area);
+        (cols[0], Some(cols[1]))
+    };
+
+    let inner = block.inner(info_area);
+    frame.render_widget(block, info_area);
+    if let Some(status_area) = status_area {
+        let status_block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(Color::DarkGray));
+        let status_inner = status_block.inner(status_area);
+        frame.render_widget(status_block, status_area);
+        frame.render_widget(Paragraph::new(status), status_inner);
+    }
+    // The content rect rather than the topic sub-area: the pane's left
+    // border separates it from the chat pane, and the wheel belongs to the
+    // chat side of that line.
     app.chat.last_info_area = Some(inner);
 
     let lines: Vec<Line> = if let Some(t) = selected_topic_summary(app) {
@@ -1669,17 +1700,6 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         out
     } else {
         vec![Line::from("Select a topic")]
-    };
-
-    // Chat screen: prepend the status block (version + gray stats, or a
-    // transient message) so the chat layout needs no bottom status bar.
-    // The overview screen keeps its own status bar and is untouched here.
-    let lines = if app.chat.visible && app.chat.status_visible {
-        let mut out = chat_status_block(app);
-        out.extend(lines);
-        out
-    } else {
-        lines
     };
 
     // Wrap here rather than with `Paragraph::wrap()` so that the row count the

@@ -15,9 +15,10 @@
 ### Changed
 
 - TUI chat screen drops its bottom status bar: version, server stats, and
-  transient messages now render as a two-line block (`JYC AI v…`, gray
-  stats) at the top of the topic info pane — leader `s` still toggles it;
-  the overview screen keeps its status bar unchanged
+  transient messages now render in a fixed sub-pane at the bottom of the
+  topic info pane (`JYC AI v…`, gray stats, gray top border) — the sub-pane
+  never scrolls with the topic info; leader `s` still toggles it; the
+  overview screen keeps its status bar unchanged (#841)
 - TUI chat header shows the topic name instead of channel and pattern
   (`╭─ plan · jyc · branch`) — the topic is the identity that matters when
   working with agents; channel/pattern remain routing metadata

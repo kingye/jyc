@@ -1558,7 +1558,9 @@ fn chat_screen_renders_no_bottom_status_bar() {
     use ratatui::backend::TestBackend;
 
     let mut app = status_block_app();
-    let backend = TestBackend::new(80, 24);
+    // 120 cols so the 20% info pane (24 wide) fits the version line
+    // without wrapping — the assertion needs it on one row.
+    let backend = TestBackend::new(120, 24);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal
         .draw(|frame| ui_chat_mode(frame, frame.area(), &mut app))

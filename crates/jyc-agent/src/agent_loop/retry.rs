@@ -7,10 +7,7 @@ use chrono::Utc;
 use tokio_util::sync::CancellationToken;
 
 use super::publish_event;
-use super::response::{
-    CollectedResponse, collect_response, looks_like_leak_in_mixed_response,
-    looks_like_leaked_tool_call,
-};
+use super::response::{CollectedResponse, collect_response, leaked_syntax_offset};
 use crate::provider::{Provider, RetryClass, classify_retry, extract_retry_after};
 use crate::types::ToolDefinition;
 use jyc_core::topic_event::TopicEvent;
@@ -112,6 +109,12 @@ pub(crate) async fn complete_with_retry(
 ) -> Result<CollectedResponse> {
     let mut last_err: anyhow::Error =
         anyhow::anyhow!("complete_with_retry exited without attempting any call");
+    // Set once a provider-format failure is seen: the retry then carries a
+    // repair note explaining what the model got wrong. Resampling an
+    // unchanged request just rerolls the same degeneracy — the model ends
+    // the turn with tool-call syntax in the text channel and never learns
+    // (#786).
+    let mut repair_hint = false;
 
     for attempt_idx in 0..THROTTLED_MAX_ATTEMPTS {
         // Check cancellation before each attempt so /cancel takes effect
@@ -133,6 +136,7 @@ pub(crate) async fn complete_with_retry(
             sse_read_timeout,
             cancel,
             thinking_enabled,
+            repair_hint,
         )
         .await;
 
@@ -145,6 +149,9 @@ pub(crate) async fn complete_with_retry(
         // budget. Terminal errors propagate immediately.
         let err_display = format!("{:#}", last_err);
         let class = classify_retry(&last_err);
+        if err_display.contains("provider format failure") {
+            repair_hint = true;
+        }
         let max_attempts = max_attempts_for(class);
         let is_last_attempt = attempt_idx + 1 >= max_attempts;
         if class == RetryClass::Terminal || is_last_attempt {
@@ -206,6 +213,15 @@ pub(crate) async fn complete_with_retry(
     Err(last_err)
 }
 
+/// Appended to the request — attempt-scoped, never persisted — once the
+/// provider-format guard has rejected an attempt. The rejected text is
+/// deliberately not quoted back: naming the failure is enough for the model
+/// to re-answer, and echoing the syntax risks re-triggering it.
+const REPAIR_NOTE: &str = "Correction: your previous response did not call a \
+tool properly — the tool call was emitted as message text (or with an empty \
+tool name), so no tool ran. Re-answer now: call tools through the structured \
+tool interface only, and keep user-facing prose in the message text.";
+
 /// Issue one LLM call and collect its streaming response, honouring the
 /// cancellation token (a cancelled token aborts immediately).
 #[allow(clippy::too_many_arguments)]
@@ -219,13 +235,28 @@ async fn issue_call(
     sse_read_timeout: std::time::Duration,
     cancel: &CancellationToken,
     thinking_enabled: bool,
+    repair_hint: bool,
 ) -> Result<CollectedResponse> {
+    let hinted_context: Vec<serde_json::Value>;
+    let request_context: &[serde_json::Value] = if repair_hint {
+        // ponytail: a trailing user turn. Merge into the last message instead
+        // if a provider ever rejects two user turns in a row.
+        hinted_context = {
+            let mut ctx = raw_context.to_vec();
+            ctx.push(serde_json::json!({ "role": "user", "content": REPAIR_NOTE }));
+            ctx
+        };
+        &hinted_context
+    } else {
+        raw_context
+    };
+
     tokio::select! {
         r = async {
             let stream = provider
-                .complete_raw(raw_context, tools, system_prompt)
+                .complete_raw(request_context, tools, system_prompt)
                 .await?;
-            let collected = collect_response(
+            let mut collected = collect_response(
                 stream,
                 sse_read_timeout,
                 event_bus,
@@ -234,40 +265,46 @@ async fn issue_call(
             )
             .await?;
             // Provider format-failure guard (#786): raw tool-call syntax in
-            // the text channel is garbage to the user — fail the attempt
-            // (transient "provider format failure") so the retry loop
-            // re-issues the call. Applies even when structured tool_calls
-            // parsed fine: a partially parsed stream can carry valid calls
-            // while the unparsed remainder lands in the text channel and
-            // ships verbatim via the auto-delivery fallback — but in that
-            // mixed mode only the closing-tag / repetition checks run, so
-            // one start-anchored quote in legit prose does not kill a valid
-            // call. Also reject
-            // structured tool calls with an EMPTY name: degenerate streams
-            // parse into blank-name calls that bypass the text guard and
-            // ship as `<response_tools>` garbage to the user.
-            let text_is_leak = if collected.tool_calls.is_empty() {
-                looks_like_leaked_tool_call(&collected.text)
-            } else {
-                // Mixed mode: a valid structured call coexists with the text
-                // channel. Use the narrow check — a single start-anchored
-                // marker quote in legit prose must not kill a valid tool
-                // call; only closing tags and repetition storms flag here.
-                looks_like_leak_in_mixed_response(&collected.text)
+            // the text channel is garbage to the user. Strip the leaked block
+            // — a reply that leaked a truncated call after real prose is
+            // still worth delivering — and fail the attempt only when nothing
+            // deliverable is left, so the retry loop re-issues the call with
+            // a repair note (#786). Structured tool_calls are untouched
+            // either way: a valid call must survive a text-channel leak.
+            let mut leaked_excerpt: Option<String> = None;
+            let text_was_all_syntax = match leaked_syntax_offset(&collected.text) {
+                Some(offset) => {
+                    leaked_excerpt = Some(jyc_utils::helpers::truncate_str_ellipsis(
+                        &collected.text,
+                        200,
+                    ));
+                    let dropped_chars = collected.text[offset..].chars().count();
+                    let kept = collected.text[..offset].trim_end().len();
+                    collected.text.truncate(kept);
+                    tracing::debug!(
+                        dropped_chars,
+                        kept_chars = kept,
+                        "stripped leaked tool-call syntax from the reply text"
+                    );
+                    collected.text.trim().is_empty()
+                }
+                None => false,
             };
-            if text_is_leak
-                || collected
-                    .tool_calls
-                    .iter()
-                    .any(|tc| tc.name.trim().is_empty())
-            {
+            // Degenerate streams also parse into blank-name calls that bypass
+            // the text guard and ship as garbage to the user.
+            let empty_name_calls = collected
+                .tool_calls
+                .iter()
+                .filter(|tc| tc.name.trim().is_empty())
+                .count();
+            let nothing_to_deliver = text_was_all_syntax && collected.tool_calls.is_empty();
+            if nothing_to_deliver || empty_name_calls > 0 {
+                let excerpt = leaked_excerpt.unwrap_or_else(|| {
+                    jyc_utils::helpers::truncate_str_ellipsis(&collected.text, 200)
+                });
                 tracing::warn!(
-                    text_excerpt = %jyc_utils::helpers::truncate_str_ellipsis(&collected.text, 200),
-                    empty_name_calls = collected
-                        .tool_calls
-                        .iter()
-                        .filter(|tc| tc.name.trim().is_empty())
-                        .count(),
+                    text_excerpt = %excerpt,
+                    empty_name_calls,
                     "provider format failure: model emitted tool-call syntax as text"
                 );
                 Err(anyhow::anyhow!(
@@ -398,6 +435,8 @@ mod retry_tests {
     /// re-issues the call (#786).
     struct LeakyProvider {
         calls: AtomicUsize,
+        /// Attempts whose request carried the repair note (#786).
+        hinted_calls: AtomicUsize,
     }
 
     #[async_trait]
@@ -420,10 +459,18 @@ mod retry_tests {
 
         async fn complete_raw(
             &self,
-            _raw_messages: &[serde_json::Value],
+            raw_messages: &[serde_json::Value],
             _tools: &[ToolDefinition],
             _system: &str,
         ) -> anyhow::Result<EventStream> {
+            if raw_messages
+                .last()
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_str())
+                .is_some_and(|c| c.contains("Correction:"))
+            {
+                self.hinted_calls.fetch_add(1, Ordering::SeqCst);
+            }
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             let text = if n == 0 {
                 "<response tools=\"<call tool=\"bash\" index=\"1\">".to_string()
@@ -584,6 +631,71 @@ mod retry_tests {
                     Ok(StreamEvent::Done),
                 ]
             };
+            Ok(Box::pin(stream::iter(events)))
+        }
+
+        fn format_user_message(&self, blocks: &[ContentBlock]) -> serde_json::Value {
+            mock_format_user_message(blocks)
+        }
+
+        fn format_tool_result(
+            &self,
+            tool_call_id: &str,
+            content: &str,
+            _is_error: bool,
+        ) -> serde_json::Value {
+            mock_format_tool_result(tool_call_id, content)
+        }
+
+        fn build_raw_assistant_message(
+            &self,
+            text: &str,
+            _reasoning: &str,
+            _tool_calls: &[(String, String, String)],
+        ) -> serde_json::Value {
+            mock_build_raw_assistant_message(text)
+        }
+    }
+
+    /// Prose with the truncated leaked call appended — the shape observed in
+    /// production on 2026-09-28: the reply is deliverable once the tail is
+    /// stripped (#786).
+    struct TailLeakProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for TailLeakProvider {
+        fn name(&self) -> &str {
+            "tail-leak"
+        }
+        fn model(&self) -> &str {
+            "tail-leak-1"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            unimplemented!("complete() unused in retry tests")
+        }
+
+        async fn complete_raw(
+            &self,
+            _raw_messages: &[serde_json::Value],
+            _tools: &[ToolDefinition],
+            _system: &str,
+        ) -> anyhow::Result<EventStream> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let events: Vec<anyhow::Result<StreamEvent>> = vec![
+                Ok(StreamEvent::TextDelta(
+                    "顺手再查一次 CI 状态：\n<tool_use>\n<invoke name=\"bash\">\n<parameter name=\"command\" type=\"string"
+                        .to_string(),
+                )),
+                Ok(StreamEvent::Done),
+            ];
             Ok(Box::pin(stream::iter(events)))
         }
 
@@ -826,12 +938,14 @@ mod retry_tests {
     }
 
     /// Leaked tool-call syntax in the text channel (no structured
-    /// tool_calls) fails the attempt as a transient provider format failure
-    /// and the retry re-issues the call (#786).
+    /// tool_calls) with nothing else to deliver fails the attempt as a
+    /// transient provider format failure; the retry re-issues the call
+    /// carrying the repair note (#786).
     #[tokio::test]
     async fn leaked_tool_call_syntax_is_retried_then_succeeds() {
         let provider = LeakyProvider {
             calls: AtomicUsize::new(0),
+            hinted_calls: AtomicUsize::new(0),
         };
         let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
 
@@ -862,13 +976,18 @@ mod retry_tests {
             2,
             "expected 2 total calls (1 leaked + 1 good)"
         );
+        assert_eq!(
+            provider.hinted_calls.load(Ordering::SeqCst),
+            1,
+            "the retry must explain the format failure to the model, the first attempt must not"
+        );
     }
 
-    /// Mixed mode: valid tool_calls + leaked syntax in the text channel —
-    /// the attempt must STILL fail the leak guard (no `tool_calls.is_empty()`
-    /// bypass) and the retry re-issue the call.
+    /// Mixed mode: valid tool_calls plus a leaked fragment storm in the text
+    /// channel — the call survives, the leaked lines are stripped, and the
+    /// prose before them is delivered without burning a retry (#786).
     #[tokio::test]
-    async fn mixed_leak_with_valid_tool_calls_is_retried() {
+    async fn mixed_leak_keeps_call_and_delivers_prose() {
         let provider = MixedLeakyProvider {
             calls: AtomicUsize::new(0),
         };
@@ -888,23 +1007,52 @@ mod retry_tests {
         )
         .await;
 
-        assert!(
-            result.is_ok(),
-            "expected Ok after retry, got {:?}",
-            result.err()
-        );
-        assert_eq!(result.unwrap().text, "ok");
+        let response = result.expect("mixed leak with prose must still be deliverable");
+        assert_eq!(response.text, "先说结论。");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].name, "bash");
         assert_eq!(
             provider.calls.load(Ordering::SeqCst),
-            2,
-            "expected 2 total calls (1 mixed-leak + 1 good)"
+            1,
+            "stripping a text-channel leak must not cost a retry"
         );
     }
 
-    /// Mixed mode: a valid tool call plus prose that begins with ONE quoted
-    /// marker must pass the guard untouched — the start-anchored check only
-    /// applies to text-only responses, otherwise legit meta-discussion
-    /// kills a valid tool call and burns the retry budget.
+    /// Prose with a truncated leaked call appended (the shape observed in
+    /// production): deliver the prose, drop the tail, no retry.
+    #[tokio::test]
+    async fn prose_with_truncated_leak_tail_is_delivered_without_retry() {
+        let provider = TailLeakProvider {
+            calls: AtomicUsize::new(0),
+        };
+        let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(10));
+
+        let result = complete_with_retry(
+            &provider,
+            &[],
+            &[],
+            "system",
+            "topic-x",
+            Some(&bus),
+            std::time::Duration::from_secs(120),
+            &CancellationToken::new(),
+            true,
+            &[1, 2],
+        )
+        .await;
+
+        let response = result.expect("prose + leak tail must be deliverable");
+        assert_eq!(response.text, "顺手再查一次 CI 状态：");
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            1,
+            "a stripped tail must not trigger a retry"
+        );
+    }
+
+    /// Mixed mode: a valid tool call plus a leaked line at the start of the
+    /// text channel — the call is kept, the leaked line is dropped, and no
+    /// retry is burned (a valid call used to die with the text).
     #[tokio::test]
     async fn mixed_mode_single_marker_quote_is_not_flagged() {
         let provider = MixedQuotingProvider {
@@ -926,9 +1074,13 @@ mod retry_tests {
         )
         .await;
 
-        let response = result.expect("single marker quote in mixed mode must pass");
+        let response = result.expect("a valid call must survive a text-channel leak line");
         assert_eq!(response.tool_calls.len(), 1);
         assert_eq!(response.tool_calls[0].name, "bash");
+        assert_eq!(
+            response.text, "",
+            "the leaked line is dropped, not delivered"
+        );
         assert_eq!(
             provider.calls.load(Ordering::SeqCst),
             1,

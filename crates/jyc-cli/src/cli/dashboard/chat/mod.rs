@@ -1459,11 +1459,12 @@ fn selected_topic_summary(app: &App) -> Option<&jyc_types::TopicSummary> {
 ///
 /// Displays topic name, channel, pattern, model, mode, tokens, a
 /// processing indicator, and the changed-files list (which can scroll
-/// when it overflows the pane). Wraps content in a bordered `Block`
-/// so it is visually separable from the borderless chat pane. On the
-/// chat screen the status block additionally gets a fixed sub-pane at
-/// the bottom of the column (see [`chat_status_block`]) that does not
-/// scroll. Takes `&mut App` because the changed-files section owns
+/// when it overflows the pane). The pane is one bordered column: on the
+/// chat screen the left border runs the full height and the interior
+/// splits into a borderless, scrollable topic sub-pane and a fixed
+/// status sub-pane at the bottom (see [`chat_status_block`]). On the
+/// overview screen the block also carries the title and top border.
+/// Takes `&mut App` because the changed-files section owns
 /// `app.chat.info_scroll`, which is clamped on every render.
 pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.chat.focus == ChatFocus::InfoPane;
@@ -1502,16 +1503,20 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     } else {
         Vec::new()
     };
-    let (info_area, status_area) = if status.is_empty() {
-        (area, None)
+    // The status sub-pane renders inside the border, pinned to the bottom of
+    // the column: the outer block is drawn over the whole column first so its
+    // left border runs the full height, and only the inner region is split
+    // into the borderless topic sub-pane and the status sub-pane.
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let (topic_inner, status_area) = if status.is_empty() || inner.height == 0 {
+        (inner, None)
     } else {
-        let status_h = (status.len() as u16 + 1).min(area.height);
-        let cols = Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(area);
-        (cols[0], Some(cols[1]))
+        let status_h = (status.len() as u16 + 1).min(inner.height);
+        let rows =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(inner);
+        (rows[0], Some(rows[1]))
     };
-
-    let inner = block.inner(info_area);
-    frame.render_widget(block, info_area);
     if let Some(status_area) = status_area {
         let status_block = Block::default()
             .borders(Borders::TOP)
@@ -1519,11 +1524,18 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         let status_inner = status_block.inner(status_area);
         frame.render_widget(status_block, status_area);
         frame.render_widget(Paragraph::new(status), status_inner);
+        // Join the sub-pane's top border with the pane's left border: ratatui
+        // only draws corner glyphs when both adjacent borders are set, so the
+        // cell left of the sub-pane's top border stays a plain vertical line
+        // without this patch.
+        if status_area.x > area.x {
+            frame.buffer_mut()[(status_area.x - 1, status_area.y)].set_symbol("├");
+        }
     }
     // The content rect rather than the topic sub-area: the pane's left
     // border separates it from the chat pane, and the wheel belongs to the
     // chat side of that line.
-    app.chat.last_info_area = Some(inner);
+    app.chat.last_info_area = Some(topic_inner);
 
     let lines: Vec<Line> = if let Some(t) = selected_topic_summary(app) {
         let mut out: Vec<Line> = Vec::new();
@@ -1714,12 +1726,12 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     // `usize::MAX` — what `End`/`G` store — out of `Paragraph::scroll`, whose
     // `offset_y + height` math would overflow and panic the TUI.
     // Offset-from-top: `info_scroll == 0` shows the first rows, the max the last.
-    let wrapped = wrap_styled_lines(lines, inner.width as usize);
-    let max_skip = wrapped.len().saturating_sub(inner.height as usize);
+    let wrapped = wrap_styled_lines(lines, topic_inner.width as usize);
+    let max_skip = wrapped.len().saturating_sub(topic_inner.height as usize);
     let skip = app.chat.info_scroll.min(max_skip);
     frame.render_widget(
         Paragraph::new(wrapped.into_iter().skip(skip).collect::<Vec<_>>()),
-        inner,
+        topic_inner,
     );
     app.chat.info_scroll = skip;
 }

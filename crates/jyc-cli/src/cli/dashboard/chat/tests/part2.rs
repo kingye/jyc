@@ -1527,6 +1527,45 @@ fn info_pane_status_block_sits_below_topic_info() {
     );
 }
 
+/// The info column is one bordered pane: the left border drawn by the outer
+/// block must run for the full column height and join the status sub-pane's
+/// top border with a `├` junction. Regression test for the split-before-block
+/// ordering that left the border column holding the sub-pane's `─` border.
+#[test]
+fn info_pane_left_border_runs_the_full_column() {
+    let mut app = status_block_app();
+    let pane = info_pane_text(&mut app, 60, 24);
+    let rows: Vec<&str> = pane.lines().collect();
+    // The status sub-pane's top border is the row directly above the version
+    // line. Its `─` run starts at the left edge of the pane interior — at
+    // width 60 the 20%-wide info column starts at x=48, so the interior (and
+    // the border run) starts at x=49.
+    let version_row = rows
+        .iter()
+        .position(|r| r.contains("JYC AI"))
+        .expect("version line");
+    let junction_row = version_row - 1;
+    let border_x = rows[junction_row]
+        .char_indices()
+        .find(|(x, c)| *x >= 48 && *c == '─')
+        .map(|(x, _)| x)
+        .expect("status sub-pane top border inside the info column");
+    let mut saw_junction = false;
+    for (y, row) in rows.iter().enumerate() {
+        match row.chars().nth(border_x - 1) {
+            Some('│') => {}
+            Some('├') if y == junction_row => saw_junction = true,
+            other => panic!(
+                "row {y}: expected the info pane's left border left of x={border_x}, got {other:?}:\n{pane}"
+            ),
+        }
+    }
+    assert!(
+        saw_junction,
+        "the status sub-pane border must join the left border with `├`:\n{pane}"
+    );
+}
+
 #[test]
 fn info_pane_status_block_stays_when_topic_info_scrolls() {
     use jyc_types::ChangeKind;

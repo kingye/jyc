@@ -2052,7 +2052,7 @@ fn render_history_thinking_collapsed_shows_summary_not_body() {
         history_msg("thinking", "secret chain of thought body", None),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let lines = render_history_lines(&msgs, 80, false, false);
+    let (lines, _turns) = render_history_lines(&msgs, 80, false, false);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -2082,7 +2082,7 @@ fn render_history_thinking_expanded_shows_full_text() {
         history_msg("thinking", "full chain of thought", None),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let lines = render_history_lines(&msgs, 80, true, false);
+    let (lines, _turns) = render_history_lines(&msgs, 80, true, false);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -2098,7 +2098,7 @@ fn render_history_marks_human_turns_with_background_not_labels() {
         history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let lines = render_history_lines(&msgs, 80, false, false);
+    let (lines, _turns) = render_history_lines(&msgs, 80, false, false);
     let text: String = lines
         .iter()
         .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -2163,7 +2163,7 @@ fn render_history_rows_fit_the_pane() {
         history_msg("user", "question", Some("2026-08-13T10:00:00Z")),
         history_msg("ai", "answer", Some("2026-08-13T10:00:05Z")),
     ];
-    let lines = render_history_lines(&msgs, 80, false, false);
+    let (lines, _turns) = render_history_lines(&msgs, 80, false, false);
     // `dim_style` on the line is what marks a round rule.
     let rules: Vec<&Line> = lines
         .iter()
@@ -2192,7 +2192,7 @@ fn render_history_blocks_piped_channel_sender() {
         "from feishu",
         Some("2026-08-13T10:00:00Z"),
     )];
-    let lines = render_history_lines(&msgs, 40, false, false);
+    let (lines, _turns) = render_history_lines(&msgs, 40, false, false);
     assert!(
         lines
             .iter()
@@ -2589,6 +2589,112 @@ fn cursor_app() -> App {
         app.chat.last_total_lines
     );
     app
+}
+
+/// A message pane drawn once with three user turns (user "one"/ai "alpha",
+/// "two"/"beta", "three"/"gamma"), so the renderer has recorded the section
+/// boundaries the `[`/`]` keys jump between.
+fn section_app() -> App {
+    let mut app = chatting_app();
+    app.chat.messages = vec![
+        history_msg("user", "one", None),
+        history_msg("ai", "alpha", None),
+        history_msg("user", "two", None),
+        history_msg("ai", "beta", None),
+        history_msg("user", "three", None),
+        history_msg("ai", "gamma", None),
+    ];
+    app.chat.focus = ChatFocus::MessageArea;
+    let _ = draw_80x24(&mut app);
+    app
+}
+
+fn recorded_turns(app: &App) -> Vec<usize> {
+    app.chat
+        .render_cache
+        .as_ref()
+        .map(|(_, _, turns)| turns.clone())
+        .expect("the draw populated the cache")
+}
+
+/// Each user turn's recorded boundary points at its opening rule line.
+#[test]
+fn history_lines_record_user_turn_boundaries() {
+    let app = section_app();
+    let turns = recorded_turns(&app);
+    assert_eq!(turns.len(), 3, "one boundary per user turn");
+    let (lines, _) = render_history_lines(&app.chat.messages, 80, false, false);
+    for &b in &turns {
+        let text: String = lines[b]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(
+            text.starts_with('─'),
+            "boundary {b} must be a rule line, got: {text}"
+        );
+    }
+}
+
+#[test]
+fn section_jump_up_walks_turn_starts() {
+    let mut app = section_app();
+    let turns = recorded_turns(&app);
+    app.chat.cursor_line = app.chat.last_total_lines - 1;
+    assert_eq!(app.chat.cursor_section_jump(-1, false), 0);
+    assert_eq!(app.chat.cursor_line, turns[2], "into turn three");
+    assert_eq!(app.chat.cursor_section_jump(-1, false), 0);
+    assert_eq!(app.chat.cursor_line, turns[1], "into turn two");
+    assert_eq!(app.chat.cursor_section_jump(-1, false), 0);
+    assert_eq!(app.chat.cursor_line, turns[0], "into turn one");
+    // Before the first turn: clamps to the top and stays there.
+    assert_eq!(app.chat.cursor_section_jump(-1, false), 0);
+    assert_eq!(app.chat.cursor_line, 0);
+}
+
+#[test]
+fn section_jump_down_walks_turn_starts() {
+    let mut app = section_app();
+    let turns = recorded_turns(&app);
+    let last = app.chat.last_total_lines - 1;
+    app.chat.cursor_line = 0;
+    assert_eq!(app.chat.cursor_section_jump(1, false), 0);
+    assert_eq!(app.chat.cursor_line, turns[1], "into turn two");
+    assert_eq!(app.chat.cursor_section_jump(1, false), 0);
+    assert_eq!(app.chat.cursor_line, turns[2], "into turn three");
+    // Past the last turn: clamps to the last line and stays there.
+    assert_eq!(app.chat.cursor_section_jump(1, false), 0);
+    assert_eq!(app.chat.cursor_line, last);
+    assert_eq!(app.chat.cursor_section_jump(1, false), 0);
+    assert_eq!(app.chat.cursor_line, last);
+}
+
+#[test]
+fn section_jump_honors_the_count() {
+    let mut app = section_app();
+    let turns = recorded_turns(&app);
+    app.chat.cursor_line = app.chat.last_total_lines - 1;
+    app.chat.pending_count = 2;
+    assert_eq!(app.chat.cursor_section_jump(-1, false), 0);
+    assert_eq!(app.chat.cursor_line, turns[1], "2[ skips one turn");
+    assert_eq!(app.chat.pending_count, 0, "the count is consumed");
+}
+
+#[test]
+fn section_jump_shift_extends_the_selection() {
+    let mut app = section_app();
+    let turns = recorded_turns(&app);
+    let from = app.chat.last_total_lines - 1;
+    app.chat.cursor_line = from;
+    let rows = app.chat.cursor_section_jump(-1, true);
+    assert_eq!(app.chat.cursor_line, turns[2]);
+    assert_eq!(
+        app.chat.selection_range(),
+        Some((turns[2], from)),
+        "Shift+[ grows a selection from the anchor"
+    );
+    assert_eq!(rows, from - turns[2] + 1);
 }
 
 /// Send one key to the chat screen the way the event loop does.
@@ -3376,8 +3482,8 @@ fn render_history_minimal_progress_drops_the_thinking_line() {
         history_msg("ai", "**reply**", None),
     ];
 
-    let full = render_history_lines(&msgs, 80, false, false);
-    let minimal = render_history_lines(&msgs, 80, false, true);
+    let (full, _) = render_history_lines(&msgs, 80, false, false);
+    let (minimal, _) = render_history_lines(&msgs, 80, false, true);
     let full_rows = line_texts(&full);
     let minimal_rows = line_texts(&minimal);
     let thinking_rows =

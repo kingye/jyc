@@ -155,13 +155,18 @@ fn is_user_message(sender: &str) -> bool {
 /// `(messages, width)` so the result is cached per frame — the dynamic progress
 /// tail (thinking / activity / live ticker) is appended by the caller after
 /// these lines and stays per-frame.
+///
+/// Also returns the transcript line index of every user turn's opening rule —
+/// the boundaries the message-area `[`/`]` keys jump between (see
+/// [`crate::cli::dashboard::chat::ChatState::cursor_section_jump`]).
 pub(super) fn render_history_lines(
     messages: &[ChatMessage],
     width: usize,
     thinking_expanded: bool,
     minimal_progress: bool,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Vec<usize>) {
     let mut all_lines: Vec<Line<'static>> = Vec::new();
+    let mut user_turn_lines: Vec<usize> = Vec::new();
 
     let dim_style = Style::default().fg(Color::DarkGray);
     // The pane is `width` wide; message bodies give up one column to the inset
@@ -239,6 +244,9 @@ pub(super) fn render_history_lines(
         // "── 09:50 ────────"
         if is_user {
             group_start_ts = msg.timestamp.clone();
+            // The rule about to be pushed is this turn's first line — a
+            // section boundary for the `[`/`]` keys.
+            user_turn_lines.push(all_lines.len());
             let time_str = format_msg_time(&msg.timestamp);
             if time_str.is_empty() {
                 all_lines.push(Line::from(Span::styled("─".repeat(width), dim_style)));
@@ -326,7 +334,7 @@ pub(super) fn render_history_lines(
         all_lines.push(Line::from(""));
     }
 
-    all_lines
+    (all_lines, user_turn_lines)
 }
 
 // ── Progress animation ──────────────────────────────────────────────────
@@ -546,15 +554,15 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         app.chat.thinking_expanded,
         app.chat.minimal_progress,
     );
-    let cache_hit = matches!(&app.chat.render_cache, Some((fp, _)) if *fp == fingerprint);
+    let cache_hit = matches!(&app.chat.render_cache, Some((fp, _, _)) if *fp == fingerprint);
     if !cache_hit {
-        let lines = render_history_lines(
+        let (lines, user_turn_lines) = render_history_lines(
             &app.chat.messages,
             messages_width,
             app.chat.thinking_expanded,
             app.chat.minimal_progress,
         );
-        app.chat.render_cache = Some((fingerprint, lines));
+        app.chat.render_cache = Some((fingerprint, lines, user_turn_lines));
     }
 
     // Dynamic progress tail (thinking / activity / live ticker) — small,

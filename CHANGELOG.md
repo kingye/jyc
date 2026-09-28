@@ -28,6 +28,11 @@
 
 ### Changed
 
+- TUI pane borders share one palette: every pane border on the chat screen and
+  the overview screen now rests in dark gray and turns cyan while its pane owns
+  the keys. The topic-info and activity panes used to inherit the terminal
+  default (and highlight yellow+bold on focus), so the separators on a single
+  screen disagreed with the explorer and status borders (#846)
 - TUI chat screen drops its bottom status bar: version, server stats, and
   transient messages now render in a fixed sub-pane at the bottom of the
   topic info pane (`JYC AI v…`, gray stats, gray top border) — the sub-pane

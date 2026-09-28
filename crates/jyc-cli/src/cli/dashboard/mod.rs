@@ -1636,18 +1636,23 @@ fn close_overview_ws(app: &mut App) {
     while app.overview_ws_rx.try_recv().is_ok() {}
 }
 
-/// Pack whole chips into rows of at most `width` cells, joined by `" · "`.
+/// Pack whole chips into rows of at most `width` cells.
+///
+/// Each chip carries the separator that joins it to the one before it (empty for
+/// the first), so `2 active / 5 thread` keeps its slash while ` · ` separates the
+/// rest — a chip that has to start a new row drops its separator rather than
+/// leading a row with it.
 ///
 /// A chip is never split: one wider than `width` gets a row to itself (and is
-/// then clipped like any over-long line). Greedy — a short chip fills the
-/// current row before the next one starts.
-fn pack_chips(chips: &[String], width: usize) -> Vec<String> {
-    let sep = " · ";
-    let sep_len = sep.chars().count();
+/// then clipped like any over-long line). Greedy — a short chip fills the current
+/// row before the next one starts.
+fn pack_chips(chips: &[(&str, String)], width: usize) -> Vec<String> {
     let mut rows: Vec<String> = Vec::new();
-    for chip in chips {
+    for (sep, chip) in chips {
         match rows.last_mut() {
-            Some(row) if row.chars().count() + sep_len + chip.chars().count() <= width => {
+            Some(row)
+                if row.chars().count() + sep.chars().count() + chip.chars().count() <= width =>
+            {
                 row.push_str(sep);
                 row.push_str(chip);
             }
@@ -1661,10 +1666,12 @@ fn pack_chips(chips: &[String], width: usize) -> Vec<String> {
 /// pane, replacing the bottom status bar on the chat screen. The version on
 /// its own line, then the server stats (gray) packed into as many rows as
 /// `width` needs — a chip is never cut mid-word, only re-rowed, so a narrow
-/// info column stays readable instead of showing `2 active / 5 t`. A
-/// transient status message swaps the whole block for one yellow line; it
-/// auto-expires after a few seconds. Empty when there is no server state to
-/// report (the chat header already shows the connecting state).
+/// info column stays readable instead of showing `2 active / 5 t`. The
+/// version line is the one row that is not packed: too narrow for it, it
+/// clips rather than taking a second row. A transient status message swaps
+/// the whole block for one yellow line; it auto-expires after a few seconds.
+/// Empty when there is no server state to report (the chat header already
+/// shows the connecting state).
 fn chat_status_block(app: &App, width: u16) -> Vec<Line<'_>> {
     if let Some((msg, _)) = &app.status_message {
         return vec![Line::from(Span::styled(
@@ -1678,13 +1685,16 @@ fn chat_status_block(app: &App, width: u16) -> Vec<Line<'_>> {
     let stats = &state.stats;
     let rows = pack_chips(
         &[
-            format!("{} active", stats.active_workers),
-            format!("{} thread", stats.total_topics),
-            format!("{} recv", stats.messages_received),
-            format!("{} err", stats.errors),
-            format!(
-                "up {}",
-                format_duration_secs(state.uptime_secs, DurationStyle::Coarse)
+            ("", format!("{} active", stats.active_workers)),
+            (" / ", format!("{} thread", stats.total_topics)),
+            (" · ", format!("{} recv", stats.messages_received)),
+            (" · ", format!("{} err", stats.errors)),
+            (
+                " · ",
+                format!(
+                    "up {}",
+                    format_duration_secs(state.uptime_secs, DurationStyle::Coarse)
+                ),
             ),
         ],
         width as usize,

@@ -1501,23 +1501,22 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         Vec::new()
     };
     frame.render_widget(block, area);
-    // Rows the topic info keeps for itself: wrapped stats may now claim more
-    // than the two they used to, but never the column. A sub-pane shorter than
-    // its border plus one text row would show nothing, so it is left out.
+    // The sub-pane is all-or-nothing: its top border, every wrapped row, and
+    // the rows the topic info keeps for itself must all fit. A column that
+    // cannot afford that loses the block entirely — rendering only the rows
+    // that happen to fit would clip the stats again, which is what this block
+    // exists to stop (a short terminal with the activity pane open is exactly
+    // that column).
     const TOPIC_INFO_MIN_ROWS: u16 = 6;
-    let (topic_inner, status_area) = if status.is_empty() || inner.height == 0 {
+    // +1: the sub-pane's top border costs a row.
+    let needed = status.len() as u16 + 1;
+    let (topic_inner, status_area) = if status.is_empty()
+        || inner.height < needed + TOPIC_INFO_MIN_ROWS
+    {
         (inner, None)
     } else {
-        // +1: the sub-pane's top border costs a row.
-        let status_h =
-            (status.len() as u16 + 1).min(inner.height.saturating_sub(TOPIC_INFO_MIN_ROWS));
-        if status_h < 2 {
-            (inner, None)
-        } else {
-            let rows =
-                Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(inner);
-            (rows[0], Some(rows[1]))
-        }
+        let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(needed)]).split(inner);
+        (rows[0], Some(rows[1]))
     };
     if let Some(status_area) = status_area {
         let status_block = Block::default()

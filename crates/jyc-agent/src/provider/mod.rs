@@ -767,6 +767,13 @@ pub fn extract_retry_after(msg: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+/// Phrase marking a response whose *shape* was wrong, as opposed to a
+/// transport failure: raw tool-call syntax in the text channel, or a tool call
+/// with no name (#786). Matching it in [`matches_transient_pattern`] makes the
+/// attempt retryable, and the agent loop keys its repair note on the same
+/// phrase — one definition, so renaming it cannot silently disable the hint.
+pub(crate) const FORMAT_FAILURE: &str = "provider format failure";
+
 fn matches_transient_pattern(lower_msg: &str) -> bool {
     const TRANSIENT_PATTERNS: &[&str] = &[
         "error decoding response body",
@@ -786,7 +793,7 @@ fn matches_transient_pattern(lower_msg: &str) -> bool {
         // Model emitted raw tool-call syntax as text (weak function-calling
         // via OpenAI-compat) — retryable; the next attempt usually
         // re-formats correctly (#786).
-        "provider format failure",
+        FORMAT_FAILURE,
     ];
     TRANSIENT_PATTERNS.iter().any(|p| lower_msg.contains(p))
 }

@@ -2,6 +2,9 @@
 
 ### Fixed
 
+- Info pane left border runs the full column height again and joins the
+  status sub-pane's top border with a `├` junction — the border no longer
+  stops where the status sub-pane begins (#843)
 - Topic-info diff probes (`base_ref`) inherit `git rev-parse` stdout, leaking
   commit SHAs into jyc's own output at startup (#840)
 

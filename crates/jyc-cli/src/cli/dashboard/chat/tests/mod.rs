@@ -1038,6 +1038,7 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
         question: "Pick one?".to_string(),
         options: (0..20).map(|i| format!("opt{i:02}")).collect(),
         multi: false,
+        declined: false,
         selected: 19,
         marked: Vec::new(),
     }];
@@ -1062,7 +1063,7 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
         "the options above the window must scroll away:\n{pane}"
     );
     assert!(
-        pane.contains("Esc hide"),
+        pane.contains("Esc discards"),
         "the hint must still fit under the window:\n{pane}"
     );
 }
@@ -1081,6 +1082,7 @@ fn question_box_numbers_the_batch_in_its_title() {
             question: "Which sections?".to_string(),
             options: vec!["Added".to_string()],
             multi: false,
+            declined: false,
             selected: 0,
             marked: Vec::new(),
         },
@@ -1090,6 +1092,7 @@ fn question_box_numbers_the_batch_in_its_title() {
             question: "Branch name?".to_string(),
             options: vec!["feat/x".to_string()],
             multi: false,
+            declined: false,
             selected: 0,
             marked: Vec::new(),
         },
@@ -1126,6 +1129,7 @@ fn a_batch_hint_says_enter_only_moves_to_the_next() {
             question: "Which sections?".to_string(),
             options: vec!["Added".to_string()],
             multi: false,
+            declined: false,
             selected: 0,
             marked: Vec::new(),
         },
@@ -1135,6 +1139,7 @@ fn a_batch_hint_says_enter_only_moves_to_the_next() {
             question: "Branch name?".to_string(),
             options: vec!["feat/x".to_string()],
             multi: false,
+            declined: false,
             selected: 0,
             marked: Vec::new(),
         },
@@ -1177,6 +1182,7 @@ fn question_box_shows_marks_for_multi_select() {
         question: "Which?".to_string(),
         options: vec!["alpha".to_string(), "beta".to_string()],
         multi: true,
+        declined: false,
         selected: 0,
         marked: vec![1],
     }];
@@ -1208,6 +1214,7 @@ fn question_box_marks_the_selected_option_with_an_arrow() {
         question: "Pick one?".to_string(),
         options: vec!["alpha".to_string(), "beta".to_string()],
         multi: false,
+        declined: false,
         selected: 1,
         marked: Vec::new(),
     }];

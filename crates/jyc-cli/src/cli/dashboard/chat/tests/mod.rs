@@ -3547,5 +3547,60 @@ fn minimal_progress_command_flips_the_flag_the_render_reads() {
     }
 }
 
+#[test]
+fn protect_leading_whitespace_replaces_one_to_three_spaces() {
+    assert_eq!(
+        protect_leading_whitespace("  two\n   three\n    four\nnone"),
+        "\u{00A0}\u{00A0}two\n\u{00A0}\u{00A0}\u{00A0}three\n    four\nnone"
+    );
+}
+
+#[test]
+fn protect_leading_whitespace_skips_fences_and_blank_lines() {
+    let md = "```\n  fenced\n```\n  after\n   \nend";
+    assert_eq!(
+        protect_leading_whitespace(md),
+        "```\n  fenced\n```\n\u{00A0}\u{00A0}after\n   \nend"
+    );
+}
+
+fn rendered_text(lines: &[ratatui::text::Line<'_>]) -> String {
+    lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref().to_string()))
+        .collect()
+}
+
+#[test]
+fn user_message_leading_spaces_survive_markdown_rendering() {
+    let messages = vec![history_msg("user", "  indented\nplain", None)];
+    let (lines, _) = render_history_lines(&messages, 40, false, false);
+    let text = rendered_text(&lines);
+    assert!(
+        text.contains('\u{00A0}'),
+        "leading spaces must survive as NBSP, got: {text:?}"
+    );
+    assert!(text.contains("indented"));
+}
+
+#[test]
+fn ai_message_leading_spaces_render_unchanged() {
+    let messages = vec![history_msg("ai", "  indented", None)];
+    let (lines, _) = render_history_lines(&messages, 40, false, false);
+    let text = rendered_text(&lines);
+    assert!(
+        !text.contains('\u{00A0}'),
+        "agent markdown must not be rewritten, got: {text:?}"
+    );
+}
+
+#[test]
+fn send_message_preserves_leading_whitespace() {
+    let mut app = chatting_app();
+    app.chat.populate_editor("  indented draft  ");
+    app.chat.send_message();
+    assert_eq!(app.chat.input_history.last().unwrap(), "  indented draft");
+}
+
 #[cfg(test)]
 mod part2;

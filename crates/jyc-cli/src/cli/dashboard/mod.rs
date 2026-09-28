@@ -1601,6 +1601,39 @@ fn close_overview_ws(app: &mut App) {
     while app.overview_ws_rx.try_recv().is_ok() {}
 }
 
+/// Build the chat-screen status block: the first lines of the topic info
+/// pane, replacing the bottom status bar on the chat screen. Two lines —
+/// the version (default style) and the server stats (gray). A transient
+/// status message swaps the whole block for one yellow line; it
+/// auto-expires after a few seconds. Empty when there is no server state
+/// to report (the chat header already shows the connecting state).
+fn chat_status_block(app: &App) -> Vec<Line<'_>> {
+    if let Some((msg, _)) = &app.status_message {
+        return vec![Line::from(Span::styled(
+            msg.as_str(),
+            Style::default().fg(Color::Yellow),
+        ))];
+    }
+    let Some(state) = &app.state else {
+        return Vec::new();
+    };
+    let stats = &state.stats;
+    vec![
+        Line::from(format!("JYC AI v{}", state.version)),
+        Line::from(Span::styled(
+            format!(
+                "{} active / {} thread · {} recv · {} err · up {}",
+                stats.active_workers,
+                stats.total_topics,
+                stats.messages_received,
+                stats.errors,
+                format_duration_secs(state.uptime_secs, DurationStyle::Coarse),
+            ),
+            Style::default().fg(Color::DarkGray),
+        )),
+    ]
+}
+
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {
     // Shortcuts live in the leader-key popup (Ctrl+P); the status
     // bar only advertises how to reach them.

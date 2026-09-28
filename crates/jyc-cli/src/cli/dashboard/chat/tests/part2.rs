@@ -883,14 +883,14 @@ fn header_line_includes_mode_topic_and_chip() {
         "missing left segment in: {text:?}"
     );
     // Right chip includes model + context-window percentage. The
-    // version lives in the status bar, not the chat header.
+    // version lives in the info-pane status block, not the chat header.
     assert!(
         text.contains("[ claude-opus-4-6 · 10% ]"),
         "missing model/pct chip in: {text:?}"
     );
     assert!(
         !text.contains("jyc ai v"),
-        "version belongs in the status bar, not the chat header: {text:?}"
+        "version belongs in the info-pane status block, not the chat header: {text:?}"
     );
     // The line should fill the requested width via dash padding.
     assert_eq!(text.width(), 80);
@@ -1497,6 +1497,89 @@ fn info_pane_omits_the_task_section_when_there_is_no_list() {
     // The neighbours still render, so the omission is local.
     assert!(pane.contains("Cost:"), "{pane}");
     assert!(pane.contains("Files:"), "{pane}");
+}
+
+/// App with server state, ready for the chat status-block tests: version,
+/// stats, and an uptime the Coarse duration style renders as "38m".
+fn status_block_app() -> App {
+    let mut app = info_pane_app(jyc_types::task::TaskList::default());
+    let state = app.state.as_mut().expect("state");
+    state.version = "9.9.9-test".to_string();
+    state.stats.active_workers = 2;
+    state.stats.total_topics = 5;
+    state.stats.messages_received = 12;
+    state.stats.errors = 0;
+    state.uptime_secs = 2280;
+    app
+}
+
+#[test]
+fn info_pane_status_block_sits_above_topic_info() {
+    let mut app = status_block_app();
+    let pane = info_pane_text(&mut app, 60, 24);
+    let version = pane.find("JYC AI v9.9.9-test").expect("version line");
+    let stats = pane
+        .find("2 active / 5 thread · 12 recv · 0 err · up 38m")
+        .expect("stats line");
+    let topic = pane.find("Topic: jyc").expect("topic line");
+    assert!(
+        version < stats && stats < topic,
+        "status block must open the pane, above the topic info:\n{pane}"
+    );
+}
+
+#[test]
+fn info_pane_transient_message_replaces_status_block() {
+    let mut app = status_block_app();
+    app.set_status("Copied 5 rows".to_string());
+    let pane = info_pane_text(&mut app, 60, 24);
+    assert!(pane.contains("Copied 5 rows"), "{pane}");
+    assert!(
+        !pane.contains("JYC AI v"),
+        "transient message swaps the whole block out:\n{pane}"
+    );
+}
+
+#[test]
+fn info_pane_hides_status_block_when_status_toggled() {
+    let mut app = status_block_app();
+    app.chat.toggle_status_bar();
+    let pane = info_pane_text(&mut app, 60, 24);
+    assert!(!pane.contains("JYC AI v"), "{pane}");
+    assert!(
+        pane.contains("Topic: jyc"),
+        "only the status block is hidden, topic info still renders:\n{pane}"
+    );
+}
+
+#[test]
+fn chat_screen_renders_no_bottom_status_bar() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = status_block_app();
+    let backend = TestBackend::new(80, 24);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| ui_chat_mode(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let text = (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !text.contains("[^P]leader"),
+        "chat screen must not render the bottom status bar:\n{text}"
+    );
+    assert!(
+        text.contains("JYC AI v9.9.9-test"),
+        "the info pane carries the status block instead:\n{text}"
+    );
 }
 // The progress tail is not part of the markdown-rendered history, and the
 // transcript `Paragraph` deliberately does not wrap (one line is exactly one

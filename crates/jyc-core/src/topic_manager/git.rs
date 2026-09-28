@@ -109,12 +109,15 @@ fn run_git_diff_name_status(cwd: &Path, revspec: &str) -> Option<Vec<(ChangeKind
 /// default branch has another name and no origin remote.
 fn base_ref(cwd: &Path) -> Option<String> {
     for candidate in ["origin/HEAD", "main", "master"] {
-        let status = std::process::Command::new("git")
+        // `.output()` (not `.status()`) so the child's stdout is captured:
+        // a successful `rev-parse` prints the resolved SHA, which an
+        // inherited stdout would leak into jyc's own output.
+        let out = std::process::Command::new("git")
             .args(["rev-parse", "--verify", "--quiet", candidate])
             .current_dir(cwd)
-            .status()
+            .output()
             .ok()?;
-        if status.success() {
+        if out.status.success() {
             return Some(candidate.to_string());
         }
     }

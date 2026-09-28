@@ -139,8 +139,10 @@ pub(super) struct ChatState {
     /// Rendered transcript lines cache — rebuilt only when the message
     /// history or pane width changes (see `history_fingerprint`). Avoids
     /// re-parsing the full transcript markdown on every frame (each
-    /// keystroke / 50ms poll / 1Hz tick used to cost O(history)).
-    pub(super) render_cache: Option<(RenderFingerprint, Vec<Line<'static>>)>,
+    /// keystroke / 50ms poll / 1Hz tick used to cost O(history)). The third
+    /// element is the transcript line of every user turn's opening rule —
+    /// the `[`/`]` section-jump boundaries.
+    pub(super) render_cache: Option<(RenderFingerprint, Vec<Line<'static>>, Vec<usize>)>,
     /// Pending `g` keypress for the `gg` (jump to top) sequence.
     pub(super) pending_g: bool,
     /// Horizontal scroll offset for the activity pane (left-right).
@@ -630,6 +632,12 @@ fn jump_cursor(app: &mut App, to_top: bool) {
     report_selection(app, rows);
 }
 
+/// `[` / `]` — previous / next user turn — with the cursor showing.
+fn section_cursor(app: &mut App, dir: i32, extend: bool) {
+    let rows = app.chat.cursor_section_jump(dir, extend);
+    report_selection(app, rows);
+}
+
 /// Say how much the cursor now has selected, if anything.
 fn report_selection(app: &mut App, rows: usize) {
     if rows > 0 {
@@ -674,7 +682,7 @@ fn yank_from_cursor(app: &mut App, count: usize) {
 /// not part of the transcript, so a range reaching it is truncated to the
 /// history and a cursor sitting in it copies nothing.
 fn copy_rows(app: &App, start: usize, count: usize) -> (String, usize) {
-    let Some((_, lines)) = app.chat.render_cache.as_ref() else {
+    let Some((_, lines, _)) = app.chat.render_cache.as_ref() else {
         return (String::new(), 0);
     };
     let end = start.saturating_add(count).min(lines.len());
@@ -1093,6 +1101,12 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                 KeyCode::Char('G') => jump_cursor(app, false),
                 KeyCode::Char('g') if gg_jump => jump_cursor(app, true),
                 KeyCode::Char('g') => {}
+                // `[` / `]` step between user turns; the shifted forms grow a
+                // selection (that is how a terminal reports Shift+[ / Shift+]).
+                KeyCode::Char('[') => section_cursor(app, -1, false),
+                KeyCode::Char(']') => section_cursor(app, 1, false),
+                KeyCode::Char('{') => section_cursor(app, -1, true),
+                KeyCode::Char('}') => section_cursor(app, 1, true),
                 // With rows selected, one `y` copies them. Without a
                 // selection `y` is the first half of a yank: arming it lets
                 // a count sit between the halves, so `yy`, `y3y` and `3yy`
@@ -2430,6 +2444,56 @@ impl ChatState {
         let to = (from as i32 + dir * self.take_count() as i32).clamp(0, last as i32) as usize;
         self.cursor_line = to;
         self.scroll_to_show(to);
+        self.selected_rows()
+    }
+
+    /// `[` / `]`: cursor and view to the previous / next user turn — a section
+    /// is the user's message plus the agent's replies up to the next user
+    /// message. The boundaries are the opening-rule lines recorded by
+    /// `render_history_lines` and carried in `render_cache`; history comes
+    /// first in the transcript, so they are directly comparable to
+    /// `cursor_line`.
+    ///
+    /// Lands on the nearest boundary strictly in `dir` — sitting exactly on
+    /// one walks to the next, so a held key steps section by section (vim
+    /// paragraph semantics) — and clamps to the transcript edge past the
+    /// first/last turn. `count` (`3]`) repeats the jump; `extend` (a Shift
+    /// key) grows a selection like `cursor_step`. Returns the number of
+    /// selected rows, 0 when nothing is selected.
+    pub(super) fn cursor_section_jump(&mut self, dir: i32, extend: bool) -> usize {
+        let Some(last) = self.last_total_lines.checked_sub(1) else {
+            return 0;
+        };
+        // Cloned: the search below must not hold the cache borrow while the
+        // cursor and view are updated. One entry per user turn — small.
+        let Some(turns) = self.render_cache.as_ref().map(|(_, _, t)| t.clone()) else {
+            return 0;
+        };
+        let mut from = self.cursor_line.min(last);
+        if extend {
+            self.selection_anchor = Some(self.selection_anchor.unwrap_or(from));
+        }
+        let count = self.take_count();
+        for _ in 0..count {
+            let target = if dir < 0 {
+                turns
+                    .iter()
+                    .rev()
+                    .find(|&&b| b < from)
+                    .copied()
+                    .unwrap_or(0)
+            } else {
+                turns.iter().find(|&&b| b > from).copied().unwrap_or(last)
+            };
+            // A clamped jump lands on the edge; the next step would find no
+            // boundary past it and stick there too — stop instead.
+            if target == from {
+                break;
+            }
+            from = target;
+        }
+        self.cursor_line = from;
+        self.scroll_to_show(from);
         self.selected_rows()
     }
 

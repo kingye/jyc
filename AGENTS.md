@@ -18,6 +18,7 @@ and uses an in-process AI agent to generate replies.
 ## Git Rules
 - NEVER run `git config user.name` or `git config user.email` (local or global)
 - NEVER run `git config --global` for any setting
+- 提交/推送 PR 后必须停留在功能分支，禁止切换回 `main` 或删除本地分支（合并由用户执行）
 
 ## 测试要求
 

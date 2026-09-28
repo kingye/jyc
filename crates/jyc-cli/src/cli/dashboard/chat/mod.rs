@@ -157,8 +157,9 @@ pub(super) struct ChatState {
     /// Topic info pane (right side, 20% width) visibility. Default
     /// visible; toggled via the leader-key popup (`i`).
     pub(super) info_visible: bool,
-    /// Bottom status bar visibility. Default visible; toggled via the
-    /// leader-key popup (`s`).
+    /// Chat status block visibility — the version/stats (or transient
+    /// message) lines at the top of the topic info pane. Default
+    /// visible; toggled via the leader-key popup (`s`).
     pub(super) status_visible: bool,
     /// Topic explorer pane (left side, 20% width). Default hidden;
     /// toggled via the leader-key popup (`e`).
@@ -1270,38 +1271,29 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
     //   │  ┌── topic info pane (20% wide, only when info_visible) ──┐  │
     //   │  │   ...                                                   │  │
     //   │  └─────────────────────────────────────────────────────────┘  │
-    //   ├────────── bottom area: status bar + activity pane ────────────┤
-    //   │  status bar (1 line; only when info_visible)                  │
+    //   ├────────── bottom area: activity pane ─────────────────────────┤
     //   │  activity pane (bottom 20% / 80% / full when visible)         │
     //   └───────────────────────────────────────────────────────────────┘
     //
-    // Status bar and topic info pane have independent visibility flags
-    // (leader `s` / `i`); zen mode hides both.
+    // No bottom status bar on the chat screen: status info (version,
+    // stats, transient messages) renders at the top of the topic info
+    // pane instead (leader `s` toggles it). Zen mode hides the info
+    // pane, which hides the status info with it.
 
-    let show_status = app.chat.status_visible;
     let show_activity = app.chat.activity_split != 0;
     let show_explorer = app.chat.explorer_visible;
     if show_explorer {
         sync_explorer_selection(app);
     }
 
-    // Outer vertical split: [main, status?]. The status bar (when visible)
-    // spans the full width across both columns.
-    let (main_area, status_area) = if show_status {
-        let v = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
-        (v[0], Some(v[1]))
-    } else {
-        (area, None)
-    };
-
     // Main area: horizontal [explorer?, right column]. The right column
     // holds chat, info, and activity.
     let (explorer_area, right_area) = if show_explorer {
         let h = Layout::horizontal([Constraint::Percentage(20), Constraint::Percentage(80)])
-            .split(main_area);
+            .split(area);
         (Some(h[0]), h[1])
     } else {
-        (None, main_area)
+        (None, area)
     };
 
     // Right column: vertical [top(chat+info), activity?].
@@ -1339,10 +1331,6 @@ pub(super) fn ui_chat_mode(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if show_activity {
         render_activity_log(frame, right_chunks[1], app);
-    }
-
-    if let Some(status) = status_area {
-        render_status_bar(frame, status, app);
     }
 }
 
@@ -1681,6 +1669,17 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         out
     } else {
         vec![Line::from("Select a topic")]
+    };
+
+    // Chat screen: prepend the status block (version + gray stats, or a
+    // transient message) so the chat layout needs no bottom status bar.
+    // The overview screen keeps its own status bar and is untouched here.
+    let lines = if app.chat.visible && app.chat.status_visible {
+        let mut out = chat_status_block(app);
+        out.extend(lines);
+        out
+    } else {
+        lines
     };
 
     // Wrap here rather than with `Paragraph::wrap()` so that the row count the
@@ -2347,7 +2346,8 @@ impl ChatState {
         }
     }
 
-    /// Toggle the bottom status bar (leader-key popup `s`).
+    /// Toggle the chat status block in the topic info pane (leader-key
+    /// popup `s`).
     pub(super) fn toggle_status_bar(&mut self) {
         self.status_visible = !self.status_visible;
     }

@@ -407,29 +407,10 @@ async fn handle_connection_impl(
                                         continue;
                                     }
                                 };
-                                // Pending-question interception (the
-                                // websocket twin of the feishu pipe): while
-                                // the topic's agent is blocked in `ask_user`,
-                                // a chat message answers the question instead
-                                // of entering the topic queue — the topic is
-                                // busy and would reject it. This is what makes
-                                // free-input answers work for websocket
-                                // clients such as the TUI: dismiss the option
-                                // modal and type in the normal input box.
-                                // Note: matches on the raw payload/URL topic;
-                                // if routing patterns remap the topic the
-                                // interception misses and the message falls
-                                // back to normal (busy-rejected) routing.
-                                if let Some(hub) = question_hub.as_ref()
-                                    && hub.try_answer(&topic_name, &text)
-                                {
-                                    tracing::info!(
-                                        addr = %addr,
-                                        topic = %topic_name,
-                                        "WebSocket message answered a pending question; not enqueueing"
-                                    );
-                                    continue;
-                                }
+                                // A message is a message: questions asked on
+                                // this channel are answered by the
+                                // `question_response` frame below, never by
+                                // reading a message as an answer.
                                 let message = InboundMessage {
                                     id: uuid::Uuid::new_v4().to_string(),
                                     channel: channel_name.clone(),

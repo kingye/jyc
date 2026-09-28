@@ -33,6 +33,10 @@ pub(super) struct PendingQuestion {
     /// Whether more than one option may be picked (the daemon's
     /// `allow_multiple`).
     pub multi: bool,
+    /// The user will not answer this one. Sent as a dismissal on its own, so a
+    /// question that cannot be answered does not cost the whole batch — `d`
+    /// toggles it, and the option list is replaced by the declined state.
+    pub declined: bool,
     /// Currently highlighted option - the cursor `Space` marks under.
     pub selected: usize,
     /// Marked option indices, in multi mode; single mode answers with the
@@ -237,12 +241,13 @@ pub(super) struct ChatState {
     pub(super) input_history: Vec<String>,
     /// The `ask_user` questions awaiting an answer here, oldest first.
     ///
-    /// One `ask_user` call can ask several at once, so these are answered as
-    /// a flow: `question_index` is the one on screen, each carries its own
-    /// cursor and marks, and nothing is sent until the last one is confirmed —
-    /// which is what lets `←/→` go back and adjust an earlier answer. Takes
-    /// over the input area while non-empty; Esc hides the whole set (they stay
-    /// pending server-side, and typed messages answer them oldest first).
+    /// One `ask_user` call can ask several at once, so they are answered as a
+    /// form: `question_index` is the one on screen, each carries its own cursor
+    /// and marks, and nothing is sent until the last one is confirmed — which
+    /// is what lets `←/→` go back and adjust an earlier answer. Takes over the
+    /// input area while non-empty; Esc discards the whole set (a cancel per
+    /// question), which settles the blocked `ask_user` call and frees the next
+    /// message as an ordinary turn.
     pub(super) questions: Vec<PendingQuestion>,
     /// Which of [`Self::questions`] is on screen.
     pub(super) question_index: usize,
@@ -881,7 +886,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         // Close any open command popup so the cancel path runs cleanly.
         app.chat.command_popup = None;
         app.chat.leader = None;
-        app.chat.dismiss_question();
+        app.chat.discard_questions();
         app.chat.send_message_inner("/cancel".to_string());
         return;
     }
@@ -960,9 +965,9 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     }
 
     // Pending questions own the keyboard while visible: the agent is blocked
-    // mid-turn waiting for these answers. Esc hides them (focus back to the
-    // editor, the questions still pending — each next typed message becomes
-    // the free-form answer of the oldest one via try_answer interception).
+    // mid-turn waiting for these answers. Esc discards the whole set (a cancel
+    // per question), which settles that call and hands the next message back
+    // to the editor as an ordinary turn.
     if app.chat.active_question() {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => app.chat.select_question_prev(),
@@ -977,7 +982,8 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     app.chat.pick_question_idx(idx);
                 }
             }
-            KeyCode::Esc => app.chat.dismiss_question(),
+            KeyCode::Char('d') | KeyCode::Backspace => app.chat.toggle_question_decline(),
+            KeyCode::Esc => app.chat.discard_questions(),
             _ => {}
         }
         return;
@@ -1757,9 +1763,7 @@ fn question_hint(total: usize) -> String {
     } else {
         "Enter send"
     };
-    format!(
-        "Up/Down or j/k move - Space or 1-9 marks/picks - {enter} - Esc hide, then type your answer"
-    )
+    format!("Up/Down/j/k move - 1-9/Space pick - d decline - {enter} - Esc discards all")
 }
 
 /// Rows a question box spends on everything but the options: the question and
@@ -1814,31 +1818,41 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
         Style::default().add_modifier(Modifier::BOLD),
     ))];
     lines.push(Line::from(""));
-    for (i, opt) in q.options.iter().enumerate().skip(off).take(room) {
-        // One row per option: a wrapped one would push the rows below it — and
-        // the cursor with them — out of the box.
-        // A marked option leads with a box, so it still reads as picked on the
-        // dimmed rows that do not carry the cursor.
-        let mark = if q.multi {
-            if q.marked.contains(&i) {
-                "[x] "
+    if q.declined {
+        // Replaces the list rather than dimming it: a greyed-out option still
+        // reads as pickable, and the point of this state is that none of them
+        // are.
+        lines.push(Line::from(Span::styled(
+            "\u{2717} no answer \u{b7} d undoes this".to_string(),
+            Style::default().fg(Color::Red),
+        )));
+    } else {
+        for (i, opt) in q.options.iter().enumerate().skip(off).take(room) {
+            // One row per option: a wrapped one would push the rows below it — and
+            // the cursor with them — out of the box.
+            // A marked option leads with a box, so it still reads as picked on the
+            // dimmed rows that do not carry the cursor.
+            let mark = if q.multi {
+                if q.marked.contains(&i) {
+                    "[x] "
+                } else {
+                    "[ ] "
+                }
             } else {
-                "[ ] "
+                ""
+            };
+            let label = truncate_to_width(
+                &format!("{mark}{}. {opt}", i + 1),
+                inner.width.saturating_sub(2 + mark.chars().count() as u16) as usize,
+            );
+            if i == q.selected {
+                lines.push(Line::from(Span::styled(
+                    format!("→ {label}"),
+                    Style::default().add_modifier(Modifier::DIM),
+                )));
+            } else {
+                lines.push(Line::from(Span::raw(format!("  {label}"))));
             }
-        } else {
-            ""
-        };
-        let label = truncate_to_width(
-            &format!("{mark}{}. {opt}", i + 1),
-            inner.width.saturating_sub(2 + mark.chars().count() as u16) as usize,
-        );
-        if i == q.selected {
-            lines.push(Line::from(Span::styled(
-                format!("→ {label}"),
-                Style::default().add_modifier(Modifier::DIM),
-            )));
-        } else {
-            lines.push(Line::from(Span::raw(format!("  {label}"))));
         }
     }
     lines.push(Line::from(""));
@@ -2259,14 +2273,10 @@ impl ChatState {
         // Clear the poll-loop's last-hydrated key so it doesn't skip hydrate
         // when we switch back to overview later.
         self.last_hydrated_key = None;
-        // A queued batch belongs to the topic being left behind. Keeping it
-        // would hide the new topic's question behind it: `current_question`
-        // reads `questions[question_index]`, and a first entry from the old
-        // topic makes `active_question` false forever, so no box is drawn.
-        // Dropping the queue is exactly what Esc does - the questions stay
-        // pending server-side, where a typed message still answers them.
-        self.questions.clear();
-        self.question_index = 0;
+        // The batch belongs to the topic being left behind and this pane can no
+        // longer draw it, so discard it as Esc does — see
+        // [`Self::discard_questions`] for why keeping it would stall the agent.
+        self.discard_questions();
     }
 
     pub(super) fn close(&mut self) {
@@ -2274,6 +2284,11 @@ impl ChatState {
         self.ws_connected = false;
         self.command_popup = None;
         self.last_hydrated_key = None;
+        // Settle the batch while the socket is still there to say so. Reopening
+        // the same topic cannot answer it either way - the pane is what shows
+        // the box - and with no free-text path on this channel the daemon would
+        // otherwise sit on questions nobody can reach until the deadline.
+        self.discard_questions();
         if let Some(tx) = self.ws_tx.take() {
             // Best-effort disconnect signal
             let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
@@ -2877,6 +2892,10 @@ impl ChatState {
         let questions = std::mem::take(&mut self.questions);
         self.question_index = 0;
         for q in questions {
+            if q.declined {
+                self.send_question_cancelled(&q.id);
+                continue;
+            }
             if !q.multi {
                 if let Some(choice) = q.options.get(q.selected) {
                     self.send_question_response(&q.id, std::slice::from_ref(choice));
@@ -2897,16 +2916,34 @@ impl ChatState {
         }
     }
 
-    /// Hide the pending questions (Esc) and return focus to the editor.
+    /// Esc: discard the whole pending batch - tell the daemon every question
+    /// was dismissed, then drop them locally.
     ///
-    /// They stay alive server-side: the next typed message is routed to the
-    /// oldest of them by the websocket inbound adapter's interception
-    /// (`QuestionHub::try_answer`), making it that question's free-form answer,
-    /// and the one after that answers the next. The daemon-side timeout still
-    /// bounds anything left unanswered.
-    fn dismiss_question(&mut self) {
-        self.questions.clear();
+    /// Discard, not hide: the blocked `ask_user` call settles at once, so the
+    /// message the user types next is an ordinary turn that gets an ordinary
+    /// answer. A hidden box would leave the questions pending with no way to
+    /// reach them - the next message used to be hijacked as a free-form answer
+    /// to the oldest, and anything left unanswered stalled the turn until the
+    /// daemon's timeout.
+    fn discard_questions(&mut self) {
+        let questions = std::mem::take(&mut self.questions);
         self.question_index = 0;
+        for q in questions {
+            self.send_question_cancelled(&q.id);
+        }
+    }
+
+    /// `d` / `Backspace`: decline this question without discarding the set.
+    ///
+    /// With no free-text path left on this channel the box is the only
+    /// answering surface, so a question the user cannot answer needs its own
+    /// "no" — otherwise the only way out is Esc, which costs the picks already
+    /// made for the rest of the batch. The flag rides to submit, where a
+    /// declined question goes out as a dismissal.
+    fn toggle_question_decline(&mut self) {
+        if let Some(q) = self.current_question_mut() {
+            q.declined = !q.declined;
+        }
     }
 
     /// Send a `question_response` frame carrying every picked option. Even a
@@ -2980,6 +3017,7 @@ impl ChatState {
                 .get("allow_multiple")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
+            declined: false,
             selected: 0,
             marked: Vec::new(),
         });

@@ -3,11 +3,11 @@
 //!
 //! The question is pushed to the current channel's outbound adapter (the
 //! websocket channel renders it as a modal; feishu/wecom cards later). The
-//! tool blocks on a [`QuestionHub`] oneshot until the channel's inbound
-//! adapter submits the user's answer, the timeout expires, or the agent turn
-//! is cancelled. Channels without interactive support fail `send_question`
-//! gracefully; the tool reports that to the model so it can ask in plain
-//! text within its reply instead.
+//! tool blocks on [`QuestionHub`] oneshots until every answer (or dismissal)
+//! of the set arrives, the timeout expires, or the agent turn is cancelled.
+//! Channels without interactive support fail `send_question` gracefully; the
+//! tool reports that to the model so it can ask in plain text within its reply
+//! instead.
 
 use std::time::Duration;
 
@@ -19,8 +19,10 @@ use jyc_types::channel::{QuestionAnswer, QuestionRequest};
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
-/// Default question lifetime when the model omits `timeout_seconds`.
-const DEFAULT_TIMEOUT_SECS: u64 = 300;
+/// Default question lifetime when the model omits `timeout_seconds`. A real
+/// decision takes reading and thinking, so the window is deliberately wide;
+/// a batch gets one window for the whole set, not one per question.
+const DEFAULT_TIMEOUT_SECS: u64 = 600;
 
 /// How many questions one call may ask at once. Past this the user is filling
 /// a form rather than making a decision, and the model should split its work.
@@ -167,7 +169,7 @@ impl Tool for AskUserTool {
                 "timeout_seconds": {
                     "type": "integer",
                     "description": "How long to wait for an answer before giving up. \
-                                    Default: 300."
+                                    Default: 600."
                 },
                 "allow_multiple": {
                     "type": "boolean",
@@ -177,8 +179,8 @@ impl Tool for AskUserTool {
                 "questions": {
                     "type": "array",
                     "maxItems": MAX_QUESTIONS as i32,
-                    "description": "Several questions asked at once, answered one after \
-                                    another and returned together as Q1/A1, Q2/A2... \
+                    "description": "Several questions asked at once, answered as one set \
+                                    and returned together as Q1/A1, Q2/A2... \
                                     When present, `question`/`options`/`allow_multiple` \
                                     below are ignored. Prefer this over calling ask_user \
                                     repeatedly in the same turn.",
@@ -258,27 +260,33 @@ impl Tool for AskUserTool {
             }
         }
 
-        // One deadline for the batch: the user answers the questions as one
-        // flow, and stalling on a later one must not extend the earlier ones.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
-        let mut outcomes = Vec::with_capacity(receivers.len());
-        for rx in &mut receivers {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            outcomes.push(match tokio::time::timeout(remaining, rx).await {
-                Ok(Ok(QuestionAnswer::Choice(choices))) => {
-                    Outcome::Answered(match choices.len() {
-                        0 => String::new(),
-                        // One pick reads exactly as it did before multi-select existed.
-                        1 => choices.into_iter().next().unwrap_or_default(),
-                        _ => format!("Selected: {}", choices.join(", ")),
-                    })
-                }
-                Ok(Ok(QuestionAnswer::Cancelled)) => Outcome::Dismissed,
-                // The asker is gone (agent turn cancelled): nothing to report to.
-                Ok(Err(_)) => Outcome::Gone,
-                Err(_) => Outcome::Unanswered,
-            });
-        }
+        // One await for the whole set, under one deadline. The answers are a
+        // set — the client picks them all and sends them at once — so waiting
+        // on them one at a time would hold the first answer inside a call that
+        // has not reached the last question yet. Each question settles on its
+        // own answer, dismissal or the deadline; the batch settles with the
+        // last of them.
+        let budget = Duration::from_secs(timeout_secs);
+        let outcomes: Vec<Outcome> = futures::future::join_all(
+            receivers
+                .into_iter()
+                .map(|rx| tokio::time::timeout(budget, rx)),
+        )
+        .await
+        .into_iter()
+        .map(|waited| match waited {
+            Ok(Ok(QuestionAnswer::Choice(choices))) => Outcome::Answered(match choices.len() {
+                0 => String::new(),
+                // One pick reads exactly as it did before multi-select existed.
+                1 => choices.into_iter().next().unwrap_or_default(),
+                _ => format!("Selected: {}", choices.join(", ")),
+            }),
+            Ok(Ok(QuestionAnswer::Cancelled)) => Outcome::Dismissed,
+            // The asker is gone (agent turn cancelled): nothing to report to.
+            Ok(Err(_)) => Outcome::Gone,
+            Err(_) => Outcome::Unanswered,
+        })
+        .collect();
 
         // A single question answers exactly as it did before batches existed.
         if total == 1 {
@@ -746,6 +754,65 @@ mod tests {
             out.content,
             "Q1: Which sections?\nA: The user dismissed this question.\n\n\
              Q2: Branch name?\nA: (no answer)"
+        );
+    }
+
+    /// The batch is one await, not a queue of them: the questions settle in any
+    /// order — the client answers them as a form, so the last question can be
+    /// settled before the first — and a set that is answered (or dismissed)
+    /// whole returns at once instead of waiting out its deadline.
+    #[tokio::test]
+    async fn batch_settles_in_any_order_without_waiting_for_the_deadline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hub = Arc::new(jyc_core::question::QuestionHub::new());
+        let sent = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let outbound = Arc::new(MockOutbound {
+            broadcast: sent.clone(),
+        });
+        let ctx = ctx_with(tmp.path(), hub.clone(), outbound);
+
+        let input = json!({
+            "questions": [
+                { "question": "Which sections?", "options": ["Added", "Changed"] },
+                { "question": "Branch name?", "options": ["feat/x", "fix/x"] },
+            ],
+            // Long on purpose: the call must not need the deadline to return.
+            "timeout_seconds": 60,
+        });
+        let answerer = async {
+            loop {
+                let reqs = sent.lock().await.clone();
+                if reqs.len() == 2 {
+                    return reqs;
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+
+        let tool = AskUserTool;
+        let started = std::time::Instant::now();
+        tokio::pin!(let out = tool.execute(input, &ctx););
+        let out = tokio::select! {
+            finished = &mut out => panic!("tool finished before the batch was settled: {finished:?}"),
+            reqs = answerer => {
+                // The second question settles first, the first is dismissed.
+                assert!(hub.respond(
+                    &reqs[1].id,
+                    QuestionAnswer::Choice(vec!["fix/x".to_string()])
+                ));
+                assert!(hub.respond(&reqs[0].id, QuestionAnswer::Cancelled));
+                out.await.unwrap()
+            }
+        };
+
+        assert!(
+            started.elapsed().as_secs() < 5,
+            "must settle on the answers, not the deadline"
+        );
+        assert_eq!(
+            out.content,
+            "Q1: Which sections?\nA: The user dismissed this question.\n\n\
+             Q2: Branch name?\nA: fix/x"
         );
     }
 }

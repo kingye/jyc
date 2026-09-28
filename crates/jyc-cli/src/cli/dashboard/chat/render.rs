@@ -270,8 +270,15 @@ pub(super) fn render_history_lines(
         }
 
         // Render message (no speaker label — the human side is identified by
-        // its background below).
-        let md_text = softbreaks_to_hardbreaks(&format!("{}\n", msg.text));
+        // its background below). The human side's leading indentation is
+        // protected from CommonMark's paragraph de-indentation (see
+        // `protect_leading_whitespace`).
+        let md_input = if is_user {
+            protect_leading_whitespace(&msg.text)
+        } else {
+            msg.text.clone()
+        };
+        let md_text = softbreaks_to_hardbreaks(&format!("{md_input}\n"));
         let rendered =
             tui_markdown::from_str_with_options(&md_text, &chat_markdown_options()).lines;
         let mut msg_lines = wrap_styled_lines(wrap_tables(rendered, body_width), body_width);

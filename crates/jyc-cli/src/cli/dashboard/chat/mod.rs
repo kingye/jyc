@@ -1488,23 +1488,34 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     // keys only move the topic info above it (leader `s` hides the block,
     // handing the whole column back to the topic info). The overview
     // screen keeps its own status bar and renders no sub-pane here.
+    //
+    // The stats wrap to the pane's inner width, so the block is built once the
+    // inner region is known. The sub-pane renders inside the border, pinned to
+    // the bottom of the column: the outer block is drawn over the whole column
+    // first so its left border runs the full height, and only the inner region
+    // is split into the borderless topic sub-pane and the status sub-pane.
+    let inner = block.inner(area);
     let status = if app.chat.visible && app.chat.status_visible {
-        chat_status_block(app)
+        chat_status_block(app, inner.width)
     } else {
         Vec::new()
     };
-    // The status sub-pane renders inside the border, pinned to the bottom of
-    // the column: the outer block is drawn over the whole column first so its
-    // left border runs the full height, and only the inner region is split
-    // into the borderless topic sub-pane and the status sub-pane.
-    let inner = block.inner(area);
     frame.render_widget(block, area);
-    let (topic_inner, status_area) = if status.is_empty() || inner.height == 0 {
+    // The sub-pane is all-or-nothing: its top border, every wrapped row, and
+    // the rows the topic info keeps for itself must all fit. A column that
+    // cannot afford that loses the block entirely — rendering only the rows
+    // that happen to fit would clip the stats again, which is what this block
+    // exists to stop (a short terminal with the activity pane open is exactly
+    // that column).
+    const TOPIC_INFO_MIN_ROWS: u16 = 6;
+    // +1: the sub-pane's top border costs a row.
+    let needed = status.len() as u16 + 1;
+    let (topic_inner, status_area) = if status.is_empty()
+        || inner.height < needed + TOPIC_INFO_MIN_ROWS
+    {
         (inner, None)
     } else {
-        let status_h = (status.len() as u16 + 1).min(inner.height);
-        let rows =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(inner);
+        let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(needed)]).split(inner);
         (rows[0], Some(rows[1]))
     };
     if let Some(status_area) = status_area {

@@ -2,6 +2,7 @@
 //!
 //! Extracted from the monolithic `agent_loop.rs`.
 
+use std::ops::Range;
 use std::sync::LazyLock;
 
 use anyhow::Result;
@@ -263,33 +264,83 @@ static TOOL_CALL_SYNTAX: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-/// Byte offset at which leaked tool-call syntax starts in `text`, or `None`
-/// when the text carries none.
+/// Byte range of `text` occupied by leaked tool-call syntax, or `None` when
+/// the text carries none.
 ///
-/// A leak is a line that *is* tool-call syntax: it begins with one of the
-/// dialects. Prose that merely mentions a dialect keeps it inline or shows it
-/// inside a fenced block (a reply discussing this very guard does both), and
-/// neither counts — that is what keeps meta-discussion deliverable (#786
-/// review). The observed failure mode is a truncated block: either the whole
-/// reply, or a tail appended after real prose, so callers strip from this
-/// offset to the end.
-pub(crate) fn leaked_syntax_offset(text: &str) -> Option<usize> {
+/// A *leak line* is a line that IS tool-call syntax: after leading whitespace it
+/// begins with one of the dialects, and it sits outside a fenced code block.
+/// Prose keeps a dialect mention inline, or fences it — a reply documenting
+/// these very tags does both — so neither counts, which is what keeps
+/// meta-discussion deliverable (#786 review). For the same reason an inline
+/// closing tag in prose is *not* a signal: that check used to kill replies that
+/// quoted one. The two generic alternatives (`functions.foo(`, `{"name":`) are
+/// only safe because of that line-start rule.
+///
+/// A run of two or more leak lines, or a single leak line with nothing but
+/// blanks after it, is a *block*: the range runs to the end of the text, because
+/// the observed leaks are truncated mid-tag and their tail (the half-written
+/// argument) is not itself syntax. A single leak line with content after it is a
+/// quoted line inside a reply: only that line is returned, so the prose around
+/// it survives.
+pub(crate) fn leaked_syntax_range(text: &str) -> Option<Range<usize>> {
+    let mut offsets = Vec::new();
     let mut offset = 0;
-    let mut in_fence = false;
-    for line in text.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") {
-            in_fence = !in_fence;
-        } else if !in_fence
-            && TOOL_CALL_SYNTAX
-                .find(trimmed)
-                .is_some_and(|m| m.start() == 0)
-        {
-            return Some(offset);
+    let mut fences = 0;
+    for raw in text.split_inclusive('\n') {
+        let line = raw.strip_suffix('\n').unwrap_or(raw);
+        if line.trim_start().starts_with("```") {
+            fences += 1;
         }
-        offset += line.len();
+        offsets.push((offset, line));
+        offset += raw.len();
+    }
+    // An unbalanced fence means a truncated reply, whose fence state is
+    // unknown — scan again ignoring fences rather than treat the whole tail
+    // as code.
+    let fenced = fences % 2 == 0;
+    let first = first_leak_line(&offsets, true).or_else(|| {
+        if fenced {
+            None
+        } else {
+            first_leak_line(&offsets, false)
+        }
+    })?;
+
+    let leak_lines = offsets[first..]
+        .iter()
+        .filter(|(_, line)| is_leak_line(line))
+        .count();
+    let content_after = offsets[first + 1..]
+        .iter()
+        .any(|(_, line)| !line.trim().is_empty() && !is_leak_line(line));
+    if leak_lines > 1 || !content_after {
+        Some(offsets[first].0..text.len())
+    } else {
+        Some(offsets[first].0..offsets[first + 1].0)
+    }
+}
+
+/// Index of the first line that IS tool-call syntax, skipping fenced code
+/// blocks while `respect_fences`.
+fn first_leak_line(offsets: &[(usize, &str)], respect_fences: bool) -> Option<usize> {
+    let mut in_fence = false;
+    for (idx, (_, line)) in offsets.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if respect_fences && trimmed.starts_with("```") {
+            in_fence = !in_fence;
+        } else if !in_fence && is_leak_line(line) {
+            return Some(idx);
+        }
     }
     None
+}
+
+/// Whether the line starts with tool-call syntax.
+fn is_leak_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    TOOL_CALL_SYNTAX
+        .find(trimmed)
+        .is_some_and(|m| m.start() == 0)
 }
 
 #[cfg(test)]
@@ -356,69 +407,80 @@ mod tests {
     }
 
     #[test]
-    fn leaked_syntax_offset_catches_the_observed_shapes() {
-        // Truncated markup-only reply, cut mid-tag (observed 2026-09-28).
-        assert_eq!(
-            leaked_syntax_offset(
-                "<tool_use>\n<invoke name=\"bash\">\n<parameter name=\"command\" type=\"string"
-            ),
-            Some(0)
-        );
-        // Same leak appended after real prose.
+    fn leaked_syntax_range_covers_the_observed_shapes() {
+        // Truncated markup-only reply, cut mid-tag (observed 2026-09-28):
+        // everything goes.
+        let whole = "<tool_use>\n<invoke name=\"bash\">\n<parameter name=\"command\" type=\"string";
+        assert_eq!(leaked_syntax_range(whole), Some(0..whole.len()));
+
+        // Same leak appended after real prose: the prose is kept, and the
+        // block runs to the end because its truncated tail (the half-written
+        // argument) is not itself syntax.
         let prose = "顺手再查一次 CI 状态：";
+        let tail = format!("{prose}\n{whole}");
         assert_eq!(
-            leaked_syntax_offset(&format!(
-                "{prose}\n<tool_use>\n<invoke name=\"bash\">\n<parameter name=\"command\" type=\"string"
-            )),
-            Some(prose.len() + 1)
+            leaked_syntax_range(&tail),
+            Some(prose.len() + 1..tail.len())
         );
-        assert_eq!(
-            leaked_syntax_offset("先说结论。\n<invoke name=\"bash\">"),
-            Some("先说结论。\n".len())
-        );
+
         // Complete block, closing tags included.
-        assert_eq!(
-            leaked_syntax_offset("<response_tools>\n<invoke name=\"bash\">x\n</response_tools>"),
-            Some(0)
-        );
-        assert_eq!(leaked_syntax_offset("</call> trailing"), Some(0));
+        let complete = "<response_tools>\n<invoke name=\"bash\">x\n</response_tools>";
+        assert_eq!(leaked_syntax_range(complete), Some(0..complete.len()));
+
         // Gateway wrapper and the other dialects.
-        assert_eq!(
-            leaked_syntax_offset("<response tools=\"<call tool=\"bash\""),
-            Some(0)
-        );
-        assert_eq!(leaked_syntax_offset("functions.bash(\"ls\")"), Some(0));
-        assert_eq!(
-            leaked_syntax_offset("{\"name\": \"bash\", \"arguments\": {}}"),
-            Some(0)
-        );
+        let gateway = "<response tools=\"<call tool=\"bash\"";
+        assert_eq!(leaked_syntax_range(gateway), Some(0..gateway.len()));
+        let funcs = "functions.bash(\"ls\")";
+        assert_eq!(leaked_syntax_range(funcs), Some(0..funcs.len()));
+        let json = "{\"name\": \"bash\", \"arguments\": {}}";
+        assert_eq!(leaked_syntax_range(json), Some(0..json.len()));
+
         // Degenerate dump: bare openers, no closing tags.
+        let dump = format!("先说结论。\n{}", "<response_tools>\n".repeat(6));
         assert_eq!(
-            leaked_syntax_offset(&format!("先说结论。\n{}", "<response_tools>\n".repeat(6))),
-            Some("先说结论。\n".len())
+            leaked_syntax_range(&dump),
+            Some("先说结论。\n".len()..dump.len())
+        );
+
+        // A LONE leak line with content after it is a quote inside a reply:
+        // only that line goes, so the prose around it survives.
+        assert_eq!(
+            leaked_syntax_range("<response_tools>\n这是正文里引用一次标签。"),
+            Some(0.."<response_tools>\n".len())
+        );
+        assert_eq!(
+            leaked_syntax_range("先说结论。\n</call>\n后面还有正文。"),
+            Some("先说结论。\n".len().."先说结论。\n</call>\n".len())
         );
     }
 
     #[test]
-    fn leaked_syntax_offset_ignores_prose_about_the_dialects() {
-        assert_eq!(leaked_syntax_offset("普通回复，没有工具调用语法。"), None);
-        assert_eq!(leaked_syntax_offset(""), None);
+    fn leaked_syntax_range_ignores_prose_about_the_dialects() {
+        assert_eq!(leaked_syntax_range("普通回复，没有工具调用语法。"), None);
+        assert_eq!(leaked_syntax_range(""), None);
         // Inline quote inside prose (#786 review: meta-discussion stays
         // deliverable).
         assert_eq!(
-            leaked_syntax_offset("比如 `<parameter name=\"command\">` 这种写法。"),
+            leaked_syntax_range("比如 `<parameter name=\"command\">` 这种写法。"),
             None
         );
         assert_eq!(
-            leaked_syntax_offset("报错输出里有 `<response_tools>` 标签，重试后还会出现。"),
+            leaked_syntax_range("报错输出里有 `<response_tools>` 标签，重试后还会出现。"),
             None
         );
         // …and inside a fenced block, the way this guard is documented.
         assert_eq!(
-            leaked_syntax_offset(
+            leaked_syntax_range(
                 "两个方言：\n```\n<tool_use>\n<invoke name=\"bash\">\n</tool_use>\n```\n就这样。"
             ),
             None
+        );
+        // An unbalanced fence means a truncated reply whose fence state is
+        // unknown: scan again ignoring fences instead of hiding the leak.
+        let truncated = "说明：\n```\n<tool_use>\n<invoke name=\"bash\">";
+        assert_eq!(
+            leaked_syntax_range(truncated),
+            Some("说明：\n```\n".len()..truncated.len())
         );
     }
 }

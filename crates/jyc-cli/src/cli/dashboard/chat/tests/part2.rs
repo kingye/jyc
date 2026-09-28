@@ -1514,17 +1514,46 @@ fn status_block_app() -> App {
 }
 
 #[test]
-fn info_pane_status_block_sits_above_topic_info() {
+fn info_pane_status_block_sits_below_topic_info() {
     let mut app = status_block_app();
     let pane = info_pane_text(&mut app, 60, 24);
-    let version = pane.find("JYC AI v9.9.9-test").expect("version line");
-    let stats = pane
-        .find("2 active / 5 thread · 12 recv · 0 err · up 38m")
-        .expect("stats line");
+    // The block gets its own sub-pane pinned to the bottom of the info
+    // column, below the topic info, separated by a gray top border.
     let topic = pane.find("Topic: jyc").expect("topic line");
+    let version = pane.find("JYC AI v9.9.9-test").expect("version line");
     assert!(
-        version < stats && stats < topic,
-        "status block must open the pane, above the topic info:\n{pane}"
+        topic < version,
+        "status block must sit below the topic info:\n{pane}"
+    );
+}
+
+#[test]
+fn info_pane_status_block_stays_when_topic_info_scrolls() {
+    use jyc_types::ChangeKind;
+    use jyc_types::ChangedFileEntry;
+    let mut app = status_block_app();
+    // Overflow the topic info so `End`/`G`-style scrolling has somewhere
+    // to go: ~30 changed files in a 24-row pane.
+    if let Some(state) = app.state.as_mut() {
+        state.topics[0].changed_files = Some(
+            (0..30)
+                .map(|i| ChangedFileEntry {
+                    path: format!("file_{i:02}.rs"),
+                    uncommitted: false,
+                    change: ChangeKind::Modified,
+                })
+                .collect(),
+        );
+    }
+    app.chat.info_scroll = usize::MAX; // what `End` / `G` store
+    let pane = info_pane_text(&mut app, 60, 24);
+    assert!(
+        pane.contains("JYC AI v9.9.9-test"),
+        "scrolling the topic info must not move the status block:\n{pane}"
+    );
+    assert!(
+        pane.contains("2 active / 5 thread · 12 recv · 0 err · up 38m"),
+        "stats line must stay pinned with the version line:\n{pane}"
     );
 }
 

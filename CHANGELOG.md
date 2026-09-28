@@ -43,6 +43,11 @@
 
 ### Fixed
 
+- Topic info diff no longer assumes the default branch is `main`: the base
+  is resolved as `origin/HEAD` (set by clone), falling back to local
+  `main`, then `master` — repos whose default branch is `master` (or
+  another name behind origin) now show committed branch files instead of
+  silently dropping them
 - TUI chat no longer strips the leading spaces of a sent message's lines:
   CommonMark indentation handling (paragraph de-indentation, indented code
   blocks) is neutralized for human turns at any depth — leading spaces survive

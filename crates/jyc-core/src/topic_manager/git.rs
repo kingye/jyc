@@ -101,13 +101,33 @@ fn run_git_diff_name_status(cwd: &Path, revspec: &str) -> Option<Vec<(ChangeKind
     Some(out)
 }
 
-/// List files changed relative to `main`, with per-file `uncommitted`
-/// flag and `change` kind.
+/// Resolve the base ref to diff the topic branch against.
+///
+/// Probes in order: `origin/HEAD` (set by clone to the remote's default
+/// branch), then local `main`, then local `master`. Returns the first
+/// ref that resolves, or `None` when none do — e.g. a repo whose
+/// default branch has another name and no origin remote.
+fn base_ref(cwd: &Path) -> Option<String> {
+    for candidate in ["origin/HEAD", "main", "master"] {
+        let status = std::process::Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet", candidate])
+            .current_dir(cwd)
+            .status()
+            .ok()?;
+        if status.success() {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+/// List files changed relative to the repo's default branch, with
+/// per-file `uncommitted` flag and `change` kind.
 ///
 /// Runs two `git diff` invocations against the topic's working directory:
-/// 1. `git diff --name-status main...HEAD` — files committed on the
-///    branch vs `main`, with status letter parsed into
-///    [`ChangeKind`].
+/// 1. `git diff --name-status <base>...HEAD` — files committed on the
+///    branch vs the default branch (resolved by [`base_ref`]), with
+///    status letter parsed into [`ChangeKind`].
 /// 2. `git diff --name-only HEAD` — files modified in the working tree
 ///    but not yet committed (staged + unstaged); kind defaults to
 ///    `Modified` since these are tracked files that exist in HEAD.
@@ -124,8 +144,8 @@ fn run_git_diff_name_status(cwd: &Path, revspec: &str) -> Option<Vec<(ChangeKind
 ///
 /// - `None` when neither `.git/HEAD` exists (not a git repo).
 /// - `None` when BOTH `git` invocations fail (missing binary, no
-///   `main` ref, etc.). If one succeeds, the successful one still
-///   contributes its files.
+///   resolvable base ref, etc.). If one succeeds, the successful one
+///   still contributes its files.
 /// - `Some(vec![])` when both diffs come back empty.
 /// - `Some(vec![{path, change, uncommitted}, ...])` for the union,
 ///   sorted alphabetically by path.
@@ -141,7 +161,8 @@ pub(crate) fn changed_files_for_topic_path(path: &Path) -> Option<Vec<ChangedFil
         return None;
     };
 
-    let branch = run_git_diff_name_status(&cwd, "main...HEAD");
+    let branch =
+        base_ref(&cwd).and_then(|base| run_git_diff_name_status(&cwd, &format!("{base}...HEAD")));
     let dirty = run_git_diff(&cwd, "HEAD");
 
     // Skip rule: not a git repo at all is the only path to `None`. If
@@ -243,6 +264,12 @@ mod changed_files_resolution_tests {
     /// Returns the tempdir; caller is responsible for keeping it alive
     /// (TempDir drops at end of the test function).
     fn git_init_with_main() -> tempfile::TempDir {
+        git_init_with_branch("main")
+    }
+
+    /// Init a git repo with the given default branch and an initial
+    /// empty commit.
+    fn git_init_with_branch(branch: &str) -> tempfile::TempDir {
         let dir = tempdir().unwrap();
         let run = |args: &[&str]| {
             Command::new("git")
@@ -252,7 +279,7 @@ mod changed_files_resolution_tests {
                 .expect("git failed")
         };
         // Ensure deterministic branch name + committer across CI hosts.
-        run(&["init", "-q", "-b", "main"]);
+        run(&["init", "-q", "-b", branch]);
         run(&[
             "-c",
             "user.email=test@example.com",
@@ -279,6 +306,135 @@ mod changed_files_resolution_tests {
         // HEAD == main → diff main...HEAD is empty.
         let files = changed_files_for_topic_path(dir.path());
         assert_eq!(files, Some(vec![]));
+    }
+
+    #[test]
+    fn lists_files_against_master_default_branch() {
+        let dir = git_init_with_branch("master");
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git failed")
+        };
+        run(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(dir.path().join("alpha.rs"), "fn a() {}").unwrap();
+        run(&["add", "alpha.rs"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "alpha",
+        ]);
+
+        let files = changed_files_for_topic_path(dir.path()).expect("git diff must run");
+        assert_eq!(
+            files,
+            vec![ChangedFileEntry {
+                path: "alpha.rs".into(),
+                uncommitted: false,
+                change: ChangeKind::Added,
+            }]
+        );
+    }
+
+    #[test]
+    fn prefers_origin_head_over_local_main() {
+        let dir = git_init_with_main();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git failed")
+        };
+        // A `master` branch that `main` does not contain, then point
+        // origin/HEAD at it — the base probe must pick master, not main.
+        run(&["checkout", "-q", "-b", "master"]);
+        std::fs::write(dir.path().join("m.rs"), "fn m() {}").unwrap();
+        run(&["add", "m.rs"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "m",
+        ]);
+        run(&[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/heads/master",
+        ]);
+        run(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(dir.path().join("f.rs"), "fn f() {}").unwrap();
+        run(&["add", "f.rs"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "f",
+        ]);
+
+        // Only the feature-branch commit is vs master; vs main this
+        // would also list m.rs.
+        let files = changed_files_for_topic_path(dir.path()).expect("git diff must run");
+        assert_eq!(
+            files,
+            vec![ChangedFileEntry {
+                path: "f.rs".into(),
+                uncommitted: false,
+                change: ChangeKind::Added,
+            }]
+        );
+    }
+
+    #[test]
+    fn falls_back_to_dirty_only_when_no_base_resolves() {
+        let dir = git_init_with_branch("develop");
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git failed")
+        };
+        std::fs::write(dir.path().join("tracked.rs"), "v1").unwrap();
+        run(&["add", "tracked.rs"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "add",
+        ]);
+        // Uncommitted modification; no main/master/origin-HEAD exists,
+        // so the branch diff is skipped and only the dirty diff reports.
+        std::fs::write(dir.path().join("tracked.rs"), "v2").unwrap();
+
+        let files = changed_files_for_topic_path(dir.path()).expect("git diff must run");
+        assert_eq!(
+            files,
+            vec![ChangedFileEntry {
+                path: "tracked.rs".into(),
+                uncommitted: true,
+                change: ChangeKind::Modified,
+            }]
+        );
     }
 
     #[test]

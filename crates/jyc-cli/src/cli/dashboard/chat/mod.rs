@@ -1488,24 +1488,36 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
     // keys only move the topic info above it (leader `s` hides the block,
     // handing the whole column back to the topic info). The overview
     // screen keeps its own status bar and renders no sub-pane here.
+    //
+    // The stats wrap to the pane's inner width, so the block is built once the
+    // inner region is known. The sub-pane renders inside the border, pinned to
+    // the bottom of the column: the outer block is drawn over the whole column
+    // first so its left border runs the full height, and only the inner region
+    // is split into the borderless topic sub-pane and the status sub-pane.
+    let inner = block.inner(area);
     let status = if app.chat.visible && app.chat.status_visible {
-        chat_status_block(app)
+        chat_status_block(app, inner.width)
     } else {
         Vec::new()
     };
-    // The status sub-pane renders inside the border, pinned to the bottom of
-    // the column: the outer block is drawn over the whole column first so its
-    // left border runs the full height, and only the inner region is split
-    // into the borderless topic sub-pane and the status sub-pane.
-    let inner = block.inner(area);
     frame.render_widget(block, area);
+    // Rows the topic info keeps for itself: wrapped stats may now claim more
+    // than the two they used to, but never the column. A sub-pane shorter than
+    // its border plus one text row would show nothing, so it is left out.
+    const TOPIC_INFO_MIN_ROWS: u16 = 6;
     let (topic_inner, status_area) = if status.is_empty() || inner.height == 0 {
         (inner, None)
     } else {
-        let status_h = (status.len() as u16 + 1).min(inner.height);
-        let rows =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(inner);
-        (rows[0], Some(rows[1]))
+        // +1: the sub-pane's top border costs a row.
+        let status_h =
+            (status.len() as u16 + 1).min(inner.height.saturating_sub(TOPIC_INFO_MIN_ROWS));
+        if status_h < 2 {
+            (inner, None)
+        } else {
+            let rows =
+                Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).split(inner);
+            (rows[0], Some(rows[1]))
+        }
     };
     if let Some(status_area) = status_area {
         let status_block = Block::default()

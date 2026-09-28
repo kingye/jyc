@@ -28,6 +28,13 @@
 
 ### Changed
 
+- TUI chat status sub-pane wraps its stats instead of clipping them: the
+  version line keeps its own row and the five stat chips (`2 active`,
+  `5 thread`, `12 recv`, `0 err`, `up 38m`) pack into as many rows as the info
+  column allows, so a narrow pane shows whole chips rather than `2 active / 5 t`
+  (`active` and `thread` are now separated like the other chips). The wrapped
+  rows come out of the topic info, which keeps at least six rows — a column too
+  short for both leaves the stats out entirely (#847)
 - TUI pane borders share one palette: every pane border on the chat screen and
   the overview screen now rests in dark gray and turns cyan while its pane owns
   the keys. The topic-info and activity panes used to inherit the terminal

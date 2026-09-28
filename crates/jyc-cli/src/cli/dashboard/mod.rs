@@ -1636,13 +1636,36 @@ fn close_overview_ws(app: &mut App) {
     while app.overview_ws_rx.try_recv().is_ok() {}
 }
 
+/// Pack whole chips into rows of at most `width` cells, joined by `" · "`.
+///
+/// A chip is never split: one wider than `width` gets a row to itself (and is
+/// then clipped like any over-long line). Greedy — a short chip fills the
+/// current row before the next one starts.
+fn pack_chips(chips: &[String], width: usize) -> Vec<String> {
+    let sep = " · ";
+    let sep_len = sep.chars().count();
+    let mut rows: Vec<String> = Vec::new();
+    for chip in chips {
+        match rows.last_mut() {
+            Some(row) if row.chars().count() + sep_len + chip.chars().count() <= width => {
+                row.push_str(sep);
+                row.push_str(chip);
+            }
+            _ => rows.push(chip.clone()),
+        }
+    }
+    rows
+}
+
 /// Build the chat-screen status block: the first lines of the topic info
-/// pane, replacing the bottom status bar on the chat screen. Two lines —
-/// the version (default style) and the server stats (gray). A transient
-/// status message swaps the whole block for one yellow line; it
-/// auto-expires after a few seconds. Empty when there is no server state
-/// to report (the chat header already shows the connecting state).
-fn chat_status_block(app: &App) -> Vec<Line<'_>> {
+/// pane, replacing the bottom status bar on the chat screen. The version on
+/// its own line, then the server stats (gray) packed into as many rows as
+/// `width` needs — a chip is never cut mid-word, only re-rowed, so a narrow
+/// info column stays readable instead of showing `2 active / 5 t`. A
+/// transient status message swaps the whole block for one yellow line; it
+/// auto-expires after a few seconds. Empty when there is no server state to
+/// report (the chat header already shows the connecting state).
+fn chat_status_block(app: &App, width: u16) -> Vec<Line<'_>> {
     if let Some((msg, _)) = &app.status_message {
         return vec![Line::from(Span::styled(
             msg.as_str(),
@@ -1653,20 +1676,25 @@ fn chat_status_block(app: &App) -> Vec<Line<'_>> {
         return Vec::new();
     };
     let stats = &state.stats;
-    vec![
-        Line::from(format!("JYC AI v{}", state.version)),
-        Line::from(Span::styled(
+    let rows = pack_chips(
+        &[
+            format!("{} active", stats.active_workers),
+            format!("{} thread", stats.total_topics),
+            format!("{} recv", stats.messages_received),
+            format!("{} err", stats.errors),
             format!(
-                "{} active / {} thread · {} recv · {} err · up {}",
-                stats.active_workers,
-                stats.total_topics,
-                stats.messages_received,
-                stats.errors,
-                format_duration_secs(state.uptime_secs, DurationStyle::Coarse),
+                "up {}",
+                format_duration_secs(state.uptime_secs, DurationStyle::Coarse)
             ),
-            Style::default().fg(Color::DarkGray),
-        )),
-    ]
+        ],
+        width as usize,
+    );
+    let mut lines = vec![Line::from(format!("JYC AI v{}", state.version))];
+    lines.extend(
+        rows.into_iter()
+            .map(|row| Line::from(Span::styled(row, Style::default().fg(Color::DarkGray)))),
+    );
+    lines
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &App) {

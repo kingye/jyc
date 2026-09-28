@@ -30,8 +30,6 @@ pub enum LocalAction {
     OpenDashboard,
     /// Open the chat screen for the selected topic (dashboard only).
     OpenChat,
-    /// Start a new chat (pattern select).
-    NewChat,
     /// Reload the server configuration.
     ReloadConfig,
     /// Quit the TUI.
@@ -118,13 +116,6 @@ pub fn local_commands() -> &'static [LocalCommand] {
             scope: Dashboard,
             action: LocalAction::OpenChat,
             leader_keys: "c",
-        },
-        LocalCommand {
-            name: "new chat",
-            description: "Start a new chat (select a pattern)",
-            scope: Shared,
-            action: LocalAction::NewChat,
-            leader_keys: "n",
         },
         LocalCommand {
             name: "reload config",
@@ -326,7 +317,6 @@ mod tests {
 
         // Dashboard screen: dashboard-scoped + shared.
         assert!(dash_keys.contains(&"c"), "open chat must be on dashboard");
-        assert!(dash_keys.contains(&"n"));
         assert!(dash_keys.contains(&"r"));
         assert!(dash_keys.contains(&"q"));
         assert!(
@@ -340,7 +330,6 @@ mod tests {
         assert!(!dash_keys.contains(&"/"));
         assert!(chat_keys.contains(&"d"));
         assert!(chat_keys.contains(&"z"));
-        assert!(chat_keys.contains(&"n"));
         assert!(chat_keys.contains(&"r"));
         assert!(chat_keys.contains(&"q"));
         // `c` is focus chat on the chat screen, open chat on the dashboard.

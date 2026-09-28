@@ -96,10 +96,6 @@ struct App {
     /// buffers so the chat pane shows the new topic's history.
     pending_hydrate: Option<(String, String)>,
 
-    /// Set by the leader `new chat` action; the async poll loop runs the
-    /// pattern-select flow (needs InspectClient for `list_patterns`).
-    pending_new_chat: bool,
-
     /// Set by the leader `reload config` action; the async poll loop runs
     /// the reload (needs InspectClient).
     pending_reload_config: bool,
@@ -160,7 +156,6 @@ impl App {
             should_quit: false,
             status_message: None,
             pending_hydrate: None,
-            pending_new_chat: false,
             pending_reload_config: false,
             mouse_capture_enabled: true,
             needs_full_redraw: false,
@@ -603,7 +598,7 @@ pub async fn run(
         if let Some(topic) = initial_topic {
             let channel = initial_channel.unwrap_or("");
             app.chat
-                .open(&args.addr, initial_channel, Some(topic), app.token.clone());
+                .open(&args.addr, initial_channel, topic, app.token.clone());
             hydrate_live(&client, &mut app, channel, topic).await;
         }
 
@@ -709,10 +704,6 @@ pub async fn run(
             }
 
             // Leader actions deferred for the same reason.
-            if app.pending_new_chat {
-                app.pending_new_chat = false;
-                start_new_chat(&mut app, &args.addr, &client).await;
-            }
             if app.pending_reload_config {
                 app.pending_reload_config = false;
                 reload_server_config(&mut app, &client, &mut last_poll).await;
@@ -1103,25 +1094,6 @@ async fn hydrate_live(client: &InspectClient, app: &mut App, channel: &str, topi
     }
 }
 
-/// Start a new chat: fetch patterns via REST and open the chat screen in
-/// pattern-select mode. Used by the `c` key and the leader `new chat`
-/// action (via `pending_new_chat`).
-async fn start_new_chat(app: &mut App, addr: &str, client: &InspectClient) {
-    let channel = app.state.as_ref().and_then(|o| {
-        o.channels
-            .iter()
-            .find(|c| c.channel_type == "websocket")
-            .map(|c| c.name.clone())
-    });
-    if let Some(channel) = channel {
-        app.chat
-            .open_pattern_select(addr, &channel, client, app.token.clone())
-            .await;
-    } else {
-        app.set_status("No websocket channel configured".to_string());
-    }
-}
-
 /// Open the chat screen for the table-selected topic. All channel types
 /// use the unified `/ws/<channel>/<topic>` endpoint. Used by the Enter key
 /// and the leader `open chat` action.
@@ -1134,7 +1106,7 @@ async fn open_selected_topic_chat(app: &mut App, client: &InspectClient, addr: &
     });
     if let Some((name, channel)) = topic_info {
         app.chat
-            .open(addr, Some(&channel), Some(&name), app.token.clone());
+            .open(addr, Some(&channel), &name, app.token.clone());
         // Chat WS takes over live events. Close the overview WS
         // so we don't have two connections to the same topic.
         close_overview_ws(app);
@@ -1189,7 +1161,6 @@ async fn handle_normal_keys(
                 use local_commands::LocalAction;
                 match action {
                     LocalAction::OpenChat => open_selected_topic_chat(app, client, addr).await,
-                    LocalAction::NewChat => start_new_chat(app, addr, client).await,
                     LocalAction::ReloadConfig => reload_server_config(app, client, last_poll).await,
                     LocalAction::Quit => app.should_quit = true,
                     LocalAction::ToggleMouseCapture => toggle_mouse_capture(app),
@@ -1209,11 +1180,6 @@ async fn handle_normal_keys(
     }
 
     match key.code {
-        KeyCode::Char('c') => {
-            // After the user picks a pattern, `select_pattern` opens a
-            // scoped WS to `/ws/<channel>/<topic>`.
-            start_new_chat(app, addr, client).await;
-        }
         KeyCode::Enter => {
             open_selected_topic_chat(app, client, addr).await;
         }

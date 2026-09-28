@@ -1302,6 +1302,32 @@ fn batch_sends_every_answer_once_the_last_question_is_settled() {
     assert!(!chat.active_question());
 }
 
+/// `d` declines the question on screen and the rest of the set still goes out:
+/// the declined question is dismissed, its neighbour keeps its pick. Without it
+/// the only "no" was Esc, which cost every pick already made.
+#[test]
+fn declining_one_question_cancels_it_and_keeps_the_other_answer() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
+    chat.handle_question_event(&question_payload("jyc", "q2", &["c", "d"]));
+
+    chat.toggle_question_decline(); // q1: no answer
+    chat.confirm_question(); // -> q2
+    chat.select_question_next(); // q2 -> d
+    chat.confirm_question(); // flush
+
+    let first: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+    assert_eq!(first["id"], "q1");
+    assert_eq!(
+        first["cancelled"],
+        serde_json::json!(true),
+        "a declined question is a dismissal, not a pick"
+    );
+    let second: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+    assert_eq!(second["id"], "q2");
+    assert_eq!(second["choices"], serde_json::json!(["d"]));
+}
+
 /// Going back is free precisely because the answer is still buffered: the
 /// earlier question keeps its marks.
 #[test]
@@ -1376,6 +1402,33 @@ fn esc_discards_the_batch_with_a_cancel_per_question() {
     assert!(
         rx.try_recv().is_err(),
         "exactly one frame per pending question"
+    );
+}
+
+/// Closing the pane settles the batch too, and it has to happen *before* the
+/// socket is taken: on reopen there is no box and no free-text path, so a
+/// pending question would be unreachable until the daemon's deadline.
+#[test]
+fn closing_the_pane_discards_the_pending_batch() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a"]));
+
+    chat.close();
+
+    let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+    assert_eq!(frame["id"], "q1");
+    assert_eq!(frame["cancelled"], serde_json::json!(true));
+    // The cancel must leave before the socket is handed back, so the pane's own
+    // `disconnect` is the frame right after it.
+    let second: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+    assert_eq!(second["type"], "disconnect");
+    assert!(chat.ws_tx.is_none(), "the socket is handed back after");
+
+    // The discard already emptied the batch, so reopening sends nothing.
+    chat.reset_chat_state("jyc");
+    assert!(
+        rx.try_recv().is_err(),
+        "a reopen must not answer questions it never showed"
     );
 }
 

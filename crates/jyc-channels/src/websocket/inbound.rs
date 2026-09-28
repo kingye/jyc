@@ -407,14 +407,10 @@ async fn handle_connection_impl(
                                         continue;
                                     }
                                 };
-                                // A message is a message: it routes to the
-                                // topic and is answered in its own turn.
-                                // `ask_user` questions are answered by the
+                                // A message is a message: questions asked on
+                                // this channel are answered by the
                                 // `question_response` frame below, never by
-                                // hijacking one — text-fallback channels
-                                // (feishu pipe, email, github) keep their own
-                                // `QuestionHub::try_answer` routing because
-                                // they have no question box to show.
+                                // reading a message as an answer.
                                 let message = InboundMessage {
                                     id: uuid::Uuid::new_v4().to_string(),
                                     channel: channel_name.clone(),

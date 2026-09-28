@@ -2,11 +2,13 @@
 //!
 //! [`QuestionHub`] tracks questions currently awaiting a user answer: the
 //! `ask_user` tool registers a oneshot receiver and blocks on it, while
-//! channel inbound adapters submit answers via [`QuestionHub::respond`] (the
-//! websocket client sends a `question_response` frame) or, for text-fallback
-//! channels with no question box (feishu pipe, email, github), via
-//! [`QuestionHub::try_answer`]. Entries are keyed by question id (UUID), so a
-//! single hub serves all channels and topics.
+//! channel inbound adapters submit answers via [`QuestionHub::respond`] — the
+//! websocket client sends a `question_response` frame per question, and the
+//! feishu pipe, which relays those question frames as cards, routes a chat
+//! reply through [`QuestionHub::try_answer`] instead. Channels whose outbound
+//! cannot render a question register none at all (the tool reports that to the
+//! model). Entries are keyed by question id (UUID), so a single hub serves all
+//! channels and topics.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -88,11 +90,13 @@ impl QuestionHub {
     /// timed out) — the message then routes normally instead of being
     /// dropped.
     ///
-    /// Used by text-fallback channels (email, github, feishu pipe) so a
-    /// user's plain reply answers the outstanding question instead of bouncing
-    /// off the busy topic — the websocket client has a question box and
-    /// answers through `question_response` frames instead. With several
-    /// questions pending for the topic, the oldest one is answered first.
+    /// Its one caller today is the feishu pipe: it relays the question frames a
+    /// websocket channel emits as cards and reads the chat reply as the answer,
+    /// so a plain reply settles the outstanding question instead of queueing
+    /// behind it. The websocket client has a question box and answers through
+    /// `question_response` frames instead — a message there is a message. With
+    /// several questions pending for the topic, the oldest one is answered
+    /// first.
     pub fn try_answer(&self, topic: &str, text: &str) -> bool {
         let text = text.trim();
         if text.is_empty() || text.starts_with('/') {

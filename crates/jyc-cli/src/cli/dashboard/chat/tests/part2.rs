@@ -1634,18 +1634,19 @@ fn status_block_wraps_chips_instead_of_clipping_them() {
 /// The floor is all-or-nothing at its boundary: a column one row short of the
 /// block's border plus every wrapped row (five here) drops the whole block
 /// instead of showing the version line with the stats cut off, and the topic
-/// info keeps the six rows it is owed.
+/// info keeps the six rows it is owed. Heights count the *pane*, whose inner
+/// region loses a row to its own top padding — the boundary is at 12, not 11.
 #[test]
 fn status_block_hides_rather_than_clipping_its_own_rows() {
     let mut app = status_block_app();
-    // 11 rows: five for the sub-pane, six left for the topic info.
-    let pane = info_pane_text(&mut app, 20, 11);
+    // 12 rows: inner 11 = five for the sub-pane plus the six the topic info keeps.
+    let pane = info_pane_text(&mut app, 20, 12);
     assert!(
         pane.contains("up 38m"),
         "the last wrapped row must show when the block fits:\n{pane}"
     );
-    // 10 rows: one short of what the block needs, so none of it renders.
-    let pane = info_pane_text(&mut app, 20, 10);
+    // 11 rows: inner 10, one short of what the block needs, so none of it renders.
+    let pane = info_pane_text(&mut app, 20, 11);
     assert!(
         !pane.contains("JYC AI") && !pane.contains("2 active"),
         "a column too short for the whole block must show none of it:\n{pane}"

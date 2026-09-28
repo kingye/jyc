@@ -159,7 +159,7 @@ fn live_tick_ms_for_round_trip() {
 }
 
 #[test]
-fn select_pattern_clears_chat_messages() {
+fn topic_switch_clears_chat_messages() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
 
@@ -177,7 +177,7 @@ fn select_pattern_clears_chat_messages() {
     assert_eq!(app.chat.messages.len(), 2);
 
     // Switch to a new topic
-    app.chat.select_pattern_inner("topic-b".to_string());
+    app.chat.reset_chat_state("topic-b");
 
     // Messages must be cleared so stale content doesn't leak across topics
     assert!(app.chat.messages.is_empty());
@@ -520,7 +520,7 @@ fn submit_empty_text_does_not_touch_history_pos() {
 }
 
 #[test]
-fn select_pattern_clears_input_history() {
+fn topic_switch_clears_input_history() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
 
@@ -528,7 +528,7 @@ fn select_pattern_clears_input_history() {
     app.chat.history_pos = Some(0);
 
     // Switch to a new topic
-    app.chat.select_pattern_inner("topic-b".to_string());
+    app.chat.reset_chat_state("topic-b");
 
     // History must be cleared so it doesn't leak across topics
     assert!(app.chat.input_history.is_empty());
@@ -584,7 +584,7 @@ fn esc_does_not_close_chat_with_input_focused() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
+    app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
     app.chat.focus = ChatFocus::ChatPane;
 
@@ -597,7 +597,7 @@ fn esc_does_not_close_chat_in_activity_pane() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
+    app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
     app.chat.focus = ChatFocus::ActivityPane;
 
@@ -610,7 +610,7 @@ fn chatting_app() -> App {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
+    app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
     app
 }
@@ -1028,48 +1028,6 @@ fn command_popup_marks_the_selected_row_with_an_arrow() {
     );
 }
 
-/// The `Select Pattern` list gets the same window as the popups: with more
-/// patterns than rows the arrow rides the bottom edge instead of walking into
-/// the clip. It used to draw every pattern into the pane, and its `Wrap` put a
-/// long path on a second row — which moved the rows out from under the cursor.
-#[test]
-fn pattern_select_scrolls_to_keep_the_cursor_visible() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
-    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-    let mut app = App::new(rx, None);
-    app.chat.visible = true;
-    app.chat.phase = ChatPhase::PatternSelect;
-    app.chat.patterns = (0..20).map(|i| format!("p{i:02}")).collect();
-    app.chat.pattern_selected = 19;
-
-    let (width, height) = (30, 8);
-    let backend = TestBackend::new(width, height);
-    let mut terminal = Terminal::new(backend).expect("terminal");
-    terminal
-        .draw(|frame| render_pattern_select(frame, frame.area(), &app))
-        .expect("draw");
-    let buffer = terminal.backend().buffer().clone();
-    let rows: Vec<String> = (0..height).map(|y| row_text(&buffer, y)).collect();
-    let pane = rows.join("\n");
-
-    // Borders::ALL: the inner rows are 1..=6, so the window's last row is 6.
-    assert!(
-        rows[6].contains("→ p19"),
-        "the selected pattern must sit on the list's bottom row:\n{pane}"
-    );
-    assert!(
-        rows[1].contains("p14"),
-        "the window slides with the cursor, so the top row is no longer the \
-         first pattern:\n{pane}"
-    );
-    assert!(
-        !pane.contains("p0"),
-        "the patterns the cursor walked over must scroll away:\n{pane}"
-    );
-}
-
 /// A question with more options than the box has rows: the list scrolls to
 /// follow the cursor, the option keeps its real number, and the hint below it
 /// survives — the box is the one list whose rows are not all options.
@@ -1378,7 +1336,7 @@ fn mouse_scroll_in_message_area_advances_scroll_offset() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
+    app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
     // Focus the input so the wheel hit-test is the only thing moving
     // focus, mirroring the user experience of scrolling with the
@@ -1433,7 +1391,7 @@ fn wheel_over_info_pane_scrolls_the_info_pane() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
+    app.chat.visible = true;
     app.chat.info_visible = true;
     app.chat.topic = Some("jyc".to_string());
     app.chat.focus = ChatFocus::ChatPane;
@@ -1478,13 +1436,11 @@ fn wheel_over_info_pane_scrolls_the_info_pane() {
 }
 
 #[test]
-fn mouse_scroll_ignored_outside_chatting_phase() {
-    // PatternSelect has no scrollable message area; the wheel must
+fn mouse_scroll_ignored_when_chat_hidden() {
+    // A hidden chat has no scrollable message area; the wheel must
     // not change focus or scroll state.
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
-    app.chat.visible = true;
-    app.chat.phase = ChatPhase::PatternSelect;
     app.chat.focus = ChatFocus::ChatPane;
     app.chat.scroll = 0;
 
@@ -1531,7 +1487,7 @@ fn mouse_scroll_ignored_when_capture_disabled() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
+    app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
     app.chat.focus = ChatFocus::ChatPane;
     app.chat.scroll = 0;
@@ -1606,7 +1562,7 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
+    app.chat.visible = true;
     app.chat.topic = Some("jyc".to_string());
     // Enough messages to overflow the pane, so the rendered scroll
     // maximum (last_max_scroll) is non-zero.
@@ -1642,7 +1598,7 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
     let (_tx2, rx2) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app2 = App::new(rx2, None);
     app2.chat.visible = true;
-    app2.chat.phase = ChatPhase::Chatting;
+    app2.chat.visible = true;
     app2.chat.topic = Some("jyc".to_string());
     for i in 0..100 {
         app2.chat.messages.push(ChatMessage {
@@ -1670,15 +1626,13 @@ fn mouse_scroll_over_message_area_moves_focus_from_other_panes() {
 }
 
 #[test]
-fn esc_does_not_close_chat_in_pattern_select() {
+fn esc_does_not_close_chat() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::PatternSelect;
 
     handle_chat_keys(&mut app, esc_key(), &mut test_terminal());
-    assert!(app.chat.visible, "Esc must not close pattern select");
-    assert_eq!(app.chat.phase, ChatPhase::PatternSelect);
+    assert!(app.chat.visible, "Esc must not close the chat");
 }
 
 #[test]
@@ -1686,7 +1640,6 @@ fn leader_open_dashboard_closes_chat() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
     app.chat.topic = Some("jyc".to_string());
 
     execute_local_action(
@@ -1706,20 +1659,17 @@ fn close_returns_to_overview_from_ws_chat() {
     // We set fields directly instead of calling open() because open()
     // spawns a tokio task requiring a runtime.
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
     app.chat.topic = Some("jyc".to_string());
     app.chat.focus = ChatFocus::ChatPane;
     let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     app.chat.ws_tx = Some(cmd_tx);
 
     assert!(app.chat.visible);
-    assert_eq!(app.chat.phase, ChatPhase::Chatting);
     assert_eq!(app.chat.topic.as_deref(), Some("jyc"));
 
     // close() is what Esc invokes — must return to overview
     app.chat.close();
     assert!(!app.chat.visible);
-    assert_eq!(app.chat.phase, ChatPhase::PatternSelect);
     assert!(app.chat.ws_tx.is_none());
 }
 
@@ -1996,7 +1946,7 @@ fn processing_complete_folds_thinking_into_pseudo_message() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
+    app.chat.visible = true;
     app.chat.channel = Some("chan".to_string());
     app.chat.topic = Some("t1".to_string());
 
@@ -2032,7 +1982,7 @@ fn processing_complete_drops_thinking_when_topic_not_open() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
+    app.chat.visible = true;
     app.chat.channel = Some("chan".to_string());
     app.chat.topic = Some("other".to_string());
 

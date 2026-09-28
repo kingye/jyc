@@ -30,8 +30,6 @@ pub enum LocalAction {
     OpenDashboard,
     /// Open the chat screen for the selected topic (dashboard only).
     OpenChat,
-    /// Start a new chat (pattern select).
-    NewChat,
     /// Reload the server configuration.
     ReloadConfig,
     /// Quit the TUI.
@@ -118,13 +116,6 @@ pub fn local_commands() -> &'static [LocalCommand] {
             scope: Dashboard,
             action: LocalAction::OpenChat,
             leader_keys: "c",
-        },
-        LocalCommand {
-            name: "new chat",
-            description: "Start a new chat (select a pattern)",
-            scope: Shared,
-            action: LocalAction::NewChat,
-            leader_keys: "n",
         },
         LocalCommand {
             name: "reload config",

@@ -550,52 +550,6 @@ fn explorer_topic(name: &str) -> jyc_types::TopicSummary {
     }
 }
 
-/// Regression: the pattern list marks its cursor with the same two-column
-/// `→` gutter + DIM as the command and question popups, and the unselected
-/// rows keep an equally wide blank gutter so nothing shifts sideways.
-#[test]
-fn pattern_select_uses_arrow_gutter_aligned_with_unselected_rows() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
-    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
-    let mut app = App::new(rx, None);
-    app.chat.patterns = vec!["alpha".to_string(), "beta".to_string()];
-    app.chat.pattern_selected = 1;
-
-    let backend = TestBackend::new(20, 6);
-    let mut terminal = Terminal::new(backend).expect("terminal");
-    terminal
-        .draw(|frame| render_pattern_select(frame, frame.area(), &app))
-        .expect("draw");
-
-    let buffer = terminal.backend().buffer().clone();
-    // Bordered block: both rows start at x=1, the name column at x=3.
-    assert_eq!(
-        buffer[(1, 1)].symbol(),
-        " ",
-        "unselected row keeps its gutter"
-    );
-    assert_eq!(
-        buffer[(3, 1)].symbol(),
-        "a",
-        "unselected name stays in column"
-    );
-    assert_eq!(buffer[(1, 2)].symbol(), "→", "selected row needs the arrow");
-    assert_eq!(
-        buffer[(3, 2)].symbol(),
-        "b",
-        "selected name stays in column"
-    );
-    assert!(buffer[(3, 2)].modifier.contains(Modifier::DIM));
-    assert!(!buffer[(3, 1)].modifier.contains(Modifier::DIM));
-    assert_eq!(
-        buffer[(1, 2)].bg,
-        Color::Reset,
-        "selection paints no background"
-    );
-}
-
 /// Regression: the Files section must color `uncommitted: true`
 /// entries yellow and leave `uncommitted: false` entries plain,
 /// and must prefix each row with the kind glyph (`+` Added,
@@ -612,7 +566,6 @@ fn files_section_colors_uncommitted_paths_yellow() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
     app.chat.topic = Some("jyc".to_string());
     app.chat.channel = Some("local_dev".to_string());
     app.chat.info_visible = true;
@@ -796,7 +749,6 @@ fn info_scroll_is_clamped_after_render() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
     app.chat.topic = Some("jyc".to_string());
     app.chat.channel = Some("local_dev".to_string());
     app.chat.info_visible = true;
@@ -1309,7 +1261,7 @@ fn switching_topics_leaves_the_old_question_batch_behind() {
     chat.handle_question_event(&question_payload("jyc", "qA2", &["y"]));
     assert_eq!(chat.questions.len(), 2, "the qA batch is queued");
 
-    chat.select_pattern_inner("other".to_string());
+    chat.reset_chat_state("other");
     chat.handle_question_event(&question_payload("other", "qB1", &["z"]));
 
     assert!(
@@ -1460,7 +1412,6 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
     app.chat.topic = Some("jyc".to_string());
     app.chat.channel = Some("local_dev".to_string());
     app.chat.info_visible = true;
@@ -1708,7 +1659,6 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
-    app.chat.phase = ChatPhase::Chatting;
     app.chat.info_visible = true;
     app.chat.topic = Some("t".to_string());
     app.state = Some(jyc_types::InspectOverview {

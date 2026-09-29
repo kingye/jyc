@@ -2,6 +2,15 @@
 
 ### Fixed
 
+- **A channel without a question box now receives the questions as a plain-text
+  message**: on a feishu / email / pipe-only turn `ask_user` answered the model
+  with an error telling it to ask in its reply text — not a delivery mechanism,
+  and what the user actually read was that `[ERROR]` line instead of a question.
+  The tool now renders the set itself (each question with its options numbered
+  the way they must be answered, multi-select marked) and sends it as an
+  ordinary message through the same reply path as the turn's final message
+  (`reply_send` hooks included), returning a normal result so the turn ends and
+  the user's numbered reply arrives as the next message (#850)
 - **A piped turn no longer stalls behind a question its user cannot see**:
   `ask_user` pushed its questions to whichever channel owns the *topic*, so a
   turn that arrived over a feishu or email pipe blocked up to the timeout on a
@@ -9,8 +18,7 @@
   turn's final message, so nothing arrived at all until the box was dismissed
   elsewhere. A question now goes to the outbound adapter of the channel the
   message came from (recorded as `origin_channel` metadata before the pipe
-  re-targets it); a channel without a question box fails the call at once, the
-  model asks in its reply text, and the turn ends normally (#849)
+  re-targets it) (#849)
 - Leaked tool-call syntax no longer reaches users as a reply, and legitimate
   prose about it is no longer mistaken for a leak: the leaked block is
   stripped and the surrounding prose delivered (a reply used to be failed

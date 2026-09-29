@@ -868,6 +868,14 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             raw_context.push(provider.format_user_message(&blocks));
         }
 
+        // Drain any texts queued by tools that had to ask without a question
+        // box (`ask_user` on a channel that cannot show one): the user has to
+        // actually receive them, so they go out through the same reply path as
+        // the final message instead of relying on the model to repeat them.
+        for text in ctx.take_pending_texts() {
+            deliver_progress_text(tools, &ctx, event_bus, topic_name, &text).await;
+        }
+
         // Publish progress (only when continuing the loop)
         let elapsed = start_time.elapsed();
         publish_event(

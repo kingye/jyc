@@ -478,3 +478,184 @@ async fn embedded_tag_from_a_channel_without_a_box_is_delivered_as_plain_text() 
         "the raw tag must not ship: {asked}"
     );
 }
+
+/// An adapter whose channel is down: `send_question` fails on the trait default
+/// (so the questions fall back to plain text) and every reply fails too.
+struct BrokenChannel;
+
+#[async_trait::async_trait]
+impl OutboundAdapter for BrokenChannel {
+    fn channel_type(&self) -> &str {
+        "mock"
+    }
+
+    async fn connect(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn clean_body(&self, body: &str) -> String {
+        body.to_string()
+    }
+
+    async fn send_reply(
+        &self,
+        _original: &InboundMessage,
+        _reply_text: &str,
+        _topic_path: &Path,
+        _message_dir: &str,
+        _attachments: Option<&[OutboundAttachment]>,
+    ) -> anyhow::Result<SendResult> {
+        Err(anyhow::anyhow!("channel is down"))
+    }
+
+    async fn send_message(
+        &self,
+        _recipient: &str,
+        _subject: &str,
+        _body: &str,
+    ) -> anyhow::Result<SendResult> {
+        Err(anyhow::anyhow!("channel is down"))
+    }
+}
+
+fn ask_round(question: &str, options: &str) -> Vec<StreamEvent> {
+    vec![
+        StreamEvent::ToolUseStart {
+            id: "ask-1".to_string(),
+            name: "ask_user".to_string(),
+        },
+        StreamEvent::ToolInputDelta(format!(
+            "{{\"question\":\"{question}\",\"options\":[{options}]}}"
+        )),
+        StreamEvent::ToolUseEnd,
+        StreamEvent::Done,
+    ]
+}
+
+/// The failure this covers: the questions could not be delivered, and the turn
+/// ended anyway with the model told not to ask again — the block went to the
+/// file relay, whose watcher dies with the turn, so nothing would ever send it
+/// and only a `warn` log remained. Undelivered questions now become the turn's
+/// reply text, which the worker delivers with the ordinary reply machinery.
+#[tokio::test]
+async fn undelivered_questions_become_the_turns_reply() {
+    let provider = ScriptedProvider {
+        rounds: vec![ask_round("开工吗？", "\"按方案\", \"再想想\"")],
+        calls: AtomicUsize::new(0),
+        seen_tools: Default::default(),
+    };
+    let tmp = TempDir::new().unwrap();
+    let tools = registry_with_reply_tool();
+
+    let result = run(AgentLoopConfig {
+        outbound: Some(Arc::new(BrokenChannel)),
+        reply_target: Some(reply_target(None)),
+        current_channel: Some("mock".to_string()),
+        ..test_config(
+            &provider,
+            &tools,
+            tmp.path(),
+            tokio_util::sync::CancellationToken::new(),
+            "undelivered-ask",
+        )
+    })
+    .await
+    .expect("a dead channel must not fail the loop");
+
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        1,
+        "the model is not asked to say it again"
+    );
+    assert!(
+        !result.reply_delivered,
+        "nothing reached the channel directly"
+    );
+    assert!(
+        result.text.contains("Q1: 开工吗？") && result.text.contains("2) 再想想"),
+        "the worker must be handed something it can deliver: {:?}",
+        result.text
+    );
+}
+
+/// A turn the user cancelled is a failed turn whatever it delivered first.
+/// `ask_user` stops the loop where it stands, and the completion event the
+/// dashboard clears its "thinking" state on must still report the cancel rather
+/// than a clean finish.
+#[tokio::test]
+async fn cancel_in_the_question_batch_still_reports_failure() {
+    use jyc_core::topic_event_bus::SimpleThreadEventBus;
+
+    // The question first, then a `bash sleep 5` in the same batch: the cancel
+    // lands while that tool runs, so the turn is stopped by the user right where
+    // `ask_user` had already ended it.
+    let provider = ScriptedProvider {
+        rounds: vec![{
+            let mut round = ask_round("开工吗？", "\"按方案\"");
+            round.pop();
+            round.extend(vec![
+                StreamEvent::ToolUseStart {
+                    id: "bash-1".to_string(),
+                    name: "bash".to_string(),
+                },
+                StreamEvent::ToolInputDelta("{\"command\":\"sleep 5\"}".to_string()),
+                StreamEvent::ToolUseEnd,
+                StreamEvent::Done,
+            ]);
+            round
+        }],
+        calls: AtomicUsize::new(0),
+        seen_tools: Default::default(),
+    };
+    let tmp = TempDir::new().unwrap();
+    let tools = registry_with_reply_tool();
+    let bus: TopicEventBusRef = Arc::new(SimpleThreadEventBus::new(256));
+    let mut rx = bus.subscribe().await.unwrap();
+    let log = DeliveryLog::default();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let fire = cancel.clone();
+    let waiter = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        fire.cancel();
+    });
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        run(AgentLoopConfig {
+            outbound: Some(Arc::new(CapturingOutbound { log: log.clone() })),
+            reply_target: Some(reply_target(None)),
+            current_channel: Some("mock".to_string()),
+            event_bus: Some(&bus),
+            ..test_config(&provider, &tools, tmp.path(), cancel, "cancel-ask")
+        }),
+    )
+    .await
+    .expect("the cancelled bash tool must not be waited out")
+    .expect("cancellation must not surface as an error");
+    let _ = waiter.await;
+
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert!(
+        result.text.is_empty(),
+        "a cancelled turn delivers nothing further: {:?}",
+        result.text
+    );
+
+    let mut success = None;
+    while let Ok(Some(event)) =
+        tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await
+    {
+        if let TopicEvent::ProcessingCompleted { success: s, .. } = event {
+            success = Some(s);
+        }
+    }
+    assert_eq!(
+        success,
+        Some(false),
+        "a cancelled turn must not report a clean finish"
+    );
+}

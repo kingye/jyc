@@ -1130,14 +1130,12 @@ fn chat_for_topic(topic: &str) -> (ChatState, tokio::sync::mpsc::UnboundedReceiv
     (chat, cmd_rx)
 }
 
-/// The frame the daemon pushes for one question. `label` doubles as its id and
-/// as the question text, so a test can tell its questions apart by what comes
-/// back - the box keeps no id of its own.
+/// The frame the daemon pushes for one question. `label` is the question text,
+/// so a test can tell its questions apart by what comes back - the frame carries
+/// no id, and the box keeps no state of its own beyond the topic.
 fn question_payload(topic: &str, label: &str, options: &[&str]) -> serde_json::Value {
     serde_json::json!({
         "type": "question",
-        "id": label,
-        "channel": "chan",
         "topic": topic,
         "question": format!("{label}?"),
         "options": options,
@@ -1146,8 +1144,8 @@ fn question_payload(topic: &str, label: &str, options: &[&str]) -> serde_json::V
 
 /// The same frame with `allow_multiple` set - what the daemon sends for a
 /// question the user may answer with several options.
-fn question_payload_multi(topic: &str, id: &str, options: &[&str]) -> serde_json::Value {
-    let mut payload = question_payload(topic, id, options);
+fn question_payload_multi(topic: &str, label: &str, options: &[&str]) -> serde_json::Value {
+    let mut payload = question_payload(topic, label, options);
     payload["allow_multiple"] = serde_json::json!(true);
     payload
 }
@@ -1320,7 +1318,7 @@ fn skipping_one_question_keeps_the_other_answer() {
     chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
     chat.handle_question_event(&question_payload("jyc", "q2", &["c", "d"]));
 
-    chat.toggle_question_decline(); // q1: no answer
+    chat.toggle_question_skip(); // q1: no answer
     chat.confirm_question(); // -> q2
     chat.select_question_next(); // q2 -> d
     chat.confirm_question(); // flush

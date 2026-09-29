@@ -56,7 +56,9 @@
   number it was rendered with (`Q1: 2) 面条`), a question skipped with `d` says
   `(skipped)`, and `Esc` only closes the box — there is no run left to stop.
   Leaving the topic or closing the chat pane drops an unfinished batch the same
-  way (#851)
+  way. Questions that fail to reach the channel go out as that turn's reply
+  rather than being logged and dropped. Supersedes the question-await behaviour
+  of #848 and #849 (#851)
 - TUI chat status sub-pane wraps its stats instead of clipping them: the
   version line keeps its own row and the five stat chips (`2 active`,
   `5 thread`, `12 recv`, `0 err`, `up 38m`) pack into as many rows as the info
@@ -99,8 +101,9 @@
 
 - The question **answer** protocol: `jyc_core::question::QuestionHub`, the
   websocket `question_response` / `question_abort` frames, `QuestionAnswer` /
-  `QuestionReply`, `QuestionRequest::timeout_seconds` and the `ask_user`
-  `timeout_seconds` argument. An answer is an ordinary chat message now, so there
+  `QuestionReply`, and the `id` / `channel` / `timeout_seconds` keys that the
+  `ask_user` argument and the rendered frame each carried. An answer is an
+  ordinary chat message now, so there
   is no pending call to settle, abort, or time out. The `question` frame stays as
   the TUI's rendering channel (#851)
 - Websocket channel: a chat message sent while the topic's agent is blocked in

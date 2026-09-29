@@ -31,10 +31,10 @@ pub(super) struct PendingQuestion {
     /// Whether more than one option may be picked (the daemon's
     /// `allow_multiple`).
     pub multi: bool,
-    /// The user will not answer this one. Reported as skipped in the answer, so
-    /// a question that cannot be answered does not cost the whole batch — `d`
-    /// toggles it, and the option list is replaced by the declined state.
-    pub declined: bool,
+    /// The user will not answer this one. Reported as `(skipped)` in the answer,
+    /// so a question that cannot be answered does not cost the whole batch — `d`
+    /// toggles it, and the option list is replaced by the skipped state.
+    pub skipped: bool,
     /// Currently highlighted option - the cursor `Space` marks under.
     pub selected: usize,
     /// Marked option indices, in multi mode; single mode answers with the
@@ -979,7 +979,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     app.chat.pick_question_idx(idx);
                 }
             }
-            KeyCode::Char('d') | KeyCode::Backspace => app.chat.toggle_question_decline(),
+            KeyCode::Char('d') | KeyCode::Backspace => app.chat.toggle_question_skip(),
             KeyCode::Esc => app.chat.close_questions(),
             _ => {}
         }
@@ -1815,7 +1815,7 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
         Style::default().add_modifier(Modifier::BOLD),
     ))];
     lines.push(Line::from(""));
-    if q.declined {
+    if q.skipped {
         // Replaces the list rather than dimming it: a greyed-out option still
         // reads as pickable, and the point of this state is that none of them
         // are.
@@ -2890,7 +2890,7 @@ impl ChatState {
         self.question_index = 0;
         let mut lines = Vec::with_capacity(questions.len());
         for (number, q) in questions.iter().enumerate() {
-            let picks: Vec<(usize, String)> = if q.declined {
+            let picks: Vec<(usize, String)> = if q.skipped {
                 Vec::new()
             } else if !q.multi {
                 q.options
@@ -2931,9 +2931,9 @@ impl ChatState {
     /// A question the user cannot answer needs its own "no" — otherwise the only
     /// way out is Esc, which drops the picks already made for the rest of the
     /// batch. The flag rides to submit, where a skipped question says so.
-    fn toggle_question_decline(&mut self) {
+    fn toggle_question_skip(&mut self) {
         if let Some(q) = self.current_question_mut() {
-            q.declined = !q.declined;
+            q.skipped = !q.skipped;
         }
     }
 
@@ -2977,7 +2977,7 @@ impl ChatState {
                 .get("allow_multiple")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
-            declined: false,
+            skipped: false,
             selected: 0,
             marked: Vec::new(),
         });

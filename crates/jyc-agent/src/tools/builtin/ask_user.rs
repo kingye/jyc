@@ -23,9 +23,9 @@ const MAX_QUESTIONS: usize = 5;
 /// What every settled call reports: the questions are with the user, this turn
 /// is over, and the answer is a future message. Read back on the next turn, so
 /// it names the questions it answers.
-const HANDED_OVER: &str = "The questions below are with the user and this turn is \
-                           over. Their reply arrives as the user's next message — do \
-                           not ask again.";
+const HANDED_OVER: &str = "The questions below are on their way to the user and this \
+                           turn is over. Their reply arrives as the user's next message \
+                           — do not ask the same questions again.";
 
 /// One question of a possibly multi-question call.
 #[derive(Debug)]
@@ -66,17 +66,20 @@ fn plain_text_block(asks: &[Ask]) -> String {
 /// sub-agents) there is no message to send: the model's reply is the only
 /// surface left, so the block goes to the model and the turn continues long
 /// enough for it to be delivered.
-fn ask_in_plain_text(ctx: &ToolContext<'_>, asks: &[Ask], reason: &str) -> ToolOutput {
+fn ask_in_plain_text(ctx: &ToolContext<'_>, asks: &[Ask]) -> ToolOutput {
     let block = plain_text_block(asks);
     if ctx.live_delivery().is_none() {
-        tracing::debug!(reason, "ask_user: no live delivery target");
+        tracing::debug!("ask_user: no live delivery target, the model must ask");
         return ToolOutput::success(format!(
             "This channel has no question box and no live delivery target. Put these \
              questions in your reply and stop; the answer arrives as the user's next \
              message.\n\n{block}"
         ));
     }
-    tracing::debug!(reason, "ask_user: no question box, asking in plain text");
+    tracing::debug!(
+        questions = asks.len(),
+        "ask_user: no question box, asking in plain text"
+    );
     let output = ToolOutput::success(format!("{HANDED_OVER}\n\n{block}"));
     ctx.pending_texts
         .lock()
@@ -257,22 +260,15 @@ impl Tool for AskUserTool {
                     "ask_user: no adapter for the origin channel"
                 );
             }
-            return Ok(ask_in_plain_text(
-                ctx,
-                &asks,
-                "the channel has no question box",
-            ));
+            return Ok(ask_in_plain_text(ctx, &asks));
         };
 
         // Render the set on the channel's own surface and hand it over. One
         // frame per question, oldest first: the user steps through the set in
         // that order and answers the whole of it in one message.
         let topic = ctx.current_topic.clone().unwrap_or_default();
-        let channel = ctx.current_channel.clone().unwrap_or_default();
         for ask in &asks {
             let request = QuestionRequest {
-                id: uuid::Uuid::new_v4().to_string(),
-                channel: channel.clone(),
                 topic: topic.clone(),
                 question: ask.question.clone(),
                 options: ask.options.clone(),
@@ -284,7 +280,7 @@ impl Tool for AskUserTool {
                 // upgrade is a cancel frame per pushed request here; no
                 // channel's `send_question` has ever failed after a success.
                 tracing::debug!(error = %e, "ask_user: the channel refused the question");
-                return Ok(ask_in_plain_text(ctx, &asks, "send_question failed"));
+                return Ok(ask_in_plain_text(ctx, &asks));
             }
         }
         let block = plain_text_block(&asks);
@@ -402,7 +398,7 @@ mod tests {
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
-            metadata: metadata.into_iter().map(|(k, v)| (k, v)).collect(),
+            metadata: metadata.into_iter().collect(),
             matched_pattern: None,
         }
     }

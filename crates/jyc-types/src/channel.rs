@@ -285,10 +285,6 @@ pub trait OutboundAdapter: Send + Sync {
 /// it never receives one (see [`OutboundAdapter::send_question`]).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QuestionRequest {
-    /// Id of this question, carried on the rendered frame.
-    pub id: String,
-    /// Channel the question was sent through.
-    pub channel: String,
     /// Topic the question belongs to.
     pub topic: String,
     /// Question text.

@@ -675,16 +675,21 @@ fn strip_mention_placeholders(
 /// payload is `{ "title": …, "content": [ [ { "tag": …, "text": … }, … ], … ] }`
 /// — paragraphs of inline elements. Answers to a question arrive here, so the
 /// text must not be lost to an `[Unsupported message type]` dump of raw JSON.
-/// Returns `None` when the payload cannot be read at all, which leaves the
-/// caller's raw-content fallback in place rather than delivering nothing.
+/// Returns `None` when the payload carries no text a reader could use, which
+/// leaves the caller's raw-content fallback in place rather than delivering
+/// nothing.
 fn post_to_text(content: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(content).ok()?;
     // Newer clients put the same paragraphs in `content_v2`; whichever key
-    // actually holds an array is the message, so both are tried.
+    // actually holds an array is the message, so both are tried. A payload
+    // with neither still has a title worth reading, so a missing body is not
+    // a parse failure.
+    let empty = Vec::new();
     let paragraphs = value
         .get("content")
         .and_then(|body| body.as_array())
-        .or_else(|| value.get("content_v2").and_then(|body| body.as_array()))?;
+        .or_else(|| value.get("content_v2").and_then(|body| body.as_array()))
+        .unwrap_or(&empty);
     let mut lines: Vec<String> = Vec::with_capacity(paragraphs.len() + 1);
     let title = value
         .get("title")
@@ -990,8 +995,10 @@ mod tests {
         .to_string();
         assert_eq!(post_to_text(&v2).unwrap(), "only v2");
         assert!(post_to_text("not json").is_none());
-        assert!(post_to_text(r#"{"title":"t"}"#).is_none());
-        assert!(post_to_text(r#"{"title":"t","content":[]}"#).is_none());
+        // A title is the only readable text a body-less post has; with neither
+        // title nor paragraphs there is nothing to deliver.
+        assert_eq!(post_to_text(r#"{"title":"t"}"#).unwrap(), "t");
+        assert!(post_to_text(r#"{"content":[[]]}"#).is_none());
     }
 
     /// Wrap a `post` payload in a receive event, the way the websocket sends it.

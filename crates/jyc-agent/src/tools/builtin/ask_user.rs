@@ -6,8 +6,9 @@
 //! The tool blocks on [`QuestionHub`] oneshots until every answer (or decline)
 //! of the set arrives, the user discards the set — which cancels this run —
 //! the timeout expires, or the agent turn is cancelled. A channel without
-//! interactive support never gets registered: the call fails at once and the
-//! tool tells the model to ask in plain text within its reply instead.
+//! interactive support never gets registered: the questions go out as a
+//! plain-text message on that channel instead, and the call returns at once so
+//! the turn ends and the answer can arrive as the user's next message.
 
 use std::time::Duration;
 
@@ -103,6 +104,59 @@ async fn stop_run(ctx: &ToolContext<'_>) {
     manager.cancel_topic(topic).await;
 }
 
+/// Render a question set as the plain text a channel without a question box
+/// can show: the options numbered the way the user has to answer them.
+fn plain_text_block(asks: &[Ask]) -> String {
+    let mut out = String::new();
+    for (number, ask) in asks.iter().enumerate() {
+        out.push_str(&format!("Q{}: {}\n", number + 1, ask.question));
+        if ask.allow_multiple {
+            out.push_str("   (multi-select)\n");
+        }
+        for (option, text) in ask.options.iter().enumerate() {
+            out.push_str(&format!("   {}) {}\n", option + 1, text));
+        }
+    }
+    out.push_str("\nReply with the option number(s), e.g. \"2\" or \"1,3\".");
+    out
+}
+
+/// Ask a set that no question box can show: queue the rendered questions for
+/// delivery as an ordinary message, and report success so the turn ends.
+///
+/// The model's reply text is not a delivery mechanism — an error handed to the
+/// model is exactly what used to reach the user in place of the question. So
+/// the block goes on `ToolContext::pending_texts` and the agent loop sends it
+/// through the ordinary reply path, which logs when a send fails just as it
+/// does for any other reply. Without a live delivery target (unit tests,
+/// sub-agents) there is no message to send, so the text goes to the model to
+/// place in its own reply instead.
+fn ask_in_plain_text(ctx: &ToolContext<'_>, asks: &[Ask], reason: &str) -> ToolOutput {
+    let block = plain_text_block(asks);
+    let live = ctx.live_delivery().is_some();
+    tracing::debug!(
+        reason,
+        live,
+        "ask_user: no question box, asking in plain text"
+    );
+    if !live {
+        return ToolOutput::success(format!(
+            "This channel has no question box. Ask these questions in your reply \
+             text and stop here; the answer arrives as the user's next message.\n\n{block}"
+        ));
+    }
+    let text = format!(
+        "A plain-text copy of the questions below is queued for delivery to the \
+         user (this channel has no question box). End your turn now; the answer \
+         arrives as the user's next message — do not ask again.\n\n{block}"
+    );
+    ctx.pending_texts
+        .lock()
+        .expect("pending_texts poisoned")
+        .push(block);
+    ToolOutput::success(text)
+}
+
 /// Read the strings out of a JSON array field.
 fn str_list(value: Option<&Value>) -> Vec<String> {
     value
@@ -185,9 +239,9 @@ impl Tool for AskUserTool {
          input changes what you do next. To settle several decisions at once, \
          pass a `questions` array instead of calling this tool repeatedly - the \
          user answers them in one flow and the answers come back together. On \
-         channels without interactive support the tool reports an error - ask \
-         the question as plain text in your reply instead and proceed with the \
-         next user message."
+         channels without a question box the questions are sent to the user as a \
+         plain-text message instead and the call returns at once - end your turn \
+         then; the answer arrives as the user's next message."
     }
 
     fn input_schema(&self) -> Value {
@@ -251,8 +305,10 @@ impl Tool for AskUserTool {
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
 
         let Some(hub) = &ctx.question_hub else {
-            return Ok(ToolOutput::error(
-                "ask_user is not available in this context (no question hub)",
+            return Ok(ask_in_plain_text(
+                ctx,
+                &asks,
+                "no question hub in this context",
             ));
         };
 
@@ -261,8 +317,9 @@ impl Tool for AskUserTool {
         // on the `agents` hub, and a box pushed there is invisible to the user
         // while the whole turn waits for an answer only a TUI could give. A
         // channel with no question support (or no adapter registered here at
-        // all) settles the call immediately, so the model asks in its reply
-        // text and the turn ends normally.
+        // all) settles the call immediately with the questions sent to the user
+        // as a plain-text message, so they are read where they were written and
+        // the turn ends normally.
         //
         // The origin comes from the inbound message's metadata, stamped by the
         // pipe retarget path just before it overwrites
@@ -288,15 +345,19 @@ impl Tool for AskUserTool {
             None => ctx.outbound.clone(),
         };
         let Some(outbound) = outbound else {
-            return Ok(ToolOutput::error(match piped_from {
-                Some(name) => format!(
-                    "channel '{name}' this message came from does not support interactive \
-                     questions. Ask the question as plain text in your reply instead."
-                ),
-                None => {
-                    "ask_user is not available in this context (no outbound adapter)".to_string()
-                }
-            }));
+            if let Some(name) = piped_from {
+                // Which pipe channel is missing an adapter is the one thing a
+                // misconfiguration would need; the fallback text has no name.
+                tracing::debug!(
+                    channel = name,
+                    "ask_user: no adapter for the origin channel"
+                );
+            }
+            return Ok(ask_in_plain_text(
+                ctx,
+                &asks,
+                "the channel has no question box",
+            ));
         };
 
         let topic = ctx.current_topic.clone().unwrap_or_default();
@@ -332,10 +393,8 @@ impl Tool for AskUserTool {
                 // drop on return), so answering one is dropped silently. The
                 // upgrade is a cancel frame per pushed request here; no
                 // channel's `send_question` has ever failed after a success.
-                return Ok(ToolOutput::error(format!(
-                    "channel does not support interactive questions: {e:#}. \
-                     Ask the question as plain text in your reply instead."
-                )));
+                tracing::debug!(error = %e, "ask_user: the channel refused the question");
+                return Ok(ask_in_plain_text(ctx, &asks, "send_question failed"));
             }
         }
 
@@ -709,7 +768,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_channel_reports_error() {
+    async fn unsupported_channel_asks_in_plain_text() {
         let tmp = tempfile::tempdir().unwrap();
         let hub = Arc::new(jyc_core::question::QuestionHub::new());
         let outbound = Arc::new(NoQuestionOutbound);
@@ -721,14 +780,13 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(out.is_error);
+        assert!(!out.is_error, "{}", out.content);
         assert!(
-            out.content
-                .contains("does not support interactive questions"),
-            "{}",
+            out.content.contains("no question box") && out.content.contains("1) a"),
+            "the questions themselves must be in the result to be asked: {}",
             out.content
         );
-        // Failed push must not leak a pending entry.
+        // A refused push must not leak a pending entry.
         assert_eq!(hub.abort_topic("topic-a"), 0);
     }
 
@@ -737,9 +795,10 @@ mod tests {
     /// The user never saw them, the reply they were waiting for stayed locked
     /// behind the block, and the timeout ran out on a question that had no
     /// surface to be answered on. A question belongs to the channel the message
-    /// came from, so the call fails at once and the model asks in its reply.
+    /// came from, so the questions go out there as a plain-text message and the
+    /// turn ends at once.
     #[tokio::test]
-    async fn piped_turn_fails_fast_instead_of_blocking() {
+    async fn piped_turn_sends_questions_as_plain_text_instead_of_blocking() {
         let tmp = tempfile::tempdir().unwrap();
         let hub = Arc::new(jyc_core::question::QuestionHub::new());
         let sent = Arc::new(tokio::sync::Mutex::new(Vec::new()));
@@ -784,10 +843,19 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(out.is_error, "{}", out.content);
+        assert!(!out.is_error, "{}", out.content);
+        let asked = ctx.take_pending_texts();
+        assert_eq!(asked.len(), 1, "the set goes out as one message");
         assert!(
-            out.content.contains("feishu_work") && out.content.contains("plain text"),
-            "the model needs to know which channel failed and what to do: {}",
+            asked[0].contains("Q1: Pick?")
+                && asked[0].contains("1) a")
+                && asked[0].contains("2) b"),
+            "the user must be able to answer by number: {}",
+            asked[0]
+        );
+        assert!(
+            out.content.contains("End your turn now"),
+            "the model must be told to stop, not to ask again: {}",
             out.content
         );
         assert!(
@@ -811,6 +879,36 @@ mod tests {
             .await
             .unwrap();
         assert!(out.is_error);
+    }
+
+    /// The plain text a channel without a question box shows: every question
+    /// numbered, its options numbered the way the user has to answer them, and
+    /// multi-select marked so a comma answer is not mistaken for a mistake.
+    #[test]
+    fn plain_text_block_numbers_questions_and_options() {
+        let asks = vec![
+            Ask {
+                question: "晚饭吃什么?".to_string(),
+                options: vec!["米饭".to_string(), "面条".to_string()],
+                allow_multiple: false,
+            },
+            Ask {
+                question: "周末做什么?".to_string(),
+                options: vec!["徒步".to_string(), "电影".to_string(), "看书".to_string()],
+                allow_multiple: true,
+            },
+        ];
+        let block = plain_text_block(&asks);
+        assert!(block.contains("Q1: 晚饭吃什么?"), "{block}");
+        assert!(block.contains("   1) 米饭"), "{block}");
+        assert!(block.contains("   2) 面条"), "{block}");
+        assert!(block.contains("Q2: 周末做什么?"), "{block}");
+        assert!(block.contains("(multi-select)"), "{block}");
+        assert!(block.contains("   3) 看书"), "{block}");
+        assert!(
+            block.contains("\"1,3\""),
+            "how to answer must be stated: {block}"
+        );
     }
 
     #[test]
@@ -888,9 +986,10 @@ mod tests {
     }
 
     /// A channel that cannot show questions fails the first push, so a batch
-    /// must return at once instead of waiting on answers nobody can give.
+    /// returns at once with both questions asked in plain text instead of
+    /// waiting on answers nobody can give.
     #[tokio::test]
-    async fn batch_fails_fast_without_interactive_support() {
+    async fn batch_without_a_question_box_is_asked_in_plain_text() {
         let tmp = tempfile::tempdir().unwrap();
         let hub = Arc::new(jyc_core::question::QuestionHub::new());
         let ctx = ctx_with(tmp.path(), hub.clone(), Arc::new(NoQuestionOutbound));
@@ -910,11 +1009,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(out.is_error);
+        assert!(!out.is_error, "{}", out.content);
         assert!(
-            out.content
-                .contains("does not support interactive questions"),
-            "{}",
+            out.content.contains("Q1: a?") && out.content.contains("Q2: b?"),
+            "both questions must be there to be asked: {}",
             out.content
         );
         assert!(started.elapsed().as_secs() < 5, "must not wait for answers");

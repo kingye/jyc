@@ -63,7 +63,7 @@ pub async fn deliver_reply(
     topic_name: &str,
     text: &str,
 ) -> Result<ReplyDelivery> {
-    if let (Some(outbound), Some(target)) = (&ctx.outbound, &ctx.reply_target) {
+    if let Some((outbound, target)) = ctx.live_delivery() {
         if let Some(hooks) = hooks {
             let mut hctx = HookCtx {
                 topic: topic_name.to_string(),
@@ -166,6 +166,13 @@ pub struct ToolContext<'a> {
     /// images. `Mutex<Vec<_>>` to allow tools with `&self` execution to
     /// push without requiring `&mut ToolContext`.
     pub pending_images: Mutex<Vec<ImageSource>>,
+    /// Side-channel for tools that must put text in front of the user *during*
+    /// the turn (currently: `ask_user` on a channel with no question box). The
+    /// agent loop drains this after each tool batch and sends it through the
+    /// same reply path as the final message, so the text reaches the channel
+    /// the user is actually reading instead of relying on the model to quote
+    /// it. `Mutex<Vec<_>>` to match `pending_images`.
+    pub pending_texts: Mutex<Vec<String>>,
     /// Whether the active pattern allows image handling. Mirrors the
     /// `inject_inbound_images` flag that `build_user_blocks` checks in
     /// `service.rs`. When `false`, `read_image` should refuse to process
@@ -238,6 +245,7 @@ impl<'a> ToolContext<'a> {
             additional_read_roots: Vec::new(),
             additional_write_roots: Vec::new(),
             pending_images: Mutex::new(Vec::new()),
+            pending_texts: Mutex::new(Vec::new()),
             pattern_inject_images: false,
             outbound: None,
             topic_managers: None,
@@ -257,6 +265,7 @@ impl<'a> ToolContext<'a> {
             additional_read_roots,
             additional_write_roots: Vec::new(),
             pending_images: Mutex::new(Vec::new()),
+            pending_texts: Mutex::new(Vec::new()),
             pattern_inject_images: false,
             outbound: None,
             topic_managers: None,
@@ -274,6 +283,23 @@ impl<'a> ToolContext<'a> {
     /// batch completes.
     pub fn take_pending_images(&self) -> Vec<ImageSource> {
         std::mem::take(&mut *self.pending_images.lock().expect("pending_images poisoned"))
+    }
+
+    /// Drain and return any texts tools queued for the user during the current
+    /// tool batch. Called by the agent loop, which delivers them through the
+    /// ordinary reply path before continuing the turn.
+    pub fn take_pending_texts(&self) -> Vec<String> {
+        std::mem::take(&mut *self.pending_texts.lock().expect("pending_texts poisoned"))
+    }
+
+    /// The live delivery target, when this turn can put a message in front of
+    /// the user right now: an outbound adapter plus the message being answered.
+    /// `deliver_reply` sends through it, and a tool deciding "can I deliver, or
+    /// is the model's reply text the only route?" must ask here — the two
+    /// answers drifting apart is how a mid-turn text lands in `reply.md`, where
+    /// the turn's final reply overwrites it.
+    pub(crate) fn live_delivery(&self) -> Option<(&Arc<dyn OutboundAdapter>, &ReplyTarget)> {
+        Some((self.outbound.as_ref()?, self.reply_target.as_ref()?))
     }
 
     /// Check that `resolved` is within `working_dir` (or one of the

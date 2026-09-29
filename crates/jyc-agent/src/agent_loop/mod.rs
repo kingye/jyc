@@ -600,6 +600,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                     &output.content,
                     output.is_error,
                 ));
+                // The same delivery the native batch path does after its tools:
+                // this path runs `ask_user` too, and a plain-text question left
+                // queued here is dropped while the model is told it was handed
+                // over.
+                drain_pending_texts(tools, &ctx, event_bus, topic_name).await;
                 continue;
             }
 
@@ -868,6 +873,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             raw_context.push(provider.format_user_message(&blocks));
         }
 
+        // Drain any texts queued by tools that had to ask without a question
+        // box (`ask_user` on a channel that cannot show one): the user has to
+        // actually receive them, so they go out through the same reply path as
+        // the final message instead of relying on the model to repeat them.
+        drain_pending_texts(tools, &ctx, event_bus, topic_name).await;
+
         // Publish progress (only when continuing the loop)
         let elapsed = start_time.elapsed();
         publish_event(
@@ -945,6 +956,22 @@ async fn deliver_progress_text(
                 tracing::warn!(error = %e, "Mid-turn reply delivery failed");
             }
         }
+    }
+}
+
+/// Deliver the texts a tool queued for the user during this batch — currently
+/// `ask_user`'s questions on a channel with no question box. Both paths that
+/// run tools (the native batch and the embedded-`<ask_user>` recovery) call
+/// this after the tool returns; a path that forgets drops the questions
+/// silently while the tool result tells the model they were handed over.
+async fn drain_pending_texts(
+    tools: &ToolRegistry,
+    ctx: &ToolContext<'_>,
+    event_bus: Option<&TopicEventBusRef>,
+    topic_name: &str,
+) {
+    for text in ctx.take_pending_texts() {
+        deliver_progress_text(tools, ctx, event_bus, topic_name, &text).await;
     }
 }
 

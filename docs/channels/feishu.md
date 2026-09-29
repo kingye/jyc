@@ -177,19 +177,21 @@ once a new feishu message has arrived (see above).
 
 ### Interactive questions (`ask_user`)
 
-Feishu does not get interactive questions. A turn that arrived over this pipe
-keeps the channel it came from (`origin_channel` metadata), and `ask_user`
-pushes a question only to that channel's outbound adapter — which has no
-question support, so the call fails at once instead of blocking. The model then
-asks in its reply text and the answer arrives as an ordinary chat message: no
+Feishu has no question box. A turn that arrived over this pipe keeps the
+channel it came from (`origin_channel` metadata), and `ask_user` pushes a
+question only to that channel's outbound adapter — which has no question
+support, so the tool renders the set as plain text (each question with its
+options numbered the way they must be answered) and sends it as an ordinary chat
+message through the same reply path the final message uses, then returns at
+once. The user answers by number, and that answer starts the next turn: no
 half-minutes of silence waiting for a card that would never show up.
 
 > **Why not cards with numbered replies?** The pipe relayed the question frames
 > as cards and read the next chat reply as the answer. One reply could only
 > settle one question, so a multi-question call stalled; and the turn could not
 > end until every question was settled, which kept the reply the user was
-> waiting for locked behind the block. Asking in the reply text costs nothing
-> the chat does not already have.
+> waiting for locked behind the block. A plain message costs nothing the chat
+> does not already have.
 
 ### Topic directory names
 

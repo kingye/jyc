@@ -261,12 +261,13 @@ pub trait OutboundAdapter: Send + Sync {
         ))
     }
 
-    /// Push an interactive question to the user, awaiting their answer.
+    /// Render an interactive question for the user.
     ///
-    /// Only a channel the user can answer on overrides this — today the
-    /// websocket channel, whose question box is the TUI. The default fails
-    /// gracefully so the `ask_user` tool can tell the model to fall back to
-    /// asking in plain text within its reply.
+    /// Only a channel with a question box overrides this — today the
+    /// websocket channel, whose box is the TUI. The default fails so the
+    /// `ask_user` tool asks in plain text instead. Nothing here waits for an
+    /// answer: on every channel the answer comes back as the user's next
+    /// message.
     ///
     /// `allow_multiple` is a rendering concern: a channel that cannot mark
     /// options may ignore it, and its answer then carries one option.
@@ -284,7 +285,7 @@ pub trait OutboundAdapter: Send + Sync {
 /// it never receives one (see [`OutboundAdapter::send_question`]).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QuestionRequest {
-    /// Unique id; the answer must reference it.
+    /// Id of this question, carried on the rendered frame.
     pub id: String,
     /// Channel the question was sent through.
     pub channel: String,
@@ -299,36 +300,6 @@ pub struct QuestionRequest {
     /// however many options were picked.
     #[serde(default)]
     pub allow_multiple: bool,
-    /// Server-side timeout in seconds; `None` waits indefinitely.
-    pub timeout_seconds: Option<u64>,
-}
-
-/// The user's answer to one pending [`QuestionRequest`].
-///
-/// A per-question value: declining one question says nothing about the rest
-/// of a multi-question call. Giving up on the whole set is not an answer —
-/// see [`QuestionReply::Discarded`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QuestionAnswer {
-    /// The picked options' texts. A single-select answer carries exactly one,
-    /// so `len()` is the only trace of whether multiple were allowed.
-    Choice(Vec<String>),
-    /// The user declined to answer this question (`d` in the TUI box).
-    Declined,
-}
-
-/// What the blocked `ask_user` call waits for: this question's answer, or the
-/// news that the user discarded the whole set (Esc) so no answer is coming.
-///
-/// Kept apart from [`QuestionAnswer`] because discarding the set is not an
-/// answer to any question: it stops the run, like `/cancel`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QuestionReply {
-    /// The user's answer to this one question.
-    Answer(QuestionAnswer),
-    /// The batch this question belonged to was discarded; nothing will be
-    /// answered.
-    Discarded,
 }
 
 // --- Pattern Types ---

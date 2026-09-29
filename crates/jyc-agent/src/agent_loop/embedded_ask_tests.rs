@@ -1,23 +1,26 @@
-//! Regression tests for the message-before-question ordering guarantee and
-//! the embedded `<ask_user>` recovery shim.
+//! Regression tests for the message-before-question ordering guarantee, the
+//! turn ending at the question, and the embedded `<ask_user>` recovery shim.
 //!
-//! Two ways a model reaches a blocking question:
-//!  1. Native tool call — narration text plus a structured `ask_user` call
-//!     in one response. The narration must be delivered BEFORE the tool
-//!     blocks, or the user sees the question card without the context.
-//!  2. Embedded XML — the reply text ends with a literal `<ask_user ...>`
-//!     tag (weak function-calling). The tag must be recovered as a real
-//!     question (prose first, then block), never shipped raw to the user.
+//! Two ways a model asks a question:
+//!  1. Native tool call — narration text plus a structured `ask_user` call in
+//!     one response. The narration must be delivered BEFORE the question, or
+//!     the user sees the question box without its context.
+//!  2. Embedded XML — the reply text ends with a literal `<ask_user ...>` tag
+//!     (weak function-calling). The tag must be recovered as a real question
+//!     (prose first, then the question), never shipped raw to the user.
 //! Malformed tags are stripped from the delivered reply.
+//!
+//! Neither path waits for the answer, on any channel: the questions go out, the
+//! turn ends, and the answer arrives as the user's next message. So every test
+//! here asserts the provider was called exactly once — a second call means the
+//! loop went on after the questions were already in front of the user.
 
 use super::event_test_helpers::scripted::ScriptedProvider;
 use super::event_test_helpers::test_config;
 use super::*;
 use crate::types::StreamEvent;
-use jyc_core::question::QuestionHub;
 use jyc_types::channel::{
-    InboundMessage, OutboundAdapter, OutboundAttachment, QuestionAnswer, QuestionRequest,
-    SendResult,
+    InboundMessage, OutboundAdapter, OutboundAttachment, QuestionRequest, SendResult,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -39,9 +42,18 @@ impl DeliveryLog {
     fn snapshot(&self) -> Vec<(&'static str, String)> {
         self.entries.lock().unwrap().clone()
     }
+
+    fn kinds(&self, kind: &str) -> Vec<String> {
+        self.snapshot()
+            .into_iter()
+            .filter(|(k, _)| *k == kind)
+            .map(|(_, text)| text)
+            .collect()
+    }
 }
 
-/// Outbound adapter that captures replies and questions in delivery order.
+/// Outbound adapter with a question box: captures replies and questions in
+/// delivery order.
 struct CapturingOutbound {
     log: DeliveryLog,
 }
@@ -91,14 +103,20 @@ impl OutboundAdapter for CapturingOutbound {
 
     async fn send_question(&self, request: &QuestionRequest) -> Result<()> {
         self.log.record("question", request.question.clone());
-        // The id as well: a test answering through the hub cannot guess a UUID,
-        // and the hub has no "list pending ids" API outside the ones it needs.
-        self.log.record("question_id", request.id.clone());
         Ok(())
     }
 }
 
-fn test_reply_target() -> crate::tools::ReplyTarget {
+/// The message a turn is answering. `origin` stamps a piped-in turn: the
+/// channel the user actually wrote on, before the pipe re-targeted it.
+fn reply_target(origin: Option<&str>) -> crate::tools::ReplyTarget {
+    let mut metadata = serde_json::Map::new();
+    if let Some(origin) = origin {
+        metadata.insert(
+            jyc_types::ORIGIN_CHANNEL_METADATA_KEY.to_string(),
+            serde_json::Value::String(origin.to_string()),
+        );
+    }
     crate::tools::ReplyTarget {
         original: InboundMessage {
             id: "test".to_string(),
@@ -114,7 +132,7 @@ fn test_reply_target() -> crate::tools::ReplyTarget {
             reply_to_id: None,
             external_id: None,
             attachments: vec![],
-            metadata: Default::default(),
+            metadata: metadata.into_iter().collect(),
             matched_pattern: None,
         },
         message_dir: "2026-09-18_00-00-00".to_string(),
@@ -125,52 +143,18 @@ fn registry_with_reply_tool() -> crate::tools::registry::ToolRegistry {
     crate::tools::builtin::create_builtin_registry()
 }
 
-/// Drive the loop while polling the hub; answer the pending question as
-/// soon as it appears, then let the loop run to completion.
-async fn run_and_answer(
-    config: AgentLoopConfig<'_>,
-    hub: Arc<QuestionHub>,
-    log: DeliveryLog,
-) -> AgentLoopResult {
-    let answerer = async {
-        loop {
-            if let Some((_, id)) = log
-                .snapshot()
-                .into_iter()
-                .find(|(kind, _)| *kind == "question_id")
-            {
-                return hub.respond(&id, QuestionAnswer::Choice(vec!["按方案".to_string()]));
-            }
-            tokio::task::yield_now().await;
-        }
-    };
-    tokio::pin!(let run = run(config););
-    tokio::select! {
-        finished = &mut run => panic!("run finished before the question was answered: {finished:?}"),
-        answered = answerer => {
-            assert!(answered, "hub.respond must find the pending question");
-            run.await.expect("agent loop should run to completion")
-        }
-    }
-}
-
-/// The exact field failure: reply text ends with a literal `<ask_user>`
-/// tag. The prose must be delivered first, the question must execute
-/// (blocking), the answer must reach the model, and the raw tag must
-/// never appear in any delivery.
+/// One round only: narration, then the embedded tag. The prose must be
+/// delivered first, the tag must execute as a real question, the turn must end
+/// there, and the raw tag must never appear in any delivery.
 #[tokio::test]
-async fn embedded_tag_recovers_question_with_message_first() {
+async fn embedded_tag_recovers_question_and_ends_the_turn() {
     let prose = "## 方案\n\n改动 1、2、3。";
-    let tag = "<ask_user question=\"开工吗？\" options=\"按方案, 再想想\" timeout_seconds=\"60\">";
-    let round1 = format!("{prose}\n\n{tag}");
+    let tag = "<ask_user question=\"开工吗？\" options=\"按方案, 再想想\">";
     let provider = ScriptedProvider {
-        rounds: vec![
-            vec![StreamEvent::TextDelta(round1), StreamEvent::Done],
-            vec![
-                StreamEvent::TextDelta("收到，按方案开工。".to_string()),
-                StreamEvent::Done,
-            ],
-        ],
+        rounds: vec![vec![
+            StreamEvent::TextDelta(format!("{prose}\n\n{tag}")),
+            StreamEvent::Done,
+        ]],
         calls: AtomicUsize::new(0),
         seen_tools: Default::default(),
     };
@@ -179,50 +163,34 @@ async fn embedded_tag_recovers_question_with_message_first() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let log = DeliveryLog::default();
     let outbound = Arc::new(CapturingOutbound { log: log.clone() });
-    let hub = Arc::new(QuestionHub::new());
 
-    let result = run_and_answer(
-        AgentLoopConfig {
-            outbound: Some(outbound),
-            reply_target: Some(test_reply_target()),
-            current_channel: Some("mock".to_string()),
-            question_hub: Some(hub.clone()),
-            ..test_config(&provider, &tools, tmp.path(), cancel, "embedded-ask")
-        },
-        hub,
-        log.clone(),
-    )
-    .await;
+    let result = run(AgentLoopConfig {
+        outbound: Some(outbound),
+        reply_target: Some(reply_target(None)),
+        current_channel: Some("mock".to_string()),
+        ..test_config(&provider, &tools, tmp.path(), cancel, "embedded-ask")
+    })
+    .await
+    .expect("agent loop should run to completion");
 
-    // The answer unblocked the question and the loop continued.
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
-    assert!(
-        result.reply_delivered,
-        "the post-answer conclusion must be delivered"
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        1,
+        "the turn ends with the question; nothing is said after it"
     );
-    assert_eq!(result.text, "收到，按方案开工。");
-    // The answer reached the transcript as the embedded question's result.
-    let tool_msgs: Vec<String> = result
-        .raw_context
-        .iter()
-        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("tool"))
-        .filter_map(|m| m.get("content").and_then(|c| c.as_str()).map(String::from))
-        .collect();
     assert!(
-        tool_msgs.iter().any(|c| c == "按方案"),
-        "the answer must be the embedded ask's tool result, got: {tool_msgs:?}"
+        result.text.is_empty(),
+        "no reply text after the question: {:?}",
+        result.text
     );
 
-    // Ordering: prose reply strictly before the question; no raw tag
-    // anywhere in the deliveries.
     let log = log.snapshot();
     assert_eq!(log[0].0, "reply", "message must come first: {log:?}");
     assert_eq!(log[0].1, prose);
-    assert!(
-        log.iter().any(|(kind, _)| *kind == "question"),
-        "the question must execute: {log:?}"
-    );
-    let question_pos = log.iter().position(|(k, _)| *k == "question").unwrap();
+    let question_pos = log
+        .iter()
+        .position(|(kind, _)| *kind == "question")
+        .expect("the question must execute");
     assert!(question_pos > 0, "question must follow the prose: {log:?}");
     for (kind, text) in &log {
         assert!(
@@ -232,31 +200,25 @@ async fn embedded_tag_recovers_question_with_message_first() {
     }
 }
 
-/// Native path: one response carrying both narration text and a
-/// structured `ask_user` call. Same ordering guarantee — narration first,
-/// then the blocking question.
+/// Native path: one response carrying both narration text and a structured
+/// `ask_user` call. Narration first, then the question — and on a channel with
+/// a question box the questions go out as one frame each and never as a
+/// duplicated plain-text message.
 #[tokio::test]
 async fn native_ask_delivers_narration_before_question() {
     let provider = ScriptedProvider {
-        rounds: vec![
-            vec![
-                StreamEvent::TextDelta("方案如下，请定夺。".to_string()),
-                StreamEvent::ToolUseStart {
-                    id: "ask-1".to_string(),
-                    name: "ask_user".to_string(),
-                },
-                StreamEvent::ToolInputDelta(
-                    "{\"question\":\"开工吗？\",\"options\":[\"按方案\",\"再想想\"],\"timeout_seconds\":60}"
-                        .to_string(),
-                ),
-                StreamEvent::ToolUseEnd,
-                StreamEvent::Done,
-            ],
-            vec![
-                StreamEvent::TextDelta("收到，按方案开工。".to_string()),
-                StreamEvent::Done,
-            ],
-        ],
+        rounds: vec![vec![
+            StreamEvent::TextDelta("方案如下，请定夺。".to_string()),
+            StreamEvent::ToolUseStart {
+                id: "ask-1".to_string(),
+                name: "ask_user".to_string(),
+            },
+            StreamEvent::ToolInputDelta(
+                "{\"question\":\"开工吗？\",\"options\":[\"按方案\",\"再想想\"]}".to_string(),
+            ),
+            StreamEvent::ToolUseEnd,
+            StreamEvent::Done,
+        ]],
         calls: AtomicUsize::new(0),
         seen_tools: Default::default(),
     };
@@ -265,67 +227,55 @@ async fn native_ask_delivers_narration_before_question() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let log = DeliveryLog::default();
     let outbound = Arc::new(CapturingOutbound { log: log.clone() });
-    let hub = Arc::new(QuestionHub::new());
 
-    let result = run_and_answer(
-        AgentLoopConfig {
-            outbound: Some(outbound),
-            reply_target: Some(test_reply_target()),
-            current_channel: Some("mock".to_string()),
-            question_hub: Some(hub.clone()),
-            ..test_config(&provider, &tools, tmp.path(), cancel, "native-ask")
-        },
-        hub,
-        log.clone(),
-    )
-    .await;
+    run(AgentLoopConfig {
+        outbound: Some(outbound),
+        reply_target: Some(reply_target(None)),
+        current_channel: Some("mock".to_string()),
+        ..test_config(&provider, &tools, tmp.path(), cancel, "native-ask")
+    })
+    .await
+    .expect("agent loop should run to completion");
 
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
-    assert!(
-        result.reply_delivered,
-        "the post-answer conclusion must be delivered"
-    );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     let log = log.snapshot();
     assert_eq!(
         log[0],
         ("reply", "方案如下，请定夺。".to_string()),
         "narration must be delivered before the question: {log:?}"
     );
-    let question_pos = log.iter().position(|(k, _)| *k == "question").unwrap();
-    assert!(
-        question_pos > 0,
-        "question must follow the narration: {log:?}"
+    assert_eq!(
+        log.iter().filter(|(k, _)| *k == "question").count(),
+        1,
+        "the question is rendered once: {log:?}"
+    );
+    assert_eq!(
+        log.iter().filter(|(k, _)| *k == "reply").count(),
+        1,
+        "a boxed question is not also sent as plain text: {log:?}"
     );
 }
 
-/// Native path with a stray XML tag mixed into the narration: the tag
-/// must not ship in the delivered narration, and the question must still
-/// execute exactly once (via the native call).
+/// Native path with a stray XML tag mixed into the narration: the tag must not
+/// ship in the delivered narration, and the question must still execute exactly
+/// once (via the native call).
 #[tokio::test]
 async fn native_ask_strips_embedded_tag_from_narration() {
     let provider = ScriptedProvider {
-        rounds: vec![
-            vec![
-                StreamEvent::TextDelta(
-                    "方案如下。<ask_user question=\"泄漏的 tag\" options=\"x, y\">"
-                        .to_string(),
-                ),
-                StreamEvent::ToolUseStart {
-                    id: "ask-1".to_string(),
-                    name: "ask_user".to_string(),
-                },
-                StreamEvent::ToolInputDelta(
-                    "{\"question\":\"开工吗？\",\"options\":[\"按方案\",\"再想想\"],\"timeout_seconds\":60}"
-                        .to_string(),
-                ),
-                StreamEvent::ToolUseEnd,
-                StreamEvent::Done,
-            ],
-            vec![
-                StreamEvent::TextDelta("收到，按方案开工。".to_string()),
-                StreamEvent::Done,
-            ],
-        ],
+        rounds: vec![vec![
+            StreamEvent::TextDelta(
+                "方案如下。<ask_user question=\"泄漏的 tag\" options=\"x, y\">".to_string(),
+            ),
+            StreamEvent::ToolUseStart {
+                id: "ask-1".to_string(),
+                name: "ask_user".to_string(),
+            },
+            StreamEvent::ToolInputDelta(
+                "{\"question\":\"开工吗？\",\"options\":[\"按方案\",\"再想想\"]}".to_string(),
+            ),
+            StreamEvent::ToolUseEnd,
+            StreamEvent::Done,
+        ]],
         calls: AtomicUsize::new(0),
         seen_tools: Default::default(),
     };
@@ -334,33 +284,26 @@ async fn native_ask_strips_embedded_tag_from_narration() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let log = DeliveryLog::default();
     let outbound = Arc::new(CapturingOutbound { log: log.clone() });
-    let hub = Arc::new(QuestionHub::new());
 
-    let result = run_and_answer(
-        AgentLoopConfig {
-            outbound: Some(outbound),
-            reply_target: Some(test_reply_target()),
-            current_channel: Some("mock".to_string()),
-            question_hub: Some(hub.clone()),
-            ..test_config(&provider, &tools, tmp.path(), cancel, "native-mixed")
-        },
-        hub,
-        log.clone(),
-    )
-    .await;
+    run(AgentLoopConfig {
+        outbound: Some(outbound),
+        reply_target: Some(reply_target(None)),
+        current_channel: Some("mock".to_string()),
+        ..test_config(&provider, &tools, tmp.path(), cancel, "native-mixed")
+    })
+    .await
+    .expect("agent loop should run to completion");
 
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
-    assert!(result.reply_delivered);
-    let log = log.snapshot();
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
-        log[0],
-        ("reply", "方案如下。".to_string()),
-        "narration must be delivered with the stray tag stripped: {log:?}"
+        log.kinds("reply"),
+        vec!["方案如下。".to_string()],
+        "narration must be delivered with the stray tag stripped"
     );
     assert_eq!(
-        log.iter().filter(|(k, _)| *k == "question").count(),
-        1,
-        "exactly one question must execute: {log:?}"
+        log.kinds("question"),
+        vec!["开工吗？".to_string()],
+        "exactly one question must execute"
     );
 }
 
@@ -381,13 +324,11 @@ async fn malformed_tag_is_stripped_from_delivery() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let log = DeliveryLog::default();
     let outbound = Arc::new(CapturingOutbound { log: log.clone() });
-    let hub = Arc::new(QuestionHub::new());
 
     let result = run(AgentLoopConfig {
         outbound: Some(outbound),
-        reply_target: Some(test_reply_target()),
+        reply_target: Some(reply_target(None)),
         current_channel: Some("mock".to_string()),
-        question_hub: Some(hub.clone()),
         ..test_config(&provider, &tools, tmp.path(), cancel, "malformed-ask")
     })
     .await
@@ -415,30 +356,23 @@ async fn malformed_tag_is_stripped_from_delivery() {
 /// The field failure this covers: a turn piped in from a channel with no
 /// question box (feishu) settled with an error, and the user read that error
 /// instead of a question. The questions must go out as an ordinary message on
-/// the channel the user is actually reading, and the turn must end instead of
-/// blocking on an answer nobody can give there.
+/// the channel the user is actually reading, and the turn must end there
+/// instead of going on to say something else.
 #[tokio::test]
 async fn piped_ask_without_a_box_is_delivered_as_plain_text() {
     let provider = ScriptedProvider {
-        rounds: vec![
-            vec![
-                StreamEvent::TextDelta("两个问题，回个编号就行。".to_string()),
-                StreamEvent::ToolUseStart {
-                    id: "ask-1".to_string(),
-                    name: "ask_user".to_string(),
-                },
-                StreamEvent::ToolInputDelta(
-                    "{\"question\":\"开工吗？\",\"options\":[\"按方案\",\"再想想\"],\"timeout_seconds\":60}"
-                        .to_string(),
-                ),
-                StreamEvent::ToolUseEnd,
-                StreamEvent::Done,
-            ],
-            vec![
-                StreamEvent::TextDelta("等你回复。".to_string()),
-                StreamEvent::Done,
-            ],
-        ],
+        rounds: vec![vec![
+            StreamEvent::TextDelta("两个问题，回个编号就行。".to_string()),
+            StreamEvent::ToolUseStart {
+                id: "ask-1".to_string(),
+                name: "ask_user".to_string(),
+            },
+            StreamEvent::ToolInputDelta(
+                "{\"question\":\"开工吗？\",\"options\":[\"按方案\",\"再想想\"]}".to_string(),
+            ),
+            StreamEvent::ToolUseEnd,
+            StreamEvent::Done,
+        ]],
         calls: AtomicUsize::new(0),
         seen_tools: Default::default(),
     };
@@ -447,20 +381,12 @@ async fn piped_ask_without_a_box_is_delivered_as_plain_text() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let log = DeliveryLog::default();
     let outbound = Arc::new(CapturingOutbound { log: log.clone() });
-    let hub = Arc::new(QuestionHub::new());
-    // A message piped in from a channel with no question box: the origin is
-    // stamped on the inbound metadata, and the hub has no adapter for it.
-    let mut target = test_reply_target();
-    target.original.metadata.insert(
-        jyc_types::ORIGIN_CHANNEL_METADATA_KEY.to_string(),
-        serde_json::Value::String("feishu_bot".to_string()),
-    );
 
     let result = run(AgentLoopConfig {
         outbound: Some(outbound),
-        reply_target: Some(target),
+        // Piped in from a channel with no question box, running on the hub.
+        reply_target: Some(reply_target(Some("feishu_bot"))),
         current_channel: Some("agents".to_string()),
-        question_hub: Some(hub.clone()),
         ..test_config(&provider, &tools, tmp.path(), cancel, "piped-ask")
     })
     .await
@@ -468,25 +394,28 @@ async fn piped_ask_without_a_box_is_delivered_as_plain_text() {
 
     assert_eq!(
         provider.calls.load(Ordering::SeqCst),
-        2,
-        "the turn must go on without waiting for an answer only a TUI could give"
+        1,
+        "the turn ends with the questions instead of going on"
     );
-    assert_eq!(hub.abort_topic("piped-ask"), 0, "nothing stays pending");
-    assert!(result.reply_delivered);
+    assert!(
+        !result.reply_delivered,
+        "nothing was delivered after the questions"
+    );
 
+    let replies = log.kinds("reply");
     let log = log.snapshot();
     assert!(
         log.iter().all(|(kind, _)| *kind != "question"),
         "the hub channel never sees a question this user cannot answer: {log:?}"
     );
-    let asked = log
-        .iter()
-        .find(|(kind, text)| *kind == "reply" && text.contains("开工吗"))
-        .expect("the questions must reach the user as a message");
+    assert_eq!(replies.len(), 2, "narration then the questions: {log:?}");
+    assert_eq!(replies[0], "两个问题，回个编号就行。");
     assert!(
-        asked.1.contains("1) 按方案") && asked.1.contains("2) 再想想"),
-        "answerable by number: {}",
-        asked.1
+        replies[1].contains("Q1: 开工吗？")
+            && replies[1].contains("1) 按方案")
+            && replies[1].contains("2) 再想想"),
+        "the questions must reach the user, answerable by number: {}",
+        replies[1]
     );
     assert!(
         log.iter().all(|(_, text)| !text.contains("[ERROR]")),
@@ -497,22 +426,16 @@ async fn piped_ask_without_a_box_is_delivered_as_plain_text() {
 /// The same fallback through the other path that runs `ask_user`: a weak model
 /// wrote the question as an XML tag, and the turn came from a channel with no
 /// question box. The recovery shim executes the tool on its own, so it has to
-/// hand the queued questions over for delivery too — otherwise the user is
-/// promised a message that is never sent.
+/// hand the queued questions over for delivery and stop — otherwise the user is
+/// promised a message that is never sent, or gets a second one after it.
 #[tokio::test]
 async fn embedded_tag_from_a_channel_without_a_box_is_delivered_as_plain_text() {
-    let tag = "<ask_user question=\"开工吗？\" options=\"按方案, 再想想\" timeout_seconds=\"60\">";
+    let tag = "<ask_user question=\"开工吗？\" options=\"按方案, 再想想\">";
     let provider = ScriptedProvider {
-        rounds: vec![
-            vec![
-                StreamEvent::TextDelta(format!("两个问题，回个编号就行。\n\n{tag}")),
-                StreamEvent::Done,
-            ],
-            vec![
-                StreamEvent::TextDelta("等你回复。".to_string()),
-                StreamEvent::Done,
-            ],
-        ],
+        rounds: vec![vec![
+            StreamEvent::TextDelta(format!("两个问题，回个编号就行。\n\n{tag}")),
+            StreamEvent::Done,
+        ]],
         calls: AtomicUsize::new(0),
         seen_tools: Default::default(),
     };
@@ -521,36 +444,37 @@ async fn embedded_tag_from_a_channel_without_a_box_is_delivered_as_plain_text() 
     let cancel = tokio_util::sync::CancellationToken::new();
     let log = DeliveryLog::default();
     let outbound = Arc::new(CapturingOutbound { log: log.clone() });
-    let hub = Arc::new(QuestionHub::new());
-    let mut target = test_reply_target();
-    target.original.metadata.insert(
-        jyc_types::ORIGIN_CHANNEL_METADATA_KEY.to_string(),
-        serde_json::Value::String("feishu_bot".to_string()),
-    );
 
     run(AgentLoopConfig {
         outbound: Some(outbound),
-        reply_target: Some(target),
+        reply_target: Some(reply_target(Some("feishu_bot"))),
         current_channel: Some("agents".to_string()),
-        question_hub: Some(hub.clone()),
         ..test_config(&provider, &tools, tmp.path(), cancel, "embedded-piped-ask")
     })
     .await
     .expect("the loop runs to completion");
 
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        1,
+        "the turn ends with the questions"
+    );
+    let replies = log.kinds("reply");
     let log = log.snapshot();
     assert!(
         log.iter().all(|(kind, _)| *kind != "question"),
         "no question may be pushed where the user cannot answer one: {log:?}"
     );
-    let asked = log
-        .iter()
-        .find(|(kind, text)| *kind == "reply" && text.contains("1) 按方案"))
-        .expect("the recovered question must reach the user as a message");
-    assert!(asked.1.contains("Q1: 开工吗"), "{}", asked.1);
+    assert_eq!(
+        replies.len(),
+        2,
+        "the prose and the questions, then nothing: {log:?}"
+    );
+    let asked = &replies[1];
+    assert!(asked.contains("Q1: 开工吗"), "{asked}");
+    assert!(asked.contains("1) 按方案"), "answerable by number: {asked}");
     assert!(
-        !asked.1.contains("<ask_user"),
-        "the raw tag must not ship: {}",
-        asked.1
+        !asked.contains("<ask_user"),
+        "the raw tag must not ship: {asked}"
     );
 }

@@ -149,9 +149,9 @@ pub(super) fn close_event_topics(
 
 /// Record the channel a message actually arrived on just before it is
 /// re-targeted into another channel's topic, so the agent turn can still tell
-/// who it is talking to. `ask_user` asks the origin channel's adapter whether
-/// it can show a question box at all — see
-/// [`jyc_types::ORIGIN_CHANNEL_METADATA_KEY`].
+/// who it is talking to. `ask_user` looks that name up among the target
+/// channel's registered adapters to decide whether a question box can be drawn
+/// where the user is — see [`jyc_types::ORIGIN_CHANNEL_METADATA_KEY`].
 fn stamp_origin_channel(msg: &mut jyc_types::InboundMessage) {
     msg.metadata.insert(
         jyc_types::ORIGIN_CHANNEL_METADATA_KEY.to_string(),

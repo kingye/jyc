@@ -45,18 +45,18 @@
 
 ### Changed
 
-- Esc on a pending `ask_user` question box discards the whole set — one
-  `question_abort` frame naming the topic, not an answer per question — and
-  stops the run that asked it, the way `/cancel` does; hiding the box used to
-  leave the questions pending with no way to reach them. Leaving the topic or
-  closing the chat pane does the same, since neither can draw the box again. `d`
-  (`Backspace` too) declines the question on screen — a per-question "no", so
-  one unanswerable question no longer costs the picks made on the others.
-  `ask_user` now awaits the whole question set in one await under one deadline
-  instead of one question after another, so an answer never sits unreachable
-  inside a call still waiting for a later question, and a settled or declined set
-  returns without paying the remaining budget; the default window doubles to 600s
-  (#848, #849)
+- **`ask_user` asks and steps back: the turn ends the moment the questions go
+  out, on every channel.** The tool renders the set — one `question` frame per
+  question where the channel has a question box (the TUI), the same set as a
+  plain-text message on the ordinary reply path everywhere else (feishu, email,
+  any pipe-only channel) — hands it over, and the agent loop stops there instead
+  of calling the model again. Nothing waits, so there is no timeout to pick and
+  no unanswered question holding up the reply a user is waiting for. The answer
+  is the user's next message: the TUI sends one line per question keyed by the
+  number it was rendered with (`Q1: 2) 面条`), a question skipped with `d` says
+  `(skipped)`, and `Esc` only closes the box — there is no run left to stop.
+  Leaving the topic or closing the chat pane drops an unfinished batch the same
+  way (#851)
 - TUI chat status sub-pane wraps its stats instead of clipping them: the
   version line keeps its own row and the five stat chips (`2 active`,
   `5 thread`, `12 recv`, `0 err`, `up 38m`) pack into as many rows as the info
@@ -97,6 +97,12 @@
 
 ### Removed
 
+- The question **answer** protocol: `jyc_core::question::QuestionHub`, the
+  websocket `question_response` / `question_abort` frames, `QuestionAnswer` /
+  `QuestionReply`, `QuestionRequest::timeout_seconds` and the `ask_user`
+  `timeout_seconds` argument. An answer is an ordinary chat message now, so there
+  is no pending call to settle, abort, or time out. The `question` frame stays as
+  the TUI's rendering channel (#851)
 - Websocket channel: a chat message sent while the topic's agent is blocked in
   `ask_user` no longer answers the oldest pending question — it routes to the
   topic as its own turn again. The TUI answers through the question box, so the

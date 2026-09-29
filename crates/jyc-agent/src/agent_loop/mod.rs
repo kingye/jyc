@@ -130,10 +130,6 @@ pub struct AgentLoopConfig<'a> {
     /// (tests, sub-agents), where the reply tool falls back to the
     /// `reply.md`/`reply-sent.flag` file relay.
     pub reply_target: Option<crate::tools::ReplyTarget>,
-    /// Shared question/answer registry for the `ask_user` tool. Passed
-    /// through to `ToolContext`; `None` disables interactive questions
-    /// (the tool then reports unavailability to the model).
-    pub question_hub: Option<std::sync::Arc<jyc_core::question::QuestionHub>>,
 }
 
 /// Run the agent loop to completion.
@@ -173,7 +169,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         model_label,
         context_strategy,
         reply_target,
-        question_hub,
     } = config;
 
     // Topic label stamped on every billing entry this loop writes.
@@ -210,6 +205,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // Informational only — already included in `total_output_tokens`.
     let mut total_reasoning_tokens: u64 = 0;
     let mut reply_delivered = false;
+    // Set when a tool handed the user everything they need this turn
+    // (`ask_user`'s questions): the loop stops at the end of that batch, since
+    // the next model call would only repeat what was just delivered.
+    let mut handed_over = false;
 
     // Shared ToolContext for tool execution. Built once: every field is
     // static for the duration of the loop. The `context_browse` snapshot
@@ -223,7 +222,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     ctx.current_topic = Some(topic_name.to_string());
     ctx.outbounds = outbounds.clone();
     ctx.reply_target = reply_target.clone();
-    ctx.question_hub = question_hub.clone();
     let start_time = Instant::now();
 
     // RAII guard: the spawned ticker task is terminated on every return
@@ -571,7 +569,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 span,
                 question,
                 options,
-                timeout_secs,
             }) = embedded_ask::find_embedded_ask(&response.text)
             {
                 let prose = embedded_ask::remove_span(&response.text, span);
@@ -581,7 +578,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 let input = serde_json::json!({
                     "question": question,
                     "options": options,
-                    "timeout_seconds": timeout_secs,
                 });
                 let output = match tools.execute("ask_user", input, &ctx).await {
                     Ok(output) => output,
@@ -605,7 +601,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 // queued here is dropped while the model is told it was handed
                 // over.
                 drain_pending_texts(tools, &ctx, event_bus, topic_name).await;
-                continue;
+                if !output.ends_turn {
+                    // No live delivery target: the model's reply is the only
+                    // surface left, so it keeps going and asks there.
+                    continue;
+                }
+                // The questions are with the user. Fall through to the ordinary
+                // end of turn, with the prose (already delivered above) cleared
+                // so nothing is sent twice.
+                response.text = String::new();
             }
 
             // Deliver the final text as the turn's reply.
@@ -688,10 +692,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             "Executing tool calls"
         );
 
-        // Question ordering: when this batch includes a blocking `ask_user`,
-        // deliver the narration text first — the user must read the message
-        // before the question card arrives. The final auto-delivery still
-        // fires when the run ends, so the post-answer conclusion is not lost.
+        // Question ordering: when this batch asks the user something, deliver
+        // the narration text first — the user must read the context before the
+        // question arrives. The turn ends at the question, so for a while this
+        // is the last thing they see from us.
         if response.tool_calls.iter().any(|tc| tc.name == "ask_user")
             && !response.text.trim().is_empty()
         {
@@ -815,6 +819,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 &output.content,
                 output.is_error,
             ));
+            handed_over |= output.ends_turn;
         }
 
         // If cancelled mid-tool-execution, the assistant message we just added
@@ -823,6 +828,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // run (400: "tool_call_ids did not have response messages"). Remove
         // the last assistant message to prevent persisting corrupted context.
         if cancelled_during_tools {
+            // A cancelled turn is a failed turn, whatever it managed to
+            // deliver first — including a question that ended the turn.
+            handed_over = false;
             tracing::warn!(
                 "Cancelled during tool execution — removing dangling assistant message from raw_context"
             );
@@ -879,6 +887,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // the final message instead of relying on the model to repeat them.
         drain_pending_texts(tools, &ctx, event_bus, topic_name).await;
 
+        // Everything the user needed this turn is already delivered, so stop
+        // here rather than going round again. The remaining tool calls of the
+        // batch ran anyway: their results keep the transcript free of dangling
+        // tool calls.
+        if handed_over {
+            tracing::info!("Agent loop ended: the questions are with the user");
+            break;
+        }
+
         // Publish progress (only when continuing the loop)
         let elapsed = start_time.elapsed();
         publish_event(
@@ -905,14 +922,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         total_iterations += 1;
     }
 
-    // Loop ended (cancellation only — there's no max-cycles limit)
+    // Loop ended (cancellation, or a tool handed its answer over — there's no
+    // max-cycles limit). Only a cancellation is a failed turn.
     let duration = start_time.elapsed();
     publish_event(
         event_bus,
         TopicEvent::ProcessingCompleted {
             topic_name: topic_name.to_string(),
             message_id: "agent-loop".to_string(),
-            success: false,
+            success: handed_over,
             duration_secs: duration.as_secs(),
             timestamp: Utc::now(),
         },

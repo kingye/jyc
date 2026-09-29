@@ -213,9 +213,6 @@ pub struct ToolContext<'a> {
     /// together with `outbound`, the reply tool delivers through the channel
     /// adapter immediately and its result reflects the real delivery outcome.
     pub reply_target: Option<ReplyTarget>,
-    /// Shared question/answer registry for the `ask_user` tool. `None` in
-    /// contexts without interactive-question support (unit tests, sub-agents).
-    pub question_hub: Option<std::sync::Arc<jyc_core::question::QuestionHub>>,
 }
 
 /// Whether `canonical` lies inside the system temp dir `tmp`.
@@ -254,7 +251,6 @@ impl<'a> ToolContext<'a> {
             outbounds: None,
             raw_context: Vec::new(),
             reply_target: None,
-            question_hub: None,
         }
     }
 
@@ -274,7 +270,6 @@ impl<'a> ToolContext<'a> {
             outbounds: None,
             raw_context: Vec::new(),
             reply_target: None,
-            question_hub: None,
         }
     }
 
@@ -435,6 +430,11 @@ pub struct ToolOutput {
     pub content: String,
     /// Whether the execution resulted in an error.
     pub is_error: bool,
+    /// End the turn as soon as this output is recorded: the tool has already
+    /// put everything the user needs in front of them, so another model call
+    /// (and whatever it would say) is one message too many. Set by `ask_user`,
+    /// which ends its turn the moment the questions are handed over.
+    pub ends_turn: bool,
 }
 
 impl ToolOutput {
@@ -443,6 +443,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: false,
+            ends_turn: false,
         }
     }
 
@@ -451,7 +452,14 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: true,
+            ends_turn: false,
         }
+    }
+
+    /// Mark this output as ending the turn — see [`Self::ends_turn`].
+    pub fn ending_turn(mut self) -> Self {
+        self.ends_turn = true;
+        self
     }
 }
 

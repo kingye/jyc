@@ -173,7 +173,6 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
             "question": request.question,
             "options": request.options,
             "allow_multiple": request.allow_multiple,
-            "timeout_seconds": request.timeout_seconds,
         });
         // Same no-receiver tolerance as `broadcast_reply`.
         let _ = self.broadcast_tx.send(payload.to_string());
@@ -202,7 +201,6 @@ mod tests {
             question: "Which?".to_string(),
             options: vec!["a".to_string(), "b".to_string()],
             allow_multiple: true,
-            timeout_seconds: None,
         };
 
         adapter.send_question(&request).await.unwrap();

@@ -263,10 +263,10 @@ pub trait OutboundAdapter: Send + Sync {
 
     /// Push an interactive question to the user, awaiting their answer.
     ///
-    /// Channels that support interactive questions (websocket; feishu/wecom
-    /// cards later) override this. The default fails gracefully so the
-    /// `ask_user` tool can tell the model to fall back to asking in plain
-    /// text within its reply.
+    /// Only a channel the user can answer on overrides this — today the
+    /// websocket channel, whose question box is the TUI. The default fails
+    /// gracefully so the `ask_user` tool can tell the model to fall back to
+    /// asking in plain text within its reply.
     ///
     /// `allow_multiple` is a rendering concern: a channel that cannot mark
     /// options may ignore it, and its answer then carries one option.
@@ -280,8 +280,8 @@ pub trait OutboundAdapter: Send + Sync {
 
 /// An interactive question pushed to a user through a channel.
 ///
-/// Serialized as the websocket `question` payload; other channels render it
-/// natively (feishu/wecom cards) or as numbered text (email, github).
+/// Serialized as the websocket `question` payload; a channel without a UI for
+/// it never receives one (see [`OutboundAdapter::send_question`]).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QuestionRequest {
     /// Unique id; the answer must reference it.
@@ -299,25 +299,36 @@ pub struct QuestionRequest {
     /// however many options were picked.
     #[serde(default)]
     pub allow_multiple: bool,
-    /// Position within a multi-question request, as 1-based `(index, total)`.
-    ///
-    /// `None` for a single question. Channels that show one question at a
-    /// time (a feishu card) label which one the user is looking at; a UI that
-    /// holds the whole batch numbers it from its own queue instead.
-    #[serde(default)]
-    pub position: Option<(u32, u32)>,
     /// Server-side timeout in seconds; `None` waits indefinitely.
     pub timeout_seconds: Option<u64>,
 }
 
-/// The user's answer to a pending [`QuestionRequest`].
+/// The user's answer to one pending [`QuestionRequest`].
+///
+/// A per-question value: declining one question says nothing about the rest
+/// of a multi-question call. Giving up on the whole set is not an answer —
+/// see [`QuestionReply::Discarded`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuestionAnswer {
     /// The picked options' texts. A single-select answer carries exactly one,
     /// so `len()` is the only trace of whether multiple were allowed.
     Choice(Vec<String>),
-    /// The user dismissed the question without choosing.
-    Cancelled,
+    /// The user declined to answer this question (`d` in the TUI box).
+    Declined,
+}
+
+/// What the blocked `ask_user` call waits for: this question's answer, or the
+/// news that the user discarded the whole set (Esc) so no answer is coming.
+///
+/// Kept apart from [`QuestionAnswer`] because discarding the set is not an
+/// answer to any question: it stops the run, like `/cancel`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuestionReply {
+    /// The user's answer to this one question.
+    Answer(QuestionAnswer),
+    /// The batch this question belonged to was discarded; nothing will be
+    /// answered.
+    Discarded,
 }
 
 // --- Pattern Types ---
@@ -327,6 +338,15 @@ pub enum QuestionAnswer {
 /// channel's matcher (e.g. `WebsocketMatcher`). Defined here so writer and
 /// reader share one source of truth.
 pub const PIPE_PATTERN_METADATA_KEY: &str = "pipe_pattern";
+
+/// Message metadata key naming the channel a message actually arrived on,
+/// before any pipe re-targeted it into another channel's topic.
+///
+/// Written by the pipe retarget path (jyc-cli) right before it overwrites
+/// `InboundMessage::channel`, so the agent turn still knows who it is talking
+/// to: an interactive question belongs to the channel the user's message came
+/// from, not to the hub channel that happens to run the topic.
+pub const ORIGIN_CHANNEL_METADATA_KEY: &str = "origin_channel";
 
 /// Target of a `ChannelPattern.pipe`: which (channel, topic) to forward
 /// matching messages into.

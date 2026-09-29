@@ -35,7 +35,6 @@ pub(crate) fn spawn_feishu_adapter(
     config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
     ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
     routers: HubRegistry,
-    question_hub: std::sync::Arc<jyc_core::question::QuestionHub>,
 ) -> Result<()> {
     let feishu_config = channel_config
         .feishu
@@ -125,47 +124,10 @@ pub(crate) fn spawn_feishu_adapter(
                             Ok(v) => v,
                             Err(_) => continue,
                         };
-                        if v.get("type").and_then(|t| t.as_str()) == Some("question") {
-                            // `ask_user` push: relay as an interactive card
-                            // with numbered options. The user answers by
-                            // replying (see `QuestionHub::try_answer`).
-                            let (Some(topic), Some(question)) = (
-                                v.get("topic").and_then(|t| t.as_str()),
-                                v.get("question").and_then(|q| q.as_str()),
-                            ) else {
-                                continue;
-                            };
-                            let options: Vec<String> = v
-                                .get("options")
-                                .and_then(|o| o.as_array())
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|x| x.as_str().map(String::from))
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            // Which question of a multi-question call this is,
-                            // so the card header can say 第 N/M 题 and the user
-                            // knows how many replies are still expected.
-                            let position = v.get("position").and_then(|p| {
-                                serde_json::from_value::<(u32, u32)>(p.clone()).ok()
-                            });
-                            let Some(chat_id) = topic_chat.lock().unwrap().get(topic).cloned()
-                            else {
-                                tracing::debug!(topic = %topic, "feishu pipe: no chat mapping for question, skipping");
-                                continue;
-                            };
-                            let card = jyc_channels::feishu::question_card::build_question_card(
-                                question,
-                                &options,
-                                position,
-                            );
-                            if let Err(e) = feishu_client.send_card_message(&chat_id, &card).await
-                            {
-                                tracing::error!(error = %e, topic = %topic, "failed to relay question card to feishu");
-                            }
-                            continue;
-                        }
+                        // Questions are never relayed here: `ask_user` only
+                        // pushes to a channel that can answer one, and a feishu
+                        // turn asks in its reply text instead (see the
+                        // `origin_channel` metadata).
                         if v.get("type").and_then(|t| t.as_str()) != Some("reply") {
                             continue;
                         }
@@ -241,7 +203,6 @@ pub(crate) fn spawn_feishu_adapter(
                     let feishu_client = feishu_client.clone();
                     let channel_name_self = channel_name.clone();
                     let routers = routers.clone();
-                    let question_hub = question_hub.clone();
                     tokio::spawn(async move {
                         let cfg = config_for_task.load();
                         let patterns = cfg
@@ -266,48 +227,6 @@ pub(crate) fn spawn_feishu_adapter(
                         let Some(message) = retarget_or_drop("feishu", message, pipe) else {
                             return;
                         };
-
-                        // Pending-question interception: a text reply while
-                        // the topic's agent is blocked in `ask_user` answers
-                        // the question instead of entering the topic (the
-                        // text fallback of `QuestionHub::pending_for`).
-                        if let Some(text) = message.content.text.as_deref()
-                            && question_hub.try_answer(&message.topic, text)
-                        {
-                            // The answer is consumed and the run keeps working
-                            // in the background — the final reply may take a
-                            // while. Cover the rest of the run with the standard
-                            // live progress card: a run started by this Feishu
-                            // message already has a watcher (below), but a run
-                            // that asked its question from another channel
-                            // (e.g. the ws TUI) has none, leaving the chat
-                            // silent between the answer and the reply. Attach
-                            // mode arms the same watcher immediately instead
-                            // of waiting for a ProcessingStarted that already
-                            // fired; skipped when a live card already exists.
-                            if let Some(chat_id) =
-                                message.metadata.get("chat_id").and_then(|v| v.as_str())
-                                && progress_cards.lock().await.get(&message.topic).is_none()
-                            {
-                                let hub_tm = {
-                                    let reg = routers.lock().unwrap();
-                                    reg.get(&message.channel).map(|(_, tm)| tm.clone())
-                                };
-                                if let Some(tm) = hub_tm {
-                                    jyc_channels::feishu::progress::spawn_progress_watcher(
-                                        feishu_client.clone(),
-                                        tm,
-                                        message.topic.clone(),
-                                        chat_id.to_string(),
-                                        std::time::Instant::now(),
-                                        chrono::Utc::now(),
-                                        progress_cards.clone(),
-                                        true, // attach: the run is already in flight
-                                    );
-                                }
-                            }
-                            return;
-                        }
 
                         // Record resolved topic -> chat_id for reply relay.
                         let chat_id = message
@@ -383,7 +302,6 @@ pub(crate) fn spawn_feishu_adapter(
                                     start,
                                     seen_after,
                                     progress_cards.clone(),
-                                    false, // arm on this message's own run start
                                 );
                             }
                             topic_starts

@@ -117,17 +117,17 @@ impl ChannelMatcher for WebsocketMatcher {
 /// (`list_patterns` and `create_topic`). The WebSocket protocol now
 /// only carries the live-message stream:
 /// - `message`: send a chat message to the bound topic
-/// - `question_response`: answer an `ask_user` question (never enqueued as a
+/// - `question_response`: answer one `ask_user` question (never enqueued as a
 ///   topic message; routed straight to the `QuestionHub`)
+/// - `question_abort`: discard every pending question of a topic (Esc on the
+///   question box) — settles the blocked `ask_user` call, which stops the run
 /// - `disconnect`: close the connection cleanly
 /// - `ping`: keep-alive (tokio-tungstenite also handles WS-level pings)
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
-    /// A chat message. Intercepted before entering the topic queue: while
-    /// the topic's agent is blocked in `ask_user`, the text answers the
-    /// pending question instead (mirroring the feishu pipe) — this is the
-    /// free-input path for websocket clients such as the TUI.
+    /// A chat message. Never read as an answer to a question: on this channel
+    /// questions are answered by the `question_response` frame below.
     #[serde(rename = "message")]
     Message {
         /// Optional: when the connection is scoped to a single topic via
@@ -153,10 +153,8 @@ enum ClientMessage {
     /// Keep-alive ping. tokio-tungstenite already handles WS-level pings
     /// at the protocol layer; this is a no-op for application-level pings.
     Ping,
-    /// Answer to an `ask_user` question, picked from the question payload's
-    /// options. Routed to the `QuestionHub`, not the topic queue; free-text
-    /// answers go through the `Message` variant's pending-question
-    /// interception instead.
+    /// Answer to one `ask_user` question, picked from the question payload's
+    /// options. Routed to the `QuestionHub`, not the topic queue.
     QuestionResponse {
         /// Id of the question being answered (from the `question` payload).
         id: String,
@@ -167,9 +165,17 @@ enum ClientMessage {
         /// over `choice` when non-empty.
         #[serde(default)]
         choices: Vec<String>,
-        /// Whether the user dismissed the question without choosing.
+        /// Whether the user declined to answer this question (`d`), leaving
+        /// the rest of the set to its own answer.
         #[serde(default)]
-        cancelled: bool,
+        declined: bool,
+    },
+    /// Discard every pending question of a topic — Esc on the question box.
+    /// Not an answer to any of them: it settles the blocked `ask_user` call,
+    /// which stops the run like `/cancel` does.
+    QuestionAbort {
+        /// Topic whose questions are given up on.
+        topic: String,
     },
 }
 
@@ -455,7 +461,7 @@ async fn handle_connection_impl(
                                 id,
                                 choice,
                                 choices,
-                                cancelled,
+                                declined,
                             } => {
                                 let Some(hub) = question_hub.clone() else {
                                     tracing::warn!(
@@ -464,15 +470,15 @@ async fn handle_connection_impl(
                                     );
                                     continue;
                                 };
-                                let answer = if cancelled {
-                                    jyc_types::channel::QuestionAnswer::Cancelled
+                                let answer = if declined {
+                                    jyc_types::channel::QuestionAnswer::Declined
                                 } else if !choices.is_empty() {
                                     jyc_types::channel::QuestionAnswer::Choice(choices)
                                 } else {
-                                    // A response without any pick is a dismissal.
+                                    // A response without any pick is a decline.
                                     choice
                                         .map(|c| jyc_types::channel::QuestionAnswer::Choice(vec![c]))
-                                        .unwrap_or(jyc_types::channel::QuestionAnswer::Cancelled)
+                                        .unwrap_or(jyc_types::channel::QuestionAnswer::Declined)
                                 };
                                 if !hub.respond(&id, answer) {
                                     // Unknown id or asker gone (timed out /
@@ -482,6 +488,23 @@ async fn handle_connection_impl(
                                         "question_response ignored: no pending question"
                                     );
                                 }
+                            }
+                            ClientMessage::QuestionAbort { topic } => {
+                                let Some(hub) = question_hub.clone() else {
+                                    tracing::warn!(
+                                        topic = %topic,
+                                        "question_abort received but no QuestionHub configured"
+                                    );
+                                    continue;
+                                };
+                                // Esc on the question box: nothing is answered,
+                                // every question of the topic settles at once
+                                // and the blocked `ask_user` call stops the run.
+                                tracing::info!(
+                                    topic = %topic,
+                                    discarded = hub.abort_topic(&topic),
+                                    "question set discarded by client"
+                                );
                             }
                         }
                     }
@@ -900,34 +923,34 @@ mod tests {
                 id,
                 choice,
                 choices,
-                cancelled,
+                declined,
             } => {
                 assert_eq!(id, "q1");
                 assert_eq!(choice.as_deref(), Some("option B"));
                 assert!(choices.is_empty());
-                assert!(!cancelled);
+                assert!(!declined);
             }
             _ => panic!("expected QuestionResponse"),
         }
     }
 
     #[test]
-    fn test_client_message_question_response_cancelled() {
-        // Cancel frames may omit `choice` entirely.
+    fn test_client_message_question_response_declined() {
+        // A decline may omit `choice` entirely.
         let msg: ClientMessage =
-            serde_json::from_str(r#"{"type":"question_response","id":"q1","cancelled":true}"#)
+            serde_json::from_str(r#"{"type":"question_response","id":"q1","declined":true}"#)
                 .unwrap();
         match msg {
             ClientMessage::QuestionResponse {
                 id,
                 choice,
                 choices,
-                cancelled,
+                declined,
             } => {
                 assert_eq!(id, "q1");
                 assert!(choice.is_none());
                 assert!(choices.is_empty());
-                assert!(cancelled);
+                assert!(declined);
             }
             _ => panic!("expected QuestionResponse"),
         }
@@ -945,14 +968,26 @@ mod tests {
                 id,
                 choice,
                 choices,
-                cancelled,
+                declined,
             } => {
                 assert_eq!(id, "q1");
                 assert!(choice.is_none(), "one frame shape wins");
                 assert_eq!(choices, vec!["a".to_string(), "b".to_string()]);
-                assert!(!cancelled);
+                assert!(!declined);
             }
             _ => panic!("expected QuestionResponse"),
+        }
+    }
+
+    /// Esc on the question box is one frame for the whole topic, not a frame
+    /// per question: it answers nothing, it gives up on the set.
+    #[test]
+    fn test_client_message_question_abort() {
+        let msg: ClientMessage =
+            serde_json::from_str(r#"{"type":"question_abort","topic":"jyc"}"#).unwrap();
+        match msg {
+            ClientMessage::QuestionAbort { topic } => assert_eq!(topic, "jyc"),
+            other => panic!("expected QuestionAbort, got {other:?}"),
         }
     }
 }

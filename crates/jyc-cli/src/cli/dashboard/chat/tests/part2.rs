@@ -1168,16 +1168,16 @@ fn multi_select_marks_then_sends_every_mark() {
     assert!(!chat.active_question());
 }
 
-/// Not one marked is the user backing out, not an empty answer.
+/// Not one marked is the user backing out of that question, not an empty answer.
 #[test]
-fn multi_select_enter_without_marks_cancels() {
+fn multi_select_enter_without_marks_declines() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload_multi("jyc", "q1", &["a", "b"]));
 
     chat.confirm_question();
 
     let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-    assert_eq!(frame["cancelled"], serde_json::json!(true));
+    assert_eq!(frame["declined"], serde_json::json!(true));
     assert!(frame.get("choices").is_none());
     assert!(!chat.active_question());
 }
@@ -1262,11 +1262,12 @@ fn switching_topics_leaves_the_old_question_batch_behind() {
     assert_eq!(chat.questions.len(), 2, "the qA batch is queued");
 
     chat.reset_chat_state("other");
-    for id in ["qA1", "qA2"] {
-        let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-        assert_eq!(frame["id"], id, "leaving settles the batch, as Esc does");
-        assert_eq!(frame["cancelled"], serde_json::json!(true));
-    }
+    let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+    assert_eq!(
+        frame["type"], "question_abort",
+        "leaving discards the batch, as Esc does"
+    );
+    assert_eq!(frame["topic"], "jyc");
     chat.handle_question_event(&question_payload("other", "qB1", &["z"]));
 
     assert!(
@@ -1303,10 +1304,10 @@ fn batch_sends_every_answer_once_the_last_question_is_settled() {
 }
 
 /// `d` declines the question on screen and the rest of the set still goes out:
-/// the declined question is dismissed, its neighbour keeps its pick. Without it
-/// the only "no" was Esc, which cost every pick already made.
+/// the declined question settles on its own, its neighbour keeps its pick.
+/// Without it the only "no" was Esc, which cost every pick already made.
 #[test]
-fn declining_one_question_cancels_it_and_keeps_the_other_answer() {
+fn declining_one_question_keeps_the_other_answer() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
     chat.handle_question_event(&question_payload("jyc", "q2", &["c", "d"]));
@@ -1319,9 +1320,9 @@ fn declining_one_question_cancels_it_and_keeps_the_other_answer() {
     let first: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
     assert_eq!(first["id"], "q1");
     assert_eq!(
-        first["cancelled"],
+        first["declined"],
         serde_json::json!(true),
-        "a declined question is a dismissal, not a pick"
+        "a declined question is a decline, not a pick"
     );
     let second: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
     assert_eq!(second["id"], "q2");
@@ -1368,15 +1369,15 @@ fn confirm_sends_choice_frame() {
     // One frame shape for both modes: even a single pick rides in the list.
     assert_eq!(parsed["choices"], serde_json::json!(["c"]));
     assert!(parsed.get("choice").is_none());
-    assert!(parsed.get("cancelled").is_none());
+    assert!(parsed.get("declined").is_none());
 }
 
-/// Esc discards the whole batch: every pending question gets its own cancel
-/// frame, so the blocked `ask_user` call settles at once. Hiding the box
+/// Esc discards the whole batch with one `question_abort` frame: every pending
+/// question of the topic settles at once and the run stops. Hiding the box
 /// instead used to leave the questions pending with nothing on screen to
 /// answer them, and the next typed message was hijacked as a free-form answer.
 #[test]
-fn esc_discards_the_batch_with_a_cancel_per_question() {
+fn esc_aborts_the_whole_batch_with_one_frame() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload("jyc", "q1", &["a"]));
     chat.handle_question_event(&question_payload("jyc", "q2", &["b", "c"]));
@@ -1386,22 +1387,17 @@ fn esc_discards_the_batch_with_a_cancel_per_question() {
 
     assert!(!chat.active_question());
     assert!(chat.questions.is_empty());
-    for id in ["q1", "q2"] {
-        let frame = rx
-            .try_recv()
-            .unwrap_or_else(|_| panic!("a cancel frame for {id}"));
-        let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
-        assert_eq!(parsed["type"], "question_response");
-        assert_eq!(parsed["id"], id);
-        assert_eq!(
-            parsed["cancelled"],
-            serde_json::json!(true),
-            "a discard answers with a dismissal, not a pick"
-        );
-    }
+    let frame = rx.try_recv().expect("one abort frame for the batch");
+    let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
+    assert_eq!(parsed["type"], "question_abort");
+    assert_eq!(parsed["topic"], "jyc");
+    assert!(
+        parsed.get("id").is_none(),
+        "discarding the set answers no question, so it names none: {parsed}"
+    );
     assert!(
         rx.try_recv().is_err(),
-        "exactly one frame per pending question"
+        "one frame for the set, not one per question"
     );
 }
 
@@ -1416,9 +1412,9 @@ fn closing_the_pane_discards_the_pending_batch() {
     chat.close();
 
     let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-    assert_eq!(frame["id"], "q1");
-    assert_eq!(frame["cancelled"], serde_json::json!(true));
-    // The cancel must leave before the socket is handed back, so the pane's own
+    assert_eq!(frame["type"], "question_abort");
+    assert_eq!(frame["topic"], "jyc");
+    // The abort must leave before the socket is handed back, so the pane's own
     // `disconnect` is the frame right after it.
     let second: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
     assert_eq!(second["type"], "disconnect");

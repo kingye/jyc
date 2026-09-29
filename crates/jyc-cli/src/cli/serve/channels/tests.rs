@@ -117,6 +117,42 @@ fn pipe_retarget_preserves_attachments_and_metadata() {
     );
 }
 
+/// The channel a message came from has to survive the re-target: `ask_user`
+/// pushes a question to *that* channel, and a turn that lost the information
+/// would block on a question box its user cannot see. Both pipe forms record
+/// it.
+#[test]
+fn pipe_retarget_records_origin_channel() {
+    let legacy = apply_pipe_retarget(
+        pipe_msg(Default::default()),
+        &pipe_target(None, Some("jyc")),
+    )
+    .unwrap();
+    assert_eq!(legacy.channel, "local_dev", "re-targeted");
+    assert_eq!(
+        legacy
+            .metadata
+            .get(jyc_types::ORIGIN_CHANNEL_METADATA_KEY)
+            .and_then(|v| v.as_str()),
+        Some("feishu_bot"),
+        "the source channel is recorded before the overwrite"
+    );
+
+    let agent = apply_pipe_retarget(
+        pipe_msg(Default::default()),
+        &agent_pipe_target("jyc", None),
+    )
+    .unwrap();
+    assert_eq!(agent.channel, "agents");
+    assert_eq!(
+        agent
+            .metadata
+            .get(jyc_types::ORIGIN_CHANNEL_METADATA_KEY)
+            .and_then(|v| v.as_str()),
+        Some("feishu_bot")
+    );
+}
+
 /// `${msg.chat_name}` in `pipe.topic` resolves from message metadata,
 /// sanitized for filesystem use.
 #[test]

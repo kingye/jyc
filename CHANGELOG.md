@@ -2,6 +2,15 @@
 
 ### Fixed
 
+- **A piped turn no longer stalls behind a question its user cannot see**:
+  `ask_user` pushed its questions to whichever channel owns the *topic*, so a
+  turn that arrived over a feishu or email pipe blocked up to the timeout on a
+  box only a TUI could draw — and the reply the user was waiting for is the
+  turn's final message, so nothing arrived at all until the box was dismissed
+  elsewhere. A question now goes to the outbound adapter of the channel the
+  message came from (recorded as `origin_channel` metadata before the pipe
+  re-targets it); a channel without a question box fails the call at once, the
+  model asks in its reply text, and the turn ends normally (#849)
 - Leaked tool-call syntax no longer reaches users as a reply, and legitimate
   prose about it is no longer mistaken for a leak: the leaked block is
   stripped and the surrounding prose delivered (a reply used to be failed
@@ -28,18 +37,18 @@
 
 ### Changed
 
-- Esc on a pending `ask_user` question box discards the whole set — one cancel
-  frame per question — instead of hiding the box and leaving the questions
-  pending, so the blocked call settles at once and the message typed next is an
-  ordinary turn that gets an ordinary answer; leaving the topic or closing the
-  chat pane does the same, since neither can draw the box again. `d`
-  (`Backspace` too) declines the question on screen — it goes out as a dismissal
-  at submit — so one unanswerable question no longer costs the picks made on the
-  others. `ask_user` now awaits the whole question set in one await under one
-  deadline instead of one question after another, so an answer never sits
-  unreachable inside a call still waiting for a later question, and a settled or
-  dismissed set returns without paying the remaining budget; the default window
-  doubles to 600s (#848)
+- Esc on a pending `ask_user` question box discards the whole set — one
+  `question_abort` frame naming the topic, not an answer per question — and
+  stops the run that asked it, the way `/cancel` does; hiding the box used to
+  leave the questions pending with no way to reach them. Leaving the topic or
+  closing the chat pane does the same, since neither can draw the box again. `d`
+  (`Backspace` too) declines the question on screen — a per-question "no", so
+  one unanswerable question no longer costs the picks made on the others.
+  `ask_user` now awaits the whole question set in one await under one deadline
+  instead of one question after another, so an answer never sits unreachable
+  inside a call still waiting for a later question, and a settled or declined set
+  returns without paying the remaining budget; the default window doubles to 600s
+  (#848, #849)
 - TUI chat status sub-pane wraps its stats instead of clipping them: the
   version line keeps its own row and the five stat chips (`2 active`,
   `5 thread`, `12 recv`, `0 err`, `up 38m`) pack into as many rows as the info
@@ -84,10 +93,18 @@
   `ask_user` no longer answers the oldest pending question — it routes to the
   topic as its own turn again. The TUI answers through the question box, so the
   hijack only ever turned an unrelated message into an answer while the rest of
-  the batch stayed unreachable (#848). The feishu pipe keeps its
-  `QuestionHub::try_answer` routing — it relays these question frames as cards
-  and has no box to answer from — and channels that cannot render a question
-  register none at all
+  the batch stayed unreachable (#848). The feishu pipe's version of the same
+  routing goes with it (#849)
+- Feishu pipe: interactive questions are gone — the numbered-options question
+  card, the relay of `ask_user` question frames, and the plain-reply answer
+  routing (`QuestionHub::try_answer` / `pending_for`, and the `seq` ordering they
+  existed to serve). One chat reply could only settle one question, so a
+  multi-question call stalled, and the stall held back the reply the user was
+  waiting for; a feishu turn now asks in its reply text like any other message.
+  `FeishuClient::send_card_message` and `QuestionRequest::position` (the card's
+  `第 N/M 题` header) had no other user and are removed with it; the progress
+  watcher's `attach` mode existed only to re-arm a card after an in-chat answer
+  (#849)
 - TUI "new chat" flow: the leader-key `new chat` action (`Ctrl+P` → `n`) and
   the plain `c` key on the dashboard, which opened the same pattern-select
   screen. Chat is now entered only on an existing topic (Enter / leader

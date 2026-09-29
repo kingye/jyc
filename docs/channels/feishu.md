@@ -195,8 +195,10 @@ half-minutes of silence waiting for a card that would never show up.
 
 > **Answering over several lines** makes Feishu send the reply as a rich-text
 > `post` rather than plain text. The adapter reads it back as the text typed —
-> paragraph breaks kept, links shown with their target, a picture as `[图片]` —
-> so a multi-line answer works like a single-line one.
+> paragraph breaks kept, links shown with their target, a mention as `@name`, a
+> picture as `[图片]`. That last one is a placeholder: a picture inside rich
+> text is not downloaded the way a stand-alone image message is, so answer a
+> question with the option number rather than a screenshot.
 
 > **Why not cards with numbered replies?** The pipe relayed the question frames
 > as cards and read the next chat reply as the answer. One reply could only

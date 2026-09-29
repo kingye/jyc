@@ -14,9 +14,11 @@
   more than one line makes feishu send `post`, which the inbound adapter had no
   arm for, so an answer to a question reached the agent as
   `[Unsupported message type: post]: {raw JSON}`. Paragraphs keep the line
-  breaks the user typed, links show their target, mentions and pictures read as
-  `@name` / `[图片]`, and a payload that cannot be parsed at all keeps the old
-  raw-content fallback instead of delivering nothing (#852)
+  breaks the user typed, links show their target, a mention reads as `@name`, a
+  picture as `[图片]` (a placeholder only — a picture inside rich text is not
+  downloaded the way a stand-alone image message is), and a payload that cannot
+  be parsed at all keeps the old raw-content fallback instead of delivering
+  nothing (#852)
 - **A channel without a question box now receives the questions as a plain-text
   message**: on a feishu / email / pipe-only turn `ask_user` answered the model
   with an error telling it to ask in its reply text — not a delivery mechanism,

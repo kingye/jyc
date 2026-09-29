@@ -164,9 +164,9 @@ fn parse_questions(input: &Value) -> Result<Vec<Ask>, String> {
     }
     for ask in &mut asks {
         ask.question = one_line(&ask.question);
-        ask.options
-            .iter_mut()
-            .for_each(|option| *option = one_line(option));
+        for option in &mut ask.options {
+            *option = one_line(option);
+        }
     }
     if asks.len() > MAX_QUESTIONS {
         return Err(format!(
@@ -651,7 +651,11 @@ mod tests {
             vec!["main".to_string(), "feature x".to_string()]
         );
         let block = plain_text_block(&asks);
-        assert_eq!(block.lines().count(), 5, "{block}");
+        assert_eq!(
+            block,
+            "Q1: Which branch should I push?\n   1) main\n   2) feature x\n\n\
+             Reply one line per question with the option number(s), e.g. \"Q1: 2\" or \"Q2: 1,3\"."
+        );
     }
 
     #[test]

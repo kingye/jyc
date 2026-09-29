@@ -2,6 +2,23 @@
 
 ### Fixed
 
+- **A multi-question set no longer arrives as one run-on line**: channels that
+  render reply text as markdown (the feishu card) parsed a question's numbered
+  options as a list and read the following `Q2:` line as that list's continuation,
+  gluing every question after the first onto the previous one's last option.
+  Questions are separated by a blank line now (which ends the list), the
+  `(multi-select)` marker sits on the question's own line, and a question or
+  option the model wrote across several lines is folded onto one, so nothing
+  shifts the numbering the user answers by (#852)
+- **A feishu rich-text (`post`) message is read as the text typed**: composing
+  more than one line makes feishu send `post`, which the inbound adapter had no
+  arm for, so an answer to a question reached the agent as
+  `[Unsupported message type: post]: {raw JSON}`. Paragraphs keep the line
+  breaks the user typed, links show their target, a mention reads as `@name`, a
+  picture as `[图片]` (a placeholder only — a picture inside rich text is not
+  downloaded the way a stand-alone image message is), and a payload that cannot
+  be parsed at all keeps the old raw-content fallback instead of delivering
+  nothing (#852)
 - **A channel without a question box now receives the questions as a plain-text
   message**: on a feishu / email / pipe-only turn `ask_user` answered the model
   with an error telling it to ask in its reply text — not a delivery mechanism,

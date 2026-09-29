@@ -459,6 +459,17 @@ impl FeishuWebSocket {
                     attachments,
                 )
             }
+            "post" => match post_to_text(&msg.content) {
+                // A rich-text answer is still just the text the user typed.
+                Some(text) => (
+                    strip_mention_placeholders(&text, msg.mentions.as_deref()),
+                    vec![],
+                ),
+                None => (
+                    format!("[Unsupported message type: post]: {}", msg.content),
+                    vec![],
+                ),
+            },
             "interactive" => {
                 // Card messages: store raw content JSON for now
                 (format!("[Card message]: {}", msg.content), vec![])
@@ -658,6 +669,87 @@ fn strip_mention_placeholders(
     result.trim().to_string()
 }
 
+/// Read a Feishu rich-text (`post`) message as the plain text the user typed.
+///
+/// Feishu sends this shape as soon as a message has more than one line: the
+/// payload is `{ "title": …, "content": [ [ { "tag": …, "text": … }, … ], … ] }`
+/// — paragraphs of inline elements. Answers to a question arrive here, so the
+/// text must not be lost to an `[Unsupported message type]` dump of raw JSON.
+/// Returns `None` when the payload carries no text a reader could use, which
+/// leaves the caller's raw-content fallback in place rather than delivering
+/// nothing.
+fn post_to_text(content: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    // Newer clients put the same paragraphs in `content_v2`; whichever key
+    // actually holds an array is the message, so both are tried. A payload
+    // with neither still has a title worth reading, so a missing body is not
+    // a parse failure.
+    let empty = Vec::new();
+    let paragraphs = value
+        .get("content")
+        .and_then(|body| body.as_array())
+        .or_else(|| value.get("content_v2").and_then(|body| body.as_array()))
+        .unwrap_or(&empty);
+    let mut lines: Vec<String> = Vec::with_capacity(paragraphs.len() + 1);
+    let title = value
+        .get("title")
+        .and_then(|t| t.as_str())
+        .map(str::trim)
+        .filter(|title| !title.is_empty());
+    if let Some(title) = title {
+        lines.push(title.to_string());
+    }
+    for paragraph in paragraphs {
+        // A paragraph is the runs of styled text on one line the user typed;
+        // any other shape carries no text the reader could use.
+        let line = match paragraph {
+            serde_json::Value::Array(inlines) => {
+                inlines.iter().map(post_inline_text).collect::<String>()
+            }
+            _ => String::new(),
+        };
+        lines.push(line.trim_end().to_string());
+    }
+    // Blank paragraphs stay blank: they are the line breaks the user typed.
+    let text = lines.join("\n").trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// What one inline element of a post paragraph shows, as text.
+fn post_inline_text(element: &serde_json::Value) -> String {
+    let shown = element
+        .get("text")
+        .and_then(|t| t.as_str())
+        .unwrap_or_default();
+    match element
+        .get("tag")
+        .and_then(|t| t.as_str())
+        .unwrap_or_default()
+    {
+        "at" => format!(
+            "@{}",
+            element
+                .get("user_name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("user")
+        ),
+        "img" => "[图片]".to_string(),
+        "media" => "[视频]".to_string(),
+        "emotion" => "[表情]".to_string(),
+        // A link's label alone would lose the address the user meant to send,
+        // so its target is kept next to it.
+        "a" => match element.get("href").and_then(|h| h.as_str()) {
+            Some(href) if !href.is_empty() && !shown.contains(href) => {
+                format!("{shown} ({href})")
+            }
+            _ => shown.to_string(),
+        },
+        // "text", "code", and anything newer than this parser: what an element
+        // shows is its text, so an unknown tag still delivers something.
+        _ => shown.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -845,6 +937,133 @@ mod tests {
         assert_ne!(
             inbound.external_id.as_deref(),
             Some(inbound.channel_uid.as_str())
+        );
+    }
+
+    /// A rich-text message is the shape Feishu uses the moment a message has
+    /// more than one line, which is exactly how a numbered answer to a
+    /// multi-question `ask_user` arrives. It must read as typed text.
+    #[test]
+    fn post_to_text_reads_a_multi_line_answer() {
+        let content = serde_json::json!({
+            "title": "回答",
+            "content": [
+                [{ "tag": "text", "text": "Q1: 3) 白开水" }],
+                [],
+                [
+                    { "tag": "text", "text": "Q2: " },
+                    { "tag": "text", "text": "1) 面, 3) 饺子" }
+                ]
+            ]
+        })
+        .to_string();
+        assert_eq!(
+            post_to_text(&content).unwrap(),
+            "回答\nQ1: 3) 白开水\n\nQ2: 1) 面, 3) 饺子"
+        );
+    }
+
+    /// The elements a user can actually put in a post: a link, an @mention, a
+    /// picture. None of them may turn into JSON or vanish.
+    #[test]
+    fn post_to_text_keeps_links_mentions_and_pictures_readable() {
+        let content = serde_json::json!({
+            "title": "",
+            "content": [[
+                { "tag": "a", "text": "CI", "href": "https://ex.am/p/1" },
+                { "tag": "text", "text": " 看 " },
+                { "tag": "at", "user_name": "金晔" },
+                { "tag": "img", "image_key": "img_v3_x" }
+            ]]
+        })
+        .to_string();
+        assert_eq!(
+            post_to_text(&content).unwrap(),
+            "CI (https://ex.am/p/1) 看 @金晔[图片]"
+        );
+    }
+
+    /// Newer clients fill `content_v2` as well, and some send it with
+    /// `content` in a shape this parser cannot read: either key holding the
+    /// paragraphs has to work. A payload with none of them reads as nothing.
+    #[test]
+    fn post_to_text_reads_whichever_paragraph_key_the_client_filled() {
+        let v2 = serde_json::json!({
+            "content": "not an array",
+            "content_v2": [[{ "tag": "text", "text": "only v2" }]]
+        })
+        .to_string();
+        assert_eq!(post_to_text(&v2).unwrap(), "only v2");
+        assert!(post_to_text("not json").is_none());
+        // A title is the only readable text a body-less post has; with neither
+        // title nor paragraphs there is nothing to deliver.
+        assert_eq!(post_to_text(r#"{"title":"t"}"#).unwrap(), "t");
+        assert!(post_to_text(r#"{"content":[[]]}"#).is_none());
+    }
+
+    /// Wrap a `post` payload in a receive event, the way the websocket sends it.
+    fn post_event_json(content: &str) -> String {
+        serde_json::json!({
+            "header": { "event_type": "im.message.receive_v1", "event_id": "ev_post" },
+            "event": {
+                "sender": { "sender_id": { "open_id": "unknown" } },
+                "message": {
+                    "message_id": "om_post_1",
+                    "message_type": "post",
+                    "content": content,
+                    "chat_type": "p2p",
+                    "create_time": "1704067200000"
+                }
+            }
+        })
+        .to_string()
+    }
+
+    /// `unknown` keeps every sender and chat name lookup off the network.
+    fn feishu_websocket() -> FeishuWebSocket {
+        let config = FeishuConfig::default();
+        let client = Arc::new(super::super::client::FeishuClient::new(config.clone()));
+        FeishuWebSocket::new(&config, client)
+    }
+
+    #[tokio::test]
+    async fn test_convert_post_message_to_text() {
+        // Regression guard for the field test: a post used to reach the agent
+        // as "[Unsupported message type: post]: {raw json}".
+        let content = serde_json::json!({
+            "title": "",
+            "content": [[{ "tag": "text", "text": "Q1: 2" }], [{ "tag": "text", "text": "Q2: 1,3" }]]
+        })
+        .to_string();
+        let envelope: super::EventEnvelope =
+            serde_json::from_str(&post_event_json(&content)).unwrap();
+        let inbound = feishu_websocket()
+            .convert_to_inbound("feishu", &envelope)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            inbound.content.text.as_deref(),
+            Some("Q1: 2\nQ2: 1,3"),
+            "the answer must be the text, not the payload: {:?}",
+            inbound.content.text
+        );
+    }
+
+    /// What cannot be read stays visible as the raw content: the user did send
+    /// something, and an empty message would look like they had not answered.
+    #[tokio::test]
+    async fn test_convert_unreadable_post_keeps_the_raw_content() {
+        let envelope: super::EventEnvelope =
+            serde_json::from_str(&post_event_json("not json")).unwrap();
+        let inbound = feishu_websocket()
+            .convert_to_inbound("feishu", &envelope)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            inbound.content.text.as_deref(),
+            Some("[Unsupported message type: post]: not json")
         );
     }
 }

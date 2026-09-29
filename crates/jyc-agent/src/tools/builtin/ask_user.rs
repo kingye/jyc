@@ -124,14 +124,16 @@ fn plain_text_block(asks: &[Ask]) -> String {
 /// Ask a set that no question box can show: queue the rendered questions for
 /// delivery as an ordinary message, and report success so the turn ends.
 ///
-/// The channel is the only thing that can put these in front of the user — the
-/// model's reply text is not a delivery mechanism, and an error here is
-/// precisely what ends up in front of them instead of the question. Without a
-/// live delivery target (unit tests, sub-agents) there is no message to send,
-/// so the text goes to the model to place in its own reply.
+/// The model's reply text is not a delivery mechanism — an error handed to the
+/// model is exactly what used to reach the user in place of the question. So
+/// the block goes on `ToolContext::pending_texts` and the agent loop sends it
+/// through the ordinary reply path, which logs when a send fails just as it
+/// does for any other reply. Without a live delivery target (unit tests,
+/// sub-agents) there is no message to send, so the text goes to the model to
+/// place in its own reply instead.
 fn ask_in_plain_text(ctx: &ToolContext<'_>, asks: &[Ask], reason: &str) -> ToolOutput {
     let block = plain_text_block(asks);
-    let live = ctx.outbound.is_some() && ctx.reply_target.is_some();
+    let live = ctx.live_delivery().is_some();
     tracing::debug!(
         reason,
         live,
@@ -143,15 +145,16 @@ fn ask_in_plain_text(ctx: &ToolContext<'_>, asks: &[Ask], reason: &str) -> ToolO
              text and stop here; the answer arrives as the user's next message.\n\n{block}"
         ));
     }
+    let text = format!(
+        "A plain-text copy of the questions below is queued for delivery to the \
+         user (this channel has no question box). End your turn now; the answer \
+         arrives as the user's next message — do not ask again.\n\n{block}"
+    );
     ctx.pending_texts
         .lock()
         .expect("pending_texts poisoned")
-        .push(block.clone());
-    ToolOutput::success(format!(
-        "The questions below were sent to the user as a plain-text message (this \
-         channel has no question box). End your turn now; the answer arrives as \
-         the user's next message — do not ask again.\n\n{block}"
-    ))
+        .push(block);
+    ToolOutput::success(text)
 }
 
 /// Read the strings out of a JSON array field.
@@ -342,6 +345,14 @@ impl Tool for AskUserTool {
             None => ctx.outbound.clone(),
         };
         let Some(outbound) = outbound else {
+            if let Some(name) = piped_from {
+                // Which pipe channel is missing an adapter is the one thing a
+                // misconfiguration would need; the fallback text has no name.
+                tracing::debug!(
+                    channel = name,
+                    "ask_user: no adapter for the origin channel"
+                );
+            }
             return Ok(ask_in_plain_text(
                 ctx,
                 &asks,

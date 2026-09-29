@@ -493,3 +493,64 @@ async fn piped_ask_without_a_box_is_delivered_as_plain_text() {
         "no internal tool error may ship to the user: {log:?}"
     );
 }
+
+/// The same fallback through the other path that runs `ask_user`: a weak model
+/// wrote the question as an XML tag, and the turn came from a channel with no
+/// question box. The recovery shim executes the tool on its own, so it has to
+/// hand the queued questions over for delivery too — otherwise the user is
+/// promised a message that is never sent.
+#[tokio::test]
+async fn embedded_tag_from_a_channel_without_a_box_is_delivered_as_plain_text() {
+    let tag = "<ask_user question=\"开工吗？\" options=\"按方案, 再想想\" timeout_seconds=\"60\">";
+    let provider = ScriptedProvider {
+        rounds: vec![
+            vec![
+                StreamEvent::TextDelta(format!("两个问题，回个编号就行。\n\n{tag}")),
+                StreamEvent::Done,
+            ],
+            vec![
+                StreamEvent::TextDelta("等你回复。".to_string()),
+                StreamEvent::Done,
+            ],
+        ],
+        calls: AtomicUsize::new(0),
+        seen_tools: Default::default(),
+    };
+    let tmp = TempDir::new().unwrap();
+    let tools = registry_with_reply_tool();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let log = DeliveryLog::default();
+    let outbound = Arc::new(CapturingOutbound { log: log.clone() });
+    let hub = Arc::new(QuestionHub::new());
+    let mut target = test_reply_target();
+    target.original.metadata.insert(
+        jyc_types::ORIGIN_CHANNEL_METADATA_KEY.to_string(),
+        serde_json::Value::String("feishu_bot".to_string()),
+    );
+
+    run(AgentLoopConfig {
+        outbound: Some(outbound),
+        reply_target: Some(target),
+        current_channel: Some("agents".to_string()),
+        question_hub: Some(hub.clone()),
+        ..test_config(&provider, &tools, tmp.path(), cancel, "embedded-piped-ask")
+    })
+    .await
+    .expect("the loop runs to completion");
+
+    let log = log.snapshot();
+    assert!(
+        log.iter().all(|(kind, _)| *kind != "question"),
+        "no question may be pushed where the user cannot answer one: {log:?}"
+    );
+    let asked = log
+        .iter()
+        .find(|(kind, text)| *kind == "reply" && text.contains("1) 按方案"))
+        .expect("the recovered question must reach the user as a message");
+    assert!(asked.1.contains("Q1: 开工吗"), "{}", asked.1);
+    assert!(
+        !asked.1.contains("<ask_user"),
+        "the raw tag must not ship: {}",
+        asked.1
+    );
+}

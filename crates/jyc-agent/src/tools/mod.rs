@@ -268,6 +268,7 @@ impl<'a> ToolContext<'a> {
             question_hub: None,
         }
     }
+
     /// Drain and return any pending image sources accumulated during the
     /// current tool-execution batch. Called by the agent loop after the
     /// batch completes.

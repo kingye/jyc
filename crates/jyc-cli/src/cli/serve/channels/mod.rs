@@ -147,6 +147,18 @@ pub(super) fn close_event_topics(
         .collect()
 }
 
+/// Record the channel a message actually arrived on just before it is
+/// re-targeted into another channel's topic, so the agent turn can still tell
+/// who it is talking to. `ask_user` asks the origin channel's adapter whether
+/// it can show a question box at all — see
+/// [`jyc_types::ORIGIN_CHANNEL_METADATA_KEY`].
+fn stamp_origin_channel(msg: &mut jyc_types::InboundMessage) {
+    msg.metadata.insert(
+        jyc_types::ORIGIN_CHANNEL_METADATA_KEY.to_string(),
+        serde_json::Value::String(msg.channel.clone()),
+    );
+}
+
 pub(super) fn apply_pipe_retarget(
     mut msg: jyc_types::InboundMessage,
     pipe: &jyc_types::PipeTarget,
@@ -182,6 +194,7 @@ pub(super) fn apply_pipe_retarget(
             jyc_types::PIPE_PATTERN_METADATA_KEY.to_string(),
             serde_json::Value::String(agent_name.clone()),
         );
+        stamp_origin_channel(&mut msg);
         msg.channel = "agents".to_string();
         msg.topic = topic;
         return Some(msg);
@@ -199,6 +212,7 @@ pub(super) fn apply_pipe_retarget(
             serde_json::Value::String(pattern.clone()),
         );
     }
+    stamp_origin_channel(&mut msg);
     msg.channel = pipe
         .channel
         .clone()

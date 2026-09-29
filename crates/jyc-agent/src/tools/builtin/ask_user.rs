@@ -1,13 +1,13 @@
 //! Builtin tool: `ask_user` — ask the user an interactive question and wait
 //! for their answer.
 //!
-//! The question is pushed to the current channel's outbound adapter (the
-//! websocket channel renders it as a modal; feishu/wecom cards later). The
-//! tool blocks on [`QuestionHub`] oneshots until every answer (or dismissal)
-//! of the set arrives, the timeout expires, or the agent turn is cancelled.
-//! Channels without interactive support fail `send_question` gracefully; the
-//! tool reports that to the model so it can ask in plain text within its reply
-//! instead.
+//! The question is pushed to the outbound adapter of the channel the user's
+//! message arrived on (the websocket channel renders it as a question box).
+//! The tool blocks on [`QuestionHub`] oneshots until every answer (or decline)
+//! of the set arrives, the user discards the set — which cancels this run —
+//! the timeout expires, or the agent turn is cancelled. A channel without
+//! interactive support never gets registered: the call fails at once and the
+//! tool tells the model to ask in plain text within its reply instead.
 
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use jyc_types::channel::{QuestionAnswer, QuestionRequest};
+use jyc_types::channel::{QuestionAnswer, QuestionReply, QuestionRequest};
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
 
@@ -40,8 +40,12 @@ struct Ask {
 enum Outcome {
     /// The user's answer, already rendered as the tool reports it.
     Answered(String),
-    /// The user dismissed it without choosing.
-    Dismissed,
+    /// The user declined to answer this one question (`d`); the rest of the
+    /// set is unaffected.
+    Declined,
+    /// The user gave up on the whole set (Esc). Not an answer: it stops the
+    /// run. See [`stop_run`].
+    Discarded,
     /// The asker vanished mid-flight (the agent turn was cancelled).
     Gone,
     /// The deadline passed with no answer.
@@ -53,7 +57,8 @@ impl Outcome {
     fn render(&self) -> &str {
         match self {
             Outcome::Answered(text) => text,
-            Outcome::Dismissed => "The user dismissed this question.",
+            Outcome::Declined => "The user declined this question.",
+            Outcome::Discarded => "(discarded)",
             Outcome::Gone => "(cancelled)",
             Outcome::Unanswered => "(no answer)",
         }
@@ -63,6 +68,39 @@ impl Outcome {
 /// Reported when nothing came back before the deadline.
 fn timeout_notice(timeout_secs: u64) -> String {
     format!("Timed out after {timeout_secs}s without an answer.")
+}
+
+/// What a discarded question set reports back to the model: the user gave up
+/// on the whole set, so there is nothing to wait for and no point carrying on
+/// with the picks made before it.
+const DISCARDED: &str = "the user discarded the question set; end this turn";
+
+/// Cancel this topic's run — what a discarded set means. Fires the same
+/// per-topic token `/cancel` fires, so the loop stops at the same point.
+///
+/// Missing pieces are logged rather than swallowed: a context with no live
+/// topic (unit tests, sub-agents) is normal, a channel with no manager is not
+/// — without the warn, Esc would quietly revert to "keep running".
+async fn stop_run(ctx: &ToolContext<'_>) {
+    let (Some(channel), Some(topic)) =
+        (ctx.current_channel.as_deref(), ctx.current_topic.as_deref())
+    else {
+        tracing::debug!("ask_user: discarded set with no live topic to cancel");
+        return;
+    };
+    let manager = match &ctx.topic_managers {
+        Some(managers) => managers.lock().await.get(channel).cloned(),
+        None => None,
+    };
+    let Some(manager) = manager else {
+        tracing::warn!(
+            channel = %channel,
+            topic = %topic,
+            "ask_user: no topic manager; run left running"
+        );
+        return;
+    };
+    manager.cancel_topic(topic).await;
 }
 
 /// Read the strings out of a JSON array field.
@@ -212,10 +250,53 @@ impl Tool for AskUserTool {
             .and_then(|t| t.as_u64())
             .unwrap_or(DEFAULT_TIMEOUT_SECS);
 
-        let (Some(hub), Some(outbound)) = (&ctx.question_hub, &ctx.outbound) else {
+        let Some(hub) = &ctx.question_hub else {
             return Ok(ToolOutput::error(
-                "ask_user is not available in this context (no question hub or outbound adapter)",
+                "ask_user is not available in this context (no question hub)",
             ));
+        };
+
+        // The question belongs to the channel the user wrote on, not to
+        // whichever channel owns this topic: a turn piped in from feishu runs
+        // on the `agents` hub, and a box pushed there is invisible to the user
+        // while the whole turn waits for an answer only a TUI could give. A
+        // channel with no question support (or no adapter registered here at
+        // all) settles the call immediately, so the model asks in its reply
+        // text and the turn ends normally.
+        //
+        // The origin comes from the inbound message's metadata, stamped by the
+        // pipe retarget path just before it overwrites
+        // `InboundMessage::channel` — so a tool can still tell who it is really
+        // talking to. `None` (or this channel) means the message came from here
+        // directly.
+        let piped_from = ctx
+            .reply_target
+            .as_ref()
+            .and_then(|target| {
+                target
+                    .original
+                    .metadata
+                    .get(jyc_types::ORIGIN_CHANNEL_METADATA_KEY)
+                    .and_then(|value| value.as_str())
+            })
+            .filter(|origin| Some(*origin) != ctx.current_channel.as_deref());
+        let outbound = match piped_from {
+            Some(name) => match &ctx.outbounds {
+                Some(map) => map.lock().await.get(name).cloned(),
+                None => None,
+            },
+            None => ctx.outbound.clone(),
+        };
+        let Some(outbound) = outbound else {
+            return Ok(ToolOutput::error(match piped_from {
+                Some(name) => format!(
+                    "channel '{name}' this message came from does not support interactive \
+                     questions. Ask the question as plain text in your reply instead."
+                ),
+                None => {
+                    "ask_user is not available in this context (no outbound adapter)".to_string()
+                }
+            }));
         };
 
         let topic = ctx.current_topic.clone().unwrap_or_default();
@@ -226,7 +307,7 @@ impl Tool for AskUserTool {
         let mut requests = Vec::with_capacity(asks.len());
         let mut receivers = Vec::with_capacity(asks.len());
         let mut _guards = Vec::with_capacity(asks.len());
-        for (i, ask) in asks.iter().enumerate() {
+        for ask in &asks {
             let id = uuid::Uuid::new_v4().to_string();
             let (tx, rx) = tokio::sync::oneshot::channel();
             _guards.push(hub.register(&id, &topic, tx));
@@ -238,14 +319,12 @@ impl Tool for AskUserTool {
                 question: ask.question.clone(),
                 options: ask.options.clone(),
                 allow_multiple: ask.allow_multiple,
-                position: (total > 1).then_some((i as u32 + 1, total)),
                 timeout_seconds: Some(timeout_secs),
             });
         }
-        // Push in order: a channel that shows one card per question should
-        // show them as question 1..N, and text replies are consumed in that
-        // same order. A channel with no interactive support fails the very
-        // first push, so the call returns at once instead of waiting.
+        // Push oldest first: the user steps through the set in that order.
+        // A channel with no interactive support fails the very first push, so
+        // the call returns at once instead of waiting.
         for request in &requests {
             if let Err(e) = outbound.send_question(request).await {
                 // ponytail: a push failing mid-batch leaves the questions
@@ -264,7 +343,7 @@ impl Tool for AskUserTool {
         // set — the client picks them all and sends them at once — so waiting
         // on them one at a time would hold the first answer inside a call that
         // has not reached the last question yet. Each question settles on its
-        // own answer, dismissal or the deadline; the batch settles with the
+        // own answer, decline or the deadline; the batch settles with the
         // last of them.
         let budget = Duration::from_secs(timeout_secs);
         let outcomes: Vec<Outcome> = futures::future::join_all(
@@ -275,24 +354,39 @@ impl Tool for AskUserTool {
         .await
         .into_iter()
         .map(|waited| match waited {
-            Ok(Ok(QuestionAnswer::Choice(choices))) => Outcome::Answered(match choices.len() {
-                0 => String::new(),
-                // One pick reads exactly as it did before multi-select existed.
-                1 => choices.into_iter().next().unwrap_or_default(),
-                _ => format!("Selected: {}", choices.join(", ")),
-            }),
-            Ok(Ok(QuestionAnswer::Cancelled)) => Outcome::Dismissed,
+            Ok(Ok(QuestionReply::Answer(QuestionAnswer::Choice(choices)))) => {
+                Outcome::Answered(match choices.len() {
+                    0 => String::new(),
+                    // One pick reads exactly as it did before multi-select existed.
+                    1 => choices.into_iter().next().unwrap_or_default(),
+                    _ => format!("Selected: {}", choices.join(", ")),
+                })
+            }
+            Ok(Ok(QuestionReply::Answer(QuestionAnswer::Declined))) => Outcome::Declined,
+            Ok(Ok(QuestionReply::Discarded)) => Outcome::Discarded,
             // The asker is gone (agent turn cancelled): nothing to report to.
             Ok(Err(_)) => Outcome::Gone,
             Err(_) => Outcome::Unanswered,
         })
         .collect();
 
+        // Esc on the box is not an answer to any question: the user gave up on
+        // the set, so there is nothing left to wait for — and no point working
+        // on with the picks made before it. Stop this run; the loop watches the
+        // very token `/cancel` fires and ends the turn at the same point.
+        if outcomes.iter().any(|o| matches!(o, Outcome::Discarded)) {
+            stop_run(ctx).await;
+            return Ok(ToolOutput::error(DISCARDED));
+        }
+
         // A single question answers exactly as it did before batches existed.
         if total == 1 {
             return Ok(match outcomes.into_iter().next().unwrap_or(Outcome::Gone) {
                 Outcome::Answered(text) => ToolOutput::success(text),
-                Outcome::Dismissed => ToolOutput::success("The user dismissed the question."),
+                Outcome::Declined => ToolOutput::success("The user declined the question."),
+                // The discard check above returns first; a bare discard is a
+                // cancellation, never an answer, so it reads the same here.
+                Outcome::Discarded => ToolOutput::error(DISCARDED),
                 Outcome::Gone => ToolOutput::error("question cancelled"),
                 Outcome::Unanswered => ToolOutput::success(timeout_notice(timeout_secs)),
             });
@@ -500,7 +594,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancel_reports_dismissal() {
+    async fn decline_reports_decline() {
         let tmp = tempfile::tempdir().unwrap();
         let hub = Arc::new(jyc_core::question::QuestionHub::new());
         let sent = Arc::new(tokio::sync::Mutex::new(Vec::new()));
@@ -524,13 +618,69 @@ mod tests {
         let out = tokio::select! {
             finished = &mut out => panic!("tool finished before the answer: {finished:?}"),
             id = answerer => {
-                assert!(hub.respond(&id, QuestionAnswer::Cancelled));
+                assert!(hub.respond(&id, QuestionAnswer::Declined));
                 out.await.unwrap()
             }
         };
 
         assert!(!out.is_error);
-        assert!(out.content.contains("dismissed"));
+        assert!(out.content.contains("declined"), "{}", out.content);
+    }
+
+    /// Esc on the question box discards the whole set. That is not an answer
+    /// to anything: the call settles with an error, so a turn piped in from a
+    /// channel that cannot show questions (or with no topic manager to cancel)
+    /// never pretends the user replied.
+    #[tokio::test]
+    async fn discarded_batch_settles_as_a_cancellation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hub = Arc::new(jyc_core::question::QuestionHub::new());
+        let sent = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let outbound = Arc::new(MockOutbound {
+            broadcast: sent.clone(),
+        });
+        let ctx = ctx_with(tmp.path(), hub.clone(), outbound);
+
+        let input = json!({
+            "questions": [
+                { "question": "a?", "options": ["x"] },
+                { "question": "b?", "options": ["y"] },
+            ],
+            // Long on purpose: the discard, not the deadline, must end this.
+            "timeout_seconds": 60,
+        });
+        let answerer = async {
+            loop {
+                let reqs = sent.lock().await.clone();
+                if reqs.len() == 2 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+
+        let tool = AskUserTool;
+        let started = std::time::Instant::now();
+        tokio::pin!(let out = tool.execute(input, &ctx););
+        let out = tokio::select! {
+            finished = &mut out => panic!("tool finished before the batch was discarded: {finished:?}"),
+            () = answerer => {
+                assert_eq!(hub.abort_topic("topic-a"), 2, "both questions settle");
+                out.await.unwrap()
+            }
+        };
+
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("discarded"), "{}", out.content);
+        assert!(
+            started.elapsed().as_secs() < 5,
+            "a discarded set must not wait out its deadline"
+        );
+        assert_eq!(
+            hub.abort_topic("topic-a"),
+            0,
+            "a discarded batch leaves nothing pending"
+        );
     }
 
     #[tokio::test]
@@ -555,7 +705,7 @@ mod tests {
             out.content
         );
         // The hub entry was cleaned up by the guard.
-        assert_eq!(hub.pending_for("topic-a"), None);
+        assert_eq!(hub.abort_topic("topic-a"), 0);
     }
 
     #[tokio::test]
@@ -579,7 +729,76 @@ mod tests {
             out.content
         );
         // Failed push must not leak a pending entry.
-        assert_eq!(hub.pending_for("topic-a"), None);
+        assert_eq!(hub.abort_topic("topic-a"), 0);
+    }
+
+    /// The bug this covers: a turn piped in from a channel that cannot show a
+    /// question box pushed its questions to whichever channel owns the *topic*.
+    /// The user never saw them, the reply they were waiting for stayed locked
+    /// behind the block, and the timeout ran out on a question that had no
+    /// surface to be answered on. A question belongs to the channel the message
+    /// came from, so the call fails at once and the model asks in its reply.
+    #[tokio::test]
+    async fn piped_turn_fails_fast_instead_of_blocking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hub = Arc::new(jyc_core::question::QuestionHub::new());
+        let sent = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let outbound = Arc::new(MockOutbound {
+            broadcast: sent.clone(),
+        });
+        let mut ctx = ctx_with(tmp.path(), hub.clone(), outbound);
+        // The hub channel's outbound map: a pipe-only source channel has no
+        // adapter in it at all.
+        ctx.outbounds = Some(Arc::new(tokio::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        )));
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            jyc_types::ORIGIN_CHANNEL_METADATA_KEY.to_string(),
+            serde_json::Value::String("feishu_work".to_string()),
+        );
+        ctx.reply_target = Some(crate::tools::ReplyTarget {
+            original: jyc_types::InboundMessage {
+                id: "test".to_string(),
+                channel: "agents".to_string(),
+                channel_uid: "1".to_string(),
+                sender: "user".to_string(),
+                sender_address: "user@test".to_string(),
+                recipients: vec![],
+                topic: "topic-a".to_string(),
+                content: Default::default(),
+                timestamp: chrono::Utc::now(),
+                references: None,
+                reply_to_id: None,
+                external_id: None,
+                attachments: vec![],
+                metadata,
+                matched_pattern: None,
+            },
+            message_dir: "2026-09-28_00-00-00".to_string(),
+        });
+
+        let started = std::time::Instant::now();
+        let out = AskUserTool
+            .execute(input("Pick?", &["a", "b"], Some(60)), &ctx)
+            .await
+            .unwrap();
+
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("feishu_work") && out.content.contains("plain text"),
+            "the model needs to know which channel failed and what to do: {}",
+            out.content
+        );
+        assert!(
+            sent.lock().await.is_empty(),
+            "the topic's own channel never sees a question it was not asked on"
+        );
+        assert!(
+            started.elapsed().as_secs() < 5,
+            "must not wait for an answer nobody can give"
+        );
+        assert_eq!(hub.abort_topic("topic-a"), 0, "nothing stays pending");
     }
 
     #[tokio::test]
@@ -647,8 +866,6 @@ mod tests {
         let out = tokio::select! {
             finished = &mut out => panic!("tool finished before the answers: {finished:?}"),
             reqs = answerer => {
-                assert_eq!(reqs[0].position, Some((1, 2)), "first of two");
-                assert_eq!(reqs[1].position, Some((2, 2)), "second of two");
                 assert!(!reqs[0].allow_multiple);
                 assert!(reqs[1].allow_multiple, "the multi flag is per question");
                 assert!(hub.respond(
@@ -702,18 +919,18 @@ mod tests {
         );
         assert!(started.elapsed().as_secs() < 5, "must not wait for answers");
         assert_eq!(
-            hub.pending_for("topic-a"),
-            None,
+            hub.abort_topic("topic-a"),
+            0,
             "a failed batch leaves nothing pending"
         );
     }
 
     /// The batch reports what it got even when the user only settles part of
-    /// it: one question dismissed and one left to the deadline must still come
+    /// it: one question declined and one left to the deadline must still come
     /// back paired with its question, or the model cannot tell which decision
     /// is still open.
     #[tokio::test]
-    async fn batch_reports_dismissed_and_unanswered_questions() {
+    async fn batch_reports_declined_and_unanswered_questions() {
         let tmp = tempfile::tempdir().unwrap();
         let hub = Arc::new(jyc_core::question::QuestionHub::new());
         let sent = Arc::new(tokio::sync::Mutex::new(Vec::new()));
@@ -744,7 +961,7 @@ mod tests {
         let out = tokio::select! {
             finished = &mut out => panic!("tool finished before the batch could be answered: {finished:?}"),
             reqs = answerer => {
-                assert!(hub.respond(&reqs[0].id, QuestionAnswer::Cancelled));
+                assert!(hub.respond(&reqs[0].id, QuestionAnswer::Declined));
                 out.await.unwrap()
             }
         };
@@ -752,7 +969,7 @@ mod tests {
         assert!(!out.is_error);
         assert_eq!(
             out.content,
-            "Q1: Which sections?\nA: The user dismissed this question.\n\n\
+            "Q1: Which sections?\nA: The user declined this question.\n\n\
              Q2: Branch name?\nA: (no answer)"
         );
     }
@@ -795,12 +1012,12 @@ mod tests {
         let out = tokio::select! {
             finished = &mut out => panic!("tool finished before the batch was settled: {finished:?}"),
             reqs = answerer => {
-                // The second question settles first, the first is dismissed.
+                // The second question settles first, the first is declined.
                 assert!(hub.respond(
                     &reqs[1].id,
                     QuestionAnswer::Choice(vec!["fix/x".to_string()])
                 ));
-                assert!(hub.respond(&reqs[0].id, QuestionAnswer::Cancelled));
+                assert!(hub.respond(&reqs[0].id, QuestionAnswer::Declined));
                 out.await.unwrap()
             }
         };
@@ -811,8 +1028,170 @@ mod tests {
         );
         assert_eq!(
             out.content,
-            "Q1: Which sections?\nA: The user dismissed this question.\n\n\
+            "Q1: Which sections?\nA: The user declined this question.\n\n\
              Q2: Branch name?\nA: fix/x"
         );
+    }
+
+    /// Agent service that records the per-topic cancellation token it is handed
+    /// (the one `/cancel` fires) and then blocks on it — the shape a real run
+    /// has while it waits for a question.
+    struct WatchdogAgent {
+        seen: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
+    }
+
+    #[async_trait]
+    impl jyc_core::agent::AgentService for WatchdogAgent {
+        async fn base_url(&self) -> Result<String> {
+            Ok(String::new())
+        }
+
+        async fn process(
+            &self,
+            _message: &jyc_types::InboundMessage,
+            _topic_name: &str,
+            _topic_path: &Path,
+            _message_dir: &str,
+            _pending_rx: &mut tokio::sync::mpsc::Receiver<jyc_types::QueueItem>,
+            topic_cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<jyc_core::agent::AgentResult> {
+            *self.seen.lock().await = Some(topic_cancel.clone());
+            topic_cancel.cancelled().await;
+            Ok(jyc_core::agent::AgentResult {
+                reply_delivered: true,
+                reply_text: None,
+            })
+        }
+
+        async fn reset_session(
+            &self,
+            _topic_path: &Path,
+            _topic_name: &str,
+            _config: &jyc_types::channel::ResetCompressionConfig,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The headline behaviour of a discarded set — Esc stops the loop — goes
+    /// through the channel's `TopicManager`, so this runs a genuine topic worker
+    /// (`TopicManager::enqueue` spawns one) and asserts on the token it handed
+    /// the agent. Deleting `stop_run`'s call must turn this red; every other
+    /// discard test only reads the tool's own return value, which stays the same
+    /// whether or not anything was actually cancelled.
+    #[tokio::test]
+    async fn discarded_set_cancels_the_running_topic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let seen: Arc<tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+        let tm = Arc::new(jyc_core::topic_manager::TopicManager::new(
+            1,
+            4,
+            Arc::new(jyc_core::message_storage::MessageStorage::new(&workspace)),
+            Arc::new(MockOutbound {
+                broadcast: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            }),
+            Arc::new(WatchdogAgent { seen: seen.clone() }),
+            tokio_util::sync::CancellationToken::new(),
+            tmp.path().join("templates"),
+            Arc::new(arc_swap::ArcSwap::from_pointee(
+                jyc_types::AppConfig::default(),
+            )),
+            "ws".to_string(),
+            "websocket".to_string(),
+            tmp.path().to_path_buf(),
+            workspace,
+            jyc_core::metrics::MetricsHandle::noop(),
+        ));
+
+        tm.enqueue(
+            jyc_types::InboundMessage {
+                id: "m1".to_string(),
+                channel: "ws".to_string(),
+                channel_uid: "1".to_string(),
+                sender: "user".to_string(),
+                sender_address: "user@test".to_string(),
+                recipients: vec![],
+                topic: "topic-a".to_string(),
+                content: jyc_types::MessageContent {
+                    text: Some("hello".to_string()),
+                    html: None,
+                    markdown: None,
+                },
+                timestamp: chrono::Utc::now(),
+                references: None,
+                reply_to_id: None,
+                external_id: None,
+                attachments: vec![],
+                metadata: std::collections::HashMap::new(),
+                matched_pattern: None,
+            },
+            "topic-a".to_string(),
+            jyc_types::PatternMatch {
+                pattern_name: String::new(),
+                channel: "websocket".to_string(),
+                matches: std::collections::HashMap::new(),
+            },
+            None,
+            false,
+            None,
+        )
+        .await;
+
+        // The worker must reach the agent before the tool can be asked to stop
+        // it; otherwise there is no live token to assert on.
+        let token = tokio::time::timeout(Duration::from_secs(2), {
+            let seen = seen.clone();
+            async move {
+                loop {
+                    if let Some(token) = seen.lock().await.clone() {
+                        return token;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }
+        })
+        .await
+        .expect("the topic worker never reached the agent");
+
+        let hub = Arc::new(jyc_core::question::QuestionHub::new());
+        let sent = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let mut ctx = ctx_with(
+            tmp.path(),
+            hub.clone(),
+            Arc::new(MockOutbound {
+                broadcast: sent.clone(),
+            }),
+        );
+        // `ctx_with` puts the run on channel "ws", topic "topic-a" — the same
+        // keys the worker registered under.
+        let mut managers = std::collections::HashMap::new();
+        managers.insert("ws".to_string(), tm.clone());
+        ctx.topic_managers = Some(Arc::new(tokio::sync::Mutex::new(managers)));
+
+        let answerer = async {
+            loop {
+                if !sent.lock().await.is_empty() {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+        let tool = AskUserTool;
+        tokio::pin!(let out = tool.execute(input("Pick?", &["a", "b"], Some(60)), &ctx););
+        let out = tokio::select! {
+            finished = &mut out => panic!("tool finished before the discard: {finished:?}"),
+            () = answerer => {
+                assert_eq!(hub.abort_topic("topic-a"), 1, "the question settles");
+                out.await.unwrap()
+            }
+        };
+
+        assert!(out.is_error, "{}", out.content);
+        assert!(token.is_cancelled(), "a discarded set must stop the run");
+        tm.shutdown().await;
     }
 }

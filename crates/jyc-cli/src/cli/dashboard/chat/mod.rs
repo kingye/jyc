@@ -245,9 +245,9 @@ pub(super) struct ChatState {
     /// form: `question_index` is the one on screen, each carries its own cursor
     /// and marks, and nothing is sent until the last one is confirmed — which
     /// is what lets `←/→` go back and adjust an earlier answer. Takes over the
-    /// input area while non-empty; Esc discards the whole set (a cancel per
-    /// question), which settles the blocked `ask_user` call and frees the next
-    /// message as an ordinary turn.
+    /// input area while non-empty; Esc discards the whole set (one
+    /// `question_abort` frame), which settles the blocked `ask_user` call and
+    /// stops the run that asked it — the way `/cancel` does.
     pub(super) questions: Vec<PendingQuestion>,
     /// Which of [`Self::questions`] is on screen.
     pub(super) question_index: usize,
@@ -965,9 +965,9 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     }
 
     // Pending questions own the keyboard while visible: the agent is blocked
-    // mid-turn waiting for these answers. Esc discards the whole set (a cancel
-    // per question), which settles that call and hands the next message back
-    // to the editor as an ordinary turn.
+    // mid-turn waiting for these answers. Esc discards the whole set (one
+    // `question_abort` frame), which settles that call and stops the run, the
+    // way `/cancel` does.
     if app.chat.active_question() {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => app.chat.select_question_prev(),
@@ -2886,14 +2886,14 @@ impl ChatState {
     }
 
     /// Send every buffered answer as its own frame, oldest question first, and
-    /// close the batch. A multi question left unmarked goes out as a cancel -
+    /// close the batch. A multi question left unmarked goes out as a decline -
     /// the user backed out of that one rather than picking something.
     fn submit_questions(&mut self) {
         let questions = std::mem::take(&mut self.questions);
         self.question_index = 0;
         for q in questions {
             if q.declined {
-                self.send_question_cancelled(&q.id);
+                self.send_question_declined(&q.id);
                 continue;
             }
             if !q.multi {
@@ -2903,7 +2903,7 @@ impl ChatState {
                 continue;
             }
             if q.marked.is_empty() {
-                self.send_question_cancelled(&q.id);
+                self.send_question_declined(&q.id);
                 continue;
             }
             let mut marked = q.marked.clone();
@@ -2916,20 +2916,22 @@ impl ChatState {
         }
     }
 
-    /// Esc: discard the whole pending batch - tell the daemon every question
-    /// was dismissed, then drop them locally.
+    /// Esc: give up on the whole pending batch — one `question_abort` frame for
+    /// the topic, then drop the box locally.
     ///
-    /// Discard, not hide: the blocked `ask_user` call settles at once, so the
-    /// message the user types next is an ordinary turn that gets an ordinary
-    /// answer. A hidden box would leave the questions pending with no way to
-    /// reach them - the next message used to be hijacked as a free-form answer
-    /// to the oldest, and anything left unanswered stalled the turn until the
-    /// daemon's timeout.
+    /// Aborting is not answering: it settles every question of the set at once,
+    /// and the daemon stops the run that asked them, the same way `/cancel`
+    /// does. Discard, not hide: a hidden box would leave the questions pending
+    /// with no way to reach them, stalling the turn until the daemon's timeout.
+    /// Per-question "no" is `d` ([`Self::toggle_question_decline`]), which lets
+    /// the rest of the batch be answered.
     fn discard_questions(&mut self) {
         let questions = std::mem::take(&mut self.questions);
         self.question_index = 0;
-        for q in questions {
-            self.send_question_cancelled(&q.id);
+        // Every question of a batch belongs to this pane's topic, so the topic
+        // of the first is the topic of the set.
+        if let Some(topic) = questions.first().map(|q| q.topic.clone()) {
+            self.send_question_abort(&topic);
         }
     }
 
@@ -2939,7 +2941,7 @@ impl ChatState {
     /// answering surface, so a question the user cannot answer needs its own
     /// "no" — otherwise the only way out is Esc, which costs the picks already
     /// made for the rest of the batch. The flag rides to submit, where a
-    /// declined question goes out as a dismissal.
+    /// declined question goes out as a decline.
     fn toggle_question_decline(&mut self) {
         if let Some(q) = self.current_question_mut() {
             q.declined = !q.declined;
@@ -2960,12 +2962,25 @@ impl ChatState {
         }
     }
 
-    /// Send a `question_response` frame marking the question as cancelled.
-    fn send_question_cancelled(&self, id: &str) {
+    /// Send a `question_response` frame declining this one question.
+    fn send_question_declined(&self, id: &str) {
         let msg = serde_json::json!({
             "type": "question_response",
             "id": id,
-            "cancelled": true,
+            "declined": true,
+        })
+        .to_string();
+        if let Some(tx) = &self.ws_tx {
+            let _ = tx.send(msg);
+        }
+    }
+
+    /// Send the `question_abort` frame for a topic: every pending question of
+    /// it is given up on, and the run that asked them stops.
+    fn send_question_abort(&self, topic: &str) {
+        let msg = serde_json::json!({
+            "type": "question_abort",
+            "topic": topic,
         })
         .to_string();
         if let Some(tx) = &self.ws_tx {

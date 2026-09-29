@@ -177,23 +177,19 @@ once a new feishu message has arrived (see above).
 
 ### Interactive questions (`ask_user`)
 
-When the agent calls the built-in `ask_user` tool in a feishu-originated topic,
-the pending question is relayed to the chat as a card message with numbered
-options. The user answers by **replying in the chat with the number or the
-option text** (e.g. `1` or `option text`) — the pipe routes that reply to the
-question hub and the agent continues. Slash commands are never intercepted.
+Feishu does not get interactive questions. A turn that arrived over this pipe
+keeps the channel it came from (`origin_channel` metadata), and `ask_user`
+pushes a question only to that channel's outbound adapter — which has no
+question support, so the call fails at once instead of blocking. The model then
+asks in its reply text and the answer arrives as an ordinary chat message: no
+half-minutes of silence waiting for a card that would never show up.
 
-A single `ask_user` call may ask up to five questions at once. Feishu gets one
-card per question, headed `第 N/M 题`, all of them arriving together; **answer
-them in order, one reply each** — every reply is matched to the oldest question
-still open. Multi-select questions have no marks to tick, so answer them with
-the numbers written out (`1,3`); the text reaches the agent as typed, and
-JYC does not resolve numbers into option text on this channel.
-
-> **Why no clickable buttons?** Feishu button callbacks (`card.action.trigger`)
-> are dropped by openlark-client's WebSocket frame handler, so JYC cannot
-> receive them over the long connection. Numbered-reply keeps everything on
-> the existing connection — no public webhook needed.
+> **Why not cards with numbered replies?** The pipe relayed the question frames
+> as cards and read the next chat reply as the answer. One reply could only
+> settle one question, so a multi-question call stalled; and the turn could not
+> end until every question was settled, which kept the reply the user was
+> waiting for locked behind the block. Asking in the reply text costs nothing
+> the chat does not already have.
 
 ### Topic directory names
 
@@ -221,18 +217,16 @@ LarkWsClient::open()          ← openlark SDK handles connection, ping/pong, re
 websocket.rs event loop        ← parse JSON → enrich with names → InboundMessage
      │ on_message callback
      ▼
-FeishuMatcher → apply_pipe_retarget (channel/topic rewritten, topic→chat_id recorded)
-     │ pending `ask_user` question? → answer QuestionHub, drop message
+FeishuMatcher → apply_pipe_retarget (channel/topic rewritten, origin channel and topic→chat_id recorded)
      ▼
 Hub channel's MessageRouter → TopicManager → in-process agent
-     │ reply / question
+     │ reply
      ▼
-Hub channel's WebsocketOutboundAdapter → broadcast {"type":"reply"|"question", topic, ...}
+Hub channel's WebsocketOutboundAdapter → broadcast {"type":"reply", topic, ...}
      │
      ▼
 Feishu pipe reply forwarder (subscribed to the agent broadcast)
      │ "reply": topic→chat_id lookup → FeishuClient.send_text_message()
-     │ "question": topic→chat_id lookup → numbered-options card
      │ attachments: download from inspect files endpoint → re-upload to feishu
      ▼
 Feishu Server → User sees reply in chat

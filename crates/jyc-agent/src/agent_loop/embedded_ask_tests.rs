@@ -91,6 +91,9 @@ impl OutboundAdapter for CapturingOutbound {
 
     async fn send_question(&self, request: &QuestionRequest) -> Result<()> {
         self.log.record("question", request.question.clone());
+        // The id as well: a test answering through the hub cannot guess a UUID,
+        // and the hub has no "list pending ids" API outside the ones it needs.
+        self.log.record("question_id", request.id.clone());
         Ok(())
     }
 }
@@ -127,11 +130,15 @@ fn registry_with_reply_tool() -> crate::tools::registry::ToolRegistry {
 async fn run_and_answer(
     config: AgentLoopConfig<'_>,
     hub: Arc<QuestionHub>,
-    topic: &str,
+    log: DeliveryLog,
 ) -> AgentLoopResult {
     let answerer = async {
         loop {
-            if let Some(id) = hub.pending_for(topic) {
+            if let Some((_, id)) = log
+                .snapshot()
+                .into_iter()
+                .find(|(kind, _)| *kind == "question_id")
+            {
                 return hub.respond(&id, QuestionAnswer::Choice(vec!["按方案".to_string()]));
             }
             tokio::task::yield_now().await;
@@ -183,7 +190,7 @@ async fn embedded_tag_recovers_question_with_message_first() {
             ..test_config(&provider, &tools, tmp.path(), cancel, "embedded-ask")
         },
         hub,
-        "embedded-ask",
+        log.clone(),
     )
     .await;
 
@@ -269,7 +276,7 @@ async fn native_ask_delivers_narration_before_question() {
             ..test_config(&provider, &tools, tmp.path(), cancel, "native-ask")
         },
         hub,
-        "native-ask",
+        log.clone(),
     )
     .await;
 
@@ -338,7 +345,7 @@ async fn native_ask_strips_embedded_tag_from_narration() {
             ..test_config(&provider, &tools, tmp.path(), cancel, "native-mixed")
         },
         hub,
-        "native-mixed",
+        log.clone(),
     )
     .await;
 

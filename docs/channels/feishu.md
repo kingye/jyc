@@ -186,6 +186,18 @@ message through the same reply path the final message uses, then returns at
 once. The user answers by number, and that answer starts the next turn: no
 half-minutes of silence waiting for a card that would never show up.
 
+> **Why a blank line between the questions?** Reply text reaches this channel as
+> markdown (a card element), where the numbered options parse as a list and the
+> next `Q2:` line would be read as that list's continuation — gluing the
+> questions onto one line. The blank line ends the list, so the set arrives as
+> it was written. An option or question the model puts on several lines is
+> folded onto one for the same reason: the numbering is what the user answers by.
+
+> **Answering over several lines** makes Feishu send the reply as a rich-text
+> `post` rather than plain text. The adapter reads it back as the text typed —
+> paragraph breaks kept, links shown with their target, a picture as `[图片]` —
+> so a multi-line answer works like a single-line one.
+
 > **Why not cards with numbered replies?** The pipe relayed the question frames
 > as cards and read the next chat reply as the answer. One reply could only
 > settle one question, so a multi-question call stalled; and the turn could not

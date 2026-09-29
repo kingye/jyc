@@ -130,10 +130,6 @@ pub struct AgentLoopConfig<'a> {
     /// (tests, sub-agents), where the reply tool falls back to the
     /// `reply.md`/`reply-sent.flag` file relay.
     pub reply_target: Option<crate::tools::ReplyTarget>,
-    /// Shared question/answer registry for the `ask_user` tool. Passed
-    /// through to `ToolContext`; `None` disables interactive questions
-    /// (the tool then reports unavailability to the model).
-    pub question_hub: Option<std::sync::Arc<jyc_core::question::QuestionHub>>,
 }
 
 /// Run the agent loop to completion.
@@ -173,7 +169,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         model_label,
         context_strategy,
         reply_target,
-        question_hub,
     } = config;
 
     // Topic label stamped on every billing entry this loop writes.
@@ -210,6 +205,15 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     // Informational only — already included in `total_output_tokens`.
     let mut total_reasoning_tokens: u64 = 0;
     let mut reply_delivered = false;
+    // Set when a tool handed the user everything they need this turn
+    // (`ask_user`'s questions): the loop stops at the end of that batch, since
+    // the next model call would only be a chance to repeat what was just delivered.
+    let mut handed_over = false;
+    // What a handed-over turn still has to say: the questions that failed to go
+    // out on the live channel, which become this turn's reply text so the worker
+    // delivers them. Empty whenever the delivery worked, and never sent twice —
+    // both paths that run tools end the turn this way.
+    let mut turn_text = String::new();
 
     // Shared ToolContext for tool execution. Built once: every field is
     // static for the duration of the loop. The `context_browse` snapshot
@@ -223,7 +227,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     ctx.current_topic = Some(topic_name.to_string());
     ctx.outbounds = outbounds.clone();
     ctx.reply_target = reply_target.clone();
-    ctx.question_hub = question_hub.clone();
     let start_time = Instant::now();
 
     // RAII guard: the spawned ticker task is terminated on every return
@@ -555,12 +558,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 
             // Embedded-question shim: models with weak function-calling
             // sometimes write the `ask_user` call as XML in the reply text
-            // instead of emitting a native tool call. Recover a well-formed
-            // tag — deliver the prose first, block on the question, then
-            // continue the turn with the answer as a synthetic tool result.
-            // Malformed tags are stripped (all of them) so raw syntax never
-            // ships to the user; the remaining prose falls through to
-            // normal delivery below.
+            // instead of emitting a native tool call. Recover a well-formed tag
+            // — deliver the prose first, then run the question exactly as the
+            // real tool would, ending the turn there. Malformed tags are
+            // stripped (all of them) so raw syntax never ships to the user; the
+            // remaining prose falls through to normal delivery below.
             while let Some(embedded_ask::EmbeddedAsk::Malformed { span }) =
                 embedded_ask::find_embedded_ask(&response.text)
             {
@@ -571,7 +573,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 span,
                 question,
                 options,
-                timeout_secs,
             }) = embedded_ask::find_embedded_ask(&response.text)
             {
                 let prose = embedded_ask::remove_span(&response.text, span);
@@ -581,7 +582,6 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 let input = serde_json::json!({
                     "question": question,
                     "options": options,
-                    "timeout_seconds": timeout_secs,
                 });
                 let output = match tools.execute("ask_user", input, &ctx).await {
                     Ok(output) => output,
@@ -604,8 +604,20 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 // this path runs `ask_user` too, and a plain-text question left
                 // queued here is dropped while the model is told it was handed
                 // over.
-                drain_pending_texts(tools, &ctx, event_bus, topic_name).await;
-                continue;
+                let undelivered = drain_pending_texts(tools, &ctx, event_bus, topic_name).await;
+                if !output.ends_turn {
+                    // No live delivery target: the model's reply is the only
+                    // surface left, so it keeps going and asks there.
+                    continue;
+                }
+                // The same exit the native batch path uses — one way for a tool
+                // that already handed its answer over to end the turn. The prose
+                // went out above, so the only thing left to say is the block that
+                // failed to deliver (empty otherwise, which also keeps the user
+                // from being shown the questions twice).
+                handed_over = true;
+                turn_text = undelivered.join("\n\n");
+                break;
             }
 
             // Deliver the final text as the turn's reply.
@@ -688,10 +700,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             "Executing tool calls"
         );
 
-        // Question ordering: when this batch includes a blocking `ask_user`,
-        // deliver the narration text first — the user must read the message
-        // before the question card arrives. The final auto-delivery still
-        // fires when the run ends, so the post-answer conclusion is not lost.
+        // Question ordering: when this batch asks the user something, deliver
+        // the narration text first — the user must read the context before the
+        // question arrives. The turn ends at the question, so for a while this
+        // is the last thing they see from us.
         if response.tool_calls.iter().any(|tc| tc.name == "ask_user")
             && !response.text.trim().is_empty()
         {
@@ -815,6 +827,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 &output.content,
                 output.is_error,
             ));
+            handed_over |= output.ends_turn;
         }
 
         // If cancelled mid-tool-execution, the assistant message we just added
@@ -877,7 +890,30 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // box (`ask_user` on a channel that cannot show one): the user has to
         // actually receive them, so they go out through the same reply path as
         // the final message instead of relying on the model to repeat them.
-        drain_pending_texts(tools, &ctx, event_bus, topic_name).await;
+        let undelivered = drain_pending_texts(tools, &ctx, event_bus, topic_name).await;
+
+        // Everything the user needed this turn is already delivered, so stop
+        // here rather than going round again. The remaining tool calls of the
+        // batch ran anyway: their results keep the transcript free of dangling
+        // tool calls.
+        if handed_over {
+            if !undelivered.is_empty() && !cancel.is_cancelled() {
+                // The questions never reached the live channel, and nothing else
+                // will carry them this turn: the relay fallback writes `reply.md`
+                // whose watcher dies with the turn, and the post-loop delivery
+                // below is skipped for a turn that reported itself delivered. So
+                // the block becomes this turn's reply text and the worker sends it
+                // with the ordinary reply machinery. Asking the model instead is
+                // pointless — its only surface is the same broken channel.
+                tracing::error!(
+                    topic = %topic_name,
+                    "ask_user questions were not delivered; sending them as the turn's reply"
+                );
+                turn_text = undelivered.join("\n\n");
+            }
+            tracing::info!("Agent loop ended: ask_user handed its questions over");
+            break;
+        }
 
         // Publish progress (only when continuing the loop)
         let elapsed = start_time.elapsed();
@@ -905,14 +941,16 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         total_iterations += 1;
     }
 
-    // Loop ended (cancellation only — there's no max-cycles limit)
+    // Loop ended (cancellation, or a tool handed its answer over — there's no
+    // max-cycles limit). A turn cancelled by the user is a failed turn whatever
+    // it managed to deliver first, including a question that ended the turn.
     let duration = start_time.elapsed();
     publish_event(
         event_bus,
         TopicEvent::ProcessingCompleted {
             topic_name: topic_name.to_string(),
             message_id: "agent-loop".to_string(),
-            success: false,
+            success: handed_over && !cancel.is_cancelled(),
             duration_secs: duration.as_secs(),
             timestamp: Utc::now(),
         },
@@ -920,7 +958,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     .await;
 
     Ok(AgentLoopResult {
-        text: String::new(),
+        text: turn_text,
         reply_delivered,
         input_tokens: context_input_tokens,
         total_input_tokens,
@@ -936,17 +974,22 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
 /// Deliver a mid-turn user-visible message (cycle-boundary heartbeat,
 /// pre-question narration) and publish `ReplySent` on direct delivery.
 /// Delivery failures are logged, never fatal — the turn continues.
+///
+/// Returns whether the text reached the user's channel directly. A `false`
+/// covers both a failed send and the relay fallback, whose watcher stops with
+/// the turn — callers that cannot tolerate that loss need to say so.
 async fn deliver_progress_text(
     tools: &ToolRegistry,
     ctx: &ToolContext<'_>,
     event_bus: Option<&TopicEventBusRef>,
     topic_name: &str,
     text: &str,
-) {
+) -> bool {
     match crate::tools::deliver_reply(ctx, tools.hooks(), topic_name, text).await {
         Ok(delivery) => {
             if delivery.direct {
                 publish_reply_sent(event_bus, topic_name, text).await;
+                return true;
             }
         }
         Err(e) => {
@@ -957,6 +1000,7 @@ async fn deliver_progress_text(
             }
         }
     }
+    false
 }
 
 /// Deliver the texts a tool queued for the user during this batch — currently
@@ -964,15 +1008,22 @@ async fn deliver_progress_text(
 /// run tools (the native batch and the embedded-`<ask_user>` recovery) call
 /// this after the tool returns; a path that forgets drops the questions
 /// silently while the tool result tells the model they were handed over.
+///
+/// Returns the texts that did not reach the user's channel, so the caller can
+/// still get them out some other way.
 async fn drain_pending_texts(
     tools: &ToolRegistry,
     ctx: &ToolContext<'_>,
     event_bus: Option<&TopicEventBusRef>,
     topic_name: &str,
-) {
+) -> Vec<String> {
+    let mut undelivered = Vec::new();
     for text in ctx.take_pending_texts() {
-        deliver_progress_text(tools, ctx, event_bus, topic_name, &text).await;
+        if !deliver_progress_text(tools, ctx, event_bus, topic_name, &text).await {
+            undelivered.push(text);
+        }
     }
+    undelivered
 }
 
 /// Compute and record the cost of one LLM call, returning the amount so

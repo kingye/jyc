@@ -1033,12 +1033,11 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
     let mut app = chatting_app();
     app.chat.info_visible = false;
     app.chat.questions = vec![PendingQuestion {
-        id: "q1".to_string(),
         topic: "jyc".to_string(),
         question: "Pick one?".to_string(),
         options: (0..20).map(|i| format!("opt{i:02}")).collect(),
         multi: false,
-        declined: false,
+        skipped: false,
         selected: 19,
         marked: Vec::new(),
     }];
@@ -1063,7 +1062,7 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
         "the options above the window must scroll away:\n{pane}"
     );
     assert!(
-        pane.contains("Esc discards"),
+        pane.contains("Esc closes"),
         "the hint must still fit under the window:\n{pane}"
     );
 }
@@ -1077,22 +1076,20 @@ fn question_box_numbers_the_batch_in_its_title() {
     app.chat.info_visible = false;
     app.chat.questions = vec![
         PendingQuestion {
-            id: "q1".to_string(),
             topic: "jyc".to_string(),
             question: "Which sections?".to_string(),
             options: vec!["Added".to_string()],
             multi: false,
-            declined: false,
+            skipped: false,
             selected: 0,
             marked: Vec::new(),
         },
         PendingQuestion {
-            id: "q2".to_string(),
             topic: "jyc".to_string(),
             question: "Branch name?".to_string(),
             options: vec!["feat/x".to_string()],
             multi: false,
-            declined: false,
+            skipped: false,
             selected: 0,
             marked: Vec::new(),
         },
@@ -1124,22 +1121,20 @@ fn a_batch_hint_says_enter_only_moves_to_the_next() {
     app.chat.info_visible = false;
     app.chat.questions = vec![
         PendingQuestion {
-            id: "q1".to_string(),
             topic: "jyc".to_string(),
             question: "Which sections?".to_string(),
             options: vec!["Added".to_string()],
             multi: false,
-            declined: false,
+            skipped: false,
             selected: 0,
             marked: Vec::new(),
         },
         PendingQuestion {
-            id: "q2".to_string(),
             topic: "jyc".to_string(),
             question: "Branch name?".to_string(),
             options: vec!["feat/x".to_string()],
             multi: false,
-            declined: false,
+            skipped: false,
             selected: 0,
             marked: Vec::new(),
         },
@@ -1177,12 +1172,11 @@ fn question_box_shows_marks_for_multi_select() {
     let mut app = chatting_app();
     app.chat.info_visible = false;
     app.chat.questions = vec![PendingQuestion {
-        id: "q1".to_string(),
         topic: "jyc".to_string(),
         question: "Which?".to_string(),
         options: vec!["alpha".to_string(), "beta".to_string()],
         multi: true,
-        declined: false,
+        skipped: false,
         selected: 0,
         marked: vec![1],
     }];
@@ -1209,12 +1203,11 @@ fn question_box_marks_the_selected_option_with_an_arrow() {
     let mut app = chatting_app();
     app.chat.info_visible = false;
     app.chat.questions = vec![PendingQuestion {
-        id: "q1".to_string(),
         topic: "jyc".to_string(),
         question: "Pick one?".to_string(),
         options: vec!["alpha".to_string(), "beta".to_string()],
         multi: false,
-        declined: false,
+        skipped: false,
         selected: 1,
         marked: Vec::new(),
     }];

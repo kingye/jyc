@@ -3,7 +3,7 @@ use jyc_core::topic_event::TopicEvent;
 /// Baseline [`super::AgentLoopConfig`] for agent-loop integration tests:
 /// everything a scripted run needs, with the fields tests actually vary
 /// (`topic_name`, `event_bus`, `outbound`, `model_label`, `max_iterations`,
-/// `reply_target`, `question_hub`, ...) overridden at the call site via
+/// `reply_target`, ...) overridden at the call site via
 /// struct-update syntax.
 pub(super) fn test_config<'a>(
     provider: &'a scripted::ScriptedProvider,
@@ -48,7 +48,6 @@ pub(super) fn test_config<'a>(
         model_label: "scripted-test",
         context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
         reply_target: None,
-        question_hub: None,
     }
 }
 

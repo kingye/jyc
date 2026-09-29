@@ -83,9 +83,6 @@ pub struct JycAgentService {
     /// Uses `std::sync::Mutex` for interior mutability (set after construction
     /// via `set_outbounds()` on an `Arc<Self>`).
     outbounds: std::sync::Mutex<Option<OutboundsMap>>,
-    /// Shared question/answer registry for the `ask_user` tool. Set after
-    /// construction via `set_question_hub()` on an `Arc<Self>`.
-    question_hub: std::sync::Mutex<Option<std::sync::Arc<jyc_core::question::QuestionHub>>>,
 }
 
 impl JycAgentService {
@@ -115,7 +112,6 @@ impl JycAgentService {
             topic_managers: std::sync::Mutex::new(None),
             channel_name,
             outbounds: std::sync::Mutex::new(None),
-            question_hub: std::sync::Mutex::new(None),
         }
     }
 
@@ -149,14 +145,6 @@ impl JycAgentService {
     /// into each agent service after all channels have been initialized.
     pub fn set_outbounds(&self, outbounds: OutboundsMap) {
         *self.outbounds.lock().expect("outbounds poisoned") = Some(outbounds);
-    }
-
-    /// Set the shared question/answer registry for the `ask_user` tool.
-    ///
-    /// Called by `jyc serve` during startup to inject the daemon-wide hub
-    /// into each agent service after channel initialization.
-    pub fn set_question_hub(&self, hub: std::sync::Arc<jyc_core::question::QuestionHub>) {
-        *self.question_hub.lock().expect("question_hub poisoned") = Some(hub);
     }
 }
 
@@ -544,11 +532,6 @@ impl AgentService for JycAgentService {
             .expect("topic_managers poisoned")
             .clone();
         let outbounds = self.outbounds.lock().expect("outbounds poisoned").clone();
-        let question_hub = self
-            .question_hub
-            .lock()
-            .expect("question_hub poisoned")
-            .clone();
         let result = agent_loop::run(AgentLoopConfig {
             provider: provider.as_ref(),
             small_provider: small_provider
@@ -585,7 +568,6 @@ impl AgentService for JycAgentService {
                 original: message.clone(),
                 message_dir: message_dir.to_string(),
             }),
-            question_hub,
         })
         .await?;
 

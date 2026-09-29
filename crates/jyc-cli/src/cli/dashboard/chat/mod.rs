@@ -22,8 +22,6 @@ const LINE_DRAWING: Style = Style::new().fg(Color::Rgb(0x39, 0x35, 0x52));
 
 /// An `ask_user` question pushed by the daemon, awaiting the user's answer.
 pub(super) struct PendingQuestion {
-    /// Question id — the response frame references it.
-    pub id: String,
     /// Topic the question belongs to (only surfaced in that topic's pane).
     pub topic: String,
     /// Question text.
@@ -33,10 +31,10 @@ pub(super) struct PendingQuestion {
     /// Whether more than one option may be picked (the daemon's
     /// `allow_multiple`).
     pub multi: bool,
-    /// The user will not answer this one. Sent as a dismissal on its own, so a
-    /// question that cannot be answered does not cost the whole batch — `d`
-    /// toggles it, and the option list is replaced by the declined state.
-    pub declined: bool,
+    /// The user will not answer this one. Reported as `(skipped)` in the answer,
+    /// so a question that cannot be answered does not cost the whole batch — `d`
+    /// toggles it, and the option list is replaced by the skipped state.
+    pub skipped: bool,
     /// Currently highlighted option - the cursor `Space` marks under.
     pub selected: usize,
     /// Marked option indices, in multi mode; single mode answers with the
@@ -245,9 +243,9 @@ pub(super) struct ChatState {
     /// form: `question_index` is the one on screen, each carries its own cursor
     /// and marks, and nothing is sent until the last one is confirmed — which
     /// is what lets `←/→` go back and adjust an earlier answer. Takes over the
-    /// input area while non-empty; Esc discards the whole set (one
-    /// `question_abort` frame), which settles the blocked `ask_user` call and
-    /// stops the run that asked it — the way `/cancel` does.
+    /// input area while non-empty; on the last Enter the whole set goes back as
+    /// one ordinary chat message. The turn that asked them is already over, so
+    /// Esc only closes the box.
     pub(super) questions: Vec<PendingQuestion>,
     /// Which of [`Self::questions`] is on screen.
     pub(super) question_index: usize,
@@ -886,7 +884,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         // Close any open command popup so the cancel path runs cleanly.
         app.chat.command_popup = None;
         app.chat.leader = None;
-        app.chat.discard_questions();
+        app.chat.close_questions();
         app.chat.send_message_inner("/cancel".to_string());
         return;
     }
@@ -964,10 +962,9 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         return;
     }
 
-    // Pending questions own the keyboard while visible: the agent is blocked
-    // mid-turn waiting for these answers. Esc discards the whole set (one
-    // `question_abort` frame), which settles that call and stops the run, the
-    // way `/cancel` does.
+    // Pending questions own the keyboard while visible: the box is the answer
+    // surface for a turn that already ended. Esc only closes it — the user can
+    // still type an answer (or anything else) afterwards.
     if app.chat.active_question() {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => app.chat.select_question_prev(),
@@ -982,8 +979,8 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
                     app.chat.pick_question_idx(idx);
                 }
             }
-            KeyCode::Char('d') | KeyCode::Backspace => app.chat.toggle_question_decline(),
-            KeyCode::Esc => app.chat.discard_questions(),
+            KeyCode::Char('d') | KeyCode::Backspace => app.chat.toggle_question_skip(),
+            KeyCode::Esc => app.chat.close_questions(),
             _ => {}
         }
         return;
@@ -1763,7 +1760,7 @@ fn question_hint(total: usize) -> String {
     } else {
         "Enter send"
     };
-    format!("Up/Down/j/k move - 1-9/Space pick - d decline - {enter} - Esc discards all")
+    format!("Up/Down/j/k move - 1-9/Space pick - d skip - {enter} - Esc closes")
 }
 
 /// Rows a question box spends on everything but the options: the question and
@@ -1818,7 +1815,7 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
         Style::default().add_modifier(Modifier::BOLD),
     ))];
     lines.push(Line::from(""));
-    if q.declined {
+    if q.skipped {
         // Replaces the list rather than dimming it: a greyed-out option still
         // reads as pickable, and the point of this state is that none of them
         // are.
@@ -2274,9 +2271,8 @@ impl ChatState {
         // when we switch back to overview later.
         self.last_hydrated_key = None;
         // The batch belongs to the topic being left behind and this pane can no
-        // longer draw it, so discard it as Esc does — see
-        // [`Self::discard_questions`] for why keeping it would stall the agent.
-        self.discard_questions();
+        // longer draw it, so drop it as Esc does.
+        self.close_questions();
     }
 
     pub(super) fn close(&mut self) {
@@ -2284,11 +2280,9 @@ impl ChatState {
         self.ws_connected = false;
         self.command_popup = None;
         self.last_hydrated_key = None;
-        // Settle the batch while the socket is still there to say so. Reopening
-        // the same topic cannot answer it either way - the pane is what shows
-        // the box - and with no free-text path on this channel the daemon would
-        // otherwise sit on questions nobody can reach until the deadline.
-        self.discard_questions();
+        // Drop the batch: the pane that draws it is going away, and a half
+        // picked set must not come back as the answer to a later question.
+        self.close_questions();
         if let Some(tx) = self.ws_tx.take() {
             // Best-effort disconnect signal
             let _ = tx.send("{\"type\":\"disconnect\"}".to_string());
@@ -2885,106 +2879,61 @@ impl ChatState {
         self.submit_questions();
     }
 
-    /// Send every buffered answer as its own frame, oldest question first, and
-    /// close the batch. A multi question left unmarked goes out as a decline -
-    /// the user backed out of that one rather than picking something.
+    /// Send the whole batch as one ordinary chat message, oldest question
+    /// first, and close the box. One line per question, keyed by the number the
+    /// question was rendered with and carrying both the option number and its
+    /// text, so the model can read the answer without any protocol of its own:
+    /// `Q1: 2) 面条`. A skipped question (`d`, or a multi with nothing marked -
+    /// the user backed out of that one) says so on its own line.
     fn submit_questions(&mut self) {
         let questions = std::mem::take(&mut self.questions);
         self.question_index = 0;
-        for q in questions {
-            if q.declined {
-                self.send_question_declined(&q.id);
+        let mut lines = Vec::with_capacity(questions.len());
+        for (number, q) in questions.iter().enumerate() {
+            let picks: Vec<(usize, String)> = if q.skipped {
+                Vec::new()
+            } else if !q.multi {
+                q.options
+                    .get(q.selected)
+                    .map(|text| vec![(q.selected, text.clone())])
+                    .unwrap_or_default()
+            } else {
+                let mut marked = q.marked.clone();
+                marked.sort_unstable();
+                marked
+                    .iter()
+                    .filter_map(|&i| q.options.get(i).map(|text| (i, text.clone())))
+                    .collect()
+            };
+            if picks.is_empty() {
+                lines.push(format!("Q{}: (skipped)", number + 1));
                 continue;
             }
-            if !q.multi {
-                if let Some(choice) = q.options.get(q.selected) {
-                    self.send_question_response(&q.id, std::slice::from_ref(choice));
-                }
-                continue;
-            }
-            if q.marked.is_empty() {
-                self.send_question_declined(&q.id);
-                continue;
-            }
-            let mut marked = q.marked.clone();
-            marked.sort_unstable();
-            let choices: Vec<String> = marked
+            let picked: Vec<String> = picks
                 .iter()
-                .filter_map(|&i| q.options.get(i).cloned())
+                .map(|(i, text)| format!("{}) {}", i + 1, text))
                 .collect();
-            self.send_question_response(&q.id, &choices);
+            lines.push(format!("Q{}: {}", number + 1, picked.join(", ")));
         }
+        self.send_message_inner(lines.join("\n"));
     }
 
-    /// Esc: give up on the whole pending batch — one `question_abort` frame for
-    /// the topic, then drop the box locally.
-    ///
-    /// Aborting is not answering: it settles every question of the set at once,
-    /// and the daemon stops the run that asked them, the same way `/cancel`
-    /// does. Discard, not hide: a hidden box would leave the questions pending
-    /// with no way to reach them, stalling the turn until the daemon's timeout.
-    /// Per-question "no" is `d` ([`Self::toggle_question_decline`]), which lets
-    /// the rest of the batch be answered.
-    fn discard_questions(&mut self) {
-        let questions = std::mem::take(&mut self.questions);
+    /// Esc / leaving the pane: drop the pending batch. Nothing is sent and
+    /// nothing needs settling - the turn that asked these questions ended when
+    /// they were rendered, and the user may still answer in ordinary text.
+    fn close_questions(&mut self) {
+        self.questions.clear();
         self.question_index = 0;
-        // Every question of a batch belongs to this pane's topic, so the topic
-        // of the first is the topic of the set.
-        if let Some(topic) = questions.first().map(|q| q.topic.clone()) {
-            self.send_question_abort(&topic);
-        }
     }
 
-    /// `d` / `Backspace`: decline this question without discarding the set.
+    /// `d` / `Backspace`: skip this question without costing the rest of the set.
     ///
-    /// With no free-text path left on this channel the box is the only
-    /// answering surface, so a question the user cannot answer needs its own
-    /// "no" — otherwise the only way out is Esc, which costs the picks already
-    /// made for the rest of the batch. The flag rides to submit, where a
-    /// declined question goes out as a decline.
-    fn toggle_question_decline(&mut self) {
+    /// A question the user cannot answer needs its own "no" — otherwise the only
+    /// way out is Esc, which drops the picks already made for the rest of the
+    /// batch. The flag rides to submit, where a skipped question says so.
+    fn toggle_question_skip(&mut self) {
         if let Some(q) = self.current_question_mut() {
-            q.declined = !q.declined;
-        }
-    }
-
-    /// Send a `question_response` frame carrying every picked option. Even a
-    /// single pick goes out as a list, so there is one frame shape.
-    fn send_question_response(&self, id: &str, choices: &[String]) {
-        let msg = serde_json::json!({
-            "type": "question_response",
-            "id": id,
-            "choices": choices,
-        })
-        .to_string();
-        if let Some(tx) = &self.ws_tx {
-            let _ = tx.send(msg);
-        }
-    }
-
-    /// Send a `question_response` frame declining this one question.
-    fn send_question_declined(&self, id: &str) {
-        let msg = serde_json::json!({
-            "type": "question_response",
-            "id": id,
-            "declined": true,
-        })
-        .to_string();
-        if let Some(tx) = &self.ws_tx {
-            let _ = tx.send(msg);
-        }
-    }
-
-    /// Send the `question_abort` frame for a topic: every pending question of
-    /// it is given up on, and the run that asked them stops.
-    fn send_question_abort(&self, topic: &str) {
-        let msg = serde_json::json!({
-            "type": "question_abort",
-            "topic": topic,
-        })
-        .to_string();
-        if let Some(tx) = &self.ws_tx {
-            let _ = tx.send(msg);
+            q.skipped = !q.skipped;
         }
     }
 
@@ -3000,9 +2949,6 @@ impl ChatState {
         if self.topic.as_deref() != Some(topic) {
             return;
         }
-        let Some(id) = parsed.get("id").and_then(|v| v.as_str()) else {
-            return;
-        };
         let options: Vec<String> = parsed
             .get("options")
             .and_then(|v| v.as_array())
@@ -3016,11 +2962,10 @@ impl ChatState {
             return;
         }
         // Queued rather than replacing: one `ask_user` call can ask several
-        // questions at once, and cancelling the one already on screen would
-        // tell the tool the user backed out of it. The user steps through the
-        // batch with ←/→ and the whole set goes out on the last Enter.
+        // questions at once, and the one already on screen still has to be
+        // answered. The user steps through the batch with ←/→ and the whole set
+        // goes out as one message on the last Enter.
         self.questions.push(PendingQuestion {
-            id: id.to_string(),
             topic: topic.to_string(),
             question: parsed
                 .get("question")
@@ -3032,7 +2977,7 @@ impl ChatState {
                 .get("allow_multiple")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
-            declined: false,
+            skipped: false,
             selected: 0,
             marked: Vec::new(),
         });

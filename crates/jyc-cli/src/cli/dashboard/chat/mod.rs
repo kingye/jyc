@@ -1760,7 +1760,7 @@ fn question_hint(total: usize) -> String {
     } else {
         "Enter send"
     };
-    format!("Up/Down/j/k move - 1-9/Space pick - d skip - {enter} - Esc closes the box")
+    format!("Up/Down/j/k move - 1-9/Space pick - d skip - {enter} - Esc closes")
 }
 
 /// Rows a question box spends on everything but the options: the question and

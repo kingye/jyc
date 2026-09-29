@@ -37,19 +37,29 @@ struct Ask {
 
 /// Render a question set as the plain text a channel without a question box
 /// can show: the options numbered the way the user has to answer them.
+///
+/// The block has to survive being read as markdown, because some channels put
+/// reply text into a markdown surface (the Feishu card). A question's options
+/// parse as a markdown list, and markdown then treats the *next* `Q2:` line as
+/// a lazy continuation of the last list item, gluing whole questions onto one
+/// line. A blank line between questions ends the list, which is what keeps the
+/// structure; the marker goes on the question's own line for the same reason.
 fn plain_text_block(asks: &[Ask]) -> String {
     let mut out = String::new();
     for (number, ask) in asks.iter().enumerate() {
-        out.push_str(&format!("Q{}: {}\n", number + 1, ask.question));
-        if ask.allow_multiple {
-            out.push_str("   (multi-select)\n");
-        }
+        let marker = if ask.allow_multiple {
+            " (multi-select)"
+        } else {
+            ""
+        };
+        out.push_str(&format!("Q{}: {}{marker}\n", number + 1, ask.question));
         for (option, text) in ask.options.iter().enumerate() {
             out.push_str(&format!("   {}) {}\n", option + 1, text));
         }
+        out.push('\n');
     }
     out.push_str(
-        "\nReply one line per question with the option number(s), e.g. \"Q1: 2\" or \"Q2: 1,3\".",
+        "Reply one line per question with the option number(s), e.g. \"Q1: 2\" or \"Q2: 1,3\".",
     );
     out
 }
@@ -100,6 +110,13 @@ fn str_list(value: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Collapse a question or option to a single line. Every surface shows one
+/// item per line — a model that writes a multi-line question would otherwise
+/// push its own options around and break the "answer by number" structure.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Read the questions out of the tool input: the `questions` array when the
 /// model asks several at once, otherwise the top-level
 /// `question`/`options`/`allow_multiple` — the shape every existing caller
@@ -144,6 +161,12 @@ fn parse_questions(input: &Value) -> Result<Vec<Ask>, String> {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
         });
+    }
+    for ask in &mut asks {
+        ask.question = one_line(&ask.question);
+        for option in &mut ask.options {
+            *option = one_line(option);
+        }
     }
     if asks.len() > MAX_QUESTIONS {
         return Err(format!(
@@ -593,12 +616,45 @@ mod tests {
         assert!(block.contains("Q1: 晚饭吃什么?"), "{block}");
         assert!(block.contains("   1) 米饭"), "{block}");
         assert!(block.contains("   2) 面条"), "{block}");
-        assert!(block.contains("Q2: 周末做什么?"), "{block}");
-        assert!(block.contains("(multi-select)"), "{block}");
+        assert!(block.contains("Q2: 周末做什么? (multi-select)"), "{block}");
         assert!(block.contains("   3) 看书"), "{block}");
         assert!(
             block.contains("\"Q2: 1,3\""),
             "how to answer must be stated: {block}"
+        );
+        // The line a markdown surface would otherwise glue onto the previous
+        // question's last option has to start after a blank line.
+        assert!(block.contains("\n\nQ2: 周末做什么?"), "{block}");
+        assert_eq!(
+            block.matches("\n\n").count(),
+            2,
+            "one blank line between questions, one before the reply hint: {block}"
+        );
+    }
+
+    /// A question or option the model wrote across lines is folded to one, or
+    /// it would push the options around and break answering by number.
+    #[test]
+    fn parse_questions_folds_every_item_onto_one_line() {
+        let input = json!({
+            "questions": [
+                {
+                    "question": "Which branch\n  should I push?",
+                    "options": ["main\n", "feature  x"]
+                }
+            ]
+        });
+        let asks = parse_questions(&input).unwrap();
+        assert_eq!(asks[0].question, "Which branch should I push?");
+        assert_eq!(
+            asks[0].options,
+            vec!["main".to_string(), "feature x".to_string()]
+        );
+        let block = plain_text_block(&asks);
+        assert_eq!(
+            block,
+            "Q1: Which branch should I push?\n   1) main\n   2) feature x\n\n\
+             Reply one line per question with the option number(s), e.g. \"Q1: 2\" or \"Q2: 1,3\"."
         );
     }
 

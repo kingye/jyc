@@ -1116,6 +1116,10 @@ fn code_fence_renders_with_highlight_colors() {
     assert!(has_rgb_fg, "code fence produced no highlighted spans");
 }
 // Tests for the `ask_user` question box flow in the chat pane.
+//
+// The box renders what the daemon pushed and answers with one ordinary chat
+// message - the turn that asked the questions has already ended, so there is no
+// response protocol here, only text the model can read.
 
 fn chat_for_topic(topic: &str) -> (ChatState, tokio::sync::mpsc::UnboundedReceiver<String>) {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
@@ -1126,28 +1130,36 @@ fn chat_for_topic(topic: &str) -> (ChatState, tokio::sync::mpsc::UnboundedReceiv
     (chat, cmd_rx)
 }
 
-fn question_payload(topic: &str, id: &str, options: &[&str]) -> serde_json::Value {
+/// The frame the daemon pushes for one question. `label` is the question text,
+/// so a test can tell its questions apart by what comes back - the frame carries
+/// no id, and the box keeps no state of its own beyond the topic.
+fn question_payload(topic: &str, label: &str, options: &[&str]) -> serde_json::Value {
     serde_json::json!({
         "type": "question",
-        "id": id,
-        "channel": "chan",
         "topic": topic,
-        "question": "Pick one?",
+        "question": format!("{label}?"),
         "options": options,
-        "timeout_seconds": 300,
     })
 }
 
 /// The same frame with `allow_multiple` set - what the daemon sends for a
 /// question the user may answer with several options.
-fn question_payload_multi(topic: &str, id: &str, options: &[&str]) -> serde_json::Value {
-    let mut payload = question_payload(topic, id, options);
+fn question_payload_multi(topic: &str, label: &str, options: &[&str]) -> serde_json::Value {
+    let mut payload = question_payload(topic, label, options);
     payload["allow_multiple"] = serde_json::json!(true);
     payload
 }
 
-/// Multi-select: `Space` marks under the cursor, digits mark too, and Enter
-/// sends every mark in the option list's own order.
+/// The one message the box sends on submit, as text. An answer is an ordinary
+/// chat `message`, not a question protocol.
+fn sent_text(rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> String {
+    let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+    assert_eq!(frame["type"], "message", "an answer is a chat message");
+    frame["text"].as_str().unwrap().to_string()
+}
+
+/// Multi-select: `Space` marks under the cursor, digits mark too, and the
+/// answer lists every mark in the option list's own order.
 #[test]
 fn multi_select_marks_then_sends_every_mark() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
@@ -1162,28 +1174,24 @@ fn multi_select_marks_then_sends_every_mark() {
     assert_eq!(chat.current_question().unwrap().marked, vec![2]);
 
     chat.confirm_question();
-    let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-    assert_eq!(frame["choices"], serde_json::json!(["c"]));
-    assert!(frame.get("choice").is_none(), "one frame shape");
+    assert_eq!(sent_text(&mut rx), "Q1: 3) c");
     assert!(!chat.active_question());
 }
 
 /// Not one marked is the user backing out of that question, not an empty answer.
 #[test]
-fn multi_select_enter_without_marks_declines() {
+fn multi_select_enter_without_marks_says_skipped() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload_multi("jyc", "q1", &["a", "b"]));
 
     chat.confirm_question();
 
-    let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-    assert_eq!(frame["declined"], serde_json::json!(true));
-    assert!(frame.get("choices").is_none());
+    assert_eq!(sent_text(&mut rx), "Q1: (skipped)");
     assert!(!chat.active_question());
 }
 
 /// `Space` is a new key: in single-select it confirms the highlighted option,
-/// which is all it can do, and the answer stays a one-element list.
+/// which is all it can do.
 #[test]
 fn single_select_space_confirms_the_highlighted_option() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
@@ -1192,8 +1200,7 @@ fn single_select_space_confirms_the_highlighted_option() {
     chat.select_question_next();
     chat.space_question(); // Space still confirms when only one may be picked
 
-    let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-    assert_eq!(frame["choices"], serde_json::json!(["b"]));
+    assert_eq!(sent_text(&mut rx), "Q1: 2) b");
     assert!(!chat.active_question());
 }
 
@@ -1204,8 +1211,7 @@ fn question_event_surfaces_for_matching_topic() {
 
     assert!(chat.active_question());
     let q = chat.current_question().expect("question stored");
-    assert_eq!(q.id, "q1");
-    assert_eq!(q.question, "Pick one?");
+    assert_eq!(q.question, "q1?");
     assert_eq!(q.options, vec!["a".to_string(), "b".to_string()]);
     assert_eq!(q.selected, 0);
 }
@@ -1225,35 +1231,37 @@ fn question_event_ignored_without_options() {
     assert!(chat.questions.is_empty());
 }
 
-/// A second question joins the queue rather than cancelling the first: one
-/// `ask_user` call asking several questions must not tell the tool the user
-/// backed out of the ones already on screen.
+/// A second question joins the queue rather than replacing the first: one
+/// `ask_user` call asking several questions must not drop one from the answer.
 #[test]
-fn second_question_queues_instead_of_cancelling_the_first() {
+fn second_question_queues_instead_of_replacing_the_first() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload("jyc", "q1", &["a"]));
     chat.handle_question_event(&question_payload("jyc", "q2", &["b"]));
 
     assert!(
         rx.try_recv().is_err(),
-        "queueing a question must not send a frame for the previous one"
+        "queueing a question must not send an answer for the previous one"
     );
     assert_eq!(
-        chat.current_question().expect("first stays on screen").id,
-        "q1"
+        chat.current_question()
+            .expect("first stays on screen")
+            .question,
+        "q1?"
     );
     chat.step_question(1);
     assert_eq!(
-        chat.current_question().expect("second is reachable").id,
-        "q2"
+        chat.current_question()
+            .expect("second is reachable")
+            .question,
+        "q2?"
     );
 }
 
 /// A queued batch belongs to the topic it was asked in, so switching topics
-/// discards it the way Esc does. Keeping it would hide the next topic's
-/// question for good: `current_question` reads `questions[question_index]`, and
-/// a first entry from the old topic makes `active_question` false forever - no
-/// box, no keys, while the tool waits out its timeout.
+/// drops it the way Esc does. Keeping it would hide the next topic's question
+/// for good: `current_question` reads `questions[question_index]`, and a first
+/// entry from the old topic leaves the new one off screen.
 #[test]
 fn switching_topics_leaves_the_old_question_batch_behind() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
@@ -1262,24 +1270,26 @@ fn switching_topics_leaves_the_old_question_batch_behind() {
     assert_eq!(chat.questions.len(), 2, "the qA batch is queued");
 
     chat.reset_chat_state("other");
-    let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-    assert_eq!(
-        frame["type"], "question_abort",
-        "leaving discards the batch, as Esc does"
+    assert!(
+        rx.try_recv().is_err(),
+        "dropping a batch that was never answered sends nothing"
     );
-    assert_eq!(frame["topic"], "jyc");
     chat.handle_question_event(&question_payload("other", "qB1", &["z"]));
 
     assert!(
         chat.active_question(),
         "the new topic's question must reach the screen"
     );
-    assert_eq!(chat.current_question().expect("qB1 on screen").id, "qB1");
+    assert_eq!(chat.questions.len(), 1, "the old batch is gone");
+    assert_eq!(
+        chat.current_question().expect("qB1 on screen").question,
+        "qB1?"
+    );
     assert_eq!(chat.question_index, 0);
 }
 
 /// The batch is the point: an intermediate Enter sends nothing, and the last
-/// one flushes every answer under its own question id.
+/// one flushes every answer as one message, one line per question.
 #[test]
 fn batch_sends_every_answer_once_the_last_question_is_settled() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
@@ -1294,39 +1304,26 @@ fn batch_sends_every_answer_once_the_last_question_is_settled() {
     );
     chat.confirm_question(); // last question settles: flush
 
-    let first: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-    assert_eq!(first["id"], "q1");
-    assert_eq!(first["choices"], serde_json::json!(["b"]));
-    let second: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-    assert_eq!(second["id"], "q2");
-    assert_eq!(second["choices"], serde_json::json!(["c"]));
+    assert_eq!(sent_text(&mut rx), "Q1: 2) b\nQ2: 1) c");
+    assert!(rx.try_recv().is_err(), "one message for the whole set");
     assert!(!chat.active_question());
 }
 
-/// `d` declines the question on screen and the rest of the set still goes out:
-/// the declined question settles on its own, its neighbour keeps its pick.
-/// Without it the only "no" was Esc, which cost every pick already made.
+/// `d` skips the question on screen and the rest of the set still goes out with
+/// its picks. Without it the only "no" was Esc, which cost every pick already
+/// made.
 #[test]
-fn declining_one_question_keeps_the_other_answer() {
+fn skipping_one_question_keeps_the_other_answer() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
     chat.handle_question_event(&question_payload("jyc", "q2", &["c", "d"]));
 
-    chat.toggle_question_decline(); // q1: no answer
+    chat.toggle_question_skip(); // q1: no answer
     chat.confirm_question(); // -> q2
     chat.select_question_next(); // q2 -> d
     chat.confirm_question(); // flush
 
-    let first: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-    assert_eq!(first["id"], "q1");
-    assert_eq!(
-        first["declined"],
-        serde_json::json!(true),
-        "a declined question is a decline, not a pick"
-    );
-    let second: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-    assert_eq!(second["id"], "q2");
-    assert_eq!(second["choices"], serde_json::json!(["d"]));
+    assert_eq!(sent_text(&mut rx), "Q1: (skipped)\nQ2: 2) d");
 }
 
 /// Going back is free precisely because the answer is still buffered: the
@@ -1341,20 +1338,21 @@ fn stepping_back_keeps_the_earlier_marks() {
     chat.confirm_question(); // -> q2
     chat.step_question(-1); // back to q1
     let current = chat.current_question().expect("q1 again");
-    assert_eq!(current.id, "q1");
+    assert_eq!(current.question, "q1?");
     assert_eq!(current.marked, vec![0], "the first mark survived");
     chat.select_question_next(); // cursor -> b
     chat.space_question(); // mark b too
     chat.step_question(1); // -> q2
     chat.confirm_question(); // flush
 
-    let first: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-    assert_eq!(first["id"], "q1");
-    assert_eq!(first["choices"], serde_json::json!(["a", "b"]));
+    assert_eq!(sent_text(&mut rx), "Q1: 1) a, 2) b\nQ2: 1) c");
 }
 
+/// Enter on the last question sends the answer as an ordinary chat message -
+/// numbered by question and by option, so the model needs nothing else to read
+/// it.
 #[test]
-fn confirm_sends_choice_frame() {
+fn confirm_sends_one_ordinary_message() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b", "c"]));
     chat.select_question_next();
@@ -1362,65 +1360,47 @@ fn confirm_sends_choice_frame() {
     chat.confirm_question();
 
     assert!(!chat.active_question());
-    let frame = rx.try_recv().expect("response frame");
-    let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
-    assert_eq!(parsed["type"], "question_response");
-    assert_eq!(parsed["id"], "q1");
-    // One frame shape for both modes: even a single pick rides in the list.
-    assert_eq!(parsed["choices"], serde_json::json!(["c"]));
-    assert!(parsed.get("choice").is_none());
-    assert!(parsed.get("declined").is_none());
+    assert_eq!(sent_text(&mut rx), "Q1: 3) c");
+    assert!(rx.try_recv().is_err(), "one message, no extra frames");
 }
 
-/// Esc discards the whole batch with one `question_abort` frame: every pending
-/// question of the topic settles at once and the run stops. Hiding the box
-/// instead used to leave the questions pending with nothing on screen to
-/// answer them, and the next typed message was hijacked as a free-form answer.
+/// Esc closes the box and sends nothing: the turn that asked the questions
+/// already ended, so there is nothing to abort, and the user may still type an
+/// answer or anything else afterwards.
 #[test]
-fn esc_aborts_the_whole_batch_with_one_frame() {
+fn esc_closes_the_box_without_sending() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload("jyc", "q1", &["a"]));
     chat.handle_question_event(&question_payload("jyc", "q2", &["b", "c"]));
     assert_eq!(chat.questions.len(), 2);
 
-    chat.discard_questions();
+    chat.close_questions();
 
     assert!(!chat.active_question());
     assert!(chat.questions.is_empty());
-    let frame = rx.try_recv().expect("one abort frame for the batch");
-    let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
-    assert_eq!(parsed["type"], "question_abort");
-    assert_eq!(parsed["topic"], "jyc");
-    assert!(
-        parsed.get("id").is_none(),
-        "discarding the set answers no question, so it names none: {parsed}"
-    );
     assert!(
         rx.try_recv().is_err(),
-        "one frame for the set, not one per question"
+        "closing the box answers nothing and aborts nothing"
     );
 }
 
-/// Closing the pane settles the batch too, and it has to happen *before* the
-/// socket is taken: on reopen there is no box and no free-text path, so a
-/// pending question would be unreachable until the daemon's deadline.
+/// Closing the pane drops the batch: the pane that draws it is going away, and
+/// a half picked set must not come back as the answer to a later question.
 #[test]
-fn closing_the_pane_discards_the_pending_batch() {
+fn closing_the_pane_drops_the_pending_batch() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload("jyc", "q1", &["a"]));
 
     chat.close();
 
     let frame: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-    assert_eq!(frame["type"], "question_abort");
-    assert_eq!(frame["topic"], "jyc");
-    // The abort must leave before the socket is handed back, so the pane's own
-    // `disconnect` is the frame right after it.
-    let second: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
-    assert_eq!(second["type"], "disconnect");
+    assert_eq!(
+        frame["type"], "disconnect",
+        "the only thing a close sends is the socket goodbye"
+    );
     assert!(chat.ws_tx.is_none(), "the socket is handed back after");
 
-    // The discard already emptied the batch, so reopening sends nothing.
+    // The batch is already gone, so reopening sends nothing.
     chat.reset_chat_state("jyc");
     assert!(
         rx.try_recv().is_err(),

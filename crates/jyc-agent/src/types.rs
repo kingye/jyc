@@ -183,7 +183,9 @@ pub struct ToolDefinition {
 /// Result of running the agent loop.
 #[derive(Debug)]
 pub struct AgentLoopResult {
-    /// Final text response from the assistant.
+    /// Final text response from the assistant. Empty when a tool ended the turn
+    /// with everything already delivered; `ask_user`'s questions land here
+    /// instead when their delivery failed, so the worker still sends them.
     pub text: String,
     /// Whether the final text was delivered (directly through the outbound
     /// adapter, or queued via the `reply.md`/`reply-sent.flag` file relay).

@@ -197,7 +197,6 @@ fn base_config<'a>(
         model_label: "test-model",
         context_strategy: jyc_types::channel::ContextStrategyConfig::default(),
         reply_target: None,
-        question_hub: None,
     }
 }
 

@@ -116,18 +116,15 @@ impl ChannelMatcher for WebsocketMatcher {
 /// have been replaced by REST endpoints on the inspect server
 /// (`list_patterns` and `create_topic`). The WebSocket protocol now
 /// only carries the live-message stream:
-/// - `message`: send a chat message to the bound topic
-/// - `question_response`: answer one `ask_user` question (never enqueued as a
-///   topic message; routed straight to the `QuestionHub`)
-/// - `question_abort`: discard every pending question of a topic (Esc on the
-///   question box) — settles the blocked `ask_user` call, which stops the run
+/// - `message`: send a chat message to the bound topic — the only way a user
+///   answers an `ask_user` question, since the question ends the turn
 /// - `disconnect`: close the connection cleanly
 /// - `ping`: keep-alive (tokio-tungstenite also handles WS-level pings)
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
-    /// A chat message. Never read as an answer to a question: on this channel
-    /// questions are answered by the `question_response` frame below.
+    /// A chat message — including the user's answer to an `ask_user` question,
+    /// which arrives as an ordinary message once the turn has ended.
     #[serde(rename = "message")]
     Message {
         /// Optional: when the connection is scoped to a single topic via
@@ -153,30 +150,6 @@ enum ClientMessage {
     /// Keep-alive ping. tokio-tungstenite already handles WS-level pings
     /// at the protocol layer; this is a no-op for application-level pings.
     Ping,
-    /// Answer to one `ask_user` question, picked from the question payload's
-    /// options. Routed to the `QuestionHub`, not the topic queue.
-    QuestionResponse {
-        /// Id of the question being answered (from the `question` payload).
-        id: String,
-        /// The picked option, for clients that send one choice at a time.
-        #[serde(default)]
-        choice: Option<String>,
-        /// Every picked option, for a question that allowed multiple. Wins
-        /// over `choice` when non-empty.
-        #[serde(default)]
-        choices: Vec<String>,
-        /// Whether the user declined to answer this question (`d`), leaving
-        /// the rest of the set to its own answer.
-        #[serde(default)]
-        declined: bool,
-    },
-    /// Discard every pending question of a topic — Esc on the question box.
-    /// Not an answer to any of them: it settles the blocked `ask_user` call,
-    /// which stops the run like `/cancel` does.
-    QuestionAbort {
-        /// Topic whose questions are given up on.
-        topic: String,
-    },
 }
 
 /// WebSocket inbound adapter.
@@ -208,9 +181,6 @@ pub struct WebsocketInboundAdapter {
     /// `with_graceful_shutdown` from waiting forever on still-open WS
     /// connections (which used to leave zombie `jyc serve` processes).
     ws_shutdown: CancellationToken,
-    /// Shared question/answer registry. `question_response` frames are
-    /// routed here instead of the topic queue.
-    question_hub: Arc<StdMutex<Option<Arc<jyc_core::question::QuestionHub>>>>,
 }
 
 impl WebsocketInboundAdapter {
@@ -224,7 +194,6 @@ impl WebsocketInboundAdapter {
             topic_manager: Arc::new(StdMutex::new(None)),
             inspect_broadcast: None,
             ws_shutdown: CancellationToken::new(),
-            question_hub: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -251,11 +220,6 @@ impl WebsocketInboundAdapter {
         *self.topic_manager.lock().unwrap() = Some(tm);
     }
 
-    /// Set the shared question/answer registry for `question_response` frames.
-    pub fn set_question_hub(&self, hub: Arc<jyc_core::question::QuestionHub>) {
-        *self.question_hub.lock().unwrap() = Some(hub);
-    }
-
     /// Return the channel name for this adapter.
     /// Used by the inspect server for path-based handler routing.
     pub fn channel_name(&self) -> &str {
@@ -276,8 +240,6 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         let channel_name = self.channel_name.clone();
         let on_message = self.on_message.clone();
         let shutdown = self.ws_shutdown.clone();
-        let question_hub = self.question_hub.lock().unwrap().clone();
-
         handle_connection_impl(
             ws,
             addr,
@@ -287,7 +249,6 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
             on_message,
             scoped_topic,
             shutdown,
-            question_hub,
         )
         .await
     }
@@ -353,7 +314,6 @@ async fn handle_connection_impl(
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
     scoped_topic: Option<&str>,
     shutdown: CancellationToken,
-    question_hub: Option<Arc<jyc_core::question::QuestionHub>>,
 ) -> anyhow::Result<()> {
     use axum::extract::ws::Message;
 
@@ -413,10 +373,6 @@ async fn handle_connection_impl(
                                         continue;
                                     }
                                 };
-                                // A message is a message: questions asked on
-                                // this channel are answered by the
-                                // `question_response` frame below, never by
-                                // reading a message as an answer.
                                 let message = InboundMessage {
                                     id: uuid::Uuid::new_v4().to_string(),
                                     channel: channel_name.clone(),
@@ -456,55 +412,6 @@ async fn handle_connection_impl(
                             ClientMessage::Ping => {
                                 // No-op; axum auto-replies to WS pings at the
                                 // protocol layer.
-                            }
-                            ClientMessage::QuestionResponse {
-                                id,
-                                choice,
-                                choices,
-                                declined,
-                            } => {
-                                let Some(hub) = question_hub.clone() else {
-                                    tracing::warn!(
-                                        question_id = %id,
-                                        "question_response received but no QuestionHub configured"
-                                    );
-                                    continue;
-                                };
-                                let answer = if declined {
-                                    jyc_types::channel::QuestionAnswer::Declined
-                                } else if !choices.is_empty() {
-                                    jyc_types::channel::QuestionAnswer::Choice(choices)
-                                } else {
-                                    // A response without any pick is a decline.
-                                    choice
-                                        .map(|c| jyc_types::channel::QuestionAnswer::Choice(vec![c]))
-                                        .unwrap_or(jyc_types::channel::QuestionAnswer::Declined)
-                                };
-                                if !hub.respond(&id, answer) {
-                                    // Unknown id or asker gone (timed out /
-                                    // cancelled) — late or duplicate answer.
-                                    tracing::info!(
-                                        question_id = %id,
-                                        "question_response ignored: no pending question"
-                                    );
-                                }
-                            }
-                            ClientMessage::QuestionAbort { topic } => {
-                                let Some(hub) = question_hub.clone() else {
-                                    tracing::warn!(
-                                        topic = %topic,
-                                        "question_abort received but no QuestionHub configured"
-                                    );
-                                    continue;
-                                };
-                                // Esc on the question box: nothing is answered,
-                                // every question of the topic settles at once
-                                // and the blocked `ask_user` call stops the run.
-                                tracing::info!(
-                                    topic = %topic,
-                                    discarded = hub.abort_topic(&topic),
-                                    "question set discarded by client"
-                                );
                             }
                         }
                     }
@@ -910,84 +817,6 @@ mod tests {
                 assert!(sender_address.is_none());
             }
             _ => panic!("expected Message"),
-        }
-    }
-
-    #[test]
-    fn test_client_message_question_response_parses() {
-        let msg: ClientMessage =
-            serde_json::from_str(r#"{"type":"question_response","id":"q1","choice":"option B"}"#)
-                .unwrap();
-        match msg {
-            ClientMessage::QuestionResponse {
-                id,
-                choice,
-                choices,
-                declined,
-            } => {
-                assert_eq!(id, "q1");
-                assert_eq!(choice.as_deref(), Some("option B"));
-                assert!(choices.is_empty());
-                assert!(!declined);
-            }
-            _ => panic!("expected QuestionResponse"),
-        }
-    }
-
-    #[test]
-    fn test_client_message_question_response_declined() {
-        // A decline may omit `choice` entirely.
-        let msg: ClientMessage =
-            serde_json::from_str(r#"{"type":"question_response","id":"q1","declined":true}"#)
-                .unwrap();
-        match msg {
-            ClientMessage::QuestionResponse {
-                id,
-                choice,
-                choices,
-                declined,
-            } => {
-                assert_eq!(id, "q1");
-                assert!(choice.is_none());
-                assert!(choices.is_empty());
-                assert!(declined);
-            }
-            _ => panic!("expected QuestionResponse"),
-        }
-    }
-
-    /// A multi-select answer arrives as a list and `choice` stays absent - the
-    /// shape the question box sends for both modes.
-    #[test]
-    fn test_client_message_question_response_choices() {
-        let msg: ClientMessage =
-            serde_json::from_str(r#"{"type":"question_response","id":"q1","choices":["a","b"]}"#)
-                .unwrap();
-        match msg {
-            ClientMessage::QuestionResponse {
-                id,
-                choice,
-                choices,
-                declined,
-            } => {
-                assert_eq!(id, "q1");
-                assert!(choice.is_none(), "one frame shape wins");
-                assert_eq!(choices, vec!["a".to_string(), "b".to_string()]);
-                assert!(!declined);
-            }
-            _ => panic!("expected QuestionResponse"),
-        }
-    }
-
-    /// Esc on the question box is one frame for the whole topic, not a frame
-    /// per question: it answers nothing, it gives up on the set.
-    #[test]
-    fn test_client_message_question_abort() {
-        let msg: ClientMessage =
-            serde_json::from_str(r#"{"type":"question_abort","topic":"jyc"}"#).unwrap();
-        match msg {
-            ClientMessage::QuestionAbort { topic } => assert_eq!(topic, "jyc"),
-            other => panic!("expected QuestionAbort, got {other:?}"),
         }
     }
 }

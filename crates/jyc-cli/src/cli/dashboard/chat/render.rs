@@ -507,10 +507,15 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         // `questions.len()` because the hint says something different for a
         // batch, and a hint that wraps to one more row is a row the options
         // lose — both sides of this measurement have to read the same text.
+        // And at the same *width*: the box is drawn inside the prompt gutter
+        // (`render.rs:954`) and inside its own borders, two columns narrower
+        // than this area. Measuring the wider width here lets a hint that is two
+        // columns from a row boundary read as one row here and two in the box —
+        // and the row it fails to reserve is the option row the box then loses.
         (question_chrome_rows(
             &q.question,
             app.chat.questions.len(),
-            area.width.saturating_sub(PROMPT_GUTTER_WIDTH),
+            area.width.saturating_sub(PROMPT_GUTTER_WIDTH + 2),
         ) + q.options.len()
             + 3)
         .clamp(6, 15) as u16

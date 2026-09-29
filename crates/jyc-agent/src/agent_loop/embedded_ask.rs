@@ -16,7 +16,6 @@ pub(crate) enum EmbeddedAsk {
         span: std::ops::Range<usize>,
         question: String,
         options: Vec<String>,
-        timeout_secs: Option<u64>,
     },
     /// Tool-looking tag that could not be parsed (bad quoting, missing
     /// attributes, unterminated...). Only the span is trustworthy: strip
@@ -51,11 +50,10 @@ pub(crate) fn find_embedded_ask(text: &str) -> Option<EmbeddedAsk> {
         return Some(EmbeddedAsk::Malformed { span });
     }
     match parse_inner(inner) {
-        Some((question, options, timeout_secs)) => Some(EmbeddedAsk::WellFormed {
+        Some((question, options)) => Some(EmbeddedAsk::WellFormed {
             span,
             question,
             options,
-            timeout_secs,
         }),
         None => Some(EmbeddedAsk::Malformed { span }),
     }
@@ -94,16 +92,13 @@ fn find_tag_end(text: &str, from: usize) -> Option<usize> {
 
 /// Parse the tag interior (`ask_user question="..." options="..."`).
 /// Returns `None` when required attributes are missing or empty.
-fn parse_inner(inner: &str) -> Option<(String, Vec<String>, Option<u64>)> {
+fn parse_inner(inner: &str) -> Option<(String, Vec<String>)> {
     let question = extract_attr(inner, "question")?.trim().to_string();
     if question.is_empty() {
         return None;
     }
     let options = extract_options(inner)?;
-    let timeout_secs = extract_attr(inner, "timeout_seconds")
-        .or_else(|| extract_attr(inner, "timeout"))
-        .and_then(|v| v.trim().parse::<u64>().ok());
-    Some((question, options, timeout_secs))
+    Some((question, options))
 }
 
 /// Value of a whitespace-delimited `key="value"` attribute. The leading
@@ -173,14 +168,11 @@ pub(crate) fn remove_span(text: &str, span: std::ops::Range<usize>) -> String {
 mod tests {
     use super::*;
 
-    fn well_formed(text: &str) -> Option<(String, Vec<String>, Option<u64>)> {
+    fn well_formed(text: &str) -> Option<(String, Vec<String>)> {
         match find_embedded_ask(text)? {
             EmbeddedAsk::WellFormed {
-                question,
-                options,
-                timeout_secs,
-                ..
-            } => Some((question, options, timeout_secs)),
+                question, options, ..
+            } => Some((question, options)),
             EmbeddedAsk::Malformed { .. } => None,
         }
     }
@@ -193,7 +185,6 @@ mod tests {
         .expect("documented comma-separated form must parse");
         assert_eq!(ask.0, "开工吗？");
         assert_eq!(ask.1, vec!["按方案".to_string(), "再想想".to_string()]);
-        assert_eq!(ask.2, Some(60));
     }
 
     #[test]
@@ -213,7 +204,6 @@ mod tests {
                 "方案要调整（回复说明）".to_string(),
             ]
         );
-        assert_eq!(ask.2, None);
     }
 
     #[test]
@@ -226,7 +216,6 @@ mod tests {
         .expect("question text mentioning options must still parse");
         assert_eq!(ask.0, "这两个 options 选哪个？");
         assert_eq!(ask.1, vec!["a".to_string(), "b".to_string()]);
-        assert_eq!(ask.2, Some(30));
 
         let ask = well_formed("<ask_user options=\"question, 其他\" question=\"q\">")
             .expect("options text mentioning question must still parse");

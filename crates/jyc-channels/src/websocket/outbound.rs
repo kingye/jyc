@@ -167,17 +167,14 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
     async fn send_question(&self, request: &jyc_types::channel::QuestionRequest) -> Result<()> {
         let payload = serde_json::json!({
             "type": "question",
-            "id": request.id,
-            "channel": request.channel,
             "topic": request.topic,
             "question": request.question,
             "options": request.options,
             "allow_multiple": request.allow_multiple,
-            "timeout_seconds": request.timeout_seconds,
         });
         // Same no-receiver tolerance as `broadcast_reply`.
         let _ = self.broadcast_tx.send(payload.to_string());
-        tracing::info!(question_id = %request.id, topic = %request.topic, "WebSocket question broadcast");
+        tracing::info!(topic = %request.topic, "WebSocket question broadcast");
         Ok(())
     }
 }
@@ -196,13 +193,10 @@ mod tests {
         let storage = Arc::new(MessageStorage::new(tmp.path()));
         let adapter = WebsocketOutboundAdapter::new(tx, storage);
         let request = jyc_types::channel::QuestionRequest {
-            id: "q1".to_string(),
-            channel: "websocket".to_string(),
             topic: "general".to_string(),
             question: "Which?".to_string(),
             options: vec!["a".to_string(), "b".to_string()],
             allow_multiple: true,
-            timeout_seconds: None,
         };
 
         adapter.send_question(&request).await.unwrap();

@@ -304,10 +304,7 @@ mod branch_resolution_tests {
         ));
         std::fs::create_dir_all(&gitdir).unwrap();
         std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/wt\n").unwrap();
-        let relative = format!(
-            "../{}-admin\n",
-            gitdir.file_name().unwrap().to_string_lossy()
-        );
+        let relative = format!("../{}\n", gitdir.file_name().unwrap().to_string_lossy());
         std::fs::write(dir.path().join(".git"), format!("gitdir: {relative}")).unwrap();
         assert_eq!(branch_for_topic_path(dir.path()).as_deref(), Some("wt"));
     }

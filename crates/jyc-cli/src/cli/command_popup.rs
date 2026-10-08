@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::Paragraph,
 };
 
 use jyc_types::{CommandArg, CommandInfo};
@@ -33,9 +33,6 @@ pub struct PopupItem {
 /// The popup level the field text currently selects.
 #[derive(Debug)]
 pub struct PopupLevel {
-    /// Top-rule name: "Commands" at the root, the command path
-    /// (`/model`, `/skill on`) deeper.
-    pub title: String,
     /// Field text this level's values are appended to — "" at the root,
     /// "/model " one level down. The empty prefix marks the first level, which
     /// is where Enter sends instead of completing.
@@ -100,7 +97,6 @@ pub fn resolve_level(filter: &str, commands: &[CommandInfo]) -> Option<PopupLeve
 
     if path.is_empty() {
         return Some(PopupLevel {
-            title: "Commands".to_string(),
             prefix: String::new(),
             items: command_rows(commands, partial),
             complete: commands
@@ -125,7 +121,6 @@ pub fn resolve_level(filter: &str, commands: &[CommandInfo]) -> Option<PopupLeve
         return None;
     }
     Some(PopupLevel {
-        title: prefix.trim_end().to_string(),
         items: arg_rows(values, partial),
         complete: values
             .iter()
@@ -285,13 +280,13 @@ pub fn handle_popup_key(
     }
 }
 
-/// Rows the popup needs below the chat input field: one top rule plus the
-/// (clamped) list. The chat layout reserves exactly this many rows, so the
-/// renderer and the layout must agree through this single helper. A list longer
-/// than the reserved rows scrolls to follow the cursor — see `window_offset`.
+/// Rows the popup needs below the chat input field: just the (clamped) list.
+/// The chat layout reserves exactly this many rows, so the renderer and the
+/// layout must agree through this single helper. A list longer than the
+/// reserved rows scrolls to follow the cursor — see `window_offset`.
 pub fn popup_height(state: &CommandPopupState, commands: &[CommandInfo]) -> u16 {
     let rows = resolve_level(&state.filter, commands).map_or(0, |l| l.items.len());
-    1 + rows.clamp(1, 10) as u16
+    rows.clamp(1, 10) as u16
 }
 
 /// First row of the `height`-row window that shows `selected`: it holds still
@@ -317,16 +312,6 @@ pub fn render_command_popup(
     commands: &[CommandInfo],
 ) {
     let level = resolve_level(&state.filter, commands);
-    let title = level.as_ref().map_or("Commands", |l| l.title.as_str());
-    let block = Block::default()
-        .title(Line::from(Span::styled(
-            rule_title(title),
-            Style::default().add_modifier(Modifier::BOLD),
-        )))
-        .borders(Borders::TOP)
-        .border_style(Style::default().fg(Color::Cyan));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
 
     // "Loading..." — only before the first poll has delivered commands.
     if commands.is_empty() {
@@ -335,7 +320,7 @@ pub fn render_command_popup(
                 "  Loading...",
                 Style::default().fg(Color::DarkGray),
             ))),
-            inner,
+            area,
         );
         return;
     }
@@ -352,14 +337,14 @@ pub fn render_command_popup(
         // One row per item, and the window follows the cursor so a list deeper
         // than the popup stays reachable — see [`window_offset`]. The level has
         // items here; the empty case took the branch above.
-        let height = inner.height as usize;
+        let height = area.height as usize;
         let count = level.items.len();
         let selected = state.selected.min(count - 1);
         let off = window_offset(count, selected, height);
         render_rows(&level.items[off..(off + height).min(count)], selected - off)
     };
 
-    frame.render_widget(Paragraph::new(items), inner);
+    frame.render_widget(Paragraph::new(items), area);
 }
 
 /// List rows, one per item — no wrapping, so a row can never push the cursor
@@ -464,7 +449,6 @@ mod tests {
     fn root_lists_commands_with_breadcrumb() {
         let commands = vec![make_cmd("/plan"), make_cmd("/model")];
         let level = resolve_level("", &commands).unwrap();
-        assert_eq!(level.title, "Commands");
         assert!(level.prefix.is_empty());
         assert_eq!(keys(&level.items), vec!["/plan", "/model"]);
         assert!(!level.items[0].has_children, "/plan declares no args");
@@ -485,7 +469,6 @@ mod tests {
     fn trailing_space_opens_the_next_level() {
         let commands = vec![model_cmd()];
         let level = resolve_level("/model ", &commands).unwrap();
-        assert_eq!(level.title, "/model");
         assert_eq!(level.prefix, "/model ");
         assert_eq!(
             keys(&level.items),
@@ -495,7 +478,6 @@ mod tests {
         // Without the space the root is still showing, and the row advertises
         // a deeper level.
         let level = resolve_level("/model", &commands).unwrap();
-        assert_eq!(level.title, "Commands");
         assert!(level.items[0].has_children);
     }
 
@@ -529,7 +511,6 @@ mod tests {
         // canonical spelling for the completion.
         let level = resolve_level("/MODEL gpt", &commands).unwrap();
         assert_eq!(level.prefix, "/model ");
-        assert_eq!(level.title, "/model");
         assert_eq!(keys(&level.items), vec!["gpt-4"]);
         assert_eq!(level.complete, None);
         assert_eq!(
@@ -543,7 +524,6 @@ mod tests {
     fn third_level_comes_from_the_parents_value() {
         let commands = vec![skill_cmd()];
         let level = resolve_level("/skill on ", &commands).unwrap();
-        assert_eq!(level.title, "/skill on");
         assert_eq!(level.prefix, "/skill on ");
         assert_eq!(keys(&level.items), vec!["ponytail", "dev-workflow"]);
 
@@ -671,14 +651,15 @@ mod tests {
     }
 
     #[test]
-    fn popup_height_is_top_rule_plus_clamped_list() {
+    fn popup_height_is_the_clamped_list() {
         let commands: Vec<CommandInfo> = (0..20).map(|i| make_cmd(&format!("/c{i}"))).collect();
-        // 1 top rule + at most 10 list rows.
-        assert_eq!(popup_height(&CommandPopupState::new(), &commands), 11);
+        // At most 10 list rows, no top rule — the input area's bottom rule
+        // is the popup's upper boundary now.
+        assert_eq!(popup_height(&CommandPopupState::new(), &commands), 10);
         // A filter matching nothing still reserves one row.
         let mut empty = CommandPopupState::new();
         empty.filter = "/zzz".to_string();
-        assert_eq!(popup_height(&empty, &commands), 2);
+        assert_eq!(popup_height(&empty, &commands), 1);
     }
 
     /// The window a list deeper than its rows shows: it holds still while the

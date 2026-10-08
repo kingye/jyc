@@ -26,12 +26,9 @@ pub async fn build_pin_context(
         context.channel_type
     );
 
-    let topic_name = context
-        .topic_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown-topic")
-        .to_string();
+    // Identity is the topic name, not the workspace dir — a forked topic
+    // shares its parent's dir, so the path would name the parent.
+    let topic_name = context.topic_name.clone();
 
     let adhoc_path = {
         let paths = topic_manager.topic_paths.lock().await;

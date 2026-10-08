@@ -59,6 +59,13 @@
   next user turn — one turn being the user's message plus the agent's
   replies up to the next one; `Shift` grows a selection and a count repeats
   (`3]` jumps three turns)
+- `/spawn [name] [path]` continues this topic's conversation in a directory of
+  its own: a fresh `agents/<name>/` with no path, or any directory the path
+  names — a non-empty checkout included, whose files are left exactly as they
+  are, since a spawn seeds state (the `/fork` allow-list, marked
+  `spawned-from`) and copies no workspace files at all. A relative path counts
+  from this topic's own dir, so `/spawn ../test` means beside it and
+  `/spawn ./lab` inside it. Websocket-only (#853)
 
 ### Changed
 
@@ -116,6 +123,11 @@
 
 ### Removed
 
+- `/clone [name] [path]`, superseded by `/spawn`. Copying the whole workspace is
+  what made it refuse a non-empty target, need `target/` / `node_modules/`
+  heuristics, and cost minutes of blocking I/O for the one thing people actually
+  wanted carried over — the conversation. Directories a `/clone` made earlier
+  keep working as ordinary pinned topics (#853)
 - The question **answer** protocol: `jyc_core::question::QuestionHub`, the
   websocket `question_response` / `question_abort` frames, `QuestionAnswer` /
   `QuestionReply`, and the `id` / `channel` / `timeout_seconds` keys that the

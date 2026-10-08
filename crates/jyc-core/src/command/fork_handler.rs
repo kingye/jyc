@@ -155,8 +155,8 @@ impl ForkCommandHandler {
 /// `dir/<topic>-2`, `dir/<topic>-3`, … — the first candidate that is neither a
 /// registered topic nor a directory that already exists under `dir`. If all of
 /// them are taken, return `<topic>-2` so the caller reports the duplicate
-/// rather than inventing a name nobody asked for. `/fork` passes its agents
-/// root as `dir` (fork dirs live there), `/clone` the source dir's parent.
+/// rather than inventing a name nobody asked for. `/fork` and `/spawn` pass
+/// their agents root as `dir` (fork dirs and default spawn dirs live there).
 ///
 /// ponytail: the probe and the `create_dir_all` inside `set_topic_path` are
 /// not one transaction, so two topics forking to the same automatic name at
@@ -180,7 +180,7 @@ pub(super) async fn next_free_name(tm: &TopicManager, topic: &str, dir: &Path) -
 /// subtree. Stricter than `post_topic`'s check in `jyc-inspect` (path syntax
 /// only) on purpose, because here the name also picks a parent directory; if
 /// anything outside `command` ever needs the same rule, lift it to
-/// `jyc-types` rather than copying it. `/clone` shares it via `pub(super)`.
+/// `jyc-types` rather than copying it. `/spawn` shares it via `pub(super)`.
 pub(super) fn invalid_name(name: &str) -> Option<&'static str> {
     if name.is_empty() {
         return Some("the name is empty");
@@ -207,7 +207,7 @@ pub(super) fn invalid_name(name: &str) -> Option<&'static str> {
 }
 
 /// Copy the inheritable state of `parent` into `child` and record where the
-/// new topic came from under `marker` (`forked-from` / `cloned-from`). Parent
+/// new topic came from under `marker` (`forked-from` / `spawned-from`). Parent
 /// files that do not exist are simply not copied — a young topic has few of
 /// them.
 pub(super) async fn seed_state(
@@ -237,7 +237,7 @@ pub(super) async fn seed_state(
 }
 
 /// A refused command: reported to the user, never an `error` (nothing broke).
-/// Shared with `/clone`, which refuses the same way.
+/// Shared with `/spawn`, which refuses the same way.
 pub(super) fn fail(message: String) -> CommandResult {
     CommandResult {
         success: false,

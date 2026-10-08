@@ -103,12 +103,12 @@ impl TopicManager {
         Ok(())
     }
 
-    /// Delete the directory a pinned/cloned topic works in — the extra step
+    /// Delete the directory a pinned topic works in — the extra step
     /// behind `/close --force --purge`.
     ///
-    /// [`Self::close_topic`] deliberately keeps that directory: for `/fork` and
-    /// `/clone` siblings it is *someone else's* — a shared checkout, or a copy
-    /// the user made on purpose. Purge is the explicit "and this one too".
+    /// [`Self::close_topic`] deliberately keeps that directory: for a `/fork`
+    /// or `/spawn` sibling it is *someone else's* — a shared checkout, or a
+    /// directory the user chose on purpose. Purge is the explicit "and this one too".
     ///
     /// Refuses (deletes nothing) when the dir is not this topic's to remove:
     ///

@@ -23,20 +23,15 @@ impl CancelCommandHandler {
 #[async_trait]
 impl CommandHandler for CancelCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let topic_name = context
-            .topic_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        // Identity is the topic name, not the workspace dir — a forked topic
+        // shares its parent's dir, so the path would name the parent.
+        let topic_name = context.topic_name.as_str();
 
         if topic_name.is_empty() {
             return Ok(CommandResult {
                 success: false,
-                message: format!(
-                    "Failed to determine topic name from path: {:?}",
-                    context.topic_path
-                ),
-                error: Some("Topic directory name could not be extracted".into()),
+                message: "Failed to determine topic name (topic_name is empty)".to_string(),
+                error: Some("Topic name is empty".into()),
                 append_body: None,
             });
         }
@@ -239,8 +234,8 @@ mode = "agent"
         let tm = make_topic_manager(tmp.path());
         let handler = CancelCommandHandler::new(tm);
 
-        // Use root path "/" which has no file name
-        let ctx = test_context(std::path::Path::new("/"));
+        let mut ctx = test_context(std::path::Path::new("/"));
+        ctx.topic_name = String::new();
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.error.is_some());
@@ -272,11 +267,12 @@ mode = "agent"
 
         let tm = make_topic_manager(workspace);
 
-        // Insert a token to simulate active processing
+        // Insert a token to simulate active processing, keyed by the topic
+        // name — resolution must not come from the workspace dir name.
         let token = CancellationToken::new();
         {
             let mut cancels = tm.topic_cancels.lock().await;
-            cancels.insert("my-topic".to_string(), token.clone());
+            cancels.insert("test-topic".to_string(), token.clone());
         }
 
         let handler = CancelCommandHandler::new(tm.clone());
@@ -284,7 +280,7 @@ mode = "agent"
         let result = handler.execute(ctx).await.unwrap();
 
         assert!(result.success);
-        assert!(result.message.contains("my-topic"));
+        assert!(result.message.contains("test-topic"));
         assert!(token.is_cancelled());
     }
 }

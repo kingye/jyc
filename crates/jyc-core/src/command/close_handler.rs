@@ -35,20 +35,16 @@ impl CloseCommandHandler {
 #[async_trait]
 impl CommandHandler for CloseCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let topic_name = context
-            .topic_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        // The topic identity is the name, not the workspace dir: a forked
+        // topic shares its parent's dir, so deriving the name from the path
+        // would close/purge the parent instead of the fork.
+        let topic_name = context.topic_name.as_str();
 
         if topic_name.is_empty() {
             return Ok(CommandResult {
                 success: false,
-                message: format!(
-                    "Failed to determine topic name from path: {:?}",
-                    context.topic_path
-                ),
-                error: Some("Topic directory name could not be extracted".into()),
+                message: "Failed to determine topic name (topic_name is empty)".to_string(),
+                error: Some("Topic name is empty".into()),
                 append_body: None,
             });
         }
@@ -69,20 +65,15 @@ impl CommandHandler for CloseCommandHandler {
             });
         }
 
-        // The directory goes first, and only when it is this topic's to delete:
-        // a refusal must leave the topic open rather than half-closed.
+        // Purge the directory only when it is this topic's to delete. A
+        // refusal does not block the close: the topic's state goes, only
+        // the directory is kept (reported in the final message).
+        let mut purge_refused: Option<String> = None;
         if Self::is_purged(&context.args) {
             match self.topic_manager.purge_topic_dir(topic_name).await? {
                 PurgeOutcome::Refused(reason) => {
-                    return Ok(CommandResult {
-                        success: false,
-                        message: format!(
-                            "/close --purge: nothing was deleted. {reason}\n\
-                             The topic is still open; /close --force closes it and keeps the dir."
-                        ),
-                        error: None,
-                        append_body: None,
-                    });
+                    tracing::info!(topic = %topic_name, reason = %reason, "Purge refused");
+                    purge_refused = Some(reason);
                 }
                 PurgeOutcome::Deleted => {
                     tracing::info!(topic = %topic_name, dir = %context.topic_path.display(), "Purged topic dir");
@@ -106,14 +97,19 @@ impl CommandHandler for CloseCommandHandler {
                 let kept = tokio::fs::try_exists(&context.topic_path)
                     .await
                     .unwrap_or(false);
-                let message = if kept {
-                    format!(
+                let message = match purge_refused {
+                    Some(reason) => format!(
+                        "Topic '{topic_name}' closed; its state is deleted and {} is kept: {reason}",
+                        context.topic_path.display()
+                    ),
+                    None if kept => format!(
                         "Topic '{topic_name}' closed; its state is deleted and {} is kept. \
                          Add --purge to delete the directory as well:\n/close --force --purge",
                         context.topic_path.display()
-                    )
-                } else {
-                    format!("Topic '{topic_name}' closed; its directory and data are deleted.")
+                    ),
+                    None => {
+                        format!("Topic '{topic_name}' closed; its directory and data are deleted.")
+                    }
                 };
                 Ok(CommandResult {
                     success: true,

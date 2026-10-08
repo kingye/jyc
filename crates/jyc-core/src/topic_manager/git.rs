@@ -6,25 +6,52 @@ use std::path::Path;
 
 use jyc_types::{ChangeKind, ChangedFileEntry};
 
+/// Locate a checkout's git metadata: the working dir to run `git` in and the
+/// on-disk `HEAD` file to read the branch from.
+///
+/// Handles three layouts:
+/// - a plain clone: `<path>/.git` is a directory and
+///   `HEAD` is `<path>/.git/HEAD`;
+/// - a linked worktree or submodule: `<path>/.git` is a *file* containing
+///   `gitdir: <dir>`, and `HEAD` lives in that dir (a relative `gitdir`
+///   resolves against `<path>`);
+/// - the agent's clone-into-`repo/` layout.
+///
+/// No `git` CLI for the probe itself — `.git/HEAD` is git's stable on-disk
+/// format and `std::fs::read_to_string` follows a `repo/` symlink for us.
+fn git_probe(path: &Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let dotgit = path.join(".git");
+    if dotgit.join("HEAD").is_file() {
+        return Some((path.to_path_buf(), dotgit.join("HEAD")));
+    }
+    if dotgit.is_file() {
+        let content = std::fs::read_to_string(&dotgit).ok()?;
+        let gitdir = content.trim().strip_prefix("gitdir:")?.trim();
+        let gitdir = if Path::new(gitdir).is_absolute() {
+            std::path::PathBuf::from(gitdir)
+        } else {
+            path.join(gitdir)
+        };
+        let head = gitdir.join("HEAD");
+        if head.is_file() {
+            return Some((path.to_path_buf(), head));
+        }
+    }
+    let repo = path.join("repo");
+    if repo.join(".git").join("HEAD").is_file() {
+        return Some((repo.clone(), repo.join(".git").join("HEAD")));
+    }
+    None
+}
+
 /// Read the current branch name from `.git/HEAD` under `path`.
 ///
-/// Looks first at `<path>/.git/HEAD`, then falls back to
-/// `<path>/repo/.git/HEAD` (the layout used when the agent clones into
-/// `repo/`). Returns:
+/// Returns:
 /// - `Some(branch)` for a symbolic ref `ref: refs/heads/<branch>`
 /// - `Some("(detached)")` for a raw SHA in `.git/HEAD`
-/// - `None` when neither file is readable (not a git repo, perms, etc.)
-///
-/// No `git` CLI — `.git/HEAD` is git's stable on-disk format and
-/// `std::fs::read_to_string` follows a `repo/` symlink for us.
+/// - `None` when no git metadata is found (not a git repo, perms, etc.)
 pub(crate) fn branch_for_topic_path(path: &Path) -> Option<String> {
-    let head_path = if path.join(".git").join("HEAD").is_file() {
-        path.join(".git").join("HEAD")
-    } else if path.join("repo").join(".git").join("HEAD").is_file() {
-        path.join("repo").join(".git").join("HEAD")
-    } else {
-        return None;
-    };
+    let (_, head_path) = git_probe(path)?;
     let raw = std::fs::read_to_string(&head_path).ok()?;
     let trimmed = raw.trim();
     if let Some(rest) = trimmed.strip_prefix("ref: refs/heads/") {
@@ -156,13 +183,9 @@ fn base_ref(cwd: &Path) -> Option<String> {
 /// Synchronous `std::process::Command` to match `branch_for_topic_path`'s
 /// style.
 pub(crate) fn changed_files_for_topic_path(path: &Path) -> Option<Vec<ChangedFileEntry>> {
-    let cwd = if path.join(".git").join("HEAD").is_file() {
-        path.to_path_buf()
-    } else if path.join("repo").join(".git").join("HEAD").is_file() {
-        path.join("repo")
-    } else {
-        return None;
-    };
+    // `git` runs in the checkout root; the CLI itself resolves a worktree's
+    // file-typed `.git`, so only the probe needs to know that layout.
+    let (cwd, _) = git_probe(path)?;
 
     let branch =
         base_ref(&cwd).and_then(|base| run_git_diff_name_status(&cwd, &format!("{base}...HEAD")));
@@ -254,11 +277,52 @@ mod branch_resolution_tests {
         std::fs::write(git.join("HEAD"), "garbage content\n").unwrap();
         assert!(branch_for_topic_path(dir.path()).is_none());
     }
+
+    #[test]
+    fn follows_worktree_gitfile_with_absolute_gitdir() {
+        let dir = tempdir().unwrap();
+        let gitdir = dir.path().join("admin-dir");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/wt\n").unwrap();
+        std::fs::write(
+            dir.path().join(".git"),
+            format!("gitdir: {}\n", gitdir.display()),
+        )
+        .unwrap();
+        assert_eq!(branch_for_topic_path(dir.path()).as_deref(), Some("wt"));
+    }
+
+    #[test]
+    fn follows_worktree_gitfile_with_relative_gitdir() {
+        let dir = tempdir().unwrap();
+        // gitdir sits next to the checkout; the pointer is relative to the
+        // checkout dir, as `git worktree add` writes it when the admin dir
+        // is addressed relatively.
+        let gitdir = dir.path().with_file_name(format!(
+            "{}-admin",
+            dir.path().file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/wt\n").unwrap();
+        let relative = format!(
+            "../{}-admin\n",
+            gitdir.file_name().unwrap().to_string_lossy()
+        );
+        std::fs::write(dir.path().join(".git"), format!("gitdir: {relative}")).unwrap();
+        assert_eq!(branch_for_topic_path(dir.path()).as_deref(), Some("wt"));
+    }
+
+    #[test]
+    fn ignores_malformed_gitfile() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".git"), "not a gitdir pointer\n").unwrap();
+        assert!(branch_for_topic_path(dir.path()).is_none());
+    }
 }
 
 #[cfg(test)]
 mod changed_files_resolution_tests {
-    use super::changed_files_for_topic_path;
+    use super::{branch_for_topic_path, changed_files_for_topic_path};
     use jyc_types::{ChangeKind, ChangedFileEntry};
     use std::process::Command;
     use tempfile::tempdir;
@@ -295,6 +359,64 @@ mod changed_files_resolution_tests {
             "init",
         ]);
         dir
+    }
+
+    /// A linked worktree (`.git` is a file pointing at the admin dir) is a
+    /// valid topic dir: the branch resolves from the pointed-at HEAD and
+    /// `git diff` runs with the checkout as cwd. Regression: `/spawn` into a
+    /// `git worktree add` dir showed neither branch nor files in topic info.
+    #[test]
+    fn changed_files_and_branch_work_in_a_git_worktree() {
+        let repo = git_init_with_main();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .expect("git failed")
+        };
+        std::fs::write(repo.path().join("a.txt"), "base\n").unwrap();
+        run(&["add", "a.txt"]);
+        run(&[
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-q",
+            "-m",
+            "add a",
+        ]);
+
+        let wt = tempdir().unwrap();
+        run(&[
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "wt-branch",
+            wt.path().to_str().unwrap(),
+        ]);
+        assert_eq!(
+            branch_for_topic_path(wt.path()).as_deref(),
+            Some("wt-branch")
+        );
+
+        std::fs::write(wt.path().join("a.txt"), "changed\n").unwrap();
+        let files =
+            changed_files_for_topic_path(wt.path()).expect("a worktree should probe as a git repo");
+        assert_eq!(
+            files,
+            vec![ChangedFileEntry {
+                path: "a.txt".to_string(),
+                change: ChangeKind::Modified,
+                uncommitted: true,
+            }]
+        );
     }
 
     #[test]

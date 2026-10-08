@@ -494,16 +494,18 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         frame.render_widget(bg, area);
     }
 
-    // Split: scrollable messages (top) + dynamic input area (bottom)
-    // Input area = 1 mode header row + editor rows (grows with content, up
-    // to 10) + the bottom rule, measured once by `input_area_rows` — the
-    // same helper `page_size` uses, so rendering and scrolling always agree.
+    // Split: scrollable messages (top), then the input field, the popup
+    // slot, and the status line (bottom).
+    // Input field = a top rule + editor rows (grows with content, up to
+    // 10) + a bottom rule, measured once by `input_area_rows` — the same
+    // helper `page_size` uses, so rendering and scrolling always agree.
     // A row missing here is a row the question box loses, or an editor row
     // the field clips.
     let input_line_count = app.chat.input_area_rows(area.width);
     // Rows reserved for an open popup, directly BELOW the input field: the
     // popup is a layout participant, not an overlay, so it can never be
     // clipped by the pane edge or cover the field the user is typing in.
+    // The status line takes the pane's last row, below the popup.
     let popup_rows = match (app.chat.command_popup.as_ref(), app.chat.leader.as_ref()) {
         (Some(state), _) => crate::cli::command_popup::popup_height(state, &app.chat.commands),
         (None, Some(leader)) => leader.popup_height(area.width as usize),
@@ -515,6 +517,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             Constraint::Min(0),
             Constraint::Length(input_line_count),
             Constraint::Length(popup_rows),
+            Constraint::Length(1),
         ])
         .split(area);
     // Cache the message-area rect so mouse-wheel events can hit-test
@@ -905,15 +908,14 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
 
     // --- Input area (text editor, at bottom) ---
     // The editor renders its own wrapping and scroll-follow, full width,
-    // under a one-row header ("─ {mode} · {topic}[ · {branch}]") and above
-    // a full-width bottom rule — both take the header style, so the frame
-    // reads as one unit and dims together when focus leaves the pane. The
-    // rule also closes the input area toward the popup slot below. The
-    // cursor is a blinking reversed block when the input has focus and
-    // invisible when another pane does (a default-styled cursor cell is
-    // indistinguishable from the text under it). While a question is
-    // pending the editor is covered by the question box, so the cursor
-    // stays hidden.
+    // framed by a full-width rule above and below — both take the same
+    // style, so the field reads as one box and dims together when focus
+    // leaves the pane. The bottom rule also closes the input area toward
+    // the popup slot below. The cursor is a blinking reversed block when
+    // the input has focus and invisible when another pane does (a
+    // default-styled cursor cell is indistinguishable from the text under
+    // it). While a question is pending the editor is covered by the
+    // question box, so the cursor stays hidden.
     app.chat
         .editor
         .set_cursor_style(if app.chat.active_question() {
@@ -929,39 +931,41 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 | ChatFocus::InfoPane => Style::default(),
             }
         });
-    let [header_area, body_and_rule] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(chunks[1]);
-    let [body_area, rule_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(body_and_rule);
+    let [top_rule_area, body_area, bottom_rule_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(chunks[1]);
     let focused = app.chat.focus == ChatFocus::ChatPane;
-    // Resolve mode/channel/pattern/model/tokens for the header line, all
-    // from the polled overview (same source as the Topic Info pane).
-    let header_ctx = resolve_header_ctx(app);
-    // Header text and the top/bottom ─ lines share one style: sapphire +
-    // bold when focused, inactive #393552 when focus moves away — the lines
-    // stay the same color as "plan · jyc · main".
-    let header_style = if focused {
+    // Both rules share one style: sapphire + bold when focused, inactive
+    // #393552 when focus moves away — the field's frame dims together.
+    let rule_style = if focused {
         Style::default()
             .fg(Color::Rgb(116, 199, 236)) // Catppuccin sapphire
             .add_modifier(Modifier::BOLD)
     } else {
         LINE_DRAWING
     };
-    let header_line = build_chat_header_line(header_area.width as usize, &header_ctx, header_style);
-    frame.render_widget(Paragraph::new(header_line), header_area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(top_rule_area.width as usize),
+            rule_style,
+        )),
+        top_rule_area,
+    );
     frame.render_widget(&app.chat.editor, body_area);
     if app.chat.active_question() {
         super::render_question_box(frame, body_area, app);
     }
-    // Bottom rule of the input area: same style as the header line, so the
-    // two frame the field as one unit. Also the popup's top boundary — the
+    // Bottom rule of the input area: also the popup's top boundary — the
     // popups below no longer draw a rule of their own.
     frame.render_widget(
         Paragraph::new(Span::styled(
-            "─".repeat(rule_area.width as usize),
-            header_style,
+            "─".repeat(bottom_rule_area.width as usize),
+            rule_style,
         )),
-        rule_area,
+        bottom_rule_area,
     );
 
     // ── Popups: the slot right below the input field (chunks[2]) ──
@@ -973,6 +977,16 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     if let Some(ref leader) = app.chat.leader {
         leader.render_anchored(frame, chunks[2]);
     }
+
+    // ── Status line: the pane's last row (chunks[3]) ──
+    // Mode/topic/branch on the left, model + context usage on the right,
+    // from the polled overview (same source as the Topic Info pane). It
+    // sits below the popup slot so a popup never covers it.
+    let status_ctx = resolve_header_ctx(app);
+    frame.render_widget(
+        build_status_line(chunks[3].width as usize, &status_ctx),
+        chunks[3],
+    );
 }
 
 /// Reformat an activity line of the form `Tool: <name> — <json input>`

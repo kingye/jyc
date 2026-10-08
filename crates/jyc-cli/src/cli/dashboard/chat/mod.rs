@@ -1862,10 +1862,10 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(paragraph, inner);
 }
 
-/// Zero-alloc snapshot of the data the chat header needs. All fields
+/// Zero-alloc snapshot of the data the chat status line needs. All fields
 /// borrow directly from the polled `InspectOverview`. Missing fields
-/// fall back to placeholders so the header still reads as
-/// `─ build · jyc` before the first poll.
+/// fall back to placeholders so the line still reads as
+/// `build · jyc` before the first poll.
 struct ChatHeaderCtx<'a> {
     mode: &'a str,
     topic: Option<&'a str>,
@@ -1886,20 +1886,17 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
     }
 }
 
-/// Build the chat header row: "─ {mode} · {topic}[ · {branch}]"
-/// left-aligned, ─ padding filling the rest of the chat-pane width, and
-/// a right-aligned "[ {model} · {pct}% ]" chip showing the current model
-/// and context-window usage. The leading ─ and the padding run take the
-/// same style as the mode/topic text, so the top line reads as one unit
-/// with the input area's bottom rule. No bottom or right border. Falls
-/// back gracefully when any field is missing — the chip is dropped
-/// before the left segment starts truncating.
-fn build_chat_header_line(
-    width: usize,
-    ctx: &ChatHeaderCtx<'_>,
-    header_style: Style,
-) -> Line<'static> {
-    // --- Left segment: "╭─ {mode} · {topic}[ · {branch}]" ---
+/// Build the chat status line — the pane's bottom row: "{mode} · {topic}[ ·
+/// {branch}]" left-aligned, a right-aligned "[ {model} · {pct}% ]" chip
+/// showing the current model and context-window usage. Both segments are
+/// one dim gray: it is a footer, not a rule, so it carries no ─ padding
+/// (the input field has its own rules above). Falls back gracefully when
+/// any field is missing — the chip is dropped before the left segment
+/// starts truncating.
+fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
+    let style = Style::default().fg(Color::Gray);
+
+    // --- Left segment: "{mode} · {topic}[ · {branch}]" ---
     // The topic name is the identity that matters here; channel and
     // pattern are routing metadata and are intentionally not shown.
     let mut left = String::with_capacity(48);
@@ -1912,9 +1909,7 @@ fn build_chat_header_line(
         left.push_str(" · ");
         left.push_str(branch);
     }
-    // The "─ " prefix is accounted for separately so it can be styled in
-    // the line-drawing color (2 display columns).
-    let left_w = 2 + left.width();
+    let left_w = left.width();
 
     // --- Right chip: "[ {model} · {pct}% ]" ---
     // Omit the chip entirely when both fields are missing (e.g., before
@@ -1929,25 +1924,19 @@ fn build_chat_header_line(
     };
     let chip_w = chip.as_ref().map(|c| c.width()).unwrap_or(0);
 
-    // Width budget: pad = width - left - chip. If negative (or zero, so
-    // we can't fit a space separator), drop the chip first, then
-    // truncate the left segment.
+    // Width budget: need left + chip + one separating space. Drop the chip
+    // first, then shrink the left segment.
     if width < left_w + chip_w + 1 {
-        // Try without the chip.
+        // Chip dropped, left fits on its own.
         if width >= left_w {
-            return Line::from(vec![
-                Span::styled("─", header_style),
-                Span::styled(format!(" {left}"), header_style),
-                Span::styled("─".repeat(width.saturating_sub(left_w + 1)), header_style),
-            ]);
+            return Line::from(Span::styled(left, style));
         }
         // Left itself doesn't fit; best-effort segments over
         // [topic, branch], adding the separator only when there is
         // room for at least one column of content after it.
         let mut compact = ctx.mode.to_string();
         for seg in [ctx.topic, ctx.branch].into_iter().flatten() {
-            // +2 accounts for the "─ " prefix.
-            let used = 3 + compact.width();
+            let used = compact.width();
             // Need room for " · " (3 cols) plus at least 1 col of content.
             if width < used + 4 {
                 break;
@@ -1956,41 +1945,19 @@ fn build_chat_header_line(
             compact.push_str(" · ");
             compact.push_str(&truncate_to_width(seg, avail));
         }
-        return Line::from(vec![
-            Span::styled("─", header_style),
-            Span::styled(format!(" {compact}"), header_style),
-        ]);
+        return Line::from(Span::styled(compact, style));
     }
 
-    let pad = width - left_w - chip_w;
-    let mut spans = Vec::with_capacity(5);
-    spans.push(Span::styled("─", header_style));
-    spans.push(Span::styled(format!(" {left}"), header_style));
-    // Separator between left segment and chip. Always emit at least
-    // a single space when the chip is rendered (so it never sits flush
-    // against the left); fill the gap with `─` runs when there's room.
-    match chip.as_deref() {
-        Some(_) if pad >= 2 => {
-            spans.push(Span::styled(" ", header_style));
-            spans.push(Span::styled("─".repeat(pad - 2), header_style));
-            spans.push(Span::styled(" ", header_style));
-        }
-        Some(_) if pad == 1 => {
-            spans.push(Span::styled(" ", header_style));
-        }
-        // pad == 0 with chip: no separator; line was packed exactly.
-        Some(c) => {
-            spans.push(Span::styled(c.to_string(), header_style));
-            return Line::from(spans);
-        }
-        None if pad > 0 => {
-            // No chip, but padding available — fill with dashes.
-            spans.push(Span::styled("─".repeat(pad), header_style));
-        }
-        None => {}
-    }
+    let mut spans = Vec::with_capacity(3);
+    spans.push(Span::styled(left, style));
     if let Some(c) = chip {
-        spans.push(Span::styled(c, header_style));
+        // Spaces separate the two segments — at least one, so the chip
+        // never sits flush against the left, the rest filling the row.
+        spans.push(Span::styled(
+            " ".repeat((width - left_w - chip_w).max(1)),
+            style,
+        ));
+        spans.push(Span::styled(c, style));
     }
     Line::from(spans)
 }
@@ -2701,7 +2668,9 @@ impl ChatState {
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => {
                 let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
-                base.saturating_sub(self.input_area_rows(term_width) as usize)
+                // +1: the status line below the popup slot — permanent
+                // chrome, exactly like the input area above it.
+                base.saturating_sub(self.input_area_rows(term_width) as usize + 1)
                     .max(1)
             }
             ChatFocus::ActivityPane | ChatFocus::ExplorerPane | ChatFocus::InfoPane => base.max(1),

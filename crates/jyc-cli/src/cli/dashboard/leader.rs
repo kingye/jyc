@@ -408,8 +408,8 @@ mod tests {
         );
         assert_eq!(
             leader.popup_height(width) as usize,
-            lines.len() + 2,
-            "reserved rows must equal rendered rows plus rule and footer"
+            lines.len() + 1,
+            "reserved rows must equal rendered rows plus the footer hint"
         );
         let text: String = lines
             .iter()

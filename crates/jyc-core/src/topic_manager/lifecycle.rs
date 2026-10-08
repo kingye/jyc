@@ -58,17 +58,25 @@ impl TopicManager {
     /// Close and delete a topic's directory.
     ///
     /// This is channel-agnostic — all topics use the same cleanup logic.
-    /// For adopted/pinned topics the registered *state dir* is deleted while
-    /// the topic dir itself — typically a user-owned project checkout — is
-    /// kept; the one exception is a state dir that sits *inside* the topic
-    /// dir (`/spawn` with no path creates that shape), where the now emptied
-    /// dir is removed with its state. The registration is deliberately
-    /// kept: a reopened topic reuses the same state dir instead of ever
-    /// falling back to `<topic_dir>/.jyc` (#825).
-    /// Unregistered topics keep the legacy behavior: the whole directory
-    /// (with its in-dir `.jyc`) is removed. In-memory state is cleaned up
-    /// in both cases.
+    /// The emptied state namespace goes with it: the `agents/<topic>/` shell
+    /// a deleted state dir leaves behind, plus empty nested parents such as
+    /// `agents/<agent>/` — pruned up to (never including) jyc's own roots.
+    /// A shell that still holds anything is kept. The registration itself
+    /// stays: a reopened topic reuses the same state dir name instead of
+    /// ever falling back to `<topic_dir>/.jyc` (#825). Unregistered topics
+    /// keep the legacy behavior: the whole directory (with its in-dir
+    /// `.jyc`) is removed, empty parents pruned the same way. In-memory
+    /// state is cleaned up in both cases.
     pub async fn close_topic(&self, topic_name: &str) -> Result<()> {
+        let agents_root = self.agents_workspace_root();
+        self.close_topic_under(topic_name, &agents_root).await
+    }
+
+    /// [`Self::close_topic`] with an explicit agents root — the same
+    /// testable-core pattern as `purge_topic_dir_under` / `auto_close_topic_under`.
+    async fn close_topic_under(&self, topic_name: &str, agents_root: &Path) -> Result<()> {
+        let state_root = crate::topic_path::state_root(&self.workdir);
+        let roots = [agents_root, state_root.as_path()];
         let topic_path = self
             .topic_path(topic_name)
             .await
@@ -85,12 +93,13 @@ impl TopicManager {
                     .context(format!("Failed to remove topic state dir: {:?}", state))?;
             }
             // A registration normally points outside the topic dir — a pin, a
-            // fork, a `/spawn` with an explicit path — and the dir stays. The
-            // one shape where the state sits *inside* the topic dir is
-            // `/spawn` with no path: `agents/<name>/` was created for it, and
-            // deleting only `.jyc` would leave an empty shell. Remove the dir
-            // too when it is empty once the state is gone; a dir that has
-            // since gained files is kept, like any pinned topic's.
+            // fork, a `/spawn` with an explicit path — and only the emptied
+            // `agents/<topic>/` shell around the state goes. The one shape
+            // where the state sits *inside* the topic dir is `/spawn` with no
+            // path: that dir was created for the topic and is not necessarily
+            // under one of our roots, so an emptied one is removed on its own
+            // (also when it *is* under the roots — this branch, not the pruner
+            // below, owns the in-dir shape; don't "unify" them).
             if path_is_under(&state, &topic_path).await {
                 match tokio::fs::remove_dir(&topic_path).await {
                     Ok(()) => tracing::info!(
@@ -119,6 +128,7 @@ impl TopicManager {
                     ),
                 }
             } else {
+                prune_empty_parents(&state, &roots).await;
                 tracing::info!(
                     topic = %topic_name,
                     state = %state.display(),
@@ -132,6 +142,7 @@ impl TopicManager {
 
         if topic_path.exists() {
             remove_topic_dir(topic_name, &topic_path).await?;
+            prune_empty_parents(&topic_path, &roots).await;
             tracing::info!(topic = %topic_name, "Topic directory deleted");
         }
 
@@ -359,6 +370,26 @@ impl TopicManager {
     }
 }
 
+/// Remove the emptied parent dirs a deleted state/topic dir leaves behind —
+/// the `agents/<topic>/` shells and empty nested parents like `agents/<agent>/`
+/// — up to but never including jyc's own roots (`agents_root`, `state_root`).
+/// Stops at the first dir that still holds anything; a non-empty shell is
+/// kept, like any pinned topic's dir. `dir` itself is expected to be already
+/// deleted by the caller.
+async fn prune_empty_parents(dir: &Path, roots: &[&Path]) {
+    let mut parent = dir.parent();
+    while let Some(p) = parent {
+        if roots.contains(&p) || !roots.iter().any(|r| p.starts_with(r)) {
+            break;
+        }
+        if tokio::fs::remove_dir(p).await.is_err() {
+            break; // gone already, not empty, or not removable — the rest stays
+        }
+        tracing::info!(dir = %p.display(), "Emptied state namespace dir removed");
+        parent = p.parent();
+    }
+}
+
 /// Canonicalized containment check: `path` must be strictly under `root`.
 ///
 /// Canonicalization resolves symlinks and `..`, so a topic dir symlinked
@@ -577,8 +608,9 @@ mode = "agent"
     }
 
     /// Pinned topic with a registered state dir: close deletes the state
-    /// dir but keeps the registration (a reopen reuses the same state
-    /// dir) and the topic dir (user-owned repo) survives.
+    /// dir *and* the emptied `agents/<topic>/` shell around it, but keeps
+    /// the registration (a reopen reuses the same state dir) and the topic
+    /// dir (user-owned repo) survives.
     #[tokio::test]
     async fn close_pinned_topic_removes_state_keeps_dir() {
         let tmp = tempdir().unwrap();
@@ -587,7 +619,9 @@ mode = "agent"
         let tm = make_tm(&workspace);
 
         let repo = tmp.path().join("probe-pin-repo");
-        let state = tmp.path().join("agents/probe-pin-app/.jyc");
+        let namespace = tmp.path().join("agents/probe-pin-app");
+        let state = namespace.join(".jyc");
+        let agents_root = tmp.path().join("agents");
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::write(repo.join("main.rs"), "fn main() {}").unwrap();
         std::fs::create_dir_all(&state).unwrap();
@@ -598,7 +632,9 @@ mode = "agent"
             .await
             .unwrap();
 
-        tm.close_topic("probe-pin-app").await.unwrap();
+        tm.close_topic_under("probe-pin-app", &agents_root)
+            .await
+            .unwrap();
 
         assert!(
             repo.join("main.rs").exists(),
@@ -609,12 +645,78 @@ mode = "agent"
             "no state should be recreated in dir"
         );
         assert!(!state.exists(), "relocated state dir must be deleted");
+        assert!(
+            !namespace.exists(),
+            "emptied agents/<topic> shell must be pruned"
+        );
+        assert!(agents_root.exists(), "the agents root itself must survive");
         assert_eq!(
             jyc_types::state_dir::registered_state("probe-pin-app"),
             Some(state.clone()),
             "registration kept so a reopen reuses the same state dir"
         );
         assert_eq!(jyc_types::state_dir::jyc_dir("probe-pin-app", &repo), state);
+    }
+
+    /// A state namespace shell that still holds non-`.jyc` files survives
+    /// the close — pruning only removes emptied dirs.
+    #[tokio::test]
+    async fn close_keeps_non_empty_state_namespace() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let namespace = tmp.path().join("agents/probe-prune-full");
+        let state = namespace.join(".jyc");
+        let agents_root = tmp.path().join("agents");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(namespace.join("notes.txt"), "keep me").unwrap();
+        jyc_types::state_dir::register("probe-prune-full", &state);
+        tm.set_topic_path("probe-prune-full", tmp.path().join("repo"))
+            .await
+            .unwrap();
+
+        tm.close_topic_under("probe-prune-full", &agents_root)
+            .await
+            .unwrap();
+
+        assert!(!state.exists(), "state dir must be deleted");
+        assert!(
+            namespace.join("notes.txt").exists(),
+            "non-empty namespace shell must survive"
+        );
+        assert!(
+            namespace.exists() && agents_root.exists(),
+            "the shell and the agents root itself must survive"
+        );
+    }
+
+    /// Unregistered topic under the agents root (pipe-routed dynamic
+    /// topic): close deletes the whole dir *and* the emptied parent agent
+    /// dir, stopping at the agents root itself.
+    #[tokio::test]
+    async fn close_prunes_empty_legacy_topic_parents() {
+        let tmp = tempdir().unwrap();
+        let agents_root = tmp.path().join("agents");
+        let workspace = agents_root.join("probe-agent-x");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let topic_dir = workspace.join("probe-plan-42");
+        std::fs::create_dir_all(topic_dir.join(".jyc")).unwrap();
+        std::fs::write(topic_dir.join("f.txt"), "x").unwrap();
+
+        tm.close_topic_under("probe-plan-42", &agents_root)
+            .await
+            .unwrap();
+
+        assert!(!topic_dir.exists());
+        assert!(
+            !workspace.exists(),
+            "emptied agents/<agent> parent must be pruned"
+        );
+        assert!(agents_root.exists(), "the agents root itself must survive");
     }
 
     /// Two topics pinning the same dir: closing one deletes only its own

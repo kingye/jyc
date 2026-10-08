@@ -13,11 +13,9 @@ mod render;
 mod table_wrap;
 
 use render::{RenderFingerprint, render_chat_conversation, truncate_to_width};
-/// Width of the input prompt gutter ("╰─❯ ").
-const PROMPT_GUTTER_WIDTH: u16 = 4;
 
-/// Color for box-drawing characters in the chat header and input gutter
-/// ("╭─", "╰─", and the "─" padding run). The ❮/❯ arrows are yellow.
+/// Inactive color for the input area (header line and bottom rule) when the
+/// chat pane loses focus.
 const LINE_DRAWING: Style = Style::new().fg(Color::Rgb(0x39, 0x35, 0x52));
 
 /// An `ask_user` question pushed by the daemon, awaiting the user's answer.
@@ -1869,7 +1867,7 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
 /// Zero-alloc snapshot of the data the chat header needs. All fields
 /// borrow directly from the polled `InspectOverview`. Missing fields
 /// fall back to placeholders so the header still reads as
-/// `╭─ build · jyc` before the first poll.
+/// `─ build · jyc` before the first poll.
 struct ChatHeaderCtx<'a> {
     mode: &'a str,
     topic: Option<&'a str>,
@@ -1890,17 +1888,18 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
     }
 }
 
-/// Build the chat header row: "╭─ {mode} · {topic}[ · {branch}]"
+/// Build the chat header row: "─ {mode} · {topic}[ · {branch}]"
 /// left-aligned, ─ padding filling the rest of the chat-pane width, and
 /// a right-aligned "[ {model} · {pct}% ]" chip showing the current model
-/// and context-window usage. No bottom or right border. Falls back
-/// gracefully when any field is missing — the chip is dropped before
-/// the left segment starts truncating.
+/// and context-window usage. The leading ─ and the padding run take the
+/// same style as the mode/topic text, so the top line reads as one unit
+/// with the input area's bottom rule. No bottom or right border. Falls
+/// back gracefully when any field is missing — the chip is dropped
+/// before the left segment starts truncating.
 fn build_chat_header_line(
     width: usize,
     ctx: &ChatHeaderCtx<'_>,
     header_style: Style,
-    line_style: Style,
 ) -> Line<'static> {
     // --- Left segment: "╭─ {mode} · {topic}[ · {branch}]" ---
     // The topic name is the identity that matters here; channel and
@@ -1915,9 +1914,9 @@ fn build_chat_header_line(
         left.push_str(" · ");
         left.push_str(branch);
     }
-    // The "╭─ " prefix is accounted for separately so it can be styled in
-    // the line-drawing color (3 display columns).
-    let left_w = 3 + left.width();
+    // The "─ " prefix is accounted for separately so it can be styled in
+    // the line-drawing color (2 display columns).
+    let left_w = 2 + left.width();
 
     // --- Right chip: "[ {model} · {pct}% ]" ---
     // Omit the chip entirely when both fields are missing (e.g., before
@@ -1939,9 +1938,9 @@ fn build_chat_header_line(
         // Try without the chip.
         if width >= left_w {
             return Line::from(vec![
-                Span::styled("╭─", line_style),
+                Span::styled("─", header_style),
                 Span::styled(format!(" {left}"), header_style),
-                Span::styled("─".repeat(width.saturating_sub(left_w + 1)), line_style),
+                Span::styled("─".repeat(width.saturating_sub(left_w + 1)), header_style),
             ]);
         }
         // Left itself doesn't fit; best-effort segments over
@@ -1949,7 +1948,7 @@ fn build_chat_header_line(
         // room for at least one column of content after it.
         let mut compact = ctx.mode.to_string();
         for seg in [ctx.topic, ctx.branch].into_iter().flatten() {
-            // +3 accounts for the "╭─ " prefix.
+            // +2 accounts for the "─ " prefix.
             let used = 3 + compact.width();
             // Need room for " · " (3 cols) plus at least 1 col of content.
             if width < used + 4 {
@@ -1960,14 +1959,14 @@ fn build_chat_header_line(
             compact.push_str(&truncate_to_width(seg, avail));
         }
         return Line::from(vec![
-            Span::styled("╭─", line_style),
+            Span::styled("─", header_style),
             Span::styled(format!(" {compact}"), header_style),
         ]);
     }
 
     let pad = width - left_w - chip_w;
     let mut spans = Vec::with_capacity(5);
-    spans.push(Span::styled("╭─", line_style));
+    spans.push(Span::styled("─", header_style));
     spans.push(Span::styled(format!(" {left}"), header_style));
     // Separator between left segment and chip. Always emit at least
     // a single space when the chip is rendered (so it never sits flush
@@ -1975,7 +1974,7 @@ fn build_chat_header_line(
     match chip.as_deref() {
         Some(_) if pad >= 2 => {
             spans.push(Span::styled(" ", header_style));
-            spans.push(Span::styled("─".repeat(pad - 2), line_style));
+            spans.push(Span::styled("─".repeat(pad - 2), header_style));
             spans.push(Span::styled(" ", header_style));
         }
         Some(_) if pad == 1 => {
@@ -1988,7 +1987,7 @@ fn build_chat_header_line(
         }
         None if pad > 0 => {
             // No chip, but padding available — fill with dashes.
-            spans.push(Span::styled("─".repeat(pad), line_style));
+            spans.push(Span::styled("─".repeat(pad), header_style));
         }
         None => {}
     }
@@ -2676,6 +2675,27 @@ impl ChatState {
         }
     }
 
+    /// Rows the input area occupies: 1 mode header row, the wrapped editor
+    /// rows (or the question box), and the full-width bottom rule. The
+    /// renderer (`render_chat_conversation`) and `page_size` must agree on
+    /// this number — this helper is the single place that measures it.
+    /// Widths mirror where content actually wraps: the editor spans the
+    /// full body width, the question box two columns narrower for its own
+    /// borders.
+    fn input_area_rows(&self, width: u16) -> u16 {
+        let body = if self.active_question() {
+            let q = self.current_question().expect("active question");
+            (question_chrome_rows(&q.question, self.questions.len(), width.saturating_sub(2))
+                + q.options.len()
+                + 3)
+            .clamp(6, 15) as u16
+        } else {
+            (count_wrapped_lines(&self.text(), width) + 1).clamp(2, 11) as u16
+        };
+        // +1: the bottom rule row below the editor.
+        body + 1
+    }
+
     pub(super) fn page_size(&self) -> usize {
         let base = crossterm::terminal::size()
             .map(|(_, h)| h.saturating_sub(7) as usize)
@@ -2683,14 +2703,8 @@ impl ChatState {
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => {
                 let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
-                // Editor rows: 1 mode header row + wrapped text lines (1-10).
-                // Subtract the prompt gutter from the width.
-                let input_lines = (count_wrapped_lines(
-                    &self.text(),
-                    term_width.saturating_sub(PROMPT_GUTTER_WIDTH),
-                ) + 1)
-                    .clamp(2, 11);
-                base.saturating_sub(input_lines).max(1)
+                base.saturating_sub(self.input_area_rows(term_width) as usize)
+                    .max(1)
             }
             ChatFocus::ActivityPane | ChatFocus::ExplorerPane | ChatFocus::InfoPane => base.max(1),
         }

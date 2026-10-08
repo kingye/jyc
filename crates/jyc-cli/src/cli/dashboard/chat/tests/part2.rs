@@ -836,50 +836,30 @@ fn line_text(line: &Line<'_>) -> String {
 }
 
 #[test]
-fn header_line_box_drawing_uses_passed_line_style() {
+fn header_line_box_drawing_uses_header_style() {
     let ctx = ctx_with_full_data();
-    // Inactive: line-drawing chars use #393552.
-    let inactive = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
-    assert_eq!(inactive.spans[0].content.as_ref(), "╭─");
-    assert_eq!(
-        inactive.spans[0].style.fg,
-        Some(Color::Rgb(0x39, 0x35, 0x52))
-    );
-    // Active: caller passes DarkGray (matches the message separator).
-    let active = build_chat_header_line(
-        80,
-        &ctx,
-        test_header_style(),
-        Style::default().fg(Color::DarkGray),
-    );
-    assert_eq!(active.spans[0].style.fg, Some(Color::DarkGray));
-}
-
-#[test]
-fn header_line_box_drawing_uses_line_color() {
-    let ctx = ctx_with_full_data();
-    let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
-    let line_fg = Color::Rgb(0x39, 0x35, 0x52);
-    // First span is the "╭─" prefix in the line-drawing color.
-    assert_eq!(line.spans[0].content.as_ref(), "╭─");
-    assert_eq!(line.spans[0].style.fg, Some(line_fg));
-    // The dash padding run also uses the line-drawing color.
+    let line = build_chat_header_line(80, &ctx, test_header_style());
+    // The "─" prefix takes the same style as the mode/topic text, so the
+    // top line reads as one unit (and dims with it when focus leaves).
+    assert_eq!(line.spans[0].content.as_ref(), "─");
+    assert_eq!(line.spans[0].style, test_header_style());
+    // The dash padding run matches too.
     let dash_span = line
         .spans
         .iter()
         .find(|s| s.content.chars().all(|c| c == '─'))
         .expect("dash padding span");
-    assert_eq!(dash_span.style.fg, Some(line_fg));
+    assert_eq!(dash_span.style, test_header_style());
 }
 
 #[test]
 fn header_line_includes_mode_topic_and_chip() {
     let ctx = ctx_with_full_data();
-    let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
+    let line = build_chat_header_line(80, &ctx, test_header_style());
     let text = line_text(&line);
     // Left segment includes mode + topic.
     assert!(
-        text.contains("╭─ plan · jyc"),
+        text.contains("─ plan · jyc"),
         "missing left segment in: {text:?}"
     );
     // Right chip includes model + context-window percentage. The
@@ -900,10 +880,10 @@ fn header_line_includes_mode_topic_and_chip() {
 fn header_line_omits_topic_when_missing() {
     let mut ctx = ctx_with_full_data();
     ctx.topic = None;
-    let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
+    let line = build_chat_header_line(80, &ctx, test_header_style());
     let text = line_text(&line);
     assert!(
-        text.starts_with("╭─ plan"),
+        text.starts_with("─ plan"),
         "missing mode segment in: {text:?}"
     );
     assert!(!text.contains("· jyc"));
@@ -918,11 +898,11 @@ fn header_line_with_no_state_is_just_mode_and_padding() {
         model: None,
         pct: None,
     };
-    let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
+    let line = build_chat_header_line(80, &ctx, test_header_style());
     let text = line_text(&line);
     // Defaults: mode = "build", topic/branch all absent.
     assert!(
-        text.starts_with("╭─ build"),
+        text.starts_with("─ build"),
         "missing default mode in: {text:?}"
     );
     // No fallback placeholders either — there is no chip anymore.
@@ -939,14 +919,14 @@ fn header_line_truncates_left_when_too_narrow() {
     let mut ctx = ctx_with_full_data();
     ctx.topic = Some("a-very-long-topic-name");
     // Width so tight that even truncating topic to 3 chars barely fits.
-    let line = build_chat_header_line(20, &ctx, test_header_style(), LINE_DRAWING);
+    let line = build_chat_header_line(20, &ctx, test_header_style());
     let text = line_text(&line);
     // Topic must be truncated to fit; no chip ever rendered.
     assert!(
         !text.contains('['),
         "should not contain a chip, got: {text:?}"
     );
-    assert!(text.starts_with("╭─ plan"));
+    assert!(text.starts_with("─ plan"));
     assert!(text.width() <= 20);
     // Never leave a dangling separator at the end.
     assert!(
@@ -959,7 +939,7 @@ fn header_line_truncates_left_when_too_narrow() {
 fn header_line_appends_branch_when_present() {
     let mut ctx = ctx_with_full_data();
     ctx.branch = Some("feat/issue-512-show-branch");
-    let line = build_chat_header_line(120, &ctx, test_header_style(), LINE_DRAWING);
+    let line = build_chat_header_line(120, &ctx, test_header_style());
     let text = line_text(&line);
     assert!(
         text.contains("· jyc · feat/issue-512-show-branch"),
@@ -973,7 +953,7 @@ fn header_line_omits_branch_segment_when_none() {
     // but with branch=None — the left segment must end at "· jyc"
     // without a dangling separator.
     let ctx = ctx_with_full_data();
-    let line = build_chat_header_line(120, &ctx, test_header_style(), LINE_DRAWING);
+    let line = build_chat_header_line(120, &ctx, test_header_style());
     let text = line_text(&line);
     assert!(
         text.contains("· jyc "),
@@ -991,7 +971,7 @@ fn header_line_renders_partial_chip_with_model_only() {
     // chip should still render with just the model name.
     let mut ctx = ctx_with_full_data();
     ctx.pct = None;
-    let line = build_chat_header_line(80, &ctx, test_header_style(), LINE_DRAWING);
+    let line = build_chat_header_line(80, &ctx, test_header_style());
     let text = line_text(&line);
     assert!(
         text.contains("[ claude-opus-4-6 ]"),
@@ -1008,18 +988,18 @@ fn header_line_drops_chip_when_narrow() {
     // Width that fits the left segment but not the chip — chip
     // should be dropped, left segment preserved (with dash padding).
     let ctx = ctx_with_full_data();
-    // Left "╭─ plan · jyc" = 13 display cols.
+    // Left "─ plan · jyc" = 12 display cols.
     // Chip "[ claude-opus-4-6 · 10% ]" = 23 display cols.
     // total = 35 cols + 2 padding spaces. Width 34 forces dropping
     // the chip and falls back to dash padding only.
-    let line = build_chat_header_line(34, &ctx, test_header_style(), LINE_DRAWING);
+    let line = build_chat_header_line(34, &ctx, test_header_style());
     let text = line_text(&line);
     assert!(
         !text.contains('['),
         "chip should be dropped when narrow, got: {text:?}"
     );
     assert!(
-        text.contains("╭─ plan · jyc"),
+        text.contains("─ plan · jyc"),
         "left segment should still render: {text:?}"
     );
     assert!(text.width() <= 34);
@@ -1027,7 +1007,7 @@ fn header_line_drops_chip_when_narrow() {
 
 #[test]
 fn header_line_never_emits_dangling_separator() {
-    // Width fits "╭─ plan · " (10 cols) but no room for topic content.
+    // Narrow enough that the topic is truncated to a single column.
     let ctx = ChatHeaderCtx {
         mode: "plan",
         topic: Some("ch"),
@@ -1035,7 +1015,7 @@ fn header_line_never_emits_dangling_separator() {
         model: None,
         pct: None,
     };
-    let line = build_chat_header_line(10, &ctx, test_header_style(), LINE_DRAWING);
+    let line = build_chat_header_line(10, &ctx, test_header_style());
     let text = line_text(&line);
     assert!(
         !text.ends_with("· "),

@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Changed
+
+- TUI: chat screen input field redraw — the `╰─❯ ` gutter is gone (the editor spans the full width), the header and the new full-width bottom rule take the mode/topic text color, and the `/` + `ctrl+p` popups no longer draw their own top rule — the input's bottom rule is their boundary (#854)
+
 ### Fixed
 
 - **A multi-question set no longer arrives as one run-on line**: channels that

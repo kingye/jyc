@@ -88,32 +88,27 @@ impl Leader {
         render_leader(frame, area, &self.entries, &self.buffer);
     }
 
-    /// Rows the anchored popup needs at `width` cells: top rule + grid rows +
-    /// footer. The chat layout reserves exactly this many rows below the input
-    /// field, so the layout and the renderer share this helper — and share the
-    /// grid math with [`leader_grid_lines`], which is what keeps the two from
-    /// disagreeing about how tall the popup is.
+    /// Rows the anchored popup needs at `width` cells: grid rows + footer.
+    /// The chat layout reserves exactly this many rows below the input field,
+    /// so the layout and the renderer share this helper — and share the grid
+    /// math with [`leader_grid_lines`], which is what keeps the two from
+    /// disagreeing about how tall the popup is. There is deliberately no top
+    /// rule: the input area's bottom rule, one row above, is the boundary.
     pub fn popup_height(&self, width: usize) -> u16 {
-        (2 + leader_grid_rows(&self.entries, width)) as u16
+        (1 + leader_grid_rows(&self.entries, width)) as u16
     }
 
-    /// Render as a full-width top rule + compact grid inside `rect` — the slot
-    /// the chat layout placed directly below the input field. No side or bottom
-    /// borders, same treatment as the `/` command popup.
+    /// Render as a compact grid inside `rect` — the slot the chat layout
+    /// placed directly below the input field. No borders at all, same
+    /// treatment as the `/` command popup.
     ///
     /// The grid rather than the descriptive list on purpose: the chat screen
     /// has ~17 entries, and one row each made a popup taller than the screen,
     /// so the bottom entries fell off it entirely. Descriptions stay on the
     /// dashboard's centered popup, which has few enough commands to fit them.
     pub fn render_anchored(&self, frame: &mut Frame, rect: Rect) {
-        let block = Block::default()
-            .title(leader_title(&self.buffer))
-            .borders(Borders::TOP)
-            .border_style(Style::default().fg(Color::Cyan));
-        let inner = block.inner(rect);
-        frame.render_widget(block, rect);
-        let lines = leader_grid_lines(&self.entries, &self.buffer, inner.width as usize);
-        render_leader_body(frame, inner, lines, &self.buffer);
+        let lines = leader_grid_lines(&self.entries, &self.buffer, rect.width as usize);
+        render_leader_body(frame, rect, lines, &self.buffer);
     }
 }
 
@@ -413,8 +408,8 @@ mod tests {
         );
         assert_eq!(
             leader.popup_height(width) as usize,
-            lines.len() + 2,
-            "reserved rows must equal rendered rows plus rule and footer"
+            lines.len() + 1,
+            "reserved rows must equal rendered rows plus the footer hint"
         );
         let text: String = lines
             .iter()

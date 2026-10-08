@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -14,6 +14,34 @@ use crate::topic_path::{resolve_topic_path, resolved};
 /// How to call it, repeated in every refusal so a typo self-corrects.
 const USAGE: &str = "/spawn [name] [path]";
 
+/// Collapse `.` and `..` components lexically — `canonicalize` without
+/// touching the filesystem, for destinations that do not exist yet.
+///
+/// `resolved()` canonicalizes only paths that already exist, so a fresh
+/// `../test` would keep its `..` components and break component-wise
+/// comparisons below (`..` does not cancel a `starts_with` prefix).
+fn normalize_lexically(path: &Path) -> PathBuf {
+    use std::ffi::OsStr;
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                // Pop only a real name we pushed; never a root, and never a
+                // `..` we kept earlier (double negation must survive).
+                if out.file_name().is_some_and(|n| n != OsStr::new("..")) {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 /// `/spawn` — start a sibling topic that carries this topic's conversation into
 /// a directory of its own.
 ///
@@ -27,7 +55,9 @@ const USAGE: &str = "/spawn [name] [path]";
 ///
 /// Because a spawn copies nothing **into** the destination, it neither merges
 /// with existing data nor needs the guards that would refuse it: a destination
-/// may be non-empty, and may even sit inside this topic's own dir. It creates
+/// may be non-empty. It may not, however, sit inside this topic's own dir —
+/// a nested working dir would inherit the parent's git status, file listings,
+/// and close semantics. It creates
 /// exactly two things — the destination directory when it is missing, and
 /// `<agents-root>/<name>/.jyc` with its registration — and leaves whatever the
 /// destination holds exactly as it found it.
@@ -97,7 +127,9 @@ impl SpawnCommandHandler {
                 None => next_free_name(&self.topic_manager, &context.topic_name, agents_root).await,
             },
         };
-        let dest = requested.unwrap_or_else(|| agents_root.join(&name));
+        let dest = requested
+            .map(|p| normalize_lexically(&p))
+            .unwrap_or_else(|| agents_root.join(&name));
 
         if let Some(reason) = invalid_name(&name) {
             return Ok(fail(format!("/spawn: {reason}. Usage: {USAGE}")));
@@ -126,6 +158,15 @@ impl SpawnCommandHandler {
         if dest_dir == source_dir {
             return Ok(fail(format!(
                 "/spawn: {} is the directory you are in — pick another path.",
+                dest.display()
+            )));
+        }
+        // A nested working dir would inherit the parent's git status, file
+        // listings, and close semantics, so the destination must stay
+        // strictly outside the source topic's own dir.
+        if dest_dir.starts_with(&source_dir) {
+            return Ok(fail(format!(
+                "/spawn: {} is inside the current topic's directory — pick a path outside it.",
                 dest.display()
             )));
         }
@@ -520,40 +561,32 @@ mod tests {
     }
 
     /// A relative destination is taken against this topic's dir, so `../test`
-    /// lands beside the parent and `./nested` lands inside it — both allowed,
-    /// because nothing is written into either.
+    /// lands beside the parent — allowed, because nothing is written into it.
     #[tokio::test]
     async fn spawn_resolves_a_relative_path_against_this_topic() {
-        for (arg, name, inside_source) in [("../test", "test", false), ("./nested", "nested", true)]
-        {
-            let (_tmp, dir) = parent_topic().await;
-            let workspace = tempdir().unwrap();
-            let tm = make_topic_manager(workspace.path());
-            let handler = SpawnCommandHandler::new(tm.clone());
-            let expected = if inside_source {
-                dir.join("nested")
-            } else {
-                dir.parent().unwrap().join("test")
-            };
+        let (_tmp, dir) = parent_topic().await;
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let handler = SpawnCommandHandler::new(tm.clone());
+        let expected = dir.parent().unwrap().join("test");
 
-            let ctx = context("src-topic", &dir, "websocket", &[arg]);
-            let result = handler
-                .spawn_under(&ctx, &dir.join(".jyc"), &workspace.path().join("agents"))
-                .await
-                .unwrap();
-            assert!(result.success, "'{arg}': {}", result.message);
-            assert_eq!(
-                tm.topic_path(name).await.unwrap(),
-                resolved(&expected),
-                "'{arg}' must pin the resolved dir, with no '..' left in it"
-            );
-            assert!(
-                !expected.join(".jyc").exists(),
-                "'{arg}' must not put state in the destination"
-            );
+        let ctx = context("src-topic", &dir, "websocket", &["../test"]);
+        let result = handler
+            .spawn_under(&ctx, &dir.join(".jyc"), &workspace.path().join("agents"))
+            .await
+            .unwrap();
+        assert!(result.success, "../test: {}", result.message);
+        assert_eq!(
+            tm.topic_path("test").await.unwrap(),
+            resolved(&expected),
+            "'../test' must pin the resolved dir, with no '..' left in it"
+        );
+        assert!(
+            !expected.join(".jyc").exists(),
+            "'../test' must not put state in the destination"
+        );
 
-            jyc_types::state_dir::unregister(name);
-        }
+        jyc_types::state_dir::unregister("test");
     }
 
     /// Look-once, refuse-before-creating: none of these may leave a directory,
@@ -587,6 +620,12 @@ mod tests {
             (
                 vec!["spawn-x", dir.to_str().unwrap()],
                 "the directory you are in",
+            ),
+            (vec!["./sub"], "inside the current topic"),
+            (vec!["nested", "./deep"], "inside the current topic"),
+            (
+                vec!["nested", dir.join("deep").to_str().unwrap()],
+                "inside the current topic",
             ),
             (vec!["spawn-x", a_file.to_str().unwrap()], "not a directory"),
             (

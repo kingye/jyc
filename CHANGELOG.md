@@ -7,6 +7,8 @@
 
 ### Fixed
 
+- Topic info recognizes a `git worktree add` directory: `.git` is a file there, not a directory, so the branch and changed-file probe returned nothing — both now follow the `gitdir:` pointer (relative paths included), which also covers submodule checkouts
+
 - **A multi-question set no longer arrives as one run-on line**: channels that
   render reply text as markdown (the feishu card) parsed a question's numbered
   options as a list and read the following `Q2:` line as that list's continuation,

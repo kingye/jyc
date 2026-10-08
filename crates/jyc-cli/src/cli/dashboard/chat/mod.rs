@@ -15,7 +15,7 @@ mod table_wrap;
 use render::{RenderFingerprint, render_chat_conversation, truncate_to_width};
 
 /// Inactive color for the input area (header line and bottom rule) when the
-/// chat pane loses focus. The ❮/❯ arrows are yellow.
+/// chat pane loses focus.
 const LINE_DRAWING: Style = Style::new().fg(Color::Rgb(0x39, 0x35, 0x52));
 
 /// An `ask_user` question pushed by the daemon, awaiting the user's answer.

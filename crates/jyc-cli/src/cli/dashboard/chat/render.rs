@@ -517,7 +517,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             Constraint::Min(0),
             Constraint::Length(input_line_count),
             Constraint::Length(popup_rows),
-            Constraint::Length(1),
+            Constraint::Length(STATUS_LINE_ROWS),
         ])
         .split(area);
     // Cache the message-area rect so mouse-wheel events can hit-test

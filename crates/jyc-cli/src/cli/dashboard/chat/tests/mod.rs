@@ -1392,15 +1392,15 @@ fn status_line_sits_right_below_the_rule_and_is_gray() {
         "{:?}",
         row_text(&buffer, status)
     );
+    // Every cell of the row is gray — the gap between the two segments is
+    // padded with gray spaces, not left unstyled.
     for x in 0..buffer.area.width {
         let cell = &buffer[(x, status)];
-        if cell.symbol() != " " {
-            assert_eq!(
-                cell.style().fg,
-                Some(Color::Gray),
-                "status cell {x} renders gray: {cell:?}"
-            );
-        }
+        assert_eq!(
+            cell.style().fg,
+            Some(Color::Gray),
+            "status cell {x} renders gray: {cell:?}"
+        );
     }
 }
 

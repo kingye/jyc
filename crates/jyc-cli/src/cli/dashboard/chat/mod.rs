@@ -18,6 +18,11 @@ use render::{RenderFingerprint, render_chat_conversation, truncate_to_width};
 /// chat pane loses focus.
 const LINE_DRAWING: Style = Style::new().fg(Color::Rgb(0x39, 0x35, 0x52));
 
+/// Rows the status line takes off the bottom of the chat pane. Both sides
+/// need this number: the renderer reserves it as its last chunk, and
+/// `page_size` subtracts it from the scrollable message rows.
+pub(super) const STATUS_LINE_ROWS: u16 = 1;
+
 /// An `ask_user` question pushed by the daemon, awaiting the user's answer.
 pub(super) struct PendingQuestion {
     /// Topic the question belongs to (only surfaced in that topic's pane).
@@ -1953,10 +1958,9 @@ fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
     if let Some(c) = chip {
         // Spaces separate the two segments — at least one, so the chip
         // never sits flush against the left, the rest filling the row.
-        spans.push(Span::styled(
-            " ".repeat((width - left_w - chip_w).max(1)),
-            style,
-        ));
+        // The guard above proved `width >= left_w + chip_w + 1`, so the
+        // gap is never negative.
+        spans.push(Span::styled(" ".repeat(width - left_w - chip_w), style));
         spans.push(Span::styled(c, style));
     }
     Line::from(spans)
@@ -2668,10 +2672,13 @@ impl ChatState {
         match self.focus {
             ChatFocus::ChatPane | ChatFocus::MessageArea => {
                 let term_width = crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80);
-                // +1: the status line below the popup slot — permanent
-                // chrome, exactly like the input area above it.
-                base.saturating_sub(self.input_area_rows(term_width) as usize + 1)
-                    .max(1)
+                // The status line is permanent chrome, exactly like the
+                // input area above it — `STATUS_LINE_ROWS` is the same
+                // count the renderer gives its last chunk.
+                base.saturating_sub(
+                    self.input_area_rows(term_width) as usize + STATUS_LINE_ROWS as usize,
+                )
+                .max(1)
             }
             ChatFocus::ActivityPane | ChatFocus::ExplorerPane | ChatFocus::InfoPane => base.max(1),
         }

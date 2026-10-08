@@ -70,11 +70,9 @@ impl CommandHandler for ResetCommandHandler {
         );
 
         if let Some(ref agent) = context.agent {
-            let topic_name = context
-                .topic_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown");
+            // Identity is the topic name, not the workspace dir — a forked
+            // topic shares its parent's dir, so the path would name the parent.
+            let topic_name = context.topic_name.as_str();
             agent
                 .reset_session(&context.topic_path, topic_name, &reset_config)
                 .await?;

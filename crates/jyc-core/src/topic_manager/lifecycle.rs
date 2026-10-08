@@ -58,11 +58,13 @@ impl TopicManager {
     /// Close and delete a topic's directory.
     ///
     /// This is channel-agnostic — all topics use the same cleanup logic.
-    /// For adopted/pinned topics (a registered state dir outside the topic
-    /// dir), the *state dir* is deleted while the topic dir itself —
-    /// typically a user-owned project checkout — is kept. The registration
-    /// is deliberately kept: a reopened topic reuses the same state dir
-    /// instead of ever falling back to `<topic_dir>/.jyc` (#825).
+    /// For adopted/pinned topics the registered *state dir* is deleted while
+    /// the topic dir itself — typically a user-owned project checkout — is
+    /// kept; the one exception is a state dir that sits *inside* the topic
+    /// dir (`/spawn` with no path creates that shape), where the now emptied
+    /// dir is removed with its state. The registration is deliberately
+    /// kept: a reopened topic reuses the same state dir instead of ever
+    /// falling back to `<topic_dir>/.jyc` (#825).
     /// Unregistered topics keep the legacy behavior: the whole directory
     /// (with its in-dir `.jyc`) is removed. In-memory state is cleaned up
     /// in both cases.
@@ -75,21 +77,55 @@ impl TopicManager {
         // Pinned topic: relocated state is the topic's data; the dir is
         // user property. Remove the former, preserve the latter. The
         // lookup is by *name*, so topics co-pinning the same dir never
-        // destroy each other's state. Name-keyed registrations always
-        // point outside the topic dir (adopt computes them under
-        // `state_root`), so no same-dir guard is needed.
+        // destroy each other's state.
         if let Some(state) = jyc_types::state_dir::registered_state(topic_name) {
             if state.exists() {
                 tokio::fs::remove_dir_all(&state)
                     .await
                     .context(format!("Failed to remove topic state dir: {:?}", state))?;
             }
-            tracing::info!(
-                topic = %topic_name,
-                state = %state.display(),
-                topic_dir = %topic_path.display(),
-                "Topic state dir deleted; pinned topic dir preserved"
-            );
+            // A registration normally points outside the topic dir — a pin, a
+            // fork, a `/spawn` with an explicit path — and the dir stays. The
+            // one shape where the state sits *inside* the topic dir is
+            // `/spawn` with no path: `agents/<name>/` was created for it, and
+            // deleting only `.jyc` would leave an empty shell. Remove the dir
+            // too when it is empty once the state is gone; a dir that has
+            // since gained files is kept, like any pinned topic's.
+            if path_is_under(&state, &topic_path).await {
+                match tokio::fs::remove_dir(&topic_path).await {
+                    Ok(()) => tracing::info!(
+                        topic = %topic_name,
+                        dir = %topic_path.display(),
+                        "Emptied topic dir removed with its state"
+                    ),
+                    // Not empty (files moved in) or already gone: nothing more
+                    // to remove, and whatever remains is user property.
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::DirectoryNotEmpty
+                            || e.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        tracing::info!(
+                            topic = %topic_name,
+                            state = %state.display(),
+                            topic_dir = %topic_path.display(),
+                            "Topic state dir deleted; topic dir preserved"
+                        );
+                    }
+                    Err(e) => tracing::warn!(
+                        topic = %topic_name,
+                        dir = %topic_path.display(),
+                        error = %e,
+                        "Topic state dir deleted but the emptied topic dir could not be removed"
+                    ),
+                }
+            } else {
+                tracing::info!(
+                    topic = %topic_name,
+                    state = %state.display(),
+                    topic_dir = %topic_path.display(),
+                    "Topic state dir deleted; pinned topic dir preserved"
+                );
+            }
             self.cleanup_topic_state(topic_name).await;
             return Ok(());
         }

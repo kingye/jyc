@@ -433,8 +433,8 @@ files: the conversation is what comes along, so the destination may already hold
 data (a checkout made elsewhere) or live inside the parent's dir, and the only
 things a spawn creates are a missing destination and `<agents_root>/<name>/.jyc`.
 Its state is registered by name even in that default shape, where the state dir
-happens to sit inside the topic's own dir — so `close_topic` deletes the state and
-leaves the (now empty) directory behind, exactly as it does for a pin. Purge is
+happens to sit inside the topic's own dir — so `close_topic` removes the emptied
+dir with its state; a dir that has since gained files is kept, like a pin's. Purge is
 the explicit "and this one too", refusing whenever the dir is not the topic's own
 to remove: one another topic also uses (a workspace topic counts, not just a
 runtime pin — a fork shares its parent's dir), contains another topic's dir, is

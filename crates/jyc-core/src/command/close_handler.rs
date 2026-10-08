@@ -98,10 +98,11 @@ impl CommandHandler for CloseCommandHandler {
         match self.topic_manager.close_topic(topic_name).await {
             Ok(()) => {
                 tracing::info!(topic = %topic_name, "Topic closed successfully via /close command");
-                // `close_topic` deletes the dir itself for a topic that keeps its
-                // state inside it, and keeps it for a pinned one — a `/fork`
-                // sibling, or a `/spawn` working in a directory somebody chose.
-                // Ask the disk rather than restating that branch here.
+                // `close_topic` deletes a dir that held nothing but its own
+                // state, and keeps one that belongs to somebody — a `/fork`
+                // sibling, a `/spawn` working in a directory somebody chose,
+                // or a spawn dir that has since gained files. Ask the disk
+                // rather than restating that branch here.
                 let kept = tokio::fs::try_exists(&context.topic_path)
                     .await
                     .unwrap_or(false);

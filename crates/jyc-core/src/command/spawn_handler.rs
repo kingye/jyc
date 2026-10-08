@@ -416,7 +416,44 @@ mod tests {
             "a copy of the parent's scheduled jobs would double-fire them"
         );
 
+        // Closing the spawn removes the emptied shell with its state — the
+        // close-side half of the default shape.
+        tm.close_topic("src-topic-2").await.unwrap();
+        assert!(
+            !dest.exists(),
+            "an emptied spawn dir goes away with its state"
+        );
+
         jyc_types::state_dir::unregister("src-topic-2");
+    }
+
+    /// A spawn's dir that gained files is user property by then: `/close`
+    /// deletes the state and keeps the dir with whatever is in it.
+    #[tokio::test]
+    async fn close_keeps_a_spawn_dir_that_gained_files() {
+        let (_tmp, dir) = parent_topic().await;
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_root = workspace.path().join("agents");
+        let handler = SpawnCommandHandler::new(tm.clone());
+
+        let ctx = context("src-topic", &dir, "websocket", &["filed-shell"]);
+        let result = handler
+            .spawn_under(&ctx, &dir.join(".jyc"), &agents_root)
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.message);
+        let dest = resolved(&agents_root.join("filed-shell"));
+        tokio::fs::write(dest.join("user-note.txt"), "keep me")
+            .await
+            .unwrap();
+
+        tm.close_topic("filed-shell").await.unwrap();
+        assert!(dest.join("user-note.txt").exists(), "the user's file stays");
+        assert!(!dest.join(".jyc").exists(), "the state is deleted");
+        tokio::fs::remove_dir_all(&dest).await.unwrap();
+
+        jyc_types::state_dir::unregister("filed-shell");
     }
 
     /// The reason `/spawn` exists: continue the conversation where the files
@@ -464,6 +501,19 @@ mod tests {
         assert!(
             !checkout.join(".jyc").exists(),
             "the conversation goes to the agents root, never into the user's checkout"
+        );
+
+        // Closing it deletes the conversation and leaves the checkout: the
+        // state lives outside the dir, so the emptied-dir cleanup never fires.
+        let agents_root = workspace.path().join("agents");
+        tm.close_topic("checkout").await.unwrap();
+        assert!(
+            checkout.join("src/main.rs").exists(),
+            "the checkout is untouched"
+        );
+        assert!(
+            !agents_root.join("checkout").join(".jyc").exists(),
+            "the state is deleted"
         );
 
         jyc_types::state_dir::unregister("checkout");

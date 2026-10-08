@@ -475,11 +475,14 @@ those roots — which is why a spawn's default dir under `agents/` is never purg
   receive the topic name via `JYC_TOPIC_NAME` at spawn); config pins
   additionally adopt from config — identical mappings, idempotent.
 - **Close.** `/close --force` on an adopted topic deletes the state dir
-  registered for that topic *name*; the registration itself is kept so a
-  reopened topic reuses the same state location (never the topic dir), and
-  the pinned topic dir (e.g. a repo) is kept. A sibling topic co-pinning the
-  same dir keeps its own state. Unregistered topics keep the legacy
-  whole-dir deletion.
+  registered for that topic *name* and prunes the emptied state namespace —
+  the `agents/<topic>/` shell around the state, plus empty nested parents
+  such as `agents/<agent>/`, up to but never including jyc's own roots; a
+  shell that still holds anything is kept. The registration itself is kept
+  so a reopened topic reuses the same state location (never the topic dir),
+  and the pinned topic dir (e.g. a repo) is kept. A sibling topic co-pinning
+  the same dir keeps its own state. Unregistered topics keep the legacy
+  whole-dir deletion, with the same empty-parent pruning.
   Ad-hoc pins (no config key) derive their state name from the dir, so two
   runtime topics opening one dir intentionally share — and closing either
   destroys — that single state: "the dir is the topic".

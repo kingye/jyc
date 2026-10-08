@@ -819,6 +819,12 @@ fn row_text(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
         .join("")
 }
 
+/// Whether row `y` is nothing but `─` — a full-width rule.
+fn is_rule_row(buffer: &ratatui::buffer::Buffer, y: u16) -> bool {
+    let text = row_text(buffer, y);
+    !text.trim().is_empty() && text.chars().all(|c| c == '─')
+}
+
 /// The input area's bottom rule — the last row made entirely of `─`. It
 /// sits directly below the editor and doubles as the popup slot's upper
 /// boundary (message round separators carry a timestamp, so they never
@@ -826,10 +832,7 @@ fn row_text(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
 fn rule_row(buffer: &ratatui::buffer::Buffer) -> u16 {
     (0..buffer.area.height)
         .rev()
-        .find(|&y| {
-            let text = row_text(buffer, y);
-            !text.trim().is_empty() && text.chars().all(|c| c == '─')
-        })
+        .find(|&y| is_rule_row(buffer, y))
         .expect("input bottom rule rendered")
 }
 
@@ -1276,7 +1279,7 @@ fn leader_popup_renders_below_the_input_field() {
     assert!(!below.contains('│'), "no side borders expected: {below:?}");
 }
 
-/// The input area measures header + body + the bottom rule in one place.
+/// The input area measures top rule + body + the bottom rule in one place.
 /// The body math is pre-existing; this pins the +1 rule row for both the
 /// plain editor and an active question box.
 #[test]
@@ -1299,6 +1302,137 @@ fn input_area_rows_reserves_the_bottom_rule() {
         (question_chrome_rows(&q.question, app.chat.questions.len(), 78) + q.options.len() + 3)
             .clamp(6, 15) as u16;
     assert_eq!(app.chat.input_area_rows(80), body + 1);
+}
+
+/// A polled topic summary so the status line has real content: `plan ·
+/// jyc · main` on the left, `[ kimi/kimi-for-coding · 10% ]` on the right.
+fn app_with_topic_summary() -> App {
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    app.state = Some(jyc_types::InspectOverview {
+        topics: vec![jyc_types::TopicSummary {
+            tasks: Default::default(),
+            name: "jyc".to_string(),
+            channel: "agents".to_string(),
+            pattern: None,
+            status: jyc_types::TopicStatus::Idle,
+            model: Some("kimi/kimi-for-coding".to_string()),
+            mode: Some("plan".to_string()),
+            branch: Some("main".to_string()),
+            changed_files: None,
+            context_input_tokens: Some(1_000),
+            total_input_tokens: None,
+            total_cache_hit_tokens: None,
+            total_cache_creation_tokens: None,
+            max_tokens: Some(10_000),
+            output_tokens: None,
+            last_active_at: None,
+            skills: vec![],
+            topic_path: None,
+            cost: None,
+            commands: vec![],
+        }],
+        ..Default::default()
+    });
+    app
+}
+
+/// The status line owns the pane's last row: below the input field and the
+/// popup slot, gray, with no rule of its own.
+#[test]
+fn status_line_renders_at_the_bottom_below_the_popup() {
+    let mut app = app_with_topic_summary();
+    handle_chat_keys(
+        &mut app,
+        crossterm::event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+        &mut test_terminal(),
+    );
+    let buffer = draw_80x24(&mut app);
+
+    let bottom = row_text(&buffer, buffer.area.height - 1);
+    assert!(
+        bottom.starts_with("plan · jyc · main"),
+        "status line takes the last row: {bottom:?}"
+    );
+    assert!(
+        bottom
+            .trim_end()
+            .ends_with("[ kimi/kimi-for-coding · 10% ]"),
+        "model chip stays right-aligned on the status line: {bottom:?}"
+    );
+    assert!(
+        !bottom.contains('─'),
+        "the status line is a footer, not a rule: {bottom:?}"
+    );
+    // The popup keeps the slot between the input rule and the status line.
+    let rule = rule_row(&buffer);
+    assert!(
+        row_text(&buffer, rule + 1).contains('/'),
+        "popup starts right below the input rule: {:?}",
+        row_text(&buffer, rule + 1)
+    );
+    assert!(
+        rule + 1 < buffer.area.height - 1,
+        "the popup sits above the status line"
+    );
+}
+
+/// Without a popup open, the status line is the row directly under the
+/// input's bottom rule — and every cell of it renders gray.
+#[test]
+fn status_line_sits_right_below_the_rule_and_is_gray() {
+    let mut app = app_with_topic_summary();
+    let buffer = draw_80x24(&mut app);
+
+    let rule = rule_row(&buffer);
+    let status = rule + 1;
+    assert_eq!(status, buffer.area.height - 1, "status takes the last row");
+    assert!(
+        row_text(&buffer, status).starts_with("plan · jyc"),
+        "{:?}",
+        row_text(&buffer, status)
+    );
+    // Every cell of the row is gray — the gap between the two segments is
+    // padded with gray spaces, not left unstyled.
+    for x in 0..buffer.area.width {
+        let cell = &buffer[(x, status)];
+        assert_eq!(
+            cell.style().fg,
+            Some(Color::Gray),
+            "status cell {x} renders gray: {cell:?}"
+        );
+    }
+}
+
+/// The input field is framed: a full-width rule directly above it and
+/// another directly below — the header row's old slot is the top rule.
+#[test]
+fn input_field_has_a_top_and_bottom_rule() {
+    let mut app = app_with_topic_summary();
+    handle_chat_keys(
+        &mut app,
+        crossterm::event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+        &mut test_terminal(),
+    );
+    let buffer = draw_80x24(&mut app);
+
+    let bottom_rule = rule_row(&buffer);
+    let editor = bottom_rule - 1;
+    assert!(
+        row_text(&buffer, editor).contains('/'),
+        "the editor row sits directly above the bottom rule: {:?}",
+        row_text(&buffer, editor)
+    );
+    let top_rule = (0..editor)
+        .rev()
+        .find(|&y| is_rule_row(&buffer, y))
+        .expect("input top rule rendered");
+    assert_eq!(top_rule + 1, editor, "the top rule sits on the editor");
+    assert_eq!(
+        row_text(&buffer, top_rule).trim(),
+        "─".repeat(buffer.area.width as usize),
+        "both rules span the full pane width"
+    );
 }
 
 #[test]

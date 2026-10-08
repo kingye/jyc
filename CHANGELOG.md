@@ -6,6 +6,7 @@
 
 ### Changed
 
+- TUI: the chat status line moved to the pane's bottom row: mode/topic/branch on the left, model + context usage on the right, both in dim gray with no rule around them. The input field gained a top rule (it already had a bottom one) and the `/` + `ctrl+p` popups sit between the field and the status line (#861)
 - `/close --force` now prunes the emptied state namespace: the `~/.local/share/jyc/agents/<topic>/` shell a deleted state dir leaves behind (and empty nested parents such as `agents/<agent>/`) is removed, stopping at jyc's own roots — a shell that still holds files is kept, and the registration is still kept so a reopen reuses the same state name (#860)
 - TUI: chat screen input field redraw — the `╰─❯ ` gutter is gone (the editor spans the full width), the header and the new full-width bottom rule take the mode/topic text color, and the `/` + `ctrl+p` popups no longer draw their own top rule — the input's bottom rule is their boundary (#854)
 - TUI: chat input cursor is a blinking reversed block instead of an underline

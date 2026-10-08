@@ -825,72 +825,69 @@ fn ctx_with_full_data() -> ChatHeaderCtx<'static> {
     }
 }
 
-fn test_header_style() -> Style {
-    Style::default()
-        .fg(Color::Rgb(249, 226, 175))
-        .add_modifier(Modifier::BOLD)
-}
-
 fn line_text(line: &Line<'_>) -> String {
     line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
 #[test]
-fn header_line_box_drawing_uses_header_style() {
+fn status_line_is_gray_and_carries_no_rule() {
     let ctx = ctx_with_full_data();
-    let line = build_chat_header_line(80, &ctx, test_header_style());
-    // The "─" prefix takes the same style as the mode/topic text, so the
-    // top line reads as one unit (and dims with it when focus leaves).
-    assert_eq!(line.spans[0].content.as_ref(), "─");
-    assert_eq!(line.spans[0].style, test_header_style());
-    // The dash padding run matches too.
-    let dash_span = line
-        .spans
-        .iter()
-        .find(|s| s.content.chars().all(|c| c == '─'))
-        .expect("dash padding span");
-    assert_eq!(dash_span.style, test_header_style());
+    let line = build_status_line(80, &ctx);
+    let text = line_text(&line);
+    // The status line is a footer: the input field's rules live above it.
+    assert!(
+        !text.contains('─'),
+        "status line must not draw rules: {text:?}"
+    );
+    // Both segments are the same dim gray, whatever the focus state.
+    for span in &line.spans {
+        assert_eq!(
+            span.style.fg,
+            Some(Color::Gray),
+            "every span renders gray: {text:?}"
+        );
+    }
 }
 
 #[test]
-fn header_line_includes_mode_topic_and_chip() {
+fn status_line_includes_mode_topic_and_chip() {
     let ctx = ctx_with_full_data();
-    let line = build_chat_header_line(80, &ctx, test_header_style());
+    let line = build_status_line(80, &ctx);
     let text = line_text(&line);
     // Left segment includes mode + topic.
     assert!(
-        text.contains("─ plan · jyc"),
+        text.starts_with("plan · jyc"),
         "missing left segment in: {text:?}"
     );
     // Right chip includes model + context-window percentage. The
-    // version lives in the info-pane status block, not the chat header.
+    // version lives in the info-pane status block, not the chat status.
     assert!(
-        text.contains("[ claude-opus-4-6 · 10% ]"),
+        text.ends_with("[ claude-opus-4-6 · 10% ]"),
         "missing model/pct chip in: {text:?}"
     );
     assert!(
         !text.contains("jyc ai v"),
-        "version belongs in the info-pane status block, not the chat header: {text:?}"
+        "version belongs in the info-pane status block, not the chat status: {text:?}"
     );
-    // The line should fill the requested width via dash padding.
+    // Spaces between the two segments fill the row exactly.
     assert_eq!(text.width(), 80);
 }
 
 #[test]
-fn header_line_omits_topic_when_missing() {
+fn status_line_omits_topic_when_missing() {
     let mut ctx = ctx_with_full_data();
     ctx.topic = None;
-    let line = build_chat_header_line(80, &ctx, test_header_style());
+    let line = build_status_line(80, &ctx);
     let text = line_text(&line);
     assert!(
-        text.starts_with("─ plan"),
+        text.starts_with("plan"),
         "missing mode segment in: {text:?}"
     );
     assert!(!text.contains("· jyc"));
 }
 
 #[test]
-fn header_line_with_no_state_is_just_mode_and_padding() {
+fn status_line_with_no_state_is_just_mode() {
     let ctx = ChatHeaderCtx {
         mode: "build",
         topic: None,
@@ -898,35 +895,30 @@ fn header_line_with_no_state_is_just_mode_and_padding() {
         model: None,
         pct: None,
     };
-    let line = build_chat_header_line(80, &ctx, test_header_style());
+    let line = build_status_line(80, &ctx);
     let text = line_text(&line);
     // Defaults: mode = "build", topic/branch all absent.
-    assert!(
-        text.starts_with("─ build"),
-        "missing default mode in: {text:?}"
-    );
+    assert_eq!(text, "build");
     // No fallback placeholders either — there is no chip anymore.
     assert!(
         !text.contains('[') && !text.contains('?'),
         "no question-mark placeholders expected: {text:?}"
     );
-    // Padding still fills the row.
-    assert_eq!(text.width(), 80);
 }
 
 #[test]
-fn header_line_truncates_left_when_too_narrow() {
+fn status_line_truncates_left_when_too_narrow() {
     let mut ctx = ctx_with_full_data();
     ctx.topic = Some("a-very-long-topic-name");
-    // Width so tight that even truncating topic to 3 chars barely fits.
-    let line = build_chat_header_line(20, &ctx, test_header_style());
+    // Width so tight that even truncating topic barely fits.
+    let line = build_status_line(20, &ctx);
     let text = line_text(&line);
     // Topic must be truncated to fit; no chip ever rendered.
     assert!(
         !text.contains('['),
         "should not contain a chip, got: {text:?}"
     );
-    assert!(text.starts_with("─ plan"));
+    assert!(text.starts_with("plan"));
     assert!(text.width() <= 20);
     // Never leave a dangling separator at the end.
     assert!(
@@ -936,10 +928,10 @@ fn header_line_truncates_left_when_too_narrow() {
 }
 
 #[test]
-fn header_line_appends_branch_when_present() {
+fn status_line_appends_branch_when_present() {
     let mut ctx = ctx_with_full_data();
     ctx.branch = Some("feat/issue-512-show-branch");
-    let line = build_chat_header_line(120, &ctx, test_header_style());
+    let line = build_status_line(120, &ctx);
     let text = line_text(&line);
     assert!(
         text.contains("· jyc · feat/issue-512-show-branch"),
@@ -948,12 +940,12 @@ fn header_line_appends_branch_when_present() {
 }
 
 #[test]
-fn header_line_omits_branch_segment_when_none() {
-    // Same ctx as `header_line_includes_mode_topic`
+fn status_line_omits_branch_segment_when_none() {
+    // Same ctx as `status_line_includes_mode_topic_and_chip`
     // but with branch=None — the left segment must end at "· jyc"
     // without a dangling separator.
     let ctx = ctx_with_full_data();
-    let line = build_chat_header_line(120, &ctx, test_header_style());
+    let line = build_status_line(120, &ctx);
     let text = line_text(&line);
     assert!(
         text.contains("· jyc "),
@@ -966,12 +958,12 @@ fn header_line_omits_branch_segment_when_none() {
 }
 
 #[test]
-fn header_line_renders_partial_chip_with_model_only() {
+fn status_line_renders_partial_chip_with_model_only() {
     // pct missing (e.g., session hasn't recorded context yet) — the
     // chip should still render with just the model name.
     let mut ctx = ctx_with_full_data();
     ctx.pct = None;
-    let line = build_chat_header_line(80, &ctx, test_header_style());
+    let line = build_status_line(80, &ctx);
     let text = line_text(&line);
     assert!(
         text.contains("[ claude-opus-4-6 ]"),
@@ -984,29 +976,25 @@ fn header_line_renders_partial_chip_with_model_only() {
 }
 
 #[test]
-fn header_line_drops_chip_when_narrow() {
+fn status_line_drops_chip_when_narrow() {
     // Width that fits the left segment but not the chip — chip
-    // should be dropped, left segment preserved (with dash padding).
+    // should be dropped, left segment preserved.
     let ctx = ctx_with_full_data();
-    // Left "─ plan · jyc" = 12 display cols.
+    // Left "plan · jyc" = 10 display cols.
     // Chip "[ claude-opus-4-6 · 10% ]" = 23 display cols.
-    // total = 35 cols + 2 padding spaces. Width 34 forces dropping
-    // the chip and falls back to dash padding only.
-    let line = build_chat_header_line(34, &ctx, test_header_style());
+    // total = 33 cols + 1 separating space. Width 32 forces dropping
+    // the chip.
+    let line = build_status_line(32, &ctx);
     let text = line_text(&line);
     assert!(
         !text.contains('['),
         "chip should be dropped when narrow, got: {text:?}"
     );
-    assert!(
-        text.contains("─ plan · jyc"),
-        "left segment should still render: {text:?}"
-    );
-    assert!(text.width() <= 34);
+    assert_eq!(text, "plan · jyc");
 }
 
 #[test]
-fn header_line_never_emits_dangling_separator() {
+fn status_line_never_emits_dangling_separator() {
     // Narrow enough that the topic is truncated to a single column.
     let ctx = ChatHeaderCtx {
         mode: "plan",
@@ -1015,7 +1003,7 @@ fn header_line_never_emits_dangling_separator() {
         model: None,
         pct: None,
     };
-    let line = build_chat_header_line(10, &ctx, test_header_style());
+    let line = build_status_line(10, &ctx);
     let text = line_text(&line);
     assert!(
         !text.ends_with("· "),

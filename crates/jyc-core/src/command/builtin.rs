@@ -38,7 +38,6 @@ use jyc_types::CommandInfo;
 use super::backlog_handler::BacklogCommandHandler;
 use super::bill_handler::BillCommandHandler;
 use super::cancel_handler::CancelCommandHandler;
-use super::clone_handler::CloneCommandHandler;
 use super::close_handler::CloseCommandHandler;
 use super::context_handler::ContextCommandHandler;
 use super::exchange_handler::ExchangeCommandHandler;
@@ -52,6 +51,7 @@ use super::new_handler::NewCommandHandler;
 use super::pin_handler::PinCommandHandler;
 use super::registry::CommandRegistry;
 use super::reset_handler::ResetCommandHandler;
+use super::spawn_handler::SpawnCommandHandler;
 use super::template_handler::TemplateCommandHandler;
 use super::thinking_handler::ThinkingCommandHandler;
 use super::toggle_handler::ToggleCommandHandler;
@@ -167,10 +167,6 @@ builtin_commands! {
         desc: "Cancel current AI processing",
         make: |tm| Arc::new(CancelCommandHandler::new(tm))
     },
-    "/clone" => {
-        desc: "Copy this topic's directory into a topic of its own",
-        make: |tm| Arc::new(CloneCommandHandler::new(tm))
-    },
     "/close" => {
         desc: "Close this topic (requires --force; --purge deletes its directory too)",
         make: |tm| Arc::new(CloseCommandHandler::new(tm))
@@ -222,6 +218,10 @@ builtin_commands! {
     "/skill" => {
         desc: "Toggle a skill for this topic: /skill on|off|reset <name>",
         make: |_| Arc::new(ToggleCommandHandler::skill())
+    },
+    "/spawn" => {
+        desc: "Continue this topic's conversation in a new or chosen directory",
+        make: |tm| Arc::new(SpawnCommandHandler::new(tm))
     },
     "/template" => {
         desc: "Apply or re-apply topic template",

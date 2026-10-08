@@ -751,38 +751,44 @@ fn tab_on_a_command_without_values_closes_the_popup() {
     );
 }
 
-/// `ctrl+p c` opens the same popup, which has no field of its own: with a
-/// draft in the input field, further typing filters off that draft.
+/// `ctrl+p x` empties the input field.
 #[test]
-fn leader_command_popup_filters_off_the_draft() {
+fn leader_clear_input_empties_the_field() {
     let mut app = chatting_app();
     app.chat.populate_editor("draft");
     execute_local_action(
         &mut app,
         &mut test_terminal(),
-        local_commands::LocalAction::OpenCommandPopup,
+        local_commands::LocalAction::ClearInput,
     );
-    assert!(
-        !app.chat.commands.is_empty(),
-        "the leader path loads the commands itself, or the popup renders Loading..."
-    );
-    let popup = app
-        .chat
-        .command_popup
-        .as_ref()
-        .expect("leader opens the popup");
-    assert!(popup.filter.is_empty(), "opens with the full list");
+    assert_eq!(app.chat.text(), "");
+}
 
-    handle_chat_keys(
-        &mut app,
-        crossterm::event::KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
-        &mut test_terminal(),
+/// An open `/` popup has no field of its own — it filters off the input
+/// field, so clearing the field must reset the popup's filter too.
+#[test]
+fn leader_clear_input_resets_an_open_popups_filter() {
+    let mut app = chatting_app();
+    let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+    handle_chat_keys(&mut app, key(KeyCode::Char('/')), &mut test_terminal());
+    for c in "dr".chars() {
+        handle_chat_keys(&mut app, key(KeyCode::Char(c)), &mut test_terminal());
+    }
+    assert_eq!(
+        app.chat.command_popup.as_ref().expect("popup open").filter,
+        "dr",
+        "typing filters the open popup"
     );
-    assert_eq!(app.chat.text(), "draft!", "the key went to the field");
+    execute_local_action(
+        &mut app,
+        &mut test_terminal(),
+        local_commands::LocalAction::ClearInput,
+    );
+    assert_eq!(app.chat.text(), "");
     assert_eq!(
         app.chat.command_popup.as_ref().expect("still open").filter,
-        "draft!",
-        "the filter adopts the field"
+        "",
+        "the popup follows the empty field"
     );
 }
 

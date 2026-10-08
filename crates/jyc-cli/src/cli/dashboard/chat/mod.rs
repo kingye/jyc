@@ -813,14 +813,12 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
         LocalAction::ScrollTop => app.chat.scroll_to_top(),
         LocalAction::ScrollBottom => app.chat.scroll_to_bottom(),
         LocalAction::ToggleMouseCapture => super::toggle_mouse_capture(app),
-        // Same popup as typing `/`, but the input field stays untouched —
-        // so the popup filters off whatever the field already holds.
-        LocalAction::OpenCommandPopup => {
-            app.chat.focus = ChatFocus::ChatPane;
-            // Same just-in-time refresh as the `/` key: without it the
-            // popup shows "Loading..." until the user types a slash.
-            app.refresh_chat_commands();
-            app.chat.command_popup = Some(CommandPopupState::new());
+        LocalAction::ClearInput => {
+            app.chat.editor = empty_chat_editor();
+            // The popup has no field of its own — it filters off this one,
+            // so an open popup has to see the empty filter instead of
+            // matching the text that was just cleared.
+            sync_command_popup(app);
         }
         LocalAction::ToggleThinking => {
             app.chat.thinking_expanded = !app.chat.thinking_expanded;

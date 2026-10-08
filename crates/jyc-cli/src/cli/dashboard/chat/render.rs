@@ -495,37 +495,12 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     }
 
     // Split: scrollable messages (top) + dynamic input area (bottom)
-    // Input area = 1 mode header row ("╭─ build") + editor rows (grows with
-    // content, up to 10). Subtract the prompt gutter from the wrap width.
-    let input_line_count = if app.chat.active_question() {
-        // Question box: `question_chrome_rows` (the question, the hint, the two
-        // spacers, slack) + one row per option + the box's borders + the input's
-        // mode header row — the box is drawn in the *body* under that header, so
-        // a row missing here is a row the box loses, and the window would eat an
-        // option for it. Both sides measure with the same helper.
-        let q = app.chat.current_question().expect("active_question");
-        // `questions.len()` because the hint says something different for a
-        // batch, and a hint that wraps to one more row is a row the options
-        // lose — both sides of this measurement have to read the same text.
-        // And at the same *width*: the box is drawn inside the prompt gutter
-        // (`render.rs:954`) and inside its own borders, two columns narrower
-        // than this area. Measuring the wider width here lets a hint that is two
-        // columns from a row boundary read as one row here and two in the box —
-        // and the row it fails to reserve is the option row the box then loses.
-        (question_chrome_rows(
-            &q.question,
-            app.chat.questions.len(),
-            area.width.saturating_sub(PROMPT_GUTTER_WIDTH + 2),
-        ) + q.options.len()
-            + 3)
-        .clamp(6, 15) as u16
-    } else {
-        (count_wrapped_lines(
-            &app.chat.text(),
-            area.width.saturating_sub(PROMPT_GUTTER_WIDTH),
-        ) + 1)
-            .clamp(2, 11) as u16
-    };
+    // Input area = 1 mode header row + editor rows (grows with content, up
+    // to 10) + the bottom rule, measured once by `input_area_rows` — the
+    // same helper `page_size` uses, so rendering and scrolling always agree.
+    // A row missing here is a row the question box loses, or an editor row
+    // the field clips.
+    let input_line_count = app.chat.input_area_rows(area.width);
     // Rows reserved for an open popup, directly BELOW the input field: the
     // popup is a layout participant, not an overlay, so it can never be
     // clipped by the pane edge or cover the field the user is typing in.
@@ -929,12 +904,13 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     frame.render_widget(messages_para, chunks[0]);
 
     // --- Input area (text editor, at bottom) ---
-    // The editor renders its own wrapping and scroll-follow. A two-line
-    // prompt gutter sits left of the editor: the header row shows
-    // "╭─ {mode} · {topic}[ · {branch}]", and "╰─❯" on the
-    // first editor row; both dim when the input field loses focus.
-    // The cursor is a blinking underline when the input has focus and
-    // invisible when another pane does (a default-styled cursor cell is
+    // The editor renders its own wrapping and scroll-follow, full width,
+    // under a one-row header ("─ {mode} · {topic}[ · {branch}]") and above
+    // a full-width bottom rule — both take the header style, so the frame
+    // reads as one unit and dims together when focus leaves the pane. The
+    // rule also closes the input area toward the popup slot below. The
+    // cursor is a blinking underline when the input has focus and invisible
+    // when another pane does (a default-styled cursor cell is
     // indistinguishable from the text under it). While a question is
     // pending the editor is covered by the question box, so the cursor
     // stays hidden.
@@ -953,17 +929,17 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 | ChatFocus::InfoPane => Style::default(),
             }
         });
-    let [header_area, body_area] =
+    let [header_area, body_and_rule] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(chunks[1]);
-    let [prompt_area, editor_area] =
-        Layout::horizontal([Constraint::Length(PROMPT_GUTTER_WIDTH), Constraint::Min(0)])
-            .areas(body_area);
+    let [body_area, rule_area] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(body_and_rule);
     let focused = app.chat.focus == ChatFocus::ChatPane;
     // Resolve mode/channel/pattern/model/tokens for the header line, all
     // from the polled overview (same source as the Topic Info pane).
     let header_ctx = resolve_header_ctx(app);
-    // Header info text: sapphire + bold when focused, otherwise the same
-    // inactive #393552 as the line-drawing characters.
+    // Header text and the top/bottom ─ lines share one style: sapphire +
+    // bold when focused, inactive #393552 when focus moves away — the lines
+    // stay the same color as "plan · jyc · main".
     let header_style = if focused {
         Style::default()
             .fg(Color::Rgb(116, 199, 236)) // Catppuccin sapphire
@@ -971,40 +947,22 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     } else {
         LINE_DRAWING
     };
-    // Box-drawing characters (header border + gutter line) match the
-    // message-area separator color when focused, and go inactive (#393552)
-    // alongside the text when focus moves away.
-    let line_style = if focused {
-        Style::default().fg(Color::DarkGray)
-    } else {
-        LINE_DRAWING
-    };
-    let header_line = build_chat_header_line(
-        header_area.width as usize,
-        &header_ctx,
-        header_style,
-        line_style,
-    );
+    let header_line = build_chat_header_line(header_area.width as usize, &header_ctx, header_style);
     frame.render_widget(Paragraph::new(header_line), header_area);
-    // Prompt arrow: "╰─❯ ". The box-drawing prefix uses the
-    // focus-dependent line style; the arrow is yellow when focused and
-    // dims to #393552 when not.
-    let arrow_style = if focused {
-        Style::default().fg(Color::Yellow)
-    } else {
-        LINE_DRAWING
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("╰─", line_style),
-            Span::styled("❯ ", arrow_style),
-        ])),
-        prompt_area,
-    );
-    frame.render_widget(&app.chat.editor, editor_area);
+    frame.render_widget(&app.chat.editor, body_area);
     if app.chat.active_question() {
-        super::render_question_box(frame, editor_area, app);
+        super::render_question_box(frame, body_area, app);
     }
+    // Bottom rule of the input area: same style as the header line, so the
+    // two frame the field as one unit. Also the popup's top boundary — the
+    // popups below no longer draw a rule of their own.
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "─".repeat(rule_area.width as usize),
+            header_style,
+        )),
+        rule_area,
+    );
 
     // ── Popups: the slot right below the input field (chunks[2]) ──
     if let Some(ref popup) = app.chat.command_popup {

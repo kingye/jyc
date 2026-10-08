@@ -806,12 +806,18 @@ fn row_text(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
         .join("")
 }
 
-/// The prompt row — the input field's last content row ("╰─❯ ").
-fn prompt_row(buffer: &ratatui::buffer::Buffer) -> u16 {
+/// The input area's bottom rule — the last row made entirely of `─`. It
+/// sits directly below the editor and doubles as the popup slot's upper
+/// boundary (message round separators carry a timestamp, so they never
+/// read as a pure rule). Popup tests anchor on it.
+fn rule_row(buffer: &ratatui::buffer::Buffer) -> u16 {
     (0..buffer.area.height)
         .rev()
-        .find(|&y| row_text(buffer, y).contains('❯'))
-        .expect("prompt row rendered")
+        .find(|&y| {
+            let text = row_text(buffer, y);
+            !text.trim().is_empty() && text.chars().all(|c| c == '─')
+        })
+        .expect("input bottom rule rendered")
 }
 
 /// Column of `needle` in row `y`, counted in cells: a row string holds one
@@ -822,9 +828,9 @@ fn col_of(buffer: &ratatui::buffer::Buffer, y: u16, needle: &str) -> u16 {
     text[..byte].chars().count() as u16
 }
 
-/// The popup renders directly BELOW the input field: a borderless top rule
-/// on the row after the prompt, with the list under it — so it can never
-/// cover the text being typed.
+/// The popup renders directly BELOW the input field, under its bottom
+/// rule — so it can never cover the text being typed. The rule is the only
+/// separator: the popup draws no top rule of its own.
 #[test]
 fn command_popup_renders_below_the_input_field() {
     let mut app = chatting_app();
@@ -838,24 +844,15 @@ fn command_popup_renders_below_the_input_field() {
     );
     let buffer = draw_80x24(&mut app);
 
-    let prompt = prompt_row(&buffer);
+    let rule = rule_row(&buffer);
     assert!(
-        row_text(&buffer, prompt).contains('/'),
-        "the input field must stay visible: {prompt}"
-    );
-    let rule = row_text(&buffer, prompt + 1);
-    assert!(rule.contains("Commands"), "top rule missing: {rule:?}");
-    assert!(
-        rule.contains('─') && !rule.contains('│'),
-        "expected a side-border-free rule, got: {rule:?}"
+        row_text(&buffer, rule - 1).contains('/'),
+        "the input field must stay visible above its rule"
     );
     assert!(
-        rule.chars().filter(|c| *c == '─').count() > 50,
-        "the rule should stretch across the pane: {rule:?}"
-    );
-    assert!(
-        row_text(&buffer, prompt + 2).contains('/'),
-        "command list should follow the rule"
+        row_text(&buffer, rule + 1).contains('/'),
+        "command list should follow the rule: {:?}",
+        row_text(&buffer, rule + 1)
     );
 }
 
@@ -907,16 +904,11 @@ fn command_popup_renders_a_deeper_level() {
     }
     let buffer = draw_80x24(&mut app);
 
-    let prompt = prompt_row(&buffer);
-    let rule = row_text(&buffer, prompt + 1);
+    let rule = rule_row(&buffer);
     assert!(
-        rule.contains("/model"),
-        "the rule should name the level: {rule:?}"
-    );
-    assert!(
-        row_text(&buffer, prompt + 2).contains("deepseek/deepseek-chat"),
-        "the level's values should follow: {:?}",
-        row_text(&buffer, prompt + 2)
+        row_text(&buffer, rule + 1).contains("deepseek/deepseek-chat"),
+        "the level's values should follow the input rule: {:?}",
+        row_text(&buffer, rule + 1)
     );
 }
 
@@ -941,8 +933,8 @@ fn command_popup_scrolls_to_keep_the_cursor_visible() {
         .collect();
     let rows = {
         let popup = app.chat.command_popup.as_ref().expect("popup open");
-        // The top rule is not a list row.
-        popup_height(popup, &app.chat.commands) as usize - 1
+        // No top rule: every reserved row is a list row.
+        popup_height(popup, &app.chat.commands) as usize
     };
     // All the way down: the last command is the one that used to be lost.
     for _ in 0..20 {
@@ -950,8 +942,8 @@ fn command_popup_scrolls_to_keep_the_cursor_visible() {
     }
     let buffer = draw_80x24(&mut app);
 
-    let prompt = prompt_row(&buffer);
-    let list: Vec<String> = ((prompt + 2)..=(prompt + 1 + rows as u16))
+    let rule = rule_row(&buffer);
+    let list: Vec<String> = ((rule + 1)..=(rule + rows as u16))
         .map(|y| row_text(&buffer, y))
         .collect();
     let popup = list.join("\n");
@@ -992,7 +984,7 @@ fn command_popup_marks_the_selected_row_with_an_arrow() {
     );
     let buffer = draw_80x24(&mut app);
 
-    let row = prompt_row(&buffer) + 2;
+    let row = rule_row(&buffer) + 1;
     let selected = row_text(&buffer, row);
     assert!(
         selected.contains("→ "),
@@ -1248,8 +1240,8 @@ fn question_box_marks_the_selected_option_with_an_arrow() {
     );
 }
 
-/// The ctrl+p leader gets the same treatment: top rule directly below the
-/// input field, no side borders.
+/// The ctrl+p leader gets the same treatment: its grid sits directly below
+/// the input field's bottom rule, no border row of its own.
 #[test]
 fn leader_popup_renders_below_the_input_field() {
     let mut app = chatting_app();
@@ -1262,9 +1254,38 @@ fn leader_popup_renders_below_the_input_field() {
     assert!(app.chat.leader.is_some());
     let buffer = draw_80x24(&mut app);
 
-    let rule = row_text(&buffer, prompt_row(&buffer) + 1);
-    assert!(rule.contains("Leader"), "top rule missing: {rule:?}");
-    assert!(!rule.contains('│'), "no side borders expected: {rule:?}");
+    let rule = rule_row(&buffer);
+    let below = row_text(&buffer, rule + 1);
+    assert!(
+        !below.trim().is_empty(),
+        "leader grid should start right below the rule: {below:?}"
+    );
+    assert!(!below.contains('│'), "no side borders expected: {below:?}");
+}
+
+/// The input area measures header + body + the bottom rule in one place.
+/// The body math is pre-existing; this pins the +1 rule row for both the
+/// plain editor and an active question box.
+#[test]
+fn input_area_rows_reserves_the_bottom_rule() {
+    let mut app = chatting_app();
+    let body = (count_wrapped_lines(&app.chat.text(), 80) + 1).clamp(2, 11) as u16;
+    assert_eq!(app.chat.input_area_rows(80), body + 1);
+
+    app.chat.questions = vec![PendingQuestion {
+        topic: "jyc".to_string(),
+        question: "Pick one?".to_string(),
+        options: vec!["alpha".to_string(), "beta".to_string()],
+        multi: false,
+        skipped: false,
+        selected: 0,
+        marked: Vec::new(),
+    }];
+    let q = app.chat.current_question().expect("question");
+    let body =
+        (question_chrome_rows(&q.question, app.chat.questions.len(), 78) + q.options.len() + 3)
+            .clamp(6, 15) as u16;
+    assert_eq!(app.chat.input_area_rows(80), body + 1);
 }
 
 #[test]

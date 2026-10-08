@@ -909,8 +909,8 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // a full-width bottom rule — both take the header style, so the frame
     // reads as one unit and dims together when focus leaves the pane. The
     // rule also closes the input area toward the popup slot below. The
-    // cursor is a blinking underline when the input has focus and invisible
-    // when another pane does (a default-styled cursor cell is
+    // cursor is a blinking reversed block when the input has focus and
+    // invisible when another pane does (a default-styled cursor cell is
     // indistinguishable from the text under it). While a question is
     // pending the editor is covered by the question box, so the cursor
     // stays hidden.
@@ -921,7 +921,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         } else {
             match app.chat.focus {
                 ChatFocus::ChatPane => Style::default()
-                    .add_modifier(Modifier::UNDERLINED)
+                    .add_modifier(Modifier::REVERSED)
                     .add_modifier(Modifier::SLOW_BLINK),
                 ChatFocus::MessageArea
                 | ChatFocus::ActivityPane

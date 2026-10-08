@@ -3,6 +3,7 @@
 ### Changed
 
 - TUI: chat screen input field redraw — the `╰─❯ ` gutter is gone (the editor spans the full width), the header and the new full-width bottom rule take the mode/topic text color, and the `/` + `ctrl+p` popups no longer draw their own top rule — the input's bottom rule is their boundary (#854)
+- TUI: chat input cursor is a blinking reversed block instead of an underline
 
 ### Fixed
 

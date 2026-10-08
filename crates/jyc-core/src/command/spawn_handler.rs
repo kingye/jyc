@@ -427,7 +427,9 @@ mod tests {
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let handler = SpawnCommandHandler::new(tm.clone());
-        let checkout = workspace.path().join("checkout");
+        // A checkout *elsewhere*: the workspace root is the workspace-topic name
+        // space, so a dir there really would be a topic of that name already.
+        let checkout = dir.parent().unwrap().join("checkout");
         tokio::fs::create_dir_all(checkout.join("src"))
             .await
             .unwrap();
@@ -526,13 +528,16 @@ mod tests {
             .await
             .unwrap();
 
-        // `"."` alone is a *name* (no separator), so reaching the source dir
-        // takes a path shape: `<topic>/./.`, which canonicalizes to the source.
+        // Reaching the source dir takes an explicit path: `Path::file_name`
+        // drops `.`, so `"./."` alone would name itself `src-topic` instead.
         for (args, expected) in [
             (vec!["src-topic"], "already in"),
             (vec!["taken"], "already exists"),
             (vec![".hidden"], "must not start with '.'"),
-            (vec!["./."], "the directory you are in"),
+            (
+                vec!["spawn-x", dir.to_str().unwrap()],
+                "the directory you are in",
+            ),
             (vec!["spawn-x", a_file.to_str().unwrap()], "not a directory"),
             (
                 vec!["spawn-x", other.to_str().unwrap()],

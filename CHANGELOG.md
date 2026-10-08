@@ -71,8 +71,10 @@
   names — a non-empty checkout included, whose files are left exactly as they
   are, since a spawn seeds state (the `/fork` allow-list, marked
   `spawned-from`) and copies no workspace files at all. A relative path counts
-  from this topic's own dir, so `/spawn ../test` means beside it and
-  `/spawn ./lab` inside it. Closing such a topic removes the emptied shell
+  from this topic's own dir, so `/spawn ../test` means beside it; a
+  destination inside the current topic's own dir is refused, since a nested
+  working dir would inherit the parent's git status, file listings, and close
+  semantics. Closing such a topic removes the emptied shell
   directory with its state. Websocket-only (#853)
 
 ### Changed

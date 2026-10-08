@@ -1,9 +1,17 @@
 ## [Unreleased]
 
+### Added
+
+- TUI: `ctrl+p x` clears the chat input field (an open `/` popup closes with it — an empty field has nothing to filter)
+
 ### Changed
 
 - TUI: chat screen input field redraw — the `╰─❯ ` gutter is gone (the editor spans the full width), the header and the new full-width bottom rule take the mode/topic text color, and the `/` + `ctrl+p` popups no longer draw their own top rule — the input's bottom rule is their boundary (#854)
 - TUI: chat input cursor is a blinking reversed block instead of an underline
+
+### Removed
+
+- TUI: the `ctrl+p /` leader entry — the input field is the `/` popup's filter now, so a leader-driven popup could never show a usable list of commands
 
 ### Fixed
 

@@ -57,10 +57,9 @@ pub enum LocalAction {
     ScrollTop,
     /// Scroll the message area to the bottom.
     ScrollBottom,
-    /// Open the `/` command popup without touching the input field (typing
-    /// `/` also leaves the slash in the field, which then serves as the
-    /// popup's filter).
-    OpenCommandPopup,
+    /// Clear the chat input field. An open `/` popup follows the empty
+    /// filter — its filter is the field itself.
+    ClearInput,
     /// Expand/collapse thinking display (live progress tail and the
     /// completed-turn pseudo-messages in the chat history).
     ToggleThinking,
@@ -97,11 +96,11 @@ pub fn local_commands() -> &'static [LocalCommand] {
     use CommandScope::{Chat, Dashboard, Shared};
     &[
         LocalCommand {
-            name: "command popup",
-            description: "Open the / command popup",
+            name: "clear input",
+            description: "Clear the chat input field",
             scope: Chat,
-            action: LocalAction::OpenCommandPopup,
-            leader_keys: "/",
+            action: LocalAction::ClearInput,
+            leader_keys: "x",
         },
         LocalCommand {
             name: "open dashboard",
@@ -326,8 +325,12 @@ mod tests {
         assert!(!dash_keys.contains(&"z"));
 
         // Chat screen: chat-scoped + shared.
-        assert!(chat_keys.contains(&"/"), "command popup must be Chat-only");
-        assert!(!dash_keys.contains(&"/"));
+        assert!(chat_keys.contains(&"x"), "clear input must be Chat-only");
+        assert!(!dash_keys.contains(&"x"));
+        // The `/` leader entry is gone: the input field is the popup's
+        // filter now, so a leader-driven popup could never show a usable
+        // list of commands.
+        assert!(!chat_keys.contains(&"/"));
         assert!(chat_keys.contains(&"d"));
         assert!(chat_keys.contains(&"z"));
         assert!(chat_keys.contains(&"r"));

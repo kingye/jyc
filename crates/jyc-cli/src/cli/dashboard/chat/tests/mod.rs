@@ -630,8 +630,12 @@ fn leader_c_focuses_message_area() {
     assert_eq!(app.chat.focus, ChatFocus::MessageArea);
 }
 
+/// `ctrl+p /` is gone. The popup has no field of its own — it filters
+/// off the chat input — so a leader-driven one could only show commands
+/// filtered by whatever draft sat in the field. The slash in the field is
+/// the only way into the popup now.
 #[test]
-fn leader_slash_opens_command_popup() {
+fn leader_slash_does_not_open_the_command_popup() {
     let mut app = chatting_app();
     handle_chat_keys(
         &mut app,
@@ -644,8 +648,11 @@ fn leader_slash_opens_command_popup() {
         crossterm::event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
         &mut test_terminal(),
     );
-    assert!(app.chat.leader.is_none());
-    assert!(app.chat.command_popup.is_some());
+    assert!(
+        app.chat.command_popup.is_none(),
+        "`/` is no leader entry, so nothing opens"
+    );
+    assert_eq!(app.chat.text(), "", "the field stays untouched");
 }
 
 /// The `/` popup has no input box of its own: text keys go to the chat
@@ -751,38 +758,44 @@ fn tab_on_a_command_without_values_closes_the_popup() {
     );
 }
 
-/// `ctrl+p c` opens the same popup, which has no field of its own: with a
-/// draft in the input field, further typing filters off that draft.
+/// `ctrl+p x` empties the input field.
 #[test]
-fn leader_command_popup_filters_off_the_draft() {
+fn leader_clear_input_empties_the_field() {
     let mut app = chatting_app();
     app.chat.populate_editor("draft");
     execute_local_action(
         &mut app,
         &mut test_terminal(),
-        local_commands::LocalAction::OpenCommandPopup,
+        local_commands::LocalAction::ClearInput,
     );
-    assert!(
-        !app.chat.commands.is_empty(),
-        "the leader path loads the commands itself, or the popup renders Loading..."
-    );
-    let popup = app
-        .chat
-        .command_popup
-        .as_ref()
-        .expect("leader opens the popup");
-    assert!(popup.filter.is_empty(), "opens with the full list");
+    assert_eq!(app.chat.text(), "");
+}
 
-    handle_chat_keys(
-        &mut app,
-        crossterm::event::KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
-        &mut test_terminal(),
-    );
-    assert_eq!(app.chat.text(), "draft!", "the key went to the field");
+/// An open `/` popup has no field of its own — it filters off the input
+/// field, so clearing the field closes the popup with it (an empty field
+/// has nothing to filter, same as deleting the `/` by hand).
+#[test]
+fn leader_clear_input_closes_an_open_popup() {
+    let mut app = chatting_app();
+    let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
+    handle_chat_keys(&mut app, key(KeyCode::Char('/')), &mut test_terminal());
+    for c in "dr".chars() {
+        handle_chat_keys(&mut app, key(KeyCode::Char(c)), &mut test_terminal());
+    }
     assert_eq!(
-        app.chat.command_popup.as_ref().expect("still open").filter,
-        "draft!",
-        "the filter adopts the field"
+        app.chat.command_popup.as_ref().expect("popup open").filter,
+        "/dr",
+        "typing filters the open popup (the filter is the field verbatim)"
+    );
+    execute_local_action(
+        &mut app,
+        &mut test_terminal(),
+        local_commands::LocalAction::ClearInput,
+    );
+    assert_eq!(app.chat.text(), "");
+    assert!(
+        app.chat.command_popup.is_none(),
+        "an empty field leaves nothing for the popup to filter"
     );
 }
 

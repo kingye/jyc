@@ -15,6 +15,11 @@
 
 ### Fixed
 
+- **Kimi's `<response>` / `<tools>` tool-call wrapper no longer leaks into the
+  delivered reply**: the text-channel leak guard (#786) knew the `response_tools`
+  spellings but not Kimi's bare wrapper tags, which slipped past unstripped.
+  Both tags are recognized now; other models are unaffected (they don't leak)
+
 - Topic info recognizes a `git worktree add` directory: `.git` is a file there, not a directory, so the branch and changed-file probe returned nothing — both now follow the `gitdir:` pointer (relative paths included), which also covers submodule checkouts
 
 - **A multi-question set no longer arrives as one run-on line**: channels that

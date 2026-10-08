@@ -408,11 +408,11 @@ keeps its own state dir.
 | Ad-hoc pinned topic (`jyc open -p`, non-agents pin) | the pinned dir | `<data_home>/agents/_<path-escaped>/.jyc` |
 | Dynamic pipe topic | `<data_home>/agents/<agent>/<topic>/` | `<topic_dir>/.jyc`, registered at activation |
 | Forked topic (`/fork`) | the **parent's** topic dir (shared workspace) | `<data_home>/agents/<name>/.jyc` |
-| Cloned topic (`/clone`) | its own copy — a sibling of the source dir by default | `<data_home>/agents/<name>/.jyc` |
+| Spawned topic (`/spawn`) | a fresh `<data_home>/agents/<name>/`, or any dir the path names (a non-empty checkout included — its files are not touched) | `<data_home>/agents/<name>/.jyc` |
 
 Registrations happen at four points: startup restore (config pins adopt,
 workspace/agent topics register in-dir), runtime pins (`set_topic_path`,
-dashboard `open -p`), fork/clone, and **activation** — every enqueue path
+dashboard `open -p`), fork/spawn, and **activation** — every enqueue path
 (router, scheduled jobs, `jyc_send_to_topic`, dashboard proxy) registers a
 jyc-owned workspace dir's in-dir `.jyc` before any state access. A user-owned
 dir (a pin) without a registration is a bug: state access fails loudly rather
@@ -428,17 +428,18 @@ registered by name before the dir was pinned (`adopt_state_dir` →
 occupies a top-level entry under `agents/`, which is why `/fork` refuses a name
 that is already a topic.
 
-A `/clone` is the same mechanism pointed at a dir of its own: it copies the
-source's files into a fresh directory (the source's own `.jyc` is skipped — state
-is seeded, never copied; so are regenerable build/dependency dirs such as
-`target/` and `node_modules/`, with the count reported in the reply) and then
-adopts/pins it exactly as `/fork` does, so the two topics hold separate files *and*
-separate state. Because that dir is a copy
-rather than a shared checkout, `close_topic` keeping it is a convenience and not
-a rule — `/close --force --purge` deletes it, refusing only when the dir is one another
-topic also uses (a workspace topic counts, not just a runtime pin — a fork
-shares its parent's dir), contains another topic's dir, is one of jyc's own, or
-holds another topic's state directly under one of those roots.
+A `/spawn` is the same mechanism pointed at a dir of its own, and it moves no
+files: the conversation is what comes along, so the destination may already hold
+data (a checkout made elsewhere) or live inside the parent's dir, and the only
+things a spawn creates are a missing destination and `<agents_root>/<name>/.jyc`.
+Its state is registered by name even in that default shape, where the state dir
+happens to sit inside the topic's own dir — so `close_topic` removes the emptied
+dir with its state; a dir that has since gained files is kept, like a pin's. Purge is
+the explicit "and this one too", refusing whenever the dir is not the topic's own
+to remove: one another topic also uses (a workspace topic counts, not just a
+runtime pin — a fork shares its parent's dir), contains another topic's dir, is
+one of jyc's own roots, or holds another topic's state directly under one of
+those roots — which is why a spawn's default dir under `agents/` is never purged.
 
 - **Identity.** Registrations key on the topic *name*. Config-key agents keep
   their `[agents.<key>]` name for the state dir — TOML keys are unique by

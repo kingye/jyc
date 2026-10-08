@@ -630,8 +630,12 @@ fn leader_c_focuses_message_area() {
     assert_eq!(app.chat.focus, ChatFocus::MessageArea);
 }
 
+/// `ctrl+p /` is gone. The popup has no field of its own — it filters
+/// off the chat input — so a leader-driven one could only show commands
+/// filtered by whatever draft sat in the field. The slash in the field is
+/// the only way into the popup now.
 #[test]
-fn leader_slash_opens_command_popup() {
+fn leader_slash_does_not_open_the_command_popup() {
     let mut app = chatting_app();
     handle_chat_keys(
         &mut app,
@@ -644,8 +648,11 @@ fn leader_slash_opens_command_popup() {
         crossterm::event::KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
         &mut test_terminal(),
     );
-    assert!(app.chat.leader.is_none());
-    assert!(app.chat.command_popup.is_some());
+    assert!(
+        app.chat.command_popup.is_none(),
+        "`/` is no leader entry, so nothing opens"
+    );
+    assert_eq!(app.chat.text(), "", "the field stays untouched");
 }
 
 /// The `/` popup has no input box of its own: text keys go to the chat
@@ -776,8 +783,8 @@ fn leader_clear_input_resets_an_open_popups_filter() {
     }
     assert_eq!(
         app.chat.command_popup.as_ref().expect("popup open").filter,
-        "dr",
-        "typing filters the open popup"
+        "/dr",
+        "typing filters the open popup (the filter is the field verbatim)"
     );
     execute_local_action(
         &mut app,

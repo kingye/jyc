@@ -26,12 +26,9 @@ pub async fn build_pin_context(
         context.channel_type
     );
 
-    let topic_name = context
-        .topic_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown-topic")
-        .to_string();
+    // Identity is the topic name, not the workspace dir — a forked topic
+    // shares its parent's dir, so the path would name the parent.
+    let topic_name = context.topic_name.clone();
 
     let adhoc_path = {
         let paths = topic_manager.topic_paths.lock().await;
@@ -242,6 +239,129 @@ fn normalize_path_line(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message_storage::MessageStorage;
+    use crate::metrics::MetricsCollector;
+    use crate::static_agent::StaticAgentService;
+    use arc_swap::ArcSwap;
+    use std::sync::Arc;
+
+    fn make_topic_manager(workspace: &std::path::Path) -> Arc<TopicManager> {
+        let storage = Arc::new(MessageStorage::new(workspace));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let metrics_cancel = tokio_util::sync::CancellationToken::new();
+        let (metrics, _stats, _metrics_task) = MetricsCollector::new(metrics_cancel).start();
+        let config = Arc::new(ArcSwap::from_pointee(
+            jyc_types::load_config_from_str(
+                r#"
+[general]
+[channels.test]
+type = "email"
+[channels.test.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.test.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+"#,
+            )
+            .unwrap(),
+        ));
+
+        Arc::new(TopicManager::new_with_options(
+            1,
+            10,
+            storage,
+            Arc::new(NoopOutbound),
+            Arc::new(StaticAgentService::new("ok")),
+            cancel,
+            false,
+            workspace.join("templates"),
+            config,
+            "test".to_string(),
+            "websocket".to_string(),
+            workspace.parent().unwrap_or(workspace).to_path_buf(),
+            workspace.to_path_buf(),
+            metrics,
+            None,
+        ))
+    }
+
+    /// Minimal outbound adapter that does nothing — build_pin_context never
+    /// sends replies.
+    struct NoopOutbound;
+
+    #[async_trait::async_trait]
+    impl jyc_types::OutboundAdapter for NoopOutbound {
+        fn channel_type(&self) -> &str {
+            "test"
+        }
+        async fn connect(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn disconnect(&self) -> Result<()> {
+            Ok(())
+        }
+        fn clean_body(&self, raw_body: &str) -> String {
+            raw_body.to_string()
+        }
+        async fn send_reply(
+            &self,
+            _original: &jyc_types::InboundMessage,
+            _reply_text: &str,
+            _topic_path: &std::path::Path,
+            _message_dir: &str,
+            _attachments: Option<&[jyc_types::OutboundAttachment]>,
+        ) -> Result<jyc_types::SendResult> {
+            Ok(jyc_types::SendResult {
+                message_id: "noop".to_string(),
+            })
+        }
+        async fn send_message(
+            &self,
+            _recipient: &str,
+            _subject: &str,
+            _body: &str,
+        ) -> Result<jyc_types::SendResult> {
+            Ok(jyc_types::SendResult {
+                message_id: "noop".to_string(),
+            })
+        }
+    }
+
+    /// Fork shape: the topic name differs from the shared workspace dir, and
+    /// the pin map is keyed by name — the pin context must come from the name.
+    #[tokio::test]
+    async fn build_pin_context_uses_topic_name_not_workspace_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_topic_manager(&workspace);
+
+        let shared = workspace.join("parent-repo");
+        std::fs::create_dir_all(&shared).unwrap();
+        tm.set_topic_path("pin-fork-test", shared.clone())
+            .await
+            .unwrap();
+
+        let context = CommandContext {
+            topic_name: "pin-fork-test".to_string(),
+            topic_path: shared.clone(),
+            channel_type: "websocket".to_string(),
+            config_path: Some(tmp.path().join("config.toml")),
+            ..Default::default()
+        };
+
+        let pin = build_pin_context(&context, &tm).await.unwrap();
+        assert_eq!(pin.topic_name, "pin-fork-test");
+        assert_eq!(pin.adhoc_path, shared);
+    }
 
     #[tokio::test]
     async fn test_append_and_remove_agent() {

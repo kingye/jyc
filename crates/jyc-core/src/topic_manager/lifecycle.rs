@@ -97,7 +97,9 @@ impl TopicManager {
             // `agents/<topic>/` shell around the state goes. The one shape
             // where the state sits *inside* the topic dir is `/spawn` with no
             // path: that dir was created for the topic and is not necessarily
-            // under one of our roots, so an emptied one is removed on its own.
+            // under one of our roots, so an emptied one is removed on its own
+            // (also when it *is* under the roots — this branch, not the pruner
+            // below, owns the in-dir shape; don't "unify" them).
             if path_is_under(&state, &topic_path).await {
                 match tokio::fs::remove_dir(&topic_path).await {
                     Ok(()) => tracing::info!(
@@ -619,6 +621,7 @@ mode = "agent"
         let repo = tmp.path().join("probe-pin-repo");
         let namespace = tmp.path().join("agents/probe-pin-app");
         let state = namespace.join(".jyc");
+        let agents_root = tmp.path().join("agents");
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::write(repo.join("main.rs"), "fn main() {}").unwrap();
         std::fs::create_dir_all(&state).unwrap();
@@ -629,7 +632,7 @@ mode = "agent"
             .await
             .unwrap();
 
-        tm.close_topic_under("probe-pin-app", &tmp.path().join("agents"))
+        tm.close_topic_under("probe-pin-app", &agents_root)
             .await
             .unwrap();
 
@@ -646,10 +649,7 @@ mode = "agent"
             !namespace.exists(),
             "emptied agents/<topic> shell must be pruned"
         );
-        assert!(
-            tmp.path().join("agents").exists(),
-            "the agents root itself must survive"
-        );
+        assert!(agents_root.exists(), "the agents root itself must survive");
         assert_eq!(
             jyc_types::state_dir::registered_state("probe-pin-app"),
             Some(state.clone()),
@@ -669,6 +669,7 @@ mode = "agent"
 
         let namespace = tmp.path().join("agents/probe-prune-full");
         let state = namespace.join(".jyc");
+        let agents_root = tmp.path().join("agents");
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(namespace.join("notes.txt"), "keep me").unwrap();
         jyc_types::state_dir::register("probe-prune-full", &state);
@@ -676,7 +677,7 @@ mode = "agent"
             .await
             .unwrap();
 
-        tm.close_topic_under("probe-prune-full", &tmp.path().join("agents"))
+        tm.close_topic_under("probe-prune-full", &agents_root)
             .await
             .unwrap();
 
@@ -684,6 +685,10 @@ mode = "agent"
         assert!(
             namespace.join("notes.txt").exists(),
             "non-empty namespace shell must survive"
+        );
+        assert!(
+            namespace.exists() && agents_root.exists(),
+            "the shell and the agents root itself must survive"
         );
     }
 

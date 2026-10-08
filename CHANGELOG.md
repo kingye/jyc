@@ -2,7 +2,7 @@
 
 ### Added
 
-- TUI: `ctrl+p x` clears the chat input field (an open `/` popup follows the empty filter, since its filter is the field itself)
+- TUI: `ctrl+p x` clears the chat input field (an open `/` popup closes with it — an empty field has nothing to filter)
 
 ### Changed
 

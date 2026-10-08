@@ -816,8 +816,8 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
         LocalAction::ClearInput => {
             app.chat.editor = empty_chat_editor();
             // The popup has no field of its own — it filters off this one,
-            // so an open popup has to see the empty filter instead of
-            // matching the text that was just cleared.
+            // so clearing the field closes it (an empty field has nothing
+            // to filter, same as deleting the `/` by hand).
             sync_command_popup(app);
         }
         LocalAction::ToggleThinking => {

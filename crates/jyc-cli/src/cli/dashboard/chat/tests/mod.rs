@@ -772,9 +772,10 @@ fn leader_clear_input_empties_the_field() {
 }
 
 /// An open `/` popup has no field of its own — it filters off the input
-/// field, so clearing the field must reset the popup's filter too.
+/// field, so clearing the field closes the popup with it (an empty field
+/// has nothing to filter, same as deleting the `/` by hand).
 #[test]
-fn leader_clear_input_resets_an_open_popups_filter() {
+fn leader_clear_input_closes_an_open_popup() {
     let mut app = chatting_app();
     let key = |code: KeyCode| crossterm::event::KeyEvent::new(code, KeyModifiers::NONE);
     handle_chat_keys(&mut app, key(KeyCode::Char('/')), &mut test_terminal());
@@ -792,10 +793,9 @@ fn leader_clear_input_resets_an_open_popups_filter() {
         local_commands::LocalAction::ClearInput,
     );
     assert_eq!(app.chat.text(), "");
-    assert_eq!(
-        app.chat.command_popup.as_ref().expect("still open").filter,
-        "",
-        "the popup follows the empty field"
+    assert!(
+        app.chat.command_popup.is_none(),
+        "an empty field leaves nothing for the popup to filter"
     );
 }
 

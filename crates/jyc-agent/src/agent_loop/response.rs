@@ -245,7 +245,9 @@ pub(crate) async fn collect_response(
 /// calling is weak. Covers the dialects seen in the wild: Anthropic XML
 /// (`tool_use` / `invoke` / `parameter`, plus the `antml:` prefix), the
 /// `<call tool=` / `<argument key=` gateway wrapper, the legacy OpenAI
-/// `functions.foo(` text call, and a bare `{"name":` JSON call.
+/// `functions.foo(` text call, a bare `{"name":` JSON call, and Kimi's
+/// agentic wrapper (`<response>` / `<tools>` around the call, observed
+/// 2026-10-08).
 ///
 /// Opening and closing forms both match, the plural spellings too, and the
 /// separator after a tag name is optional — the observed leaks are truncated
@@ -253,8 +255,8 @@ pub(crate) async fn collect_response(
 /// required after the name.
 static TOOL_CALL_SYNTAX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"</?\s*(?:tool_use|tool_calls?|function_calls?|invoke|parameter",
-        r"|response_tools?|response\s+tools?)\b",
+        r"</?\s*(?:tool_use|tool_calls?|tools?|function_calls?|invoke|parameter",
+        r"|response|response_tools?|response\s+tools?)\b",
         r"|</?\s*(?:call\s+tool=|argument\s+key=)",
         r"|</call>",
         r"|antml:(?:invoke|parameter)\b",
@@ -440,6 +442,23 @@ mod tests {
         assert_eq!(
             leaked_syntax_range(&dump),
             Some("先说结论。\n".len()..dump.len())
+        );
+
+        // Kimi agentic wrapper (observed 2026-10-08): a `<response>` /
+        // `<tools>` shell around the call — bare tags, no `_tool` infix.
+        let kimi_tail = "现在改文档。CHANGELOG 的 #853 条目：\n\n<response>\n<tools>";
+        assert_eq!(
+            leaked_syntax_range(kimi_tail),
+            Some("现在改文档。CHANGELOG 的 #853 条目：\n\n".len()..kimi_tail.len())
+        );
+        let kimi_block =
+            "<response>\n最终回答\n</response>\n<tools>\n<invoke name=\"bash\">x\n</tools>";
+        assert_eq!(leaked_syntax_range(kimi_block), Some(0..kimi_block.len()));
+        // Leading-whitespace opener, nothing after it: still a leak.
+        let indented = "结论。\n <response>";
+        assert_eq!(
+            leaked_syntax_range(indented),
+            Some("结论。\n".len()..indented.len())
         );
 
         // A LONE leak line with content after it is a quote inside a reply:

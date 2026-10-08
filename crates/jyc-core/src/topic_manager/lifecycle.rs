@@ -93,17 +93,47 @@ impl TopicManager {
                     .context(format!("Failed to remove topic state dir: {:?}", state))?;
             }
             // A registration normally points outside the topic dir — a pin, a
-            // fork, a `/spawn` with an explicit path — and only the `agents/<topic>/`
-            // shell around the state goes. The one shape where the state sits
-            // *inside* the topic dir is `/spawn` with no path, and pruning the
-            // emptied `agents/<name>/` covers it.
-            prune_empty_parents(&state, &roots).await;
-            tracing::info!(
-                topic = %topic_name,
-                state = %state.display(),
-                topic_dir = %topic_path.display(),
-                "Topic state dir deleted; topic dir preserved"
-            );
+            // fork, a `/spawn` with an explicit path — and only the emptied
+            // `agents/<topic>/` shell around the state goes. The one shape
+            // where the state sits *inside* the topic dir is `/spawn` with no
+            // path: that dir was created for the topic and is not necessarily
+            // under one of our roots, so an emptied one is removed on its own.
+            if path_is_under(&state, &topic_path).await {
+                match tokio::fs::remove_dir(&topic_path).await {
+                    Ok(()) => tracing::info!(
+                        topic = %topic_name,
+                        dir = %topic_path.display(),
+                        "Emptied topic dir removed with its state"
+                    ),
+                    // Not empty (files moved in) or already gone: nothing more
+                    // to remove, and whatever remains is user property.
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::DirectoryNotEmpty
+                            || e.kind() == std::io::ErrorKind::NotFound =>
+                    {
+                        tracing::info!(
+                            topic = %topic_name,
+                            state = %state.display(),
+                            topic_dir = %topic_path.display(),
+                            "Topic state dir deleted; topic dir preserved"
+                        );
+                    }
+                    Err(e) => tracing::warn!(
+                        topic = %topic_name,
+                        dir = %topic_path.display(),
+                        error = %e,
+                        "Topic state dir deleted but the emptied topic dir could not be removed"
+                    ),
+                }
+            } else {
+                prune_empty_parents(&state, &roots).await;
+                tracing::info!(
+                    topic = %topic_name,
+                    state = %state.display(),
+                    topic_dir = %topic_path.display(),
+                    "Topic state dir deleted; pinned topic dir preserved"
+                );
+            }
             self.cleanup_topic_state(topic_name).await;
             return Ok(());
         }

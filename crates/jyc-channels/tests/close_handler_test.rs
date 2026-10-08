@@ -42,6 +42,28 @@ fn test_config_swap() -> Arc<ArcSwap<AppConfig>> {
     Arc::new(ArcSwap::new(test_config()))
 }
 
+fn make_tm(tmp: &TempDir, workspace: &std::path::Path) -> Arc<TopicManager> {
+    let storage = Arc::new(MessageStorage::new(workspace));
+    Arc::new(TopicManager::new(
+        3,
+        10,
+        storage.clone(),
+        Arc::new(WebsocketOutboundAdapter::new(
+            tokio::sync::broadcast::channel(4).0,
+            storage,
+        )),
+        Arc::new(StaticAgentService::new("test reply")),
+        tokio_util::sync::CancellationToken::new(),
+        PathBuf::from("/tmp/templates"),
+        test_config_swap(),
+        "test".to_string(),
+        "email".to_string(),
+        tmp.path().to_path_buf(),
+        workspace.to_path_buf(),
+        MetricsHandle::noop(),
+    ))
+}
+
 fn test_context(topic_path: &std::path::Path) -> CommandContext {
     test_context_with(topic_path, &["--force"], "test-topic")
 }
@@ -85,26 +107,7 @@ async fn test_close_command_uses_topic_name_not_workspace_dir() {
     std::fs::create_dir_all(&state_dir).unwrap();
     jyc_types::state_dir::register("close-fork-test", &state_dir);
 
-    let storage = Arc::new(MessageStorage::new(&workspace));
-
-    let topic_manager = Arc::new(TopicManager::new(
-        3,
-        10,
-        storage.clone(),
-        Arc::new(WebsocketOutboundAdapter::new(
-            tokio::sync::broadcast::channel(4).0,
-            storage,
-        )),
-        Arc::new(StaticAgentService::new("test reply")),
-        tokio_util::sync::CancellationToken::new(),
-        PathBuf::from("/tmp/templates"),
-        test_config_swap(),
-        "test".to_string(),
-        "email".to_string(),
-        tmp.path().to_path_buf(),
-        workspace.clone(),
-        MetricsHandle::noop(),
-    ));
+    let topic_manager = make_tm(&tmp, &workspace);
 
     let handler = CloseCommandHandler::new(topic_manager);
     let ctx = test_context_with(&topic_dir, &["--force"], "close-fork-test");
@@ -129,26 +132,7 @@ async fn test_close_command_nonexistent_topic_succeeds() {
     std::fs::create_dir_all(&workspace).unwrap();
     let topic_dir = workspace.join("nonexistent_topic");
 
-    let storage = Arc::new(MessageStorage::new(&workspace));
-
-    let topic_manager = Arc::new(TopicManager::new(
-        3,
-        10,
-        storage.clone(),
-        Arc::new(WebsocketOutboundAdapter::new(
-            tokio::sync::broadcast::channel(4).0,
-            storage,
-        )),
-        Arc::new(StaticAgentService::new("test reply")),
-        tokio_util::sync::CancellationToken::new(),
-        PathBuf::from("/tmp/templates"),
-        test_config_swap(),
-        "test".to_string(),
-        "email".to_string(),
-        tmp.path().to_path_buf(),
-        workspace.clone(),
-        MetricsHandle::noop(),
-    ));
+    let topic_manager = make_tm(&tmp, &workspace);
 
     let handler = CloseCommandHandler::new(topic_manager);
     let ctx = test_context(&topic_dir);
@@ -163,26 +147,7 @@ async fn test_close_command_empty_topic_name() {
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
 
-    let storage = Arc::new(MessageStorage::new(&workspace));
-
-    let topic_manager = Arc::new(TopicManager::new(
-        3,
-        10,
-        storage.clone(),
-        Arc::new(WebsocketOutboundAdapter::new(
-            tokio::sync::broadcast::channel(4).0,
-            storage,
-        )),
-        Arc::new(StaticAgentService::new("test reply")),
-        tokio_util::sync::CancellationToken::new(),
-        PathBuf::from("/tmp/templates"),
-        test_config_swap(),
-        "test".to_string(),
-        "email".to_string(),
-        tmp.path().to_path_buf(),
-        workspace.clone(),
-        MetricsHandle::noop(),
-    ));
+    let topic_manager = make_tm(&tmp, &workspace);
 
     let handler = CloseCommandHandler::new(topic_manager);
 
@@ -214,26 +179,7 @@ async fn test_close_command_without_force_keeps_directory() {
     std::fs::create_dir_all(&topic_dir).unwrap();
     std::fs::write(topic_dir.join("test.txt"), "content").unwrap();
 
-    let storage = Arc::new(MessageStorage::new(&workspace));
-
-    let topic_manager = Arc::new(TopicManager::new(
-        3,
-        10,
-        storage.clone(),
-        Arc::new(WebsocketOutboundAdapter::new(
-            tokio::sync::broadcast::channel(4).0,
-            storage,
-        )),
-        Arc::new(StaticAgentService::new("test reply")),
-        tokio_util::sync::CancellationToken::new(),
-        PathBuf::from("/tmp/templates"),
-        test_config_swap(),
-        "test".to_string(),
-        "email".to_string(),
-        tmp.path().to_path_buf(),
-        workspace.clone(),
-        MetricsHandle::noop(),
-    ));
+    let topic_manager = make_tm(&tmp, &workspace);
 
     let handler = CloseCommandHandler::new(topic_manager);
     // Plain `/close` (no args) — must NOT delete
@@ -272,26 +218,7 @@ async fn test_close_command_refused_purge_still_closes_topic() {
     std::fs::create_dir_all(&state_dir).unwrap();
     jyc_types::state_dir::register("close-purge-test", &state_dir);
 
-    let storage = Arc::new(MessageStorage::new(&workspace));
-
-    let topic_manager = Arc::new(TopicManager::new(
-        3,
-        10,
-        storage.clone(),
-        Arc::new(WebsocketOutboundAdapter::new(
-            tokio::sync::broadcast::channel(4).0,
-            storage,
-        )),
-        Arc::new(StaticAgentService::new("test reply")),
-        tokio_util::sync::CancellationToken::new(),
-        PathBuf::from("/tmp/templates"),
-        test_config_swap(),
-        "test".to_string(),
-        "email".to_string(),
-        tmp.path().to_path_buf(),
-        workspace.clone(),
-        MetricsHandle::noop(),
-    ));
+    let topic_manager = make_tm(&tmp, &workspace);
     topic_manager
         .set_topic_path("close-purge-test", repo.clone())
         .await

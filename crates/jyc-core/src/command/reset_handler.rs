@@ -105,8 +105,72 @@ impl CommandHandler for ResetCommandHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{AgentResult, AgentService};
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
+
+    /// Records the topic names it is asked to reset.
+    #[derive(Default)]
+    struct RecordingAgent {
+        reset_names: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl AgentService for RecordingAgent {
+        async fn base_url(&self) -> Result<String> {
+            Ok(String::new())
+        }
+        async fn process(
+            &self,
+            _message: &jyc_types::InboundMessage,
+            _topic_name: &str,
+            _topic_path: &Path,
+            _message_dir: &str,
+            _pending_rx: &mut tokio::sync::mpsc::Receiver<jyc_types::QueueItem>,
+            _topic_cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<AgentResult> {
+            Ok(AgentResult {
+                reply_delivered: false,
+                reply_text: None,
+            })
+        }
+        async fn reset_session(
+            &self,
+            _topic_path: &Path,
+            topic_name: &str,
+            _config: &jyc_types::channel::ResetCompressionConfig,
+        ) -> Result<()> {
+            self.reset_names
+                .lock()
+                .unwrap()
+                .push(topic_name.to_string());
+            Ok(())
+        }
+    }
+
+    /// Fork shape: the topic name differs from the shared workspace dir —
+    /// the agent must be reset by name, not by dir name.
+    #[tokio::test]
+    async fn test_reset_uses_topic_name_not_workspace_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_reset_uses_topic_name";
+        let workspace = tmp.path().join("parent-repo");
+        tokio::fs::create_dir_all(&workspace).await.unwrap();
+
+        let agent = Arc::new(RecordingAgent::default());
+        let handler = ResetCommandHandler;
+        let mut ctx = test_context(topic, &workspace);
+        ctx.agent = Some(agent.clone());
+
+        let result = handler.execute(ctx).await.unwrap();
+        assert!(result.success);
+        let names = agent.reset_names.lock().unwrap();
+        assert_eq!(
+            names.as_slice(),
+            [topic.to_string()],
+            "reset must target the topic name, not the workspace dir name"
+        );
+    }
 
     fn test_context(topic_name: &str, topic_path: &Path) -> CommandContext {
         jyc_types::state_dir::register(topic_name, &topic_path.join(".jyc"));

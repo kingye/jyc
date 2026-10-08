@@ -10,7 +10,7 @@
 - `/close --force` now prunes the emptied state namespace: the `~/.local/share/jyc/agents/<topic>/` shell a deleted state dir leaves behind (and empty nested parents such as `agents/<agent>/`) is removed, stopping at jyc's own roots — a shell that still holds files is kept, and the registration is still kept so a reopen reuses the same state name (#860)
 - TUI: chat screen input field redraw — the `╰─❯ ` gutter is gone (the editor spans the full width), the header and the new full-width bottom rule take the mode/topic text color, and the `/` + `ctrl+p` popups no longer draw their own top rule — the input's bottom rule is their boundary (#854)
 - TUI: chat input cursor is a blinking reversed block instead of an underline
-- `/close --force --purge`: a refused directory purge (workspace shared with another topic, project checkout, or jyc-managed root) no longer blocks the close — the topic's state is deleted as usual and the reply reports that the directory was kept, with the reason
+- `/close --force --purge`: a refused directory purge (workspace shared with another topic, project checkout, or jyc-managed root) no longer blocks the close — the topic's state is deleted as usual and the reply reports that the directory was kept, with the reason (#862)
 
 ### Removed
 
@@ -18,7 +18,7 @@
 
 ### Fixed
 
-- **`/close`, `/cancel`, `/pin`, and `/reset` in a forked topic no longer act on the original topic**: the handlers derived the topic name from the workspace directory, which a fork shares with its parent — the topic's own name is the identity now, so closing a fork deletes the fork's state (keeping the shared directory), cancel/reset hit the fork's session, and pin/unpin apply to the fork's channel topic
+- **`/close`, `/cancel`, `/pin`, and `/reset` in a forked topic no longer act on the original topic**: the handlers derived the topic name from the workspace directory, which a fork shares with its parent — the topic's own name is the identity now, so closing a fork deletes the fork's state (keeping the shared directory), cancel/reset hit the fork's session, and pin/unpin apply to the fork's channel topic (#862)
 - **Kimi's `<response>` / `<tools>` tool-call wrapper no longer leaks into the
   delivered reply**: the text-channel leak guard (#786) knew the `response_tools`
   spellings but not Kimi's bare wrapper tags, which slipped past unstripped.

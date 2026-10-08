@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -13,6 +13,34 @@ use crate::topic_path::{resolve_topic_path, resolved};
 
 /// How to call it, repeated in every refusal so a typo self-corrects.
 const USAGE: &str = "/spawn [name] [path]";
+
+/// Collapse `.` and `..` components lexically — `canonicalize` without
+/// touching the filesystem, for destinations that do not exist yet.
+///
+/// `resolved()` canonicalizes only paths that already exist, so a fresh
+/// `../test` would keep its `..` components and break component-wise
+/// comparisons below (`..` does not cancel a `starts_with` prefix).
+fn normalize_lexically(path: &Path) -> PathBuf {
+    use std::ffi::OsStr;
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                // Pop only a real name we pushed; never a root, and never a
+                // `..` we kept earlier (double negation must survive).
+                if out.file_name().is_some_and(|n| n != OsStr::new("..")) {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
 
 /// `/spawn` — start a sibling topic that carries this topic's conversation into
 /// a directory of its own.
@@ -99,7 +127,9 @@ impl SpawnCommandHandler {
                 None => next_free_name(&self.topic_manager, &context.topic_name, agents_root).await,
             },
         };
-        let dest = requested.unwrap_or_else(|| agents_root.join(&name));
+        let dest = requested
+            .map(|p| normalize_lexically(&p))
+            .unwrap_or_else(|| agents_root.join(&name));
 
         if let Some(reason) = invalid_name(&name) {
             return Ok(fail(format!("/spawn: {reason}. Usage: {USAGE}")));

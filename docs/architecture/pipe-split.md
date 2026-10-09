@@ -97,12 +97,25 @@ to skip in-process spawning of externally-piped channels.
 ### Step 4 — Migrate remaining pipe-only channels, one PR each
 
 Order by coupling: github → gitee → wecom_bot → wecom. Each reuses the
-Step 3 pattern.
+Step 3 pattern. The first migration PR should also delete the feishu
+in-process wiring (`serve/channels/feishu.rs` + `spawn_feishu_adapter`):
+the `jyc` binary only shrinks when in-process spawn paths are *removed*,
+not when the pipe path is added. Attach a before/after `jyc` release
+artifact size comparison to that PR — adapter-exclusive dependencies
+(`openlark-client`, wecom crypto `aes`/`cbc`/`md5`/`sha1`/`hex`) drop out
+of the link graph entirely once unreferenced; the big shared deps
+(tokio, reqwest, serde, tungstenite, axum) do not.
 
 ### Step 5 — Email, decided separately
 
 Email has protocol state (IMAP cursor) and possibly own-topic semantics;
 migrate last with a dedicated design or keep in-process.
+
+Note: email's client dependencies (`async-imap`, `lettre`) live in
+`jyc-services`, not `jyc-channels` — alongside `job_scheduler.rs`, which
+stays in-process. Migrating email to the pipe therefore also requires
+moving the `imap/` and `smtp/` clients out of `jyc-services` (e.g. into
+the pipe side); otherwise they stay linked into the `jyc` binary.
 
 ### Step 6 — Cleanup
 

@@ -31,9 +31,6 @@ fn agent_pipe_target(agent: &str, topic: Option<&str>) -> jyc_types::PipeTarget 
     }
 }
 
-/// Regression: piping re-targets only channel/topic — attachment bytes
-/// and metadata (chat_id, sender identity) must survive the forward.
-
 // ---- email_pipe_with_topic ----
 
 /// Without an explicit `pipe.topic`, email falls back to the derived

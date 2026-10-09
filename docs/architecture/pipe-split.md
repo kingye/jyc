@@ -43,7 +43,15 @@ binary no longer references those adapters; their adapter-only
 dependencies (aes/cbc/md5/sha1/hex, openlark-client) should then drop
 out of its link graph — expected, not measured: no local
 `cargo build` is allowed on dev machines, and CI does not weigh
-artifacts. Remaining: email (step 5, decided separately).
+artifacts. Step 5 done (email
+migrated, `pipe/email.rs`): the IMAP monitor + SMTP reply relay run in
+`jyc-pipe`, which also owns the mailbox cursor state
+(`<workdir>/channels/<name>/.imap/`); `--no-idle` / `--reset` moved to the
+`jyc-pipe` CLI (email was their only consumer), and reply attachments
+download through the hub's files endpoint with the pipe's bearer token —
+the same helper feishu and wecom_bot use. With that, `jyc serve` spawns no
+pipe-only channel at all: it hosts the synthesized agent websocket channel
+plus the inspect server. Remaining for step 6: Docker orchestration.
 
 ## Goal
 
@@ -140,22 +148,47 @@ of the link graph entirely once unreferenced; the big shared deps
 they share the `[wecom].bind_addr` listener — the pipe owns that port
 now, so migrating either alone would have collided with the hub.
 
-### Step 5 — Email, decided separately
+### Step 5 — Email (done)
 
-Email has protocol state (IMAP cursor) and possibly own-topic semantics;
-migrate last with a dedicated design or keep in-process.
+Migrated last, in one PR: `pipe/email.rs` hosts the `ImapMonitor` and the
+SMTP reply relay; the hub-side `spawn_email_adapter` and the helpers only
+it still used (`HubRegistry`, `route_into_pipe_target`,
+`wait_for_broadcast`, `fetch_reply_attachment`, `ws_broadcasts`) are
+deleted.
 
-Note: email's client dependencies (`async-imap`, `lettre`) live in
-`jyc-services`, not `jyc-channels` — alongside `job_scheduler.rs`, which
-stays in-process. Migrating email to the pipe therefore also requires
-moving the `imap/` and `smtp/` clients out of `jyc-services` (e.g. into
-the pipe side); otherwise they stay linked into the `jyc` binary.
+- Mailbox cursor state (`<workdir>/channels/<channel>/.imap/`) stays with
+  the adapter: protocol-level dedup state, not conversation state.
+- `jyc serve --no-idle` / `--reset` moved to the `jyc-pipe` CLI. Email was
+  their only consumer, so on the hub they would be no-ops after the move.
+- Reply attachments download from the hub's files endpoint through the
+  pipe's bearer token (`pipe::fetch_topic_file`, already shared by
+  feishu/wecom_bot), so `jyc-channels` needs no `jyc-inspect` dependency.
+- Patterns are read from the pipe's config snapshot at startup, like every
+  other migrated channel (the in-process adapter re-read live config per
+  message).
+- Known gap (feishu's too): attachments on incoming mail are not relayed.
+  The `message` frame has no attachments field, so the worker never saves
+  them into the topic workspace, and an attachment-only mail (empty body)
+  stops without calling the AI. The pipe warns at startup and per dropped
+  message; carrying inbound attachments over the pipe protocol is its own
+  piece of work.
+- **Correction of an earlier note in this document:** IMAP/SMTP clients
+  did *not* have to move out of `jyc-services`. `jyc-channels` already
+  depends on that crate, and `job_scheduler.rs` keeps it in the hub's
+  graph. The clients stay where they are; only the hub's *reachability* of
+  the email adapter went away. Whether `async-imap` / `lettre` drop out of
+  the `jyc` link graph is expected, not measured (no local `cargo build`
+  on dev machines, and CI does not weigh artifacts).
 
-### Step 6 — Cleanup
+### Step 6 — Cleanup (remaining)
 
-Slim `jyc` dependencies (drop in-process channel spawn paths), Docker /
-systemd two-process orchestration, update overview.md / docs/channels/ /
-CHANGELOG.md.
+The hub-side work landed with step 5: every in-process pipe-only spawn
+path (and the pipe helpers that hung off them) is gone from `jyc-cli`.
+
+Docker orchestration landed with step 5 (the compose file runs `jyc-pipe`
+alongside `jyc` and sends its logs to stderr). Remaining: pairing the two
+processes under systemd (left to operators) and the same unmeasured
+dependency audit as above.
 
 ## Open decisions
 

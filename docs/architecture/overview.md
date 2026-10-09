@@ -259,7 +259,12 @@ retains only:
 - `jyc-services/src/smtp/client.rs` — SMTP wire format (reply threading,
   attachments).
 - `jyc-channels/src/email/inbound.rs` — pattern matching only (`EmailMatcher`).
-- The new `spawn_email_adapter` in `crates/jyc-cli/src/cli/serve/channels/email.rs`.
+- The adapter wiring, `spawn_email_pipe` in
+  `crates/jyc-channels/src/pipe/email.rs` — it lives in `jyc-pipe` like every
+  other migrated channel (step 5 of [pipe-split.md](pipe-split.md)); the
+  in-process `spawn_email_adapter` and the hub helpers only it still used
+  (`HubRegistry`, `route_into_pipe_target`, `wait_for_broadcast`,
+  `fetch_reply_attachment`, `ws_broadcasts`) are deleted.
 
 Removed in the migration: `EmailOutboundAdapter` (whole file), the dead
 `EmailInboundAdapter` + duplicate `parse_raw_email` in `email/inbound.rs`,
@@ -269,9 +274,11 @@ Removed in the migration: `EmailOutboundAdapter` (whole file), the dead
 **Mailbox cursor state.** Unlike feishu/wecom_bot, the email channel keeps a
 `StateManager` at `<workdir>/channels/<channel_name>/.imap/` — the IMAP
 sequence number + processed UIDs. That is protocol-level dedup state, not
-conversation state, so it stays with the channel. `--reset` clears it;
-`--no-idle` forces poll mode. (The generic per-channel `StateManager` in
-`serve/mod.rs` went away with this migration: email was its only consumer.)
+conversation state, so it stays with the channel. `jyc-pipe --reset` clears it and
+`jyc-pipe --no-idle` forces poll mode: both flags moved from `jyc serve` to
+the pipe CLI, since email was their only consumer. The directory is resolved
+against `jyc-pipe --workdir`, so a pipe started with a different workdir
+looks for its cursor elsewhere.
 
 **Topic identity.** Email's natural topic is its subject, so a `pipe` without
 an explicit `topic` falls back to the subject-derived topic name
@@ -295,6 +302,21 @@ original mail thread (`In-Reply-To` = original `Message-ID`, `References` =
 original chain + `Message-ID`). Same in-memory limitation as feishu: rebuilt
 from inbound traffic after a restart, and two senders sharing one subject
 share one entry (last writer wins).
+
+**Attachments.** Reply attachments download from the hub's files endpoint
+with the pipe's bearer token (`pipe::fetch_topic_file`, shared with feishu and
+wecom_bot — no `jyc-inspect` dependency in `jyc-channels`), then get the
+`[attachments.outbound]` policy check before SMTP sends them. A disabled
+inspect server drops them with a warning.
+
+**Patterns.** Read from the pipe's config snapshot at startup, like every
+migrated channel; editing patterns requires restarting `jyc-pipe`.
+
+**Inbound attachments: not relayed** (known gap, same as feishu). The pipe
+`message` frame carries no attachments, so files mailed in are not saved to
+the topic workspace, and a mail whose body is empty but that carries a file
+stops without calling the AI. `jyc-pipe` warns at startup when
+`[attachments.inbound]` is configured and for every dropped message.
 
 **No footer.** Email replies are plain agent text (trailing `---` separators
 stripped); the model/mode/token footer is gone, so `[channels.<name>.footer]`

@@ -507,10 +507,13 @@ fn select_channels_claims_supported_types_without_config_section() {
     config
         .channels
         .insert("kf_service".to_string(), channel_config("wecomkf"));
-    // Unsupported type: email is still spawned by `jyc serve` (step 5).
     config
         .channels
         .insert("inbox".to_string(), channel_config("email"));
+    // Unsupported type: `jyc serve` still spawns it in-process.
+    config
+        .channels
+        .insert("dash".to_string(), channel_config("websocket"));
 
     let claimed = select_channels(&config).unwrap();
     assert_eq!(claimed.feishu.len(), 1);
@@ -525,6 +528,8 @@ fn select_channels_claims_supported_types_without_config_section() {
     assert_eq!(claimed.wecom[0].0, "wecom_group");
     assert_eq!(claimed.wecomkf.len(), 1);
     assert_eq!(claimed.wecomkf[0].0, "kf_service");
+    assert_eq!(claimed.email.len(), 1);
+    assert_eq!(claimed.email[0].0, "inbox");
 }
 
 #[test]
@@ -532,7 +537,7 @@ fn select_channels_errors_when_nothing_supported() {
     let mut config = jyc_types::AppConfig::default();
     config
         .channels
-        .insert("inbox".to_string(), channel_config("email"));
+        .insert("dash".to_string(), channel_config("websocket"));
 
     let err = select_channels(&config).unwrap_err().to_string();
     assert!(err.contains("nothing to run"), "unexpected error: {err}");
@@ -555,6 +560,31 @@ async fn start_webhook_server_fails_on_unbindable_addr() {
         .expect("an unbindable address must fail startup")
         .to_string();
     assert!(err.contains("failed to start"), "unexpected error: {err}");
+}
+
+// ---- email_pipe_with_topic ----
+// (moved from jyc-cli's channels tests when the email adapter migrated
+// into jyc-pipe — the helper's only remaining caller)
+
+/// Without an explicit `pipe.topic`, email falls back to the derived
+/// topic (subject / pattern `topic_name`) — one thread per subject, the
+/// pre-migration MessageRouter behavior.
+#[test]
+fn email_pipe_with_topic_fills_derived_topic() {
+    let pipe = super::email::email_pipe_with_topic(&agent_pipe_target("jin", None), "Invoice 42");
+    assert_eq!(pipe.topic.as_deref(), Some("Invoice 42"));
+    assert_eq!(pipe.agent.as_deref(), Some("jin"));
+}
+
+/// An explicit `pipe.topic` wins (including `${msg.*}` templates, which
+/// are resolved later by `apply_pipe_retarget`).
+#[test]
+fn email_pipe_with_topic_keeps_explicit_topic() {
+    let pipe = super::email::email_pipe_with_topic(
+        &agent_pipe_target("jin", Some("invoices")),
+        "Invoice 42",
+    );
+    assert_eq!(pipe.topic.as_deref(), Some("invoices"));
 }
 
 #[test]

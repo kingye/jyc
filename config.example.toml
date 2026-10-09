@@ -27,7 +27,9 @@ max_queue_size_per_topic = 10
 # topics or agents — every enabled pattern must pipe into an agent channel /
 # agent. IMAP still receives and SMTP still replies (threaded into the
 # original mail thread); only the mailbox cursor lives with the adapter, at
-# <workdir>/channels/<channel_name>/.imap/.
+# <workdir>/channels/<channel_name>/.imap/ — resolved against the *jyc-pipe*
+# process's --workdir, since that process hosts the adapter now (`jyc serve`
+# skips every pipe-capable channel type). Run jyc-pipe for email to work.
 
 [channels.jiny283]
 type = "email"

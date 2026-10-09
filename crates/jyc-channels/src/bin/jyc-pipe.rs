@@ -227,7 +227,7 @@ async fn main() -> Result<()> {
         });
     }
 
-    jyc_channels::pipe::run(Arc::new(config), &hub_origin, Some(token), cancel).await
+    jyc_channels::pipe::run(Arc::new(config), &workdir, &hub_origin, Some(token), cancel).await
 }
 
 #[cfg(test)]

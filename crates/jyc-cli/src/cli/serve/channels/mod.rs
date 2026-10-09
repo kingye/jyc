@@ -3,7 +3,6 @@
 //! Extracted from the monolithic `serve.rs` run() function.
 
 use anyhow::Result;
-use jyc_channels::feishu::client::FeishuClient;
 use jyc_core::channel_orchestrator::ChannelOrchestrator;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::topic_manager::TopicManager;
@@ -11,7 +10,7 @@ use jyc_inspect::server::websocket::inbound::{WebsocketInboundAdapter, Websocket
 use jyc_types::{ChannelInfo, InboundAdapter, InboundAttachmentConfig};
 use serde_json;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -19,18 +18,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 mod email;
-mod feishu;
 mod gitee;
-mod github;
 #[cfg(test)]
 mod tests;
 mod wecom;
 mod wecom_bot;
 
 pub(crate) use email::spawn_email_adapter;
-pub(crate) use feishu::spawn_feishu_adapter;
 pub(crate) use gitee::spawn_gitee_adapter;
-pub(crate) use github::spawn_github_adapter;
 pub(crate) use wecom::{spawn_wecom_adapter, spawn_wecomkf_adapter};
 pub(crate) use wecom_bot::spawn_wecom_bot_adapter;
 
@@ -38,8 +33,8 @@ pub(crate) use wecom_bot::spawn_wecom_bot_adapter;
 // re-exported so the remaining in-process pipe adapters keep working
 // until their channels migrate (docs/architecture/pipe-split.md).
 pub(crate) use jyc_channels::pipe::{
-    ReplyAttachmentRef, collect_pipe_target_channels, loopback_addr, match_and_retarget,
-    match_pipe, parse_reply_attachments, resolve_placeholders_with, retarget_or_drop,
+    ReplyAttachmentRef, close_event_topics, collect_pipe_target_channels, loopback_addr,
+    match_and_retarget, match_pipe, parse_reply_attachments, retarget_or_drop, role_prefixed_body,
     warn_on_bad_pipe_patterns,
 };
 
@@ -71,18 +66,6 @@ pub(super) async fn wait_for_broadcast(
     }
 }
 
-/// Strip trailing separators and prefix a reply with its `[Role]` header
-/// (skipped when the reply already carries it). Shared by the GitHub and
-/// Gitee pipe reply forwarders.
-pub(super) fn role_prefixed_body(text: &str, role: &str) -> String {
-    let clean_reply = jyc_core::email_parser::strip_trailing_separators(text);
-    if role.is_empty() || clean_reply.trim_start().starts_with(&format!("[{role}]")) {
-        clean_reply
-    } else {
-        format!("[{role}] {clean_reply}")
-    }
-}
-
 /// Runtime placeholder resolved from message metadata (or the
 /// `channel_uid` core field) when retargeting a piped message. The
 /// `msg.` namespace keeps it immune to the load-time `${ENV_VAR}`
@@ -98,57 +81,10 @@ pub(super) fn role_prefixed_body(text: &str, role: &str) -> String {
 /// If any placeholder is present but the value is missing/empty, the
 /// caller drops the message with a warning (avoids misrouting to a
 /// literal `"${msg.<key>}"` topic).
-/// Topics to close for a GitHub/Gitee close event, derived from config alone.
-///
-/// The routed topic name is a pure function of `pipe.topic` and the item
-/// number, so re-rendering the template beats remembering what was routed:
-/// the in-memory topic map is empty after a restart, and a close event for an
-/// item routed before the restart would otherwise close nothing (#611).
-///
-/// Only number-dependent templates are considered. A static `pipe.topic`
-/// collects many items into one shared topic, which must survive any single
-/// item closing. `${msg.pr_number}` / `${msg.issue_number}` are type-gated
-/// exactly as at routing time, so an issue close never resolves a PR topic.
-/// `${msg.github_number}` / `${msg.gitee_number}` resolve for both hosts.
-///
-/// Returns `(topic, target_hub_channel)` pairs.
-pub(super) fn close_event_topics(
-    patterns: &[jyc_types::ChannelPattern],
-    number: u64,
-    github_type: &str,
-    repo: &str,
-) -> Vec<(String, String)> {
-    patterns
-        .iter()
-        .filter(|p| p.enabled)
-        .filter_map(|p| {
-            let pipe = p.pipe.as_ref()?;
-            // Same template resolution as apply_pipe_retarget: pipe.topic
-            // wins, legacy pipe.pattern is the fallback.
-            let template = pipe.topic.as_deref().or(pipe.pattern.as_deref())?;
-            if !template.contains("${msg.") {
-                return None;
-            }
-            let topic = resolve_placeholders_with(template, |key| match key {
-                "github_number" | "gitee_number" => Some(number.to_string()),
-                "pr_number" if github_type == "pull_request" => Some(number.to_string()),
-                "issue_number" if github_type != "pull_request" => Some(number.to_string()),
-                "repo" => Some(repo.to_string()),
-                _ => None,
-            })?;
-            let hub = pipe
-                .channel
-                .clone()
-                .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))?;
-            Some((topic, hub))
-        })
-        .collect()
-}
-
 /// Download one reply attachment from the inspect server, apply the
 /// operator's outbound policy, and stage it in a temp file.
 ///
-/// Shared by all pipe reply forwarders (feishu / email / wecom_bot): the
+/// Shared by the pipe reply forwarders (email / wecom): the
 /// upload APIs take a path, the validator takes a path, SMTP takes bytes —
 /// so both are returned. The temp file lives until the caller drops it.
 pub(super) async fn fetch_reply_attachment(
@@ -169,36 +105,6 @@ pub(super) async fn fetch_reply_attachment(
             .await?;
     }
     Ok((bytes, tmp))
-}
-
-/// Download one reply attachment from the inspect server and send it to the
-/// feishu chat (image vs. file chosen by content type).
-pub(super) async fn relay_attachment(
-    inspect: &jyc_inspect::client::InspectClient,
-    client: &FeishuClient,
-    chat_id: &str,
-    att: &ReplyAttachmentRef,
-    config: &arc_swap::ArcSwap<jyc_types::AppConfig>,
-) -> Result<()> {
-    use jyc_channels::feishu::client::{feishu_file_type, is_image_content_type};
-
-    let (_bytes, tmp) = fetch_reply_attachment(inspect, att, config).await?;
-
-    if is_image_content_type(&att.content_type) {
-        let key = client.upload_image(tmp.path(), &att.filename).await?;
-        client.send_image_message(chat_id, &key).await?;
-    } else {
-        let ext = Path::new(&att.filename)
-            .extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-        let key = client
-            .upload_file(tmp.path(), &att.filename, feishu_file_type(&ext))
-            .await?;
-        client.send_file_message(chat_id, &key).await?;
-    }
-    tracing::info!(filename = %att.filename, "feishu pipe: attachment relayed");
-    Ok(())
 }
 
 /// Hub channels a pipe-only adapter can route into, keyed by channel name.

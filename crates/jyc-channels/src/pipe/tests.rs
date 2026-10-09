@@ -494,11 +494,16 @@ fn select_channels_claims_supported_types_without_config_section() {
         .insert("feishu_bot".to_string(), channel_config("feishu"));
     config
         .channels
+        .insert("jin_repo".to_string(), channel_config("github"));
+    config
+        .channels
         .insert("wecom_work".to_string(), channel_config("wecom"));
 
-    let (_targets, feishu) = select_channels(&config).unwrap();
-    assert_eq!(feishu.len(), 1);
-    assert_eq!(feishu[0].0, "feishu_bot");
+    let claimed = select_channels(&config).unwrap();
+    assert_eq!(claimed.feishu.len(), 1);
+    assert_eq!(claimed.feishu[0].0, "feishu_bot");
+    assert_eq!(claimed.github.len(), 1);
+    assert_eq!(claimed.github[0].0, "jin_repo");
 }
 
 #[test]

@@ -6,10 +6,11 @@
 
 - WebSocket hub protocol extensions for external pipe processes (`jyc-pipe`, see `docs/architecture/pipe-split.md`): inbound `message` frames accept an optional `metadata` map (pipe hints forwarded verbatim to the router), a `close_topic` client frame asks the hub to close a topic (`TopicManager::auto_close_topic`), and `topic_event` server frames stream the raw `TopicEvent` sequence to connected clients (1 Hz `LoopTick` heartbeats excluded)
 - New `jyc-pipe` binary (pipe process split step 2, `docs/architecture/pipe-split.md`): a standalone peripheral message-pipe process that connects to the hub websocket (`--hub`, defaults to `ws://<inspect.bind>/ws/agents`) with the inspect auth token, logs the reply/`topic_event` stream, and auto-reconnects with backoff. Channel adapter wiring lands in a later step
-- Feishu can now run in the external `jyc-pipe` process: channels listed under `[pipe] channels` are spawned by `jyc-pipe` (hub websocket client with reconnect backoff, reply relay, live status cards from `topic_event` frames, chat disband → `close_topic`) and skipped in-process by `jyc serve` (pipe split step 3, `docs/architecture/pipe-split.md`). Known gap: inbound attachments (images sent to the bot) are not relayed through the pipe protocol yet
+- Feishu can now run in the external `jyc-pipe` process (pipe split step 3, `docs/architecture/pipe-split.md`): `jyc-pipe` claims every configured feishu channel — hub websocket client with reconnect backoff, reply relay, live status cards from `topic_event` frames, chat disband → `close_topic` — while `jyc serve` skips those channels in-process. Ownership is derived from the pipe's adapter capabilities (`pipe::SUPPORTED_CHANNEL_TYPES`), so no config change is needed. Known gap: inbound attachments (images sent to the bot) are not relayed through the pipe protocol yet (#868)
 
 ### Changed
 
+- The `[pipe]` config section introduced earlier in this release cycle is removed before any release: channel ownership between `jyc` and `jyc-pipe` is derived from the pipe's adapter capabilities (`pipe::SUPPORTED_CHANNEL_TYPES`) instead of a user-maintained channel list, so deploying the pipe split no longer requires touching config.toml. A leftover `[pipe]` section in an existing config is ignored
 
 - Internal restructure: the websocket channel adapter moved from `jyc-channels` to `jyc-inspect` (`server::websocket`) — it is hub frontend (dashboard UI + pipe endpoint), not a peripheral channel. `jyc-channels` is now the pipe crate and no longer depends on `jyc-inspect`; no behavior change
 

@@ -165,21 +165,6 @@ fn init_tracing(debug: bool, verbose: bool, log_file: Option<&Path>) -> Result<(
     Ok(())
 }
 
-fn resolve_workdir(workdir: Option<&PathBuf>) -> Result<PathBuf> {
-    match workdir {
-        Some(w) => {
-            let expanded = jyc_utils::paths::expand_tilde(&w.to_string_lossy());
-            let abs = std::fs::canonicalize(&expanded).unwrap_or(expanded);
-            Ok(abs)
-        }
-        None => jyc_utils::paths::data_home().ok_or_else(|| {
-            anyhow::anyhow!(
-                "could not determine platform data directory; pass --workdir explicitly"
-            )
-        }),
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let (cli, is_bare_jyc) = parse_cli();
@@ -197,7 +182,7 @@ async fn main() -> Result<()> {
     };
     init_tracing(cli.debug, cli.verbose, log_file.as_deref())?;
 
-    let workdir = resolve_workdir(cli.workdir.as_ref())?;
+    let workdir = jyc_utils::config_resolve::resolve_workdir(cli.workdir.as_ref())?;
 
     let result = match &cli.command {
         Commands::Serve(args) => cli::serve::run(args, &workdir, cli.workdir.is_some()).await,

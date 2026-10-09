@@ -150,7 +150,7 @@ enum ClientMessage {
         /// `InboundMessage.metadata` the router sees. Used by external
         /// pipe processes (`jyc-pipe`) that cannot set metadata in-process.
         #[serde(default)]
-        metadata: Option<HashMap<String, serde_json::Value>>,
+        metadata: HashMap<String, serde_json::Value>,
     },
     /// Ask the hub to close a topic. Sent by external pipe processes when
     /// the platform-side conversation ends (feishu chat disband, GitHub
@@ -415,7 +415,7 @@ async fn handle_connection_impl(
                                     reply_to_id: None,
                                     external_id: None,
                                     attachments: vec![],
-                                    metadata: metadata.unwrap_or_default(),
+                                    metadata,
                                     matched_pattern: None,
                                 };
 
@@ -431,20 +431,26 @@ async fn handle_connection_impl(
                             ClientMessage::CloseTopic { topic } => {
                                 match &topic_manager {
                                     Some(tm) => {
-                                        if let Err(e) = tm.auto_close_topic(&topic).await {
-                                            tracing::warn!(
-                                                error = %e,
-                                                channel = %channel_name,
-                                                topic = %topic,
-                                                "WebSocket close_topic failed"
-                                            );
-                                        } else {
-                                            tracing::info!(
-                                                channel = %channel_name,
-                                                topic = %topic,
-                                                "WebSocket close_topic: topic closed"
-                                            );
-                                        }
+                                        // Spawn: auto_close_topic does async
+                                        // I/O and must not stall the read loop.
+                                        let tm = tm.clone();
+                                        let channel_name = channel_name.clone();
+                                        tokio::spawn(async move {
+                                            if let Err(e) = tm.auto_close_topic(&topic).await {
+                                                tracing::warn!(
+                                                    error = %e,
+                                                    channel = %channel_name,
+                                                    topic = %topic,
+                                                    "WebSocket close_topic failed"
+                                                );
+                                            } else {
+                                                tracing::info!(
+                                                    channel = %channel_name,
+                                                    topic = %topic,
+                                                    "WebSocket close_topic: topic closed"
+                                                );
+                                            }
+                                        });
                                     }
                                     None => {
                                         tracing::warn!(
@@ -867,7 +873,7 @@ mod tests {
             } => {
                 assert!(sender.is_none());
                 assert!(sender_address.is_none());
-                assert!(metadata.is_none());
+                assert!(metadata.is_empty());
             }
             _ => panic!("expected Message"),
         }
@@ -883,9 +889,8 @@ mod tests {
         .unwrap();
         match msg {
             ClientMessage::Message { metadata, .. } => {
-                let md = metadata.expect("metadata should parse");
-                assert_eq!(md["pipe_pattern"], serde_json::json!("group_chat"));
-                assert_eq!(md["chat_id"], serde_json::json!("oc_123"));
+                assert_eq!(metadata["pipe_pattern"], serde_json::json!("group_chat"));
+                assert_eq!(metadata["chat_id"], serde_json::json!("oc_123"));
             }
             _ => panic!("expected Message"),
         }

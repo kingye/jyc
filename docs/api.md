@@ -408,6 +408,11 @@ Browsers cannot set custom headers on `new WebSocket(url)` from JS.
 Browser-based clients must use a reverse proxy that injects the header,
 or use a cookie/query-param auth (not currently supported).
 
+Note: the token also gates destructive frames — `close_topic` closes a
+live topic (`auto_close_topic`). Holders of the token can already send
+messages as any sender, so this adds no new trust class, but the
+capability exists.
+
 ### 3.2 URL routes
 
 | Path                          | Handler                                              | Use case                                                              |
@@ -432,8 +437,11 @@ serves the route (see §3.2):
 | `/ws/<channel>/<topic>` (WS channel)   | `ScopedWsHandler` → adapter   | `{ "topic"?: "<name>", "text": "..." }` (payload `topic` overrides the URL) |
 | `/ws/<channel>/<topic>` (other channel) | `TopicProxyHandler`          | `{ "text": "..." }` (payload `topic` is ignored; URL is the only source) |
 
-All handlers also accept these optional `message` fields, forwarded
-verbatim into the routed `InboundMessage.metadata`:
+Handlers on a WebSocket-type channel (`/ws`, `/ws/<channel>`, and
+`/ws/<channel>/<topic>` when `<channel>` is a WS channel) also accept
+these optional `message` fields. The proxy route for non-WS channels
+ignores them — it hardcodes `sender: "dashboard"` and loads metadata
+from the persisted `topic-meta.json` instead.
 
 | Field           | Type                       | Meaning                                             |
 |-----------------|----------------------------|-----------------------------------------------------|
@@ -462,7 +470,7 @@ Server-pushed events are JSON text frames from a shared
 
 | `type`         | Payload                                                            | Emitted when                                                                  |
 |----------------|--------------------------------------------------------------------|-------------------------------------------------------------------------------|
-| `topic_event`  | `{ "channel", "topic", "event": TopicEvent }`                     | Any typed `TopicEvent` fires on a topic — the complete raw event stream (`ProcessingStarted`, `Thinking`, `ToolStarted`, `ProcessingCompleted`, `LoopTick`, ...). Consumed by external pipe processes (`jyc-pipe`); dashboard clients can ignore it. |
+| `topic_event`  | `{ "channel", "topic", "event": TopicEvent }`                     | Any typed `TopicEvent` fires on a topic — the raw event stream (`ProcessingStarted`, `Thinking`, `ToolStarted`, `ProcessingCompleted`, ...). The 1 Hz `LoopTick` heartbeat is excluded. Consumed by external pipe processes (`jyc-pipe`); dashboard clients can ignore it. |
 | `activity`     | `{ "channel", "topic", "id", "entry": ActivityEntry }`            | A new entry is appended to `.jyc/activity.jsonl`.                             |
 | `chat_message` | `{ "channel", "topic", "id", "entry": ChatMessageEntry }`         | An incoming message or a sent reply arrives.                                  |
 | `thinking`     | `{ "channel", "topic", "text" }`                                  | The agent publishes a thinking chunk.                                         |

@@ -59,9 +59,9 @@ fn publish_activity_event(
 /// Unlike the dashboard-oriented `activity` / `thinking` / `processing`
 /// frames, this carries the complete serialized `TopicEvent` — consumed by
 /// external pipe processes (`jyc-pipe`) for status cards and progress
-/// display. Published for every event, including internal ones (LoopTick)
-/// and Thinking, so subscribers see the full stream. Existing dashboard
-/// clients ignore the unknown frame type.
+/// display. Published for every event except the 1 Hz `LoopTick`
+/// heartbeat (dashboard-only). Existing dashboard clients ignore the
+/// unknown frame type.
 fn publish_topic_event(
     bus: &tokio::sync::broadcast::Sender<String>,
     channel: &str,
@@ -286,13 +286,21 @@ impl ActivityTracker {
                                                                     // Fan the raw typed event out
                                                                     // for external pipe processes
                                                                     // before any dashboard-oriented
-                                                                    // branching below.
-                                                                    publish_topic_event(
-                                                                        &inspect_broadcast_for_task,
-                                                                        &channel_for_task,
-                                                                        &name,
-                                                                        &event,
-                                                                    );
+                                                                    // branching below. The 1 Hz
+                                                                    // LoopTick heartbeat is
+                                                                    // dashboard-only (it drives
+                                                                    // the live-duration ticker)
+                                                                    // and is excluded, mirroring
+                                                                    // the persistence path which
+                                                                    // marks it internal.
+                                                                    if !matches!(event, TopicEvent::LoopTick { .. }) {
+                                                                        publish_topic_event(
+                                                                            &inspect_broadcast_for_task,
+                                                                            &channel_for_task,
+                                                                            &name,
+                                                                            &event,
+                                                                        );
+                                                                    }
 
                                                                     let is_processing = matches!(
                                                                         &event,
@@ -753,5 +761,41 @@ pub(crate) fn event_to_activity(event: &TopicEvent) -> ActivityEntry {
         severity,
         id: 0, // assigned by ActivityTracker on push (see fanout step)
         is_internal: is_event_internal(event),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    #[test]
+    fn test_publish_topic_event_frame_shape() {
+        // Locks the wire format consumed by external pipe processes
+        // (jyc-pipe): {"type":"topic_event","channel","topic","event"}.
+        let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+        let event = jyc_core::topic_event::TopicEvent::ProcessingStarted {
+            topic_name: "dev-jyc".to_string(),
+            message_id: "m1".to_string(),
+            timestamp: Utc::now(),
+        };
+        publish_topic_event(&tx, "agents", "dev-jyc", &event);
+        let frame: serde_json::Value =
+            serde_json::from_str(&rx.try_recv().expect("frame should be published")).unwrap();
+        assert_eq!(frame["type"], "topic_event");
+        assert_eq!(frame["channel"], "agents");
+        assert_eq!(frame["topic"], "dev-jyc");
+        // TopicEvent serializes as an externally-tagged enum: the variant
+        // name is the single key of `event` (jyc-pipe extracts it this
+        // way — keep this shape locked).
+        let event_obj = frame["event"]
+            .as_object()
+            .expect("event should be an object");
+        assert_eq!(
+            event_obj.keys().next().map(String::as_str),
+            Some("ProcessingStarted")
+        );
+        assert_eq!(frame["event"]["ProcessingStarted"]["topic_name"], "dev-jyc");
+        assert_eq!(frame["event"]["ProcessingStarted"]["message_id"], "m1");
     }
 }

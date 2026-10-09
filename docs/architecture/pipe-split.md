@@ -2,8 +2,10 @@
 
 **Status:** Step 1 done (websocket protocol extensions: `metadata` on
 inbound `message` frames, `topic_event` server frames, `close_topic`
-client frame — see [api.md](../api.md) §3). Step 2 (`jyc-pipe` binary
-skeleton) next.
+client frame — see [api.md](../api.md) §3). Step 2 done (`jyc-pipe`
+binary: config resolution shared via `jyc_utils::config_resolve`, hub
+ws client with inspect auth token and reconnect backoff; adapter
+wiring lands in step 3, feishu first).
 
 ## Goal
 

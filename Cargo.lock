@@ -1907,6 +1907,7 @@ dependencies = [
  "toml",
  "tower",
  "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
  "wiremock",

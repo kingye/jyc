@@ -35,7 +35,9 @@ WeCom (WeChat Work / 企业微信) channel implementation for JYC, using the
 ### Key Design Decisions
 
 - **Shared HTTP Server**: All WeCom channels share a single axum HTTP server (方案B).
-  Configured via `[wecom].bind_addr` (default: `127.0.0.1:10001`).
+  Configured via `[wecom].bind_addr` (default: `127.0.0.1:10001`) and bound by the
+  **`jyc-pipe` process**, which hosts `wecom` / `wecomkf` — `jyc serve` no longer starts it,
+  so run `jyc-pipe` (and expose/forward the port on that process) or callbacks are not received.
 - **Path-based Routing**: Each channel registers at `/webhook/{channel_name}`.
 - **One Group = One Topic**: Topic name is derived from `chat_id`
   (`{channel_name}_{sanitized_chat_id}`), ensuring each WeCom chat group maps to a dedicated
@@ -50,6 +52,8 @@ WeCom (WeChat Work / 企业微信) channel implementation for JYC, using the
 ## Configuration
 
 ### Global Server Config
+
+Bound by the `jyc-pipe` process (see the pinning note above), not by `jyc serve`:
 
 ```toml
 [wecom]
@@ -83,7 +87,7 @@ keywords = ["help", "问题"]
 | `encoding_aes_key` | Yes | Base64-encoded AES key (43 chars with `=`) |
 | `corp_id` | Yes | Enterprise ID / Corp ID |
 | `corp_secret` | Yes | Corp secret for access_token acquisition (use `${ENV_VAR}` syntax) |
-| `bind_addr` | No | Global server bind address (default: `127.0.0.1:10001`) |
+| `bind_addr` | No | Global server bind address (default: `127.0.0.1:10001`), bound by `jyc-pipe` |
 
 ## Webhook Protocol
 

@@ -1,7 +1,8 @@
 //! jyc-pipe — peripheral message-pipe process.
 //!
-//! Hosts pipe-only channel adapters (feishu, github, gitee, wecom_bot) as a
-//! separate process from the agent core (`jyc`). Adapters translate
+//! Hosts pipe-only channel adapters (feishu, github, gitee, wecom_bot,
+//! wecom, wecomkf) as a separate process from the agent core (`jyc`).
+//! Adapters translate
 //! platform events and forward messages to a hub websocket channel over
 //! the protocol documented in `docs/api.md` §3 — inbound via `message`
 //! frames, replies and `topic_event` frames stream back on the same
@@ -37,9 +38,10 @@ enum ParseOutcome {
 const USAGE: &str = "\
 jyc-pipe — peripheral message-pipe process for jyc
 
-Runs the configured pipe-only channels (feishu, github, gitee, wecom_bot)
-as a separate process, forwarding messages to the hub over websocket.
-`jyc serve` skips those channels in-process.
+Runs the configured pipe-only channels (feishu, github, gitee, wecom_bot,
+wecom, wecomkf) as a separate process, forwarding messages to the hub over
+websocket. `jyc serve` skips those channels in-process, and the WeCom
+webhook listener (`[wecom].bind_addr`) is bound here.
 
 Usage: jyc-pipe [OPTIONS]
 

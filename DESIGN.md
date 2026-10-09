@@ -19,13 +19,22 @@ JYC is a channel-agnostic AI agent that operates through messaging channels. Use
 ## Architecture
 
 > **Architecture:** JYC follows the three-layer **channels / agents / core+AI**
-> model — pipe-only channels (Feishu, WeCom, Email, GitHub, Gitee, WeCom KF),
-> agents (first-class entities; own topics, synthesize a websocket channel),
-> and a channel-agnostic core (per-topic queues + workers + `[ai]` block).
+> model — pipe-only channels (Feishu, GitHub, Gitee, WeCom Bot, WeCom, WeCom KF,
+> Email), agents (first-class entities; own topics, synthesize a websocket
+> channel), and a channel-agnostic core (per-topic queues + workers + `[ai]` block).
 > See [docs/architecture/overview.md](docs/architecture/overview.md). Sections
 > below that describe per-channel TopicManagers and outbound adapters reflect
 > the legacy architecture and apply to the websocket channel synthesized by
 > an agent only.
+>
+> **Processes:** every pipe-only channel except email runs in a separate
+> process, `jyc-pipe`, which connects to the hub's websocket endpoint and owns
+> no topics, agents, or core state; the hub (`jyc` serve) claims only
+> agent/websocket and email channels, and hosts the inspect server. The
+> ownership rule is the channel type (`pipe::SUPPORTED_CHANNEL_TYPES`), not a
+> config section, and the WeCom webhook listener (`[wecom].bind_addr`) belongs
+> to the pipe. See [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md);
+> email is the remaining step (5).
 
 ### High-Level Flow
 

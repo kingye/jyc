@@ -18,14 +18,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 mod email;
-mod gitee;
 #[cfg(test)]
 mod tests;
 mod wecom;
 mod wecom_bot;
 
 pub(crate) use email::spawn_email_adapter;
-pub(crate) use gitee::spawn_gitee_adapter;
 pub(crate) use wecom::{spawn_wecom_adapter, spawn_wecomkf_adapter};
 pub(crate) use wecom_bot::spawn_wecom_bot_adapter;
 
@@ -33,9 +31,8 @@ pub(crate) use wecom_bot::spawn_wecom_bot_adapter;
 // re-exported so the remaining in-process pipe adapters keep working
 // until their channels migrate (docs/architecture/pipe-split.md).
 pub(crate) use jyc_channels::pipe::{
-    ReplyAttachmentRef, close_event_topics, collect_pipe_target_channels, loopback_addr,
-    match_and_retarget, match_pipe, parse_reply_attachments, retarget_or_drop, role_prefixed_body,
-    warn_on_bad_pipe_patterns,
+    ReplyAttachmentRef, collect_pipe_target_channels, loopback_addr, match_and_retarget,
+    match_pipe, parse_reply_attachments, retarget_or_drop, warn_on_bad_pipe_patterns,
 };
 
 /// Re-target a piped inbound message into the target channel/topic, applying

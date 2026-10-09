@@ -24,13 +24,13 @@ required users to coordinate both sides by editing config, and the
 capability rule replaces it.) Known
 gap: inbound attachments are not relayed (the hub `message` frame has no
 attachments field). Step 4 in progress (one PR per channel type, in
-order): **github migrated** — `pipe/github.rs` hosts the poller adapter
-(poll + dedup/cursor state stays under
-`<data_dir>/channels/<channel>/.github/`), reply relay posts
+order): **github and gitee migrated** — `pipe/github.rs` / `pipe/gitee.rs`
+host the poller adapters (poll + dedup/cursor state stays under
+`<data_dir>/channels/<channel>/.github/` / `.gitee/`), reply relays post
 `[Role]`-prefixed comments, issue/PR close events forward `close_topic`
-frames; the hub-side feishu and github in-process wiring is deleted, so
+frames; the hub-side feishu/github/gitee in-process wiring is deleted, so
 the `jyc` binary no longer references those adapters (adapter-only
-dependencies leave its link graph). Remaining: gitee, wecom_bot, wecom.
+dependencies leave its link graph). Remaining: wecom_bot, wecom.
 
 ## Goal
 

@@ -118,6 +118,8 @@ impl ChannelMatcher for WebsocketMatcher {
 /// only carries the live-message stream:
 /// - `message`: send a chat message to the bound topic — the only way a user
 ///   answers an `ask_user` question, since the question ends the turn
+/// - `close_topic`: ask the hub to close a topic (pipe processes, e.g. a
+///   feishu chat disband or a GitHub issue closed)
 /// - `disconnect`: close the connection cleanly
 /// - `ping`: keep-alive (tokio-tungstenite also handles WS-level pings)
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -143,6 +145,19 @@ enum ClientMessage {
         /// Defaults to the connection address.
         #[serde(default)]
         sender_address: Option<String>,
+        /// Optional platform metadata (pipe hints such as `pipe_pattern`,
+        /// platform message ids, ...). Forwarded verbatim into the
+        /// `InboundMessage.metadata` the router sees. Used by external
+        /// pipe processes (`jyc-pipe`) that cannot set metadata in-process.
+        #[serde(default)]
+        metadata: Option<HashMap<String, serde_json::Value>>,
+    },
+    /// Ask the hub to close a topic. Sent by external pipe processes when
+    /// the platform-side conversation ends (feishu chat disband, GitHub
+    /// issue/PR closed). Maps to `TopicManager::auto_close_topic`.
+    CloseTopic {
+        /// Name of the topic to close.
+        topic: String,
     },
     /// Close the connection cleanly. The handler breaks the read loop and
     /// the post-loop helper sends a WS Close frame (`inbound.rs:405-407`).
@@ -240,6 +255,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
         let channel_name = self.channel_name.clone();
         let on_message = self.on_message.clone();
         let shutdown = self.ws_shutdown.clone();
+        let topic_manager = self.topic_manager.lock().unwrap().clone();
         handle_connection_impl(
             ws,
             addr,
@@ -249,6 +265,7 @@ impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
             on_message,
             scoped_topic,
             shutdown,
+            topic_manager,
         )
         .await
     }
@@ -304,6 +321,10 @@ impl InboundAdapter for WebsocketInboundAdapter {
 /// version: read text frames and parse `ClientMessage`; forward
 /// per-channel broadcast and inspect-broadcast events to the client
 /// (filtered for the current channel/topic); handle graceful close.
+///
+/// `topic_manager` (when set) serves `close_topic` requests from external
+/// pipe processes; without it, `close_topic` frames are ignored with a
+/// warning.
 #[allow(clippy::too_many_arguments)]
 async fn handle_connection_impl(
     ws: axum::extract::ws::WebSocket,
@@ -314,6 +335,7 @@ async fn handle_connection_impl(
     on_message: std::sync::Arc<tokio::sync::Mutex<Option<OnMessageCallback>>>,
     scoped_topic: Option<&str>,
     shutdown: CancellationToken,
+    topic_manager: Option<Arc<jyc_core::topic_manager::TopicManager>>,
 ) -> anyhow::Result<()> {
     use axum::extract::ws::Message;
 
@@ -356,6 +378,7 @@ async fn handle_connection_impl(
                                 text,
                                 sender,
                                 sender_address,
+                                metadata,
                             } => {
                                 // Prefer the payload's `topic` field (an
                                 // explicit override); fall back to the
@@ -392,7 +415,7 @@ async fn handle_connection_impl(
                                     reply_to_id: None,
                                     external_id: None,
                                     attachments: vec![],
-                                    metadata: HashMap::new(),
+                                    metadata: metadata.unwrap_or_default(),
                                     matched_pattern: None,
                                 };
 
@@ -403,6 +426,33 @@ async fn handle_connection_impl(
                                     }
                                 } else {
                                     tracing::warn!("WebSocket on_message callback not set — message dropped");
+                                }
+                            }
+                            ClientMessage::CloseTopic { topic } => {
+                                match &topic_manager {
+                                    Some(tm) => {
+                                        if let Err(e) = tm.auto_close_topic(&topic).await {
+                                            tracing::warn!(
+                                                error = %e,
+                                                channel = %channel_name,
+                                                topic = %topic,
+                                                "WebSocket close_topic failed"
+                                            );
+                                        } else {
+                                            tracing::info!(
+                                                channel = %channel_name,
+                                                topic = %topic,
+                                                "WebSocket close_topic: topic closed"
+                                            );
+                                        }
+                                    }
+                                    None => {
+                                        tracing::warn!(
+                                            channel = %channel_name,
+                                            topic = %topic,
+                                            "WebSocket close_topic ignored: no TopicManager on this adapter"
+                                        );
+                                    }
                                 }
                             }
                             ClientMessage::Disconnect => {
@@ -791,6 +841,7 @@ mod tests {
                 text,
                 sender,
                 sender_address,
+                ..
             } => {
                 assert_eq!(topic.as_deref(), Some("t1"));
                 assert_eq!(text, "hi");
@@ -811,12 +862,42 @@ mod tests {
             ClientMessage::Message {
                 sender,
                 sender_address,
+                metadata,
                 ..
             } => {
                 assert!(sender.is_none());
                 assert!(sender_address.is_none());
+                assert!(metadata.is_none());
             }
             _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_metadata_roundtrip() {
+        // Pipe processes carry hints (pipe_pattern) and platform metadata
+        // through the ws message frame.
+        let msg: ClientMessage = serde_json::from_str(
+            r#"{"type":"message","topic":"t1","text":"hi","metadata":{"pipe_pattern":"group_chat","chat_id":"oc_123"}}"#,
+        )
+        .unwrap();
+        match msg {
+            ClientMessage::Message { metadata, .. } => {
+                let md = metadata.expect("metadata should parse");
+                assert_eq!(md["pipe_pattern"], serde_json::json!("group_chat"));
+                assert_eq!(md["chat_id"], serde_json::json!("oc_123"));
+            }
+            _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_close_topic() {
+        let msg: ClientMessage =
+            serde_json::from_str(r#"{"type":"close_topic","topic":"dev-jyc"}"#).unwrap();
+        match msg {
+            ClientMessage::CloseTopic { topic } => assert_eq!(topic, "dev-jyc"),
+            _ => panic!("expected CloseTopic"),
         }
     }
 }

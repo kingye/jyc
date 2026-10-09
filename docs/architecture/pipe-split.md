@@ -1,6 +1,9 @@
 # Pipe Process Split (`jyc` / `jyc-pipe`)
 
-**Status:** Planned. Step 1 (websocket protocol extensions) in progress.
+**Status:** Step 1 done (websocket protocol extensions: `metadata` on
+inbound `message` frames, `topic_event` server frames, `close_topic`
+client frame — see [api.md](../api.md) §3). Step 2 (`jyc-pipe` binary
+skeleton) next.
 
 ## Goal
 

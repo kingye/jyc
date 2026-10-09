@@ -25,7 +25,7 @@
 //! opportunity (#825) — silently writing state into a topic's working
 //! directory is what polluted pinned user repos.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
@@ -33,6 +33,41 @@ static REGISTRY: OnceLock<RwLock<HashMap<String, PathBuf>>> = OnceLock::new();
 
 fn registry() -> &'static RwLock<HashMap<String, PathBuf>> {
     REGISTRY.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// Process-global set of **closed** topic names.
+///
+/// `/close` freezes a topic's state: the state dir is deleted, and any
+/// bookkeeping write that would land *after* the deletion (the close reply's
+/// chat-history line, activity-log entries from event subscribers) must be
+/// dropped instead of recreating the directory. State writers consult
+/// [`is_closed`]; the topic-open path ([`clear_closed`]) lifts the freeze.
+static CLOSED: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+
+fn closed() -> &'static RwLock<HashSet<String>> {
+    CLOSED.get_or_init(|| RwLock::new(HashSet::new()))
+}
+
+/// Freeze `topic_name`'s state: subsequent state writes for it are dropped.
+///
+/// Idempotent. Set by the topic close path; cleared when the topic reopens.
+pub fn mark_closed(topic_name: &str) {
+    let mut set = closed().write().unwrap_or_else(|e| e.into_inner());
+    set.insert(topic_name.to_string());
+}
+
+/// Whether `topic_name`'s state is frozen (writes must be dropped).
+pub fn is_closed(topic_name: &str) -> bool {
+    let set = closed().read().unwrap_or_else(|e| e.into_inner());
+    set.contains(topic_name)
+}
+
+/// Lift the freeze for `topic_name` — the topic was reopened.
+///
+/// No-op if the topic was not closed. Called when a topic's worker starts.
+pub fn clear_closed(topic_name: &str) {
+    let mut set = closed().write().unwrap_or_else(|e| e.into_inner());
+    set.remove(topic_name);
 }
 
 /// Lexically normalize a path used as a registry key: drop `.` components
@@ -137,6 +172,30 @@ pub fn jyc_dir(topic_name: &str, topic_dir: impl AsRef<Path>) -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn closed_set_marks_checks_and_clears() {
+        // `closed-set-` prefix keeps this key unique across parallel tests.
+        assert!(!is_closed("closed-set-a"));
+        mark_closed("closed-set-a");
+        assert!(is_closed("closed-set-a"));
+        // Marking is idempotent.
+        mark_closed("closed-set-a");
+        assert!(is_closed("closed-set-a"));
+        clear_closed("closed-set-a");
+        assert!(!is_closed("closed-set-a"));
+        // Clearing an open topic is a no-op.
+        clear_closed("closed-set-a");
+        assert!(!is_closed("closed-set-a"));
+    }
+
+    #[test]
+    fn closed_set_names_are_independent() {
+        mark_closed("closed-set-b");
+        assert!(is_closed("closed-set-b"));
+        assert!(!is_closed("closed-set-c"));
+        clear_closed("closed-set-b");
+    }
 
     #[test]
     fn derive_state_name_basic() {

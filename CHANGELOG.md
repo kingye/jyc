@@ -18,6 +18,7 @@
 
 ### Fixed
 
+- **`/close` no longer leaves a recreated `agents/<topic>/` folder behind**: the close deleted the state dir, but the close reply's chat-history write and the inspect server's activity-log entries then recreated it as a bookkeeping-only tombstone — closing now freezes the topic's state, so late writes are dropped instead of resurrecting the directory; the freeze lifts when the topic reopens (#863)
 - **`/close`, `/cancel`, `/pin`, and `/reset` in a forked topic no longer act on the original topic**: the handlers derived the topic name from the workspace directory, which a fork shares with its parent — the topic's own name is the identity now, so closing a fork deletes the fork's state (keeping the shared directory), cancel/reset hit the fork's session, and pin/unpin apply to the fork's channel topic (#862)
 - **Kimi's `<response>` / `<tools>` tool-call wrapper no longer leaks into the
   delivered reply**: the text-channel leak guard (#786) knew the `response_tools`

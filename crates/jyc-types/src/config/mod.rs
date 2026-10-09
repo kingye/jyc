@@ -118,6 +118,18 @@ pub struct OAuthClientCredentialsConfig {
     pub scopes: Vec<String>,
 }
 
+/// External pipe process (`jyc-pipe`) configuration.
+///
+/// Channels named here are owned by the pipe process: `jyc-pipe` spawns
+/// their adapters and talks to the hub over websocket; `jyc serve` skips
+/// spawning them in-process.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PipeConfig {
+    /// Channel names owned by the external pipe process.
+    #[serde(default)]
+    pub channels: Vec<String>,
+}
+
 /// Top-level application configuration, deserialized from config.toml.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct AppConfig {
@@ -162,6 +174,14 @@ pub struct AppConfig {
     /// and fires due jobs by injecting InboundMessage into TopicManager.
     #[serde(default)]
     pub scheduler: SchedulerConfig,
+
+    /// External pipe process configuration. Channels listed under
+    /// `[pipe] channels` are spawned by `jyc-pipe` (a separate process)
+    /// instead of in-process by `jyc serve`; the hub skips spawning them.
+    /// Both processes read the same config file, so the two sides agree
+    /// by construction. See `docs/architecture/pipe-split.md`.
+    #[serde(default)]
+    pub pipe: Option<PipeConfig>,
 
     /// User-defined slash commands (e.g. `/review`), declared as `[[commands]]`.
     #[serde(default)]

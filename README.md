@@ -410,6 +410,8 @@ Key sections:
   unlike Chat Completions supports tools + reasoning together)
 - **`[inspect]`** -- Inspect server settings (enabled, bind address,
   `base_url` for links that leave the server, e.g. `/exchange` share links)
+- **`[pipe]`** -- Channels run by the external `jyc-pipe` process instead of
+  in-process (`channels = ["feishu"]`); `jyc serve` skips them
 - **`[vision]`** -- DEPRECATED: Vision is now configured via `[[mcps]]` (see `config.example.toml` for the new approach)
 - **`[attachments]`** -- Inbound/outbound attachment settings
 

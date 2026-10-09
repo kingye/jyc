@@ -1671,4 +1671,21 @@ mod shell_command_timeout_tests {
             std::time::Duration::from_secs(5)
         );
     }
+
+    #[test]
+    fn pipe_config_parses_channels() {
+        let config = load_config_from_str("[ai]\n[pipe]\nchannels = [\"feishu\", \"work\"]\n")
+            .expect("config with [pipe] parses");
+        let pipe = config.pipe.expect("pipe section present");
+        assert_eq!(
+            pipe.channels,
+            vec!["feishu".to_string(), "work".to_string()]
+        );
+    }
+
+    #[test]
+    fn pipe_config_defaults_to_none() {
+        let config = load_config_from_str("[ai]").expect("minimal config parses");
+        assert!(config.pipe.is_none());
+    }
 }

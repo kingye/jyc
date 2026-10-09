@@ -67,6 +67,10 @@ pub(crate) async fn start_webhook_server(
             anyhow::bail!("WeCom webhook server task panicked during startup");
         }
         Err(_) => {
+            // Timeout: the bind has not reported yet. Assume "slow, not
+            // broken" and continue — if it does fail later, the spawned task
+            // logs it, but the adapters stay up without a listener (same
+            // trade-off the hub made before this moved).
             tracing::info!(
                 bind_addr = %bind_addr,
                 "WeCom webhook server startup pending (may be slow to bind)"

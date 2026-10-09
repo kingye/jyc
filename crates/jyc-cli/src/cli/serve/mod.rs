@@ -338,10 +338,10 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             channel_name.clone(),
         ));
         // Expose the router so piped channels can route through it.
-        routers.lock().unwrap().insert(
-            channel_name.clone(),
-            (router.clone(), topic_manager.clone()),
-        );
+        routers
+            .lock()
+            .unwrap()
+            .insert(channel_name.clone(), router.clone());
 
         tracing::info!(
             channel = %channel_name,

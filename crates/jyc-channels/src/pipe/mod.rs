@@ -49,7 +49,8 @@ pub const SUPPORTED_CHANNEL_TYPES: &[&str] =
 /// adapters, then wait for cancellation.
 ///
 /// Returns `Err` when a hub pipe fails fatally (e.g. the auth token is
-/// rejected) — the caller should exit non-zero.
+/// rejected) or the shared WeCom webhook listener cannot bind its port — the
+/// caller should exit non-zero.
 pub async fn run(
     config: Arc<jyc_types::AppConfig>,
     workdir: &std::path::Path,

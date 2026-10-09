@@ -432,6 +432,21 @@ serves the route (see §3.2):
 | `/ws/<channel>/<topic>` (WS channel)   | `ScopedWsHandler` → adapter   | `{ "topic"?: "<name>", "text": "..." }` (payload `topic` overrides the URL) |
 | `/ws/<channel>/<topic>` (other channel) | `TopicProxyHandler`          | `{ "text": "..." }` (payload `topic` is ignored; URL is the only source) |
 
+All handlers also accept these optional `message` fields, forwarded
+verbatim into the routed `InboundMessage.metadata`:
+
+| Field           | Type                       | Meaning                                             |
+|-----------------|----------------------------|-----------------------------------------------------|
+| `sender`        | `string?`                  | Display name (e.g. a feishu user name).             |
+| `sender_address`| `string?`                  | Canonical address (e.g. an open_id).                |
+| `metadata`      | `object?` (string → JSON)  | Pipe hints (`pipe_pattern`), platform ids, ...      |
+
+`close_topic` (`{ "topic": "<name>" }`) asks a websocket-channel hub to
+close a topic (`TopicManager::auto_close_topic`). Sent by external pipe
+processes (`jyc-pipe`) when the platform-side conversation ends (feishu
+chat disband, GitHub issue/PR closed). Ignored with a warning when the
+adapter has no `TopicManager`.
+
 `disconnect` (`{}`) and `ping` (`{}`) are accepted by both handlers
 with identical semantics.
 
@@ -447,6 +462,7 @@ Server-pushed events are JSON text frames from a shared
 
 | `type`         | Payload                                                            | Emitted when                                                                  |
 |----------------|--------------------------------------------------------------------|-------------------------------------------------------------------------------|
+| `topic_event`  | `{ "channel", "topic", "event": TopicEvent }`                     | Any typed `TopicEvent` fires on a topic — the complete raw event stream (`ProcessingStarted`, `Thinking`, `ToolStarted`, `ProcessingCompleted`, `LoopTick`, ...). Consumed by external pipe processes (`jyc-pipe`); dashboard clients can ignore it. |
 | `activity`     | `{ "channel", "topic", "id", "entry": ActivityEntry }`            | A new entry is appended to `.jyc/activity.jsonl`.                             |
 | `chat_message` | `{ "channel", "topic", "id", "entry": ChatMessageEntry }`         | An incoming message or a sent reply arrives.                                  |
 | `thinking`     | `{ "channel", "topic", "text" }`                                  | The agent publishes a thinking chunk.                                         |

@@ -33,8 +33,8 @@ pub(crate) use wecom_bot::spawn_wecom_bot_adapter;
 // re-exported so the remaining in-process pipe adapters keep working
 // until their channels migrate (docs/architecture/pipe-split.md).
 pub(crate) use jyc_channels::pipe::{
-    ReplyAttachmentRef, collect_pipe_target_channels, loopback_addr, match_and_retarget,
-    match_pipe, parse_reply_attachments, resolve_placeholders_with, retarget_or_drop,
+    ReplyAttachmentRef, close_event_topics, collect_pipe_target_channels, loopback_addr,
+    match_and_retarget, match_pipe, parse_reply_attachments, retarget_or_drop, role_prefixed_body,
     warn_on_bad_pipe_patterns,
 };
 
@@ -66,18 +66,6 @@ pub(super) async fn wait_for_broadcast(
     }
 }
 
-/// Strip trailing separators and prefix a reply with its `[Role]` header
-/// (skipped when the reply already carries it). Shared by the GitHub and
-/// Gitee pipe reply forwarders.
-pub(super) fn role_prefixed_body(text: &str, role: &str) -> String {
-    let clean_reply = jyc_core::email_parser::strip_trailing_separators(text);
-    if role.is_empty() || clean_reply.trim_start().starts_with(&format!("[{role}]")) {
-        clean_reply
-    } else {
-        format!("[{role}] {clean_reply}")
-    }
-}
-
 /// Runtime placeholder resolved from message metadata (or the
 /// `channel_uid` core field) when retargeting a piped message. The
 /// `msg.` namespace keeps it immune to the load-time `${ENV_VAR}`
@@ -93,53 +81,6 @@ pub(super) fn role_prefixed_body(text: &str, role: &str) -> String {
 /// If any placeholder is present but the value is missing/empty, the
 /// caller drops the message with a warning (avoids misrouting to a
 /// literal `"${msg.<key>}"` topic).
-/// Topics to close for a GitHub/Gitee close event, derived from config alone.
-///
-/// The routed topic name is a pure function of `pipe.topic` and the item
-/// number, so re-rendering the template beats remembering what was routed:
-/// the in-memory topic map is empty after a restart, and a close event for an
-/// item routed before the restart would otherwise close nothing (#611).
-///
-/// Only number-dependent templates are considered. A static `pipe.topic`
-/// collects many items into one shared topic, which must survive any single
-/// item closing. `${msg.pr_number}` / `${msg.issue_number}` are type-gated
-/// exactly as at routing time, so an issue close never resolves a PR topic.
-/// `${msg.github_number}` / `${msg.gitee_number}` resolve for both hosts.
-///
-/// Returns `(topic, target_hub_channel)` pairs.
-pub(super) fn close_event_topics(
-    patterns: &[jyc_types::ChannelPattern],
-    number: u64,
-    github_type: &str,
-    repo: &str,
-) -> Vec<(String, String)> {
-    patterns
-        .iter()
-        .filter(|p| p.enabled)
-        .filter_map(|p| {
-            let pipe = p.pipe.as_ref()?;
-            // Same template resolution as apply_pipe_retarget: pipe.topic
-            // wins, legacy pipe.pattern is the fallback.
-            let template = pipe.topic.as_deref().or(pipe.pattern.as_deref())?;
-            if !template.contains("${msg.") {
-                return None;
-            }
-            let topic = resolve_placeholders_with(template, |key| match key {
-                "github_number" | "gitee_number" => Some(number.to_string()),
-                "pr_number" if github_type == "pull_request" => Some(number.to_string()),
-                "issue_number" if github_type != "pull_request" => Some(number.to_string()),
-                "repo" => Some(repo.to_string()),
-                _ => None,
-            })?;
-            let hub = pipe
-                .channel
-                .clone()
-                .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))?;
-            Some((topic, hub))
-        })
-        .collect()
-}
-
 /// Download one reply attachment from the inspect server, apply the
 /// operator's outbound policy, and stage it in a temp file.
 ///

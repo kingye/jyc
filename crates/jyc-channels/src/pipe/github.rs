@@ -147,7 +147,11 @@ pub(crate) fn spawn_github_pipe(
                 &workdir.join("channels"),
                 Some(snapshot),
             );
-            let patterns = adapter_patterns(&config, &channel_name);
+            let patterns: Vec<jyc_types::ChannelPattern> = config
+                .channels
+                .get(&channel_name)
+                .and_then(|c| c.patterns.clone())
+                .unwrap_or_default();
 
             let topic_state_for_close = topic_state.clone();
             let hubs_for_close = hubs.clone();
@@ -195,19 +199,6 @@ pub(crate) fn spawn_github_pipe(
         .instrument(channel_span),
     ));
     Ok(())
-}
-
-/// Patterns for this channel from the startup config snapshot. Shared
-/// lookup for the inbound and close-event handlers.
-fn adapter_patterns(
-    config: &jyc_types::AppConfig,
-    channel_name: &str,
-) -> Vec<jyc_types::ChannelPattern> {
-    config
-        .channels
-        .get(channel_name)
-        .and_then(|c| c.patterns.clone())
-        .unwrap_or_default()
 }
 
 /// Route one inbound github event into the hub: pattern match, capture

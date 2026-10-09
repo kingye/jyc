@@ -34,11 +34,11 @@ axum = { version = "0.8", features = ["macros", "ws"] }
 tower = "0.5"
 arc-swap = "1"
 url = "2"
+tempfile = "3"
 
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-tempfile = "3"
 toml = "1"
 arc-swap = "1"
 wiremock = "0.6"

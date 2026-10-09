@@ -50,6 +50,7 @@ mod tests {
         // AppConfig doesn't derive Default; build the minimum needed
         // for synthesize_agents_channel / install_agents_channel.
         AppConfig {
+            pipe: None,
             general: Default::default(),
             channels: Default::default(),
             agents: Default::default(),

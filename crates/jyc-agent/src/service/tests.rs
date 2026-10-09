@@ -37,6 +37,7 @@ fn base_app_config(model: Option<&str>) -> jyc_types::AppConfig {
         commands: Vec::new(),
         hooks: Vec::new(),
         agents: std::collections::HashMap::new(),
+        pipe: None,
     }
 }
 
@@ -330,6 +331,7 @@ fn reload_picks_up_new_model_context_window_without_restart() {
         commands: Vec::new(),
         hooks: Vec::new(),
         agents: std::collections::HashMap::new(),
+        pipe: None,
     };
     let config = Arc::new(ArcSwap::from_pointee(app));
     let svc = JycAgentService::new(
@@ -442,6 +444,7 @@ fn derive_agent_config_applies_channel_overrides() {
         commands: Vec::new(),
         hooks: Vec::new(),
         agents: std::collections::HashMap::new(),
+        pipe: None,
     };
     let cfg = derive_agent_config(&app, "test");
     assert_eq!(cfg.model.as_deref(), Some("override/main"));

@@ -224,6 +224,23 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     for (channel_name, channel_config) in &config_snapshot.channels {
         let channel_type = channel_config.channel_type.as_str();
 
+        // Channels owned by an external `jyc-pipe` process are skipped:
+        // the pipe connects to the hub websocket and runs the adapter
+        // there (see docs/architecture/pipe-split.md). Both processes
+        // read the same config, so the [pipe] section is the single
+        // source of truth for who owns the channel.
+        if config_snapshot
+            .pipe
+            .as_ref()
+            .is_some_and(|p| p.channels.contains(channel_name))
+        {
+            tracing::info!(
+                channel = %channel_name,
+                "channel owned by external pipe process (jyc-pipe); skipping in-process spawn"
+            );
+            continue;
+        }
+
         // Get attachment configuration from unified config
         let inbound_attachment_config = config_snapshot
             .attachments

@@ -51,6 +51,32 @@ fn publish_activity_event(
     let _ = bus.send(payload.to_string());
 }
 
+/// Publish a raw typed topic event to the inspect-broadcast bus.
+///
+/// Payload format:
+///   {"type":"topic_event","channel":"...","topic":"...","event":{...}}
+///
+/// Unlike the dashboard-oriented `activity` / `thinking` / `processing`
+/// frames, this carries the complete serialized `TopicEvent` — consumed by
+/// external pipe processes (`jyc-pipe`) for status cards and progress
+/// display. Published for every event, including internal ones (LoopTick)
+/// and Thinking, so subscribers see the full stream. Existing dashboard
+/// clients ignore the unknown frame type.
+fn publish_topic_event(
+    bus: &tokio::sync::broadcast::Sender<String>,
+    channel: &str,
+    topic: &str,
+    event: &jyc_core::topic_event::TopicEvent,
+) {
+    let payload = serde_json::json!({
+        "type": "topic_event",
+        "channel": channel,
+        "topic": topic,
+        "event": event,
+    });
+    let _ = bus.send(payload.to_string());
+}
+
 /// Publish a chat message to the inspect-broadcast bus.
 ///
 /// Payload format:
@@ -257,6 +283,17 @@ impl ActivityTracker {
                                                         event = rx.recv() => {
                                                             match event {
                                                                 Some(event) => {
+                                                                    // Fan the raw typed event out
+                                                                    // for external pipe processes
+                                                                    // before any dashboard-oriented
+                                                                    // branching below.
+                                                                    publish_topic_event(
+                                                                        &inspect_broadcast_for_task,
+                                                                        &channel_for_task,
+                                                                        &name,
+                                                                        &event,
+                                                                    );
+
                                                                     let is_processing = matches!(
                                                                         &event,
                                                                         TopicEvent::ProcessingStarted { .. }

@@ -1,21 +1,22 @@
 //! External pipe process support (`jyc-pipe`).
 //!
 //! A pipe process hosts peripheral channel adapters (feishu, github,
-//! gitee, wecom_bot, wecom, wecomkf) that translate platform events and
-//! forward messages to the hub over websocket — owning no topics, no
-//! agents, no core state. See `docs/architecture/pipe-split.md`.
+//! gitee, wecom_bot, wecom, wecomkf, email) that translate platform
+//! events and forward messages to the hub over websocket — owning no
+//! topics, no agents, no core state. See
+//! `docs/architecture/pipe-split.md`.
 //!
 //! Submodules:
 //! - [`hub`]: one websocket connection per target hub channel, with
 //!   reconnect backoff and frame demux (`reply` / `topic_event`).
 //! - one module per channel type — [`feishu`], [`github`], [`gitee`],
 //!   [`wecom_bot`], [`wecom`] (`wecom` + `wecomkf`, which share one
-//!   webhook listener): adapter wiring, reply relay, channel-specific
-//!   events (`close_topic`, status cards, …).
+//!   webhook listener), [`email`]: adapter wiring, reply relay,
+//!   channel-specific events (`close_topic`, status cards, …).
 //!
-//! The pattern-matching / retarget helpers below are shared with the
-//! in-process pipe adapters still living in `jyc-cli` (email, the last
-//! one, moves in a later step).
+//! The pattern-matching / retarget helpers below are used by the pipe
+//! adapters (and were shared with the in-process ones before the split
+//! completed in step 5).
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -26,6 +27,7 @@ use jyc_types::{ChannelConfig, ChannelMatcher, ChannelPattern};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+pub mod email;
 pub mod feishu;
 pub mod gitee;
 pub mod github;
@@ -38,10 +40,18 @@ pub use hub::{HubPipe, PipeTopicEvent};
 /// Channel types the pipe process can run adapters for. Ownership is
 /// derived from this list on both sides (`jyc serve` skips in-process
 /// spawn for configured channels whose type appears here), so no config
-/// section is needed to coordinate the two processes. Step 4 is complete;
-/// email (step 5) is decided separately.
-pub const SUPPORTED_CHANNEL_TYPES: &[&str] =
-    &["feishu", "github", "gitee", "wecom_bot", "wecom", "wecomkf"];
+/// section is needed to coordinate the two processes. The split is
+/// complete: every pipe-capable channel type is listed here and the hub
+/// spawns none of them.
+pub const SUPPORTED_CHANNEL_TYPES: &[&str] = &[
+    "feishu",
+    "github",
+    "gitee",
+    "wecom_bot",
+    "wecom",
+    "wecomkf",
+    "email",
+];
 
 /// Run the pipe process: claim every configured channel whose type this
 /// process can run, build one hub pipe per pipe-target channel its
@@ -49,13 +59,16 @@ pub const SUPPORTED_CHANNEL_TYPES: &[&str] =
 /// adapters, then wait for cancellation.
 ///
 /// Returns `Err` when a hub pipe fails fatally (e.g. the auth token is
-/// rejected) or the shared WeCom webhook listener cannot bind its port — the
+/// rejected), the shared WeCom webhook listener cannot bind its port, or
+/// an email channel cannot initialize its mailbox cursor state — the
 /// caller should exit non-zero.
 pub async fn run(
     config: Arc<jyc_types::AppConfig>,
     workdir: &std::path::Path,
     ws_origin: &str,
     token: Option<String>,
+    no_idle: bool,
+    reset: bool,
     cancel: CancellationToken,
 ) -> Result<()> {
     // Claim configured channels by capability. The hub applies the same
@@ -162,6 +175,23 @@ pub async fn run(
         }
     }
 
+    for (name, channel_config) in claimed.email {
+        email::spawn_email_pipe(
+            &channel_config,
+            name,
+            workdir,
+            config.clone(),
+            hubs.clone(),
+            files_base.clone(),
+            token.clone(),
+            no_idle,
+            reset,
+            cancel.clone(),
+            &mut tasks,
+        )
+        .await?;
+    }
+
     tokio::select! {
         _ = cancel.cancelled() => Ok(()),
         next = pipes.join_next() => match next {
@@ -185,6 +215,7 @@ struct ClaimedChannels {
     wecom_bot: Vec<(String, ChannelConfig)>,
     wecom: Vec<(String, ChannelConfig)>,
     wecomkf: Vec<(String, ChannelConfig)>,
+    email: Vec<(String, ChannelConfig)>,
 }
 
 /// Select the configured channels this process owns: every channel whose
@@ -201,6 +232,7 @@ fn select_channels(config: &jyc_types::AppConfig) -> Result<ClaimedChannels> {
         wecom_bot: Vec::new(),
         wecom: Vec::new(),
         wecomkf: Vec::new(),
+        email: Vec::new(),
     };
     for (name, channel_config) in &config.channels {
         if !SUPPORTED_CHANNEL_TYPES.contains(&channel_config.channel_type.as_str()) {
@@ -220,6 +252,7 @@ fn select_channels(config: &jyc_types::AppConfig) -> Result<ClaimedChannels> {
                 .push((name.clone(), channel_config.clone())),
             "wecom" => claimed.wecom.push((name.clone(), channel_config.clone())),
             "wecomkf" => claimed.wecomkf.push((name.clone(), channel_config.clone())),
+            "email" => claimed.email.push((name.clone(), channel_config.clone())),
             other => anyhow::bail!(
                 "type '{other}' is in SUPPORTED_CHANNEL_TYPES but has no adapter in jyc-pipe"
             ),
@@ -233,7 +266,8 @@ fn select_channels(config: &jyc_types::AppConfig) -> Result<ClaimedChannels> {
         + claimed.gitee.len()
         + claimed.wecom_bot.len()
         + claimed.wecom.len()
-        + claimed.wecomkf.len();
+        + claimed.wecomkf.len()
+        + claimed.email.len();
     if claimed_count == 0 {
         anyhow::bail!(
             "no configured channels supported by jyc-pipe (supports: {}) — nothing to run",

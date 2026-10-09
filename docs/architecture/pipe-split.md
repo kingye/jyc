@@ -5,7 +5,11 @@ inbound `message` frames, `topic_event` server frames, `close_topic`
 client frame — see [api.md](../api.md) §3). Step 2 done (`jyc-pipe`
 binary: config resolution shared via `jyc_utils::config_resolve`, hub
 ws client with inspect auth token and reconnect backoff; adapter
-wiring lands in step 3, feishu first).
+wiring lands in step 3, feishu first). The websocket channel adapter
+moved from `jyc-channels` into `jyc-inspect` (`server::websocket`) —
+it is hub frontend (dashboard UI + pipe endpoint), not a peripheral
+channel; `jyc-channels` is now the pipe crate and no longer depends on
+`jyc-inspect`.
 
 ## Goal
 
@@ -65,7 +69,7 @@ break existing clients (TUI, agents channel):
 ### Step 1 — Hub websocket protocol extensions (additive)
 
 Extend `ClientMessage` / server frames in
-`crates/jyc-channels/src/websocket/inbound.rs` (+ `jyc-core` topic event
+`crates/jyc-inspect/src/server/websocket/inbound.rs` (+ `jyc-core` topic event
 serialization). Existing clients unaffected.
 
 ### Step 2 — `jyc-pipe` binary skeleton

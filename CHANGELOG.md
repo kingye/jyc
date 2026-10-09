@@ -3,6 +3,7 @@
 ### Added
 
 - Email channels can now run in the external `jyc-pipe` process (pipe split step 5 — the last in-process pipe-only channel, `docs/architecture/pipe-split.md`): `jyc-pipe` claims every configured email channel — IMAP monitor (IDLE/poll), pattern match + subject-derived topic retarget, SMTP reply relay threaded into the original mail (`In-Reply-To`/`References`), reply attachments downloaded through the hub's files endpoint with the pipe's bearer token (`pipe::fetch_topic_file`, shared with feishu/wecom_bot — no `jyc-inspect` dependency) — and owns the mailbox cursor state (`<workdir>/channels/<name>/.imap/`). `jyc-pipe` also gains `--no-idle` and `--reset`. No config change needed; email patterns are a startup snapshot like github's (#876)
+- Known gap of the email migration, same as feishu's: **attachments on incoming mail are not relayed** — the pipe `message` frame has no attachments field, so they are not saved into the topic workspace, and a mail with an empty body and a file attached now stops without calling the AI. `jyc-pipe` warns about this at startup (when `[attachments.inbound]` is configured) and for every dropped message (#876)
 
 - `jyc-pipe` gains `--log-file [PATH]`, aligned with `jyc`'s log destination semantics: writes to PATH, or `<data_home>/jyc-pipe.log` when the value is omitted; like bare `jyc` (a daemon), the default destination is the log file — use `--log-file /dev/stderr` for stderr
 
@@ -30,7 +31,7 @@
 
 ### Removed
 
-- The in-process email adapter (`spawn_email_adapter` in `crates/jyc-cli/src/cli/serve/channels/email.rs`) and the hub-side pipe helpers only it still used: `HubRegistry` (per-channel `MessageRouter` map), `route_into_pipe_target`, `wait_for_broadcast`, `fetch_reply_attachment` and the `ws_broadcasts` map. With the split complete, `jyc-cli` no longer references `jyc_channels::pipe` at all (#876)
+- The in-process email adapter (`spawn_email_adapter` in `crates/jyc-cli/src/cli/serve/channels/email.rs`) and the hub-side pipe helpers only it still used: `HubRegistry` (per-channel `MessageRouter` map), `route_into_pipe_target`, `wait_for_broadcast`, `fetch_reply_attachment` and the `ws_broadcasts` map. With the split complete, `jyc-cli` no longer references any pipe adapter or routing helper — it reads `pipe::SUPPORTED_CHANNEL_TYPES` only, to skip the channels `jyc-pipe` owns (#876)
 
 ## [0.3.19] - 2026-10-09
 

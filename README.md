@@ -118,7 +118,7 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 
 ### ✅ Email (IMAP/SMTP)
 - **Status:** Production ready; pipe-only channel, runs in `jyc-pipe` — which owns the mailbox cursor (`<workdir>/channels/<name>/.imap/`) (see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
-- **Features:** Full email support with References, attachments, and HTML formatting
+- **Features:** Full email support with References, HTML formatting, and reply attachments — note the known gap: **attachments on incoming mail are not relayed** (`jyc-pipe` logs them as dropped)
 - **Protocols:** IMAP for inbound, SMTP for outbound
 - **Authentication:** TLS/SSL with username/password or OAuth2
 
@@ -332,9 +332,11 @@ jyc open                 # Create a new ad-hoc websocket topic and open chat
 jyc config init        # Generate config template (in <config dir>, or --workdir)
 jyc config validate    # Validate config file (layered: global + workdir)
                        #   --config <FILE>   Config file path (default: as serve)
-jyc-pipe               # Peripheral pipe process: hosts the pipe-only channels
-                       # (feishu, github, gitee, wecom_bot, wecom, wecomkf, email);
-                       # required for those channels to work. See
+jyc-pipe               # Peripheral pipe process (separate binary, not a `jyc`
+                       # subcommand): hosts the pipe-only channels
+                       # (feishu, github, gitee, wecom_bot, wecom, wecomkf, email),
+                       # forwarding to the hub over websocket; required for
+                       # those channels to work. See
                        # docs/architecture/pipe-split.md
                        #   -w, --workdir <DIR> Working directory / data root
                        #   -c, --config <FILE> Config file (default: as serve)

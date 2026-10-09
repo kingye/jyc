@@ -166,6 +166,12 @@ deleted.
 - Patterns are read from the pipe's config snapshot at startup, like every
   other migrated channel (the in-process adapter re-read live config per
   message).
+- Known gap (feishu's too): attachments on incoming mail are not relayed.
+  The `message` frame has no attachments field, so the worker never saves
+  them into the topic workspace, and an attachment-only mail (empty body)
+  stops without calling the AI. The pipe warns at startup and per dropped
+  message; carrying inbound attachments over the pipe protocol is its own
+  piece of work.
 - **Correction of an earlier note in this document:** IMAP/SMTP clients
   did *not* have to move out of `jyc-services`. `jyc-channels` already
   depends on that crate, and `job_scheduler.rs` keeps it in the hub's
@@ -179,9 +185,10 @@ deleted.
 The hub-side work landed with step 5: every in-process pipe-only spawn
 path (and the pipe helpers that hung off them) is gone from `jyc-cli`.
 
-Remaining: Docker two-process orchestration (the compose file runs
-`jyc-pipe` alongside `jyc`; systemd unit pairing is left to operators) and
-the same unmeasured dependency audit as above.
+Docker orchestration landed with step 5 (the compose file runs `jyc-pipe`
+alongside `jyc` and sends its logs to stderr). Remaining: pairing the two
+processes under systemd (left to operators) and the same unmeasured
+dependency audit as above.
 
 ## Open decisions
 

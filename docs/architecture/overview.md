@@ -312,6 +312,12 @@ inspect server drops them with a warning.
 **Patterns.** Read from the pipe's config snapshot at startup, like every
 migrated channel; editing patterns requires restarting `jyc-pipe`.
 
+**Inbound attachments: not relayed** (known gap, same as feishu). The pipe
+`message` frame carries no attachments, so files mailed in are not saved to
+the topic workspace, and a mail whose body is empty but that carries a file
+stops without calling the AI. `jyc-pipe` warns at startup when
+`[attachments.inbound]` is configured and for every dropped message.
+
 **No footer.** Email replies are plain agent text (trailing `---` separators
 stripped); the model/mode/token footer is gone, so `[channels.<name>.footer]`
 no longer applies to email channels. Per-pattern

@@ -11,6 +11,13 @@
 //!   (`<workdir>/channels/<channel>/.imap/`) tracks the sequence number
 //!   and processed UIDs — protocol-level dedup state, not conversation
 //!   state, so it stays with the adapter.
+//!
+//! Known gap vs in-process (same as feishu): attachments on incoming mail
+//! are not relayed — the hub `message` frame has no attachments field, so
+//! the worker never gets a chance to save them into the topic workspace
+//! (and an attachment-only mail, with an empty body, now stops without
+//! calling the AI). Announced at startup when `[attachments.inbound]` is
+//! configured, and logged per dropped message.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -102,6 +109,18 @@ pub async fn spawn_email_pipe(
     let pipe_channels =
         collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
     warn_on_bad_pipe_patterns("email", &channel_name, channel_config);
+    if config
+        .attachments
+        .as_ref()
+        .and_then(|a| a.inbound.clone())
+        .is_some()
+    {
+        tracing::warn!(
+            channel = %channel_name,
+            "email pipe: inbound attachments are not supported by the pipe protocol yet; \
+             attachments on incoming mail are dropped (not saved to the topic workspace)"
+        );
+    }
 
     // Mailbox cursor state lives under <workdir>/channels/<channel>/.imap/.
     let mut state_manager = StateManager::for_channel(&workdir.join("channels"), &channel_name);
@@ -279,6 +298,22 @@ pub async fn spawn_email_pipe(
                             .pipe
                             .as_ref()
                             .expect("match_pipe guarantees a pipe target");
+
+                        if !message.attachments.is_empty() {
+                            tracing::warn!(
+                                channel = %channel_name_self,
+                                topic = %message.topic,
+                                count = message.attachments.len(),
+                                files = %message
+                                    .attachments
+                                    .iter()
+                                    .map(|a| a.filename.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", "),
+                                "email pipe: inbound attachments are not relayed by the pipe \
+                                 protocol; dropped"
+                            );
+                        }
 
                         // Reply state, captured before re-targeting
                         // rewrites channel/topic.

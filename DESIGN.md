@@ -485,7 +485,12 @@ those roots — which is why a spawn's default dir under `agents/` is never purg
   whole-dir deletion, with the same empty-parent pruning.
   Ad-hoc pins (no config key) derive their state name from the dir, so two
   runtime topics opening one dir intentionally share — and closing either
-  destroys — that single state: "the dir is the topic".
+  destroys — that single state: "the dir is the topic". Closing also
+  **freezes** the topic's state (a process-global closed set in
+  `jyc_types::state_dir`): bookkeeping writes that land after the deletion —
+  the close reply's chat-history line, activity-log entries from event
+  subscribers — are dropped rather than recreating the deleted directory.
+  The freeze lifts when the topic reopens (its worker starts).
 - **Agent access.** When the state dir lies outside the topic dir it is
   appended to the agent's additional read/write roots (parity with the
   pre-refactor in-dir `.jyc`), and the system prompt's Chat History

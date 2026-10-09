@@ -29,9 +29,17 @@ pub mod hub;
 
 pub use hub::{HubPipe, PipeTopicEvent};
 
-/// Run the pipe process: build one hub pipe per pipe-target channel
-/// referenced by the configured `[pipe] channels`, spawn the connection
-/// tasks and the channel adapters, then wait for cancellation.
+/// Channel types the pipe process can run adapters for. Ownership is
+/// derived from this list on both sides (`jyc serve` skips in-process
+/// spawn for configured channels whose type appears here), so no config
+/// section is needed to coordinate the two processes. Extend this list as
+/// pipe split step 4 moves more channel types into the pipe process.
+pub const SUPPORTED_CHANNEL_TYPES: &[&str] = &["feishu"];
+
+/// Run the pipe process: claim every configured channel whose type this
+/// process can run, build one hub pipe per pipe-target channel its
+/// patterns route through, spawn the connection tasks and the channel
+/// adapters, then wait for cancellation.
 ///
 /// Returns `Err` when a hub pipe fails fatally (e.g. the auth token is
 /// rejected) — the caller should exit non-zero.
@@ -41,33 +49,10 @@ pub async fn run(
     token: Option<String>,
     cancel: CancellationToken,
 ) -> Result<()> {
-    let pipe_channels: Vec<&String> = match &config.pipe {
-        Some(pipe) if !pipe.channels.is_empty() => pipe.channels.iter().collect(),
-        _ => anyhow::bail!("no [pipe] channels configured — nothing for jyc-pipe to run"),
-    };
-
-    // Validate channel configs and gather the distinct hub targets.
-    let mut targets: HashSet<String> = HashSet::new();
-    let mut feishu_channels: Vec<(String, ChannelConfig)> = Vec::new();
-    for name in &pipe_channels {
-        let Some(channel_config) = config.channels.get(*name) else {
-            anyhow::bail!("[pipe] channel '{name}' not found in [channels]");
-        };
-        match channel_config.channel_type.as_str() {
-            "feishu" => {
-                targets.extend(collect_pipe_target_channels(
-                    channel_config.patterns.as_deref().unwrap_or(&[]),
-                ));
-                feishu_channels.push(((*name).clone(), channel_config.clone()));
-            }
-            other => {
-                anyhow::bail!(
-                    "[pipe] channel '{name}': type '{other}' is not supported by jyc-pipe yet \
-                     (pipe split step 3 covers feishu; see docs/architecture/pipe-split.md)"
-                );
-            }
-        }
-    }
+    // Claim configured channels by capability. The hub applies the same
+    // rule to skip in-process spawn, so the two sides agree without any
+    // `[pipe]` config section — both just read the same channel list.
+    let (targets, feishu_channels) = select_channels(&config)?;
 
     // Hub attachment download: only when the inspect server is enabled.
     let files_base = config
@@ -112,6 +97,48 @@ pub async fn run(
             None => Ok(()),
         },
     }
+}
+
+/// Channels claimed by the pipe process: the distinct hub targets their
+/// patterns route through, plus the feishu channel configs to spawn.
+type ClaimedChannels = (HashSet<String>, Vec<(String, ChannelConfig)>);
+
+/// Select the configured channels this process owns: every channel whose
+/// type appears in [`SUPPORTED_CHANNEL_TYPES`]. Returns the distinct hub
+/// targets their patterns route through plus the feishu channels to
+/// spawn. Errors when no configured channel is supported — running the
+/// pipe process would do nothing.
+fn select_channels(config: &jyc_types::AppConfig) -> Result<ClaimedChannels> {
+    let mut targets: HashSet<String> = HashSet::new();
+    let mut feishu_channels: Vec<(String, ChannelConfig)> = Vec::new();
+    for (name, channel_config) in &config.channels {
+        if !SUPPORTED_CHANNEL_TYPES.contains(&channel_config.channel_type.as_str()) {
+            tracing::info!(
+                channel = %name,
+                channel_type = %channel_config.channel_type,
+                "channel type not supported by jyc-pipe — leaving to hub in-process spawn"
+            );
+            continue;
+        }
+        match channel_config.channel_type.as_str() {
+            "feishu" => {
+                targets.extend(collect_pipe_target_channels(
+                    channel_config.patterns.as_deref().unwrap_or(&[]),
+                ));
+                feishu_channels.push((name.clone(), channel_config.clone()));
+            }
+            other => anyhow::bail!(
+                "type '{other}' is in SUPPORTED_CHANNEL_TYPES but has no adapter in jyc-pipe"
+            ),
+        }
+    }
+    if feishu_channels.is_empty() {
+        anyhow::bail!(
+            "no configured channels supported by jyc-pipe (supports: {}) — nothing to run",
+            SUPPORTED_CHANNEL_TYPES.join(", ")
+        );
+    }
+    Ok((targets, feishu_channels))
 }
 
 /// Loopback address for calls to the hub's inspect server: a wildcard bind

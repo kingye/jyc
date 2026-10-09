@@ -478,3 +478,42 @@ fn collect_pipe_target_channels_handles_empty_and_disabled() {
         std::collections::HashSet::from(["local_dev".to_string()])
     );
 }
+
+fn channel_config(channel_type: &str) -> ChannelConfig {
+    ChannelConfig {
+        channel_type: channel_type.to_string(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn select_channels_claims_supported_types_without_config_section() {
+    let mut config = jyc_types::AppConfig::default();
+    config
+        .channels
+        .insert("feishu_bot".to_string(), channel_config("feishu"));
+    config
+        .channels
+        .insert("wecom_work".to_string(), channel_config("wecom"));
+
+    let (_targets, feishu) = select_channels(&config).unwrap();
+    assert_eq!(feishu.len(), 1);
+    assert_eq!(feishu[0].0, "feishu_bot");
+}
+
+#[test]
+fn select_channels_errors_when_nothing_supported() {
+    let mut config = jyc_types::AppConfig::default();
+    config
+        .channels
+        .insert("wecom_work".to_string(), channel_config("wecom"));
+
+    let err = select_channels(&config).unwrap_err().to_string();
+    assert!(err.contains("nothing to run"), "unexpected error: {err}");
+}
+
+#[test]
+fn select_channels_errors_on_empty_config() {
+    let config = jyc_types::AppConfig::default();
+    assert!(select_channels(&config).is_err());
+}

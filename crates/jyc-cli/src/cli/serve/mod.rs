@@ -226,14 +226,12 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
 
         // Channels owned by an external `jyc-pipe` process are skipped:
         // the pipe connects to the hub websocket and runs the adapter
-        // there (see docs/architecture/pipe-split.md). Both processes
-        // read the same config, so the [pipe] section is the single
-        // source of truth for who owns the channel.
-        if config_snapshot
-            .pipe
-            .as_ref()
-            .is_some_and(|p| p.channels.contains(channel_name))
-        {
+        // there (see docs/architecture/pipe-split.md). Ownership is
+        // derived from the pipe's adapter capabilities — the pipe claims
+        // every configured channel of a type it can run and the hub
+        // skips exactly those, so no config section is involved and the
+        // two processes agree by construction.
+        if jyc_channels::pipe::SUPPORTED_CHANNEL_TYPES.contains(&channel_type) {
             tracing::info!(
                 channel = %channel_name,
                 "channel owned by external pipe process (jyc-pipe); skipping in-process spawn"

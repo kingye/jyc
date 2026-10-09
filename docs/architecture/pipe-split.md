@@ -14,7 +14,14 @@ migrated end-to-end: `jyc-pipe` hosts the feishu adapter — inbound
 `message` frames, reply relay with completion footer + attachment
 download, live status cards fed by `topic_event` frames (mode/model/
 context segments omitted — no `TopicManager` in the pipe), chat disband
-→ `close_topic`; `jyc serve` skips `[pipe] channels` in-process). Known
+→ `close_topic`). Channel ownership between the two processes is derived
+from the pipe's adapter capabilities
+(`pipe::SUPPORTED_CHANNEL_TYPES`), not from any config section: the pipe
+claims every configured channel of a type it can run and `jyc serve`
+skips exactly those in-process. (Step 2 briefly introduced a `[pipe]`
+config section listing channel names; that was a design mistake — it
+required users to coordinate both sides by editing config, and the
+capability rule replaces it.) Known
 gap: inbound attachments are not relayed (the hub `message` frame has no
 attachments field).
 
@@ -83,7 +90,8 @@ serialization). Existing clients unaffected.
 
 New `[[bin]] name = "jyc-pipe"` in `crates/jyc-channels`: loads config,
 runs a tokio runtime, and implements a hub ws client
-(connect/subscribe/reconnect). Chooses adapters per config.
+(connect/subscribe/reconnect). Chooses adapters by capability: it claims
+every configured channel whose type it can run.
 
 ### Step 3 — Migrate feishu (first channel, end-to-end proof)
 
@@ -91,8 +99,10 @@ Move the wiring from `crates/jyc-cli/src/cli/serve/channels/feishu.rs`
 into `jyc-pipe`: inbound adapter → ws `message` frames (topic→chat_id map
 stays local in `jyc-pipe`); ws reply/event stream → `FeishuClient` relay +
 status cards (progress watcher consumes ws events instead of the
-in-process bus); chat disband → `close_topic`. `jyc serve` gains a switch
-to skip in-process spawning of externally-piped channels.
+in-process bus); chat disband → `close_topic`. `jyc serve` skips
+in-process spawning of any channel whose type the pipe can run — the two
+sides derive ownership from the same capability list
+(`pipe::SUPPORTED_CHANNEL_TYPES`), with no config involvement.
 
 ### Step 4 — Migrate remaining pipe-only channels, one PR each
 

@@ -1832,7 +1832,7 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
             // dimmed rows that do not carry the cursor.
             let mark = if q.multi {
                 if q.marked.contains(&i) {
-                    "[x] "
+                    "[✓] "
                 } else {
                     "[ ] "
                 }

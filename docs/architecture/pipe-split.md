@@ -23,22 +23,24 @@ config section listing channel names; that was a design mistake — it
 required users to coordinate both sides by editing config, and the
 capability rule replaces it.) Known
 gap: inbound attachments are not relayed (the hub `message` frame has no
-attachments field). Step 4 in progress (one PR per channel type, in
-order): **github and gitee migrated** — `pipe/github.rs` / `pipe/gitee.rs`
+attachments field). Step 4 done (one PR per channel type, in order):
+**github and gitee migrated** — `pipe/github.rs` / `pipe/gitee.rs`
 host the poller adapters (poll + dedup/cursor state stays under
 `<data_dir>/channels/<channel>/.github/` / `.gitee/`), reply relays post
 `[Role]`-prefixed comments, issue/PR close events forward `close_topic`
-frames; the hub-side feishu/github/gitee in-process wiring is deleted, so
-the `jyc` binary no longer references those adapters (adapter-only
-dependencies leave its link graph). wecom_bot follows: the aibot WS
-callback adapter (streaming indicator, keep-alive spinner, proactive
-fallback + attachment relay) also runs in `jyc-pipe`, deleting the
-hub-side wiring; reply attachments download through the hub's files
-endpoint with the pipe's bearer token instead of the `jyc-inspect`
-client (no new dependency in `jyc-channels`). Remaining: wecom (and
-wecomkf, which shares the hub's webhook server with wecom — migrating
-either alone collides on the bind port, so they move together or the
-pipe takes the server).
+frames. **wecom_bot** followed: the aibot WS callback adapter (streaming
+indicator, keep-alive spinner, proactive fallback + attachment relay)
+runs in `jyc-pipe`, and reply attachments download through the hub's
+files endpoint with the pipe's bearer token instead of the `jyc-inspect`
+client (no new dependency in `jyc-channels`). **wecom and wecomkf** close
+step 4 (`pipe/wecom.rs`): they share one webhook listener, which the pipe
+now binds — `[wecom].bind_addr` belongs to `jyc-pipe`, `jyc serve` no
+longer starts that server (running the hub alone means callbacks are not
+received), and the sync-cursor / msgid-dedup protocol state still lives
+under the configured `cursor_store_path`. With that, the hub-side
+in-process wiring for every migrated channel is deleted and the `jyc`
+binary no longer references those adapters (adapter-only dependencies
+leave its link graph). Remaining: email (step 5, decided separately).
 
 ## Goal
 
@@ -130,6 +132,10 @@ artifact size comparison to that PR — adapter-exclusive dependencies
 (`openlark-client`, wecom crypto `aes`/`cbc`/`md5`/`sha1`/`hex`) drop out
 of the link graph entirely once unreferenced; the big shared deps
 (tokio, reqwest, serde, tungstenite, axum) do not.
+
+**Status:** all four shipped. wecom and wecomkf moved in one PR because
+they share the `[wecom].bind_addr` listener — the pipe owns that port
+now, so migrating either alone would have collided with the hub.
 
 ### Step 5 — Email, decided separately
 

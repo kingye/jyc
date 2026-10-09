@@ -136,13 +136,13 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 - **Authentication:** App credentials with automatic token refresh
 
 ### ✅ WeCom (企业微信)
-- **Status:** Pipe-only channel (see [docs/architecture/overview.md](docs/architecture/overview.md))
+- **Status:** Pipe-only channel, runs in `jyc-pipe` — which binds the shared webhook server (`[wecom].bind_addr`) (see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
 - **Features:** Bot webhook inbound piped into a agent's websocket channel, external-contact API outbound with `corp_id` + `corp_secret` authentication
 - **Protocols:** Shared axum HTTP server (inbound), REST API (outbound)
 - **Security:** AES-256-CBC decryption, SHA1 signature verification
 
 ### ✅ WeCom KF (Customer Service)
-- **Status:** Pipe-only channel (see [docs/architecture/overview.md](docs/architecture/overview.md))
+- **Status:** Pipe-only channel, runs in `jyc-pipe` (shared webhook server with WeCom) (see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
 - **Features:** Customer-service messaging via event notifications and `kf/sync_msg` API pull, piped into a agent's websocket channel
 - **Protocols:** Webhook events (inbound), REST API (outbound)
 - **Model:** Topic scoping via `pipe.topic` placeholders (`${msg.open_kfid}_${msg.external_userid}`)

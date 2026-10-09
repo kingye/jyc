@@ -78,7 +78,9 @@ messages via webhook and sends through the external contact API), the KF channel
 
 ### Global Server Config
 
-The KF channel reuses the global `[wecom]` HTTP server:
+The KF channel reuses the global `[wecom]` HTTP server. It is bound by the
+**`jyc-pipe` process** (which hosts `wecomkf` / `wecom`); `jyc serve` no longer starts it,
+so run `jyc-pipe` (and expose/forward the port on that process) or callbacks are not received:
 
 ```toml
 [wecom]
@@ -118,7 +120,7 @@ keywords = ["help", "问题"]
 | `corp_id` | Yes | Enterprise ID / Corp ID |
 | `corp_secret` | Yes | Corp secret for access_token (use `${ENV_VAR}` syntax) |
 | `open_kf_ids` | No | List of KF account IDs to process (empty = accept all — planned for future use) |
-| `cursor_store_path` | No | File path for cursor persistence JSON file |
+| `cursor_store_path` | No | File path for cursor persistence JSON file (a relative path resolves against the `jyc-pipe` process' working directory) |
 
 ## Webhook Protocol
 

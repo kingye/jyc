@@ -352,7 +352,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        let topic = "%s";
+        let topic = "pending_delivery_delivers_when_signal_and_reply_exist";
         jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
         let tp = topic_path.clone();
         let handle = tokio::spawn(async move {
@@ -411,7 +411,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        let topic = "%s";
+        let topic = "pending_delivery_delivers_attachments_from_signal";
         jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
         let tp = topic_path.clone();
         let handle = tokio::spawn(async move {
@@ -455,7 +455,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        let topic = "%s";
+        let topic = "pending_delivery_no_delivery_without_signal";
         jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
         let tp = topic_path.clone();
         let handle = tokio::spawn(async move {
@@ -499,7 +499,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        let topic = "%s";
+        let topic = "pending_delivery_no_delivery_with_empty_reply";
         jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
         let tp = topic_path.clone();
         let handle = tokio::spawn(async move {
@@ -580,7 +580,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
 
-        let topic = "%s";
+        let topic = "pending_delivery_publishes_reply_sent_event_on_delivery";
         jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
         let tp = topic_path.clone();
         let bus_for_watcher = bus.clone();

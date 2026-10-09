@@ -503,7 +503,14 @@ fn select_channels_claims_supported_types_without_config_section() {
         .insert("wecom_bot_work".to_string(), channel_config("wecom_bot"));
     config
         .channels
-        .insert("wecom_work".to_string(), channel_config("wecom"));
+        .insert("wecom_group".to_string(), channel_config("wecom"));
+    config
+        .channels
+        .insert("kf_service".to_string(), channel_config("wecomkf"));
+    // Unsupported type: email is still spawned by `jyc serve` (step 5).
+    config
+        .channels
+        .insert("inbox".to_string(), channel_config("email"));
 
     let claimed = select_channels(&config).unwrap();
     assert_eq!(claimed.feishu.len(), 1);
@@ -514,6 +521,10 @@ fn select_channels_claims_supported_types_without_config_section() {
     assert_eq!(claimed.gitee[0].0, "gitee_repo");
     assert_eq!(claimed.wecom_bot.len(), 1);
     assert_eq!(claimed.wecom_bot[0].0, "wecom_bot_work");
+    assert_eq!(claimed.wecom.len(), 1);
+    assert_eq!(claimed.wecom[0].0, "wecom_group");
+    assert_eq!(claimed.wecomkf.len(), 1);
+    assert_eq!(claimed.wecomkf[0].0, "kf_service");
 }
 
 #[test]
@@ -521,10 +532,27 @@ fn select_channels_errors_when_nothing_supported() {
     let mut config = jyc_types::AppConfig::default();
     config
         .channels
-        .insert("wecom_work".to_string(), channel_config("wecom"));
+        .insert("inbox".to_string(), channel_config("email"));
 
     let err = select_channels(&config).unwrap_err().to_string();
     assert!(err.contains("nothing to run"), "unexpected error: {err}");
+}
+
+/// The webhook listener now belongs to the pipe, so a bad bind address must
+/// surface at startup instead of 404ing every WeCom callback.
+#[tokio::test]
+async fn start_webhook_server_fails_on_unbindable_addr() {
+    let mut config = jyc_types::AppConfig::default();
+    config.wecom = Some(jyc_types::WecomGlobalConfig {
+        bind_addr: "not-an-address".to_string(),
+    });
+
+    let err = super::wecom::start_webhook_server(&config, CancellationToken::new())
+        .await
+        .err()
+        .expect("an unbindable address must fail startup")
+        .to_string();
+    assert!(err.contains("failed to start"), "unexpected error: {err}");
 }
 
 #[test]

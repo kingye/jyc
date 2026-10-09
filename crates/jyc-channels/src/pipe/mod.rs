@@ -99,14 +99,16 @@ pub async fn run(
     }
 }
 
+/// Channels claimed by the pipe process: the distinct hub targets their
+/// patterns route through, plus the feishu channel configs to spawn.
+type ClaimedChannels = (HashSet<String>, Vec<(String, ChannelConfig)>);
+
 /// Select the configured channels this process owns: every channel whose
 /// type appears in [`SUPPORTED_CHANNEL_TYPES`]. Returns the distinct hub
 /// targets their patterns route through plus the feishu channels to
 /// spawn. Errors when no configured channel is supported — running the
 /// pipe process would do nothing.
-fn select_channels(
-    config: &jyc_types::AppConfig,
-) -> Result<(HashSet<String>, Vec<(String, ChannelConfig)>)> {
+fn select_channels(config: &jyc_types::AppConfig) -> Result<ClaimedChannels> {
     let mut targets: HashSet<String> = HashSet::new();
     let mut feishu_channels: Vec<(String, ChannelConfig)> = Vec::new();
     for (name, channel_config) in &config.channels {

@@ -153,7 +153,6 @@ fn create_test_config(pattern_names: Vec<&str>) -> jyc_types::AppConfig {
         commands: Vec::new(),
         hooks: Vec::new(),
         agents: std::collections::HashMap::new(),
-        pipe: None,
     }
 }
 

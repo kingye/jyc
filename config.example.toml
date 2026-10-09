@@ -1074,7 +1074,8 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # 2. Get the token, encoding_aes_key, and corp_id from WeCom callback settings
 # # 3. Get the corp_secret from WeCom app management
 # #
-# # Global HTTP server config (shared by all wecom channels):
+# # Global HTTP server config (shared by all wecom channels). Bound by the
+# # `jyc-pipe` process, which hosts wecom/wecomkf:
 # [wecom]
 # bind_addr = "127.0.0.1:10001"
 #
@@ -1116,7 +1117,8 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # # 3. Get the corp_secret from WeCom app management
 # # 4. Note the open_kfid(s) for the KF accounts
 # #
-# # Reuses the shared WeCom webhook server (configured in [wecom] above):
+# # Reuses the shared WeCom webhook server (configured in [wecom] above,
+# # bound by the `jyc-pipe` process — run it or callbacks are not received):
 # # [wecom]
 # # bind_addr = "127.0.0.1:10001"
 # #

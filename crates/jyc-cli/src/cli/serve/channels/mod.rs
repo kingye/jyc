@@ -20,17 +20,15 @@ use tracing::Instrument;
 mod email;
 #[cfg(test)]
 mod tests;
-mod wecom;
 
 pub(crate) use email::spawn_email_adapter;
-pub(crate) use wecom::{spawn_wecom_adapter, spawn_wecomkf_adapter};
 
 // Pipe helpers shared with `jyc-pipe` live in `jyc_channels::pipe`;
 // re-exported so the remaining in-process pipe adapters keep working
 // until their channels migrate (docs/architecture/pipe-split.md).
 pub(crate) use jyc_channels::pipe::{
-    ReplyAttachmentRef, collect_pipe_target_channels, loopback_addr, match_and_retarget,
-    match_pipe, parse_reply_attachments, retarget_or_drop, warn_on_bad_pipe_patterns,
+    ReplyAttachmentRef, collect_pipe_target_channels, loopback_addr, match_pipe,
+    parse_reply_attachments, retarget_or_drop, warn_on_bad_pipe_patterns,
 };
 
 /// Re-target a piped inbound message into the target channel/topic, applying
@@ -79,7 +77,7 @@ pub(super) async fn wait_for_broadcast(
 /// Download one reply attachment from the inspect server, apply the
 /// operator's outbound policy, and stage it in a temp file.
 ///
-/// Shared by the pipe reply forwarders (email / wecom): the
+/// Shared by the email pipe reply forwarder: the
 /// upload APIs take a path, the validator takes a path, SMTP takes bytes —
 /// so both are returned. The temp file lives until the caller drops it.
 pub(super) async fn fetch_reply_attachment(
@@ -104,11 +102,10 @@ pub(super) async fn fetch_reply_attachment(
 
 /// Hub channels a pipe-only adapter can route into, keyed by channel name.
 ///
-/// Carries the `TopicManager` alongside the router because pipe-only adapters
-/// own no workspace: routing needs the router, and close events (GitHub
-/// issue/PR closed) need the hub's TopicManager.
-pub(crate) type HubRegistry =
-    std::sync::Arc<std::sync::Mutex<HashMap<String, (Arc<MessageRouter>, Arc<TopicManager>)>>>;
+/// The router is all a pipe-only adapter needs: it owns no workspace, and
+/// close events (GitHub/Gitee issue or PR closed) now belong to those
+/// channels' own pipes, not to the hub.
+pub(crate) type HubRegistry = std::sync::Arc<std::sync::Mutex<HashMap<String, Arc<MessageRouter>>>>;
 
 /// Route a retargeted message into the pipe target channel's router.
 pub(super) async fn route_into_pipe_target(
@@ -122,12 +119,7 @@ pub(super) async fn route_into_pipe_target(
         .clone()
         .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))
         .expect("validated upstream: agent or channel required");
-    let Some(target_router) = routers
-        .lock()
-        .unwrap()
-        .get(&target_channel)
-        .map(|(r, _)| r.clone())
-    else {
+    let Some(target_router) = routers.lock().unwrap().get(&target_channel).cloned() else {
         tracing::warn!(
             channel_type,
             channel = %target_channel,

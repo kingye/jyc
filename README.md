@@ -130,19 +130,19 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 - **Agents:** Planner, Developer, Reviewer templates for full PR workflow
 
 ### ✅ Feishu (飞书/Lark)
-- **Status:** Production ready (implemented in Phase 7); pipe-only channel (see [docs/architecture/overview.md](docs/architecture/overview.md))
+- **Status:** Production ready (implemented in Phase 7); pipe-only channel, runs in `jyc-pipe` (see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
 - **Features:** Real-time messaging via WebSocket, messages piped into a agent's websocket channel, replies relayed back (text + attachments)
 - **API:** REST API with openlark SDK + WebSocket for real-time updates
 - **Authentication:** App credentials with automatic token refresh
 
 ### ✅ WeCom (企业微信)
-- **Status:** Pipe-only channel (see [docs/architecture/overview.md](docs/architecture/overview.md))
+- **Status:** Pipe-only channel, runs in `jyc-pipe` — which binds the shared webhook server (`[wecom].bind_addr`) (see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
 - **Features:** Bot webhook inbound piped into a agent's websocket channel, external-contact API outbound with `corp_id` + `corp_secret` authentication
 - **Protocols:** Shared axum HTTP server (inbound), REST API (outbound)
 - **Security:** AES-256-CBC decryption, SHA1 signature verification
 
 ### ✅ WeCom KF (Customer Service)
-- **Status:** Pipe-only channel (see [docs/architecture/overview.md](docs/architecture/overview.md))
+- **Status:** Pipe-only channel, runs in `jyc-pipe` (shared webhook server with WeCom) (see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
 - **Features:** Customer-service messaging via event notifications and `kf/sync_msg` API pull, piped into a agent's websocket channel
 - **Protocols:** Webhook events (inbound), REST API (outbound)
 - **Model:** Topic scoping via `pipe.topic` placeholders (`${msg.open_kfid}_${msg.external_userid}`)
@@ -410,10 +410,11 @@ Key sections:
   unlike Chat Completions supports tools + reasoning together)
 - **`[inspect]`** -- Inspect server settings (enabled, bind address,
   `base_url` for links that leave the server, e.g. `/exchange` share links)
-- **Pipe-only channels** (no config section needed) -- `feishu`, `github`,
-  `gitee`, and `wecom_bot` run in the external `jyc-pipe` process, and
-  `jyc serve` skips them in-process (ownership follows the channel type:
-  see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
+- **Pipe-only channels** (no config section needed) -- channel types the pipe
+  process can host run in the external `jyc-pipe` process, and `jyc serve`
+  skips them in-process; each channel entry below says whether it is one, and
+  the authoritative list is `pipe::SUPPORTED_CHANNEL_TYPES` (see
+  [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
 - **`[vision]`** -- DEPRECATED: Vision is now configured via `[[mcps]]` (see `config.example.toml` for the new approach)
 - **`[attachments]`** -- Inbound/outbound attachment settings
 

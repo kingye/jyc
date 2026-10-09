@@ -13,7 +13,6 @@ use jyc_agent::JycAgentService;
 use jyc_services::job_scheduler::JobScheduler;
 use std::collections::HashMap;
 
-use jyc_channels::wecom::server::WecomWebhookServer;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsCollector;
@@ -126,54 +125,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         );
     }
 
-    // Initialize shared WeCom webhook server (if any wecom or wecomkf channel is configured)
-    let has_wecom = config_snapshot
-        .channels
-        .values()
-        .any(|c| c.channel_type == "wecom" || c.channel_type == "wecomkf");
-    let wecom_server: Option<Arc<WecomWebhookServer>> = if has_wecom {
-        let bind_addr = config_snapshot
-            .wecom
-            .as_ref()
-            .map(|w| w.bind_addr.clone())
-            .unwrap_or_else(|| "127.0.0.1:10001".to_string());
-        let server = Arc::new(WecomWebhookServer::new(&bind_addr));
-        // Use a oneshot channel to detect server startup success/failure
-        let (startup_tx, startup_rx) = tokio::sync::oneshot::channel::<Result<()>>();
-        let server_for_task = server.clone();
-        let cancel_wecom = cancel.clone();
-        tokio::spawn(async move {
-            let result = server_for_task.start(cancel_wecom).await;
-            if let Err(ref e) = result {
-                tracing::error!(error = %e, "WeCom webhook server failed to start");
-            }
-            let _ = startup_tx.send(result);
-        });
-        // Wait briefly to detect binding failures (port in use, etc.)
-        match tokio::time::timeout(std::time::Duration::from_secs(5), startup_rx).await {
-            Ok(Ok(Ok(()))) => {
-                tracing::info!(bind_addr = %bind_addr, "WeCom webhook server started");
-            }
-            Ok(Ok(Err(e))) => {
-                anyhow::bail!("WeCom webhook server failed to start: {}", e);
-            }
-            Ok(Err(_)) => {
-                // Channel closed without sending — server task panicked
-                anyhow::bail!("WeCom webhook server task panicked during startup");
-            }
-            Err(_) => {
-                // Timeout — server is still binding or serving, assume success
-                tracing::info!(
-                    bind_addr = %bind_addr,
-                    "WeCom webhook server startup pending (may be slow to bind)"
-                );
-            }
-        }
-        Some(server)
-    } else {
-        None
-    };
-
     // Resolve and persist the inspect auth token BEFORE spawning channels:
     // piped-channel reply forwarders (e.g. feishu) read this file at startup
     // to build their inspect client — writing it later would race them and
@@ -263,42 +214,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
                 routers.clone(),
             )
             .await?;
-            continue;
-        }
-
-        // wecom (group bot callback) is a pipe-only adapter: webhook
-        // registration on the shared WeCom server, pattern match, pipe
-        // retarget, reply forwarders. No TopicManager/agent/orchestrator.
-        if channel_type == "wecom" {
-            crate::cli::serve::channels::spawn_wecom_adapter(
-                channel_config,
-                channel_name.clone(),
-                inbound_attachment_config,
-                cancel.clone(),
-                &mut tasks,
-                config_for_spawn.clone(),
-                ws_broadcasts.clone(),
-                routers.clone(),
-                wecom_server.clone(),
-            )?;
-            continue;
-        }
-
-        // wecomkf (customer service) is a pipe-only adapter, same
-        // architecture as wecom. The sync cursor and msgid dedup stores
-        // are protocol state and stay (precedent: email IMAP cursor).
-        if channel_type == "wecomkf" {
-            crate::cli::serve::channels::spawn_wecomkf_adapter(
-                channel_config,
-                channel_name.clone(),
-                inbound_attachment_config,
-                cancel.clone(),
-                &mut tasks,
-                config_for_spawn.clone(),
-                ws_broadcasts.clone(),
-                routers.clone(),
-                wecom_server.clone(),
-            )?;
             continue;
         }
 
@@ -423,10 +338,10 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             channel_name.clone(),
         ));
         // Expose the router so piped channels can route through it.
-        routers.lock().unwrap().insert(
-            channel_name.clone(),
-            (router.clone(), topic_manager.clone()),
-        );
+        routers
+            .lock()
+            .unwrap()
+            .insert(channel_name.clone(), router.clone());
 
         tracing::info!(
             channel = %channel_name,

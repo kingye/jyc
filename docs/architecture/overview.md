@@ -504,16 +504,14 @@ Retained:
   API sender (text/markdown auto-detect).
 - The new `spawn_wecom_adapter` in `crates/jyc-cli/src/cli/serve/channels/wecom.rs`:
   pipe retarget, an in-memory `topic → chat_id` relay map, and one reply
-  forwarder per pipe target channel.
+  forwarder per pipe target channel — later moved wholesale to `jyc-pipe` as
+  `spawn_wecom_pipe` in `crates/jyc-channels/src/pipe/wecom.rs` (pipe split
+  step 4, see `docs/architecture/pipe-split.md`). The shared webhook listener
+  moved with it: `[wecom].bind_addr` is bound by `jyc-pipe`
+  (`pipe::wecom::start_webhook_server`), not by `jyc serve`.
 
 Removed: `WecomOutboundAdapter` (full-channel OutboundAdapter impl), the
 `wecom` arms in `build_outbound_adapter` / `InboundSpawner`.
-
-Moved to `jyc-pipe` (pipe split step 4, final): the wiring is now
-`spawn_wecom_pipe` in `crates/jyc-channels/src/pipe/wecom.rs`, and the
-shared webhook listener moved with it — `[wecom].bind_addr` is bound by
-the `jyc-pipe` process (`start_webhook_server`), not by `jyc serve`
-(see `docs/architecture/pipe-split.md`).
 
 ## WeCom KF (customer service) — migration
 
@@ -530,13 +528,12 @@ Retained:
 - `kf_outbound.rs` — reduced to `send_kf_text` (`kf/send_msg` with the
   95001 rate-limit retry).
 - The new `spawn_wecomkf_adapter`: pipe retarget, an in-memory
-  `topic → (open_kfid, external_userid)` relay map, reply forwarders.
-
-Moved to `jyc-pipe` (pipe split step 4, final): same move as `wecom` —
-`spawn_wecomkf_pipe` in `crates/jyc-channels/src/pipe/wecom.rs`, sharing
-that module's webhook listener. `cursor_store_path` stays where the
-operator configured it, and is now resolved (when relative) against the
-`jyc-pipe` process' working directory.
+  `topic → (open_kfid, external_userid)` relay map, reply forwarders — later
+  moved wholesale to `jyc-pipe` as `spawn_wecomkf_pipe` in
+  `crates/jyc-channels/src/pipe/wecom.rs` (pipe split step 4, see
+  `docs/architecture/pipe-split.md`), sharing that module's webhook listener.
+  `cursor_store_path` stays where the operator configured it, and is now
+  resolved (when relative) against the `jyc-pipe` process' working directory.
 
 Removed: `WecomKfOutboundAdapter`, the `wecomkf` arms in
 `build_outbound_adapter` / `InboundSpawner`, and the shared

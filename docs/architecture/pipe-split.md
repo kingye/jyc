@@ -39,8 +39,11 @@ longer starts that server (running the hub alone means callbacks are not
 received), and the sync-cursor / msgid-dedup protocol state still lives
 under the configured `cursor_store_path`. With that, the hub-side
 in-process wiring for every migrated channel is deleted and the `jyc`
-binary no longer references those adapters (adapter-only dependencies
-leave its link graph). Remaining: email (step 5, decided separately).
+binary no longer references those adapters; their adapter-only
+dependencies (aes/cbc/md5/sha1/hex, openlark-client) should then drop
+out of its link graph — expected, not measured: no local
+`cargo build` is allowed on dev machines, and CI does not weigh
+artifacts. Remaining: email (step 5, decided separately).
 
 ## Goal
 

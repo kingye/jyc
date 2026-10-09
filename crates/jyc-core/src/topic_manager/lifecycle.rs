@@ -75,6 +75,11 @@ impl TopicManager {
     /// [`Self::close_topic`] with an explicit agents root — the same
     /// testable-core pattern as `purge_topic_dir_under` / `auto_close_topic_under`.
     async fn close_topic_under(&self, topic_name: &str, agents_root: &Path) -> Result<()> {
+        // Freeze the topic's state *before* deleting: bookkeeping writes that
+        // land after the deletion (the close reply's chat-history line,
+        // activity-log entries from event subscribers) are dropped instead of
+        // recreating the directory. The topic-open path lifts the freeze.
+        jyc_types::state_dir::mark_closed(topic_name);
         let state_root = crate::topic_path::state_root(&self.workdir);
         let roots = [agents_root, state_root.as_path()];
         let topic_path = self

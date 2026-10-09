@@ -173,6 +173,15 @@ impl ChatLogStore {
 
     /// Append a received message to the chat log.
     pub fn append_message(&mut self, message: &InboundMessage, is_matched: bool) -> Result<()> {
+        // A closed topic's state is frozen: drop the write rather than
+        // recreating the deleted state dir.
+        if jyc_types::state_dir::is_closed(&self.topic_name) {
+            tracing::debug!(
+                topic = %self.topic_name,
+                "Topic closed; dropping chat-log message append"
+            );
+            return Ok(());
+        }
         self.ensure_file_open()?;
 
         // Extract user_name from metadata (e.g., WeCom KF provides display names)
@@ -237,6 +246,15 @@ impl ChatLogStore {
 
     /// Append a reply message to the chat log.
     pub fn append_reply(&mut self, reply_text: &str, metadata: &ReplyMetadata) -> Result<()> {
+        // A closed topic's state is frozen: drop the write rather than
+        // recreating the deleted state dir.
+        if jyc_types::state_dir::is_closed(&self.topic_name) {
+            tracing::debug!(
+                topic = %self.topic_name,
+                "Topic closed; dropping chat-log reply append"
+            );
+            return Ok(());
+        }
         self.ensure_file_open()?;
 
         let mut record = serde_json::json!({
@@ -327,6 +345,36 @@ mod tests {
             metadata: HashMap::new(),
             matched_pattern: None,
         }
+    }
+
+    #[test]
+    fn test_append_dropped_while_topic_closed() {
+        let temp_dir = tempdir().unwrap();
+        let topic = "test_chat_log_closed_gate";
+        jyc_types::state_dir::register(topic, &temp_dir.path().join(".jyc"));
+        let mut store = ChatLogStore::new(topic, temp_dir.path());
+
+        // A closed topic's state is frozen: appends must not recreate the
+        // deleted state dir.
+        jyc_types::state_dir::mark_closed(topic);
+        let message = create_test_message();
+        store.append_message(&message, true).unwrap();
+        let metadata = ReplyMetadata {
+            sender: "jyc-bot".to_string(),
+            subject: "Re: Test Subject".to_string(),
+            model: None,
+            mode: None,
+        };
+        store.append_reply("reply while closed", &metadata).unwrap();
+        assert!(
+            !store.get_today_file_path().exists(),
+            "closed topic must not recreate the chat log"
+        );
+
+        // Reopening the topic (worker start clears the freeze) resumes logging.
+        jyc_types::state_dir::clear_closed(topic);
+        store.append_message(&message, true).unwrap();
+        assert!(store.get_today_file_path().exists());
     }
 
     #[test]

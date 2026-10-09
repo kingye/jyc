@@ -23,11 +23,18 @@ impl ActivityLogStore {
     ///
     /// Creates the `.jyc/` directory if it doesn't exist. After writing,
     /// checks whether lazy rotation is needed (1.5x threshold).
+    ///
+    /// A closed topic's state is frozen: the append is dropped (not an
+    /// error) rather than recreating the deleted state dir.
     pub fn append(
         topic_name: &str,
         topic_path: &Path,
         entry: &ActivityEntry,
     ) -> anyhow::Result<()> {
+        if jyc_types::state_dir::is_closed(topic_name) {
+            tracing::debug!(topic = %topic_name, "Topic closed; dropping activity append");
+            return Ok(());
+        }
         let path = Self::jsonl_path(topic_name, topic_path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -114,6 +121,34 @@ mod tests {
             id: 0,
             is_internal: false,
         }
+    }
+
+    #[test]
+    fn test_append_dropped_while_topic_closed() {
+        let dir = tempdir().unwrap();
+        let topic_path = dir.path().join("closed-gate-topic");
+        let topic = "test_activity_closed_gate";
+        jyc_types::state_dir::register(topic, &topic_path.join(".jyc"));
+        std::fs::create_dir_all(topic_path.join(".jyc")).unwrap();
+
+        // A closed topic's state is frozen: appends must not recreate the
+        // deleted state dir.
+        jyc_types::state_dir::mark_closed(topic);
+        ActivityLogStore::append(topic, &topic_path, &make_entry("while closed")).unwrap();
+        assert!(
+            !ActivityLogStore::jsonl_path(topic, &topic_path).exists(),
+            "closed topic must not recreate activity.jsonl"
+        );
+
+        // Reopening the topic (worker start clears the freeze) resumes logging.
+        jyc_types::state_dir::clear_closed(topic);
+        ActivityLogStore::append(topic, &topic_path, &make_entry("after reopen")).unwrap();
+        assert_eq!(
+            ActivityLogStore::load_recent(topic, &topic_path, 1)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

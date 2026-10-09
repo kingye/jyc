@@ -785,7 +785,17 @@ mod tests {
         assert_eq!(frame["type"], "topic_event");
         assert_eq!(frame["channel"], "agents");
         assert_eq!(frame["topic"], "dev-jyc");
-        assert_eq!(frame["event"]["topic_name"], "dev-jyc");
-        assert_eq!(frame["event"]["message_id"], "m1");
+        // TopicEvent serializes as an externally-tagged enum: the variant
+        // name is the single key of `event` (jyc-pipe extracts it this
+        // way — keep this shape locked).
+        let event_obj = frame["event"]
+            .as_object()
+            .expect("event should be an object");
+        assert_eq!(
+            event_obj.keys().next().map(String::as_str),
+            Some("ProcessingStarted")
+        );
+        assert_eq!(frame["event"]["ProcessingStarted"]["topic_name"], "dev-jyc");
+        assert_eq!(frame["event"]["ProcessingStarted"]["message_id"], "m1");
     }
 }

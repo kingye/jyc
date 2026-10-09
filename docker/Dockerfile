@@ -22,8 +22,9 @@ COPY config.example.toml ./
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build --release -p jyc-cli \
-    && cp target/release/jyc /usr/local/bin/jyc
+    cargo build --release -p jyc-cli -p jyc-channels \
+    && cp target/release/jyc /usr/local/bin/jyc \
+    && cp target/release/jyc-pipe /usr/local/bin/jyc-pipe
 
 # ── Stage 2: Slim runtime (minimal production image) ─────────────────
 FROM debian:bookworm-slim AS slim
@@ -42,6 +43,7 @@ RUN apt-get -o Acquire::Check-Valid-Until=false update && apt-get install -y --n
 WORKDIR /opt/jyc
 
 COPY --from=builder /usr/local/bin/jyc /usr/local/bin/jyc
+COPY --from=builder /usr/local/bin/jyc-pipe /usr/local/bin/jyc-pipe
 
 ENTRYPOINT ["jyc"]
 CMD ["serve", "--debug"]

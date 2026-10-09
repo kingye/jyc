@@ -53,13 +53,15 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf
 
-      - name: Build release binary
-        run: cargo build --release -p jyc-cli --target ${{ matrix.target }}
+      - name: Build release binaries
+        # jyc: agent core + TUI; jyc-pipe: peripheral channel pipe process
+        # (pipe process split — docs/architecture/pipe-split.md).
+        run: cargo build --release -p jyc-cli -p jyc-channels --target ${{ matrix.target }}
 
-      - name: Package binary
+      - name: Package binaries
         run: |
           mkdir -p dist
-          tar -C target/${{ matrix.target }}/release -czf dist/jyc-${{ matrix.target }}.tar.gz jyc
+          tar -C target/${{ matrix.target }}/release -czf dist/jyc-${{ matrix.target }}.tar.gz jyc jyc-pipe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -38,4 +38,7 @@ services:
   # reconnects with backoff.
   jyc-pipe:
     <<: *jyc-base
-    entrypoint: ["jyc-pipe"]
+    # `jyc-pipe` is a daemon like `jyc`: its default destination is the log
+    # file (`<data_home>/jyc-pipe.log`, not on a mounted volume here), so
+    # send it to stderr to make it visible in `docker compose logs`.
+    entrypoint: ["jyc-pipe", "--log-file", "/dev/stderr"]

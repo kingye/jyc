@@ -131,8 +131,10 @@ wecom_bot, wecom, wecomkf, email); `jyc serve` skips those channels
 in-process. The compose file starts it as a second service that reuses the
 hub's definition (same image, config, data directory and credentials — it
 needs the inspect auth token and the channel state, e.g. the IMAP mailbox
-cursor), overriding only the binary. It reconnects to the hub with backoff,
-so start order does not matter.
+cursor), overriding only the binary (and passing `--log-file /dev/stderr`, so
+its logs land in `docker compose logs` instead of the in-container log file
+that `jyc` itself still uses by default). It reconnects to the hub with
+backoff, so start order does not matter.
 
 ```bash
 docker compose logs -f jyc-pipe

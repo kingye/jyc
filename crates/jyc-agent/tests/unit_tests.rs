@@ -1638,6 +1638,7 @@ mod skills {
             commands: Vec::new(),
             hooks: Vec::new(),
             agents: std::collections::HashMap::new(),
+            pipe: None,
         };
         JycAgentService::new(
             Arc::new(ArcSwap::from_pointee(app)),

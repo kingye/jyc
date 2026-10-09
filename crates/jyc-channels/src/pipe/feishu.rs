@@ -36,12 +36,14 @@ use crate::pipe::{
 struct PipeState {
     /// Resolved topic → feishu chat_id, for reply relay and disband
     /// reverse-lookup. In-memory only.
-    topic_chat: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>,
+    topic_chat: std::sync::Mutex<HashMap<String, String>>,
     /// Per-topic start times for the reply footer ("⏱ 耗时 <elapsed>") and
     /// the live status card. In-memory only.
-    topic_starts: std::sync::Arc<std::sync::Mutex<HashMap<String, std::time::Instant>>>,
+    topic_starts: std::sync::Mutex<HashMap<String, std::time::Instant>>,
     /// Live status message id per topic (dedup registry). In-memory only.
-    progress_cards: std::sync::Arc<tokio::sync::Mutex<HashMap<String, String>>>,
+    /// `Arc`-wrapped because the map is handed to the progress watcher
+    /// task by value.
+    progress_cards: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
 }
 
 /// Spawn the feishu pipe channel: inbound adapter + reply forwarders +
@@ -93,8 +95,8 @@ pub fn spawn_feishu_pipe(
     }
 
     let state = Arc::new(PipeState {
-        topic_chat: Arc::new(std::sync::Mutex::new(HashMap::new())),
-        topic_starts: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        topic_chat: std::sync::Mutex::new(HashMap::new()),
+        topic_starts: std::sync::Mutex::new(HashMap::new()),
         progress_cards: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     });
     let feishu_client = Arc::new(FeishuClient::new(feishu_config.clone()));
@@ -115,7 +117,15 @@ pub fn spawn_feishu_pipe(
             async move {
                 let mut rx = hub.subscribe_replies();
                 tracing::info!(channel = %target, "feishu pipe reply forwarder subscribed");
-                while let Ok(payload) = rx.recv().await {
+                loop {
+                    // Lagged: a burst overflowed the broadcast buffer —
+                    // skip the missed frames and keep relaying. Closed:
+                    // the pipe is gone for good.
+                    let payload = match rx.recv().await {
+                        Ok(payload) => payload,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    };
                     let v: serde_json::Value = match serde_json::from_str(&payload) {
                         Ok(v) => v,
                         Err(_) => continue,
@@ -286,8 +296,7 @@ async fn handle_inbound(
         .split_whitespace()
         .next()
         .unwrap_or("");
-    let custom = config.commands.clone();
-    let continues_to_agent = jyc_core::command::all_commands_with(&custom, &[], &[])
+    let continues_to_agent = jyc_core::command::all_commands_with(&config.commands, &[], &[])
         .iter()
         .find(|c| c.name == first_token)
         .map(|c| c.continues_to_agent)
@@ -303,7 +312,19 @@ async fn handle_inbound(
             let (tx, rx) = tokio::sync::mpsc::channel(64);
             let forward_topic = topic.clone();
             tokio::spawn(async move {
-                while let Ok(pe) = events.recv().await {
+                loop {
+                    let pe = tokio::select! {
+                        // Watcher ended (card completed / lifetime
+                        // bound): stop filtering, don't leak the task.
+                        _ = tx.closed() => return,
+                        received = events.recv() => match received {
+                            Ok(pe) => pe,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                continue
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        },
+                    };
                     if pe.topic != forward_topic {
                         continue;
                     }

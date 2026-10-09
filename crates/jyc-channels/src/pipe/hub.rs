@@ -186,12 +186,21 @@ impl HubPipe {
     /// cancellation. Returns `Err` only on fatal (non-retryable) failures
     /// such as a rejected auth token.
     pub async fn run(self: &Arc<Self>, cancel: CancellationToken) -> Result<()> {
+        // Take the outbound queue once, before the reconnect loop: it
+        // survives reconnects, so frames queued while the hub is
+        // unreachable flush once the pipe comes back.
+        let mut guard = self.outbound_rx.lock().await;
+        let Some(mut outbound_rx) = guard.take() else {
+            return Err(anyhow::anyhow!("hub pipe: connection already running"));
+        };
+        drop(guard);
+
         let mut backoff = std::time::Duration::from_secs(1);
         loop {
             // Retryable disconnect (connect failure or clean close):
             // pause with exponential backoff — a persistent immediate-close
             // loop degrades to slow retries instead of spinning.
-            let pause = match self.run_connection(&cancel).await {
+            let pause = match self.run_connection(&cancel, &mut outbound_rx).await {
                 ConnectionOutcome::Cancelled => return Ok(()),
                 ConnectionOutcome::Fatal(e) => return Err(e),
                 ConnectionOutcome::Disconnected => backoff,
@@ -212,7 +221,11 @@ impl HubPipe {
 
     /// One connection attempt: handshake + read/write loop until the
     /// connection ends.
-    async fn run_connection(self: &Arc<Self>, cancel: &CancellationToken) -> ConnectionOutcome {
+    async fn run_connection(
+        self: &Arc<Self>,
+        cancel: &CancellationToken,
+        outbound_rx: &mut mpsc::Receiver<String>,
+    ) -> ConnectionOutcome {
         let mut request = match self.url.as_str().into_client_request() {
             Ok(request) => request,
             Err(e) => {
@@ -256,14 +269,6 @@ impl HubPipe {
                 return ConnectionOutcome::Disconnected;
             }
         };
-
-        let mut guard = self.outbound_rx.lock().await;
-        let Some(mut outbound_rx) = guard.take() else {
-            return ConnectionOutcome::Fatal(anyhow::anyhow!(
-                "hub pipe: connection already running"
-            ));
-        };
-        drop(guard);
 
         tracing::info!(channel = %self.target_channel, "hub pipe: connected");
         let mut ping = tokio::time::interval(std::time::Duration::from_secs(30));

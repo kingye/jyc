@@ -2,7 +2,7 @@
 
 ### Added
 
-- `jyc-pipe` gains `--log-file [PATH]`, aligned with `jyc`'s log destination semantics: writes to PATH, or `<data_home>/jyc-pipe.log` when the value is omitted; default remains stderr (under systemd the timestamp is dropped, matching `jyc`)
+- `jyc-pipe` gains `--log-file [PATH]`, aligned with `jyc`'s log destination semantics: writes to PATH, or `<data_home>/jyc-pipe.log` when the value is omitted; like bare `jyc` (a daemon), the default destination is the log file — use `--log-file /dev/stderr` for stderr
 
 - WebSocket hub protocol extensions for external pipe processes (`jyc-pipe`, see `docs/architecture/pipe-split.md`): inbound `message` frames accept an optional `metadata` map (pipe hints forwarded verbatim to the router), a `close_topic` client frame asks the hub to close a topic (`TopicManager::auto_close_topic`), and `topic_event` server frames stream the raw `TopicEvent` sequence to connected clients (1 Hz `LoopTick` heartbeats excluded)
 - New `jyc-pipe` binary (pipe process split step 2, `docs/architecture/pipe-split.md`): a standalone peripheral message-pipe process that connects to the hub websocket (`--hub`, defaults to `ws://<inspect.bind>/ws/agents`) with the inspect auth token, logs the reply/`topic_event` stream, and auto-reconnects with backoff. Channel adapter wiring lands in a later step
@@ -11,6 +11,7 @@
 ### Changed
 
 - The `[pipe]` config section introduced earlier in this release cycle is removed before any release: channel ownership between `jyc` and `jyc-pipe` is derived from the pipe's adapter capabilities (`pipe::SUPPORTED_CHANNEL_TYPES`) instead of a user-maintained channel list, so deploying the pipe split no longer requires touching config.toml. A leftover `[pipe]` section in an existing config is ignored
+- `jyc`'s log destination is unified: every invocation now writes tracing logs to `<data_home>/jyc.log` by default — the file is named after the binary, regardless of subcommand. Previously only bare `jyc` defaulted to the file, `jyc serve` defaulted to stderr, and `jyc dashboard` / `jyc open` wrote a separate `dashboard.log`. Use `--log-file PATH` to override, or `--log-file /dev/stderr` for stderr
 
 - Internal restructure: the websocket channel adapter moved from `jyc-channels` to `jyc-inspect` (`server::websocket`) — it is hub frontend (dashboard UI + pipe endpoint), not a peripheral channel. `jyc-channels` is now the pipe crate and no longer depends on `jyc-inspect`; no behavior change
 

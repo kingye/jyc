@@ -3,7 +3,6 @@
 //! Extracted from the monolithic `serve.rs` run() function.
 
 use anyhow::Result;
-use jyc_channels::feishu::client::FeishuClient;
 use jyc_core::channel_orchestrator::ChannelOrchestrator;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::topic_manager::TopicManager;
@@ -11,7 +10,7 @@ use jyc_inspect::server::websocket::inbound::{WebsocketInboundAdapter, Websocket
 use jyc_types::{ChannelInfo, InboundAdapter, InboundAttachmentConfig};
 use serde_json;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -19,18 +18,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 mod email;
-mod feishu;
 mod gitee;
-mod github;
 #[cfg(test)]
 mod tests;
 mod wecom;
 mod wecom_bot;
 
 pub(crate) use email::spawn_email_adapter;
-pub(crate) use feishu::spawn_feishu_adapter;
 pub(crate) use gitee::spawn_gitee_adapter;
-pub(crate) use github::spawn_github_adapter;
 pub(crate) use wecom::{spawn_wecom_adapter, spawn_wecomkf_adapter};
 pub(crate) use wecom_bot::spawn_wecom_bot_adapter;
 
@@ -148,7 +143,7 @@ pub(super) fn close_event_topics(
 /// Download one reply attachment from the inspect server, apply the
 /// operator's outbound policy, and stage it in a temp file.
 ///
-/// Shared by all pipe reply forwarders (feishu / email / wecom_bot): the
+/// Shared by the pipe reply forwarders (email / wecom): the
 /// upload APIs take a path, the validator takes a path, SMTP takes bytes —
 /// so both are returned. The temp file lives until the caller drops it.
 pub(super) async fn fetch_reply_attachment(
@@ -169,36 +164,6 @@ pub(super) async fn fetch_reply_attachment(
             .await?;
     }
     Ok((bytes, tmp))
-}
-
-/// Download one reply attachment from the inspect server and send it to the
-/// feishu chat (image vs. file chosen by content type).
-pub(super) async fn relay_attachment(
-    inspect: &jyc_inspect::client::InspectClient,
-    client: &FeishuClient,
-    chat_id: &str,
-    att: &ReplyAttachmentRef,
-    config: &arc_swap::ArcSwap<jyc_types::AppConfig>,
-) -> Result<()> {
-    use jyc_channels::feishu::client::{feishu_file_type, is_image_content_type};
-
-    let (_bytes, tmp) = fetch_reply_attachment(inspect, att, config).await?;
-
-    if is_image_content_type(&att.content_type) {
-        let key = client.upload_image(tmp.path(), &att.filename).await?;
-        client.send_image_message(chat_id, &key).await?;
-    } else {
-        let ext = Path::new(&att.filename)
-            .extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-        let key = client
-            .upload_file(tmp.path(), &att.filename, feishu_file_type(&ext))
-            .await?;
-        client.send_file_message(chat_id, &key).await?;
-    }
-    tracing::info!(filename = %att.filename, "feishu pipe: attachment relayed");
-    Ok(())
 }
 
 /// Hub channels a pipe-only adapter can route into, keyed by channel name.

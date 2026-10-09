@@ -245,26 +245,8 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             .as_ref()
             .and_then(|att| att.inbound.clone());
 
-        // Feishu is a pipe-only adapter (see docs/architecture/overview.md):
-        // skip the full channel construction (outbound/agent/TopicManager/
-        // StateManager/orchestrator) — spawn only the inbound adapter plus
-        // pipe reply forwarders.
-        if channel_type == "feishu" {
-            crate::cli::serve::channels::spawn_feishu_adapter(
-                channel_config,
-                channel_name.clone(),
-                workdir,
-                inbound_attachment_config,
-                cancel.clone(),
-                &mut tasks,
-                config_for_spawn.clone(),
-                ws_broadcasts.clone(),
-                routers.clone(),
-            )?;
-            continue;
-        }
-
-        // Email is also a pipe-only adapter (same architecture as feishu).
+        // Email is also a pipe-only adapter (same architecture as the
+        // feishu/github adapters that now live in `jyc-pipe`).
         // It keeps a StateManager under <workdir>/channels/<channel>/.imap/
         // for the mailbox cursor — protocol dedup state, not conversation
         // state.
@@ -281,25 +263,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
                 routers.clone(),
             )
             .await?;
-            continue;
-        }
-
-        // github is also a pipe-only adapter: the poller plus reply
-        // forwarders. State (dedup/cursor) lives under
-        // <workdir>/channels/<channel>/.github/. Topic initialization is a
-        // skill on the agent side — no per-pattern template.
-        if channel_type == "github" {
-            crate::cli::serve::channels::spawn_github_adapter(
-                channel_config,
-                channel_name.clone(),
-                workdir,
-                inbound_attachment_config,
-                cancel.clone(),
-                &mut tasks,
-                config_for_spawn.clone(),
-                ws_broadcasts.clone(),
-                routers.clone(),
-            )?;
             continue;
         }
 

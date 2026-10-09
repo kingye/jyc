@@ -25,6 +25,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 pub mod feishu;
+pub mod github;
 pub mod hub;
 
 pub use hub::{HubPipe, PipeTopicEvent};
@@ -34,7 +35,7 @@ pub use hub::{HubPipe, PipeTopicEvent};
 /// spawn for configured channels whose type appears here), so no config
 /// section is needed to coordinate the two processes. Extend this list as
 /// pipe split step 4 moves more channel types into the pipe process.
-pub const SUPPORTED_CHANNEL_TYPES: &[&str] = &["feishu"];
+pub const SUPPORTED_CHANNEL_TYPES: &[&str] = &["feishu", "github"];
 
 /// Run the pipe process: claim every configured channel whose type this
 /// process can run, build one hub pipe per pipe-target channel its
@@ -45,6 +46,7 @@ pub const SUPPORTED_CHANNEL_TYPES: &[&str] = &["feishu"];
 /// rejected) — the caller should exit non-zero.
 pub async fn run(
     config: Arc<jyc_types::AppConfig>,
+    workdir: &std::path::Path,
     ws_origin: &str,
     token: Option<String>,
     cancel: CancellationToken,
@@ -52,7 +54,7 @@ pub async fn run(
     // Claim configured channels by capability. The hub applies the same
     // rule to skip in-process spawn, so the two sides agree without any
     // `[pipe]` config section — both just read the same channel list.
-    let (targets, feishu_channels) = select_channels(&config)?;
+    let claimed = select_channels(&config)?;
 
     // Hub attachment download: only when the inspect server is enabled.
     let files_base = config
@@ -61,7 +63,8 @@ pub async fn run(
         .filter(|i| i.enabled)
         .map(|i| format!("http://{}", loopback_addr(&i.bind)));
 
-    let hubs: std::collections::HashMap<String, Arc<HubPipe>> = targets
+    let hubs: std::collections::HashMap<String, Arc<HubPipe>> = claimed
+        .targets
         .iter()
         .map(|t| (t.clone(), HubPipe::new(t, ws_origin, token.clone())))
         .collect();
@@ -75,7 +78,7 @@ pub async fn run(
     }
 
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-    for (name, channel_config) in feishu_channels {
+    for (name, channel_config) in claimed.feishu {
         feishu::spawn_feishu_pipe(
             &channel_config,
             name,
@@ -83,6 +86,17 @@ pub async fn run(
             hubs.clone(),
             files_base.clone(),
             token.clone(),
+            cancel.clone(),
+            &mut tasks,
+        )?;
+    }
+    for (name, channel_config) in claimed.github {
+        github::spawn_github_pipe(
+            &channel_config,
+            name,
+            config.clone(),
+            hubs.clone(),
+            workdir,
             cancel.clone(),
             &mut tasks,
         )?;
@@ -100,17 +114,26 @@ pub async fn run(
 }
 
 /// Channels claimed by the pipe process: the distinct hub targets their
-/// patterns route through, plus the feishu channel configs to spawn.
-type ClaimedChannels = (HashSet<String>, Vec<(String, ChannelConfig)>);
+/// patterns route through, plus the channel configs to spawn, grouped by
+/// adapter type.
+#[derive(Debug)]
+struct ClaimedChannels {
+    targets: HashSet<String>,
+    feishu: Vec<(String, ChannelConfig)>,
+    github: Vec<(String, ChannelConfig)>,
+}
 
 /// Select the configured channels this process owns: every channel whose
 /// type appears in [`SUPPORTED_CHANNEL_TYPES`]. Returns the distinct hub
-/// targets their patterns route through plus the feishu channels to
+/// targets their patterns route through plus the channel configs to
 /// spawn. Errors when no configured channel is supported — running the
 /// pipe process would do nothing.
 fn select_channels(config: &jyc_types::AppConfig) -> Result<ClaimedChannels> {
-    let mut targets: HashSet<String> = HashSet::new();
-    let mut feishu_channels: Vec<(String, ChannelConfig)> = Vec::new();
+    let mut claimed = ClaimedChannels {
+        targets: HashSet::new(),
+        feishu: Vec::new(),
+        github: Vec::new(),
+    };
     for (name, channel_config) in &config.channels {
         if !SUPPORTED_CHANNEL_TYPES.contains(&channel_config.channel_type.as_str()) {
             tracing::info!(
@@ -121,24 +144,23 @@ fn select_channels(config: &jyc_types::AppConfig) -> Result<ClaimedChannels> {
             continue;
         }
         match channel_config.channel_type.as_str() {
-            "feishu" => {
-                targets.extend(collect_pipe_target_channels(
-                    channel_config.patterns.as_deref().unwrap_or(&[]),
-                ));
-                feishu_channels.push((name.clone(), channel_config.clone()));
-            }
+            "feishu" => claimed.feishu.push((name.clone(), channel_config.clone())),
+            "github" => claimed.github.push((name.clone(), channel_config.clone())),
             other => anyhow::bail!(
                 "type '{other}' is in SUPPORTED_CHANNEL_TYPES but has no adapter in jyc-pipe"
             ),
         }
+        claimed.targets.extend(collect_pipe_target_channels(
+            channel_config.patterns.as_deref().unwrap_or(&[]),
+        ));
     }
-    if feishu_channels.is_empty() {
+    if claimed.feishu.is_empty() && claimed.github.is_empty() {
         anyhow::bail!(
             "no configured channels supported by jyc-pipe (supports: {}) — nothing to run",
             SUPPORTED_CHANNEL_TYPES.join(", ")
         );
     }
-    Ok((targets, feishu_channels))
+    Ok(claimed)
 }
 
 /// Loopback address for calls to the hub's inspect server: a wildcard bind
@@ -200,6 +222,65 @@ pub fn warn_on_bad_pipe_patterns(
             ),
         }
     }
+}
+
+/// Strip trailing separators and prefix a reply with its `[Role]` header
+/// (skipped when the reply already carries it). Shared by the GitHub and
+/// Gitee pipe reply forwarders.
+pub fn role_prefixed_body(text: &str, role: &str) -> String {
+    let clean_reply = jyc_core::email_parser::strip_trailing_separators(text);
+    if role.is_empty() || clean_reply.trim_start().starts_with(&format!("[{role}]")) {
+        clean_reply
+    } else {
+        format!("[{role}] {clean_reply}")
+    }
+}
+
+/// Topics to close for a GitHub/Gitee close event, derived from config alone.
+///
+/// The routed topic name is a pure function of `pipe.topic` and the item
+/// number, so re-rendering the template beats remembering what was routed:
+/// the in-memory topic map is empty after a restart, and a close event for an
+/// item routed before the restart would otherwise close nothing (#611).
+///
+/// Only number-dependent templates are considered. A static `pipe.topic`
+/// collects many items into one shared topic, which must survive any single
+/// item closing. `${msg.pr_number}` / `${msg.issue_number}` are type-gated
+/// exactly as at routing time, so an issue close never resolves a PR topic.
+/// `${msg.github_number}` / `${msg.gitee_number}` resolve for both hosts.
+///
+/// Returns `(topic, target_hub_channel)` pairs.
+pub fn close_event_topics(
+    patterns: &[ChannelPattern],
+    number: u64,
+    github_type: &str,
+    repo: &str,
+) -> Vec<(String, String)> {
+    patterns
+        .iter()
+        .filter(|p| p.enabled)
+        .filter_map(|p| {
+            let pipe = p.pipe.as_ref()?;
+            // Same template resolution as apply_pipe_retarget: pipe.topic
+            // wins, legacy pipe.pattern is the fallback.
+            let template = pipe.topic.as_deref().or(pipe.pattern.as_deref())?;
+            if !template.contains("${msg.") {
+                return None;
+            }
+            let topic = resolve_placeholders_with(template, |key| match key {
+                "github_number" | "gitee_number" => Some(number.to_string()),
+                "pr_number" if github_type == "pull_request" => Some(number.to_string()),
+                "issue_number" if github_type != "pull_request" => Some(number.to_string()),
+                "repo" => Some(repo.to_string()),
+                _ => None,
+            })?;
+            let hub = pipe
+                .channel
+                .clone()
+                .or_else(|| pipe.agent.as_ref().map(|_| "agents".to_string()))?;
+            Some((topic, hub))
+        })
+        .collect()
 }
 
 /// Pipe-adapter step 1 (shared): match the message against this channel's

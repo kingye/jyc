@@ -265,6 +265,9 @@ impl TopicManager {
                 _ = topic_cancel.cancelled() => return,
             };
 
+            // The topic is open again: lift the close freeze so bookkeeping
+            // writes (chat history, activity log) resume.
+            jyc_types::state_dir::clear_closed(&topic_name);
             tracing::info!("Worker started");
 
             // Set topic event bus for agent service

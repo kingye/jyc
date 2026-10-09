@@ -4,8 +4,6 @@
 //! [`jyc_utils::config_resolve`] (shared with the `jyc-pipe` binary);
 //! this module only creates the default config skeleton on first run.
 
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
 
 pub use jyc_utils::config_resolve::{ConfigResolution, resolve_config};
@@ -50,6 +48,7 @@ pub async fn provision_default_config(res: &ConfigResolution) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[tokio::test]
     async fn test_provision_skips_non_default_invocation() {

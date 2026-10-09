@@ -4,7 +4,6 @@ use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 /// RAII guard that removes a PID file on drop.
@@ -101,7 +100,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
 
     let config_snapshot = config.load();
     let agent_config = Arc::new(config_snapshot.ai.clone());
-    let config_for_spawn = Arc::clone(&config);
 
     // Emit a one-shot deprecation warning for legacy
     // `[channels.<name>] type = "websocket"` configs (those without a
@@ -148,17 +146,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     let mut websocket_handlers: Vec<Arc<WebsocketInboundAdapter>> = vec![];
     // Map for setting TopicManager on websocket handlers after creation
     let mut ws_handler_for_channel: HashMap<String, Arc<WebsocketInboundAdapter>> = HashMap::new();
-    // Per-channel websocket broadcast senders, keyed by channel name. Used by
-    // piped channels (e.g. feishu with `pipe = "local_dev"`) to receive the
-    // target channel's replies.
-    let ws_broadcasts: std::sync::Arc<
-        std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>,
-    > = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
-    // Per-channel MessageRouters, keyed by channel name. Used by piped
-    // channels (e.g. feishu with `pipe`) to route re-targeted messages
-    // through the target channel's router (identical to a chat-pane message).
-    let routers: crate::cli::serve::channels::HubRegistry =
-        std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
     // Create the inspect-broadcast bus that ActivityTracker publishes to.
     // Shared with websocket inbound adapters so they can forward live
     // activity/thinking events to dashboard WebSocket clients.
@@ -195,27 +182,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             .attachments
             .as_ref()
             .and_then(|att| att.inbound.clone());
-
-        // Email is also a pipe-only adapter (same architecture as the
-        // feishu/github adapters that now live in `jyc-pipe`).
-        // It keeps a StateManager under <workdir>/channels/<channel>/.imap/
-        // for the mailbox cursor — protocol dedup state, not conversation
-        // state.
-        if channel_type == "email" {
-            crate::cli::serve::channels::spawn_email_adapter(
-                channel_config,
-                channel_name.clone(),
-                workdir,
-                args,
-                cancel.clone(),
-                &mut tasks,
-                config_for_spawn.clone(),
-                ws_broadcasts.clone(),
-                routers.clone(),
-            )
-            .await?;
-            continue;
-        }
 
         // Workspace directory:
         //   - regular channels: <workdir>/<channel>/workspace/
@@ -256,11 +222,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         let handler = Arc::new(handler);
         ws_handler_for_channel.insert(channel_name.to_string(), handler.clone());
         websocket_handlers.push(handler);
-        // Expose the broadcast so piped channels can subscribe to replies.
-        ws_broadcasts
-            .lock()
-            .unwrap()
-            .insert(channel_name.to_string(), broadcast_tx);
 
         // Connect the outbound adapter
         outbound
@@ -337,11 +298,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             config.clone(),
             channel_name.clone(),
         ));
-        // Expose the router so piped channels can route through it.
-        routers
-            .lock()
-            .unwrap()
-            .insert(channel_name.clone(), router.clone());
 
         tracing::info!(
             channel = %channel_name,

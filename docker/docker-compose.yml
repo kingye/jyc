@@ -1,5 +1,7 @@
 services:
-  jyc:
+  # Hub: agent core, websocket channel, inspect server. `jyc-pipe` below
+  # reuses this definition through the anchor.
+  jyc: &jyc-base
     image: jyc:${JYC_IMAGE_TAG:-latest}
     build:
       context: ..
@@ -26,3 +28,17 @@ services:
       # SSH keys (read-only); configure SSH_DIR in .env
       - ${SSH_DIR:-~/.ssh}:/root/.ssh:ro
     restart: unless-stopped
+
+  # Peripheral pipe process: hosts every pipe-only channel adapter
+  # (feishu, github, gitee, wecom_bot, wecom, wecomkf, email) and connects
+  # to the hub's websocket. It reuses the hub service definition verbatim
+  # (same image, config, data directory and credentials — the pipe needs the
+  # inspect auth token and the channel state, e.g. the IMAP mailbox cursor),
+  # overriding only the binary. Restart ordering does not matter: the pipe
+  # reconnects with backoff.
+  jyc-pipe:
+    <<: *jyc-base
+    # `jyc-pipe` is a daemon like `jyc`: its default destination is the log
+    # file (`<data_home>/jyc-pipe.log`, not on a mounted volume here), so
+    # send it to stderr to make it visible in `docker compose logs`.
+    entrypoint: ["jyc-pipe", "--log-file", "/dev/stderr"]

@@ -117,8 +117,8 @@ The Docker image supports automatic restarts and AI self-bootstrapping (the AI c
 JYC is designed to be channel-agnostic. Currently implemented channels:
 
 ### ✅ Email (IMAP/SMTP)
-- **Status:** Production ready
-- **Features:** Full email support with References, attachments, and HTML formatting
+- **Status:** Production ready; pipe-only channel, runs in `jyc-pipe` — which owns the mailbox cursor (`<workdir>/channels/<name>/.imap/`) (see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
+- **Features:** Full email support with References, HTML formatting, and reply attachments — note the known gap: **attachments on incoming mail are not relayed** (`jyc-pipe` logs them as dropped)
 - **Protocols:** IMAP for inbound, SMTP for outbound
 - **Authentication:** TLS/SSL with username/password or OAuth2
 
@@ -317,8 +317,6 @@ Place a `system.md` file in a topic's workspace directory to customize the AI's 
 jyc serve              # Start the agent (main command)
                        #   --config <FILE>    Config file path (default:
                        #     <config dir>/config.toml, or config.toml in --workdir)
-                       #   --no-idle         Use polling instead of IMAP IDLE
-                       #   --reset           Reset monitoring state before starting
 jyc dashboard            # Live TUI dashboard (connects via inspect server)
                          #   --addr <ADDR>     Inspect server address (default: 127.0.0.1:9876)
                          #                     Also used for WebSocket chat on /ws
@@ -334,6 +332,18 @@ jyc open                 # Create a new ad-hoc websocket topic and open chat
 jyc config init        # Generate config template (in <config dir>, or --workdir)
 jyc config validate    # Validate config file (layered: global + workdir)
                        #   --config <FILE>   Config file path (default: as serve)
+jyc-pipe               # Peripheral pipe process (separate binary, not a `jyc`
+                       # subcommand): hosts the pipe-only channels
+                       # (feishu, github, gitee, wecom_bot, wecom, wecomkf, email),
+                       # forwarding to the hub over websocket; required for
+                       # those channels to work. See
+                       # docs/architecture/pipe-split.md
+                       #   -w, --workdir <DIR> Working directory / data root
+                       #   -c, --config <FILE> Config file (default: as serve)
+                       #   --hub <WS-URL>      Hub websocket origin (default: from
+                       #     the config's [inspect] bind)
+                       #   --no-idle           Use polling instead of IMAP IDLE (email)
+                       #   --reset             Reset mailbox state before starting (email)
 jyc token show         # Print the dashboard authorization token
 jyc patterns list      # List configured patterns
                        #   --config <FILE>   Config file path (default: as serve)

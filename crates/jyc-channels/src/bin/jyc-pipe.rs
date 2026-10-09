@@ -1,9 +1,9 @@
 //! jyc-pipe — peripheral message-pipe process.
 //!
 //! Hosts pipe-only channel adapters (feishu, github, gitee, wecom_bot,
-//! wecom, wecomkf) as a separate process from the agent core (`jyc`).
-//! Adapters translate
-//! platform events and forward messages to a hub websocket channel over
+//! wecom, wecomkf, email) as a separate process from the agent core
+//! (`jyc`). Adapters translate platform events and forward messages to a
+//! hub websocket channel over
 //! the protocol documented in `docs/api.md` §3 — inbound via `message`
 //! frames, replies and `topic_event` frames stream back on the same
 //! connection. The pipe owns no topics, agents, or core state.
@@ -13,7 +13,8 @@
 //! (`pipe::SUPPORTED_CHANNEL_TYPES`) is spawned here, and `jyc serve`
 //! skips exactly those in-process. No config section is involved.
 //!
-//! Usage: jyc-pipe [--workdir DIR] [--config FILE] [--hub WS-URL] [-v]
+//! Usage: jyc-pipe [--workdir DIR] [--config FILE] [--hub WS-URL]
+//!                  [--no-idle] [--reset] [-v]
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,6 +27,8 @@ struct PipeArgs {
     config: Option<String>,
     hub: Option<String>,
     log_file: Option<Option<PathBuf>>,
+    no_idle: bool,
+    reset: bool,
     verbose: bool,
 }
 
@@ -39,9 +42,10 @@ const USAGE: &str = "\
 jyc-pipe — peripheral message-pipe process for jyc
 
 Runs the configured pipe-only channels (feishu, github, gitee, wecom_bot,
-wecom, wecomkf) as a separate process, forwarding messages to the hub over
-websocket. `jyc serve` skips those channels in-process, and the WeCom
-webhook listener (`[wecom].bind_addr`) is bound here.
+wecom, wecomkf, email) as a separate process, forwarding messages to the hub
+over websocket. `jyc serve` skips those channels in-process; the WeCom
+webhook listener (`[wecom].bind_addr`) and the email mailbox cursor
+(`<workdir>/channels/<name>/.imap/`) belong to this process.
 
 Usage: jyc-pipe [OPTIONS]
 
@@ -53,6 +57,8 @@ Options:
       --log-file [PATH] Write logs to PATH (no value: <data_home>/jyc-pipe.log);
                         default: <data_home>/jyc-pipe.log (jyc-pipe is a
                         daemon, like bare `jyc`); use /dev/stderr for stderr
+      --no-idle         Use polling instead of IMAP IDLE (email channels)
+      --reset           Reset monitoring state before starting (email channels)
   -v, --verbose         Enable debug logging
   -h, --help            Print this help
 ";
@@ -63,6 +69,8 @@ fn parse_args_from<I: Iterator<Item = String>>(it: I) -> Result<ParseOutcome> {
         config: None,
         hub: None,
         log_file: None,
+        no_idle: false,
+        reset: false,
         verbose: false,
     };
     let mut it = it.peekable();
@@ -81,6 +89,8 @@ fn parse_args_from<I: Iterator<Item = String>>(it: I) -> Result<ParseOutcome> {
                 let value = it.next_if(|a| !a.starts_with('-'));
                 args.log_file = Some(value.map(PathBuf::from));
             }
+            "--no-idle" => args.no_idle = true,
+            "--reset" => args.reset = true,
             "-v" | "--verbose" => args.verbose = true,
             "-h" | "--help" => return Ok(ParseOutcome::Help),
             other if other.starts_with("--workdir=") => {
@@ -231,7 +241,16 @@ async fn main() -> Result<()> {
         });
     }
 
-    jyc_channels::pipe::run(Arc::new(config), &workdir, &hub_origin, Some(token), cancel).await
+    jyc_channels::pipe::run(
+        Arc::new(config),
+        &workdir,
+        &hub_origin,
+        Some(token),
+        args.no_idle,
+        args.reset,
+        cancel,
+    )
+    .await
 }
 
 #[cfg(test)]

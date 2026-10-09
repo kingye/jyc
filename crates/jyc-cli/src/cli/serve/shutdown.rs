@@ -27,14 +27,6 @@ pub struct ServeArgs {
     /// ~/.config/jyc/config.toml; or config.toml in --workdir when given)
     #[arg(short, long)]
     pub config: Option<String>,
-
-    /// Use polling instead of IMAP IDLE
-    #[arg(long)]
-    pub no_idle: bool,
-
-    /// Reset monitoring state before starting
-    #[arg(long)]
-    pub reset: bool,
 }
 
 /// Wait for a shutdown signal (Ctrl+C on all platforms, plus SIGTERM on Unix).

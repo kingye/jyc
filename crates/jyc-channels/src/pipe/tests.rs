@@ -500,6 +500,9 @@ fn select_channels_claims_supported_types_without_config_section() {
         .insert("gitee_repo".to_string(), channel_config("gitee"));
     config
         .channels
+        .insert("wecom_bot_work".to_string(), channel_config("wecom_bot"));
+    config
+        .channels
         .insert("wecom_work".to_string(), channel_config("wecom"));
 
     let claimed = select_channels(&config).unwrap();
@@ -509,6 +512,8 @@ fn select_channels_claims_supported_types_without_config_section() {
     assert_eq!(claimed.github[0].0, "jin_repo");
     assert_eq!(claimed.gitee.len(), 1);
     assert_eq!(claimed.gitee[0].0, "gitee_repo");
+    assert_eq!(claimed.wecom_bot.len(), 1);
+    assert_eq!(claimed.wecom_bot[0].0, "wecom_bot_work");
 }
 
 #[test]

@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use jyc_types::{ChannelConfig, InboundAdapter};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -26,8 +26,8 @@ use crate::wecom_bot::client::WecomBotConnectionHandle;
 use crate::wecom_bot::inbound::{WecomBotInboundAdapter, WecomBotMatcher};
 
 use super::{
-    HubPipe, ReplyAttachmentRef, collect_pipe_target_channels, match_pipe, parse_reply_attachments,
-    retarget_or_drop, warn_on_bad_pipe_patterns,
+    HubPipe, ReplyAttachmentRef, collect_pipe_target_channels, fetch_topic_file, match_pipe,
+    parse_reply_attachments, retarget_or_drop, warn_on_bad_pipe_patterns,
 };
 
 /// State tracked per piped topic for the wecom_bot reply forwarder.
@@ -438,6 +438,11 @@ async fn send_wecom_proactive_text(
 ) -> Result<()> {
     let body = wecom_bot::build_proactive_text_body(recipient, text);
     send_aibot_msg(handle, body).await?;
+    tracing::info!(
+        recipient = %recipient,
+        text_len = text.len(),
+        "wecom_bot pipe: proactive text reply sent"
+    );
     Ok(())
 }
 
@@ -462,10 +467,12 @@ async fn send_aibot_msg(handle: &WecomBotConnectionHandle, body: serde_json::Val
 /// it to WeCom media, and send the media message via `aibot_send_msg`
 /// (proactive) keyed by the recipient.
 ///
-/// Mirrors `relay_attachment` (feishu). Proactive send is used here
-/// instead of `aibot_respond_msg` because the agent's reply is async
-/// and the WeCom passive reply window may have closed by the time the
-/// forwarder relays attachments.
+/// Same wiring as feishu's `relay_attachment`, sharing the download +
+/// outbound-policy check (`fetch_topic_file`) and differing only in the
+/// upload/send calls. Proactive send is used here instead of
+/// `aibot_respond_msg` because the agent's reply is async and the WeCom
+/// passive reply window may have closed by the time the forwarder
+/// relays attachments.
 async fn relay_wecom_attachment(
     handle: &WecomBotConnectionHandle,
     files_base: &str,
@@ -476,28 +483,7 @@ async fn relay_wecom_attachment(
 ) -> Result<()> {
     use crate::wecom_bot::{build_media_message_body, upload_attachment, wecom_media_type};
 
-    // `url_path` is the relative URL from the reply broadcast's
-    // `attachments[].path` (leading slash included, percent-encoded).
-    let mut req = reqwest::Client::new().get(format!("{files_base}{}", att.url_path));
-    if let Some(token) = token {
-        req = req.bearer_auth(token);
-    }
-    let bytes = req
-        .send()
-        .await
-        .context("failed to download topic file")?
-        .error_for_status()
-        .context("topic file request returned an error status")?
-        .bytes()
-        .await
-        .context("failed to read topic file body")?;
-
-    let tmp = tempfile::NamedTempFile::new()?;
-    tokio::fs::write(tmp.path(), &bytes).await?;
-    if let Some(cfg) = config.attachments.as_ref().and_then(|a| a.outbound.clone()) {
-        jyc_utils::attachment_validator::validate_outbound_file(tmp.path(), &att.filename, &cfg)
-            .await?;
-    }
+    let tmp = fetch_topic_file(files_base, token, att, config).await?;
 
     let media_id = upload_attachment(handle, tmp.path(), &att.filename, &att.content_type).await?;
     let media_type = wecom_media_type(&att.content_type, &att.filename);

@@ -1,15 +1,16 @@
 //! External pipe process support (`jyc-pipe`).
 //!
-//! A pipe process hosts peripheral channel adapters (feishu first, then
-//! github / gitee / wecom / wecom_bot) that translate platform events and
+//! A pipe process hosts peripheral channel adapters (feishu, github,
+//! gitee, wecom_bot — wecom next) that translate platform events and
 //! forward messages to the hub over websocket — owning no topics, no
 //! agents, no core state. See `docs/architecture/pipe-split.md`.
 //!
-//! Two submodules:
+//! Submodules:
 //! - [`hub`]: one websocket connection per target hub channel, with
 //!   reconnect backoff and frame demux (`reply` / `topic_event`).
-//! - [`feishu`]: the feishu pipe wiring (adapter + reply relay + status
-//!   cards + disband → `close_topic`).
+//! - one module per channel type — [`feishu`], [`github`], [`gitee`],
+//!   [`wecom_bot`]: adapter wiring, reply relay, channel-specific
+//!   events (`close_topic`, status cards, …).
 //!
 //! The pattern-matching / retarget helpers below are shared with the
 //! in-process pipe adapters still living in `jyc-cli` (they move here as
@@ -564,6 +565,42 @@ pub fn parse_reply_attachments(v: &serde_json::Value) -> Vec<ReplyAttachmentRef>
             })
         })
         .collect()
+}
+
+/// Download one reply attachment from the hub's files endpoint through the
+/// pipe's bearer token, spool it to a temp file, and apply the outbound
+/// attachment policy to it.
+///
+/// `att.url_path` is the relative URL from the reply broadcast's
+/// `attachments[].path` (leading slash included, percent-encoded). The
+/// caller uploads the returned file with its own channel client.
+pub(crate) async fn fetch_topic_file(
+    files_base: &str,
+    token: Option<&str>,
+    att: &ReplyAttachmentRef,
+    config: &jyc_types::AppConfig,
+) -> Result<tempfile::NamedTempFile> {
+    let mut req = reqwest::Client::new().get(format!("{files_base}{}", att.url_path));
+    if let Some(token) = token {
+        req = req.bearer_auth(token);
+    }
+    let bytes = req
+        .send()
+        .await
+        .context("failed to download topic file")?
+        .error_for_status()
+        .context("topic file request returned an error status")?
+        .bytes()
+        .await
+        .context("failed to read topic file body")?;
+
+    let tmp = tempfile::NamedTempFile::new()?;
+    tokio::fs::write(tmp.path(), &bytes).await?;
+    if let Some(cfg) = config.attachments.as_ref().and_then(|a| a.outbound.clone()) {
+        jyc_utils::attachment_validator::validate_outbound_file(tmp.path(), &att.filename, &cfg)
+            .await?;
+    }
+    Ok(tmp)
 }
 
 #[cfg(test)]

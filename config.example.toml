@@ -628,16 +628,12 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # base_url = "https://jyc.example.com"
 
 # --- External Pipe Process ---
-# Channels listed here are run by `jyc-pipe`, a separate peripheral
-# message-pipe process, instead of in-process by `jyc serve`. The pipe
-# connects to the hub websocket (the inspect server port) with the same
-# auth token and forwards messages in both directions; `jyc serve` skips
-# spawning these channels. Both processes read this config, so the two
-# sides always agree. Currently supported: feishu.
-# See docs/architecture/pipe-split.md.
-#
-# [pipe]
-# channels = ["feishu"]
+# `jyc-pipe`, a separate peripheral message-pipe process, claims every
+# configured channel whose type it can run (currently feishu) and talks to
+# the hub over websocket; `jyc serve` skips spawning those channels
+# in-process. No config section is involved — ownership is derived from
+# the pipe's adapter capabilities, so both processes agree by reading the
+# same channel list. See docs/architecture/pipe-split.md.
 
 # --- Custom Commands ---
 # User-defined slash commands. Each `[[commands]]` entry adds a `/<name>`

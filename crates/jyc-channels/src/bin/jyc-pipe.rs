@@ -47,7 +47,8 @@ Options:
       --hub <WS-URL>    Hub websocket origin (default: ws://<inspect.bind>,
                         derived from the config's [inspect] section)
       --log-file [PATH] Write logs to PATH (no value: <data_home>/jyc-pipe.log);
-                        default: stderr
+                        default: <data_home>/jyc-pipe.log (jyc-pipe is a
+                        daemon, like bare `jyc`); use /dev/stderr for stderr
   -v, --verbose         Enable debug logging
   -h, --help            Print this help
 ";
@@ -144,12 +145,16 @@ fn resolve_hub_origin(hub_arg: Option<&str>, config: &jyc_types::AppConfig) -> R
     })
 }
 
-/// Log destination, mirroring `jyc`'s semantics: `--log-file [PATH]`
-/// (no value → `<data_home>/jyc-pipe.log`), default stderr. Under
-/// systemd (`JOURNAL_STREAM` set) stderr logs drop the timestamp —
-/// journal adds its own. Plain append-only file, no rotation (same
-/// trade-off as `jyc`: external logrotate if size-based rotation is
-/// needed); `Mutex<File>` serializes writes across threads.
+/// Log destination, mirroring `jyc`'s daemon behavior: `jyc-pipe` is a
+/// long-running process with no one-shot mode, so it aligns with bare
+/// `jyc` (which defaults to `jyc.log`), not with explicit `jyc`
+/// subcommands (which default to stderr). Default: append to
+/// `<data_home>/jyc-pipe.log`; `--log-file [PATH]` overrides, and
+/// `--log-file /dev/stderr` restores stderr. Under systemd
+/// (`JOURNAL_STREAM` set) stderr logs drop the timestamp — journal adds
+/// its own. Plain append-only file, no rotation (same trade-off as
+/// `jyc`: external logrotate if size-based rotation is needed);
+/// `Mutex<File>` serializes writes across threads.
 fn init_tracing(filter: &str, log_file: Option<Option<PathBuf>>) -> Result<()> {
     let base = tracing_subscriber::fmt()
         .with_env_filter(
@@ -161,8 +166,7 @@ fn init_tracing(filter: &str, log_file: Option<Option<PathBuf>>) -> Result<()> {
 
     let path = match log_file {
         Some(Some(path)) => Some(path),
-        Some(None) => jyc_utils::paths::data_home().map(|home| home.join("jyc-pipe.log")),
-        None => None,
+        Some(None) | None => jyc_utils::paths::data_home().map(|home| home.join("jyc-pipe.log")),
     };
     if let Some(path) = path {
         let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));

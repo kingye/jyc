@@ -9,7 +9,7 @@ edition = "2024"
 [workspace.dependencies]
 
 [profile.dev]
-debug = 1
+debug = "line-tables-only"
 opt-level = 1
 split-debuginfo = "packed"
 lto = false

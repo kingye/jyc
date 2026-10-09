@@ -19,7 +19,8 @@ use super::*;
 
 /// Spawn a wecom (group bot callback) pipe-only adapter.
 ///
-/// Mirrors spawn_wecom_bot_adapter. Protocol only: webhook registration
+/// Same shape as the wecom_bot pipe adapter
+/// (`jyc_channels::pipe::wecom_bot`). Protocol only: webhook registration
 /// via the shared WecomWebhookServer, pattern match, pipe retarget, and a
 /// reply forwarder per pipe target channel. No TopicManager / agent /
 /// orchestrator — the hub owns all of that.

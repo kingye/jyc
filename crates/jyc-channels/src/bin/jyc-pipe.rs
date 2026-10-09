@@ -1,15 +1,16 @@
 //! jyc-pipe — peripheral message-pipe process.
 //!
-//! Hosts pipe-only channel adapters (feishu, wecom, github, ...) as a
+//! Hosts pipe-only channel adapters (feishu, github, gitee, wecom_bot) as a
 //! separate process from the agent core (`jyc`). Adapters translate
 //! platform events and forward messages to a hub websocket channel over
 //! the protocol documented in `docs/api.md` §3 — inbound via `message`
 //! frames, replies and `topic_event` frames stream back on the same
 //! connection. The pipe owns no topics, agents, or core state.
 //!
-//! Step 3 of the pipe process split (`docs/architecture/pipe-split.md`):
-//! channels listed under `[pipe] channels` in the config are spawned
-//! here (feishu first); `jyc serve` skips them in-process.
+//! Per the pipe process split (`docs/architecture/pipe-split.md`): every
+//! configured channel whose type this process can run
+//! (`pipe::SUPPORTED_CHANNEL_TYPES`) is spawned here, and `jyc serve`
+//! skips exactly those in-process. No config section is involved.
 //!
 //! Usage: jyc-pipe [--workdir DIR] [--config FILE] [--hub WS-URL] [-v]
 
@@ -36,8 +37,9 @@ enum ParseOutcome {
 const USAGE: &str = "\
 jyc-pipe — peripheral message-pipe process for jyc
 
-Runs the channels listed under `[pipe] channels` in the config as a
-separate process, forwarding messages to the hub over websocket.
+Runs the configured pipe-only channels (feishu, github, gitee, wecom_bot)
+as a separate process, forwarding messages to the hub over websocket.
+`jyc serve` skips those channels in-process.
 
 Usage: jyc-pipe [OPTIONS]
 

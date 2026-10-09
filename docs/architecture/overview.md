@@ -202,7 +202,9 @@ only:
 - `websocket.rs` — event stream → `InboundMessage`
 - `inbound.rs` — pattern matching (`FeishuMatcher`)
 - pipe wiring in `jyc-cli/src/cli/serve/channels/` — re-targeting, address
-  mapping, reply forwarder
+  mapping, reply forwarder — later moved wholesale to
+  `crates/jyc-channels/src/pipe/feishu.rs` (pipe split step 3, see
+  `docs/architecture/pipe-split.md`)
 
 Removed in the migration: `FeishuOutboundAdapter` (direct-mode delivery),
 `formatter.rs` and `validator.rs` (never wired in), the non-pipe routing
@@ -220,7 +222,10 @@ same pipe-only migration as feishu. The channel retains only:
 - `outbound.rs` — wire-format helpers only (streaming reply, attachment
   upload, media body), re-exported as `pub` so the pipe channel drives
   them directly.
-- The new `spawn_wecom_bot_adapter` in `crates/jyc-cli/src/cli/serve/channels/wecom_bot.rs`.
+- The new `spawn_wecom_bot_adapter` in `crates/jyc-cli/src/cli/serve/channels/wecom_bot.rs`
+  — later moved wholesale to `jyc-pipe` as `spawn_wecom_bot_pipe` in
+  `crates/jyc-channels/src/pipe/wecom_bot.rs` (pipe split step 4, see
+  `docs/architecture/pipe-split.md`).
 
 Removed in the migration: the `WecomBotOutboundAdapter` registration in
 `build_outbound_adapter`, the `"wecom_bot"` arm in `InboundSpawner::spawn`,
@@ -310,7 +315,10 @@ Retained:
 - `jyc-channels/src/github/inbound/` — the poller (`poll.rs`), dedup/cursor
   state (`state.rs`), and `GithubMatcher` (reviewer-priority pattern ordering,
   topic-name derivation).
-- The new `spawn_github_adapter` in `crates/jyc-cli/src/cli/serve/channels/github.rs`.
+- The new `spawn_github_adapter` in `crates/jyc-cli/src/cli/serve/channels/github.rs`
+  — later moved wholesale to `jyc-pipe` as `spawn_github_pipe` in
+  `crates/jyc-channels/src/pipe/github.rs` (pipe split step 4, see
+  `docs/architecture/pipe-split.md`).
 
 Removed: `GithubOutboundAdapter` (whole file), the `"github"` arms in
 `build_outbound_adapter` / `InboundSpawner::spawn`, and — repo-wide — the
@@ -446,7 +454,10 @@ Retained:
 - `jyc-channels/src/gitee/client.rs` — REST client (polling + comment posting).
 - `jyc-channels/src/gitee/inbound.rs` — the poller, dedup/cursor state, and
   `GiteeMatcher` (pattern ordering, topic-name derivation).
-- The new `spawn_gitee_adapter` in `crates/jyc-cli/src/cli/serve/channels/gitee.rs`.
+- The new `spawn_gitee_adapter` in `crates/jyc-cli/src/cli/serve/channels/gitee.rs`
+  — later moved wholesale to `jyc-pipe` as `spawn_gitee_pipe` in
+  `crates/jyc-channels/src/pipe/gitee.rs` (pipe split step 4, see
+  `docs/architecture/pipe-split.md`).
 
 Removed: `GiteeOutboundAdapter` (whole file, plus its inclusion in `mod.rs`),
 and the `"gitee"` arms in `build_outbound_adapter` / `InboundSpawner::spawn`.
@@ -546,6 +557,8 @@ TopicManager/agent/outbound-adapter registration.
 ## See also
 
 - [Context](context.md) — how each agent shapes its LLM request
+- [Pipe process split](pipe-split.md) — which channels run in `jyc-pipe`
+  vs. in-process, and why
 - [`DESIGN.md`](../DESIGN.md) — system architecture overview
 - [`config.example.toml`](../config.example.toml) — full config reference
 - [`docs/channels/*.md`](../channels/) — per-channel setup guides

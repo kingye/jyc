@@ -27,14 +27,14 @@ JYC is a channel-agnostic AI agent that operates through messaging channels. Use
 > the legacy architecture and apply to the websocket channel synthesized by
 > an agent only.
 >
-> **Processes:** every pipe-only channel except email runs in a separate
-> process, `jyc-pipe`, which connects to the hub's websocket endpoint and owns
-> no topics, agents, or core state; the hub (`jyc` serve) claims only
-> agent/websocket and email channels, and hosts the inspect server. The
+> **Processes:** every pipe-only channel runs in a separate process,
+> `jyc-pipe`, which connects to the hub's websocket endpoint and owns no
+> topics, agents, or core state; the hub (`jyc` serve) claims only the
+> synthesized agent/websocket channel, and hosts the inspect server. The
 > ownership rule is the channel type (`pipe::SUPPORTED_CHANNEL_TYPES`), not a
-> config section, and the WeCom webhook listener (`[wecom].bind_addr`) belongs
-> to the pipe. See [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md);
-> email is the remaining step (5).
+> config section; the WeCom webhook listener (`[wecom].bind_addr`) and the
+> email mailbox cursor (`<workdir>/channels/<name>/.imap/`) belong to the pipe.
+> See [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md).
 
 ### High-Level Flow
 
@@ -250,7 +250,7 @@ Each component has a single, clear responsibility. Data flows through the system
 - Adds `Re:` to subject, sets `In-Reply-To` and `References` headers for References
 - Does NOT build quoted history, does NOT clean or transform content
 - **Structured error handling**: Uses lettre's structured SmtpError API for error classification: permanent errors (5xx) fail immediately, transient errors (4xx) retry with exponential backoff (3 attempts, 5-60s), connection/timeout errors reconnect with backoff (2 attempts).
-- **Shared instance**: A single `SmtpClient` is created by the pipe-only email channel at startup and shared by its reply forwarders (see `docs/architecture/overview.md`)
+- **Shared instance**: A single `SmtpClient` is created by the pipe-only email channel (`jyc-pipe`, `crates/jyc-channels/src/pipe/email.rs`) at startup and shared by its reply forwarders (see `docs/architecture/overview.md`)
 
 **Topic Event System**
 

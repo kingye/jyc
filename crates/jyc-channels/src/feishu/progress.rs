@@ -225,6 +225,10 @@ fn reuse_decision(existing: Option<&String>, prior_completed: bool) -> Option<St
 
 // Args are built inline at the pipe call site, which already sits next to
 // several local clones (same pattern as `spawn_feishu_adapter`).
+/// Watcher lifetime bound: even on a completely silent topic the
+/// watcher exits after this long.
+const MAX_LIFETIME: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_progress_watcher(
     feishu_client: Arc<FeishuClient>,
@@ -236,8 +240,6 @@ pub fn spawn_progress_watcher(
     cards: Arc<tokio::sync::Mutex<std::collections::HashMap<String, String>>>,
 ) {
     tokio::spawn(async move {
-        const MAX_LIFETIME: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
-
         // No bus (events disabled) → no status card at all.
         let Some(bus) = topic_manager.get_or_create_event_bus(&topic).await else {
             return;
@@ -246,7 +248,70 @@ pub fn spawn_progress_watcher(
             Ok(rx) => rx,
             Err(_) => return,
         };
+        run_watcher(
+            feishu_client,
+            topic,
+            chat_id,
+            start,
+            seen_after,
+            cards,
+            Some(topic_manager),
+            &mut rx,
+        )
+        .await;
+    });
+}
 
+/// Pipe-process variant: events arrive from the hub websocket
+/// (`topic_event` frames, filtered to this topic by the caller) instead
+/// of an in-process topic bus. No `TopicManager` exists in the pipe
+/// process, so the card omits the mode · model · context % display
+/// segments.
+pub fn spawn_progress_watcher_pipe(
+    feishu_client: Arc<FeishuClient>,
+    topic: String,
+    chat_id: String,
+    start: std::time::Instant,
+    seen_after: chrono::DateTime<chrono::Utc>,
+    cards: Arc<tokio::sync::Mutex<std::collections::HashMap<String, String>>>,
+    mut rx: tokio::sync::mpsc::Receiver<TopicEvent>,
+) {
+    tokio::spawn(async move {
+        run_watcher(
+            feishu_client,
+            topic,
+            chat_id,
+            start,
+            seen_after,
+            cards,
+            None,
+            &mut rx,
+        )
+        .await;
+    });
+}
+
+/// Display state for the card: live from the `TopicManager` when
+/// in-process, empty (segments omitted) in the pipe process.
+async fn fetch_display(tm: Option<&TopicManager>, topic: &str) -> TopicDisplayState {
+    match tm {
+        Some(tm) => tm.topic_display_state(topic).await,
+        None => TopicDisplayState::default(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_watcher(
+    feishu_client: Arc<FeishuClient>,
+    topic: String,
+    chat_id: String,
+    start: std::time::Instant,
+    seen_after: chrono::DateTime<chrono::Utc>,
+    cards: Arc<tokio::sync::Mutex<std::collections::HashMap<String, String>>>,
+    topic_manager: Option<Arc<TopicManager>>,
+    rx: &mut tokio::sync::mpsc::Receiver<TopicEvent>,
+) {
+    {
         // ── Phase 1: wait for the first fresh ProcessingStarted ─────────
         //
         // `seen_after` is captured by the caller *before routing*, so
@@ -310,7 +375,7 @@ pub fn spawn_progress_watcher(
             // Processing actually starts now — exclude the queue wait
             // from the elapsed time shown on the card.
             start = std::time::Instant::now();
-            let display = topic_manager.topic_display_state(&topic).await;
+            let display = fetch_display(topic_manager.as_deref(), &topic).await;
             let text = progress_card("⏳ 处理中", start.elapsed().as_secs(), 0, None, &display);
             // Dedup: another watcher of this topic may already have posted
             // this run's status message (a dormant watcher armed by the
@@ -445,7 +510,7 @@ pub fn spawn_progress_watcher(
             // Fetch display state (mode · model · context %) at render
             // time — small state-file reads, cheap enough per tick, so
             // mid-run /plan or /model switches show up on the next PATCH.
-            let display = topic_manager.topic_display_state(&topic).await;
+            let display = fetch_display(topic_manager.as_deref(), &topic).await;
             let preview = thinking_blocks.last().map(String::as_str);
             let text = match done {
                 Some((success, duration_secs)) => progress_card(
@@ -529,7 +594,7 @@ pub fn spawn_progress_watcher(
         if owns_entry {
             release_topic_card(&cards, &topic, &status_message_id).await;
         }
-    });
+    }
 }
 
 #[cfg(test)]

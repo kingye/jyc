@@ -9,7 +9,14 @@ wiring lands in step 3, feishu first). The websocket channel adapter
 moved from `jyc-channels` into `jyc-inspect` (`server::websocket`) —
 it is hub frontend (dashboard UI + pipe endpoint), not a peripheral
 channel; `jyc-channels` is now the pipe crate and no longer depends on
-`jyc-inspect`.
+`jyc-inspect`. Step 3 done (feishu
+migrated end-to-end: `jyc-pipe` hosts the feishu adapter — inbound
+`message` frames, reply relay with completion footer + attachment
+download, live status cards fed by `topic_event` frames (mode/model/
+context segments omitted — no `TopicManager` in the pipe), chat disband
+→ `close_topic`; `jyc serve` skips `[pipe] channels` in-process). Known
+gap: inbound attachments are not relayed (the hub `message` frame has no
+attachments field).
 
 ## Goal
 

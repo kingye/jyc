@@ -20,17 +20,15 @@ use tracing::Instrument;
 mod email;
 #[cfg(test)]
 mod tests;
-mod wecom;
 
 pub(crate) use email::spawn_email_adapter;
-pub(crate) use wecom::{spawn_wecom_adapter, spawn_wecomkf_adapter};
 
 // Pipe helpers shared with `jyc-pipe` live in `jyc_channels::pipe`;
 // re-exported so the remaining in-process pipe adapters keep working
 // until their channels migrate (docs/architecture/pipe-split.md).
 pub(crate) use jyc_channels::pipe::{
-    ReplyAttachmentRef, collect_pipe_target_channels, loopback_addr, match_and_retarget,
-    match_pipe, parse_reply_attachments, retarget_or_drop, warn_on_bad_pipe_patterns,
+    ReplyAttachmentRef, collect_pipe_target_channels, loopback_addr, match_pipe,
+    parse_reply_attachments, retarget_or_drop, warn_on_bad_pipe_patterns,
 };
 
 /// Re-target a piped inbound message into the target channel/topic, applying
@@ -79,7 +77,7 @@ pub(super) async fn wait_for_broadcast(
 /// Download one reply attachment from the inspect server, apply the
 /// operator's outbound policy, and stage it in a temp file.
 ///
-/// Shared by the pipe reply forwarders (email / wecom): the
+/// Shared by the email pipe reply forwarder: the
 /// upload APIs take a path, the validator takes a path, SMTP takes bytes —
 /// so both are returned. The temp file lives until the caller drops it.
 pub(super) async fn fetch_reply_attachment(

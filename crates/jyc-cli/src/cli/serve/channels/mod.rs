@@ -4,10 +4,10 @@
 
 use anyhow::Result;
 use jyc_channels::feishu::client::FeishuClient;
-use jyc_channels::websocket::inbound::{WebsocketInboundAdapter, WebsocketMatcher};
 use jyc_core::channel_orchestrator::ChannelOrchestrator;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::topic_manager::TopicManager;
+use jyc_inspect::server::websocket::inbound::{WebsocketInboundAdapter, WebsocketMatcher};
 use jyc_types::{
     ChannelConfig, ChannelInfo, ChannelMatcher, ChannelPattern, InboundAdapter,
     InboundAttachmentConfig,

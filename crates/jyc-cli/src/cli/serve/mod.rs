@@ -13,12 +13,12 @@ use jyc_agent::JycAgentService;
 use jyc_services::job_scheduler::JobScheduler;
 use std::collections::HashMap;
 
-use jyc_channels::websocket::inbound::WebsocketInboundAdapter;
 use jyc_channels::wecom::server::WecomWebhookServer;
 use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsCollector;
 use jyc_core::topic_manager::TopicManager;
+use jyc_inspect::server::websocket::inbound::WebsocketInboundAdapter;
 use jyc_types::OutboundAdapter;
 use jyc_types::{load_config_layered, validation};
 
@@ -385,7 +385,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         }
         let (broadcast_tx, _) = tokio::sync::broadcast::channel(64);
         let outbound: Arc<dyn OutboundAdapter> = Arc::new(
-            jyc_channels::websocket::outbound::WebsocketOutboundAdapter::new(
+            jyc_inspect::server::websocket::outbound::WebsocketOutboundAdapter::new(
                 broadcast_tx.clone(),
                 storage.clone(),
             ),

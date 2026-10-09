@@ -661,8 +661,8 @@ Both have the fields below, except `TopicSummary` **omits** `activity`,
   - `crates/jyc-inspect/src/client.rs` — `reqwest` client
   - `crates/jyc-inspect/src/scoped_ws.rs` — `ScopedWsHandler`
   - `crates/jyc-inspect/src/topic_proxy.rs` — `TopicProxyHandler`
-  - `crates/jyc-channels/src/websocket/inbound.rs` — `WebsocketInboundAdapter`
-  - `crates/jyc-channels/src/websocket/outbound.rs` — `WebsocketOutboundAdapter` (legacy `reply` event)
+  - `crates/jyc-inspect/src/server/websocket/inbound.rs` — `WebsocketInboundAdapter`
+  - `crates/jyc-inspect/src/server/websocket/outbound.rs` — `WebsocketOutboundAdapter` (legacy `reply` event)
 - Related docs:
   - `docs/channels/websocket.md` — websocket channel (user-facing)
   - `docs/tools.md` — agent tools

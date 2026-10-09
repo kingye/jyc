@@ -421,6 +421,6 @@ The workspace is reused across restarts, so conversation history is available to
 
 ## References
 
-- See `crates/jyc-channels/src/websocket/` for implementation
+- See `crates/jyc-inspect/src/server/websocket/` for implementation
 - See `crates/jyc-cli/src/cli/dashboard.rs` for dashboard chat pane
 - See `config.example.toml` for configuration example

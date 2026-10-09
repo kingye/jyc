@@ -4,6 +4,5 @@ pub mod feishu;
 mod git_host;
 pub mod gitee;
 pub mod github;
-pub mod websocket;
 pub mod wecom;
 pub mod wecom_bot;

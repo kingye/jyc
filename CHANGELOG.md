@@ -2,6 +2,8 @@
 
 ### Added
 
+- `jyc-pipe` gains `--log-file [PATH]`, aligned with `jyc`'s log destination semantics: writes to PATH, or `<data_home>/jyc-pipe.log` when the value is omitted; default remains stderr (under systemd the timestamp is dropped, matching `jyc`)
+
 - WebSocket hub protocol extensions for external pipe processes (`jyc-pipe`, see `docs/architecture/pipe-split.md`): inbound `message` frames accept an optional `metadata` map (pipe hints forwarded verbatim to the router), a `close_topic` client frame asks the hub to close a topic (`TopicManager::auto_close_topic`), and `topic_event` server frames stream the raw `TopicEvent` sequence to connected clients (1 Hz `LoopTick` heartbeats excluded)
 - New `jyc-pipe` binary (pipe process split step 2, `docs/architecture/pipe-split.md`): a standalone peripheral message-pipe process that connects to the hub websocket (`--hub`, defaults to `ws://<inspect.bind>/ws/agents`) with the inspect auth token, logs the reply/`topic_event` stream, and auto-reconnects with backoff. Channel adapter wiring lands in a later step
 - Feishu can now run in the external `jyc-pipe` process: channels listed under `[pipe] channels` are spawned by `jyc-pipe` (hub websocket client with reconnect backoff, reply relay, live status cards from `topic_event` frames, chat disband → `close_topic`) and skipped in-process by `jyc serve` (pipe split step 3, `docs/architecture/pipe-split.md`). Known gap: inbound attachments (images sent to the bot) are not relayed through the pipe protocol yet

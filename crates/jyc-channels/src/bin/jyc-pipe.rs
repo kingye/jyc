@@ -23,6 +23,7 @@ struct PipeArgs {
     workdir: Option<PathBuf>,
     config: Option<String>,
     hub: Option<String>,
+    log_file: Option<Option<PathBuf>>,
     verbose: bool,
 }
 
@@ -45,17 +46,21 @@ Options:
   -c, --config <FILE>   Config file (default: resolved like `jyc serve`)
       --hub <WS-URL>    Hub websocket origin (default: ws://<inspect.bind>,
                         derived from the config's [inspect] section)
+      --log-file [PATH] Write logs to PATH (no value: <data_home>/jyc-pipe.log);
+                        default: stderr
   -v, --verbose         Enable debug logging
   -h, --help            Print this help
 ";
 
-fn parse_args_from<I: Iterator<Item = String>>(mut it: I) -> Result<ParseOutcome> {
+fn parse_args_from<I: Iterator<Item = String>>(it: I) -> Result<ParseOutcome> {
     let mut args = PipeArgs {
         workdir: None,
         config: None,
         hub: None,
+        log_file: None,
         verbose: false,
     };
+    let mut it = it.peekable();
     while let Some(arg) = it.next() {
         let mut take_value = |flag: &str| -> Result<String> {
             it.next()
@@ -65,6 +70,12 @@ fn parse_args_from<I: Iterator<Item = String>>(mut it: I) -> Result<ParseOutcome
             "-w" | "--workdir" => args.workdir = Some(PathBuf::from(take_value("--workdir")?)),
             "-c" | "--config" => args.config = Some(take_value("--config")?),
             "--hub" => args.hub = Some(take_value("--hub")?),
+            // Optional value (clap-style `num_args = 0..=1`): consume the
+            // next argument as the path unless it looks like another flag.
+            "--log-file" => {
+                let value = it.next_if(|a| !a.starts_with('-'));
+                args.log_file = Some(value.map(PathBuf::from));
+            }
             "-v" | "--verbose" => args.verbose = true,
             "-h" | "--help" => return Ok(ParseOutcome::Help),
             other if other.starts_with("--workdir=") => {
@@ -75,6 +86,9 @@ fn parse_args_from<I: Iterator<Item = String>>(mut it: I) -> Result<ParseOutcome
             }
             other if other.starts_with("--hub=") => {
                 args.hub = Some(other["--hub=".len()..].to_string());
+            }
+            other if other.starts_with("--log-file=") => {
+                args.log_file = Some(Some(PathBuf::from(&other["--log-file=".len()..])));
             }
             other => anyhow::bail!("unknown argument: {other}\n\n{USAGE}"),
         }
@@ -130,17 +144,50 @@ fn resolve_hub_origin(hub_arg: Option<&str>, config: &jyc_types::AppConfig) -> R
     })
 }
 
+/// Log destination, mirroring `jyc`'s semantics: `--log-file [PATH]`
+/// (no value → `<data_home>/jyc-pipe.log`), default stderr. Under
+/// systemd (`JOURNAL_STREAM` set) stderr logs drop the timestamp —
+/// journal adds its own. Plain append-only file, no rotation (same
+/// trade-off as `jyc`: external logrotate if size-based rotation is
+/// needed); `Mutex<File>` serializes writes across threads.
+fn init_tracing(filter: &str, log_file: Option<Option<PathBuf>>) -> Result<()> {
+    let base = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter)),
+        )
+        .with_target(false)
+        .with_thread_ids(false);
+
+    let path = match log_file {
+        Some(Some(path)) => Some(path),
+        Some(None) => jyc_utils::paths::data_home().map(|home| home.join("jyc-pipe.log")),
+        None => None,
+    };
+    if let Some(path) = path {
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create log directory {}", parent.display()))?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("failed to open log file {}", path.display()))?;
+        base.with_writer(std::sync::Mutex::new(file)).init();
+    } else if std::env::var("JOURNAL_STREAM").is_ok() {
+        base.without_time().init();
+    } else {
+        base.init();
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = parse_args()?;
 
     let filter = if args.verbose { "debug" } else { "info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter)),
-        )
-        .init();
+    init_tracing(filter, args.log_file)?;
 
     let workdir = jyc_utils::config_resolve::resolve_workdir(args.workdir.as_ref())?;
     let resolution = jyc_utils::config_resolve::resolve_config(
@@ -185,6 +232,39 @@ mod tests {
 
     fn parse(argv: &[&str]) -> Result<ParseOutcome> {
         parse_args_from(argv.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn log_file_flag_without_value_uses_default_path() {
+        let ParseOutcome::Args(args) = parse(&["--log-file"]).unwrap() else {
+            panic!("expected Args");
+        };
+        assert_eq!(args.log_file, Some(None));
+    }
+
+    #[test]
+    fn log_file_consumes_following_value() {
+        let ParseOutcome::Args(args) = parse(&["--log-file", "/tmp/pipe.log"]).unwrap() else {
+            panic!("expected Args");
+        };
+        assert_eq!(args.log_file, Some(Some(PathBuf::from("/tmp/pipe.log"))));
+    }
+
+    #[test]
+    fn log_file_equals_form() {
+        let ParseOutcome::Args(args) = parse(&["--log-file=/tmp/x.log"]).unwrap() else {
+            panic!("expected Args");
+        };
+        assert_eq!(args.log_file, Some(Some(PathBuf::from("/tmp/x.log"))));
+    }
+
+    #[test]
+    fn log_file_before_another_flag_takes_no_value() {
+        let ParseOutcome::Args(args) = parse(&["--log-file", "-v"]).unwrap() else {
+            panic!("expected Args");
+        };
+        assert_eq!(args.log_file, Some(None));
+        assert!(args.verbose);
     }
 
     #[test]

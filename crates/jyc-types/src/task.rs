@@ -26,13 +26,13 @@ impl TaskStatus {
     /// a test pins the two together so the tool schema can't drift.
     pub const NAMES: &'static [&'static str] = &["pending", "in_progress", "completed"];
 
-    /// ASCII marker for the `/info` and TUI renderers, matching the plain
-    /// `+ / -` style of the changed-files section (and safe on every channel).
+    /// Marker for the `/info` and TUI renderers: completed items get a tick
+    /// (`✓`, a width-1 char, so `[✓]` has the same display width as `[x]`).
     pub fn marker(&self) -> &'static str {
         match self {
             TaskStatus::Pending => "[ ]",
             TaskStatus::InProgress => "[~]",
-            TaskStatus::Completed => "[x]",
+            TaskStatus::Completed => "[✓]",
         }
     }
 }
@@ -61,7 +61,7 @@ impl TaskList {
     }
 
     /// The section exactly as the user sees it: a `Tasks (done/total):` header,
-    /// then one `[ ]` / `[~]` / `[x]` line per item with its id.
+    /// then one `[ ]` / `[~]` / `[✓]` line per item with its id.
     ///
     /// `/info` and the agent's own tools both render through here, so the ids
     /// the model prints and the ids the user reads cannot drift. The TUI pane
@@ -136,7 +136,7 @@ mod tests {
             list.render_lines(),
             vec![
                 "Tasks (1/3):".to_string(),
-                "  [x] 1. a".to_string(),
+                "  [✓] 1. a".to_string(),
                 "  [~] 2. b".to_string(),
                 "  [ ] 7. c".to_string(),
             ]

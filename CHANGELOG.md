@@ -12,6 +12,7 @@
 
 ### Changed
 
+- Use [✓] tick instead of [x] for completed tasks and marked question options (#871)
 - The `[pipe]` config section introduced earlier in this release cycle is removed before any release: channel ownership between `jyc` and `jyc-pipe` is derived from the pipe's adapter capabilities (`pipe::SUPPORTED_CHANNEL_TYPES`) instead of a user-maintained channel list, so deploying the pipe split no longer requires touching config.toml. A leftover `[pipe]` section in an existing config is ignored
 - `jyc`'s log destination is unified: every invocation now writes tracing logs to `<data_home>/jyc.log` by default — the file is named after the binary, regardless of subcommand. Previously only bare `jyc` defaulted to the file, `jyc serve` defaulted to stderr, and `jyc dashboard` / `jyc open` wrote a separate `dashboard.log`. Use `--log-file PATH` to override, or `--log-file /dev/stderr` for stderr
 

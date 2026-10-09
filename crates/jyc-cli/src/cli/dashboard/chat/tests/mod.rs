@@ -1195,7 +1195,7 @@ fn question_box_shows_marks_for_multi_select() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        pane.contains("[x] 2. beta"),
+        pane.contains("[✓] 2. beta"),
         "a marked option carries a box even without the cursor:\n{pane}"
     );
     assert!(

@@ -1673,19 +1673,13 @@ mod shell_command_timeout_tests {
     }
 
     #[test]
-    fn pipe_config_parses_channels() {
-        let config = load_config_from_str("[ai]\n[pipe]\nchannels = [\"feishu\", \"work\"]\n")
-            .expect("config with [pipe] parses");
-        let pipe = config.pipe.expect("pipe section present");
-        assert_eq!(
-            pipe.channels,
-            vec!["feishu".to_string(), "work".to_string()]
-        );
-    }
-
-    #[test]
-    fn pipe_config_defaults_to_none() {
-        let config = load_config_from_str("[ai]").expect("minimal config parses");
-        assert!(config.pipe.is_none());
+    fn leftover_pipe_section_is_ignored() {
+        // The `[pipe]` section was removed in pipe split step 3 (channel
+        // ownership is derived from adapter capabilities). Configs that
+        // still carry it must keep parsing — AppConfig ignores unknown
+        // top-level sections.
+        let config = load_config_from_str("[ai]\n[pipe]\nchannels = [\"feishu\"]\n")
+            .expect("config with leftover [pipe] section parses");
+        assert!(config.channels.is_empty());
     }
 }

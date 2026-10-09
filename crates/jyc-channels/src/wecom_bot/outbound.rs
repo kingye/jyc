@@ -36,7 +36,7 @@ const FILE_MAX_SIZE: usize = 20 * 1024 * 1024;
 
 // ─── Public helpers exposed for the pipe adapter ───────────────────
 //
-// The pipe-only `spawn_wecom_bot_adapter` (jyc-cli) calls these
+// The pipe wiring (`crate::pipe::wecom_bot`) calls these
 // directly: the hub channel owns the reply lifecycle (footer, reply
 // context, session tokens, chat-log storage), so all that is left here
 // is the wire format. Keeping them as free functions leaves one

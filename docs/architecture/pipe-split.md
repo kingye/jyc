@@ -30,7 +30,15 @@ host the poller adapters (poll + dedup/cursor state stays under
 `[Role]`-prefixed comments, issue/PR close events forward `close_topic`
 frames; the hub-side feishu/github/gitee in-process wiring is deleted, so
 the `jyc` binary no longer references those adapters (adapter-only
-dependencies leave its link graph). Remaining: wecom_bot, wecom.
+dependencies leave its link graph). wecom_bot follows: the aibot WS
+callback adapter (streaming indicator, keep-alive spinner, proactive
+fallback + attachment relay) also runs in `jyc-pipe`, deleting the
+hub-side wiring; reply attachments download through the hub's files
+endpoint with the pipe's bearer token instead of the `jyc-inspect`
+client (no new dependency in `jyc-channels`). Remaining: wecom (and
+wecomkf, which shares the hub's webhook server with wecom — migrating
+either alone collides on the bind port, so they move together or the
+pipe takes the server).
 
 ## Goal
 

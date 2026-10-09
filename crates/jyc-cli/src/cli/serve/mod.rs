@@ -266,23 +266,6 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
             continue;
         }
 
-        // wecom_bot is also a pipe-only adapter (same architecture as
-        // feishu): protocol-only, no TopicManager/agent/orchestrator.
-        if channel_type == "wecom_bot" {
-            crate::cli::serve::channels::spawn_wecom_bot_adapter(
-                channel_config,
-                channel_name.clone(),
-                workdir,
-                inbound_attachment_config,
-                cancel.clone(),
-                &mut tasks,
-                config_for_spawn.clone(),
-                ws_broadcasts.clone(),
-                routers.clone(),
-            )?;
-            continue;
-        }
-
         // wecom (group bot callback) is a pipe-only adapter: webhook
         // registration on the shared WeCom server, pattern match, pipe
         // retarget, reply forwarders. No TopicManager/agent/orchestrator.

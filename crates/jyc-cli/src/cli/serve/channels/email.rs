@@ -40,7 +40,9 @@ struct EmailReplyState {
 /// Spawn a pipe-only email adapter: the IMAP monitor plus one reply
 /// forwarder per distinct pipe target channel.
 ///
-/// Mirrors `spawn_feishu_adapter` (see `docs/architecture/overview.md`).
+/// Mirrors the feishu pipe adapter
+/// (`crates/jyc-channels/src/pipe/feishu.rs`; see
+/// `docs/architecture/overview.md`).
 /// Differences specific to email:
 ///
 /// - Keeps a `StateManager` (`<workdir>/channels/<channel>/.imap/`): it

@@ -1,15 +1,16 @@
 //! External pipe process support (`jyc-pipe`).
 //!
-//! A pipe process hosts peripheral channel adapters (feishu first, then
-//! github / gitee / wecom / wecom_bot) that translate platform events and
+//! A pipe process hosts peripheral channel adapters (feishu, github,
+//! gitee, wecom_bot — wecom next) that translate platform events and
 //! forward messages to the hub over websocket — owning no topics, no
 //! agents, no core state. See `docs/architecture/pipe-split.md`.
 //!
-//! Two submodules:
+//! Submodules:
 //! - [`hub`]: one websocket connection per target hub channel, with
 //!   reconnect backoff and frame demux (`reply` / `topic_event`).
-//! - [`feishu`]: the feishu pipe wiring (adapter + reply relay + status
-//!   cards + disband → `close_topic`).
+//! - one module per channel type — [`feishu`], [`github`], [`gitee`],
+//!   [`wecom_bot`]: adapter wiring, reply relay, channel-specific
+//!   events (`close_topic`, status cards, …).
 //!
 //! The pattern-matching / retarget helpers below are shared with the
 //! in-process pipe adapters still living in `jyc-cli` (they move here as
@@ -28,6 +29,7 @@ pub mod feishu;
 pub mod gitee;
 pub mod github;
 pub mod hub;
+pub mod wecom_bot;
 
 pub use hub::{HubPipe, PipeTopicEvent};
 
@@ -36,7 +38,7 @@ pub use hub::{HubPipe, PipeTopicEvent};
 /// spawn for configured channels whose type appears here), so no config
 /// section is needed to coordinate the two processes. Extend this list as
 /// pipe split step 4 moves more channel types into the pipe process.
-pub const SUPPORTED_CHANNEL_TYPES: &[&str] = &["feishu", "github", "gitee"];
+pub const SUPPORTED_CHANNEL_TYPES: &[&str] = &["feishu", "github", "gitee", "wecom_bot"];
 
 /// Run the pipe process: claim every configured channel whose type this
 /// process can run, build one hub pipe per pipe-target channel its
@@ -113,6 +115,18 @@ pub async fn run(
             &mut tasks,
         )?;
     }
+    for (name, channel_config) in claimed.wecom_bot {
+        wecom_bot::spawn_wecom_bot_pipe(
+            &channel_config,
+            name,
+            config.clone(),
+            hubs.clone(),
+            files_base.clone(),
+            token.clone(),
+            cancel.clone(),
+            &mut tasks,
+        )?;
+    }
 
     tokio::select! {
         _ = cancel.cancelled() => Ok(()),
@@ -134,6 +148,7 @@ struct ClaimedChannels {
     feishu: Vec<(String, ChannelConfig)>,
     github: Vec<(String, ChannelConfig)>,
     gitee: Vec<(String, ChannelConfig)>,
+    wecom_bot: Vec<(String, ChannelConfig)>,
 }
 
 /// Select the configured channels this process owns: every channel whose
@@ -147,6 +162,7 @@ fn select_channels(config: &jyc_types::AppConfig) -> Result<ClaimedChannels> {
         feishu: Vec::new(),
         github: Vec::new(),
         gitee: Vec::new(),
+        wecom_bot: Vec::new(),
     };
     for (name, channel_config) in &config.channels {
         if !SUPPORTED_CHANNEL_TYPES.contains(&channel_config.channel_type.as_str()) {
@@ -161,6 +177,9 @@ fn select_channels(config: &jyc_types::AppConfig) -> Result<ClaimedChannels> {
             "feishu" => claimed.feishu.push((name.clone(), channel_config.clone())),
             "github" => claimed.github.push((name.clone(), channel_config.clone())),
             "gitee" => claimed.gitee.push((name.clone(), channel_config.clone())),
+            "wecom_bot" => claimed
+                .wecom_bot
+                .push((name.clone(), channel_config.clone())),
             other => anyhow::bail!(
                 "type '{other}' is in SUPPORTED_CHANNEL_TYPES but has no adapter in jyc-pipe"
             ),
@@ -169,7 +188,11 @@ fn select_channels(config: &jyc_types::AppConfig) -> Result<ClaimedChannels> {
             channel_config.patterns.as_deref().unwrap_or(&[]),
         ));
     }
-    if claimed.feishu.is_empty() && claimed.github.is_empty() && claimed.gitee.is_empty() {
+    if claimed.feishu.is_empty()
+        && claimed.github.is_empty()
+        && claimed.gitee.is_empty()
+        && claimed.wecom_bot.is_empty()
+    {
         anyhow::bail!(
             "no configured channels supported by jyc-pipe (supports: {}) — nothing to run",
             SUPPORTED_CHANNEL_TYPES.join(", ")
@@ -542,6 +565,42 @@ pub fn parse_reply_attachments(v: &serde_json::Value) -> Vec<ReplyAttachmentRef>
             })
         })
         .collect()
+}
+
+/// Download one reply attachment from the hub's files endpoint through the
+/// pipe's bearer token, spool it to a temp file, and apply the outbound
+/// attachment policy to it.
+///
+/// `att.url_path` is the relative URL from the reply broadcast's
+/// `attachments[].path` (leading slash included, percent-encoded). The
+/// caller uploads the returned file with its own channel client.
+pub(crate) async fn fetch_topic_file(
+    files_base: &str,
+    token: Option<&str>,
+    att: &ReplyAttachmentRef,
+    config: &jyc_types::AppConfig,
+) -> Result<tempfile::NamedTempFile> {
+    let mut req = reqwest::Client::new().get(format!("{files_base}{}", att.url_path));
+    if let Some(token) = token {
+        req = req.bearer_auth(token);
+    }
+    let bytes = req
+        .send()
+        .await
+        .context("failed to download topic file")?
+        .error_for_status()
+        .context("topic file request returned an error status")?
+        .bytes()
+        .await
+        .context("failed to read topic file body")?;
+
+    let tmp = tempfile::NamedTempFile::new()?;
+    tokio::fs::write(tmp.path(), &bytes).await?;
+    if let Some(cfg) = config.attachments.as_ref().and_then(|a| a.outbound.clone()) {
+        jyc_utils::attachment_validator::validate_outbound_file(tmp.path(), &att.filename, &cfg)
+            .await?;
+    }
+    Ok(tmp)
 }
 
 #[cfg(test)]

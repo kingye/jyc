@@ -21,11 +21,9 @@ mod email;
 #[cfg(test)]
 mod tests;
 mod wecom;
-mod wecom_bot;
 
 pub(crate) use email::spawn_email_adapter;
 pub(crate) use wecom::{spawn_wecom_adapter, spawn_wecomkf_adapter};
-pub(crate) use wecom_bot::spawn_wecom_bot_adapter;
 
 // Pipe helpers shared with `jyc-pipe` live in `jyc_channels::pipe`;
 // re-exported so the remaining in-process pipe adapters keep working

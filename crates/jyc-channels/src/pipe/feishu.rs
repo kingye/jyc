@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use jyc_core::duration::{DurationStyle, format_duration_secs};
 use jyc_types::{ChannelConfig, InboundAdapter, InboundMessage};
 use tokio::task::JoinHandle;
@@ -414,28 +414,7 @@ async fn relay_attachment(
 ) -> Result<()> {
     use crate::feishu::client::{feishu_file_type, is_image_content_type};
 
-    // `url_path` is the relative URL from the reply broadcast's
-    // `attachments[].path` (leading slash included, percent-encoded).
-    let mut req = reqwest::Client::new().get(format!("{files_base}{}", att.url_path));
-    if let Some(token) = token {
-        req = req.bearer_auth(token);
-    }
-    let bytes = req
-        .send()
-        .await
-        .context("failed to download topic file")?
-        .error_for_status()
-        .context("topic file request returned an error status")?
-        .bytes()
-        .await
-        .context("failed to read topic file body")?;
-
-    let tmp = tempfile::NamedTempFile::new()?;
-    tokio::fs::write(tmp.path(), &bytes).await?;
-    if let Some(cfg) = config.attachments.as_ref().and_then(|a| a.outbound.clone()) {
-        jyc_utils::attachment_validator::validate_outbound_file(tmp.path(), &att.filename, &cfg)
-            .await?;
-    }
+    let tmp = super::fetch_topic_file(files_base, token, att, config).await?;
 
     if is_image_content_type(&att.content_type) {
         let key = client.upload_image(tmp.path(), &att.filename).await?;

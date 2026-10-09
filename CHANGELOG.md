@@ -5,6 +5,10 @@
 - WebSocket hub protocol extensions for external pipe processes (`jyc-pipe`, see `docs/architecture/pipe-split.md`): inbound `message` frames accept an optional `metadata` map (pipe hints forwarded verbatim to the router), a `close_topic` client frame asks the hub to close a topic (`TopicManager::auto_close_topic`), and `topic_event` server frames stream the raw `TopicEvent` sequence to connected clients (1 Hz `LoopTick` heartbeats excluded)
 - New `jyc-pipe` binary (pipe process split step 2, `docs/architecture/pipe-split.md`): a standalone peripheral message-pipe process that connects to the hub websocket (`--hub`, defaults to `ws://<inspect.bind>/ws/agents`) with the inspect auth token, logs the reply/`topic_event` stream, and auto-reconnects with backoff. Channel adapter wiring lands in a later step
 
+### Changed
+
+- Internal restructure: the websocket channel adapter moved from `jyc-channels` to `jyc-inspect` (`server::websocket`) — it is hub frontend (dashboard UI + pipe endpoint), not a peripheral channel. `jyc-channels` is now the pipe crate and no longer depends on `jyc-inspect`; no behavior change
+
 ## [0.3.19] - 2026-10-09
 
 ### Added

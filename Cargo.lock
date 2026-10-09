@@ -1888,7 +1888,6 @@ dependencies = [
  "futures-util",
  "hex",
  "jyc-core",
- "jyc-inspect",
  "jyc-services",
  "jyc-types",
  "jyc-utils",
@@ -1999,6 +1998,7 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]

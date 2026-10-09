@@ -172,9 +172,9 @@ enum ClientMessage {
 type OnMessageCallback = Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>;
 
 /// Does NOT run its own TCP listener. Instead, it implements
-/// `jyc_inspect::server::WebsocketHandler` and is registered with the inspect
-/// server, which shares the same port for both JSON queries and WebSocket
-/// upgrades.
+/// [`WebsocketHandler`](crate::server::WebsocketHandler) and is registered
+/// with the inspect server, which shares the same port for both JSON queries
+/// and WebSocket upgrades.
 pub struct WebsocketInboundAdapter {
     channel_name: String,
     /// Broadcast sender — cloned for each new connection via `subscribe()`.
@@ -243,7 +243,7 @@ impl WebsocketInboundAdapter {
 }
 
 #[async_trait::async_trait]
-impl jyc_inspect::server::WebsocketHandler for WebsocketInboundAdapter {
+impl crate::server::WebsocketHandler for WebsocketInboundAdapter {
     async fn handle(
         &self,
         ws: axum::extract::ws::WebSocket,

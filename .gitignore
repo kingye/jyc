@@ -33,3 +33,4 @@ jyc-data
 /auth.token
 /nohup.out
 /jyc.log
+/jyc-pipe

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
-use jyc_channels::websocket::inbound::WebsocketInboundAdapter;
-use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_inspect::server::WebsocketHandler;
+use jyc_inspect::server::websocket::inbound::WebsocketInboundAdapter;
+use jyc_inspect::server::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_types::{InboundAdapter, InboundAdapterOptions, InboundMessage};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;

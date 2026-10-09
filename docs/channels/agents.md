@@ -216,6 +216,6 @@ Only the configuration syntax is different.
 
 ## References
 
-- See `crates/jyc-channels/src/websocket/` for transport implementation
+- See `crates/jyc-inspect/src/server/websocket/` for transport implementation
 - See `crates/jyc-cli/src/cli/serve/agents_synth.rs` for the synthesis logic
 - See `crates/jyc-types/src/config/agent.rs` for the `AgentConfig` type

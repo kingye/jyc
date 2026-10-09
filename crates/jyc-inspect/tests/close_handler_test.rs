@@ -3,13 +3,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-use jyc_channels::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_core::command::close_handler::CloseCommandHandler;
 use jyc_core::command::handler::{CommandContext, CommandHandler};
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsHandle;
 use jyc_core::static_agent::StaticAgentService;
 use jyc_core::topic_manager::TopicManager;
+use jyc_inspect::server::websocket::outbound::WebsocketOutboundAdapter;
 use jyc_types::{AppConfig, load_config_from_str};
 
 fn test_config() -> Arc<AppConfig> {

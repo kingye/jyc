@@ -772,6 +772,7 @@ mod exchange_route_auth_tests {
 
 mod activity;
 mod routes;
+pub mod websocket;
 
 pub use activity::ActivityTracker;
 pub(crate) use activity::*;

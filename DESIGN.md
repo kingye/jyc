@@ -1629,7 +1629,7 @@ Each agent mode implements this trait. Adding a new agent requires only implemen
 - Fallback: passes raw AI text to outbound adapter if MCP tool wasn't used
 - Does NOT know about: sessions, prompts, SSE, reply formatting, email quoting
 
-**OutboundAdapter** (e.g. `crates/jyc-channels/src/websocket/outbound.rs`) — Channel-specific reply lifecycle:
+**OutboundAdapter** (e.g. `crates/jyc-inspect/src/server/websocket/outbound.rs`) — Channel-specific reply lifecycle:
 
 - Builds channel-formatted reply (footer, formatting)
 - Sends via channel transport

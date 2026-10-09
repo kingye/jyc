@@ -1,19 +1,34 @@
-//! `wecom_bot` channel adapter wiring (extracted from serve/channels.rs).
+//! WeCom smart-bot (`wecom_bot`) pipe wiring: the aibot WS callback adapter
+//! running inside `jyc-pipe`, replacing the deleted in-process
+//! `spawn_wecom_bot_adapter` (`jyc-cli/src/cli/serve/channels/wecom_bot.rs`)
+//! over the hub websocket.
+//!
+//! - Inbound: `WecomBotInboundAdapter` (shared `WecomBotConnectionHandle`
+//!   populated by the WS connect callback) → pattern match → retarget →
+//!   `message` frame on the target channel's [`HubPipe`].
+//! - Replies: the pipe's reply stream → `finish=true` streaming update on
+//!   the opened stream (falling back to proactive `aibot_send_msg` when
+//!   the streaming window has closed), attachments via proactive send.
+//! - No close events (adapters run per message; the WeCom side has no
+//!   close-event stream).
+
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
-use jyc_channels::wecom_bot::inbound::{WecomBotInboundAdapter, WecomBotMatcher};
-use jyc_types::{ChannelConfig, InboundAdapter, InboundAttachmentConfig};
-use serde_json;
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
-use tokio::sync::broadcast;
+use jyc_types::{ChannelConfig, InboundAdapter};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use super::wecom::{relay_wecom_attachment, send_wecom_proactive_text};
-use super::*;
+use crate::wecom_bot;
+use crate::wecom_bot::client::WecomBotConnectionHandle;
+use crate::wecom_bot::inbound::{WecomBotInboundAdapter, WecomBotMatcher};
+
+use super::{
+    HubPipe, ReplyAttachmentRef, collect_pipe_target_channels, fetch_topic_file, match_pipe,
+    parse_reply_attachments, retarget_or_drop, warn_on_bad_pipe_patterns,
+};
 
 /// State tracked per piped topic for the wecom_bot reply forwarder.
 ///
@@ -27,7 +42,6 @@ use super::*;
 ///   outbound attachments. Storing it here avoids the forwarder having
 ///   to recompute it from the broadcast payload.
 #[derive(Debug, Clone)]
-
 struct WecomReplyState {
     req_id: String,
     stream_id: String,
@@ -46,16 +60,15 @@ const WECOM_KEEP_ALIVE_DEADLINE: std::time::Duration = std::time::Duration::from
 /// Braille spinner frames for the keep-alive "thinking…" indicator.
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Spawn a pipe-only wecom_bot adapter: the inbound adapter plus one
-/// reply forwarder per distinct pipe target channel.
+/// Spawn the wecom_bot pipe wiring: the inbound adapter plus one reply
+/// forwarder per distinct pipe target channel.
 ///
-/// Mirrors `spawn_feishu_adapter` (see `docs/architecture/overview.md`).
-/// Differences specific to wecom_bot:
+/// Mirrors `pipe::github::spawn_github_pipe`. Unlike full channels, owns
+/// no TopicManager/agent/orchestrator — all topics live in the pipe target
+/// (hub) channel. wecom_bot specifics:
 ///
 /// - Uses a shared `WecomBotConnectionHandle` (set by the inbound
-///   adapter on WS connect) instead of an HTTP client. The outbound
-///   adapter is intentionally NOT constructed — there is no
-///   `TopicManager`/agent/orchestrator wired for a pipe-only adapter.
+///   adapter on WS connect) instead of an HTTP client.
 /// - Sends a `finish=false` streaming reply immediately when a message
 ///   arrives (the user-visible "thinking" indicator). The streaming
 ///   window must be opened before the agent runs because the agent
@@ -67,23 +80,22 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 ///   the answer. Likewise, attachments always go via proactive
 ///   `aibot_send_msg` for the same reason.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn spawn_wecom_bot_adapter(
+pub(crate) fn spawn_wecom_bot_pipe(
     channel_config: &ChannelConfig,
     channel_name: String,
-    workdir: &Path,
-    inbound_attachment_config: Option<InboundAttachmentConfig>,
+    config: Arc<jyc_types::AppConfig>,
+    hubs: Arc<HashMap<String, Arc<HubPipe>>>,
+    files_base: Option<String>,
+    token: Option<String>,
     cancel: CancellationToken,
     tasks: &mut Vec<JoinHandle<()>>,
-    config_for_spawn: Arc<arc_swap::ArcSwap<jyc_types::AppConfig>>,
-    ws_broadcasts: std::sync::Arc<std::sync::Mutex<HashMap<String, broadcast::Sender<String>>>>,
-    routers: HubRegistry,
 ) -> Result<()> {
-    use jyc_channels::wecom_bot;
     let wecom_bot_config = channel_config
         .wecom_bot
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("channel '{channel_name}': missing wecom_bot config"))?
         .clone();
+    let inbound_attachment_config = config.attachments.as_ref().and_then(|a| a.inbound.clone());
 
     // wecom_bot is pipe-only: every enabled pattern must name a pipe
     // target (a websocket hub channel). Collect the distinct targets
@@ -93,58 +105,37 @@ pub(crate) fn spawn_wecom_bot_adapter(
         collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
     warn_on_bad_pipe_patterns("wecom_bot", &channel_name, channel_config);
 
-    let channel_span = tracing::info_span!("in", ch = %channel_name);
-    let workdir_for_task = workdir.to_path_buf();
+    // Pattern snapshot taken at startup (patterns may not change between
+    // the hub reading them and this pipe claiming the channel).
+    let patterns = channel_config.patterns.clone().unwrap_or_default();
 
-    let task = tokio::spawn(
+    let channel_span = tracing::info_span!("in", ch = %channel_name);
+
+    tasks.push(tokio::spawn(
         async move {
             // Shared WS connection handle; populated by the inbound
             // adapter's `on_connect` callback after subscribe.
-            let handle_arc: std::sync::Arc<
-                tokio::sync::Mutex<Option<wecom_bot::client::WecomBotConnectionHandle>>,
-            > = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+            let handle_arc: Arc<tokio::sync::Mutex<Option<WecomBotConnectionHandle>>> =
+                Arc::new(tokio::sync::Mutex::new(None));
 
             // topic → {req_id, stream_id, recipient} for the reply forwarder.
-            let topic_state: std::sync::Arc<
-                tokio::sync::Mutex<HashMap<String, WecomReplyState>>,
-            > = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-
-            // Inspect client for attachment downloads (None when inspect
-            // is disabled — text relaying still works, attachments are
-            // dropped with a warning, same as feishu).
-            let inspect_client = {
-                let cfg = config_for_spawn.load();
-                cfg.inspect.as_ref().filter(|i| i.enabled).map(|i| {
-                    let token = jyc_utils::auth_token::read_token(
-                        &jyc_utils::auth_token::token_path(&workdir_for_task),
-                    )
-                    .ok();
-                    jyc_inspect::client::InspectClient::with_token(
-                        &loopback_addr(&i.bind),
-                        token.as_deref(),
-                    )
-                })
-            };
+            let topic_state: Arc<tokio::sync::Mutex<HashMap<String, WecomReplyState>>> =
+                Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
             // One reply forwarder per distinct pipe target channel.
-            for channel in &pipe_channels {
-                let ws_broadcasts = ws_broadcasts.clone();
+            for target in &pipe_channels {
+                let Some(hub) = hubs.get(target).cloned() else {
+                    continue;
+                };
                 let topic_state = topic_state.clone();
                 let handle_arc = handle_arc.clone();
-                let channel = channel.clone();
-                let inspect_client = inspect_client.clone();
-                let config_for_relay = config_for_spawn.clone();
+                let files_base = files_base.clone();
+                let token = token.clone();
+                let config = config.clone();
+                let target = target.clone();
                 tokio::spawn(async move {
-                    let Some(broadcast_tx) = wait_for_broadcast(&ws_broadcasts, &channel).await
-                    else {
-                        tracing::error!(
-                            channel = %channel,
-                            "wecom_bot pipe: target channel broadcast never appeared (is it a websocket channel?), reply forwarder not started"
-                        );
-                        return;
-                    };
-                    let mut rx = broadcast_tx.subscribe();
-                    tracing::info!(channel = %channel, "wecom_bot pipe reply forwarder subscribed");
+                    let mut rx = hub.subscribe_replies();
+                    tracing::info!(channel = %target, "wecom_bot pipe reply forwarder subscribed");
                     while let Ok(payload) = rx.recv().await {
                         let v: serde_json::Value = match serde_json::from_str(&payload) {
                             Ok(v) => v,
@@ -199,26 +190,23 @@ pub(crate) fn spawn_wecom_bot_adapter(
                         //    846604. Fall back to proactive
                         //    aibot_send_msg so the user still receives
                         //    the answer.
-                        let streamed = wecom_bot::send_stream_reply_and_wait(
-                            &handle,
-                            &state.req_id,
-                            &state.stream_id,
-                            text,
-                            true,
-                        )
-                        .await;
+                        let streamed =
+                            wecom_bot::send_stream_reply_and_wait(
+                                &handle,
+                                &state.req_id,
+                                &state.stream_id,
+                                text,
+                                true,
+                            )
+                            .await;
                         if let Err(e) = streamed {
                             tracing::warn!(
                                 error = format!("{e:#}"),
                                 topic = %topic,
                                 "wecom_bot pipe: stream reply rejected, falling back to proactive send"
                             );
-                            if let Err(e2) = send_wecom_proactive_text(
-                                &handle,
-                                &state.recipient,
-                                text,
-                            )
-                            .await
+                            if let Err(e2) =
+                                send_wecom_proactive_text(&handle, &state.recipient, text).await
                             {
                                 tracing::error!(
                                     error = format!("{e2:#}"),
@@ -230,7 +218,7 @@ pub(crate) fn spawn_wecom_bot_adapter(
 
                         // 2. Relay attachments via proactive aibot_send_msg.
                         for att in parse_reply_attachments(&v) {
-                            let Some(inspect) = &inspect_client else {
+                            let Some(files_base) = files_base.as_deref() else {
                                 tracing::warn!(
                                     filename = %att.filename,
                                     "wecom_bot pipe: attachment dropped (inspect server disabled)"
@@ -239,10 +227,11 @@ pub(crate) fn spawn_wecom_bot_adapter(
                             };
                             if let Err(e) = relay_wecom_attachment(
                                 &handle,
-                                inspect,
+                                files_base,
+                                token.as_deref(),
                                 &state.recipient,
                                 &att,
-                                &config_for_relay,
+                                &config,
                             )
                             .await
                             {
@@ -257,26 +246,16 @@ pub(crate) fn spawn_wecom_bot_adapter(
                 });
             }
 
-            let adapter = WecomBotInboundAdapter::with_shared_handle(
-                &wecom_bot_config,
-                channel_name.clone(),
-                handle_arc.clone(),
-            );
+            let adapter =
+                WecomBotInboundAdapter::with_shared_handle(&wecom_bot_config, channel_name.clone(), handle_arc.clone());
 
             let options = jyc_types::InboundAdapterOptions {
                 on_message: Box::new(move |message| {
-                    let config_for_pipe = config_for_spawn.clone();
+                    let hubs = hubs.clone();
+                    let patterns = patterns.clone();
                     let topic_state = topic_state.clone();
                     let handle_arc = handle_arc.clone();
-                    let channel_name_self = channel_name.clone();
-                    let routers = routers.clone();
                     tokio::spawn(async move {
-                        let patterns = config_for_pipe
-                            .load()
-                            .channels
-                            .get(&channel_name_self)
-                            .and_then(|c| c.patterns.clone())
-                            .unwrap_or_default();
                         let Some((_pm, pattern)) =
                             match_pipe("wecom_bot", &WecomBotMatcher, &message, &patterns)
                         else {
@@ -292,15 +271,15 @@ pub(crate) fn spawn_wecom_bot_adapter(
                             return;
                         };
 
-                        // 4. Send the streaming "thinking" indicator
-                        //    (finish=false) immediately. The streaming
-                        //    window must be opened before the agent runs
-                        //    because the agent can take minutes and the
-                        //    WeCom passive reply window is short. No-op
-                        //    when the handle is not yet set or the
-                        //    original message lacks a req_id (a
-                        //    configured edge case — the reply can still
-                        //    be relayed without an indicator).
+                        // Send the streaming "thinking" indicator
+                        // (finish=false) immediately. The streaming
+                        // window must be opened before the agent runs
+                        // because the agent can take minutes and the
+                        // WeCom passive reply window is short. No-op
+                        // when the handle is not yet set or the
+                        // original message lacks a req_id (a
+                        // configured edge case — the reply can still
+                        // be relayed without an indicator).
                         let req_id = message
                             .metadata
                             .get("req_id")
@@ -325,8 +304,8 @@ pub(crate) fn spawn_wecom_bot_adapter(
                             );
                         }
 
-                        // 5. Record resolved topic → streaming state for
-                        //    the reply forwarder (and the keep-alive).
+                        // Record resolved topic → streaming state for
+                        // the reply forwarder (and the keep-alive).
                         let resolved_topic = message.topic.clone();
                         let resolved_state = WecomReplyState {
                             req_id: req_id.unwrap_or_default(),
@@ -338,15 +317,15 @@ pub(crate) fn spawn_wecom_bot_adapter(
                             .await
                             .insert(resolved_topic.clone(), resolved_state.clone());
 
-                        // 5.5. Spawn keep-alive task to keep the streaming
-                        //      window open during long agent runs. Sends
-                        //      `finish=false` with a rotating spinner every
-                        //      WECOM_KEEP_ALIVE_INTERVAL. Self-terminates
-                        //      when the reply is delivered (state removed
-                        //      by the forwarder) or when the safety
-                        //      deadline expires. No-op when the original
-                        //      message lacked a req_id (no stream was
-                        //      opened, so nothing to keep alive).
+                        // Spawn keep-alive task to keep the streaming
+                        // window open during long agent runs. Sends
+                        // `finish=false` with a rotating spinner every
+                        // WECOM_KEEP_ALIVE_INTERVAL. Self-terminates
+                        // when the reply is delivered (state removed
+                        // by the forwarder) or when the safety
+                        // deadline expires. No-op when the original
+                        // message lacked a req_id (no stream was
+                        // opened, so nothing to keep alive).
                         if !resolved_state.req_id.is_empty() {
                             let keep_alive_handle_arc = handle_arc.clone();
                             let keep_alive_topic_state = topic_state.clone();
@@ -385,10 +364,8 @@ pub(crate) fn spawn_wecom_bot_adapter(
                                     }
                                     let frame = SPINNER_FRAMES[frame_idx % SPINNER_FRAMES.len()];
                                     let elapsed = started.elapsed().as_secs();
-                                    let content = format!(
-                                        "{} 正在处理中... (已用 {}s)",
-                                        frame, elapsed
-                                    );
+                                    let content =
+                                        format!("{} 正在处理中... (已用 {}s)", frame, elapsed);
                                     if let Some(handle) =
                                         keep_alive_handle_arc.lock().await.clone()
                                         && let Err(e) = wecom_bot::send_stream_reply(
@@ -411,10 +388,22 @@ pub(crate) fn spawn_wecom_bot_adapter(
                             });
                         }
 
-                        // 6. Route through the target channel's own
-                        //    MessageRouter (identical to a chat-pane
-                        //    message — topic_path/template/skills apply).
-                        route_into_pipe_target("wecom_bot", &routers, pipe, message).await;
+                        // Send the frame to the hub pipe for the
+                        // retargeted channel.
+                        let Some(hub) = hubs.get(&message.channel) else {
+                            tracing::warn!(
+                                channel = %message.channel,
+                                "wecom_bot pipe: no hub pipe for target channel, dropping"
+                            );
+                            return;
+                        };
+                        hub.send_message(
+                            &message.topic,
+                            message.content.text.as_deref().unwrap_or(""),
+                            &message.sender,
+                            &message.sender_address,
+                            message.metadata,
+                        );
                     });
                     Ok(())
                 }),
@@ -423,7 +412,7 @@ pub(crate) fn spawn_wecom_bot_adapter(
                 on_error: Box::new(|error| {
                     tracing::error!(error = %error, "WeCom Bot inbound error");
                 }),
-                attachment_config: inbound_attachment_config.clone(),
+                attachment_config: inbound_attachment_config,
             };
 
             if let Err(e) = adapter.start(options, cancel).await {
@@ -431,7 +420,76 @@ pub(crate) fn spawn_wecom_bot_adapter(
             }
         }
         .instrument(channel_span),
+    ));
+    Ok(())
+}
+
+/// Send a proactive text message via `aibot_send_msg`, keyed by the
+/// recipient (group chatid or single userid).
+///
+/// Fallback path when the streaming `finish=true` ack is rejected
+/// (typically errcode 846604 — the WeCom passive-reply window has
+/// closed, common for long agent runs). The body wire format is built
+/// by the shared `build_proactive_text_body` helper.
+async fn send_wecom_proactive_text(
+    handle: &WecomBotConnectionHandle,
+    recipient: &str,
+    text: &str,
+) -> Result<()> {
+    let body = wecom_bot::build_proactive_text_body(recipient, text);
+    send_aibot_msg(handle, body).await?;
+    tracing::info!(
+        recipient = %recipient,
+        text_len = text.len(),
+        "wecom_bot pipe: proactive text reply sent"
     );
-    tasks.push(task);
+    Ok(())
+}
+
+/// Wrap one `aibot_send_msg` body in the cmd envelope and push it onto
+/// the shared WS handle's sender.
+async fn send_aibot_msg(handle: &WecomBotConnectionHandle, body: serde_json::Value) -> Result<()> {
+    let req_id = wecom_bot::client::generate_req_id("aibot_send_msg");
+    let json = serde_json::json!({
+        "cmd": "aibot_send_msg",
+        "headers": {"req_id": req_id},
+        "body": body,
+    })
+    .to_string();
+    handle
+        .sender
+        .send(json)
+        .map_err(|e| anyhow::anyhow!("wecom_bot pipe: failed to send aibot_send_msg: {e}"))?;
+    Ok(())
+}
+
+/// Download one reply attachment from the hub's files endpoint, upload
+/// it to WeCom media, and send the media message via `aibot_send_msg`
+/// (proactive) keyed by the recipient.
+///
+/// Same wiring as feishu's `relay_attachment`, sharing the download +
+/// outbound-policy check (`fetch_topic_file`) and differing only in the
+/// upload/send calls. Proactive send is used here instead of
+/// `aibot_respond_msg` because the agent's reply is async and the WeCom
+/// passive reply window may have closed by the time the forwarder
+/// relays attachments.
+async fn relay_wecom_attachment(
+    handle: &WecomBotConnectionHandle,
+    files_base: &str,
+    token: Option<&str>,
+    recipient: &str,
+    att: &ReplyAttachmentRef,
+    config: &jyc_types::AppConfig,
+) -> Result<()> {
+    use crate::wecom_bot::{build_media_message_body, upload_attachment, wecom_media_type};
+
+    let tmp = fetch_topic_file(files_base, token, att, config).await?;
+
+    let media_id = upload_attachment(handle, tmp.path(), &att.filename, &att.content_type).await?;
+    let media_type = wecom_media_type(&att.content_type, &att.filename);
+    let mut body = build_media_message_body(media_type, &media_id);
+    body["chatid"] = serde_json::Value::String(recipient.to_string());
+    send_aibot_msg(handle, body).await?;
+    tracing::info!(filename = %att.filename, recipient = %recipient, "wecom_bot pipe: attachment relayed");
     Ok(())
 }

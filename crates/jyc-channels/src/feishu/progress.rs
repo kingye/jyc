@@ -224,7 +224,7 @@ fn reuse_decision(existing: Option<&String>, prior_completed: bool) -> Option<St
 }
 
 // Args are built inline at the pipe call site, which already sits next to
-// several local clones (same pattern as `spawn_feishu_adapter`).
+// several local clones (same pattern as the feishu pipe adapter).
 /// Watcher lifetime bound: even on a completely silent topic the
 /// watcher exits after this long.
 const MAX_LIFETIME: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);

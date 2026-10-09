@@ -19,7 +19,8 @@ use super::*;
 
 /// Spawn a wecom (group bot callback) pipe-only adapter.
 ///
-/// Mirrors spawn_wecom_bot_adapter. Protocol only: webhook registration
+/// Same shape as the wecom_bot pipe adapter
+/// (`jyc_channels::pipe::wecom_bot`). Protocol only: webhook registration
 /// via the shared WecomWebhookServer, pattern match, pipe retarget, and a
 /// reply forwarder per pipe target channel. No TopicManager / agent /
 /// orchestrator — the hub owns all of that.
@@ -367,80 +368,5 @@ pub(crate) fn spawn_wecomkf_adapter(
         .instrument(channel_span),
     );
     tasks.push(task);
-    Ok(())
-}
-
-/// Download one reply attachment from the inspect server, upload it to
-/// the WeCom user via the shared WebSocket handle, and send the media
-/// message via `aibot_send_msg` (proactive) keyed by the recipient.
-///
-/// Mirrors `relay_attachment` (feishu). Proactive send is used here
-/// instead of `aibot_respond_msg` because the agent's reply is async
-/// and the WeCom passive reply window may have closed by the time the
-/// forwarder relays attachments.
-pub(super) async fn relay_wecom_attachment(
-    handle: &jyc_channels::wecom_bot::client::WecomBotConnectionHandle,
-    inspect: &jyc_inspect::client::InspectClient,
-    recipient: &str,
-    att: &ReplyAttachmentRef,
-    config: &arc_swap::ArcSwap<jyc_types::AppConfig>,
-) -> Result<()> {
-    use jyc_channels::wecom_bot::{build_media_message_body, upload_attachment, wecom_media_type};
-
-    let (_bytes, tmp) = fetch_reply_attachment(inspect, att, config).await?;
-
-    let media_id = upload_attachment(handle, tmp.path(), &att.filename, &att.content_type).await?;
-    let media_type = wecom_media_type(&att.content_type, &att.filename);
-    let mut body = build_media_message_body(media_type, &media_id);
-    body["chatid"] = serde_json::Value::String(recipient.to_string());
-
-    let req_id = jyc_channels::wecom_bot::client::generate_req_id("aibot_send_msg");
-    let json = serde_json::json!({
-        "cmd": "aibot_send_msg",
-        "headers": {"req_id": req_id},
-        "body": body,
-    })
-    .to_string();
-
-    handle
-        .sender
-        .send(json)
-        .map_err(|e| anyhow::anyhow!("wecom_bot pipe: failed to send attachment: {e}"))?;
-    tracing::info!(
-        filename = %att.filename,
-        recipient = %recipient,
-        "wecom_bot pipe: attachment relayed"
-    );
-    Ok(())
-}
-
-/// Send a text reply via proactive `aibot_send_msg` to the recipient.
-///
-/// Fallback path when the streaming `finish=true` ack is rejected
-/// (typically errcode 846604 — the WeCom passive-reply window has
-/// closed, common for long agent runs). The body wire format is built
-/// by the shared `build_proactive_text_body` helper.
-pub(super) async fn send_wecom_proactive_text(
-    handle: &jyc_channels::wecom_bot::client::WecomBotConnectionHandle,
-    recipient: &str,
-    text: &str,
-) -> Result<()> {
-    let body = jyc_channels::wecom_bot::build_proactive_text_body(recipient, text);
-    let req_id = jyc_channels::wecom_bot::client::generate_req_id("aibot_send_msg");
-    let json = serde_json::json!({
-        "cmd": "aibot_send_msg",
-        "headers": {"req_id": req_id},
-        "body": body,
-    })
-    .to_string();
-    handle
-        .sender
-        .send(json)
-        .map_err(|e| anyhow::anyhow!("wecom_bot pipe: proactive text send failed: {e}"))?;
-    tracing::info!(
-        recipient = %recipient,
-        text_len = text.len(),
-        "wecom_bot pipe: proactive text reply sent"
-    );
     Ok(())
 }

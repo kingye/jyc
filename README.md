@@ -123,7 +123,7 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 - **Authentication:** TLS/SSL with username/password or OAuth2
 
 ### ✅ GitHub
-- **Status:** Production ready (implemented in v0.1.10)
+- **Status:** Production ready (implemented in v0.1.10); pipe-only channel, runs in `jyc-pipe` (see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
 - **Features:** Issue/PR comments, label-based routing, multi-agent workflow
 - **Protocols:** REST API polling (inbound), REST API (outbound)
 - **Authentication:** Personal Access Token (PAT)
@@ -148,14 +148,14 @@ JYC is designed to be channel-agnostic. Currently implemented channels:
 - **Model:** Topic scoping via `pipe.topic` placeholders (`${msg.open_kfid}_${msg.external_userid}`)
 
 ### ✅ WeCom Smart Robot (wecom_bot)
-- **Status:** Implemented in v0.3.11
+- **Status:** Implemented in v0.3.11; pipe-only channel, runs in `jyc-pipe` (see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
 - **Features:** Smart Robot messaging via persistent WebSocket, streaming replies, and outbound attachment upload
 - **Protocols:** WebSocket long connection for both inbound and outbound
 - **Authentication:** Bot ID + long-connection secret
 - **Attachments:** File, image, voice, and video upload via WebSocket media upload protocol
 
 ### ✅ Gitee
-- **Status:** Implemented in v0.3.10
+- **Status:** Implemented in v0.3.10; pipe-only channel, runs in `jyc-pipe` (see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
 - **Features:** Multi-agent workflow on Gitee issues and Pull Requests
 - **Protocols:** REST API v5 polling (inbound), REST API (outbound)
 - **Agents:** Planner, Developer, Reviewer templates
@@ -410,8 +410,10 @@ Key sections:
   unlike Chat Completions supports tools + reasoning together)
 - **`[inspect]`** -- Inspect server settings (enabled, bind address,
   `base_url` for links that leave the server, e.g. `/exchange` share links)
-- **`[pipe]`** -- Channels run by the external `jyc-pipe` process instead of
-  in-process (`channels = ["feishu"]`); `jyc serve` skips them
+- **Pipe-only channels** (no config section needed) -- `feishu`, `github`,
+  `gitee`, and `wecom_bot` run in the external `jyc-pipe` process, and
+  `jyc serve` skips them in-process (ownership follows the channel type:
+  see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
 - **`[vision]`** -- DEPRECATED: Vision is now configured via `[[mcps]]` (see `config.example.toml` for the new approach)
 - **`[attachments]`** -- Inbound/outbound attachment settings
 

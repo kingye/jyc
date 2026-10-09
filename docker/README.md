@@ -5,7 +5,7 @@ Run JYC as a containerized service.
 ## Architecture
 
 - **Multi-stage build**: `builder` (compile) → `slim` (minimal runtime) → `full` (dev tools) → `production`
-- **Single binary**: `jyc` (the MCP reply tool is a hidden subcommand `jyc mcp-reply-tool`).
+- **Two binaries**: `jyc` (hub: agent core + inspect server; the MCP reply tool is a hidden subcommand `jyc mcp-reply-tool`) and `jyc-pipe` (peripheral pipe process, hosting every pipe-only channel adapter). Compose starts both — see [docs/architecture/pipe-split.md](../docs/architecture/pipe-split.md).
 - **Host networking**: Container shares host network (`network_mode: host`), so services on `localhost` are accessible from inside the container.
 
 ## Image Variants
@@ -121,6 +121,22 @@ podman logs -f jyc
 
 ```bash
 docker compose restart jyc
+docker compose restart jyc-pipe
+```
+
+### 5. Pipe process
+
+`jyc-pipe` hosts the pipe-only channel adapters (feishu, github, gitee,
+wecom_bot, wecom, wecomkf, email); `jyc serve` skips those channels
+in-process. The compose file starts it as a second service that reuses the
+hub's definition (same image, config, data directory and credentials — it
+needs the inspect auth token and the channel state, e.g. the IMAP mailbox
+cursor), overriding only the binary. It reconnects to the hub with backoff,
+so start order does not matter.
+
+```bash
+docker compose logs -f jyc-pipe
+docker compose restart jyc-pipe
 ```
 
 ## Volume Mounts
@@ -149,6 +165,8 @@ volumes:
 Check container logs:
 ```bash
 docker compose logs -f jyc
+# pipe-only channels (feishu, github, gitee, wecom, email, ...) log here:
+docker compose logs -f jyc-pipe
 ```
 
 ### Build fails behind a proxy

@@ -172,9 +172,9 @@ enum ClientMessage {
 type OnMessageCallback = Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>;
 
 /// Does NOT run its own TCP listener. Instead, it implements
-/// [`WebsocketHandler`](super::WebsocketHandler) and is registered with the
-/// inspect server, which shares the same port for both JSON queries and
-/// WebSocket upgrades.
+/// [`WebsocketHandler`](crate::server::WebsocketHandler) and is registered
+/// with the inspect server, which shares the same port for both JSON queries
+/// and WebSocket upgrades.
 pub struct WebsocketInboundAdapter {
     channel_name: String,
     /// Broadcast sender — cloned for each new connection via `subscribe()`.

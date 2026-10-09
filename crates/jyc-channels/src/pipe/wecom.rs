@@ -83,7 +83,6 @@ pub(crate) async fn start_webhook_server(
 /// split's protocol boundaries: webhook registration on the shared
 /// server, pattern match, re-target, and text replies via `WecomSender`.
 /// No TopicManager / agent / orchestrator — the hub owns all of that.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_wecom_pipe(
     channel_config: &ChannelConfig,
     channel_name: String,
@@ -250,7 +249,6 @@ pub(crate) fn spawn_wecom_pipe(
 /// msgid dedup) — same precedent as email's IMAP cursor and github's
 /// dedup store. Replies go out via `kf/send_msg` (text only; attachments
 /// are not relayed, same as the pre-migration behavior).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_wecomkf_pipe(
     channel_config: &ChannelConfig,
     channel_name: String,

@@ -542,10 +542,12 @@ fn select_channels_errors_when_nothing_supported() {
 /// surface at startup instead of 404ing every WeCom callback.
 #[tokio::test]
 async fn start_webhook_server_fails_on_unbindable_addr() {
-    let mut config = jyc_types::AppConfig::default();
-    config.wecom = Some(jyc_types::WecomGlobalConfig {
-        bind_addr: "not-an-address".to_string(),
-    });
+    let config = jyc_types::AppConfig {
+        wecom: Some(jyc_types::WecomGlobalConfig {
+            bind_addr: "not-an-address".to_string(),
+        }),
+        ..Default::default()
+    };
 
     let err = super::wecom::start_webhook_server(&config, CancellationToken::new())
         .await

@@ -497,6 +497,9 @@ fn select_channels_claims_supported_types_without_config_section() {
         .insert("jin_repo".to_string(), channel_config("github"));
     config
         .channels
+        .insert("gitee_repo".to_string(), channel_config("gitee"));
+    config
+        .channels
         .insert("wecom_work".to_string(), channel_config("wecom"));
 
     let claimed = select_channels(&config).unwrap();
@@ -504,6 +507,8 @@ fn select_channels_claims_supported_types_without_config_section() {
     assert_eq!(claimed.feishu[0].0, "feishu_bot");
     assert_eq!(claimed.github.len(), 1);
     assert_eq!(claimed.github[0].0, "jin_repo");
+    assert_eq!(claimed.gitee.len(), 1);
+    assert_eq!(claimed.gitee[0].0, "gitee_repo");
 }
 
 #[test]
@@ -521,4 +526,94 @@ fn select_channels_errors_when_nothing_supported() {
 fn select_channels_errors_on_empty_config() {
     let config = jyc_types::AppConfig::default();
     assert!(select_channels(&config).is_err());
+}
+
+// ---- close_event_topics ----
+// (moved from jyc-cli's channels tests when the gitee adapter migrated
+// into jyc-pipe — the helper's only remaining caller)
+
+/// Regression for #611: a close event must resolve its topics from config,
+/// not from the in-memory routing map (empty after a restart). Type-gated
+/// placeholders keep an issue close from touching PR topics.
+#[test]
+fn close_event_topics_renders_number_templates() {
+    let patterns = vec![
+        pattern_with(agent_pipe_target(
+            "jyc_git_planner",
+            Some("plan-${msg.issue_number}"),
+        )),
+        pattern_with(agent_pipe_target("jyc_git", Some("dev-${msg.pr_number}"))),
+    ];
+
+    // Issue close → only the issue_number template resolves.
+    assert_eq!(
+        close_event_topics(&patterns, 607, "issue", "jyc"),
+        vec![("plan-607".to_string(), "agents".to_string())]
+    );
+    // PR close → only the pr_number template resolves.
+    assert_eq!(
+        close_event_topics(&patterns, 609, "pull_request", "jyc"),
+        vec![("dev-609".to_string(), "agents".to_string())]
+    );
+}
+
+/// A static `pipe.topic` collects many items into one shared topic, so
+/// closing one item must never delete it. Disabled patterns are ignored.
+#[test]
+fn close_event_topics_skips_static_and_disabled() {
+    let patterns = vec![
+        pattern_with(agent_pipe_target("jyc_git", Some("shared-inbox"))),
+        jyc_types::ChannelPattern {
+            name: "disabled".to_string(),
+            enabled: false,
+            pipe: Some(agent_pipe_target(
+                "jyc_git",
+                Some("plan-${msg.issue_number}"),
+            )),
+            ..Default::default()
+        },
+    ];
+    assert!(close_event_topics(&patterns, 607, "issue", "jyc").is_empty());
+}
+
+/// `${msg.repo}` disambiguates two channels piping into one agent, and the
+/// legacy `pipe.channel` form resolves to that channel as the hub.
+#[test]
+fn close_event_topics_repo_placeholder_and_legacy_channel() {
+    let patterns = vec![pattern_with(pipe_target(
+        None,
+        Some("review-${msg.repo}-${msg.pr_number}"),
+    ))];
+    assert_eq!(
+        close_event_topics(&patterns, 42, "pull_request", "jyc"),
+        vec![("review-jyc-42".to_string(), "local_dev".to_string())]
+    );
+}
+
+/// The legacy form may carry the template in `pipe.pattern` when
+/// `pipe.topic` is absent — mirror apply_pipe_retarget's fallback.
+#[test]
+fn close_event_topics_legacy_pattern_template_fallback() {
+    let patterns = vec![pattern_with(pipe_target(
+        Some("dev-${msg.pr_number}"),
+        None,
+    ))];
+    assert_eq!(
+        close_event_topics(&patterns, 609, "pull_request", "jyc"),
+        vec![("dev-609".to_string(), "local_dev".to_string())]
+    );
+}
+
+/// Gitee templates use `${msg.gitee_number}` (same semantics as
+/// `${msg.github_number}`): a close event must resolve it.
+#[test]
+fn close_event_topics_resolves_gitee_number() {
+    let patterns = vec![pattern_with(agent_pipe_target(
+        "jyc_git",
+        Some("gitee-${msg.gitee_number}"),
+    ))];
+    assert_eq!(
+        close_event_topics(&patterns, 42, "issue", "jyc"),
+        vec![("gitee-42".to_string(), "agents".to_string())]
+    );
 }

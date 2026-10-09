@@ -283,7 +283,7 @@ mod tests {
         )
         .await;
         assert!(out.content.contains("Tasks (1/2):"), "{}", out.content);
-        assert!(out.content.contains("  [x] 2. second step"));
+        assert!(out.content.contains("  [✓] 2. second step"));
 
         // The file — what `/info` and the TUI pane read — carries the same state.
         let stored = read_tasks_at(&tasks_dir(&ctx_for(

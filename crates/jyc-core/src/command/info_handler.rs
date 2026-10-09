@@ -226,7 +226,7 @@ Cache create: 111
 Reasoning: 4096
 Cost: $0.4200 session · $1.2300 today
 Tasks (1/3):
-  [x] 1. inspect list_topics
+  [✓] 1. inspect list_topics
   [~] 2. wire the pane
   [ ] 3. ship it
 Files (2):

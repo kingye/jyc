@@ -208,7 +208,7 @@ there, and `/reset` / `/new` delete it.
 Three tools rather than one whole-list call so that finishing a step stays a
 small call, and `task_list` exists because the ids must be recoverable after the
 context is compressed. All three return the rendered list — `Tasks (2/5):` plus
-one `[ ]` / `[~]` / `[x]` line per item — which is also what the TUI topic-info
+one `[ ]` / `[~]` / `[✓]` line per item — which is also what the TUI topic-info
 pane and `/info` show, so the ids the user reads are the ids `task_update` takes.
 
 Use it for anything multi-step: write the list before starting, mark an item

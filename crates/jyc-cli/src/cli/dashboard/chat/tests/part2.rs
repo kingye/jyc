@@ -1502,7 +1502,7 @@ fn info_pane_shows_task_list_between_cost_and_files() {
         cost < tasks && tasks < files,
         "tasks must sit between cost and files:\n{pane}"
     );
-    assert!(pane.contains("[x] 1. inspect list_topics"), "{pane}");
+    assert!(pane.contains("[✓] 1. inspect list_topics"), "{pane}");
     assert!(pane.contains("[~] 2. wire the pane"), "{pane}");
     assert!(pane.contains("[ ] 7. ship it"), "{pane}");
 }

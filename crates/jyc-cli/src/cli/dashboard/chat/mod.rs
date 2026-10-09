@@ -1627,7 +1627,7 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         }
         // Separated section: the agent's task list (`.jyc/tasks.json`),
         // placed between the cost row and the files section. Same
-        // `[ ] [~] [x]` markers and ids the agent's own tools print, so what
+        // `[ ] [~] [✓]` markers and ids the agent's own tools print, so what
         // the user sees and what `task_update` takes agree. Completed fades,
         // in-progress is the row you want to spot. Omitted entirely when the
         // topic has no list; the whole pane (list included) scrolls.
@@ -1832,7 +1832,7 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
             // dimmed rows that do not carry the cursor.
             let mark = if q.multi {
                 if q.marked.contains(&i) {
-                    "[x] "
+                    "[✓] "
                 } else {
                     "[ ] "
                 }

@@ -11,10 +11,12 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
+use jyc_core::topic_path::INBOUND_STAGING_DIR;
 use jyc_types::{
     ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
-    MessageContent, PatternMatch,
+    MessageAttachment, MessageContent, PatternMatch,
 };
+use std::path::{Component, Path};
 use std::sync::Mutex as StdMutex;
 
 /// WebSocket channel-specific pattern matching and topic name derivation.
@@ -110,6 +112,61 @@ impl ChannelMatcher for WebsocketMatcher {
     }
 }
 
+/// One attachment referenced by a `message` frame.
+///
+/// The sender uploads the bytes first (`POST .../files/{path}`) and then names
+/// the topic-relative path here, so large files never ride the WebSocket
+/// frame and the hub needs no shared filesystem with the pipe process.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct FrameAttachment {
+    /// Original filename, for the prompt and the saved attachment.
+    filename: String,
+    /// Location inside the topic directory, as returned by the upload
+    /// endpoint.
+    path: String,
+    /// MIME content type.
+    #[serde(default = "octet_stream")]
+    content_type: String,
+    /// Size in bytes, as reported by the uploader (the worker re-stats).
+    #[serde(default)]
+    size: usize,
+}
+
+/// Default content type for a frame attachment without one.
+fn octet_stream() -> String {
+    "application/octet-stream".to_string()
+}
+
+impl FrameAttachment {
+    /// Build the attachment the router sees, dropping paths that would escape
+    /// the channel's staging directory — the frame is client input.
+    ///
+    /// `staging_root` is the channel's inbound staging directory; the staged
+    /// path is resolved against it so the topic worker needs no workspace
+    /// knowledge of its own.
+    fn into_attachment(self, staging_root: &Path) -> Option<MessageAttachment> {
+        let rel = Path::new(&self.path);
+        let escapes = !rel.starts_with(INBOUND_STAGING_DIR)
+            || rel.components().any(|c| !matches!(c, Component::Normal(_)));
+        if escapes {
+            tracing::warn!(
+                path = %self.path,
+                "Message attachment path is not in the inbound staging directory; dropping"
+            );
+            return None;
+        }
+
+        Some(MessageAttachment {
+            filename: self.filename,
+            content_type: self.content_type,
+            size: self.size,
+            content: None,
+            saved_path: None,
+            staged_path: Some(staging_root.join(rel)),
+        })
+    }
+}
+
 /// Inbound JSON protocol messages from clients.
 ///
 /// The legacy `list_patterns` / `subscribe` / `create_topic` commands
@@ -151,6 +208,11 @@ enum ClientMessage {
         /// pipe processes (`jyc-pipe`) that cannot set metadata in-process.
         #[serde(default)]
         metadata: HashMap<String, serde_json::Value>,
+        /// Optional attachments the sender uploaded to the topic directory
+        /// through `POST .../files/{path}` beforehand (same shape as a reply's
+        /// `attachments`, with `path` relative to the topic directory).
+        #[serde(default)]
+        attachments: Vec<FrameAttachment>,
     },
     /// Ask the hub to close a topic. Sent by external pipe processes when
     /// the platform-side conversation ends (feishu chat disband, GitHub
@@ -379,6 +441,7 @@ async fn handle_connection_impl(
                                 sender,
                                 sender_address,
                                 metadata,
+                                attachments,
                             } => {
                                 // Prefer the payload's `topic` field (an
                                 // explicit override); fall back to the
@@ -414,7 +477,27 @@ async fn handle_connection_impl(
                                     references: None,
                                     reply_to_id: None,
                                     external_id: None,
-                                    attachments: vec![],
+                                    attachments: match &topic_manager {
+                                        Some(tm) => attachments
+                                            .into_iter()
+                                            .filter_map(|att| {
+                                                att.into_attachment(
+                                                    &tm.channel_workspace()
+                                                        .join(INBOUND_STAGING_DIR),
+                                                )
+                                            })
+                                            .collect(),
+                                        None => {
+                                            if !attachments.is_empty() {
+                                                tracing::warn!(
+                                                    count = attachments.len(),
+                                                    "No topic manager for this channel, \
+                                                     dropping message attachments"
+                                                );
+                                            }
+                                            vec![]
+                                        }
+                                    },
                                     metadata,
                                     matched_pattern: None,
                                 };
@@ -856,6 +939,66 @@ mod tests {
             }
             _ => panic!("expected Message"),
         }
+    }
+
+    #[test]
+    fn test_client_message_attachments_default_empty() {
+        // Frames from before the attachment protocol carry no `attachments`.
+        let msg: ClientMessage =
+            serde_json::from_str(r#"{"type":"message","topic":"t1","text":"hi"}"#).unwrap();
+        match msg {
+            ClientMessage::Message { attachments, .. } => assert!(attachments.is_empty()),
+            _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_client_message_maps_frame_attachments_to_staged_paths() {
+        let msg: ClientMessage = serde_json::from_str(
+            r#"{"type":"message","topic":"t1","text":"hi","attachments":[
+                 {"filename":"invoice.pdf","path":".inbound/ab12-invoice.pdf",
+                  "content_type":"application/pdf","size":1234}]}"#,
+        )
+        .unwrap();
+        match msg {
+            ClientMessage::Message { attachments, .. } => {
+                let root = Path::new("/ws/email/workspace");
+                let mapped: Vec<_> = attachments
+                    .into_iter()
+                    .filter_map(|att| att.into_attachment(root))
+                    .collect();
+                assert_eq!(mapped.len(), 1);
+                let att = &mapped[0];
+                assert_eq!(att.filename, "invoice.pdf");
+                assert_eq!(att.content_type, "application/pdf");
+                assert_eq!(att.size, 1234);
+                assert_eq!(
+                    att.staged_path.as_deref(),
+                    Some(Path::new("/ws/email/workspace/.inbound/ab12-invoice.pdf"))
+                );
+                // Bytes and the final path are settled by the topic worker.
+                assert!(att.content.is_none());
+                assert!(att.saved_path.is_none());
+            }
+            _ => panic!("expected Message"),
+        }
+    }
+
+    #[test]
+    fn test_frame_attachment_path_must_be_in_the_staging_dir() {
+        let root = Path::new("/ws/email/workspace");
+        let frame = |path: &str| FrameAttachment {
+            filename: "x.pdf".to_string(),
+            path: path.to_string(),
+            content_type: "application/pdf".to_string(),
+            size: 1,
+        };
+        assert!(frame(".inbound/x.pdf").into_attachment(root).is_some());
+        // Uploaded bytes live outside every topic directory.
+        assert!(frame("attachments/x.pdf").into_attachment(root).is_none());
+        assert!(frame("../../etc/passwd").into_attachment(root).is_none());
+        assert!(frame("/etc/passwd").into_attachment(root).is_none());
+        assert!(frame(".inbound/../topic/x").into_attachment(root).is_none());
     }
 
     #[test]

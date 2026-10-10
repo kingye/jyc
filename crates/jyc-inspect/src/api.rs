@@ -30,12 +30,20 @@ use std::sync::Arc;
 
 use axum::{
     Json,
+    body::Bytes,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use jyc_core::{activity_log_store::ActivityLogStore, chat_log_store::load_recent_chat_history};
-use jyc_types::{ActivityEntry, ChatMessageEntry, InspectOverview, InspectState};
+use jyc_core::{
+    activity_log_store::ActivityLogStore, chat_log_store::load_recent_chat_history,
+    topic_path::INBOUND_STAGING_DIR,
+};
+use jyc_types::{
+    ActivityEntry, ChatMessageEntry, InboundAttachmentConfig, InspectOverview, InspectState,
+};
+use jyc_utils::attachment_validator::validate_inbound_file;
+use jyc_utils::helpers::sanitize_for_filesystem;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -288,6 +296,114 @@ async fn serve_topic_file(
         bytes,
     )
         .into_response())
+}
+
+/// Query parameters for `POST /api/channels/:channel/inbound`.
+#[derive(Debug, Deserialize)]
+pub struct StagedUploadQuery {
+    /// Original filename: validated against the allowed extensions and kept
+    /// (sanitized) in the stored name.
+    pub filename: String,
+}
+
+/// Response of `POST /api/channels/:channel/inbound`.
+#[derive(Debug, Serialize)]
+pub struct StagedFile {
+    /// Path relative to the channel workspace — a pipe puts this in the
+    /// `attachments[].path` field of the `message` frame it sends next.
+    pub path: String,
+    /// Size in bytes actually stored.
+    pub size: usize,
+}
+
+/// `POST /api/channels/:channel/inbound?filename=...` — stage an inbound
+/// attachment.
+///
+/// Pipe processes (`jyc-pipe`) have no access to the hub's filesystem, so they
+/// upload the bytes here and then name the returned path in a `message` frame.
+/// The file lands in the channel's staging directory
+/// (`<workspace>/.inbound/`), deliberately outside every topic directory: the
+/// topic is only known once the message is routed, and staged bytes must not be
+/// reachable through the topic files endpoint. The topic worker moves the file
+/// into the topic's attachment directory when the frame arrives
+/// (`attachment_storage::save_attachments_to_dir`).
+pub async fn post_inbound_file(
+    State(ctx): State<Arc<InspectContext>>,
+    Path(channel): Path<String>,
+    Query(query): Query<StagedUploadQuery>,
+    body: Bytes,
+) -> Result<Json<StagedFile>, ApiError> {
+    let tm = ctx
+        .topic_managers
+        .load()
+        .iter()
+        .find(|tm| tm.channel_name() == channel)
+        .cloned()
+        .ok_or_else(|| {
+            ApiError::not_found(format!("no topic manager found for channel '{channel}'"))
+        })?;
+
+    // The pipe validated against the config it knows; this is the hub's own
+    // check at the trust boundary, with the same rules.
+    let inbound_config = ctx
+        .config
+        .as_ref()
+        .and_then(|config| config.load().attachments.clone())
+        .and_then(|attachments| attachments.inbound);
+
+    let staged = store_staged_file(
+        &tm.channel_workspace().join(INBOUND_STAGING_DIR),
+        &query.filename,
+        &body,
+        inbound_config.as_ref(),
+    )
+    .await?;
+
+    tracing::debug!(
+        channel = %channel,
+        path = %staged.path,
+        size = staged.size,
+        "Staged inbound attachment"
+    );
+    Ok(Json(staged))
+}
+
+/// Write an uploaded attachment into the staging directory.
+///
+/// The stored name is generated, never taken from the request, so an upload
+/// cannot overwrite an existing file; the requested filename only survives
+/// (sanitized) as its readable part.
+async fn store_staged_file(
+    staging_dir: &std::path::Path,
+    filename: &str,
+    bytes: &[u8],
+    inbound_config: Option<&InboundAttachmentConfig>,
+) -> Result<StagedFile, ApiError> {
+    tokio::fs::create_dir_all(staging_dir)
+        .await
+        .map_err(|e| ApiError::internal(format!("failed to create the staging dir: {e}")))?;
+
+    let stored_name = format!(
+        "{}-{}",
+        uuid::Uuid::new_v4(),
+        sanitize_for_filesystem(filename)
+    );
+    let stored_path = staging_dir.join(&stored_name);
+    tokio::fs::write(&stored_path, bytes)
+        .await
+        .map_err(|e| ApiError::internal(format!("failed to write the attachment: {e}")))?;
+
+    if let Some(config) = inbound_config
+        && let Err(e) = validate_inbound_file(&stored_path, filename, config).await
+    {
+        tokio::fs::remove_file(&stored_path).await.ok();
+        return Err(ApiError::bad_request(format!("attachment rejected: {e}")));
+    }
+
+    Ok(StagedFile {
+        path: format!("{INBOUND_STAGING_DIR}/{stored_name}"),
+        size: bytes.len(),
+    })
 }
 
 /// Content type from file extension for published files.
@@ -671,5 +787,121 @@ mod topic_file_tests {
 
         let err = serve_topic_file(tmp.path(), "link").await.unwrap_err();
         assert_eq!(err.status, StatusCode::NOT_FOUND);
+    }
+}
+
+#[cfg(test)]
+mod staged_upload_tests {
+    use super::*;
+
+    fn config(allowed: &[&str], max_file_size: Option<&str>) -> InboundAttachmentConfig {
+        InboundAttachmentConfig {
+            enabled: true,
+            allowed_extensions: allowed.iter().map(|e| e.to_string()).collect(),
+            max_file_size: max_file_size.map(str::to_string),
+            max_per_message: None,
+            save_path: None,
+        }
+    }
+
+    /// Path of a staged file inside `staging_dir`, from its response path.
+    fn stored_file(staging_dir: &std::path::Path, staged: &StagedFile) -> PathBuf {
+        let name = staged
+            .path
+            .strip_prefix(&format!("{INBOUND_STAGING_DIR}/"))
+            .expect("staged path is relative to the staging dir");
+        staging_dir.join(name)
+    }
+
+    #[tokio::test]
+    async fn stores_bytes_under_a_generated_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tmp.path().join(INBOUND_STAGING_DIR);
+
+        let staged = store_staged_file(
+            &staging,
+            "invoice.pdf",
+            b"pdf-bytes",
+            Some(&config(&[".pdf"], None)),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(staged.size, 9);
+        assert!(staged.path.ends_with("-invoice.pdf"), "{}", staged.path);
+        let stored = tokio::fs::read(stored_file(&staging, &staged))
+            .await
+            .unwrap();
+        assert_eq!(stored, b"pdf-bytes");
+    }
+
+    #[tokio::test]
+    async fn same_filename_twice_does_not_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tmp.path().join(INBOUND_STAGING_DIR);
+
+        let first = store_staged_file(&staging, "a.txt", b"first", None)
+            .await
+            .unwrap();
+        let second = store_staged_file(&staging, "a.txt", b"second", None)
+            .await
+            .unwrap();
+
+        assert_ne!(first.path, second.path);
+        assert_eq!(
+            tokio::fs::read(stored_file(&staging, &first))
+                .await
+                .unwrap(),
+            b"first"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_disallowed_extension_without_leaving_a_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tmp.path().join(INBOUND_STAGING_DIR);
+
+        let err = store_staged_file(&staging, "evil.exe", b"x", Some(&config(&[".pdf"], None)))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(
+            std::fs::read_dir(&staging).unwrap().next().is_none(),
+            "a rejected upload must not stay in the staging dir"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_attachment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tmp.path().join(INBOUND_STAGING_DIR);
+
+        let big = vec![0u8; 2048];
+        let err = store_staged_file(
+            &staging,
+            "big.pdf",
+            &big,
+            Some(&config(&[".pdf"], Some("1kb"))),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(std::fs::read_dir(&staging).unwrap().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn stores_without_config() {
+        // No `[attachments.inbound]` at all: the pipe's own validation is the
+        // gate, and the hub only guards the staging directory.
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tmp.path().join(INBOUND_STAGING_DIR);
+
+        let staged = store_staged_file(&staging, "anything.bin", b"x", None)
+            .await
+            .unwrap();
+
+        assert_eq!(staged.size, 1);
     }
 }

@@ -113,6 +113,13 @@ pub struct MessageAttachment {
     pub content: Option<Vec<u8>>,
     /// Path where the attachment was saved (set after saving to disk)
     pub saved_path: Option<PathBuf>,
+    /// Absolute path a pipe adapter uploaded the bytes to *before* sending the
+    /// message (`jyc-pipe` writes them through the hub's inbound endpoint,
+    /// because the two processes need not share a filesystem). The topic
+    /// worker moves the file into the resolved attachment directory, fills
+    /// `saved_path`, and clears this; in-process adapters leave it `None`.
+    #[serde(default)]
+    pub staged_path: Option<PathBuf>,
 }
 
 /// Result of pattern matching on an inbound message.

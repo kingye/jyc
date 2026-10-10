@@ -446,7 +446,7 @@ mod tests {
     fn message_frame_omits_empty_attachments_and_carries_staged_ones() {
         let staged = super::super::StagedAttachment {
             filename: "invoice.pdf".to_string(),
-            path: ".inbound/ab12-invoice.pdf".to_string(),
+            path: "ab12-invoice.pdf".to_string(),
             content_type: "application/pdf".to_string(),
         };
         let plain = message_frame(
@@ -480,10 +480,7 @@ mod tests {
             Some(std::slice::from_ref(&staged)),
         );
         assert_eq!(with_att["attachments"][0]["filename"], "invoice.pdf");
-        assert_eq!(
-            with_att["attachments"][0]["path"],
-            ".inbound/ab12-invoice.pdf"
-        );
+        assert_eq!(with_att["attachments"][0]["path"], "ab12-invoice.pdf");
         assert_eq!(
             with_att["attachments"][0]["content_type"],
             "application/pdf"

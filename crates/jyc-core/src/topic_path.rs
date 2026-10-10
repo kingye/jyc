@@ -15,12 +15,13 @@ pub fn resolve_workspace(workdir: &Path, channel: &str) -> PathBuf {
     workdir.join(channel).join("workspace")
 }
 
-/// Subdirectory of a channel workspace where the bytes of an inbound
-/// attachment are staged before the message announcing them arrives.
+/// Name of the hub-level directory holding the bytes of an inbound attachment
+/// between their upload and the message that announces them.
 ///
-/// Outside every topic directory on purpose: staged bytes must not be
-/// reachable through the topic files endpoint, and the topic a message belongs
-/// to is only known once it has been routed.
+/// It lives directly under `data_home()` — see [`inbound_staging_root`] —
+/// deliberately outside every topic root and every channel workspace: staged
+/// bytes must not be reachable through the topic files endpoint, and the topic
+/// a message belongs to is only known once it has been routed.
 pub const INBOUND_STAGING_DIR: &str = ".inbound";
 
 /// Resolve the workspace root for the synthesized "agents" channel.
@@ -41,6 +42,35 @@ pub fn resolve_agents_workspace_root(workdir: &Path) -> PathBuf {
     } else {
         tracing::warn!("data_home() returned None; falling back to <workdir>/agents");
         workdir.join("agents")
+    }
+}
+
+/// Directory where the hub stages the bytes of inbound attachments:
+/// `<data_home>/.inbound/`.
+///
+/// A sibling of `agents/` and `channels/`, so no topic directory can ever be
+/// this path — which is the point: the inbound endpoint used to stage in the
+/// uploading channel's workspace, and for the synthesized "agents" channel that
+/// is `<data_home>/agents/workspace/`, i.e. exactly where a topic *named*
+/// `workspace` lives. Staged bytes were then reachable through that topic's
+/// files endpoint.
+///
+/// It has to be on the data volume rather than in the OS temp dir: the hub and
+/// the agent workers can run in different containers sharing only this volume,
+/// and the worker moves staged files out with a same-filesystem rename.
+///
+/// Falls back to a temp dir when `data_home()` is unavailable (never to the
+/// cwd, which multi-instance setups would share). Callers that need an isolated
+/// root — tests — pass their own directory to the staging helpers instead.
+pub fn inbound_staging_root() -> PathBuf {
+    match jyc_utils::paths::data_home() {
+        Some(home) => home.join(INBOUND_STAGING_DIR),
+        None => {
+            tracing::warn!(
+                "data_home() returned None; staging inbound attachments in the temp dir"
+            );
+            std::env::temp_dir().join("jyc-inbound")
+        }
     }
 }
 
@@ -741,5 +771,28 @@ mod tests {
             !agents_root.starts_with(workdir) || agents_root == workdir.join("agents"),
             "agents root should resolve via data_home, not under workdir"
         );
+    }
+
+    /// The staging root must not be reachable as a topic path — for the
+    /// "agents" channel a topic named `workspace` *is* its channel workspace,
+    /// which is what staging under a channel workspace used to collide with.
+    #[test]
+    fn test_inbound_staging_root_is_outside_every_topic_root() {
+        let staging = inbound_staging_root();
+        assert_eq!(staging.file_name().unwrap(), INBOUND_STAGING_DIR);
+
+        let workdir = Path::new("/tmp/jyc-data");
+        let agents_root = resolve_agents_workspace_root(workdir);
+        assert!(
+            !staging.starts_with(&agents_root),
+            "staging {staging:?} must stay outside the agents topic root {agents_root:?}"
+        );
+        if jyc_utils::paths::data_home().is_some() {
+            assert_eq!(
+                staging.parent(),
+                agents_root.parent(),
+                "staging is a sibling of the agents root, not a topic path"
+            );
+        }
     }
 }

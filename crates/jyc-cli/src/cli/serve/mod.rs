@@ -169,7 +169,7 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         // every configured channel of a type it can run and the hub
         // skips exactly those, so no config section is involved and the
         // two processes agree by construction.
-        if jyc_channels::pipe::SUPPORTED_CHANNEL_TYPES.contains(&channel_type) {
+        if jyc_types::channel::SUPPORTED_CHANNEL_TYPES.contains(&channel_type) {
             tracing::info!(
                 channel = %channel_name,
                 "channel owned by external pipe process (jyc-pipe); skipping in-process spawn"

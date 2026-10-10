@@ -12,6 +12,26 @@ use crate::config::McpServerConfig;
 /// Channel type identifier (e.g., "email", "feishu", "slack")
 pub type ChannelType = String;
 
+/// Channel types the `jyc-pipe` process runs adapters for.
+///
+/// Ownership between the two processes is derived from this list on both
+/// sides — `jyc serve` skips in-process spawn for configured channels whose
+/// type appears here, and the pipe claims exactly those — so no config section
+/// is needed to coordinate them. The split is complete: every pipe-capable
+/// channel type is listed here and the hub spawns none of them.
+///
+/// It lives in this dependency-light crate so the hub can read it without
+/// depending on the adapter crate.
+pub const SUPPORTED_CHANNEL_TYPES: &[&str] = &[
+    "feishu",
+    "github",
+    "gitee",
+    "wecom_bot",
+    "wecom",
+    "wecomkf",
+    "email",
+];
+
 /// Channel-agnostic normalized message.
 ///
 /// Produced by InboundAdapter from channel-specific raw data.

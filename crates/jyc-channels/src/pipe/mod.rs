@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
+use jyc_types::channel::SUPPORTED_CHANNEL_TYPES;
 use jyc_types::{ChannelConfig, ChannelMatcher, ChannelPattern};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -36,22 +37,6 @@ pub mod wecom;
 pub mod wecom_bot;
 
 pub use hub::{HubPipe, PipeTopicEvent};
-
-/// Channel types the pipe process can run adapters for. Ownership is
-/// derived from this list on both sides (`jyc serve` skips in-process
-/// spawn for configured channels whose type appears here), so no config
-/// section is needed to coordinate the two processes. The split is
-/// complete: every pipe-capable channel type is listed here and the hub
-/// spawns none of them.
-pub const SUPPORTED_CHANNEL_TYPES: &[&str] = &[
-    "feishu",
-    "github",
-    "gitee",
-    "wecom_bot",
-    "wecom",
-    "wecomkf",
-    "email",
-];
 
 /// Run the pipe process: claim every configured channel whose type this
 /// process can run, build one hub pipe per pipe-target channel its

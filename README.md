@@ -423,7 +423,7 @@ Key sections:
 - **Pipe-only channels** (no config section needed) -- channel types the pipe
   process can host run in the external `jyc-pipe` process, and `jyc serve`
   skips them in-process; each channel entry below says whether it is one, and
-  the authoritative list is `pipe::SUPPORTED_CHANNEL_TYPES` (see
+  the authoritative list is `SUPPORTED_CHANNEL_TYPES` in `jyc-types` (see
   [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
 - **`[vision]`** -- DEPRECATED: Vision is now configured via `[[mcps]]` (see `config.example.toml` for the new approach)
 - **`[attachments]`** -- Inbound/outbound attachment settings

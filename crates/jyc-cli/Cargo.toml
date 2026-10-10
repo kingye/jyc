@@ -13,7 +13,6 @@ jyc-types = { path = "../jyc-types" }
 jyc-utils = { path = "../jyc-utils" }
 jyc-core = { path = "../jyc-core" }
 jyc-services = { path = "../jyc-services" }
-jyc-channels = { path = "../jyc-channels" }
 jyc-inspect = { path = "../jyc-inspect" }
 jyc-agent = { path = "../jyc-agent" }
 tokio = { version = "1", features = ["full"] }

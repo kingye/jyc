@@ -6,9 +6,15 @@ use std::path::{Path, PathBuf};
 /// Per-channel IMAP monitoring state.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MonitorState {
+    /// Message count reported by the last `SELECT`. Observation only — the
+    /// count is unchanged when one message replaces another, so it must never
+    /// be used to detect new mail.
     pub last_sequence_number: u32,
+    /// UID of the newest message processed so far — the detection cursor.
     pub last_processed_uid: Option<u32>,
     pub last_processed_timestamp: Option<String>,
+    /// UIDVALIDITY of the mailbox the UIDs above belong to. UIDs are only
+    /// comparable while this stays the same; a change voids them all.
     pub uid_validity: Option<u32>,
 }
 
@@ -28,7 +34,7 @@ pub struct StateManager {
 impl StateManager {
     /// Compact when the processed UIDs set exceeds this many entries.
     const COMPACTION_THRESHOLD: usize = 5000;
-    /// Keep UIDs within this many sequence numbers below `last_sequence_number`.
+    /// Keep UIDs within this many UIDs below `last_processed_uid`.
     const COMPACTION_KEEP_BUFFER: u32 = 1000;
 
     /// Create a StateManager for a specific channel.
@@ -129,14 +135,14 @@ impl StateManager {
 
     /// Compact the processed UIDs set by removing UIDs below a safe floor.
     ///
-    /// Keeps only UIDs >= (last_sequence_number - COMPACTION_KEEP_BUFFER) to
+    /// Keeps only UIDs >= (last_processed_uid - COMPACTION_KEEP_BUFFER) to
     /// prevent unbounded growth while still protecting against reprocessing
     /// of recent messages.
     async fn compact(&mut self) -> Result<()> {
-        let floor = self
-            .state
-            .last_sequence_number
-            .saturating_sub(Self::COMPACTION_KEEP_BUFFER);
+        let Some(last_uid) = self.state.last_processed_uid else {
+            return Ok(());
+        };
+        let floor = last_uid.saturating_sub(Self::COMPACTION_KEEP_BUFFER);
 
         if floor == 0 {
             return Ok(());
@@ -190,14 +196,17 @@ impl StateManager {
         self.state.last_processed_timestamp = Some(chrono::Utc::now().to_rfc3339());
     }
 
+    /// Get the UID of the newest message processed so far.
+    pub fn last_processed_uid(&self) -> Option<u32> {
+        self.state.last_processed_uid
+    }
+
     /// Get the UID validity value.
-    #[allow(dead_code)]
     pub fn uid_validity(&self) -> Option<u32> {
         self.state.uid_validity
     }
 
     /// Update the UID validity.
-    #[allow(dead_code)]
     pub fn update_uid_validity(&mut self, validity: u32) {
         self.state.uid_validity = Some(validity);
     }
@@ -258,6 +267,7 @@ mod tests {
         sm2.initialize().await.unwrap();
 
         assert_eq!(sm2.last_sequence_number(), 42);
+        assert_eq!(sm2.last_processed_uid(), Some(100));
         assert!(sm2.is_processed(100));
         assert!(sm2.is_processed(101));
         assert!(!sm2.is_processed(102));
@@ -290,5 +300,25 @@ mod tests {
         assert_eq!(sm.uid_validity(), None);
         sm.update_uid_validity(12345);
         assert_eq!(sm.uid_validity(), Some(12345));
+    }
+
+    #[tokio::test]
+    async fn test_compaction_uses_the_uid_floor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut sm = StateManager::for_channel(tmp.path(), "test-channel");
+        sm.initialize().await.unwrap();
+
+        // No cursor yet — nothing may be dropped.
+        sm.processed_uids = [1, 1500, 2000].into_iter().collect();
+        sm.compact().await.unwrap();
+        assert_eq!(sm.processed_uid_count(), 3);
+
+        // Cursor at 2000, buffer 1000 → everything below 1000 goes.
+        sm.update_sequence(3, Some(2000));
+        sm.processed_uids = [1, 500, 999, 1000, 1500, 2000].into_iter().collect();
+        sm.compact().await.unwrap();
+        assert_eq!(sm.processed_uid_count(), 3);
+        assert!(!sm.is_processed(999));
+        assert!(sm.is_processed(1000));
     }
 }

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
-use crate::imap::client::ImapClient;
+use crate::imap::client::{ImapClient, MailboxInfo};
 use jyc_core::state_manager::StateManager;
 use jyc_types::{ImapConfig, InboundMessage, MonitorConfig};
 
@@ -16,8 +16,6 @@ pub type OnEmail = Box<dyn Fn(InboundMessage) -> Result<()> + Send + Sync>;
 /// Supports two modes:
 /// - **IDLE**: Server push — blocks until new mail arrives (recommended)
 /// - **Poll**: Periodic check at a configured interval
-///
-/// Includes recovery mode for message deletions and suspicious jumps.
 pub struct ImapMonitor {
     channel_name: String,
     imap_config: ImapConfig,
@@ -25,6 +23,8 @@ pub struct ImapMonitor {
     state_manager: StateManager,
     cancel: CancellationToken,
     on_message: OnEmail,
+    /// Whether the "server did not report UIDNEXT" warning was already emitted.
+    warned_missing_uidnext: bool,
 }
 
 impl ImapMonitor {
@@ -43,6 +43,7 @@ impl ImapMonitor {
             state_manager,
             cancel,
             on_message,
+            warned_missing_uidnext: false,
         }
     }
 
@@ -101,8 +102,8 @@ impl ImapMonitor {
             }
 
             // Select mailbox
-            let current_count = match client.select(folder).await {
-                Ok(count) => count,
+            let mailbox = match client.select(folder).await {
+                Ok(info) => info,
                 Err(e) => {
                     reconnect_attempts += 1;
                     tracing::error!(
@@ -128,7 +129,7 @@ impl ImapMonitor {
             };
 
             // Check for new messages
-            if let Err(e) = self.check_for_new(&mut client, current_count, folder).await {
+            if let Err(e) = self.check_for_new(&mut client, mailbox).await {
                 tracing::error!(error = %e, "Error checking for new messages, forcing disconnect");
                 // Force disconnect so the next iteration reconnects cleanly
                 // instead of entering IDLE on a potentially dead connection.
@@ -165,7 +166,7 @@ impl ImapMonitor {
                     _ = self.cancel.cancelled() => break,
                 }
             } else {
-                tracing::trace!(interval = poll_interval, "Polling, sleeping...");
+                tracing::debug!(interval = poll_interval, "Polling, sleeping...");
                 tokio::select! {
                     _ = tokio::time::sleep(
                         std::time::Duration::from_secs(poll_interval)
@@ -182,59 +183,92 @@ impl ImapMonitor {
         Ok(())
     }
 
-    /// Check for new messages since last known sequence number.
-    async fn check_for_new(
-        &mut self,
-        client: &mut ImapClient,
-        current_count: u32,
-        _folder: &str,
-    ) -> Result<()> {
-        let last_seq = self.state_manager.last_sequence_number();
-
-        if current_count == 0 {
-            tracing::debug!("Mailbox empty");
-            return Ok(());
+    /// Check for new messages since the last processed UID.
+    ///
+    /// Detection is UID-based. The message count is *not* a cursor: a mailbox
+    /// that expunges one message and receives another reports the same count
+    /// while the newest UID moved, so a count comparison silently misses mail.
+    async fn check_for_new(&mut self, client: &mut ImapClient, mailbox: MailboxInfo) -> Result<()> {
+        // A changed UIDVALIDITY voids every stored UID — both the cursor and
+        // the processed-UID set describe the server's previous UID space.
+        let stored_validity = self.state_manager.uid_validity();
+        match validity_action(stored_validity, mailbox.uid_validity) {
+            ValidityAction::Keep => {}
+            ValidityAction::Record(server) => {
+                // Persist the first sighting immediately: after a restart an
+                // unrecorded epoch is indistinguishable from a changed one.
+                self.state_manager.update_uid_validity(server);
+                self.state_manager.save().await?;
+            }
+            ValidityAction::Reset(server) => {
+                tracing::warn!(
+                    stored = ?stored_validity,
+                    server,
+                    "UIDVALIDITY changed, resetting UID state"
+                );
+                self.state_manager.reset().await?;
+                self.state_manager.update_uid_validity(server);
+                self.state_manager.save().await?;
+            }
         }
 
-        if current_count == last_seq {
-            tracing::trace!(count = current_count, "No new messages");
-            return Ok(());
-        }
-
-        if current_count < last_seq {
-            // Messages were deleted — recovery needed
+        // Without UIDNEXT there is no way to spot messages the count hides;
+        // say so once per outage instead of once per poll.
+        if mailbox.uid_next.is_some() {
+            self.warned_missing_uidnext = false;
+        } else if !self.warned_missing_uidnext {
+            self.warned_missing_uidnext = true;
             tracing::warn!(
-                current = current_count,
-                last = last_seq,
-                "Message count decreased, possible deletion"
-            );
-            self.state_manager.update_sequence(current_count, None);
-            self.state_manager.save().await?;
-            return Ok(());
-        }
-
-        // Suspicious jump check
-        let jump = current_count - last_seq;
-        if jump > 50 {
-            tracing::warn!(
-                jump = jump,
-                "Large sequence jump detected ({}→{})",
-                last_seq,
-                current_count
+                exists = mailbox.exists,
+                "IMAP server did not report UIDNEXT, cannot detect new mail"
             );
         }
 
-        // Fetch new messages (from last_seq+1 to current_count)
-        let from = if last_seq == 0 {
-            // First run — only process the latest message (don't flood)
-            current_count
-        } else {
-            last_seq + 1
+        let last_uid = self.state_manager.last_processed_uid();
+        let (from, to) = match plan_fetch(last_uid, mailbox.uid_next) {
+            FetchPlan::Nothing => {
+                tracing::debug!(
+                    exists = mailbox.exists,
+                    uid_next = ?mailbox.uid_next,
+                    last_uid = ?last_uid,
+                    "No new messages"
+                );
+                return Ok(());
+            }
+            FetchPlan::CursorAhead => {
+                // With a known UIDVALIDITY a newest UID below the cursor only
+                // means the newest message was expunged; a recreated mailbox
+                // is the likely story only while the epoch is unknown.
+                if self.state_manager.uid_validity().is_some() {
+                    tracing::debug!(
+                        last_uid = ?last_uid,
+                        uid_next = ?mailbox.uid_next,
+                        "Newest UID is below the cursor, the newest message was deleted"
+                    );
+                } else {
+                    tracing::warn!(
+                        last_uid = ?last_uid,
+                        uid_next = ?mailbox.uid_next,
+                        "Newest UID is below the cursor and UIDVALIDITY is unknown, the \
+                         mailbox may have been recreated; run with --reset to reprocess it"
+                    );
+                }
+                return Ok(());
+            }
+            FetchPlan::Uids(from, to) => (from, to),
         };
 
-        tracing::info!(from = from, to = current_count, "Fetching new messages");
+        if to - from + 1 > 50 {
+            tracing::warn!(
+                from_uid = from,
+                to_uid = to,
+                "Large UID range, fetching many messages"
+            );
+        }
 
-        let emails = client.fetch_range(from, current_count).await?;
+        tracing::info!(from_uid = from, to_uid = to, "Fetching new messages");
+
+        let emails = client.fetch_uid_range(from, to).await?;
 
         for email in &emails {
             if self.cancel.is_cancelled() {
@@ -261,9 +295,10 @@ impl ImapMonitor {
             }
         }
 
-        // Update sequence number
-        self.state_manager
-            .update_sequence(current_count, emails.last().map(|e| e.uid));
+        // Move the cursor past everything just fetched: a message that failed
+        // to process is not retried (reprocessing needs --reset). The message
+        // count is kept in the state file for observation only.
+        self.state_manager.update_sequence(mailbox.exists, Some(to));
         self.state_manager.save().await?;
 
         Ok(())
@@ -299,4 +334,124 @@ fn backoff_delay(attempt: u32) -> std::time::Duration {
     let delay = base * 2u64.pow(attempt.saturating_sub(1));
     let capped = delay.min(300);
     std::time::Duration::from_secs(capped)
+}
+
+/// What the monitor should fetch after reading the mailbox status.
+#[derive(Debug, PartialEq)]
+enum FetchPlan {
+    /// Empty mailbox, nothing new, or no usable UIDNEXT.
+    Nothing,
+    /// The newest UID is below the stored cursor — the mailbox most likely
+    /// restarted its UID space while the stored UIDVALIDITY was unknown.
+    CursorAhead,
+    /// Inclusive UID range to fetch.
+    Uids(u32, u32),
+}
+
+/// Decide what to fetch from the mailbox status.
+fn plan_fetch(last_uid: Option<u32>, uid_next: Option<u32>) -> FetchPlan {
+    // `uid_next` is 1 in a mailbox that never held a message, and absent when
+    // the server did not report it.
+    let Some(newest) = uid_next.and_then(|next| next.checked_sub(1)) else {
+        return FetchPlan::Nothing;
+    };
+    if newest == 0 {
+        return FetchPlan::Nothing;
+    }
+
+    match last_uid {
+        // First run — only the newest message, don't replay mailbox history.
+        None => FetchPlan::Uids(newest, newest),
+        Some(last) if newest > last => FetchPlan::Uids(last + 1, newest),
+        Some(last) if newest == last => FetchPlan::Nothing,
+        Some(_) => FetchPlan::CursorAhead,
+    }
+}
+
+/// What to do with the stored UID state, given the server's UIDVALIDITY.
+#[derive(Debug, PartialEq)]
+enum ValidityAction {
+    /// Same epoch (or the server reported none): keep the stored UIDs.
+    Keep,
+    /// First sighting of the epoch: remember it, keep the stored UIDs.
+    Record(u32),
+    /// The epoch changed: every stored UID describes the previous mailbox.
+    Reset(u32),
+}
+
+/// Compare the stored UIDVALIDITY against the server's.
+fn validity_action(stored: Option<u32>, server: Option<u32>) -> ValidityAction {
+    match (stored, server) {
+        (Some(stored), Some(server)) if stored != server => ValidityAction::Reset(server),
+        (None, Some(server)) => ValidityAction::Record(server),
+        _ => ValidityAction::Keep,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_run_fetches_only_the_newest() {
+        assert_eq!(plan_fetch(None, Some(101)), FetchPlan::Uids(100, 100));
+    }
+
+    #[test]
+    fn new_message_after_cursor_is_fetched() {
+        assert_eq!(plan_fetch(Some(100), Some(104)), FetchPlan::Uids(101, 103));
+    }
+
+    #[test]
+    fn same_message_count_but_new_uid_is_detected() {
+        // Regression: a mailbox that expunged one message and received
+        // another still reports `1 EXISTS` — the count is unchanged while the
+        // newest UID moved past the cursor.
+        assert_eq!(
+            plan_fetch(Some(1_773_715_637), Some(1_773_715_639)),
+            FetchPlan::Uids(1_773_715_638, 1_773_715_638)
+        );
+    }
+
+    #[test]
+    fn nothing_when_newest_equals_cursor() {
+        assert_eq!(plan_fetch(Some(100), Some(101)), FetchPlan::Nothing);
+    }
+
+    #[test]
+    fn nothing_for_empty_or_unreported_mailbox() {
+        assert_eq!(plan_fetch(None, Some(1)), FetchPlan::Nothing);
+        assert_eq!(plan_fetch(Some(100), Some(0)), FetchPlan::Nothing);
+        assert_eq!(plan_fetch(Some(100), None), FetchPlan::Nothing);
+    }
+
+    #[test]
+    fn cursor_ahead_of_newest_uid_is_flagged() {
+        // The mailbox was recreated (UIDs restarted) while the stored
+        // UIDVALIDITY was unknown — reprocessing needs an explicit reset.
+        assert_eq!(plan_fetch(Some(100), Some(50)), FetchPlan::CursorAhead);
+    }
+
+    #[test]
+    fn first_sighting_of_uidvalidity_is_recorded() {
+        assert_eq!(
+            validity_action(None, Some(1_773_715_637)),
+            ValidityAction::Record(1_773_715_637)
+        );
+    }
+
+    #[test]
+    fn unchanged_uidvalidity_keeps_stored_uids() {
+        assert_eq!(validity_action(Some(42), Some(42)), ValidityAction::Keep);
+        // A server that stops reporting UIDVALIDITY must not reset anything.
+        assert_eq!(validity_action(Some(42), None), ValidityAction::Keep);
+    }
+
+    #[test]
+    fn changed_uidvalidity_resets_stored_uids() {
+        assert_eq!(
+            validity_action(Some(42), Some(43)),
+            ValidityAction::Reset(43)
+        );
+    }
 }

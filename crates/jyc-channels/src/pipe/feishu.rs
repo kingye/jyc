@@ -3,16 +3,14 @@
 //! (`jyc-cli/src/cli/serve/channels/feishu.rs`) over the hub websocket.
 //!
 //! - Inbound messages: `FeishuInboundAdapter` → pattern match + retarget →
-//!   `message` frame on the target channel's [`HubPipe`].
+//!   `message` frame on the target channel's [`HubPipe`], with the images and
+//!   files the adapter downloaded uploaded to the hub's inbound endpoint first.
 //! - Replies: the pipe's reply stream → feishu relay (completion footer +
 //!   attachment download from the hub's files endpoint).
 //! - Live status cards: the pipe's `topic_event` stream feeds the shared
 //!   progress watcher (no `TopicManager` in the pipe process — the card
 //!   omits mode/model/context segments).
 //! - Chat disband: `close_topic` frame to every connected hub pipe.
-//!
-//! Known gap vs in-process: inbound attachments (images sent TO the bot)
-//! are not relayed — the hub `message` frame has no attachments field.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -72,18 +70,6 @@ pub fn spawn_feishu_pipe(
     let pipe_channels =
         collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
     warn_on_bad_pipe_patterns("feishu", &channel_name, channel_config);
-    if config
-        .attachments
-        .as_ref()
-        .and_then(|a| a.inbound.clone())
-        .is_some()
-    {
-        tracing::warn!(
-            channel = %channel_name,
-            "feishu pipe: inbound attachments are not supported by the pipe protocol yet; \
-             images sent to the bot are dropped"
-        );
-    }
     for target in &pipe_channels {
         if !hubs.contains_key(target) {
             tracing::warn!(
@@ -218,8 +204,20 @@ pub fn spawn_feishu_pipe(
                     let state = state.clone();
                     let client = feishu_client.clone();
                     let channel_name = channel_name_for_adapter.clone();
+                    let files_base = files_base.clone();
+                    let token = token.clone();
                     tokio::spawn(async move {
-                        handle_inbound(config, hubs, state, client, channel_name, message).await;
+                        handle_inbound(
+                            config,
+                            hubs,
+                            state,
+                            client,
+                            channel_name,
+                            files_base,
+                            token,
+                            message,
+                        )
+                        .await;
                     });
                     Ok(())
                 }),
@@ -254,6 +252,8 @@ async fn handle_inbound(
     state: Arc<PipeState>,
     feishu_client: Arc<FeishuClient>,
     channel_name: String,
+    files_base: Option<String>,
+    token: Option<String>,
     message: InboundMessage,
 ) {
     let patterns = config
@@ -361,12 +361,24 @@ async fn handle_inbound(
         );
         return;
     };
-    hub.send_message(
+    // Upload the images/files the adapter downloaded to the hub first (it has
+    // no access to the hub's filesystem), then announce them in the frame.
+    let attachments = crate::pipe::upload_inbound_attachments(
+        files_base.as_deref(),
+        token.as_deref(),
+        &message.channel,
+        &message.attachments,
+        &config,
+    )
+    .await;
+
+    hub.send_message_with_attachments(
         &message.topic,
         message.content.text.as_deref().unwrap_or(""),
         &message.sender,
         &message.sender_address,
         message.metadata,
+        &attachments,
     );
 }
 

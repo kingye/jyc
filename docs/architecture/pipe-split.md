@@ -21,9 +21,7 @@ section: the pipe claims every configured channel of a type it can run and
 `jyc serve` skips exactly those in-process. (Step 2 briefly introduced a
 `[pipe]` config section listing channel names; that was a design mistake — it
 required users to coordinate both sides by editing config, and the
-capability rule replaces it.) Known
-gap: inbound attachments are not relayed (the hub `message` frame has no
-attachments field). Step 4 done (one PR per channel type, in order):
+capability rule replaces it.) Step 4 done (one PR per channel type, in order):
 **github and gitee migrated** — `pipe/github.rs` / `pipe/gitee.rs`
 host the poller adapters (poll + dedup/cursor state stays under
 `<data_dir>/channels/<channel>/.github/` / `.gitee/`), reply relays post
@@ -166,12 +164,16 @@ deleted.
 - Patterns are read from the pipe's config snapshot at startup, like every
   other migrated channel (the in-process adapter re-read live config per
   message).
-- Known gap (feishu's too): attachments on incoming mail are not relayed.
-  The `message` frame has no attachments field, so the worker never saves
-  them into the topic workspace, and an attachment-only mail (empty body)
-  stops without calling the AI. The pipe warns at startup and per dropped
-  message; carrying inbound attachments over the pipe protocol is its own
-  piece of work.
+- Inbound attachments are relayed: the adapter uploads the bytes to the
+  hub's staging endpoint (`POST /api/channels/<channel>/inbound`, bearer
+  token, `docs/api.md` §2.4.10) and names the returned path in the
+  `message` frame's `attachments` field, so the topic worker can move the
+  file into the routed topic — the two processes do not share a filesystem,
+  and the topic is only known after routing. The same applies to feishu and
+  wecom_bot; `wecom`/`wecomkf` never relayed inbound media, in-process or
+  not. An attachment-only mail (empty body) now reaches the AI: the hub's
+  body check keeps messages that carry attachments and the prompt gets its
+  attachment placeholder.
 - **Correction of an earlier note in this document:** IMAP/SMTP clients
   did *not* have to move out of `jyc-services`. `jyc-channels` already
   depends on that crate, and `job_scheduler.rs` keeps it in the hub's

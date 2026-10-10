@@ -3,7 +3,9 @@
 //! (`jyc-cli/src/cli/serve/channels/email.rs`) over the hub websocket.
 //!
 //! - Inbound mail: `ImapMonitor` → pattern match + retarget →
-//!   `message` frame on the target channel's [`HubPipe`].
+//!   `message` frame on the target channel's [`HubPipe`], with the
+//!   attachments uploaded to the hub's inbound endpoint first (the pipe
+//!   and the hub need not share a filesystem) and named in the frame.
 //! - Replies: the pipe's reply stream → SMTP reply threaded into the
 //!   original mail thread (plain text — no model/mode footer), with
 //!   attachments downloaded from the hub's files endpoint.
@@ -12,12 +14,9 @@
 //!   and processed UIDs — protocol-level dedup state, not conversation
 //!   state, so it stays with the adapter.
 //!
-//! Known gap vs in-process (same as feishu): attachments on incoming mail
-//! are not relayed — the hub `message` frame has no attachments field, so
-//! the worker never gets a chance to save them into the topic workspace
-//! (and an attachment-only mail, with an empty body, now stops without
-//! calling the AI). Announced at startup when `[attachments.inbound]` is
-//! configured, and logged per dropped message.
+//! A mail with an empty body but attachments is handed to the agent like any
+//! other message: the hub's body check keeps attachment-only messages, and the
+//! prompt gets the attachment placeholder text.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -109,18 +108,6 @@ pub async fn spawn_email_pipe(
     let pipe_channels =
         collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
     warn_on_bad_pipe_patterns("email", &channel_name, channel_config);
-    if config
-        .attachments
-        .as_ref()
-        .and_then(|a| a.inbound.clone())
-        .is_some()
-    {
-        tracing::warn!(
-            channel = %channel_name,
-            "email pipe: inbound attachments are not supported by the pipe protocol yet; \
-             attachments on incoming mail are dropped (not saved to the topic workspace)"
-        );
-    }
 
     // Mailbox cursor state lives under <workdir>/channels/<channel>/.imap/.
     let mut state_manager = StateManager::for_channel(&workdir.join("channels"), &channel_name);
@@ -283,6 +270,8 @@ pub async fn spawn_email_pipe(
                     let topic_state = topic_state.clone();
                     let channel_name_self = channel_name_for_monitor.clone();
                     let hubs = hubs.clone();
+                    let files_base = files_base.clone();
+                    let token = token.clone();
                     tokio::spawn(async move {
                         let mut message = message;
                         let patterns = config_for_pipe
@@ -301,18 +290,11 @@ pub async fn spawn_email_pipe(
                             .expect("match_pipe guarantees a pipe target");
 
                         if !message.attachments.is_empty() {
-                            tracing::warn!(
+                            tracing::debug!(
                                 channel = %channel_name_self,
                                 topic = %message.topic,
                                 count = message.attachments.len(),
-                                files = %message
-                                    .attachments
-                                    .iter()
-                                    .map(|a| a.filename.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(", "),
-                                "email pipe: inbound attachments are not relayed by the pipe \
-                                 protocol; dropped"
+                                "email pipe: relaying inbound attachments"
                             );
                         }
 
@@ -365,12 +347,27 @@ pub async fn spawn_email_pipe(
                             );
                             return;
                         };
-                        hub.send_message(
+
+                        // Upload the attachment bytes to the hub first (the pipe
+                        // has no access to its filesystem), then announce them in
+                        // the frame: the hub stages them and the topic worker
+                        // moves each one into the topic it routes the mail to.
+                        let attachments = crate::pipe::upload_inbound_attachments(
+                            files_base.as_deref(),
+                            token.as_deref(),
+                            &message.channel,
+                            &message.attachments,
+                            &config_for_pipe,
+                        )
+                        .await;
+
+                        hub.send_message_with_attachments(
                             &message.topic,
                             message.content.text.as_deref().unwrap_or(""),
                             &message.sender,
                             &message.sender_address,
                             message.metadata,
+                            &attachments,
                         );
                     });
                     Ok(())

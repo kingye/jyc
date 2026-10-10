@@ -664,5 +664,149 @@ pub(crate) async fn fetch_topic_file(
     Ok(tmp)
 }
 
+/// An attachment staged on the hub, as named in a `message` frame.
+///
+/// Serialized into `message.attachments[]`; the hub resolves `path` against the
+/// channel's staging directory and the topic worker moves the file into the
+/// topic it routed the message to.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StagedAttachment {
+    /// Original filename, for the prompt and the saved attachment.
+    pub filename: String,
+    /// Path relative to the channel workspace, as returned by the hub.
+    pub path: String,
+    /// MIME content type.
+    pub content_type: String,
+    /// Size in bytes as stored by the hub.
+    pub size: usize,
+}
+
+/// Response of the hub's inbound upload endpoint.
+#[derive(Debug, serde::Deserialize)]
+struct HubStagedFile {
+    path: String,
+    size: usize,
+}
+
+/// Upload every attachment of an inbound message to the hub's staging
+/// directory, warning and skipping the ones that fail.
+///
+/// Nothing here is fatal: an attachment that cannot be staged only costs that
+/// one file, while the message itself must still reach the agent. With
+/// `files_base` `None` (inspect server disabled) there is no endpoint to stage
+/// bytes at, so every attachment is dropped.
+pub(crate) async fn upload_inbound_attachments(
+    files_base: Option<&str>,
+    token: Option<&str>,
+    channel: &str,
+    attachments: &[jyc_types::MessageAttachment],
+    config: &jyc_types::AppConfig,
+) -> Vec<StagedAttachment> {
+    if attachments.is_empty() {
+        return vec![];
+    }
+
+    let Some(files_base) = files_base else {
+        tracing::warn!(
+            channel,
+            count = attachments.len(),
+            "inbound attachments dropped (inspect server disabled)"
+        );
+        return vec![];
+    };
+
+    let mut staged = Vec::with_capacity(attachments.len());
+    for att in attachments {
+        match upload_inbound_attachment(files_base, token, channel, att, config).await {
+            Ok(uploaded) => staged.push(uploaded),
+            Err(e) => tracing::warn!(
+                channel,
+                filename = %att.filename,
+                error = format!("{e:#}"),
+                "failed to stage an inbound attachment, dropping it"
+            ),
+        }
+    }
+    staged
+}
+
+/// Upload one inbound attachment and return the reference to put in the
+/// `message` frame — the mirror of [`fetch_topic_file`].
+///
+/// The pipe does not share a filesystem with the hub, so the bytes travel over
+/// the authenticated REST API. The inbound attachment policy is applied here,
+/// before anything is uploaded; the hub checks the same rules again at its own
+/// trust boundary.
+pub(crate) async fn upload_inbound_attachment(
+    files_base: &str,
+    token: Option<&str>,
+    channel: &str,
+    att: &jyc_types::MessageAttachment,
+    config: &jyc_types::AppConfig,
+) -> Result<StagedAttachment> {
+    // Attachments arrive as bytes (all three adapters that relay them carry
+    // `content`); spool them so the policy check sees a file, exactly as the
+    // in-process adapters did.
+    let spooled = tempfile::NamedTempFile::new()?;
+    match (&att.content, &att.saved_path, &att.staged_path) {
+        (Some(bytes), _, _) => tokio::fs::write(spooled.path(), bytes).await?,
+        (None, Some(path), _) | (None, _, Some(path)) => {
+            tokio::fs::copy(path, spooled.path())
+                .await
+                .with_context(|| format!("failed to read attachment '{}'", att.filename))?;
+        }
+        (None, None, None) => anyhow::bail!(
+            "attachment '{}' carries neither bytes nor a path",
+            att.filename
+        ),
+    }
+
+    if let Some(cfg) = config.attachments.as_ref().and_then(|a| a.inbound.clone()) {
+        jyc_utils::attachment_validator::validate_inbound_file(spooled.path(), &att.filename, &cfg)
+            .await?;
+    }
+
+    let bytes = tokio::fs::read(spooled.path())
+        .await
+        .context("failed to read the attachment bytes")?;
+    let url = inbound_upload_url(files_base, channel, &att.filename)?;
+
+    let mut req = reqwest::Client::new()
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, att.content_type.clone())
+        .body(bytes);
+    if let Some(token) = token {
+        req = req.bearer_auth(token);
+    }
+    let response = req
+        .send()
+        .await
+        .context("failed to upload the attachment")?
+        .error_for_status()
+        .context("attachment upload returned an error status")?;
+    let staged: HubStagedFile = response
+        .json()
+        .await
+        .context("failed to read the upload response")?;
+
+    Ok(StagedAttachment {
+        filename: att.filename.clone(),
+        path: staged.path,
+        content_type: att.content_type.clone(),
+        size: staged.size,
+    })
+}
+
+/// URL of the hub's inbound upload endpoint, with the original filename as a
+/// percent-encoded query parameter.
+fn inbound_upload_url(files_base: &str, channel: &str, filename: &str) -> Result<reqwest::Url> {
+    let mut url = reqwest::Url::parse(files_base)
+        .with_context(|| format!("invalid hub base URL '{files_base}'"))?
+        .join(&format!("/api/channels/{channel}/inbound"))
+        .context("failed to build the inbound upload URL")?;
+    url.query_pairs_mut().append_pair("filename", filename);
+    Ok(url)
+}
+
 #[cfg(test)]
 mod tests;

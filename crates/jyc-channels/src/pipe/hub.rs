@@ -34,6 +34,32 @@ pub struct PipeTopicEvent {
     pub event: TopicEvent,
 }
 
+/// Build a `message` frame.
+///
+/// The `attachments` key is omitted when there is nothing to relay, so frames
+/// from channels without attachment support stay byte-identical to before.
+fn message_frame(
+    topic: &str,
+    text: &str,
+    sender: &str,
+    sender_address: &str,
+    metadata: std::collections::HashMap<String, serde_json::Value>,
+    attachments: Option<&[super::StagedAttachment]>,
+) -> serde_json::Value {
+    let mut frame = serde_json::json!({
+        "type": "message",
+        "topic": topic,
+        "text": text,
+        "sender": sender,
+        "sender_address": sender_address,
+        "metadata": metadata,
+    });
+    if let Some(attachments) = attachments.filter(|list| !list.is_empty()) {
+        frame["attachments"] = serde_json::json!(attachments);
+    }
+    frame
+}
+
 /// Classification of one inbound server frame.
 enum FrameKind {
     /// A `reply` broadcast payload — forwarded verbatim to reply
@@ -153,15 +179,34 @@ impl HubPipe {
         sender_address: &str,
         metadata: std::collections::HashMap<String, serde_json::Value>,
     ) {
-        let frame = serde_json::json!({
-            "type": "message",
-            "topic": topic,
-            "text": text,
-            "sender": sender,
-            "sender_address": sender_address,
-            "metadata": metadata,
-        });
-        self.queue_frame(frame, "message");
+        self.queue_frame(
+            message_frame(topic, text, sender, sender_address, metadata, None),
+            "message",
+        );
+    }
+
+    /// Queue a `message` frame whose attachments are already staged on the hub
+    /// (see [`super::upload_inbound_attachments`]).
+    pub fn send_message_with_attachments(
+        &self,
+        topic: &str,
+        text: &str,
+        sender: &str,
+        sender_address: &str,
+        metadata: std::collections::HashMap<String, serde_json::Value>,
+        attachments: &[super::StagedAttachment],
+    ) {
+        self.queue_frame(
+            message_frame(
+                topic,
+                text,
+                sender,
+                sender_address,
+                metadata,
+                Some(attachments),
+            ),
+            "message",
+        );
     }
 
     /// Queue a `close_topic` frame for the hub.
@@ -395,6 +440,52 @@ mod tests {
             close,
             serde_json::json!({"type": "close_topic", "topic": "t1"})
         );
+    }
+
+    #[test]
+    fn message_frame_omits_empty_attachments_and_carries_staged_ones() {
+        let staged = super::super::StagedAttachment {
+            filename: "invoice.pdf".to_string(),
+            path: ".inbound/ab12-invoice.pdf".to_string(),
+            content_type: "application/pdf".to_string(),
+            size: 12,
+        };
+        let plain = message_frame(
+            "t1",
+            "hi",
+            "jin",
+            "ou_1",
+            std::collections::HashMap::new(),
+            None,
+        );
+        assert!(plain.get("attachments").is_none());
+
+        // An empty list is the same as none: channels without attachments
+        // must keep sending the frame they always did.
+        let empty = message_frame(
+            "t1",
+            "hi",
+            "jin",
+            "ou_1",
+            std::collections::HashMap::new(),
+            Some(&[]),
+        );
+        assert!(empty.get("attachments").is_none());
+
+        let with_att = message_frame(
+            "t1",
+            "hi",
+            "jin",
+            "ou_1",
+            std::collections::HashMap::new(),
+            Some(std::slice::from_ref(&staged)),
+        );
+        assert_eq!(with_att["attachments"][0]["filename"], "invoice.pdf");
+        assert_eq!(
+            with_att["attachments"][0]["path"],
+            ".inbound/ab12-invoice.pdf"
+        );
+        assert_eq!(with_att["attachments"][0]["size"], 12);
     }
 
     #[test]

@@ -5,7 +5,8 @@
 //!
 //! - Inbound: `WecomBotInboundAdapter` (shared `WecomBotConnectionHandle`
 //!   populated by the WS connect callback) → pattern match → retarget →
-//!   `message` frame on the target channel's [`HubPipe`].
+//!   `message` frame on the target channel's [`HubPipe`], with the media the
+//!   adapter downloaded uploaded to the hub's inbound endpoint first.
 //! - Replies: the pipe's reply stream → `finish=true` streaming update on
 //!   the opened stream (falling back to proactive `aibot_send_msg` when
 //!   the streaming window has closed), attachments via proactive send.
@@ -255,6 +256,9 @@ pub(crate) fn spawn_wecom_bot_pipe(
                     let patterns = patterns.clone();
                     let topic_state = topic_state.clone();
                     let handle_arc = handle_arc.clone();
+                    let files_base = files_base.clone();
+                    let token = token.clone();
+                    let config = config.clone();
                     tokio::spawn(async move {
                         let Some((_pm, pattern)) =
                             match_pipe("wecom_bot", &WecomBotMatcher, &message, &patterns)
@@ -397,12 +401,25 @@ pub(crate) fn spawn_wecom_bot_pipe(
                             );
                             return;
                         };
-                        hub.send_message(
+                        // Upload the media the adapter downloaded to the hub
+                        // first (it has no access to the hub's filesystem),
+                        // then announce it in the frame.
+                        let attachments = crate::pipe::upload_inbound_attachments(
+                            files_base.as_deref(),
+                            token.as_deref(),
+                            &message.channel,
+                            &message.attachments,
+                            &config,
+                        )
+                        .await;
+
+                        hub.send_message_with_attachments(
                             &message.topic,
                             message.content.text.as_deref().unwrap_or(""),
                             &message.sender,
                             &message.sender_address,
                             message.metadata,
+                            &attachments,
                         );
                     });
                     Ok(())

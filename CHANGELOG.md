@@ -18,6 +18,7 @@
 
 ### Changed
 
+- The `jyc` binary no longer builds the pipe adapters: channel ownership (`SUPPORTED_CHANNEL_TYPES`) moved from `jyc-channels` to `jyc-types`, so the hub reads it from a dependency-light crate and `jyc-cli` drops its `jyc-channels` dependency. Previously that one constant pulled 22k lines of adapters into the hub's build graph along with the adapter-only crates (`openlark-client`, the WeCom crypto stack, …) — pipe split step 6, `jyc-services`' email transports are a separate follow-up (#878)
 - Email now runs in the `jyc-pipe` process, so `jyc serve` hosts no pipe-only channel at all: run `jyc-pipe` for email channels to receive and reply (the hub skips them in-process). The mailbox cursor directory is resolved against `jyc-pipe --workdir`, so a pipe started with a different workdir looks for its cursor elsewhere (#876)
 - `jyc serve --no-idle` / `--reset` moved to the `jyc-pipe` CLI (`jyc-pipe --no-idle` / `--reset`): both only ever affected the email adapter, which now runs in the pipe. On the hub they would be no-ops, so the flags were removed there (#876)
 

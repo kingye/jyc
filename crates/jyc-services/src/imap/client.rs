@@ -33,6 +33,18 @@ pub struct FetchedEmail {
     pub body: Vec<u8>,
 }
 
+/// Mailbox status returned by [`ImapClient::select`].
+#[derive(Debug, Clone, Copy)]
+pub struct MailboxInfo {
+    /// Number of messages in the mailbox (`EXISTS`).
+    pub exists: u32,
+    /// Next UID the server will assign (`UIDNEXT`); the newest message's UID
+    /// is `uid_next - 1`. `None` if the server did not report it.
+    pub uid_next: Option<u32>,
+    /// `UIDVALIDITY` — when it changes, every previously stored UID is void.
+    pub uid_validity: Option<u32>,
+}
+
 impl ImapClient {
     pub fn new(config: ImapConfig) -> Self {
         Self {
@@ -126,8 +138,8 @@ impl ImapClient {
         Ok(())
     }
 
-    /// Select a mailbox (e.g., "INBOX") and return the message count.
-    pub async fn select(&mut self, mailbox: &str) -> Result<u32> {
+    /// Select a mailbox (e.g., "INBOX") and return its status.
+    pub async fn select(&mut self, mailbox: &str) -> Result<MailboxInfo> {
         let session = self.session_mut()?;
 
         let mbox = tokio::time::timeout(IMAP_CMD_TIMEOUT, session.select(mailbox))
@@ -141,36 +153,52 @@ impl ImapClient {
             })?
             .map_err(|e| anyhow::anyhow!("IMAP SELECT '{}' failed: {}", mailbox, e))?;
 
-        let count = mbox.exists;
-        tracing::trace!(mailbox = %mailbox, count = count, "Mailbox selected");
-        Ok(count)
+        let info = MailboxInfo {
+            exists: mbox.exists,
+            uid_next: mbox.uid_next,
+            uid_validity: mbox.uid_validity,
+        };
+        tracing::debug!(
+            mailbox = %mailbox,
+            exists = info.exists,
+            uid_next = ?info.uid_next,
+            uid_validity = ?info.uid_validity,
+            "Mailbox selected"
+        );
+        Ok(info)
     }
 
-    /// Fetch emails by sequence number range.
+    /// Fetch emails by UID range (inclusive).
     /// Returns raw email bodies with UIDs and sequence numbers.
-    pub async fn fetch_range(&mut self, from: u32, to: u32) -> Result<Vec<FetchedEmail>> {
+    pub async fn fetch_uid_range(&mut self, from: u32, to: u32) -> Result<Vec<FetchedEmail>> {
         let session = self.session_mut()?;
 
         let range = format!("{from}:{to}");
         let mut messages = tokio::time::timeout(
             IMAP_CMD_TIMEOUT,
-            session.fetch(&range, "(UID BODY.PEEK[] FLAGS)"),
+            session.uid_fetch(&range, "(UID BODY.PEEK[] FLAGS)"),
         )
         .await
         .map_err(|_| {
             anyhow::anyhow!(
-                "IMAP FETCH {range} timed out ({}s)",
+                "IMAP UID FETCH {range} timed out ({}s)",
                 IMAP_CMD_TIMEOUT.as_secs()
             )
         })?
-        .with_context(|| format!("failed to fetch range {range}"))?;
+        .with_context(|| format!("failed to fetch UID range {range}"))?;
 
         let mut results = Vec::new();
         while let Some(msg) = messages.next().await {
             let msg = msg.context("error reading fetch stream")?;
+            // A UID FETCH response always carries a UID; without one the
+            // monitor cannot deduplicate the message.
+            let Some(uid) = msg.uid else {
+                tracing::warn!(seq = msg.message, "Fetched message without a UID, skipping");
+                continue;
+            };
             if let Some(body) = msg.body() {
                 results.push(FetchedEmail {
-                    uid: msg.uid.unwrap_or(0),
+                    uid,
                     seq: msg.message,
                     body: body.to_vec(),
                 });
@@ -179,39 +207,6 @@ impl ImapClient {
 
         tracing::debug!(range = %range, count = results.len(), "Fetched emails");
         Ok(results)
-    }
-
-    /// Fetch a single email by UID.
-    #[allow(dead_code)]
-    pub async fn fetch_uid(&mut self, uid: u32) -> Result<Option<FetchedEmail>> {
-        let session = self.session_mut()?;
-
-        let uid_str = uid.to_string();
-        let mut messages = tokio::time::timeout(
-            IMAP_CMD_TIMEOUT,
-            session.uid_fetch(&uid_str, "(UID BODY.PEEK[] FLAGS)"),
-        )
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "IMAP UID FETCH {uid} timed out ({}s)",
-                IMAP_CMD_TIMEOUT.as_secs()
-            )
-        })?
-        .with_context(|| format!("failed to fetch UID {uid}"))?;
-
-        while let Some(msg) = messages.next().await {
-            let msg = msg.context("error reading fetch stream")?;
-            if let Some(body) = msg.body() {
-                return Ok(Some(FetchedEmail {
-                    uid: msg.uid.unwrap_or(uid),
-                    seq: msg.message,
-                    body: body.to_vec(),
-                }));
-            }
-        }
-
-        Ok(None)
     }
 
     /// Start IMAP IDLE and wait for new mail notification.

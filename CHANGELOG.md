@@ -18,6 +18,8 @@
 
 ### Changed
 
+- `jyc-pipe`'s log is scoped to jyc's own targets and cannot pick up other processes' content: the default filter is `jyc=info,async_imap=warn` (`-v`: `jyc=trace,async_imap=debug`, mirroring `jyc`'s defaults) instead of a global level, `RUST_LOG` still wins but the wire-level crates (`tungstenite`, `hyper`, `reqwest`, …) stay capped at `warn` unless named explicitly, and lines now carry their module target. A global `RUST_LOG=trace` used to dump every websocket frame the hub sent — other topics' replies and tool events — into `jyc-pipe.log` via `tungstenite`'s own `Received message` trace (#877)
+- The `jyc` binary no longer builds the pipe adapters: channel ownership (`SUPPORTED_CHANNEL_TYPES`) moved from `jyc-channels` to `jyc-types`, so the hub reads it from a dependency-light crate and `jyc-cli` drops its `jyc-channels` dependency. Previously that one constant pulled 22k lines of adapters into the hub's build graph along with the adapter-only crates (`openlark-client`, the WeCom crypto stack, …) — pipe split step 6, `jyc-services`' email transports are a separate follow-up (#877)
 - Email now runs in the `jyc-pipe` process, so `jyc serve` hosts no pipe-only channel at all: run `jyc-pipe` for email channels to receive and reply (the hub skips them in-process). The mailbox cursor directory is resolved against `jyc-pipe --workdir`, so a pipe started with a different workdir looks for its cursor elsewhere (#876)
 - `jyc serve --no-idle` / `--reset` moved to the `jyc-pipe` CLI (`jyc-pipe --no-idle` / `--reset`): both only ever affected the email adapter, which now runs in the pipe. On the hub they would be no-ops, so the flags were removed there (#876)
 
@@ -28,6 +30,10 @@
 - `jyc`'s log destination is unified: every invocation now writes tracing logs to `<data_home>/jyc.log` by default — the file is named after the binary, regardless of subcommand. Previously only bare `jyc` defaulted to the file, `jyc serve` defaulted to stderr, and `jyc dashboard` / `jyc open` wrote a separate `dashboard.log`. Use `--log-file PATH` to override, or `--log-file /dev/stderr` for stderr
 
 - Internal restructure: the websocket channel adapter moved from `jyc-channels` to `jyc-inspect` (`server::websocket`) — it is hub frontend (dashboard UI + pipe endpoint), not a peripheral channel. `jyc-channels` is now the pipe crate and no longer depends on `jyc-inspect`; no behavior change
+
+### Fixed
+
+- **IMAP mail detection is UID-based** (#877): the monitor compared the mailbox message count against the count it saw last, so a mailbox that expunged one message and received another reported the *same* count and the new mail was never fetched — the pipe then sat on `No new messages` and nothing above debug level said so. It now compares the server's `UIDNEXT` with the state's `last_processed_uid` and fetches `UID FETCH <from>:<to>`, so mail is detected regardless of the count; `UIDVALIDITY` is recorded and a change resets the UID cursor (the stored UIDs describe the server's previous UID space), and a cursor that ends up above the newest UID is reported as such instead of staying silent. `Mailbox selected` / `No new messages` moved from trace to debug (visible with `-v`) and the fetch line reports the UID range
 
 ### Removed
 

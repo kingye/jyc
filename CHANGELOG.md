@@ -18,6 +18,7 @@
 
 ### Changed
 
+- `jyc-pipe`'s log is scoped to jyc's own targets and cannot pick up other processes' content (#877): the default filter is `jyc=info,async_imap=warn` (`-v`: `jyc=trace,async_imap=debug`, mirroring `jyc`'s defaults) instead of a global level, `RUST_LOG` still wins but the wire-level crates (`tungstenite`, `hyper`, `reqwest`, …) stay capped at `warn` unless named explicitly, and lines now carry their module target. A global `RUST_LOG=trace` used to dump every websocket frame the hub sent — other topics' replies and tool events — into `jyc-pipe.log` via `tungstenite`'s own `Received message` trace (#877)
 - Email now runs in the `jyc-pipe` process, so `jyc serve` hosts no pipe-only channel at all: run `jyc-pipe` for email channels to receive and reply (the hub skips them in-process). The mailbox cursor directory is resolved against `jyc-pipe --workdir`, so a pipe started with a different workdir looks for its cursor elsewhere (#876)
 - `jyc serve --no-idle` / `--reset` moved to the `jyc-pipe` CLI (`jyc-pipe --no-idle` / `--reset`): both only ever affected the email adapter, which now runs in the pipe. On the hub they would be no-ops, so the flags were removed there (#876)
 

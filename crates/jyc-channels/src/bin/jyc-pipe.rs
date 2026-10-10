@@ -59,7 +59,9 @@ Options:
                         daemon, like bare `jyc`); use /dev/stderr for stderr
       --no-idle         Use polling instead of IMAP IDLE (email channels)
       --reset           Reset monitoring state before starting (email channels)
-  -v, --verbose         Enable debug logging
+  -v, --verbose         Verbose logging for jyc's own targets (trace; IMAP
+                        protocol at debug). RUST_LOG overrides this, with the
+                        wire-level third-party crates capped unless named
   -h, --help            Print this help
 ";
 
@@ -159,6 +161,42 @@ fn resolve_hub_origin(hub_arg: Option<&str>, config: &jyc_types::AppConfig) -> R
     })
 }
 
+/// Wire-level third-party crates that dump raw traffic at debug/trace.
+///
+/// This process is a websocket client of the hub, so such dumps carry frames
+/// the hub generated for *other* topics: under a global `RUST_LOG` they would
+/// copy other processes' content into `jyc-pipe.log` (the frame dumps of
+/// `tungstenite`'s own `Received message` trace). Capped to `warn` unless the
+/// operator names the target in `RUST_LOG`.
+const NOISY_TARGETS: [&str; 6] = [
+    "tungstenite",
+    "tokio_tungstenite",
+    "hyper",
+    "h2",
+    "reqwest",
+    "mio",
+];
+
+/// Build the `EnvFilter` directives: scoped to jyc's own targets by default,
+/// `RUST_LOG` when set, with the noisy wire-level crates capped.
+fn filter_directives(default_filter: &str, rust_log: Option<&str>) -> String {
+    let base = rust_log
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+        .unwrap_or(default_filter);
+
+    let mut directives = base.to_string();
+    for target in NOISY_TARGETS {
+        // `target=` (rather than a bare substring) marks the operator's own
+        // decision — naming `tokio_tungstenite` also leaves `tungstenite`
+        // uncapped, since the inner crate is the one that reads the frames.
+        if !base.contains(&format!("{target}=")) {
+            directives.push_str(&format!(",{target}=warn"));
+        }
+    }
+    directives
+}
+
 /// Log destination, mirroring `jyc`'s daemon behavior: `jyc-pipe` is a
 /// long-running process with no one-shot mode, so it aligns with bare
 /// `jyc` (which defaults to `jyc.log`), not with explicit `jyc`
@@ -169,13 +207,17 @@ fn resolve_hub_origin(hub_arg: Option<&str>, config: &jyc_types::AppConfig) -> R
 /// its own. Plain append-only file, no rotation (same trade-off as
 /// `jyc`: external logrotate if size-based rotation is needed);
 /// `Mutex<File>` serializes writes across threads.
+///
+/// Filtering is scoped to jyc's own targets by default (same shape as
+/// `jyc`'s) so third-party noise never lands in the pipe's log; see
+/// [`filter_directives`] for the `RUST_LOG` precedence.
 fn init_tracing(filter: &str, log_file: Option<Option<PathBuf>>) -> Result<()> {
     let base = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(filter)),
-        )
-        .with_target(false)
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter_directives(
+            filter,
+            std::env::var("RUST_LOG").ok().as_deref(),
+        )))
+        .with_target(true)
         .with_thread_ids(false);
 
     let path = match log_file {
@@ -204,7 +246,13 @@ fn init_tracing(filter: &str, log_file: Option<Option<PathBuf>>) -> Result<()> {
 async fn main() -> Result<()> {
     let args = parse_args()?;
 
-    let filter = if args.verbose { "debug" } else { "info" };
+    // Scoped like `jyc`'s defaults: our own crates plus the IMAP protocol
+    // trace (`-v`), everything else off unless `RUST_LOG` says otherwise.
+    let filter = if args.verbose {
+        "jyc=trace,async_imap=debug"
+    } else {
+        "jyc=info,async_imap=warn"
+    };
     init_tracing(filter, args.log_file)?;
 
     let workdir = jyc_utils::config_resolve::resolve_workdir(args.workdir.as_ref())?;
@@ -377,5 +425,34 @@ mod tests {
         assert!(resolve_hub_origin(None, &config).is_err());
         let disabled = config_from("[ai]\n[inspect]\nenabled = false\n");
         assert!(resolve_hub_origin(None, &disabled).is_err());
+    }
+
+    #[test]
+    fn filter_keeps_the_default_and_caps_wire_crates() {
+        let raw = filter_directives("jyc=info,async_imap=warn", None);
+        let directives: Vec<&str> = raw.split(',').collect();
+        assert_eq!(directives[0], "jyc=info");
+        assert_eq!(directives[1], "async_imap=warn");
+        assert!(directives.contains(&"tungstenite=warn"));
+        assert!(directives.contains(&"hyper=warn"));
+    }
+
+    #[test]
+    fn filter_honours_rust_log_but_still_caps_wire_crates() {
+        // A global `RUST_LOG=trace` must not copy hub-generated frames into
+        // the pipe's log.
+        let raw = filter_directives("jyc=info", Some("trace"));
+        let directives: Vec<&str> = raw.split(',').collect();
+        assert_eq!(directives[0], "trace");
+        assert!(directives.contains(&"tungstenite=warn"));
+    }
+
+    #[test]
+    fn filter_respects_an_explicitly_named_wire_crate() {
+        let raw = filter_directives("jyc=info", Some("trace,tungstenite=trace"));
+        let directives: Vec<&str> = raw.split(',').collect();
+        assert!(directives.contains(&"tungstenite=trace"));
+        assert!(!directives.contains(&"tungstenite=warn"));
+        assert!(directives.contains(&"hyper=warn"));
     }
 }

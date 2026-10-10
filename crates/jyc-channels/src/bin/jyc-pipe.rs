@@ -10,7 +10,8 @@
 //!
 //! Per the pipe process split (`docs/architecture/pipe-split.md`): every
 //! configured channel whose type this process can run
-//! (`pipe::SUPPORTED_CHANNEL_TYPES`) is spawned here, and `jyc serve`
+//! (`jyc_types::channel::SUPPORTED_CHANNEL_TYPES`) is spawned here, and `jyc
+//! serve`
 //! skips exactly those in-process. No config section is involved.
 //!
 //! Usage: jyc-pipe [--workdir DIR] [--config FILE] [--hub WS-URL]

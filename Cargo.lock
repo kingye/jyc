@@ -1923,7 +1923,6 @@ dependencies = [
  "crossterm",
  "futures-util",
  "jyc-agent",
- "jyc-channels",
  "jyc-core",
  "jyc-inspect",
  "jyc-services",

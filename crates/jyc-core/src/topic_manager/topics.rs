@@ -63,15 +63,6 @@ async fn restored_path(topic_name: &str) -> Option<PathBuf> {
 }
 
 impl TopicManager {
-    /// The workspace directory every topic of this channel lives under.
-    ///
-    /// Also the root of the inbound staging directory
-    /// ([`crate::topic_path::INBOUND_STAGING_DIR`]) where pipe processes upload
-    /// attachment bytes through the hub's inbound endpoint.
-    pub fn channel_workspace(&self) -> PathBuf {
-        crate::topic_path::resolve_workspace(&self.workdir, &self.channel_name)
-    }
-
     pub async fn topic_path(&self, topic_name: &str) -> Option<PathBuf> {
         let mut paths = self.topic_paths.lock().await;
         if let Some(path) = paths.get(topic_name) {

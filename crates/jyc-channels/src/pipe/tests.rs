@@ -685,10 +685,10 @@ fn close_event_topics_resolves_gitee_number() {
 }
 
 #[test]
-fn inbound_upload_url_targets_the_channel_staging_endpoint() {
-    let url = inbound_upload_url("http://127.0.0.1:8080", "jiny283", "发票 2026.pdf").unwrap();
+fn inbound_upload_url_targets_the_staging_endpoint() {
+    let url = inbound_upload_url("http://127.0.0.1:8080", "发票 2026.pdf").unwrap();
 
-    assert_eq!(url.path(), "/api/channels/jiny283/inbound");
+    assert_eq!(url.path(), "/api/inbound");
     // The filename rides as a query parameter, percent-encoded.
     let query: Vec<(String, String)> = url
         .query_pairs()

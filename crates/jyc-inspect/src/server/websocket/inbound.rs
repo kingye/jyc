@@ -11,7 +11,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
-use jyc_core::topic_path::INBOUND_STAGING_DIR;
+use jyc_core::topic_path::inbound_staging_root;
 use jyc_types::{
     ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
     MessageAttachment, MessageContent, PatternMatch,
@@ -114,15 +114,15 @@ impl ChannelMatcher for WebsocketMatcher {
 
 /// One attachment referenced by a `message` frame.
 ///
-/// The sender uploads the bytes first (`POST .../files/{path}`) and then names
-/// the topic-relative path here, so large files never ride the WebSocket
-/// frame and the hub needs no shared filesystem with the pipe process.
+/// The sender uploads the bytes first (`POST /api/inbound`) and then names the
+/// staged file here, so large files never ride the WebSocket frame and the hub
+/// needs no shared filesystem with the pipe process.
 #[derive(Debug, Clone, serde::Deserialize)]
 struct FrameAttachment {
     /// Original filename, for the prompt and the saved attachment.
     filename: String,
-    /// Location inside the topic directory, as returned by the upload
-    /// endpoint.
+    /// Name of the file in the hub's staging directory, as returned by the
+    /// upload endpoint.
     path: String,
     /// MIME content type.
     #[serde(default = "octet_stream")]
@@ -135,20 +135,21 @@ fn octet_stream() -> String {
 }
 
 impl FrameAttachment {
-    /// Build the attachment the router sees, dropping paths that would escape
-    /// the channel's staging directory — the frame is client input.
+    /// Build the attachment the router sees, dropping names that are not a
+    /// single plain file name — the frame is client input.
     ///
-    /// `staging_root` is the channel's inbound staging directory; the staged
-    /// path is resolved against it so the topic worker needs no workspace
-    /// knowledge of its own.
+    /// `staging_root` is the hub's inbound staging directory
+    /// ([`inbound_staging_root`]), so the topic worker needs no knowledge of
+    /// the layout — it just moves the file it is handed.
     fn into_attachment(self, staging_root: &Path) -> Option<MessageAttachment> {
-        let rel = Path::new(&self.path);
-        let escapes = !rel.starts_with(INBOUND_STAGING_DIR)
-            || rel.components().any(|c| !matches!(c, Component::Normal(_)));
-        if escapes {
+        let name = Path::new(&self.path);
+        let mut components = name.components();
+        let plain =
+            matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+        if !plain {
             tracing::warn!(
                 path = %self.path,
-                "Message attachment path is not in the inbound staging directory; dropping"
+                "Message attachment is not a plain staged file name; dropping"
             );
             return None;
         }
@@ -160,7 +161,7 @@ impl FrameAttachment {
             size: 0,
             content: None,
             saved_path: None,
-            staged_path: Some(staging_root.join(rel)),
+            staged_path: Some(staging_root.join(name)),
         })
     }
 }
@@ -475,26 +476,14 @@ async fn handle_connection_impl(
                                     references: None,
                                     reply_to_id: None,
                                     external_id: None,
-                                    attachments: match &topic_manager {
-                                        Some(tm) => attachments
+                                    attachments: {
+                                        let staging_root = inbound_staging_root();
+                                        attachments
                                             .into_iter()
                                             .filter_map(|att| {
-                                                att.into_attachment(
-                                                    &tm.channel_workspace()
-                                                        .join(INBOUND_STAGING_DIR),
-                                                )
+                                                att.into_attachment(&staging_root)
                                             })
-                                            .collect(),
-                                        None => {
-                                            if !attachments.is_empty() {
-                                                tracing::warn!(
-                                                    count = attachments.len(),
-                                                    "No topic manager for this channel, \
-                                                     dropping message attachments"
-                                                );
-                                            }
-                                            vec![]
-                                        }
+                                            .collect()
                                     },
                                     metadata,
                                     matched_pattern: None,
@@ -954,13 +943,13 @@ mod tests {
     fn test_client_message_maps_frame_attachments_to_staged_paths() {
         let msg: ClientMessage = serde_json::from_str(
             r#"{"type":"message","topic":"t1","text":"hi","attachments":[
-                 {"filename":"invoice.pdf","path":".inbound/ab12-invoice.pdf",
+                 {"filename":"invoice.pdf","path":"ab12-invoice.pdf",
                   "content_type":"application/pdf"}]}"#,
         )
         .unwrap();
         match msg {
             ClientMessage::Message { attachments, .. } => {
-                let root = Path::new("/ws/email/workspace");
+                let root = Path::new("/data/.inbound");
                 let mapped: Vec<_> = attachments
                     .into_iter()
                     .filter_map(|att| att.into_attachment(root))
@@ -971,7 +960,7 @@ mod tests {
                 assert_eq!(att.content_type, "application/pdf");
                 assert_eq!(
                     att.staged_path.as_deref(),
-                    Some(Path::new("/ws/email/workspace/.inbound/ab12-invoice.pdf"))
+                    Some(Path::new("/data/.inbound/ab12-invoice.pdf"))
                 );
                 // Bytes and the final path are settled by the topic worker.
                 assert!(att.content.is_none());
@@ -981,20 +970,50 @@ mod tests {
         }
     }
 
+    /// The frame names a file in the hub's staging directory, so anything that
+    /// is not a single plain name is refused — the frame is client input.
     #[test]
-    fn test_frame_attachment_path_must_be_in_the_staging_dir() {
-        let root = Path::new("/ws/email/workspace");
+    fn test_frame_attachment_path_must_be_a_plain_staged_name() {
+        let root = Path::new("/data/.inbound");
         let frame = |path: &str| FrameAttachment {
             filename: "x.pdf".to_string(),
             path: path.to_string(),
             content_type: "application/pdf".to_string(),
         };
-        assert!(frame(".inbound/x.pdf").into_attachment(root).is_some());
-        // Uploaded bytes live outside every topic directory.
-        assert!(frame("attachments/x.pdf").into_attachment(root).is_none());
-        assert!(frame("../../etc/passwd").into_attachment(root).is_none());
+        assert!(frame("ab12-x.pdf").into_attachment(root).is_some());
+        assert!(frame("a/b.pdf").into_attachment(root).is_none());
+        assert!(frame("./x.pdf").into_attachment(root).is_none());
+        assert!(frame("../x.pdf").into_attachment(root).is_none());
         assert!(frame("/etc/passwd").into_attachment(root).is_none());
-        assert!(frame(".inbound/../topic/x").into_attachment(root).is_none());
+        assert!(frame("").into_attachment(root).is_none());
+    }
+
+    /// Round trip across the seam that used to disagree about the base
+    /// directory: the name the upload endpoint returns is the name the frame
+    /// handler resolves — and the file it points at is the one that was stored.
+    #[tokio::test]
+    async fn test_staged_upload_is_resolved_by_the_frame_handler() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Stands in for `inbound_staging_root()`: the two sides only have to
+        // agree on the directory, whatever it is.
+        let staging = tmp.path().join(".inbound");
+
+        let staged = crate::api::store_staged_file(&staging, "invoice.pdf", b"pdf-bytes", None)
+            .await
+            .unwrap();
+
+        let frame = FrameAttachment {
+            filename: "invoice.pdf".to_string(),
+            path: staged.path.clone(),
+            content_type: "application/pdf".to_string(),
+        };
+        let att = frame
+            .into_attachment(&staging)
+            .expect("the frame must resolve");
+
+        let resolved = att.staged_path.expect("the frame sets a staged path");
+        assert_eq!(resolved, staging.join(&staged.path));
+        assert_eq!(tokio::fs::read(&resolved).await.unwrap(), b"pdf-bytes");
     }
 
     #[test]

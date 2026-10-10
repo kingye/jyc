@@ -666,14 +666,14 @@ pub(crate) async fn fetch_topic_file(
 
 /// An attachment staged on the hub, as named in a `message` frame.
 ///
-/// Serialized into `message.attachments[]`; the hub resolves `path` against the
-/// channel's staging directory and the topic worker moves the file into the
-/// topic it routed the message to (and stats it, so the frame carries no size).
+/// Serialized into `message.attachments[]`; the hub resolves `path` against its
+/// staging directory and the topic worker moves the file into the topic it
+/// routed the message to (and stats it, so the frame carries no size).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct StagedAttachment {
     /// Original filename, for the prompt and the saved attachment.
     pub filename: String,
-    /// Path relative to the channel workspace, as returned by the hub.
+    /// Name of the staged file, as returned by the hub.
     pub path: String,
     /// MIME content type.
     pub content_type: String,
@@ -729,7 +729,7 @@ impl HubFiles {
 
         let mut staged = Vec::with_capacity(attachments.len());
         for att in attachments {
-            match self.stage(files_base, channel, att, config).await {
+            match self.stage(files_base, att, config).await {
                 Ok(uploaded) => staged.push(uploaded),
                 Err(e) => tracing::warn!(
                     channel,
@@ -752,7 +752,6 @@ impl HubFiles {
     async fn stage(
         &self,
         files_base: &str,
-        channel: &str,
         att: &jyc_types::MessageAttachment,
         config: &jyc_types::AppConfig,
     ) -> Result<StagedAttachment> {
@@ -773,7 +772,7 @@ impl HubFiles {
             .await?;
         }
 
-        let url = inbound_upload_url(files_base, channel, &att.filename)?;
+        let url = inbound_upload_url(files_base, &att.filename)?;
         let mut req = reqwest::Client::new()
             .post(url)
             .header(reqwest::header::CONTENT_TYPE, att.content_type.clone())
@@ -808,10 +807,10 @@ struct HubStagedFile {
 
 /// URL of the hub's inbound upload endpoint, with the original filename as a
 /// percent-encoded query parameter.
-fn inbound_upload_url(files_base: &str, channel: &str, filename: &str) -> Result<reqwest::Url> {
+fn inbound_upload_url(files_base: &str, filename: &str) -> Result<reqwest::Url> {
     let mut url = reqwest::Url::parse(files_base)
         .with_context(|| format!("invalid hub base URL '{files_base}'"))?
-        .join(&format!("/api/channels/{channel}/inbound"))
+        .join("/api/inbound")
         .context("failed to build the inbound upload URL")?;
     url.query_pairs_mut().append_pair("filename", filename);
     Ok(url)

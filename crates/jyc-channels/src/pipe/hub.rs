@@ -448,7 +448,6 @@ mod tests {
             filename: "invoice.pdf".to_string(),
             path: ".inbound/ab12-invoice.pdf".to_string(),
             content_type: "application/pdf".to_string(),
-            size: 12,
         };
         let plain = message_frame(
             "t1",
@@ -485,7 +484,10 @@ mod tests {
             with_att["attachments"][0]["path"],
             ".inbound/ab12-invoice.pdf"
         );
-        assert_eq!(with_att["attachments"][0]["size"], 12);
+        assert_eq!(
+            with_att["attachments"][0]["content_type"],
+            "application/pdf"
+        );
     }
 
     #[test]

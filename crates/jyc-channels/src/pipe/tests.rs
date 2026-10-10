@@ -701,27 +701,51 @@ fn inbound_upload_url_targets_the_channel_staging_endpoint() {
     assert!(url.as_str().contains("filename=%E5%8F%91%E7%A5%A8"));
 }
 
-#[tokio::test]
-async fn inbound_uploads_are_dropped_without_an_inspect_server() {
-    // No hub base URL: there is no endpoint to stage bytes at, so nothing is
-    // uploaded and no attachment is announced.
-    let att = jyc_types::MessageAttachment {
+fn attachment_with_bytes() -> jyc_types::MessageAttachment {
+    jyc_types::MessageAttachment {
         filename: "a.pdf".to_string(),
         content_type: "application/pdf".to_string(),
         size: 3,
         content: Some(b"pdf".to_vec()),
         saved_path: None,
         staged_path: None,
+    }
+}
+
+#[tokio::test]
+async fn inbound_uploads_are_dropped_without_an_inspect_server() {
+    // No hub base URL: there is no endpoint to stage bytes at, so nothing is
+    // uploaded and no attachment is announced.
+    let attachments = [attachment_with_bytes()];
+
+    let staged = HubFiles::new(None, None)
+        .stage_attachments("jiny283", &attachments, &jyc_types::AppConfig::default())
+        .await;
+
+    assert!(staged.is_empty());
+}
+
+#[tokio::test]
+async fn inbound_uploads_are_dropped_when_attachments_are_disabled() {
+    let config = jyc_types::AppConfig {
+        attachments: Some(jyc_types::UnifiedAttachmentConfig {
+            inbound: Some(jyc_types::InboundAttachmentConfig {
+                enabled: false,
+                allowed_extensions: vec![],
+                max_file_size: None,
+                max_per_message: None,
+                save_path: None,
+            }),
+            outbound: None,
+        }),
+        ..Default::default()
     };
 
-    let staged = upload_inbound_attachments(
-        None,
-        None,
-        "jiny283",
-        std::slice::from_ref(&att),
-        &jyc_types::AppConfig::default(),
-    )
-    .await;
+    let attachments = [attachment_with_bytes()];
+    // A base URL is set, so only the `enabled = false` gate can stop this.
+    let staged = HubFiles::new(Some("http://127.0.0.1:1".to_string()), None)
+        .stage_attachments("jiny283", &attachments, &config)
+        .await;
 
     assert!(staged.is_empty());
 }

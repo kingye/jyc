@@ -270,8 +270,10 @@ pub async fn spawn_email_pipe(
                     let topic_state = topic_state.clone();
                     let channel_name_self = channel_name_for_monitor.clone();
                     let hubs = hubs.clone();
-                    let files_base = files_base.clone();
-                    let token = token.clone();
+                    let hub_files = crate::pipe::HubFiles::new(
+                        files_base.clone(),
+                        token.clone(),
+                    );
                     tokio::spawn(async move {
                         let mut message = message;
                         let patterns = config_for_pipe
@@ -288,15 +290,6 @@ pub async fn spawn_email_pipe(
                             .pipe
                             .as_ref()
                             .expect("match_pipe guarantees a pipe target");
-
-                        if !message.attachments.is_empty() {
-                            tracing::debug!(
-                                channel = %channel_name_self,
-                                topic = %message.topic,
-                                count = message.attachments.len(),
-                                "email pipe: relaying inbound attachments"
-                            );
-                        }
 
                         // Reply state, captured before re-targeting
                         // rewrites channel/topic.
@@ -352,14 +345,13 @@ pub async fn spawn_email_pipe(
                         // has no access to its filesystem), then announce them in
                         // the frame: the hub stages them and the topic worker
                         // moves each one into the topic it routes the mail to.
-                        let attachments = crate::pipe::upload_inbound_attachments(
-                            files_base.as_deref(),
-                            token.as_deref(),
-                            &message.channel,
-                            &message.attachments,
-                            &config_for_pipe,
-                        )
-                        .await;
+                        let attachments = hub_files
+                            .stage_attachments(
+                                &message.channel,
+                                &message.attachments,
+                                &config_for_pipe,
+                            )
+                            .await;
 
                         hub.send_message_with_attachments(
                             &message.topic,

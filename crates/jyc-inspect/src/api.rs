@@ -393,11 +393,17 @@ async fn store_staged_file(
         .await
         .map_err(|e| ApiError::internal(format!("failed to write the attachment: {e}")))?;
 
-    if let Some(config) = inbound_config
-        && let Err(e) = validate_inbound_file(&stored_path, filename, config).await
-    {
-        tokio::fs::remove_file(&stored_path).await.ok();
-        return Err(ApiError::bad_request(format!("attachment rejected: {e}")));
+    if let Some(config) = inbound_config {
+        // `validate_inbound_file` treats a disabled policy as "no rules", so
+        // the switch needs its own check.
+        if !config.enabled {
+            tokio::fs::remove_file(&stored_path).await.ok();
+            return Err(ApiError::forbidden("inbound attachments are disabled"));
+        }
+        if let Err(e) = validate_inbound_file(&stored_path, filename, config).await {
+            tokio::fs::remove_file(&stored_path).await.ok();
+            return Err(ApiError::bad_request(format!("attachment rejected: {e}")));
+        }
     }
 
     Ok(StagedFile {
@@ -854,6 +860,12 @@ mod staged_upload_tests {
                 .unwrap(),
             b"first"
         );
+        assert_eq!(
+            tokio::fs::read(stored_file(&staging, &second))
+                .await
+                .unwrap(),
+            b"second"
+        );
     }
 
     #[tokio::test]
@@ -903,5 +915,32 @@ mod staged_upload_tests {
             .unwrap();
 
         assert_eq!(staged.size, 1);
+        assert!(staged.path.starts_with(".inbound/"));
+        assert_eq!(
+            tokio::fs::read(stored_file(&staging, &staged))
+                .await
+                .unwrap(),
+            b"x"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_upload_when_the_policy_is_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tmp.path().join(INBOUND_STAGING_DIR);
+        let disabled = InboundAttachmentConfig {
+            enabled: false,
+            allowed_extensions: vec![".pdf".to_string()],
+            max_file_size: None,
+            max_per_message: None,
+            save_path: None,
+        };
+
+        let err = store_staged_file(&staging, "a.pdf", b"x", Some(&disabled))
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert!(std::fs::read_dir(&staging).unwrap().next().is_none());
     }
 }

@@ -6,12 +6,20 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{Path as AxPath, State as AxState};
+use axum::extract::{DefaultBodyLimit, Path as AxPath, State as AxState};
 use axum::middleware::from_fn_with_state;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 
 use super::{InspectContext, InspectServer, WsRoute};
+
+/// Largest inbound-attachment body the hub will buffer for one request.
+///
+/// `Bytes` rejects bodies over 2MB by default, which would cap inbound
+/// attachments far below any sane `[attachments.inbound].max_file_size`; the
+/// real policy check is `store_staged_file`, this only bounds the buffer.
+/// ponytail: fixed 32MiB, make it configurable when a deployment needs more.
+const INBOUND_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
 pub fn build_router(context: Arc<InspectContext>) -> Router {
     use crate::api;
@@ -34,7 +42,7 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
         )
         .route(
             "/api/channels/{channel}/inbound",
-            post(api::post_inbound_file),
+            post(api::post_inbound_file).layer(DefaultBodyLimit::max(INBOUND_BODY_LIMIT)),
         )
         .route("/api/topics", post(api::post_topic))
         .route("/api/config/reload", post(api::post_reload_config))

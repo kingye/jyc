@@ -118,7 +118,7 @@ pub struct MessageAttachment {
     /// because the two processes need not share a filesystem). The topic
     /// worker moves the file into the resolved attachment directory, fills
     /// `saved_path`, and clears this; in-process adapters leave it `None`.
-    #[serde(default)]
+    #[serde(skip)]
     pub staged_path: Option<PathBuf>,
 }
 

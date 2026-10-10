@@ -363,10 +363,12 @@ curl -H 'Authorization: Bearer <token>' \
 #### 2.4.10 `POST /api/channels/{channel}/inbound?filename=...`
 
 Stages one inbound attachment for a pipe process. The request body is the
-raw file; `filename` carries the original name (percent-encoded), which is
-validated against `[attachments.inbound]` (`allowed_extensions`,
-`max_file_size`) and kept, sanitized, as the readable part of the stored
-name.
+raw file (at most 32 MiB — see the errors below); `filename` carries the
+original name (percent-encoded), which is validated against the **global**
+`[attachments.inbound]` (`allowed_extensions`, `max_file_size`) and kept,
+sanitized, as the readable part of the stored name. A per-pattern
+`attachments` section is enforced by the pipe before it uploads, not here.
+`enabled = false` is refused.
 
 Pipe processes (`jyc-pipe`) do not share a filesystem with the hub, so an
 adapter uploads an attachment here and then names the returned `path` in
@@ -375,7 +377,8 @@ file is staged in the channel's `.inbound/` directory — deliberately
 outside every topic directory, because the topic is only known once the
 message has been routed. When the frame arrives, the topic worker moves the
 file into the topic's attachment directory and the agent sees it like any
-other inbound attachment.
+other inbound attachment. A staged file whose frame never arrives is not
+collected: remove it by hand under `<channel workspace>/.inbound/`.
 
 **Request:**
 
@@ -396,7 +399,9 @@ curl -X POST -H 'Authorization: Bearer <token>' \
 | Status | Trigger |
 |--------|---------|
 | `400`  | Extension or size rejected by the inbound attachment policy. |
+| `403`  | Inbound attachments are disabled (`[attachments.inbound].enabled = false`). |
 | `404`  | Unknown channel (no topic manager). |
+| `413`  | Body larger than the 32 MiB ceiling. |
 | `500`  | Staging directory or file could not be written. |
 
 ### 2.5 Example session (curl + Python)
@@ -488,7 +493,7 @@ from the persisted `topic-meta.json` instead.
 | `sender`        | `string?`                  | Display name (e.g. a feishu user name).             |
 | `sender_address`| `string?`                  | Canonical address (e.g. an open_id).                |
 | `metadata`      | `object?` (string → JSON)  | Pipe hints (`pipe_pattern`), platform ids, ...      |
-| `attachments`   | `array?`                   | Attachments staged beforehand (§2.4.10), each `{ "filename", "path", "content_type", "size" }` — same shape as a reply's `attachments`, with `path` relative to the channel workspace instead of a URL. |
+| `attachments`   | `array?`                   | Attachments staged beforehand (§2.4.10), each `{ "filename", "path", "content_type" }` — same shape as a reply's `attachments` minus `size` (the worker stats the file), with `path` relative to the channel workspace instead of a URL. |
 
 `close_topic` (`{ "topic": "<name>" }`) asks a websocket-channel hub to
 close a topic (`TopicManager::auto_close_topic`). Sent by external pipe

@@ -127,9 +127,6 @@ struct FrameAttachment {
     /// MIME content type.
     #[serde(default = "octet_stream")]
     content_type: String,
-    /// Size in bytes, as reported by the uploader (the worker re-stats).
-    #[serde(default)]
-    size: usize,
 }
 
 /// Default content type for a frame attachment without one.
@@ -159,7 +156,8 @@ impl FrameAttachment {
         Some(MessageAttachment {
             filename: self.filename,
             content_type: self.content_type,
-            size: self.size,
+            // The worker stats the staged file before the agent sees it.
+            size: 0,
             content: None,
             saved_path: None,
             staged_path: Some(staging_root.join(rel)),
@@ -957,7 +955,7 @@ mod tests {
         let msg: ClientMessage = serde_json::from_str(
             r#"{"type":"message","topic":"t1","text":"hi","attachments":[
                  {"filename":"invoice.pdf","path":".inbound/ab12-invoice.pdf",
-                  "content_type":"application/pdf","size":1234}]}"#,
+                  "content_type":"application/pdf"}]}"#,
         )
         .unwrap();
         match msg {
@@ -971,7 +969,6 @@ mod tests {
                 let att = &mapped[0];
                 assert_eq!(att.filename, "invoice.pdf");
                 assert_eq!(att.content_type, "application/pdf");
-                assert_eq!(att.size, 1234);
                 assert_eq!(
                     att.staged_path.as_deref(),
                     Some(Path::new("/ws/email/workspace/.inbound/ab12-invoice.pdf"))
@@ -991,7 +988,6 @@ mod tests {
             filename: "x.pdf".to_string(),
             path: path.to_string(),
             content_type: "application/pdf".to_string(),
-            size: 1,
         };
         assert!(frame(".inbound/x.pdf").into_attachment(root).is_some());
         // Uploaded bytes live outside every topic directory.

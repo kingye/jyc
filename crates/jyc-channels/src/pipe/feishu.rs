@@ -204,8 +204,7 @@ pub fn spawn_feishu_pipe(
                     let state = state.clone();
                     let client = feishu_client.clone();
                     let channel_name = channel_name_for_adapter.clone();
-                    let files_base = files_base.clone();
-                    let token = token.clone();
+                    let hub_files = crate::pipe::HubFiles::new(files_base.clone(), token.clone());
                     tokio::spawn(async move {
                         handle_inbound(
                             config,
@@ -213,8 +212,7 @@ pub fn spawn_feishu_pipe(
                             state,
                             client,
                             channel_name,
-                            files_base,
-                            token,
+                            hub_files,
                             message,
                         )
                         .await;
@@ -252,8 +250,7 @@ async fn handle_inbound(
     state: Arc<PipeState>,
     feishu_client: Arc<FeishuClient>,
     channel_name: String,
-    files_base: Option<String>,
-    token: Option<String>,
+    hub_files: crate::pipe::HubFiles,
     message: InboundMessage,
 ) {
     let patterns = config
@@ -363,14 +360,9 @@ async fn handle_inbound(
     };
     // Upload the images/files the adapter downloaded to the hub first (it has
     // no access to the hub's filesystem), then announce them in the frame.
-    let attachments = crate::pipe::upload_inbound_attachments(
-        files_base.as_deref(),
-        token.as_deref(),
-        &message.channel,
-        &message.attachments,
-        &config,
-    )
-    .await;
+    let attachments = hub_files
+        .stage_attachments(&message.channel, &message.attachments, &config)
+        .await;
 
     hub.send_message_with_attachments(
         &message.topic,

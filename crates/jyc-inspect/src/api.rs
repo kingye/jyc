@@ -313,8 +313,6 @@ pub struct StagedFile {
     /// this in the `attachments[].path` field of the `message` frame it sends
     /// next.
     pub path: String,
-    /// Size in bytes actually stored.
-    pub size: usize,
 }
 
 /// `POST /api/inbound?filename=...` — stage an inbound attachment.
@@ -348,11 +346,7 @@ pub async fn post_inbound_file(
     )
     .await?;
 
-    tracing::debug!(
-        path = %staged.path,
-        size = staged.size,
-        "Staged inbound attachment"
-    );
+    tracing::debug!(path = %staged.path, "Staged inbound attachment");
     Ok(Json(staged))
 }
 
@@ -395,10 +389,7 @@ pub(crate) async fn store_staged_file(
         }
     }
 
-    Ok(StagedFile {
-        path: stored_name,
-        size: bytes.len(),
-    })
+    Ok(StagedFile { path: stored_name })
 }
 
 /// Content type from file extension for published files.
@@ -826,7 +817,6 @@ mod staged_upload_tests {
         .await
         .unwrap();
 
-        assert_eq!(staged.size, 9);
         assert!(staged.path.ends_with("-invoice.pdf"), "{}", staged.path);
         let stored = tokio::fs::read(stored_file(&staging, &staged))
             .await
@@ -907,7 +897,6 @@ mod staged_upload_tests {
             .await
             .unwrap();
 
-        assert_eq!(staged.size, 1);
         assert!(staged.path.ends_with("-anything.bin"), "{}", staged.path);
         assert_eq!(
             tokio::fs::read(stored_file(&staging, &staged))

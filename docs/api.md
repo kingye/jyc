@@ -400,7 +400,7 @@ curl -X POST -H 'Authorization: Bearer <token>' \
 **Response (200):**
 
 ```json
-{ "path": "6f1c0f6e-5f4b-4c0a-9f5e-2b0f4d8f1c31-invoice.pdf", "size": 18422 }
+{ "path": "6f1c0f6e-5f4b-4c0a-9f5e-2b0f4d8f1c31-invoice.pdf" }
 ```
 
 **Errors:**

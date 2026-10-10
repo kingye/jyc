@@ -35,6 +35,9 @@ JYC is a channel-agnostic AI agent that operates through messaging channels. Use
 > (`jyc_types::channel::SUPPORTED_CHANNEL_TYPES`), not a config section;
 > the WeCom webhook listener (`[wecom].bind_addr`) and the
 > email mailbox cursor (`<workdir>/channels/<name>/.imap/`) belong to the pipe.
+> Inbound attachment bytes travel the same way as reply attachments, over the
+> bearer-gated REST API (staged under `<workspace>/.inbound/`, then named in
+> the `message` frame and moved into the routed topic).
 > See [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md).
 
 ### High-Level Flow
@@ -995,6 +998,7 @@ pub struct MessageAttachment {
     #[serde(skip)]
     pub content: Option<Vec<u8>>,             // Binary content (transient, not serialized)
     pub saved_path: Option<PathBuf>,          // Set after saving to disk
+    pub staged_path: Option<PathBuf>,         // Pipe-uploaded file, moved into the topic by the worker
 }
 
 /// Pattern matching result

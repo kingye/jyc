@@ -115,6 +115,11 @@ pub fn generate_attachment_filename(attachment: &MessageAttachment) -> String {
 ///
 /// Simpler version that takes the resolved topic path directly.
 /// Used by the topic manager where the topic path is already known.
+///
+/// Attachments a pipe process uploaded beforehand (`staged_path`, set by the
+/// WebSocket frame handler) are moved out of the staging directory into
+/// `save_dir` instead of being written — the pipe has no access to the hub's
+/// filesystem, so it cannot place them inside the topic itself.
 pub async fn save_attachments_to_dir(
     message: &mut InboundMessage,
     topic_path: &Path,
@@ -133,6 +138,11 @@ pub async fn save_attachments_to_dir(
         .context("Failed to create attachment directory")?;
 
     for attachment in message.attachments.iter_mut() {
+        if let Some(staged) = attachment.staged_path.take() {
+            adopt_staged_attachment(attachment, &staged, &save_dir).await;
+            continue;
+        }
+
         if attachment.content.is_none() {
             tracing::warn!("Attachment has no content: {}", attachment.filename);
             continue;
@@ -163,6 +173,50 @@ pub async fn save_attachments_to_dir(
     }
 
     Ok(())
+}
+
+/// Move a pipe-staged attachment into `save_dir` under a generated name.
+///
+/// Failures are logged rather than propagated: the message must still reach
+/// the agent, and a lost file costs only that one attachment.
+async fn adopt_staged_attachment(
+    attachment: &mut MessageAttachment,
+    staged: &Path,
+    save_dir: &Path,
+) {
+    let file_path = save_dir.join(generate_attachment_filename(attachment));
+
+    // The staging directory shares the filesystem with most topic
+    // directories, but a `save_path` pin can point at another device.
+    let moved: Result<(), String> = match tokio::fs::rename(staged, &file_path).await {
+        Ok(()) => Ok(()),
+        Err(_) => match tokio::fs::copy(staged, &file_path).await {
+            Ok(_) => tokio::fs::remove_file(staged)
+                .await
+                .map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        },
+    };
+
+    match moved {
+        Ok(()) => {
+            if let Ok(metadata) = tokio::fs::metadata(&file_path).await {
+                attachment.size = metadata.len() as usize;
+            }
+            attachment.saved_path = Some(file_path.clone());
+            tracing::info!(
+                "Attachment moved from staging: {} -> {}",
+                attachment.filename,
+                file_path.display()
+            );
+        }
+        Err(e) => tracing::warn!(
+            filename = %attachment.filename,
+            staged = %staged.display(),
+            error = %e,
+            "Failed to move the staged attachment, it is lost"
+        ),
+    }
 }
 
 /// Save attachments from an inbound message to the topic directory.
@@ -304,6 +358,7 @@ mod tests {
             size: 100,
             content: None,
             saved_path: None,
+            staged_path: None,
         };
         let name = generate_attachment_filename(&attachment);
         assert!(name.ends_with(".pdf"));
@@ -319,6 +374,7 @@ mod tests {
             size: 100,
             content: None,
             saved_path: None,
+            staged_path: None,
         };
         let name = generate_attachment_filename(&attachment);
         assert!(name.ends_with(".txt"));
@@ -336,6 +392,7 @@ mod tests {
             size: 1000,
             content: None,
             saved_path: None,
+            staged_path: None,
         };
         let name = generate_attachment_filename(&attachment);
         assert!(name.ends_with(".pdf"));
@@ -353,6 +410,7 @@ mod tests {
             size: 1000,
             content: None,
             saved_path: None,
+            staged_path: None,
         };
         let name = generate_attachment_filename(&attachment);
         assert!(name.ends_with(".pdf"));
@@ -386,6 +444,7 @@ mod tests {
                 size: 12,
                 content: Some(b"test content".to_vec()),
                 saved_path: None,
+                staged_path: None,
             }],
             metadata: HashMap::new(),
             matched_pattern: None,
@@ -415,5 +474,75 @@ mod tests {
         let saved = message.attachments[0].saved_path.as_ref().unwrap();
         assert!(saved.exists());
         assert!(saved.to_string_lossy().ends_with(".txt"));
+    }
+
+    /// An inbound message whose single attachment a pipe staged on disk.
+    fn staged_message(staged_path: Option<PathBuf>, filename: &str) -> InboundMessage {
+        InboundMessage {
+            id: "test".to_string(),
+            channel: "email".to_string(),
+            channel_uid: "1".to_string(),
+            sender: "Test".to_string(),
+            sender_address: "test@example.com".to_string(),
+            recipients: vec![],
+            topic: "Test Subject".to_string(),
+            content: MessageContent::default(),
+            timestamp: Utc::now(),
+            references: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![MessageAttachment {
+                filename: filename.to_string(),
+                content_type: "application/pdf".to_string(),
+                size: 0,
+                content: None,
+                saved_path: None,
+                staged_path,
+            }],
+            metadata: HashMap::new(),
+            matched_pattern: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn adopts_the_staged_attachment_of_a_pipe_message() {
+        let tmp = tempdir().unwrap();
+        let topic_path = tmp.path().join("topic");
+        let staging_dir = tmp.path().join(".inbound");
+        std::fs::create_dir_all(&staging_dir).unwrap();
+        let staged = staging_dir.join("ab12-invoice.pdf");
+        std::fs::write(&staged, b"pdf-bytes").unwrap();
+
+        let mut message = staged_message(Some(staged.clone()), "invoice.pdf");
+        save_attachments_to_dir(&mut message, &topic_path, None)
+            .await
+            .unwrap();
+
+        let saved = message.attachments[0].saved_path.clone().unwrap();
+        assert!(saved.starts_with(topic_path.join("attachments")));
+        assert!(saved.to_string_lossy().ends_with(".pdf"));
+        assert_eq!(std::fs::read(&saved).unwrap(), b"pdf-bytes");
+        // The size is re-stat'ed from the file the pipe uploaded.
+        assert_eq!(message.attachments[0].size, 9);
+        // Nothing is left behind in the staging directory.
+        assert!(!staged.exists());
+        assert!(message.attachments[0].staged_path.is_none());
+    }
+
+    #[tokio::test]
+    async fn tolerates_a_staged_attachment_that_is_gone() {
+        // The message must still reach the agent when the staged bytes
+        // vanished (an upload that never made it, or a removed file).
+        let tmp = tempdir().unwrap();
+        let mut message = staged_message(
+            Some(tmp.path().join(".inbound").join("gone.pdf")),
+            "gone.pdf",
+        );
+
+        save_attachments_to_dir(&mut message, &tmp.path().join("topic"), None)
+            .await
+            .unwrap();
+
+        assert!(message.attachments[0].saved_path.is_none());
     }
 }

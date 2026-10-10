@@ -15,6 +15,14 @@ pub fn resolve_workspace(workdir: &Path, channel: &str) -> PathBuf {
     workdir.join(channel).join("workspace")
 }
 
+/// Subdirectory of a channel workspace where the bytes of an inbound
+/// attachment are staged before the message announcing them arrives.
+///
+/// Outside every topic directory on purpose: staged bytes must not be
+/// reachable through the topic files endpoint, and the topic a message belongs
+/// to is only known once it has been routed.
+pub const INBOUND_STAGING_DIR: &str = ".inbound";
+
 /// Resolve the workspace root for the synthesized "agents" channel.
 ///
 /// This is the parent directory holding every agent's subtree:
@@ -577,6 +585,7 @@ mod tests {
             size: 5,
             content: Some(b"hello".to_vec()),
             saved_path: None,
+            staged_path: None,
         });
 
         crate::attachment_storage::save_attachments_to_dir(&mut msg, &topic_path, None)

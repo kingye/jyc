@@ -1345,6 +1345,7 @@ mod tools {
             size,
             content: file_bytes,
             saved_path: None,
+            staged_path: None,
         };
 
         assert!(

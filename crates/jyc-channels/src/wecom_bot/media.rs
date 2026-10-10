@@ -309,6 +309,7 @@ fn build_attachment(
         size: bytes.len(),
         content: Some(bytes.to_vec()),
         saved_path: None,
+        staged_path: None,
     }
 }
 /// Map a MIME type to a filesystem extension.

@@ -100,6 +100,7 @@ pub fn parse_raw_email(raw: &[u8], uid: u32) -> Result<InboundMessage> {
                 size,
                 content: Some(content),
                 saved_path: None,
+                staged_path: None,
             }
         })
         .collect();

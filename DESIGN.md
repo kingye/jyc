@@ -31,8 +31,9 @@ JYC is a channel-agnostic AI agent that operates through messaging channels. Use
 > `jyc-pipe`, which connects to the hub's websocket endpoint and owns no
 > topics, agents, or core state; the hub (`jyc` serve) claims only the
 > synthesized agent/websocket channel, and hosts the inspect server. The
-> ownership rule is the channel type (`jyc_types::channel::SUPPORTED_CHANNEL_TYPES`), not a
-> config section; the WeCom webhook listener (`[wecom].bind_addr`) and the
+> ownership rule is the channel type
+> (`jyc_types::channel::SUPPORTED_CHANNEL_TYPES`), not a config section;
+> the WeCom webhook listener (`[wecom].bind_addr`) and the
 > email mailbox cursor (`<workdir>/channels/<name>/.imap/`) belong to the pipe.
 > See [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md).
 

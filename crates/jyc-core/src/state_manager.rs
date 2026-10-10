@@ -6,9 +6,15 @@ use std::path::{Path, PathBuf};
 /// Per-channel IMAP monitoring state.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MonitorState {
+    /// Message count reported by the last `SELECT`. Observation only — the
+    /// count is unchanged when one message replaces another, so it must never
+    /// be used to detect new mail.
     pub last_sequence_number: u32,
+    /// UID of the newest message processed so far — the detection cursor.
     pub last_processed_uid: Option<u32>,
     pub last_processed_timestamp: Option<String>,
+    /// UIDVALIDITY of the mailbox the UIDs above belong to. UIDs are only
+    /// comparable while this stays the same; a change voids them all.
     pub uid_validity: Option<u32>,
 }
 

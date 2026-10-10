@@ -20,8 +20,8 @@ pub type ChannelType = String;
 /// is needed to coordinate them. The split is complete: every pipe-capable
 /// channel type is listed here and the hub spawns none of them.
 ///
-/// It lives in this dependency-light crate because the hub reads it too, and
-/// the hub must not depend on the adapter crate to know what it does not host.
+/// It lives in this dependency-light crate so the hub can read it without
+/// depending on the adapter crate.
 pub const SUPPORTED_CHANNEL_TYPES: &[&str] = &[
     "feishu",
     "github",

@@ -190,9 +190,15 @@ impl ImapClient {
         let mut results = Vec::new();
         while let Some(msg) = messages.next().await {
             let msg = msg.context("error reading fetch stream")?;
+            // A UID FETCH response always carries a UID; without one the
+            // monitor cannot deduplicate the message.
+            let Some(uid) = msg.uid else {
+                tracing::warn!(seq = msg.message, "Fetched message without a UID, skipping");
+                continue;
+            };
             if let Some(body) = msg.body() {
                 results.push(FetchedEmail {
-                    uid: msg.uid.unwrap_or(0),
+                    uid,
                     seq: msg.message,
                     body: body.to_vec(),
                 });

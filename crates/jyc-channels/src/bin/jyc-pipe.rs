@@ -10,9 +10,9 @@
 //!
 //! Per the pipe process split (`docs/architecture/pipe-split.md`): every
 //! configured channel whose type this process can run
-//! (`jyc_types::channel::SUPPORTED_CHANNEL_TYPES`) is spawned here, and `jyc
-//! serve`
-//! skips exactly those in-process. No config section is involved.
+//! (`jyc_types::channel::SUPPORTED_CHANNEL_TYPES`) is spawned here, and
+//! `jyc serve` skips exactly those in-process. No config section is
+//! involved.
 //!
 //! Usage: jyc-pipe [--workdir DIR] [--config FILE] [--hub WS-URL]
 //!                  [--no-idle] [--reset] [-v]
@@ -169,14 +169,7 @@ fn resolve_hub_origin(hub_arg: Option<&str>, config: &jyc_types::AppConfig) -> R
 /// copy other processes' content into `jyc-pipe.log` (the frame dumps of
 /// `tungstenite`'s own `Received message` trace). Capped to `warn` unless the
 /// operator names the target in `RUST_LOG`.
-const NOISY_TARGETS: [&str; 6] = [
-    "tungstenite",
-    "tokio_tungstenite",
-    "hyper",
-    "h2",
-    "reqwest",
-    "mio",
-];
+const NOISY_TARGETS: [&str; 5] = ["tungstenite", "tokio_tungstenite", "hyper", "h2", "reqwest"];
 
 /// Build the `EnvFilter` directives: scoped to jyc's own targets by default,
 /// `RUST_LOG` when set, with the noisy wire-level crates capped.

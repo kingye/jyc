@@ -377,13 +377,17 @@ file is staged in the hub's staging directory `<data_home>/.inbound/` —
 deliberately outside every topic directory, because the topic is only known
 once the message has been routed. When the frame arrives, the topic worker
 moves the file into the topic's attachment directory and the agent sees it
-like any other inbound attachment. The endpoint is hub-level, not
-per-channel: the frame carries the channel used for routing.
+like any other inbound attachment. The move is a same-filesystem rename (no
+copy); only when a pattern's `attachments.save_path` pins the directory to
+another filesystem does it fall back to copy + delete of the staged
+original. The endpoint is hub-level, not per-channel: the frame carries the
+channel used for routing.
 
-A staged file whose frame never arrives (a hub restart in between, a
-message the hub refused, a failed move) is an orphan: the hub removes staged
-files older than 24 h when it starts, and anything younger can be removed by
-hand under `<data_home>/.inbound/`.
+A file still staged once its message is long gone is an orphan: its frame
+never arrived (a hub restart in between, a message the hub refused) or the
+move failed. **Nothing collects orphans automatically** — check
+`<data_home>/.inbound/` by hand and delete what you find there (a failed
+move also logs the file's path).
 
 **Request:**
 

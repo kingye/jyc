@@ -111,52 +111,6 @@ pub fn generate_attachment_filename(attachment: &MessageAttachment) -> String {
     final_name
 }
 
-/// Delete staged inbound attachment files older than `max_age`.
-///
-/// Staging is transient: the worker moves each file into its topic as soon as
-/// the frame naming it arrives (`save_attachments_to_dir`), so a file still
-/// staged long after that is an orphan of an upload whose frame never came — a
-/// hub restart in between, or a message the hub refused. The hub sweeps once at
-/// startup.
-///
-/// Returns how many files were removed; a missing staging directory means
-/// nothing to do. Never fails: this is hygiene, not a startup gate.
-pub async fn sweep_stale_staging_files(staging_dir: &Path, max_age: std::time::Duration) -> usize {
-    let Ok(mut entries) = tokio::fs::read_dir(staging_dir).await else {
-        return 0;
-    };
-
-    let mut removed = 0usize;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let Ok(meta) = entry.metadata().await else {
-            continue;
-        };
-        let age = meta.modified().ok().and_then(|mtime| mtime.elapsed().ok());
-        if !(meta.is_file() && age.is_some_and(|age| age > max_age)) {
-            continue;
-        }
-
-        let path = entry.path();
-        match tokio::fs::remove_file(&path).await {
-            Ok(()) => removed += 1,
-            Err(e) => tracing::warn!(
-                file = %path.display(),
-                error = %e,
-                "Failed to remove a stale staged attachment"
-            ),
-        }
-    }
-
-    if removed > 0 {
-        tracing::info!(
-            count = removed,
-            dir = %staging_dir.display(),
-            "Removed stale staged attachments"
-        );
-    }
-    removed
-}
-
 /// Save attachments from an inbound message directly to a topic directory.
 ///
 /// Simpler version that takes the resolved topic path directly.
@@ -224,7 +178,8 @@ pub async fn save_attachments_to_dir(
 /// Move a pipe-staged attachment into `save_dir` under a generated name.
 ///
 /// Failures are logged rather than propagated: the message must still reach
-/// the agent, and a lost file costs only that one attachment.
+/// the agent. Only a failed rename *and* copy costs the agent this one
+/// attachment; the staged file itself then stays on disk for manual cleanup.
 async fn adopt_staged_attachment(
     attachment: &mut MessageAttachment,
     staged: &Path,
@@ -234,24 +189,35 @@ async fn adopt_staged_attachment(
 
     // The staging directory shares the filesystem with most topic
     // directories, but a `save_path` pin can point at another device.
-    let moved: Result<(), String> = match tokio::fs::rename(staged, &file_path).await {
+    let adopted: Result<(), String> = match tokio::fs::rename(staged, &file_path).await {
         Ok(()) => Ok(()),
         Err(_) => match tokio::fs::copy(staged, &file_path).await {
-            Ok(_) => tokio::fs::remove_file(staged)
-                .await
-                .map_err(|e| e.to_string()),
+            // The copy is in place, so the attachment is usable; only the
+            // staging original is left behind, and that is not a reason to
+            // tell the agent the file is missing.
+            Ok(_) => match tokio::fs::remove_file(staged).await {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    tracing::warn!(
+                        staged = %staged.display(),
+                        error = %e,
+                        "Copied the staged attachment but could not remove the original"
+                    );
+                    Ok(())
+                }
+            },
             Err(e) => Err(e.to_string()),
         },
     };
 
-    match moved {
+    match adopted {
         Ok(()) => {
             if let Ok(metadata) = tokio::fs::metadata(&file_path).await {
                 attachment.size = metadata.len() as usize;
             }
             attachment.saved_path = Some(file_path.clone());
             tracing::info!(
-                "Attachment moved from staging: {} -> {}",
+                "Attachment taken out of staging: {} -> {}",
                 attachment.filename,
                 file_path.display()
             );
@@ -260,7 +226,8 @@ async fn adopt_staged_attachment(
             filename = %attachment.filename,
             staged = %staged.display(),
             error = %e,
-            "Failed to move the staged attachment, it is lost"
+            "Failed to move the staged attachment; it stays in the staging directory \
+             and was not given to the agent (remove it by hand when convenient)"
         ),
     }
 }
@@ -361,7 +328,6 @@ mod tests {
     use chrono::Utc;
     use jyc_types::MessageContent;
     use std::collections::HashMap;
-    use std::time::Duration;
     use tempfile::tempdir;
 
     #[test]
@@ -591,33 +557,5 @@ mod tests {
             .unwrap();
 
         assert!(message.attachments[0].saved_path.is_none());
-    }
-
-    #[tokio::test]
-    async fn sweep_removes_only_orphaned_staging_files() {
-        let tmp = tempdir().unwrap();
-        let staging = tmp.path().join(".inbound");
-        tokio::fs::create_dir_all(&staging).await.unwrap();
-        tokio::fs::write(staging.join("fresh.pdf"), b"x")
-            .await
-            .unwrap();
-
-        // A file that is younger than the TTL survives...
-        assert_eq!(
-            sweep_stale_staging_files(&staging, Duration::from_secs(3600)).await,
-            0
-        );
-        assert!(staging.join("fresh.pdf").exists());
-
-        // ...one the TTL has passed is removed (zero TTL: anything with an age
-        // is stale)...
-        assert_eq!(sweep_stale_staging_files(&staging, Duration::ZERO).await, 1);
-        assert!(!staging.join("fresh.pdf").exists());
-
-        // ...and a missing staging directory is not an error.
-        assert_eq!(
-            sweep_stale_staging_files(&tmp.path().join("gone"), Duration::ZERO).await,
-            0
-        );
     }
 }

@@ -4,7 +4,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -93,14 +93,6 @@ pub struct TopicActivityState {
 pub type ReloadCallback =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
-/// How long a staged inbound attachment may sit in the staging directory before
-/// startup considers it an orphan and removes it.
-///
-/// Staging normally lasts milliseconds (upload → frame → move into the topic),
-/// so a day is generous; the only things it can hit are files whose frame never
-/// arrived. ponytail: keep it a constant until someone needs to tune it.
-const INBOUND_STAGING_TTL: Duration = Duration::from_secs(24 * 60 * 60);
-
 /// Shared state accessible by the inspect server.
 pub struct InspectContext {
     /// Per-channel topic managers (dynamic — updated on reload)
@@ -171,16 +163,6 @@ impl InspectServer {
     async fn run(self) -> anyhow::Result<()> {
         let listener = TcpListener::bind(&self.bind_addr).await?;
         tracing::info!(bind = %self.bind_addr, "Inspect server started");
-
-        // Staged inbound attachments are moved into their topic as soon as the
-        // frame naming them arrives; anything still staged a day later is an
-        // orphan (a restart or a dropped frame between the upload and the
-        // frame). Sweep once, here — hygiene, never a startup gate.
-        jyc_core::attachment_storage::sweep_stale_staging_files(
-            &jyc_core::topic_path::inbound_staging_root(),
-            INBOUND_STAGING_TTL,
-        )
-        .await;
 
         let app = build_router(self.context.clone());
         let cancel = self.cancel.clone();

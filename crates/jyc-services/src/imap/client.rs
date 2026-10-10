@@ -38,8 +38,11 @@ pub struct FetchedEmail {
 pub struct MailboxInfo {
     /// Number of messages in the mailbox (`EXISTS`).
     pub exists: u32,
-    /// Next UID the server will assign (`UIDNEXT`); the newest message's UID
-    /// is `uid_next - 1`. `None` if the server did not report it.
+    /// Next UID the server will assign (`UIDNEXT`). Observation only: the
+    /// monitor reads the newest UID from the mailbox itself
+    /// ([`ImapClient::newest_uid`]), because not every server reports this and
+    /// it need not move when the newest message is expunged. `None` if the
+    /// server did not report it.
     pub uid_next: Option<u32>,
     /// `UIDVALIDITY` — when it changes, every previously stored UID is void.
     pub uid_validity: Option<u32>,
@@ -207,6 +210,38 @@ impl ImapClient {
 
         tracing::debug!(range = %range, count = results.len(), "Fetched emails");
         Ok(results)
+    }
+
+    /// UID of the newest message in the selected mailbox, `None` when it holds none.
+    ///
+    /// The monitor asks the mailbox itself instead of trusting `SELECT`'s
+    /// `UIDNEXT`: not every server reports it (163 does not), and it is only a
+    /// prediction — unlike `UID FETCH *`, which always answers with a real UID.
+    ///
+    /// Callers must skip empty mailboxes (`MailboxInfo::exists == 0`), where
+    /// `*` is not a valid sequence number.
+    pub async fn newest_uid(&mut self) -> Result<Option<u32>> {
+        let session = self.session_mut()?;
+
+        let mut messages = tokio::time::timeout(IMAP_CMD_TIMEOUT, session.uid_fetch("*", "(UID)"))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "IMAP UID FETCH * (UID) timed out ({}s)",
+                    IMAP_CMD_TIMEOUT.as_secs()
+                )
+            })?
+            .context("failed to fetch the newest UID")?;
+
+        let mut newest: Option<u32> = None;
+        while let Some(msg) = messages.next().await {
+            let msg = msg.context("error reading fetch stream")?;
+            if let Some(uid) = msg.uid {
+                newest = Some(newest.unwrap_or(0).max(uid));
+            }
+        }
+
+        Ok(newest)
     }
 
     /// Start IMAP IDLE and wait for new mail notification.

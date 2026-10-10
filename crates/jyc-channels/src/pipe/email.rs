@@ -132,6 +132,7 @@ pub async fn spawn_email_pipe(
     tracing::info!(
         channel = %channel_name,
         last_seq = state_manager.last_sequence_number(),
+        last_uid = ?state_manager.last_processed_uid(),
         processed_uids = state_manager.processed_uid_count(),
         "State loaded"
     );

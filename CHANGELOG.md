@@ -29,6 +29,10 @@
 
 - Internal restructure: the websocket channel adapter moved from `jyc-channels` to `jyc-inspect` (`server::websocket`) — it is hub frontend (dashboard UI + pipe endpoint), not a peripheral channel. `jyc-channels` is now the pipe crate and no longer depends on `jyc-inspect`; no behavior change
 
+### Fixed
+
+- **IMAP mail detection is UID-based** (#877): the monitor compared the mailbox message count against the count it saw last, so a mailbox that expunged one message and received another reported the *same* count and the new mail was never fetched — the pipe then sat on `No new messages` and nothing above debug level said so. It now compares the server's `UIDNEXT` with the state's `last_processed_uid` and fetches `UID FETCH <from>:<to>`, so mail is detected regardless of the count; `UIDVALIDITY` is recorded and a change resets the UID cursor (the stored UIDs describe the server's previous UID space), and a cursor that ends up above the newest UID is reported as such instead of staying silent. `Mailbox selected` / `No new messages` moved from trace to debug (visible with `-v`) and the fetch line reports the UID range
+
 ### Removed
 
 - The in-process email adapter (`spawn_email_adapter` in `crates/jyc-cli/src/cli/serve/channels/email.rs`) and the hub-side pipe helpers only it still used: `HubRegistry` (per-channel `MessageRouter` map), `route_into_pipe_target`, `wait_for_broadcast`, `fetch_reply_attachment` and the `ws_broadcasts` map. With the split complete, `jyc-cli` no longer references any pipe adapter or routing helper — it reads `pipe::SUPPORTED_CHANNEL_TYPES` only, to skip the channels `jyc-pipe` owns (#876)

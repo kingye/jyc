@@ -1987,6 +1987,7 @@ dependencies = [
  "http",
  "jyc-core",
  "jyc-types",
+ "jyc-utils",
  "reqwest",
  "serde",
  "serde_json",

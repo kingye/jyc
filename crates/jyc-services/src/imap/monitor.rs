@@ -23,8 +23,6 @@ pub struct ImapMonitor {
     state_manager: StateManager,
     cancel: CancellationToken,
     on_message: OnEmail,
-    /// Whether the "server did not report UIDNEXT" warning was already emitted.
-    warned_missing_uidnext: bool,
 }
 
 impl ImapMonitor {
@@ -43,7 +41,6 @@ impl ImapMonitor {
             state_manager,
             cancel,
             on_message,
-            warned_missing_uidnext: false,
         }
     }
 
@@ -212,24 +209,27 @@ impl ImapMonitor {
             }
         }
 
-        // Without UIDNEXT there is no way to spot messages the count hides;
-        // say so once per outage instead of once per poll.
-        if mailbox.uid_next.is_some() {
-            self.warned_missing_uidnext = false;
-        } else if !self.warned_missing_uidnext {
-            self.warned_missing_uidnext = true;
-            tracing::warn!(
-                exists = mailbox.exists,
-                "IMAP server did not report UIDNEXT, cannot detect new mail"
-            );
-        }
+        // The newest UID comes from the mailbox itself: not every server
+        // reports UIDNEXT (163 does not), and UIDNEXT is only a prediction
+        // that need not move when the newest message is expunged.
+        let newest_uid = if mailbox.exists == 0 {
+            None
+        } else {
+            client.newest_uid().await?
+        };
+        tracing::debug!(
+            exists = mailbox.exists,
+            uid_next = ?mailbox.uid_next,
+            newest_uid = ?newest_uid,
+            "Using the mailbox's newest UID"
+        );
 
         let last_uid = self.state_manager.last_processed_uid();
-        let (from, to) = match plan_fetch(last_uid, mailbox.uid_next) {
+        let (from, to) = match plan_fetch(last_uid, newest_uid) {
             FetchPlan::Nothing => {
                 tracing::debug!(
                     exists = mailbox.exists,
-                    uid_next = ?mailbox.uid_next,
+                    newest_uid = ?newest_uid,
                     last_uid = ?last_uid,
                     "No new messages"
                 );
@@ -242,13 +242,13 @@ impl ImapMonitor {
                 if self.state_manager.uid_validity().is_some() {
                     tracing::debug!(
                         last_uid = ?last_uid,
-                        uid_next = ?mailbox.uid_next,
+                        newest_uid = ?newest_uid,
                         "Newest UID is below the cursor, the newest message was deleted"
                     );
                 } else {
                     tracing::warn!(
                         last_uid = ?last_uid,
-                        uid_next = ?mailbox.uid_next,
+                        newest_uid = ?newest_uid,
                         "Newest UID is below the cursor and UIDVALIDITY is unknown, the \
                          mailbox may have been recreated; run with --reset to reprocess it"
                     );
@@ -336,10 +336,10 @@ fn backoff_delay(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_secs(capped)
 }
 
-/// What the monitor should fetch after reading the mailbox status.
+/// What the monitor should fetch after reading the mailbox's newest UID.
 #[derive(Debug, PartialEq)]
 enum FetchPlan {
-    /// Empty mailbox, nothing new, or no usable UIDNEXT.
+    /// Empty mailbox, or nothing new since the stored cursor.
     Nothing,
     /// The newest UID is below the stored cursor — the mailbox most likely
     /// restarted its UID space while the stored UIDVALIDITY was unknown.
@@ -348,16 +348,13 @@ enum FetchPlan {
     Uids(u32, u32),
 }
 
-/// Decide what to fetch from the mailbox status.
-fn plan_fetch(last_uid: Option<u32>, uid_next: Option<u32>) -> FetchPlan {
-    // `uid_next` is 1 in a mailbox that never held a message, and absent when
-    // the server did not report it.
-    let Some(newest) = uid_next.and_then(|next| next.checked_sub(1)) else {
+/// Decide what to fetch, given the stored cursor and the mailbox's newest UID.
+fn plan_fetch(last_uid: Option<u32>, newest_uid: Option<u32>) -> FetchPlan {
+    // `None` for an empty mailbox; `Some(0)` for a server that answered
+    // without a UID.
+    let Some(newest) = newest_uid.filter(|uid| *uid > 0) else {
         return FetchPlan::Nothing;
     };
-    if newest == 0 {
-        return FetchPlan::Nothing;
-    }
 
     match last_uid {
         // First run — only the newest message, don't replay mailbox history.
@@ -394,12 +391,12 @@ mod tests {
 
     #[test]
     fn first_run_fetches_only_the_newest() {
-        assert_eq!(plan_fetch(None, Some(101)), FetchPlan::Uids(100, 100));
+        assert_eq!(plan_fetch(None, Some(100)), FetchPlan::Uids(100, 100));
     }
 
     #[test]
     fn new_message_after_cursor_is_fetched() {
-        assert_eq!(plan_fetch(Some(100), Some(104)), FetchPlan::Uids(101, 103));
+        assert_eq!(plan_fetch(Some(100), Some(103)), FetchPlan::Uids(101, 103));
     }
 
     #[test]
@@ -408,21 +405,21 @@ mod tests {
         // another still reports `1 EXISTS` — the count is unchanged while the
         // newest UID moved past the cursor.
         assert_eq!(
-            plan_fetch(Some(1_773_715_637), Some(1_773_715_639)),
+            plan_fetch(Some(1_773_715_637), Some(1_773_715_638)),
             FetchPlan::Uids(1_773_715_638, 1_773_715_638)
         );
     }
 
     #[test]
     fn nothing_when_newest_equals_cursor() {
-        assert_eq!(plan_fetch(Some(100), Some(101)), FetchPlan::Nothing);
+        assert_eq!(plan_fetch(Some(100), Some(100)), FetchPlan::Nothing);
     }
 
     #[test]
-    fn nothing_for_empty_or_unreported_mailbox() {
-        assert_eq!(plan_fetch(None, Some(1)), FetchPlan::Nothing);
-        assert_eq!(plan_fetch(Some(100), Some(0)), FetchPlan::Nothing);
+    fn nothing_for_empty_or_uidless_mailbox() {
+        assert_eq!(plan_fetch(None, None), FetchPlan::Nothing);
         assert_eq!(plan_fetch(Some(100), None), FetchPlan::Nothing);
+        assert_eq!(plan_fetch(Some(100), Some(0)), FetchPlan::Nothing);
     }
 
     #[test]

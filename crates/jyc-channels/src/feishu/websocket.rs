@@ -307,6 +307,7 @@ impl FeishuWebSocket {
                                         size: image_bytes.len(),
                                         content: Some(image_bytes),
                                         saved_path: None,
+                                        staged_path: None,
                                     };
                                     attachments.push(image_attachment);
                                 } else {
@@ -424,6 +425,7 @@ impl FeishuWebSocket {
                                             size: file_bytes.len(),
                                             content: Some(file_bytes),
                                             saved_path: None,
+                                            staged_path: None,
                                         };
                                         attachments.push(file_attachment);
                                     } else {

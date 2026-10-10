@@ -88,6 +88,7 @@ fn pipe_msg(
             size: 3,
             content: Some(vec![1, 2, 3]),
             saved_path: None,
+            staged_path: None,
         }],
         metadata,
         matched_pattern: None,
@@ -681,4 +682,70 @@ fn close_event_topics_resolves_gitee_number() {
         close_event_topics(&patterns, 42, "issue", "jyc"),
         vec![("gitee-42".to_string(), "agents".to_string())]
     );
+}
+
+#[test]
+fn inbound_upload_url_targets_the_channel_staging_endpoint() {
+    let url = inbound_upload_url("http://127.0.0.1:8080", "jiny283", "发票 2026.pdf").unwrap();
+
+    assert_eq!(url.path(), "/api/channels/jiny283/inbound");
+    // The filename rides as a query parameter, percent-encoded.
+    let query: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    assert_eq!(
+        query,
+        vec![("filename".to_string(), "发票 2026.pdf".to_string())]
+    );
+    assert!(url.as_str().contains("filename=%E5%8F%91%E7%A5%A8"));
+}
+
+fn attachment_with_bytes() -> jyc_types::MessageAttachment {
+    jyc_types::MessageAttachment {
+        filename: "a.pdf".to_string(),
+        content_type: "application/pdf".to_string(),
+        size: 3,
+        content: Some(b"pdf".to_vec()),
+        saved_path: None,
+        staged_path: None,
+    }
+}
+
+#[tokio::test]
+async fn inbound_uploads_are_dropped_without_an_inspect_server() {
+    // No hub base URL: there is no endpoint to stage bytes at, so nothing is
+    // uploaded and no attachment is announced.
+    let attachments = [attachment_with_bytes()];
+
+    let staged = HubFiles::new(None, None)
+        .stage_attachments("jiny283", &attachments, &jyc_types::AppConfig::default())
+        .await;
+
+    assert!(staged.is_empty());
+}
+
+#[tokio::test]
+async fn inbound_uploads_are_dropped_when_attachments_are_disabled() {
+    let config = jyc_types::AppConfig {
+        attachments: Some(jyc_types::UnifiedAttachmentConfig {
+            inbound: Some(jyc_types::InboundAttachmentConfig {
+                enabled: false,
+                allowed_extensions: vec![],
+                max_file_size: None,
+                max_per_message: None,
+                save_path: None,
+            }),
+            outbound: None,
+        }),
+        ..Default::default()
+    };
+
+    let attachments = [attachment_with_bytes()];
+    // A base URL is set, so only the `enabled = false` gate can stop this.
+    let staged = HubFiles::new(Some("http://127.0.0.1:1".to_string()), None)
+        .stage_attachments("jiny283", &attachments, &config)
+        .await;
+
+    assert!(staged.is_empty());
 }

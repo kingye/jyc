@@ -122,6 +122,7 @@ users who have no dashboard token.
 | GET    | `/api/topics/{channel}/{topic}/chat`        | Recent chat messages for a topic.                 |
 | GET    | `/api/channels/{channel}/patterns`            | Pattern names configured for a channel.            |
 | GET    | `/api/topics/{channel}/{topic}/files/{file...}` | Topic-local file (bearer-gated; see §2.4.9).     |
+| POST   | `/api/channels/{channel}/inbound?filename=`  | Stage an inbound attachment for a pipe (see §2.4.10). |
 | POST   | `/api/topics`                                | Register a new ad-hoc topic.                      |
 | POST   | `/api/config/reload`                          | Reload the layered config (global + workdir).      |
 | GET    | `/exchange/{channel}/{topic}/{file...}?token=` | Agent-published file (no bearer auth; see §2.2).   |
@@ -359,6 +360,50 @@ curl -H 'Authorization: Bearer <token>' \
 | `400`  | Path contains non-normal components (`..`, `.`, absolute). |
 | `404`  | Unknown channel/topic, missing file, directory, or a symlink resolving into `.jyc/`. |
 
+#### 2.4.10 `POST /api/channels/{channel}/inbound?filename=...`
+
+Stages one inbound attachment for a pipe process. The request body is the
+raw file (at most 32 MiB — see the errors below); `filename` carries the
+original name (percent-encoded), which is validated against the **global**
+`[attachments.inbound]` (`allowed_extensions`, `max_file_size`) and kept,
+sanitized, as the readable part of the stored name. A per-pattern
+`attachments` section is enforced by the pipe before it uploads, not here.
+`enabled = false` is refused.
+
+Pipe processes (`jyc-pipe`) do not share a filesystem with the hub, so an
+adapter uploads an attachment here and then names the returned `path` in
+the `attachments` field of the `message` frame it sends next (§3.3). The
+file is staged in the channel's `.inbound/` directory — deliberately
+outside every topic directory, because the topic is only known once the
+message has been routed. When the frame arrives, the topic worker moves the
+file into the topic's attachment directory and the agent sees it like any
+other inbound attachment. A staged file whose frame never arrives is not
+collected: remove it by hand under `<channel workspace>/.inbound/`.
+
+**Request:**
+
+```bash
+curl -X POST -H 'Authorization: Bearer <token>' \
+  -H 'Content-Type: application/pdf' --data-binary @invoice.pdf \
+  'http://127.0.0.1:9876/api/channels/local_dev/inbound?filename=invoice.pdf'
+```
+
+**Response (200):**
+
+```json
+{ "path": ".inbound/6f1c0f6e-5f4b-4c0a-9f5e-2b0f4d8f1c31-invoice.pdf", "size": 18422 }
+```
+
+**Errors:**
+
+| Status | Trigger |
+|--------|---------|
+| `400`  | Extension or size rejected by the inbound attachment policy. |
+| `403`  | Inbound attachments are disabled (`[attachments.inbound].enabled = false`). |
+| `404`  | Unknown channel (no topic manager). |
+| `413`  | Body larger than the 32 MiB ceiling. |
+| `500`  | Staging directory or file could not be written. |
+
 ### 2.5 Example session (curl + Python)
 
 ```bash
@@ -448,6 +493,7 @@ from the persisted `topic-meta.json` instead.
 | `sender`        | `string?`                  | Display name (e.g. a feishu user name).             |
 | `sender_address`| `string?`                  | Canonical address (e.g. an open_id).                |
 | `metadata`      | `object?` (string → JSON)  | Pipe hints (`pipe_pattern`), platform ids, ...      |
+| `attachments`   | `array?`                   | Attachments staged beforehand (§2.4.10), each `{ "filename", "path", "content_type" }` — same shape as a reply's `attachments` minus `size` (the worker stats the file), with `path` relative to the channel workspace instead of a URL. |
 
 `close_topic` (`{ "topic": "<name>" }`) asks a websocket-channel hub to
 close a topic (`TopicManager::auto_close_topic`). Sent by external pipe

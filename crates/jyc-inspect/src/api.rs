@@ -37,7 +37,7 @@ use axum::{
 };
 use jyc_core::{
     activity_log_store::ActivityLogStore, chat_log_store::load_recent_chat_history,
-    topic_path::INBOUND_STAGING_DIR,
+    topic_path::inbound_staging_root,
 };
 use jyc_types::{
     ActivityEntry, ChatMessageEntry, InboundAttachmentConfig, InspectOverview, InspectState,
@@ -298,7 +298,7 @@ async fn serve_topic_file(
         .into_response())
 }
 
-/// Query parameters for `POST /api/channels/:channel/inbound`.
+/// Query parameters for `POST /api/inbound`.
 #[derive(Debug, Deserialize)]
 pub struct StagedUploadQuery {
     /// Original filename: validated against the allowed extensions and kept
@@ -306,43 +306,30 @@ pub struct StagedUploadQuery {
     pub filename: String,
 }
 
-/// Response of `POST /api/channels/:channel/inbound`.
+/// Response of `POST /api/inbound`.
 #[derive(Debug, Serialize)]
 pub struct StagedFile {
-    /// Path relative to the channel workspace — a pipe puts this in the
-    /// `attachments[].path` field of the `message` frame it sends next.
+    /// Name of the staged file inside the hub's staging directory — a pipe puts
+    /// this in the `attachments[].path` field of the `message` frame it sends
+    /// next.
     pub path: String,
-    /// Size in bytes actually stored.
-    pub size: usize,
 }
 
-/// `POST /api/channels/:channel/inbound?filename=...` — stage an inbound
-/// attachment.
+/// `POST /api/inbound?filename=...` — stage an inbound attachment.
 ///
 /// Pipe processes (`jyc-pipe`) have no access to the hub's filesystem, so they
-/// upload the bytes here and then name the returned path in a `message` frame.
-/// The file lands in the channel's staging directory
-/// (`<workspace>/.inbound/`), deliberately outside every topic directory: the
-/// topic is only known once the message is routed, and staged bytes must not be
-/// reachable through the topic files endpoint. The topic worker moves the file
-/// into the topic's attachment directory when the frame arrives
+/// upload the bytes here and then name the returned file in a `message` frame.
+/// The file lands in the hub's staging directory ([`inbound_staging_root`]),
+/// deliberately outside every topic directory: the topic is only known once the
+/// message is routed, and staged bytes must not be reachable through the topic
+/// files endpoint. The topic worker moves the file into the topic's attachment
+/// directory when the frame arrives
 /// (`attachment_storage::save_attachments_to_dir`).
 pub async fn post_inbound_file(
     State(ctx): State<Arc<InspectContext>>,
-    Path(channel): Path<String>,
     Query(query): Query<StagedUploadQuery>,
     body: Bytes,
 ) -> Result<Json<StagedFile>, ApiError> {
-    let tm = ctx
-        .topic_managers
-        .load()
-        .iter()
-        .find(|tm| tm.channel_name() == channel)
-        .cloned()
-        .ok_or_else(|| {
-            ApiError::not_found(format!("no topic manager found for channel '{channel}'"))
-        })?;
-
     // The pipe validated against the config it knows; this is the hub's own
     // check at the trust boundary, with the same rules.
     let inbound_config = ctx
@@ -352,19 +339,14 @@ pub async fn post_inbound_file(
         .and_then(|attachments| attachments.inbound);
 
     let staged = store_staged_file(
-        &tm.channel_workspace().join(INBOUND_STAGING_DIR),
+        &inbound_staging_root(),
         &query.filename,
         &body,
         inbound_config.as_ref(),
     )
     .await?;
 
-    tracing::debug!(
-        channel = %channel,
-        path = %staged.path,
-        size = staged.size,
-        "Staged inbound attachment"
-    );
+    tracing::debug!(path = %staged.path, "Staged inbound attachment");
     Ok(Json(staged))
 }
 
@@ -372,8 +354,9 @@ pub async fn post_inbound_file(
 ///
 /// The stored name is generated, never taken from the request, so an upload
 /// cannot overwrite an existing file; the requested filename only survives
-/// (sanitized) as its readable part.
-async fn store_staged_file(
+/// (sanitized) as its readable part. The name is what the pipe passes back in
+/// its frame, so it stays a plain file name.
+pub(crate) async fn store_staged_file(
     staging_dir: &std::path::Path,
     filename: &str,
     bytes: &[u8],
@@ -406,10 +389,7 @@ async fn store_staged_file(
         }
     }
 
-    Ok(StagedFile {
-        path: format!("{INBOUND_STAGING_DIR}/{stored_name}"),
-        size: bytes.len(),
-    })
+    Ok(StagedFile { path: stored_name })
 }
 
 /// Content type from file extension for published files.
@@ -810,19 +790,23 @@ mod staged_upload_tests {
         }
     }
 
-    /// Path of a staged file inside `staging_dir`, from its response path.
+    /// Path of a staged file inside `staging_dir`, from its response name.
+    ///
+    /// The frame carries this name, so it has to stay a plain file name — the
+    /// hub refuses anything else (see `FrameAttachment::into_attachment`).
     fn stored_file(staging_dir: &std::path::Path, staged: &StagedFile) -> PathBuf {
-        let name = staged
-            .path
-            .strip_prefix(&format!("{INBOUND_STAGING_DIR}/"))
-            .expect("staged path is relative to the staging dir");
-        staging_dir.join(name)
+        assert!(
+            !staged.path.contains('/'),
+            "the staged name must be a plain file name: {}",
+            staged.path
+        );
+        staging_dir.join(&staged.path)
     }
 
     #[tokio::test]
     async fn stores_bytes_under_a_generated_name() {
         let tmp = tempfile::tempdir().unwrap();
-        let staging = tmp.path().join(INBOUND_STAGING_DIR);
+        let staging = tmp.path().join("staging");
 
         let staged = store_staged_file(
             &staging,
@@ -833,7 +817,6 @@ mod staged_upload_tests {
         .await
         .unwrap();
 
-        assert_eq!(staged.size, 9);
         assert!(staged.path.ends_with("-invoice.pdf"), "{}", staged.path);
         let stored = tokio::fs::read(stored_file(&staging, &staged))
             .await
@@ -844,7 +827,7 @@ mod staged_upload_tests {
     #[tokio::test]
     async fn same_filename_twice_does_not_overwrite() {
         let tmp = tempfile::tempdir().unwrap();
-        let staging = tmp.path().join(INBOUND_STAGING_DIR);
+        let staging = tmp.path().join("staging");
 
         let first = store_staged_file(&staging, "a.txt", b"first", None)
             .await
@@ -871,7 +854,7 @@ mod staged_upload_tests {
     #[tokio::test]
     async fn rejects_disallowed_extension_without_leaving_a_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let staging = tmp.path().join(INBOUND_STAGING_DIR);
+        let staging = tmp.path().join("staging");
 
         let err = store_staged_file(&staging, "evil.exe", b"x", Some(&config(&[".pdf"], None)))
             .await
@@ -887,7 +870,7 @@ mod staged_upload_tests {
     #[tokio::test]
     async fn rejects_oversized_attachment() {
         let tmp = tempfile::tempdir().unwrap();
-        let staging = tmp.path().join(INBOUND_STAGING_DIR);
+        let staging = tmp.path().join("staging");
 
         let big = vec![0u8; 2048];
         let err = store_staged_file(
@@ -908,14 +891,13 @@ mod staged_upload_tests {
         // No `[attachments.inbound]` at all: the pipe's own validation is the
         // gate, and the hub only guards the staging directory.
         let tmp = tempfile::tempdir().unwrap();
-        let staging = tmp.path().join(INBOUND_STAGING_DIR);
+        let staging = tmp.path().join("staging");
 
         let staged = store_staged_file(&staging, "anything.bin", b"x", None)
             .await
             .unwrap();
 
-        assert_eq!(staged.size, 1);
-        assert!(staged.path.starts_with(".inbound/"));
+        assert!(staged.path.ends_with("-anything.bin"), "{}", staged.path);
         assert_eq!(
             tokio::fs::read(stored_file(&staging, &staged))
                 .await
@@ -927,7 +909,7 @@ mod staged_upload_tests {
     #[tokio::test]
     async fn rejects_upload_when_the_policy_is_disabled() {
         let tmp = tempfile::tempdir().unwrap();
-        let staging = tmp.path().join(INBOUND_STAGING_DIR);
+        let staging = tmp.path().join("staging");
         let disabled = InboundAttachmentConfig {
             enabled: false,
             allowed_extensions: vec![".pdf".to_string()],

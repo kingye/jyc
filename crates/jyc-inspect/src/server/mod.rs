@@ -753,6 +753,46 @@ mod exchange_route_auth_tests {
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
+    /// The pipe uploads to `POST /api/inbound` (`jyc-channels` pins its half
+    /// of that URL); this pins the hub's half, so a rename on either side
+    /// cannot pass CI and 404 in production.
+    #[tokio::test]
+    async fn inbound_upload_route_requires_bearer() {
+        let app = build_router(ctx_with_token(Some("secret")));
+        let res = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api/inbound?filename=a.pdf")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Authed, the request reaches the handler, so a missing `filename` is a
+    /// `400`. Nothing is written: only that rejection is safe to exercise
+    /// here, because the handler resolves the real `<data_home>/.inbound/`
+    /// and a test must not stage files in it.
+    #[tokio::test]
+    async fn inbound_upload_route_reaches_the_handler() {
+        let app = build_router(ctx_with_token(Some("secret")));
+        let res = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api/inbound")
+                    .header("authorization", "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
     /// Sanity: authed routes still reject requests without the bearer token.
     #[tokio::test]
     async fn api_route_still_requires_bearer() {

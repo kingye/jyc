@@ -186,7 +186,7 @@ impl HubPipe {
     }
 
     /// Queue a `message` frame whose attachments are already staged on the hub
-    /// (see [`super::upload_inbound_attachments`]).
+    /// (see `stage_attachments`).
     pub fn send_message_with_attachments(
         &self,
         topic: &str,
@@ -196,7 +196,7 @@ impl HubPipe {
         metadata: std::collections::HashMap<String, serde_json::Value>,
         attachments: &[super::StagedAttachment],
     ) {
-        self.queue_frame(
+        let queued = self.queue_frame(
             message_frame(
                 topic,
                 text,
@@ -207,6 +207,17 @@ impl HubPipe {
             ),
             "message",
         );
+        if !queued {
+            // The bytes are already on the hub and nothing will ever name
+            // them now, so this warning is the only trace of the leftovers
+            // (they stay under the hub's staging directory until removed by
+            // hand — see `docs/api.md` §2.4.10).
+            tracing::warn!(
+                channel = %self.target_channel,
+                staged = ?attachments.iter().map(|att| att.path.as_str()).collect::<Vec<_>>(),
+                "hub pipe: message frame dropped, staged attachments are stranded"
+            );
+        }
     }
 
     /// Queue a `close_topic` frame for the hub.
@@ -215,14 +226,17 @@ impl HubPipe {
         self.queue_frame(frame, "close_topic");
     }
 
-    fn queue_frame(&self, frame: serde_json::Value, kind: &str) {
+    /// Returns whether the frame was queued; a closed queue means the pipe is
+    /// shutting down, so only a full one is worth reporting to the caller.
+    fn queue_frame(&self, frame: serde_json::Value, kind: &str) -> bool {
         match self.outbound.try_send(frame.to_string()) {
-            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => {}
+            Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => true,
             Err(mpsc::error::TrySendError::Full(_)) => {
                 tracing::warn!(
                     channel = %self.target_channel,
                     "hub pipe: outbound queue full, {kind} frame dropped (hub unreachable?)"
                 );
+                false
             }
         }
     }
@@ -446,7 +460,7 @@ mod tests {
     fn message_frame_omits_empty_attachments_and_carries_staged_ones() {
         let staged = super::super::StagedAttachment {
             filename: "invoice.pdf".to_string(),
-            path: ".inbound/ab12-invoice.pdf".to_string(),
+            path: "ab12-invoice.pdf".to_string(),
             content_type: "application/pdf".to_string(),
         };
         let plain = message_frame(
@@ -480,10 +494,7 @@ mod tests {
             Some(std::slice::from_ref(&staged)),
         );
         assert_eq!(with_att["attachments"][0]["filename"], "invoice.pdf");
-        assert_eq!(
-            with_att["attachments"][0]["path"],
-            ".inbound/ab12-invoice.pdf"
-        );
+        assert_eq!(with_att["attachments"][0]["path"], "ab12-invoice.pdf");
         assert_eq!(
             with_att["attachments"][0]["content_type"],
             "application/pdf"

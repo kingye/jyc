@@ -165,11 +165,15 @@ deleted.
   other migrated channel (the in-process adapter re-read live config per
   message).
 - Inbound attachments are relayed: the adapter uploads the bytes to the
-  hub's staging endpoint (`POST /api/channels/<channel>/inbound`, bearer
-  token, `docs/api.md` §2.4.10) and names the returned path in the
-  `message` frame's `attachments` field, so the topic worker can move the
-  file into the routed topic — the two processes do not share a filesystem,
-  and the topic is only known after routing. The same applies to feishu and
+  hub's staging endpoint (`POST /api/inbound`, bearer token, `docs/api.md`
+  §2.4.10) and names the returned file in the `message` frame's
+  `attachments` field, so the topic worker can move the file into the routed
+  topic — the two processes do not share a filesystem, and the topic is only
+  known after routing. Staging is a single hub-level directory,
+  `<data_home>/.inbound/`: outside every topic root by construction (a
+  channel workspace is not — for the "agents" channel it *is* the directory
+  a topic named `workspace` would own), and on the shared volume, so the
+  worker's move is a same-filesystem rename. The same applies to feishu and
   wecom_bot; `wecom`/`wecomkf` never relayed inbound media, in-process or
   not. An attachment-only mail (empty body) now reaches the AI: the hub's
   body check keeps messages that carry attachments and the prompt gets its

@@ -178,7 +178,8 @@ pub async fn save_attachments_to_dir(
 /// Move a pipe-staged attachment into `save_dir` under a generated name.
 ///
 /// Failures are logged rather than propagated: the message must still reach
-/// the agent, and a lost file costs only that one attachment.
+/// the agent. Only a failed rename *and* copy costs the agent this one
+/// attachment; the staged file itself then stays on disk for manual cleanup.
 async fn adopt_staged_attachment(
     attachment: &mut MessageAttachment,
     staged: &Path,
@@ -188,24 +189,35 @@ async fn adopt_staged_attachment(
 
     // The staging directory shares the filesystem with most topic
     // directories, but a `save_path` pin can point at another device.
-    let moved: Result<(), String> = match tokio::fs::rename(staged, &file_path).await {
+    let adopted: Result<(), String> = match tokio::fs::rename(staged, &file_path).await {
         Ok(()) => Ok(()),
         Err(_) => match tokio::fs::copy(staged, &file_path).await {
-            Ok(_) => tokio::fs::remove_file(staged)
-                .await
-                .map_err(|e| e.to_string()),
+            // The copy is in place, so the attachment is usable; only the
+            // staging original is left behind, and that is not a reason to
+            // tell the agent the file is missing.
+            Ok(_) => match tokio::fs::remove_file(staged).await {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    tracing::warn!(
+                        staged = %staged.display(),
+                        error = %e,
+                        "Copied the staged attachment but could not remove the original"
+                    );
+                    Ok(())
+                }
+            },
             Err(e) => Err(e.to_string()),
         },
     };
 
-    match moved {
+    match adopted {
         Ok(()) => {
             if let Ok(metadata) = tokio::fs::metadata(&file_path).await {
                 attachment.size = metadata.len() as usize;
             }
             attachment.saved_path = Some(file_path.clone());
             tracing::info!(
-                "Attachment moved from staging: {} -> {}",
+                "Attachment taken out of staging: {} -> {}",
                 attachment.filename,
                 file_path.display()
             );
@@ -214,7 +226,8 @@ async fn adopt_staged_attachment(
             filename = %attachment.filename,
             staged = %staged.display(),
             error = %e,
-            "Failed to move the staged attachment, it is lost"
+            "Failed to move the staged attachment; it stays in the staging directory \
+             and was not given to the agent (remove it by hand when convenient)"
         ),
     }
 }

@@ -16,7 +16,12 @@ lto = false
 
 [profile.release]
 opt-level = "s"
-lto = "thin"
+# Fat LTO + a single codegen unit: whole-graph inlining and deduplication, paid
+# for with release build time (the local gate stays on `cargo check`, so
+# day-to-day work is unaffected). If release builds get too slow, drop
+# `codegen-units` first and measure.
+lto = "fat"
+codegen-units = 1
 strip = "symbols"
 # NOTE: panic stays "unwind" — jyc-inspect/src/server.rs uses
 # AssertUnwindSafe(catch_unwind) for dashboard event-forwarding tasks.

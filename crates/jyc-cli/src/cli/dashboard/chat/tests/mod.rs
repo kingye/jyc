@@ -871,16 +871,37 @@ fn leader_space_toggles_mode_through_the_key_handler() {
     assert_eq!(app.chat.text(), "", "the shortcut must not touch the field");
 }
 
-/// Draw `app` into the shared 80x24 test backend and hand back the cells.
-fn draw_80x24(app: &mut App) -> ratatui::buffer::Buffer {
+/// Draw `app` into a `width` x `height` test backend and hand back the cells.
+fn draw_sized(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
         .draw(|frame| ui_chat_mode(frame, frame.area(), app))
         .expect("draw");
     terminal.backend().buffer().clone()
+}
+
+/// Draw `app` into the shared 80x24 test backend and hand back the cells.
+fn draw_80x24(app: &mut App) -> ratatui::buffer::Buffer {
+    draw_sized(app, 80, 24)
+}
+
+/// The whole screen as one string, rows joined by newlines.
+fn pane_text(buffer: &ratatui::buffer::Buffer) -> String {
+    (0..buffer.area.height)
+        .map(|y| row_text(buffer, y))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// How many screen rows carry `needle` — one per wrapped row, so it counts the
+/// rows a wrapped block actually took.
+fn rows_showing(buffer: &ratatui::buffer::Buffer, needle: &str) -> usize {
+    (0..buffer.area.height)
+        .filter(|y| row_text(buffer, *y).contains(needle))
+        .count()
 }
 
 /// One screen row as a string, one char per cell.
@@ -1139,7 +1160,7 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
          {cursor_row:?}"
     );
     assert!(
-        !pane.contains("opt0"),
+        !pane.contains("opt00"),
         "the options above the window must scroll away:\n{pane}"
     );
     assert!(
@@ -1313,24 +1334,14 @@ fn question_box_shows_the_context_above_the_question() {
     assert!(pane.contains("alpha"), "the options still fit:\n{pane}");
 }
 
-/// A long narration is capped, marked as cut, and measured the same way by the
-/// renderer and the layout: an uncapped one would push the question and its
-/// options out of a box whose height is fixed.
-#[test]
-fn long_question_context_is_capped_to_three_rows() {
-    let long = "A narration long enough to fill the box. ".repeat(10);
-    let rows = question_context_lines(&long, 78);
-    assert_eq!(rows.len(), QUESTION_CONTEXT_ROWS, "capped: {rows:?}");
-    assert!(
-        rows.last().unwrap().ends_with('\u{2026}'),
-        "the cut is marked: {rows:?}"
-    );
-
+/// An app with one open question carrying `context` — the box's input in every
+/// test about how much of that context fits.
+fn app_with_question(context: Option<String>) -> App {
     let mut app = chatting_app();
     app.chat.info_visible = false;
     app.chat.questions = vec![PendingQuestion {
         topic: "jyc".to_string(),
-        context: Some(long.clone()),
+        context,
         question: "Which one?".to_string(),
         options: vec!["alpha".to_string(), "beta".to_string()],
         multi: false,
@@ -1338,18 +1349,87 @@ fn long_question_context_is_capped_to_three_rows() {
         selected: 0,
         marked: Vec::new(),
     }];
-    let buffer = draw_80x24(&mut app);
-    let pane: String = (0..buffer.area.height)
-        .map(|y| row_text(&buffer, y))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(pane.contains('\u{2026}'), "the cut is visible:\n{pane}");
-    assert!(pane.contains("alpha"), "the options survive:\n{pane}");
+    app
+}
+
+/// A long narration gets ten rows, marked as cut, and measured the same way by
+/// the renderer and the layout: an uncapped one would push the question and its
+/// options out of a box whose height is fixed to the body around it.
+#[test]
+fn long_question_context_fills_ten_rows_on_a_tall_terminal() {
+    let long = "A narration long enough to fill the box. ".repeat(40);
+    let rows = question_context_lines(&long, 78, QUESTION_CONTEXT_ROWS);
+    assert_eq!(rows.len(), QUESTION_CONTEXT_ROWS, "ten rows: {rows:?}");
+    assert!(
+        rows.last().unwrap().ends_with('\u{2026}'),
+        "the cut is marked: {rows:?}"
+    );
+
+    let mut app = app_with_question(Some(long.clone()));
+    let buffer = draw_sized(&mut app, 80, 60);
+    let pane = pane_text(&buffer);
     assert_eq!(
-        question_chrome_rows("Which one?", Some(&long), 1, 78),
-        question_chrome_rows("Which one?", None, 1, 78) + QUESTION_CONTEXT_ROWS + 1,
+        rows_showing(&buffer, "narration"),
+        QUESTION_CONTEXT_ROWS,
+        "ten context rows drawn:\n{pane}"
+    );
+    assert!(
+        pane.contains("Which one?"),
+        "the question survives:\n{pane}"
+    );
+    assert!(
+        pane.contains("alpha") && pane.contains("beta"),
+        "the options survive:\n{pane}"
+    );
+    // A 60-row terminal affords the whole cap, and the layout counts the same
+    // rows the box draws.
+    assert_eq!(
+        question_context_budget("Which one?", 2, 1, 78, 53),
+        QUESTION_CONTEXT_ROWS
+    );
+    assert_eq!(
+        question_chrome_rows("Which one?", Some(&long), 2, 1, 78, 53),
+        question_chrome_rows("Which one?", None, 2, 1, 78, 53) + QUESTION_CONTEXT_ROWS + 1,
         "the layout must measure exactly what the box draws"
     );
+}
+
+/// On a terminal with no room for ten rows the context is what gives way: the
+/// question and its options — the reason the box is open — stay drawn, and the
+/// box never grows past the rows the body had to spare.
+#[test]
+fn a_short_terminal_shrinks_the_context_not_the_options() {
+    let long = "A narration long enough to fill the box. ".repeat(40);
+    let mut app = app_with_question(Some(long.clone()));
+    let buffer = draw_sized(&mut app, 80, 18);
+    let pane = pane_text(&buffer);
+    let drawn = rows_showing(&buffer, "narration");
+    assert!(
+        drawn > 0 && drawn < QUESTION_CONTEXT_ROWS,
+        "the context gives rows back first: {drawn} of {QUESTION_CONTEXT_ROWS}\n{pane}"
+    );
+    assert!(
+        pane.contains("Which one?"),
+        "the question survives:\n{pane}"
+    );
+    assert!(
+        pane.contains("alpha") && pane.contains("beta"),
+        "the options survive:\n{pane}"
+    );
+    // An 18-row screen hands the chat pane 18 rows of body, and that is what
+    // the box measured — the same number `input_area_rows` is handed below.
+    assert_eq!(
+        question_context_budget("Which one?", 2, 1, 78, 18),
+        drawn,
+        "the budget is what the box draws"
+    );
+    for body in [18u16, 60] {
+        let rows = app.chat.input_area_rows(80, body) as usize;
+        assert!(
+            rows <= body as usize - QUESTION_BOX_MESSAGE_ROWS + 1,
+            "body {body}: the box took {rows} rows, leaving the pane none"
+        );
+    }
 }
 
 /// The question box marks its selected option the same way, and follows the
@@ -1434,8 +1514,9 @@ fn leader_popup_renders_below_the_input_field() {
 #[test]
 fn input_area_rows_reserves_the_bottom_rule() {
     let mut app = chatting_app();
+    let body_height = 17; // a 24-row terminal's body, once the header is off
     let body = (count_wrapped_lines(&app.chat.text(), 80) + 1).clamp(2, 11) as u16;
-    assert_eq!(app.chat.input_area_rows(80), body + 1);
+    assert_eq!(app.chat.input_area_rows(80, body_height), body + 1);
 
     app.chat.questions = vec![PendingQuestion {
         topic: "jyc".to_string(),
@@ -1451,12 +1532,14 @@ fn input_area_rows_reserves_the_bottom_rule() {
     let body = (question_chrome_rows(
         &q.question,
         q.context.as_deref(),
+        q.options.len(),
         app.chat.questions.len(),
         78,
+        body_height,
     ) + q.options.len()
         + 3)
-    .clamp(6, 15) as u16;
-    assert_eq!(app.chat.input_area_rows(80), body + 1);
+    .clamp(6, question_box_max_rows(body_height)) as u16;
+    assert_eq!(app.chat.input_area_rows(80, body_height), body + 1);
 }
 
 /// A polled topic summary so the status line has real content: `plan ·

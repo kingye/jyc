@@ -1947,14 +1947,12 @@ dependencies = [
  "jyc-agent",
  "jyc-core",
  "jyc-inspect",
- "jyc-services",
  "jyc-types",
  "jyc-utils",
  "libc",
  "ratatui",
  "ratatui-textarea",
  "regex",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1965,7 +1963,6 @@ dependencies = [
  "tui-markdown",
  "unicode-width",
  "url",
- "uuid",
 ]
 
 [[package]]
@@ -2020,34 +2017,6 @@ dependencies = [
  "tower",
  "tracing",
  "url",
- "uuid",
-]
-
-[[package]]
-name = "jyc-services"
-version = "0.3.19"
-dependencies = [
- "anyhow",
- "async-imap",
- "async-native-tls",
- "async-trait",
- "base64 0.23.1",
- "chrono",
- "comrak",
- "futures",
- "htmd",
- "jyc-core",
- "jyc-types",
- "jyc-utils",
- "lettre",
- "mail-parser",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-util",
- "tracing",
  "uuid",
 ]
 

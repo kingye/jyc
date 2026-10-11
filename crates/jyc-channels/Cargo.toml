@@ -8,10 +8,9 @@ description = "Channel implementations for the JYC AI agent framework"
 jyc-types = { path = "../jyc-types" }
 jyc-utils = { path = "../jyc-utils" }
 jyc-core = { path = "../jyc-core" }
-jyc-services = { path = "../jyc-services" }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "compat"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -35,6 +34,16 @@ tower = "0.5"
 arc-swap = "1"
 url = "2"
 tempfile = "3"
+
+# Email transports: the IMAP client/monitor and the SMTP client live here with
+# their only caller (the email pipe adapter), not in a shared services crate.
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+async-native-tls = "0.5"
+mail-parser = "0.11"
+lettre = { version = "0.11", features = ["tokio1-native-tls"] }
+comrak = { version = "0.54", default-features = false }
+htmd = "0.5"
+futures = "0.3"
 
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

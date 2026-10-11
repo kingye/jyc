@@ -1831,18 +1831,18 @@ fn format_last_active(value: Option<&str>) -> String {
         None => return "-".to_string(),
     };
     let dt = match chrono::DateTime::parse_from_rfc3339(value) {
-        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Ok(dt) => dt.with_timezone(&chrono::Local),
         Err(_) => return "-".to_string(),
     };
-    let now = chrono::Utc::now();
+    let now = chrono::Local::now();
     let diff = now.signed_duration_since(dt);
     if diff.num_minutes() <= 60 {
         let mins = diff.num_minutes();
         return format!("{}m ago", mins.max(0));
     }
-    let dt_utc = dt.format("%H:%M").to_string();
+    let dt_local = dt.format("%H:%M").to_string();
     if dt.date_naive() == now.date_naive() {
-        return dt_utc;
+        return dt_local;
     }
     dt.format("%b %d").to_string()
 }

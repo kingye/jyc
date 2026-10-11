@@ -6,10 +6,10 @@
 //! a `.jyc/jobs/` subdirectory, discovers due jobs, fires them, and updates
 //! their state.
 
+use crate::job_store::JobStore;
+use crate::topic_manager::TopicManager;
 use anyhow::Result;
 use chrono::Utc;
-use jyc_core::job_store::JobStore;
-use jyc_core::topic_manager::TopicManager;
 use jyc_types::state_dir::jyc_dir;
 use jyc_types::{InboundMessage, MessageContent, PatternMatch};
 use std::collections::HashMap;
@@ -421,7 +421,7 @@ impl JobScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jyc_core::job_store::JobStore;
+    use crate::job_store::JobStore;
     use std::path::Path;
     use tempfile::tempdir;
 

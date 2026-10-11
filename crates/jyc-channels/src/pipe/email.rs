@@ -24,7 +24,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use jyc_core::state_manager::StateManager;
-use jyc_services::imap::monitor::ImapMonitor;
 use jyc_types::{ChannelConfig, ChannelMatcher, MonitorConfig};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -32,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::email::inbound::EmailMatcher;
+use crate::imap::monitor::ImapMonitor;
 use crate::pipe::hub::HubPipe;
 use crate::pipe::{
     collect_pipe_target_channels, fetch_topic_file, match_pipe, parse_reply_attachments,
@@ -129,7 +129,7 @@ pub async fn spawn_email_pipe(
     let task = tokio::spawn(
         async move {
             // Shared SMTP client + topic -> reply state for pipe relaying.
-            let smtp = Arc::new(Mutex::new(jyc_services::smtp::client::SmtpClient::new(
+            let smtp = Arc::new(Mutex::new(crate::smtp::client::SmtpClient::new(
                 smtp_config.clone(),
             )));
             let from_address = smtp_config
@@ -399,12 +399,12 @@ async fn load_reply_attachment(
     token: &Option<String>,
     att: &crate::pipe::ReplyAttachmentRef,
     config: &jyc_types::AppConfig,
-) -> Result<jyc_services::smtp::client::EmailAttachment> {
+) -> Result<crate::smtp::client::EmailAttachment> {
     let tmp = fetch_topic_file(files_base, token.as_deref(), att, config).await?;
     let data = tokio::fs::read(tmp.path())
         .await
         .context("email pipe: failed to read downloaded attachment")?;
-    Ok(jyc_services::smtp::client::EmailAttachment {
+    Ok(crate::smtp::client::EmailAttachment {
         filename: att.filename.clone(),
         content_type: att.content_type.clone(),
         data,

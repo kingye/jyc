@@ -7,6 +7,7 @@ pub mod chat_log_store;
 pub mod command;
 pub mod duration;
 pub mod email_parser;
+pub mod job_scheduler;
 pub mod job_store;
 pub mod message_router;
 pub mod message_storage;

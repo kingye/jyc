@@ -253,10 +253,10 @@ any attachments via proactive `aibot_send_msg` (no window constraint).
 Email (IMAP in, SMTP out) follows the same pipe-only migration. The channel
 retains only:
 
-- `jyc-services/src/imap/` — IMAP client, monitor loop (IDLE/poll), raw email
+- `jyc-channels/src/imap/` — IMAP client, monitor loop (IDLE/poll), raw email
   parsing. The monitor takes an `on_message` callback (like
   `InboundAdapterOptions::on_message`) instead of owning a router + matcher.
-- `jyc-services/src/smtp/client.rs` — SMTP wire format (reply threading,
+- `jyc-channels/src/smtp/client.rs` — SMTP wire format (reply threading,
   attachments).
 - `jyc-channels/src/email/inbound.rs` — pattern matching only (`EmailMatcher`).
 - The adapter wiring, `spawn_email_pipe` in

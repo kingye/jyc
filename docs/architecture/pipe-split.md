@@ -178,18 +178,24 @@ deleted.
   not. An attachment-only mail (empty body) now reaches the AI: the hub's
   body check keeps messages that carry attachments and the prompt gets its
   attachment placeholder.
-- **Correction of an earlier note in this document:** IMAP/SMTP clients
-  did *not* have to move out of `jyc-services`. `jyc-channels` already
-  depends on that crate, and `job_scheduler.rs` keeps it in the hub's
-  graph. The clients stay where they are; only the hub's *reachability* of
-  the email adapter went away. Whether `async-imap` / `lettre` drop out of
-  the `jyc` link graph is expected, not measured (no local `cargo build`
-  on dev machines, and CI does not weigh artifacts).
+- **The email transports moved to their caller.** The IMAP client/monitor and
+  the raw-email parser now live in `jyc-channels/src/imap/`, the SMTP client in
+  `jyc-channels/src/smtp/client.rs`, and `job_scheduler.rs` moved to
+  `jyc-core`; `jyc-services` is gone and `jyc-channels` no longer depends on it.
+  This closes the gap step 5 left: the hub had stopped *reaching* the email
+  adapter, but it still compiled the transport stack (`async-imap`,
+  `mail-parser`, `lettre`, `comrak`, `htmd`) because `jyc-services` stayed in
+  its graph for the job scheduler. Whether that shows up as bytes in the `jyc`
+  artifact stays unmeasured here (no local `cargo build` on dev machines, and
+  CI does not weigh artifacts) — measure with
+  `ls -l target/release/{jyc,jyc-pipe}`.
 
 ### Step 6 — Cleanup (remaining)
 
 The hub-side work landed with step 5: every in-process pipe-only spawn
-path (and the pipe helpers that hung off them) is gone from `jyc-cli`.
+path (and the pipe helpers that hung off them) is gone from `jyc-cli`, and
+the email transports followed their caller to `jyc-channels`, so
+`jyc-services` no longer exists and the hub's graph holds no mail crates.
 
 Docker orchestration landed with step 5 (the compose file runs `jyc-pipe`
 alongside `jyc` and sends its logs to stderr). Remaining: pairing the two

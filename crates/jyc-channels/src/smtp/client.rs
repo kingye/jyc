@@ -199,6 +199,50 @@ impl SmtpClient {
         Ok(message_id)
     }
 
+    /// Send a fresh message (not a reply): no `In-Reply-To` / `References`
+    /// headers, and the subject as given rather than `Re: …`.
+    ///
+    /// Used by the email pipe to relay a proactive message from the hub — an
+    /// alert or notification addressed to an arbitrary recipient, possibly
+    /// carrying files.
+    pub async fn send_mail(
+        &mut self,
+        from: &str,
+        from_name: Option<&str>,
+        to: &str,
+        subject: &str,
+        markdown_body: &str,
+        attachments: Option<&[EmailAttachment]>,
+    ) -> Result<String> {
+        let email = self.build_email(
+            from,
+            from_name,
+            to,
+            subject,
+            markdown_body,
+            None,
+            None,
+            attachments,
+        )?;
+
+        let message_id = email
+            .headers()
+            .get_raw("Message-ID")
+            .unwrap_or_default()
+            .to_string();
+
+        self.send_with_retry(email).await?;
+
+        tracing::info!(
+            to = %to,
+            subject = %subject,
+            attachments = attachments.map_or(0, |a| a.len()),
+            "Email sent"
+        );
+
+        Ok(message_id)
+    }
+
     /// Private helper: build a lettre `Message` from the given components.
     ///
     /// Handles markdown→HTML conversion, multipart/alternative body,

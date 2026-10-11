@@ -203,6 +203,41 @@ runs a single service. Remaining: pairing the two
 processes under systemd (left to operators) and the same unmeasured
 dependency audit as above.
 
+### Outbound (proactive) messages
+
+A reply is not the only thing a user sees: `jyc_send_message` sends alerts and
+notifications to an arbitrary recipient, optionally with files. Before the
+split each channel's in-process adapter sent those itself
+(`OutboundAdapter::send_message_with_attachments`); the hub now holds neither
+the channel's credentials nor a shared filesystem, so the send has to cross to
+the pipe exactly as a reply does.
+
+- The hub channel's outbound adapter resolves the addressed channel from its
+  `PipeRoute` — built by `jyc serve` from the config: which channels the pipe
+  owns, their type, and the hub channel their patterns route into
+  (`crates/jyc-inspect/src/server/pipe_proxy.rs`). The channel comes from the
+  tool's `channel` parameter when it named one, else from the inbound message's
+  `origin_channel` (stamped by the pipe's retarget path), else from the only
+  pipe channel routing into that hub channel; several candidates without a name
+  is an error, not a guess. The frame carries the same `attachments` entries a
+  reply does, so the pipe downloads them through the hub's files endpoint with
+  its bearer token — no second transport, no shared volume.
+- The addressed channel is named in the frame (`channel`), because several pipe
+  channels can share one hub channel; only the forwarder whose config name
+  matches relays it. A frame carrying `proactive: true` never touches the reply
+  state table: it is not a reply to anything, so a missing topic entry is
+  expected.
+- Each channel then sends it the way it would have in-process: wecom_bot
+  (`aibot_send_msg` text, then one proactive media message per file), feishu
+  (text, then uploaded file/image), email (a fresh mail with the files, no
+  `In-Reply-To`). Channels that never sent files (github, gitee, wecom,
+  wecomkf) still answer with "Attachments not supported for this channel type"
+  rather than reporting a success that sends nothing.
+- Cross-channel sends resolve too: the outbound map keys a pipe channel to a
+  `PipeProxyOutboundAdapter` onto its hub channel. It deliberately has no
+  question box, so `ask_user` keeps asking in plain text instead of drawing a
+  box on the hub that the user — reading WeCom or mail — would never see.
+
 A third pairing option landed after that: `jyc serve --pipe` spawns
 `jyc-pipe` as a child of the hub
 (`crates/jyc-cli/src/cli/serve/pipe_child.rs`), reusing the hub's workdir and

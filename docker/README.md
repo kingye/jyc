@@ -5,7 +5,7 @@ Run JYC as a containerized service.
 ## Architecture
 
 - **Multi-stage build**: `builder` (compile) → `slim` (minimal runtime) → `full` (dev tools) → `production`
-- **Two binaries**: `jyc` (hub: agent core + inspect server; the MCP reply tool is a hidden subcommand `jyc mcp-reply-tool`) and `jyc-pipe` (peripheral pipe process, hosting every pipe-only channel adapter). Compose starts both — see [docs/architecture/pipe-split.md](../docs/architecture/pipe-split.md).
+- **Two binaries**: `jyc` (hub: agent core + inspect server; the MCP reply tool is a hidden subcommand `jyc mcp-reply-tool`) and `jyc-pipe` (peripheral pipe process, hosting every pipe-only channel adapter). The image's default command is `jyc serve --debug --pipe`, so the hub spawns the pipe as a child of itself and one container runs both halves — run `jyc-pipe` separately only when you supervise the two processes yourself (see [docs/architecture/pipe-split.md](../docs/architecture/pipe-split.md)).
 - **Host networking**: Container shares host network (`network_mode: host`), so services on `localhost` are accessible from inside the container.
 
 ## Image Variants
@@ -99,7 +99,9 @@ docker compose logs -f
 # Build slim image
 podman build --target slim -t jyc:slim -f docker/Dockerfile ..
 
-# Run slim image
+# Run slim image — the default command already passes `--pipe`, so this one
+# container runs the hub and its pipe child (bare `jyc` without `serve` would
+# open the dashboard instead).
 podman run -d --name jyc \
   --network=host \
   -v /path/to/jyc-data:/opt/jyc \
@@ -121,25 +123,26 @@ podman logs -f jyc
 
 ```bash
 docker compose restart jyc
-docker compose restart jyc-pipe
 ```
 
 ### 5. Pipe process
 
 `jyc-pipe` hosts the pipe-only channel adapters (feishu, github, gitee,
 wecom_bot, wecom, wecomkf, email); `jyc serve` skips those channels
-in-process. The compose file starts it as a second service that reuses the
-hub's definition (same image, config, data directory and credentials — it
-needs the inspect auth token and the channel state, e.g. the IMAP mailbox
-cursor), overriding only the binary (and passing `--log-file /dev/stderr`, so
-its logs land in `docker compose logs` instead of the in-container log file
-that `jyc` itself still uses by default). It reconnects to the hub with
-backoff, so start order does not matter.
+in-process. The image's default command passes `--pipe`, so the hub starts
+`jyc-pipe` as a child of itself: same workdir and config file, its own
+default log file inside the container
+(`/root/.local/share/jyc/jyc-pipe.log`), stopped together with the hub. One
+container, no second service.
 
 ```bash
-docker compose logs -f jyc-pipe
-docker compose restart jyc-pipe
+# Child pipe log (the hub's own log is jyc.log in the same directory)
+docker compose exec jyc tail -f /root/.local/share/jyc/jyc-pipe.log
 ```
+
+Running a second pipe by hand (`docker compose exec jyc jyc-pipe`, or a
+separate service of your own) would make two processes read the same channel
+events — IMAP mail would be consumed twice. Keep it to one.
 
 ## Volume Mounts
 
@@ -167,8 +170,8 @@ volumes:
 Check container logs:
 ```bash
 docker compose logs -f jyc
-# pipe-only channels (feishu, github, gitee, wecom, email, ...) log here:
-docker compose logs -f jyc-pipe
+# the child pipe process logs to its own file inside the container:
+docker compose exec jyc tail -f /root/.local/share/jyc/jyc-pipe.log
 ```
 
 ### Build fails behind a proxy

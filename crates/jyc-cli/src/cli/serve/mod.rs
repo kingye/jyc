@@ -20,7 +20,12 @@ use jyc_inspect::server::websocket::inbound::WebsocketInboundAdapter;
 use jyc_types::OutboundAdapter;
 use jyc_types::{load_config_layered, validation};
 
-pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Result<()> {
+pub async fn run(
+    args: &ServeArgs,
+    workdir: &Path,
+    workdir_explicit: bool,
+    pipe: bool,
+) -> Result<()> {
     // 1. Resolve config locations, provision default config on first run
     let resolution =
         super::resolve::resolve_config(workdir, args.config.as_deref(), workdir_explicit)?;
@@ -467,6 +472,25 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
         "Serve started, press Ctrl+C to stop"
     );
 
+    // 7. Start the peripheral pipe process. The hub hosts no pipe-only
+    // channel itself, so `--pipe` pairs the two processes in one command.
+    // A child that cannot work at all (no websocket endpoint to connect to)
+    // is not started; anything else is passed through untouched.
+    let pipe_child = if pipe {
+        if config_snapshot.inspect.as_ref().is_some_and(|i| i.enabled) {
+            Some(PipeChild::spawn(workdir, &config_path)?)
+        } else {
+            tracing::warn!(
+                "`--pipe` ignored: the [inspect] server is disabled, so jyc-pipe has no \
+                 hub websocket to connect to. Enable [inspect] (or run jyc-pipe with an \
+                 explicit --hub) to host pipe-only channels"
+            );
+            None
+        }
+    } else {
+        None
+    };
+
     // Wait for all channel tasks to complete
     for task in tasks {
         task.await.ok();
@@ -480,13 +504,20 @@ pub async fn run(args: &ServeArgs, workdir: &Path, workdir_explicit: bool) -> Re
     // Wait for metrics collector to stop
     metrics_task.await.ok();
 
+    // Stop the pipe process together with the hub
+    if let Some(child) = pipe_child {
+        child.shutdown().await;
+    }
+
     tracing::info!("Serve stopped");
     Ok(())
 }
 
 mod agents_synth;
 mod channels;
+mod pipe_child;
 mod shutdown;
 
+use pipe_child::PipeChild;
 pub use shutdown::ServeArgs;
 use shutdown::{PidFileGuard, shutdown_signal};

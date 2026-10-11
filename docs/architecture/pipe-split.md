@@ -197,10 +197,23 @@ path (and the pipe helpers that hung off them) is gone from `jyc-cli`, and
 the email transports followed their caller to `jyc-channels`, so
 `jyc-services` no longer exists and the hub's graph holds no mail crates.
 
-Docker orchestration landed with step 5 (the compose file runs `jyc-pipe`
-alongside `jyc` and sends its logs to stderr). Remaining: pairing the two
+Docker orchestration landed with step 5 (the compose file ran `jyc-pipe` as a
+second service); it is folded into `--pipe` below, so the compose file now
+runs a single service. Remaining: pairing the two
 processes under systemd (left to operators) and the same unmeasured
 dependency audit as above.
+
+A third pairing option landed after that: `jyc serve --pipe` spawns
+`jyc-pipe` as a child of the hub
+(`crates/jyc-cli/src/cli/serve/pipe_child.rs`), reusing the hub's workdir and
+resolved config file, and stops it when the hub exits (SIGTERM, then SIGKILL
+after a 5 s grace). The child is deliberately not restarted — a channel crash
+must not take the agent core down, and the pipe reconnects to the hub on its
+own — so a pipe that dies is only reported at `error` level. `--pipe` is a
+global flag: bare `jyc --pipe` forwards it to the `jyc serve` the dashboard
+auto-starts (an already running hub cannot be retrofitted, and warns about
+it). The Docker image's default command passes it, so the shipped container
+runs one service; the child keeps its own `<data_home>/jyc-pipe.log` there.
 
 ## Open decisions
 

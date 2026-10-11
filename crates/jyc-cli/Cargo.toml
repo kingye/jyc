@@ -29,9 +29,7 @@ arc-swap = "1"
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
 futures-util = "0.3"
-url = "2"
 unicode-width = "0.2"
 tempfile = "3"
 ratatui-textarea = "0.9.2"
 libc = "0.2"
-regex = "1"

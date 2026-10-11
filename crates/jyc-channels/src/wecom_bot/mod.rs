@@ -31,7 +31,7 @@ pub mod media;
 pub mod outbound;
 pub mod types;
 
-pub use client::{ConnectionState, ServerMessage, WecomBotWsClient};
+pub use client::{ServerMessage, WecomBotWsClient};
 pub use inbound::{WecomBotInboundAdapter, WecomBotMatcher};
 pub use outbound::{
     build_media_message_body, build_proactive_text_body, send_stream_reply,

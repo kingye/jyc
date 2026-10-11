@@ -67,11 +67,11 @@ pub struct AgentLoopConfig<'a> {
     /// SSE read timeout — maximum gap between SSE events before the stream
     /// is considered hung. Defaults to 120 seconds.
     pub sse_read_timeout: std::time::Duration,
-    /// Additional absolute paths permitted for tools that enforce a path
-    /// boundary (currently: `read_image`). Used to allow access to a
-    /// configured absolute `[attachments.inbound].save_path` outside
-    /// `working_dir`.
-    #[allow(dead_code)]
+    /// Additional absolute paths permitted for every tool that enforces a
+    /// path boundary (`read`, `read_image`, `bash`, `grep`). Used to allow
+    /// access to a configured absolute `[attachments.inbound].save_path`,
+    /// the external skill directories and the relocated `.jyc` state
+    /// directory, all of which live outside `working_dir`.
     pub additional_read_roots: Vec<std::path::PathBuf>,
     /// Additional absolute paths permitted for write tools (`write`, `edit`,
     /// `bash`). Configured via per-pattern `write` paths.

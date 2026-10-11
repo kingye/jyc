@@ -165,15 +165,6 @@ mod filter_valid_messages {
 mod parse_openai_chunk {
     use jyc_agent::types::StreamEvent;
 
-    // Helper to parse a chunk and collect events
-    #[allow(dead_code)]
-    fn parse_chunk(_data: &str) -> Vec<StreamEvent> {
-        // We need access to the internal parse function.
-        // Since it's private, we test via the public stream interface indirectly.
-        // For now, test the stream behavior through type checking.
-        vec![] // TODO: expose parse_openai_chunk for testing or test via integration
-    }
-
     // These tests verify the StreamEvent types are correct
     #[test]
     fn stream_event_text_delta() {

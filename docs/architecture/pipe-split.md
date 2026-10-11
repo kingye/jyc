@@ -197,8 +197,9 @@ path (and the pipe helpers that hung off them) is gone from `jyc-cli`, and
 the email transports followed their caller to `jyc-channels`, so
 `jyc-services` no longer exists and the hub's graph holds no mail crates.
 
-Docker orchestration landed with step 5 (the compose file runs `jyc-pipe`
-alongside `jyc` and sends its logs to stderr). Remaining: pairing the two
+Docker orchestration landed with step 5 (the compose file ran `jyc-pipe` as a
+second service); it is folded into `--pipe` below, so the compose file now
+runs a single service. Remaining: pairing the two
 processes under systemd (left to operators) and the same unmeasured
 dependency audit as above.
 
@@ -211,8 +212,8 @@ must not take the agent core down, and the pipe reconnects to the hub on its
 own — so a pipe that dies is only reported at `error` level. `--pipe` is a
 global flag: bare `jyc --pipe` forwards it to the `jyc serve` the dashboard
 auto-starts (an already running hub cannot be retrofitted, and warns about
-it). Unlike the compose service, the child keeps its own
-`<data_home>/jyc-pipe.log`.
+it). The Docker compose file uses it, so the shipped container runs one
+service; the child keeps its own `<data_home>/jyc-pipe.log` there.
 
 ## Open decisions
 

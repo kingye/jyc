@@ -35,11 +35,12 @@ JYC is a channel-agnostic AI agent that operates through messaging channels. Use
 > (`jyc_types::channel::SUPPORTED_CHANNEL_TYPES`), not a config section;
 > the WeCom webhook listener (`[wecom].bind_addr`) and the
 > email mailbox cursor (`<workdir>/channels/<name>/.imap/`) belong to the pipe.
-> The two processes are paired by the operator (systemd, the compose file) or by
-> `jyc serve --pipe`, which spawns `jyc-pipe` as a child of the hub — same workdir
-> and resolved config file — and stops it when the hub exits (SIGTERM, then
-> SIGKILL after a grace period); the child is deliberately not restarted, since a
-> channel crash must not take the agent core down.
+> The two processes are paired by `jyc serve --pipe`, which spawns `jyc-pipe` as a
+> child of the hub — same workdir and resolved config file — and stops it when the
+> hub exits (SIGTERM, then SIGKILL after a grace period); the child is deliberately
+> not restarted, since a channel crash must not take the agent core down. Running
+> `jyc-pipe` separately (systemd, by hand) stays possible, but the shipped
+> deployment is the hub-owned child.
 > Inbound attachment bytes travel the same way as reply attachments, over the
 > bearer-gated REST API (staged under `<data_home>/.inbound/`, then named in
 > the `message` frame and moved into the routed topic). The staging directory
@@ -3899,5 +3900,4 @@ max_jobs_per_topic = 10    # default: 10
 
 ## References
 
-- [SYSTEMD.md](SYSTEMD.md) - systemd service management for process supervision and self-bootstrapping
 - [CHANGELOG.md](CHANGELOG.md) - Version history and changes

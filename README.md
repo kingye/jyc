@@ -76,7 +76,7 @@ See `config.example.toml` for a full annotated example. Use `${ENV_VAR}` syntax 
 ./target/release/jyc serve
 ```
 
-Add `--pipe` to start the peripheral `jyc-pipe` process as a child of the hub — required for the pipe-only channels (email, feishu, github, gitee, wecom, wecom_bot, wecomkf), which the hub itself skips. It is a global flag, so bare `jyc --pipe` forwards it to the `jyc serve` the dashboard auto-starts. Alternatively run `jyc-pipe` yourself (systemd, the compose file) — see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md).
+Add `--pipe` to start the peripheral `jyc-pipe` process as a child of the hub — required for the pipe-only channels (email, feishu, github, gitee, wecom, wecom_bot, wecomkf), which the hub itself skips. It is a global flag, so bare `jyc --pipe` forwards it to the `jyc serve` the dashboard auto-starts. Alternatively run `jyc-pipe` yourself (e.g. as a systemd unit) — see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md).
 
 On first run without a config, `jyc serve` creates a default `config.toml` (plus empty `skills/` and `templates/` directories) in the platform config dir and exits — edit the file, then start again.
 

@@ -3,9 +3,9 @@
 //! The peripheral message pipe ([`jyc-pipe`](../../../../../jyc-channels/src/bin/jyc-pipe.rs))
 //! hosts the pipe-only channel adapters (feishu, github, gitee, wecom,
 //! wecom_bot, wecomkf, email); `jyc serve` skips exactly those channels
-//! in-process. Without a pipe running they receive nothing, so operators
-//! pair the two processes by hand (systemd, the compose file) — this module
-//! lets `jyc serve --pipe` do it in one command.
+//! in-process. Without a pipe running they receive nothing, so the deployment
+//! wires the two together — the Docker compose file runs one service whose
+//! command is `jyc serve --pipe`, and this module is what makes that work.
 //!
 //! The child is *not* restarted when it exits: a channel crashing must never
 //! take the agent core down (that is the point of the process split), and

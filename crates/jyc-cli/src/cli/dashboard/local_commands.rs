@@ -70,6 +70,11 @@ pub enum LocalAction {
     /// (`⠹ 12.4s · bash`) and leave the completed-turn thinking line out of
     /// the history. Session-only, like the other display toggles.
     ToggleMinimalProgress,
+    /// Switch this topic between plan and build mode by sending the
+    /// server-side `/plan` / `/build` command. The TUI does not own the
+    /// mode — the agent applies the command to the topic's override chain
+    /// — so the shortcut sends the same command the user would type.
+    ToggleMode,
 }
 
 /// Static metadata for one leader entry.
@@ -194,6 +199,15 @@ pub fn local_commands() -> &'static [LocalCommand] {
             leader_keys: "p",
         },
         LocalCommand {
+            name: "toggle mode",
+            description: "Switch this topic between plan and build",
+            scope: Chat,
+            action: LocalAction::ToggleMode,
+            // The space bar. Displayed as `␣` (see `leader::key_label`) —
+            // a bare space would render as an empty key column.
+            leader_keys: " ",
+        },
+        LocalCommand {
             name: "toggle mouse",
             description: "Toggle mouse capture",
             scope: Shared,
@@ -263,6 +277,16 @@ mod tests {
             .expect("leader entry for minimal progress");
         assert_eq!(cmd.scope, CommandScope::Chat);
         assert_eq!(cmd.leader_keys, "p");
+    }
+
+    #[test]
+    fn toggle_mode_is_a_chat_command_on_space() {
+        let cmd = local_commands()
+            .iter()
+            .find(|c| c.action == LocalAction::ToggleMode)
+            .expect("leader entry for mode toggle");
+        assert_eq!(cmd.scope, CommandScope::Chat);
+        assert_eq!(cmd.leader_keys, " ");
     }
 
     #[test]

@@ -23,7 +23,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use jyc_core::state_manager::StateManager;
 use jyc_types::{ChannelConfig, ChannelMatcher, MonitorConfig};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -37,6 +36,7 @@ use crate::pipe::{
     collect_pipe_target_channels, fetch_topic_file, match_pipe, parse_reply_attachments,
     retarget_or_drop, warn_on_bad_pipe_patterns,
 };
+use crate::state_manager::StateManager;
 
 /// State recorded per piped topic so the email reply forwarder can
 /// reply into the original mail thread.

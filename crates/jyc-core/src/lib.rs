@@ -15,7 +15,6 @@ pub mod metrics;
 pub mod pending_delivery;
 pub mod security;
 pub mod session_state;
-pub mod state_manager;
 pub mod static_agent;
 pub mod template_dirs;
 pub mod template_utils;

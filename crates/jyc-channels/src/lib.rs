@@ -7,5 +7,6 @@ pub mod github;
 pub mod imap;
 pub mod pipe;
 pub mod smtp;
+pub mod state_manager;
 pub mod wecom;
 pub mod wecom_bot;

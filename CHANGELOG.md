@@ -7,7 +7,7 @@
 
 ### Changed
 
-- TUI: an `ask_user` box shows up to ten rows of context instead of three, and gives those rows back before it would ever shrink the question or its options. The box's height is now bounded by the body it is drawn in — three rows stay with the message pane above it — rather than a fixed fifteen, so on a terminal too short for ten rows the context is shortened by exactly what the box cannot spare (#891)
+- TUI: an `ask_user` box shows up to ten rows of context instead of three, and gives those rows back before it would ever shrink the question or its options. The box's height is now bounded by the body it is drawn in — three rows stay with the message pane above it — rather than a fixed fifteen, so on a terminal too short for ten rows the context is shortened by exactly what the box cannot spare. `PgUp`/`PgDn` in the chat pane now page by the rows the renderer last drew for the messages, so scrolling and drawing cannot disagree about how tall the box came out (#891)
 
 ### Fixed
 

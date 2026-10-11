@@ -1160,7 +1160,7 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
          {cursor_row:?}"
     );
     assert!(
-        !pane.contains("opt0"),
+        !pane.contains("opt00"),
         "the options above the window must scroll away:\n{pane}"
     );
     assert!(

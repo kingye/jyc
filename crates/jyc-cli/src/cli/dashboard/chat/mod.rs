@@ -1820,7 +1820,8 @@ fn question_context_budget(
 ) -> usize {
     let fixed = count_wrapped_lines(question, width)
         + count_wrapped_lines(&question_hint(total), width)
-        + 3 // the two blank spacers and a row of slack for word-boundary wrapping
+        + 4 // the three blank separators, plus the spare row that keeps the
+            // ceiling from squeezing an option out of the window
         + options
         + 3; // the box's two borders and the bottom rule under it
     question_box_max_rows(body_height)
@@ -2807,6 +2808,16 @@ impl ChatState {
     }
 
     pub(super) fn page_size(&self) -> usize {
+        // What the renderer last gave the messages is the page: it already has
+        // the input area, the popup slot and the status line taken out of it,
+        // and it is the only source that also knows how tall the question box
+        // came out. Before the first frame there is nothing to agree with, so
+        // fall back to the arithmetic below.
+        if matches!(self.focus, ChatFocus::ChatPane | ChatFocus::MessageArea)
+            && let Some(area) = self.last_message_area
+        {
+            return (area.height as usize).max(1);
+        }
         let base = crossterm::terminal::size()
             .map(|(_, h)| h.saturating_sub(7) as usize)
             .unwrap_or(10);

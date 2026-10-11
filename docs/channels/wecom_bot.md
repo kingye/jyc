@@ -166,6 +166,23 @@ Supported mappings:
 Configuration uses the generic `[attachments.outbound]` settings (same as Feishu
 and email): `enabled`, `allowed_extensions`, `max_file_size`, `max_per_message`.
 
+### Proactive Messages (alerts and notifications)
+
+`jyc_send_message` with `attachments` sends files too, and takes a different
+route — the same one robots use for a long-running reply's files: text first,
+then one proactive `aibot_send_msg` per attachment, with the recipient (a
+`chatid` or `userid`) as the message target. The passive reply window is why:
+`aibot_respond_msg` must echo the `req_id` of an inbound callback and expires
+long before a file is ready.
+
+The hub has neither the WeCom credentials nor a shared filesystem, so it
+broadcasts a frame to the pipe naming the channel, the recipient and the files
+under `/api/topics/<channel>/<topic>/files/…`; the pipe downloads each file
+through the hub's files endpoint and uploads it.
+
+Note the delivery limits above: a user must have messaged the bot before a
+proactive `aibot_send_msg` reaches them.
+
 ## Topic Naming
 
 - **Single chat**: `bot-{userid}`

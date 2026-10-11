@@ -247,3 +247,9 @@ Feishu pipe reply forwarder (subscribed to the agent broadcast)
      ▼
 Feishu Server → User sees reply in chat
 ```
+
+The same forwarder also relays a proactive message (`jyc_send_message`, an
+alert or a notification to an arbitrary chat, optionally with files): that frame
+carries `proactive: true`, the addressed channel and the recipient itself, so it
+skips the topic→chat lookup — nothing is being replied to — and goes out as a
+fresh text message plus one uploaded file/image per attachment.

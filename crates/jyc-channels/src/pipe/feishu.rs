@@ -27,7 +27,7 @@ use crate::feishu::inbound::{FeishuInboundAdapter, FeishuMatcher};
 use crate::pipe::hub::HubPipe;
 use crate::pipe::{
     ReplyAttachmentRef, collect_pipe_target_channels, match_pipe, parse_reply_attachments,
-    retarget_or_drop, warn_on_bad_pipe_patterns,
+    proactive_frame, retarget_or_drop, warn_on_bad_pipe_patterns,
 };
 
 /// Shared per-process state for one feishu pipe channel.
@@ -97,6 +97,7 @@ pub fn spawn_feishu_pipe(
         let config = config.clone();
         let files_base = files_base.clone();
         let token = token.clone();
+        let channel_name = channel_name.clone();
         let target = target.clone();
         let span = tracing::info_span!("out", ch = %channel_name, target = %target);
         tasks.push(tokio::spawn(
@@ -128,6 +129,35 @@ pub fn spawn_feishu_pipe(
                     ) else {
                         continue;
                     };
+                    // A proactive message (alert or notification, with or
+                    // without files) names its own recipient, so it is sent as
+                    // a fresh message and never consults the topic → chat
+                    // mapping — a missing entry there is normal, not a stale
+                    // reply.
+                    if let Some(proactive) = proactive_frame(&v, &channel_name) {
+                        let text = if proactive.subject.is_empty() {
+                            proactive.text.to_string()
+                        } else {
+                            format!("**{}**\n\n{}", proactive.subject, proactive.text)
+                        };
+                        if let Err(e) = client.send_text_message(proactive.recipient, &text).await {
+                            tracing::error!(
+                                error = %e,
+                                recipient = %proactive.recipient,
+                                "feishu pipe: failed to relay proactive message"
+                            );
+                        }
+                        relay_attachments(
+                            &client,
+                            files_base.as_deref(),
+                            token.as_deref(),
+                            proactive.recipient,
+                            &v,
+                            &config,
+                        )
+                        .await;
+                        continue;
+                    }
                     let Some(chat_id) = state.topic_chat.lock().unwrap().get(topic).cloned()
                     else {
                         tracing::debug!(topic = %topic, "feishu pipe: no chat mapping for reply, skipping");
@@ -152,33 +182,15 @@ pub fn spawn_feishu_pipe(
                     if let Err(e) = client.send_text_message(&chat_id, &text).await {
                         tracing::error!(error = %e, "failed to relay reply to feishu");
                     }
-                    for att in parse_reply_attachments(&v) {
-                        let Some(base) = &files_base else {
-                            tracing::warn!(
-                                filename = %att.filename,
-                                "feishu pipe: attachment dropped (inspect server disabled)"
-                            );
-                            continue;
-                        };
-                        if let Err(e) = relay_attachment(
-                            base,
-                            token.as_deref(),
-                            &client,
-                            &chat_id,
-                            &att,
-                            &config,
-                        )
-                        .await
-                        {
-                            // Full chain (`{:#}`): the outer context alone
-                            // hides the HTTP status (e.g. 401).
-                            tracing::warn!(
-                                filename = %att.filename,
-                                error = format!("{e:#}"),
-                                "feishu pipe: failed to relay attachment"
-                            );
-                        }
-                    }
+                    relay_attachments(
+                        &client,
+                        files_base.as_deref(),
+                        token.as_deref(),
+                        &chat_id,
+                        &v,
+                        &config,
+                    )
+                    .await;
                 }
             }
             .instrument(span),
@@ -403,6 +415,39 @@ async fn handle_disband(
         .retain(|_, v| v != &chat_id);
     for topic in &topics_to_close {
         state.topic_starts.lock().unwrap().remove(topic);
+    }
+}
+
+/// Relay every attachment of a frame into `chat_id`.
+///
+/// Shared by the reply path and a proactive message: both carry the same
+/// `attachments` entries. One bad file never stops the rest and never fails the
+/// message — the text is already sent.
+async fn relay_attachments(
+    client: &FeishuClient,
+    files_base: Option<&str>,
+    token: Option<&str>,
+    chat_id: &str,
+    frame: &serde_json::Value,
+    config: &jyc_types::AppConfig,
+) {
+    for att in parse_reply_attachments(frame) {
+        let Some(base) = files_base else {
+            tracing::warn!(
+                filename = %att.filename,
+                "feishu pipe: attachment dropped (inspect server disabled)"
+            );
+            continue;
+        };
+        if let Err(e) = relay_attachment(base, token, client, chat_id, &att, config).await {
+            // Full chain (`{:#}`): the outer context alone hides the HTTP
+            // status (e.g. 401).
+            tracing::warn!(
+                filename = %att.filename,
+                error = format!("{e:#}"),
+                "feishu pipe: failed to relay attachment"
+            );
+        }
     }
 }
 

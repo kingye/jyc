@@ -46,7 +46,10 @@ COPY --from=builder /usr/local/bin/jyc /usr/local/bin/jyc
 COPY --from=builder /usr/local/bin/jyc-pipe /usr/local/bin/jyc-pipe
 
 ENTRYPOINT ["jyc"]
-CMD ["serve", "--debug"]
+# `--pipe` spawns `jyc-pipe` as a child of the hub, which is what hosts every
+# pipe-only channel (feishu, github, gitee, wecom, wecom_bot, wecomkf, email);
+# without it the hub starts alone and silently skips those channels.
+CMD ["serve", "--debug", "--pipe"]
 
 # ── Stage 3: Full (slim + dev tools for AI agent development) ────────
 FROM --platform=linux/amd64 ccr.ccs.tencentyun.com/jiny/jyc:slim AS full

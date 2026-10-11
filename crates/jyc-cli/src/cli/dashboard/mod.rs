@@ -321,17 +321,51 @@ impl App {
     }
 }
 
+/// Arguments for the auto-started `jyc serve`.
+///
+/// Kept separate from the spawn so the shape is testable (spawning needs a
+/// live address). `--workdir` is skipped when it is the platform default
+/// (`data_home`) so the child uses the standard first-run provisioning path,
+/// and `--pipe` is forwarded so bare `jyc --pipe` also starts the pipe.
+fn serve_spawn_args(
+    workdir: &std::path::Path,
+    default_workdir: &std::path::Path,
+    log_path: &std::path::Path,
+    pipe: bool,
+) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = vec!["serve".into()];
+    if workdir != default_workdir {
+        args.push("--workdir".into());
+        args.push(workdir.into());
+    }
+    args.push("--log-file".into());
+    args.push(log_path.into());
+    if pipe {
+        args.push("--pipe".into());
+    }
+    args
+}
+
 /// Auto-spawn `jyc serve` when it's not running, once per dashboard process.
 ///
 /// The spawned `serve` writes its tracing logs to `<workdir>/jyc.log`
 /// (same file as `/deploy`-started servers). Only works for localhost
 /// addresses (the default).
-async fn ensure_serve_running(addr: &str, workdir: &std::path::Path) -> Result<()> {
+async fn ensure_serve_running(addr: &str, workdir: &std::path::Path, pipe: bool) -> Result<()> {
     // Only try to spawn once per dashboard session.
     static SPAWNED: AtomicBool = AtomicBool::new(false);
 
     // Quick check: server already up?
     if TcpStream::connect(addr).await.is_ok() {
+        if pipe {
+            // Someone else started this hub (systemd, compose, another
+            // terminal) and `--pipe` cannot be retrofitted, so its
+            // pipe-only channels still need a separate jyc-pipe.
+            tracing::warn!(
+                "A jyc serve is already running at {addr} and was not started with \
+                 `--pipe`; its pipe-only channels need a separate jyc-pipe process"
+            );
+        }
         return Ok(());
     }
     if SPAWNED.swap(true, Ordering::SeqCst) {
@@ -362,11 +396,7 @@ async fn ensure_serve_running(addr: &str, workdir: &std::path::Path) -> Result<(
     let default_workdir = jyc_utils::paths::data_home().unwrap_or_default();
     let log_path = workdir.join("jyc.log");
     let mut cmd = Command::new(&exe);
-    cmd.arg("serve");
-    if workdir != default_workdir {
-        cmd.arg("--workdir").arg(workdir);
-    }
-    cmd.arg("--log-file").arg(&log_path);
+    cmd.args(serve_spawn_args(workdir, &default_workdir, &log_path, pipe));
     cmd.stdin(std::process::Stdio::null()).kill_on_drop(true);
     let mut child = cmd
         .spawn()
@@ -528,10 +558,11 @@ pub async fn run(
     workdir: &std::path::Path,
     initial_topic: Option<&str>,
     initial_channel: Option<&str>,
+    pipe: bool,
 ) -> Result<()> {
     // Auto-spawn jyc serve FIRST - it writes <workdir>/auth.token on
     // startup, so the token file exists by the time we resolve it.
-    ensure_serve_running(&args.addr, workdir)
+    ensure_serve_running(&args.addr, workdir, pipe)
         .await
         .with_context(|| {
             format!(
@@ -828,9 +859,10 @@ pub async fn run_open(
     channel: Option<&str>,
     path: Option<&str>,
     explicit_token: Option<&str>,
+    pipe: bool,
 ) -> Result<()> {
     // Auto-spawn jyc serve FIRST (writes <workdir>/auth.token on startup).
-    ensure_serve_running(addr, workdir)
+    ensure_serve_running(addr, workdir, pipe)
         .await
         .with_context(|| format!("Failed to connect to {addr}. Start jyc serve manually."))?;
 
@@ -886,6 +918,7 @@ pub async fn run_open(
         workdir,
         Some(&topic),
         Some(&channel),
+        pipe,
     )
     .await
 }
@@ -1817,6 +1850,43 @@ fn format_last_active(value: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The auto-started `jyc serve` keeps its provisioning shape and only
+    /// forwards `--pipe` when the dashboard was asked for it.
+    #[test]
+    fn auto_spawned_serve_args_forward_pipe() {
+        let default_workdir = std::path::Path::new("/home/u/.local/share/jyc");
+        let log_path = default_workdir.join("jyc.log");
+        assert_eq!(
+            serve_spawn_args(default_workdir, default_workdir, &log_path, false),
+            ["serve", "--log-file", "/home/u/.local/share/jyc/jyc.log"]
+        );
+        assert_eq!(
+            serve_spawn_args(default_workdir, default_workdir, &log_path, true),
+            [
+                "serve",
+                "--log-file",
+                "/home/u/.local/share/jyc/jyc.log",
+                "--pipe"
+            ]
+        );
+        assert_eq!(
+            serve_spawn_args(
+                std::path::Path::new("/srv/jyc"),
+                default_workdir,
+                &log_path,
+                true
+            ),
+            [
+                "serve",
+                "--workdir",
+                "/srv/jyc",
+                "--log-file",
+                "/home/u/.local/share/jyc/jyc.log",
+                "--pipe"
+            ]
+        );
+    }
 
     fn char_key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)

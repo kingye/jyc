@@ -276,10 +276,9 @@ async fn main() -> Result<()> {
     {
         let cancel = cancel.clone();
         tokio::spawn(async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                tracing::info!("shutting down");
-                cancel.cancel();
-            }
+            shutdown_signal().await;
+            tracing::info!("shutting down");
+            cancel.cancel();
         });
     }
 
@@ -293,6 +292,35 @@ async fn main() -> Result<()> {
         cancel,
     )
     .await
+}
+
+/// Resolve when the process is asked to stop: `Ctrl+C` or, on Unix, SIGTERM
+/// (systemd `stop`, compose `down`, a plain `kill`, or the hub that spawned
+/// this pipe). Mirrors `jyc serve`'s own handling so both halves of the split
+/// shut down the same way.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(sigterm) => sigterm,
+            Err(e) => {
+                // SIGTERM cannot be observed; Ctrl+C still shuts down.
+                tracing::warn!(error = %e, "Could not install the SIGTERM handler");
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 #[cfg(test)]

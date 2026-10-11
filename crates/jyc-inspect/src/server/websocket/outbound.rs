@@ -253,14 +253,12 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
                 channel.channel_type
             );
         }
-        if attachments.is_some() {
-            // The pipe downloads every attachment from the inspect server's
-            // topic-file endpoint, which is addressed by channel and topic.
-            if message.origin_channel.is_empty() || message.origin_topic.is_empty() {
-                anyhow::bail!(
-                    "attachments need the channel and topic holding them (origin is empty)"
-                );
-            }
+        // The pipe downloads every attachment from the inspect server's
+        // topic-file endpoint, which is addressed by channel and topic.
+        if attachments.is_some()
+            && (message.origin_channel.is_empty() || message.origin_topic.is_empty())
+        {
+            anyhow::bail!("attachments need the channel and topic holding them (origin is empty)");
         }
         let attachments_json = attachments.map(|atts| {
             atts.iter()
@@ -596,7 +594,7 @@ mod tests {
         let sent = rx.recv().await.expect("should receive broadcast");
         let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
         assert_eq!(parsed["type"], "reply");
-        assert_eq!(parsed["proactive"], true);
+        assert_eq!(parsed["proactive"].as_bool(), Some(true));
         assert_eq!(parsed["channel"], "wecom_bot");
         // `topic` carries the recipient: the pipe has no topic state for a
         // proactive message, so this frame must not look like a reply to one.

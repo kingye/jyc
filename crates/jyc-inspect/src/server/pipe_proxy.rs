@@ -181,24 +181,10 @@ impl OutboundAdapter for PipeProxyOutboundAdapter {
         .await
     }
 
-    async fn send_message_with_attachments(
-        &self,
-        recipient: &str,
-        subject: &str,
-        body: &str,
-        attachments: Option<&[OutboundAttachment]>,
-    ) -> Result<SendResult> {
-        self.relay(&OutboundMessage {
-            recipient,
-            channel: &self.name,
-            subject,
-            body,
-            attachments,
-            origin_channel: "",
-            origin_topic: "",
-        })
-        .await
-    }
+    // `send_message_with_attachments` is deliberately left to the trait
+    // default: a caller reaching this entry without the origin (which only the
+    // tool knows) cannot have its files delivered, and the default says so
+    // rather than failing deeper with a misleading message.
 
     async fn send_proactive(&self, message: &OutboundMessage<'_>) -> Result<SendResult> {
         self.relay(message).await

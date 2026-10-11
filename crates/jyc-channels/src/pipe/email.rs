@@ -203,15 +203,15 @@ pub async fn spawn_email_pipe(
                                 );
                                 let mut smtp = smtp.lock().await;
                                 // Lazy connect, same as the reply path.
-                                if !smtp.is_connected() {
-                                    if let Err(e) = smtp.connect().await {
-                                        tracing::error!(
-                                            error = %e,
-                                            recipient = %proactive.recipient,
-                                            "email pipe: SMTP connect failed, proactive message dropped"
-                                        );
-                                        continue;
-                                    }
+                                if !smtp.is_connected()
+                                    && let Err(e) = smtp.connect().await
+                                {
+                                    tracing::error!(
+                                        error = %e,
+                                        recipient = %proactive.recipient,
+                                        "email pipe: SMTP connect failed, proactive message dropped"
+                                    );
+                                    continue;
                                 }
                                 if let Err(e) = smtp
                                     .send_mail(

@@ -250,6 +250,11 @@ the pipe exactly as a reply does.
   question box, so `ask_user` keeps asking in plain text instead of drawing a
   box on the hub that the user — reading WeCom or mail — would never see.
 
+A proactive send is fire-and-forget, like a reply: the hub reports that the
+frame went out, not that the channel delivered it. A pipe that is down, an
+`[inspect]` server that is off (the files endpoint) or a rejected upload shows
+up in the pipe's log at `error`/`warn`, and nowhere in the tool result.
+
 ## Open decisions
 
 1. **Service discovery** — `jyc-pipe` reads the hub ws address from config

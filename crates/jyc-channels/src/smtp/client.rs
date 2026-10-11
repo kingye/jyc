@@ -489,6 +489,49 @@ fn format_smtp_code(code: Option<u16>) -> String {
 mod tests {
     use super::*;
 
+    /// `send_mail` is the proactive path: a fresh message, so it must not
+    /// thread itself into anything (`In-Reply-To` / `References`) and must keep
+    /// the caller's subject as given rather than prefixing `Re:` — a reply to
+    /// an alert nobody sent would thread into nothing.
+    #[test]
+    fn test_build_email_for_a_fresh_mail_has_no_threading_and_keeps_subject() {
+        let client = SmtpClient::new(SmtpConfig {
+            host: "smtp.example.com".to_string(),
+            port: 465,
+            secure: true,
+            username: "bot@example.com".to_string(),
+            password: "secret".to_string(),
+            from_name: Some("JYC Bot".to_string()),
+            from_address: Some("bot@example.com".to_string()),
+        });
+
+        let email = client
+            .build_email(
+                "bot@example.com",
+                Some("JYC Bot"),
+                "user@example.com",
+                "daily report",
+                "see attached",
+                None,
+                None,
+                Some(&[EmailAttachment {
+                    filename: "report.pdf".to_string(),
+                    content_type: "application/pdf".to_string(),
+                    data: b"%PDF-1.4".to_vec(),
+                }]),
+            )
+            .expect("fresh mail builds");
+
+        let headers = email.headers();
+        assert!(headers.get_raw("In-Reply-To").is_none());
+        assert!(headers.get_raw("References").is_none());
+        assert_eq!(headers.get_raw("Subject"), Some("daily report"));
+        let formatted = email.formatted();
+        let rendered = String::from_utf8_lossy(&formatted);
+        assert!(rendered.contains("JYC Bot <bot@example.com>"), "{rendered}");
+        assert!(rendered.contains("multipart/mixed"), "{rendered}");
+    }
+
     #[test]
     fn test_markdown_to_html() {
         let md = "Hello **world**\n\n- item 1\n- item 2";

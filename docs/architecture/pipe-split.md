@@ -212,8 +212,8 @@ must not take the agent core down, and the pipe reconnects to the hub on its
 own — so a pipe that dies is only reported at `error` level. `--pipe` is a
 global flag: bare `jyc --pipe` forwards it to the `jyc serve` the dashboard
 auto-starts (an already running hub cannot be retrofitted, and warns about
-it). The Docker compose file uses it, so the shipped container runs one
-service; the child keeps its own `<data_home>/jyc-pipe.log` there.
+it). The Docker image's default command passes it, so the shipped container
+runs one service; the child keeps its own `<data_home>/jyc-pipe.log` there.
 
 ## Open decisions
 

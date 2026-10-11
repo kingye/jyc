@@ -1,17 +1,17 @@
 services:
   # Hub: agent core, websocket channel, inspect server — and the parent of the
-  # peripheral pipe process. `--pipe` spawns `jyc-pipe` as a child of the hub:
-  # it hosts every pipe-only channel adapter (feishu, github, gitee, wecom,
-  # wecom_bot, wecomkf, email), which the hub skips in-process. The child
-  # reconnects to the hub with backoff, so start order does not matter, and it
-  # is stopped together with the hub.
+  # peripheral pipe process. The image's default command is
+  # `jyc serve --debug --pipe`: `--pipe` spawns `jyc-pipe` as a child of the
+  # hub, which hosts every pipe-only channel adapter (feishu, github, gitee,
+  # wecom, wecom_bot, wecomkf, email) — channels the hub skips in-process. The
+  # child reconnects to the hub with backoff, so start order does not matter,
+  # and it is stopped together with the hub.
   jyc:
     image: jyc:${JYC_IMAGE_TAG:-latest}
     build:
       context: ..
       dockerfile: docker/Dockerfile
       target: full
-    command: ["serve", "--debug", "--pipe"]
     network_mode: host
     env_file:
       - .env

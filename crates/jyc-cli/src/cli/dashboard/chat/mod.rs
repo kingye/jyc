@@ -834,7 +834,23 @@ pub(super) fn execute_local_action<B: ratatui::backend::Backend>(
         LocalAction::ToggleMinimalProgress => {
             app.chat.minimal_progress = !app.chat.minimal_progress;
         }
+        LocalAction::ToggleMode => toggle_topic_mode(app),
     }
+}
+
+/// Send `/plan` or `/build` for the topic open in the chat pane — the same
+/// route `ctrl+c` takes with `/cancel`.
+///
+/// The mode is read through the lookup the header and the topic info pane
+/// display ([`selected_topic_summary`]), so what the pane shows and what the
+/// shortcut does cannot disagree. A topic whose mode the server has not
+/// reported yet counts as build, matching the server's default.
+fn toggle_topic_mode(app: &mut App) {
+    let in_plan = selected_topic_summary(app)
+        .and_then(|t| t.mode.as_deref())
+        .is_some_and(|m| m.eq_ignore_ascii_case("plan"));
+    app.chat
+        .send_message_inner(if in_plan { "/build" } else { "/plan" }.to_string());
 }
 
 /// Toggle the topic explorer. When opening, snap the selection to the

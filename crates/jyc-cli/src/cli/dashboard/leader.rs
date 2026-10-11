@@ -147,6 +147,13 @@ fn leader_grid_rows(entries: &[LeaderEntry], width: usize) -> usize {
         .max(1)
 }
 
+/// A leader key as shown in the popup. The space key is invisible as a bare
+/// space, so it gets the open-box glyph; dispatch still matches the real `" "`
+/// (one cell wide either way, so the grid math is unaffected).
+fn key_label(keys: &str) -> &str {
+    if keys == " " { "␣" } else { keys }
+}
+
 /// The leader key of one entry, padded to `key_col` and styled by how well it
 /// matches what the user has typed so far.
 fn leader_key_span(entry: &LeaderEntry, buffer: &str, key_col: usize) -> Span<'static> {
@@ -165,7 +172,7 @@ fn leader_key_span(entry: &LeaderEntry, buffer: &str, key_col: usize) -> Span<'s
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
     };
-    Span::styled(format!("{}{}", entry.keys, pad), style)
+    Span::styled(format!("{}{}", key_label(entry.keys), pad), style)
 }
 
 /// One entry as `key  name  description`, for the centered popup.
@@ -218,7 +225,7 @@ fn leader_title(buffer: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled("── Leader ", Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(
-            format!(" {} ", buffer),
+            format!(" {} ", key_label(buffer)),
             Style::default().fg(Color::Black).bg(Color::Yellow),
         ),
         Span::styled(" ──", Style::default().add_modifier(Modifier::BOLD)),
@@ -375,6 +382,40 @@ mod tests {
         let k = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
         assert_eq!(leader.handle_key(k), LeaderResult::Consumed);
         assert_eq!(leader.buffer(), "");
+    }
+
+    #[test]
+    fn space_dispatches_toggle_mode() {
+        let mut leader = Leader::new(CommandScope::Chat);
+        assert_eq!(
+            leader.handle_key(key(' ')),
+            LeaderResult::Action(LocalAction::ToggleMode)
+        );
+    }
+
+    /// The space key has to be visible in the popup: a bare space renders as
+    /// an empty key column, and as a blank chip in the title while the buffer
+    /// holds it.
+    #[test]
+    fn space_key_renders_as_the_open_box_glyph() {
+        let leader = Leader::new(CommandScope::Chat);
+        let grid: String = leader_grid_lines(&leader.entries, "", 80)
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            grid.contains('␣'),
+            "space key invisible in the grid: {grid}"
+        );
+        let title: String = leader_title(" ")
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            title.contains('␣'),
+            "space-key chip invisible in the title: {title:?}"
+        );
     }
 
     #[test]

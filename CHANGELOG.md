@@ -1,3 +1,9 @@
+## [Unreleased]
+
+### Added
+
+- TUI: `ctrl+p space` switches the open topic between plan and build mode, by sending the server-side `/plan` or `/build` command (#889)
+
 ## [0.5.0] - 2026-10-11
 
 ### Added

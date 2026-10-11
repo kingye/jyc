@@ -799,6 +799,78 @@ fn leader_clear_input_closes_an_open_popup() {
     );
 }
 
+/// `ctrl+p space` switches the topic's mode by sending the `/plan` / `/build`
+/// command the server applies — the TUI never sets a mode itself.
+#[test]
+fn leader_toggle_mode_sends_build_when_the_topic_is_in_plan() {
+    let mut app = app_with_topic_summary(); // mode: Some("plan")
+    execute_local_action(
+        &mut app,
+        &mut test_terminal(),
+        local_commands::LocalAction::ToggleMode,
+    );
+    let sent = app.chat.messages.last().expect("command echoed locally");
+    assert_eq!(sent.text, "/build", "plan mode must ask for build");
+}
+
+#[test]
+fn leader_toggle_mode_sends_plan_when_the_topic_is_in_build() {
+    let mut app = app_with_topic_summary();
+    app.state.as_mut().expect("overview").topics[0].mode = Some("build".to_string());
+    execute_local_action(
+        &mut app,
+        &mut test_terminal(),
+        local_commands::LocalAction::ToggleMode,
+    );
+    let sent = app.chat.messages.last().expect("command echoed locally");
+    assert_eq!(sent.text, "/plan", "build mode must ask for plan");
+}
+
+/// Before the server reports a mode — no overview polled yet, or the field
+/// absent — the topic counts as build (the server's default), so the first
+/// press has to ask for plan.
+#[test]
+fn leader_toggle_mode_defaults_to_plan_when_the_mode_is_unknown() {
+    let mut app = chatting_app();
+    execute_local_action(
+        &mut app,
+        &mut test_terminal(),
+        local_commands::LocalAction::ToggleMode,
+    );
+    assert_eq!(app.chat.messages.last().expect("echo").text, "/plan");
+
+    let mut app = app_with_topic_summary();
+    app.state.as_mut().expect("overview").topics[0].mode = None;
+    execute_local_action(
+        &mut app,
+        &mut test_terminal(),
+        local_commands::LocalAction::ToggleMode,
+    );
+    assert_eq!(app.chat.messages.last().expect("echo").text, "/plan");
+}
+
+/// The key path: `ctrl+p` then the space bar — the space must reach the
+/// leader (not the input field) and dispatch.
+#[test]
+fn leader_space_toggles_mode_through_the_key_handler() {
+    let mut app = app_with_topic_summary();
+    let key = |code: KeyCode, mods| crossterm::event::KeyEvent::new(code, mods);
+    handle_chat_keys(
+        &mut app,
+        key(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        &mut test_terminal(),
+    );
+    assert!(app.chat.leader.is_some());
+    handle_chat_keys(
+        &mut app,
+        key(KeyCode::Char(' '), KeyModifiers::NONE),
+        &mut test_terminal(),
+    );
+    assert!(app.chat.leader.is_none(), "space dispatches");
+    assert_eq!(app.chat.messages.last().expect("echo").text, "/build");
+    assert_eq!(app.chat.text(), "", "the shortcut must not touch the field");
+}
+
 /// Draw `app` into the shared 80x24 test backend and hand back the cells.
 fn draw_80x24(app: &mut App) -> ratatui::buffer::Buffer {
     use ratatui::Terminal;

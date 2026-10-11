@@ -5,7 +5,7 @@ Run JYC as a containerized service.
 ## Architecture
 
 - **Multi-stage build**: `builder` (compile) → `slim` (minimal runtime) → `full` (dev tools) → `production`
-- **Two binaries**: `jyc` (hub: agent core + inspect server; the MCP reply tool is a hidden subcommand `jyc mcp-reply-tool`) and `jyc-pipe` (peripheral pipe process, hosting every pipe-only channel adapter). Compose starts both — see [docs/architecture/pipe-split.md](../docs/architecture/pipe-split.md).
+- **Two binaries**: `jyc` (hub: agent core + inspect server; the MCP reply tool is a hidden subcommand `jyc mcp-reply-tool`) and `jyc-pipe` (peripheral pipe process, hosting every pipe-only channel adapter). Compose starts both — or run `jyc serve --pipe` in one container, which spawns the pipe as a child of the hub (see [docs/architecture/pipe-split.md](../docs/architecture/pipe-split.md)).
 - **Host networking**: Container shares host network (`network_mode: host`), so services on `localhost` are accessible from inside the container.
 
 ## Image Variants
@@ -99,14 +99,16 @@ docker compose logs -f
 # Build slim image
 podman build --target slim -t jyc:slim -f docker/Dockerfile ..
 
-# Run slim image
+# Run slim image — `serve --pipe` starts the hub and the pipe process in the
+# one container (the image's default command `jyc serve --debug` starts the
+# hub only, which skips the pipe-only channels).
 podman run -d --name jyc \
   --network=host \
   -v /path/to/jyc-data:/opt/jyc \
   -v /path/to/.claude/skills:/root/.claude/skills:ro \
   -v /path/to/.agents/skills:/root/.agents/skills:ro \
   --restart unless-stopped \
-  jyc:slim
+  jyc:slim serve --pipe
 ```
 
 ### 3. Check logs
@@ -135,6 +137,12 @@ cursor), overriding only the binary (and passing `--log-file /dev/stderr`, so
 its logs land in `docker compose logs` instead of the in-container log file
 that `jyc` itself still uses by default). It reconnects to the hub with
 backoff, so start order does not matter.
+
+The same image can instead run both processes in **one** container:
+`jyc serve --pipe` spawns `jyc-pipe` as a child of the hub (same workdir and
+config file, the pipe's own log file inside the container) and stops it when
+the hub exits. Do not combine the two — a compose `jyc-pipe` service *and*
+`--pipe` would run two pipes reading the same channel events.
 
 ```bash
 docker compose logs -f jyc-pipe

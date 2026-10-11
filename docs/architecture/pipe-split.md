@@ -202,6 +202,18 @@ alongside `jyc` and sends its logs to stderr). Remaining: pairing the two
 processes under systemd (left to operators) and the same unmeasured
 dependency audit as above.
 
+A third pairing option landed after that: `jyc serve --pipe` spawns
+`jyc-pipe` as a child of the hub
+(`crates/jyc-cli/src/cli/serve/pipe_child.rs`), reusing the hub's workdir and
+resolved config file, and stops it when the hub exits (SIGTERM, then SIGKILL
+after a 5 s grace). The child is deliberately not restarted — a channel crash
+must not take the agent core down, and the pipe reconnects to the hub on its
+own — so a pipe that dies is only reported at `error` level. `--pipe` is a
+global flag: bare `jyc --pipe` forwards it to the `jyc serve` the dashboard
+auto-starts (an already running hub cannot be retrofitted, and warns about
+it). Unlike the compose service, the child keeps its own
+`<data_home>/jyc-pipe.log`.
+
 ## Open decisions
 
 1. **Service discovery** — `jyc-pipe` reads the hub ws address from config

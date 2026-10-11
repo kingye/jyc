@@ -32,6 +32,15 @@ struct Cli {
     #[arg(long, global = true, num_args = 0..=1, value_name = "PATH")]
     log_file: Option<Option<PathBuf>>,
 
+    /// Run the peripheral message pipe (`jyc-pipe`) as a child process.
+    ///
+    /// Pipe-only channels (feishu, github, gitee, wecom, wecom_bot, wecomkf,
+    /// email) are hosted by the separate `jyc-pipe` process; without it the
+    /// hub skips them and their inbound messages go unprocessed. For bare
+    /// `jyc` the flag is forwarded to the auto-started `jyc serve`.
+    #[arg(long, global = true)]
+    pipe: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -93,30 +102,40 @@ enum Commands {
 }
 
 /// Parse `Cli` so that bare `jyc` behaves like `jyc open` (creates an
-/// ad-hoc websocket topic and opens the chat pane). When no
-/// subcommand is given, we inject `open` and re-parse. With clap's
-/// default `subcommand_required(true)`, a bare invocation emits
-/// `DisplayHelp` (we also catch `MissingSubcommand` for safety); we
-/// treat both as "no subcommand" only when `args.len() == 1` so that
-/// an explicit `jyc --help` still shows help.
+/// ad-hoc websocket topic and opens the chat pane). When no subcommand is
+/// given, we inject `open` and re-parse.
 fn parse_cli() -> Cli {
-    let args: Vec<String> = std::env::args().collect();
+    parse_cli_from(std::env::args().collect())
+}
+
+/// [`parse_cli`] against an explicit argv, so tests can cover the
+/// bare-invocation heuristics.
+fn parse_cli_from(args: Vec<String>) -> Cli {
     match Cli::try_parse_from(&args) {
         Ok(c) => c,
-        Err(e)
-            if args.len() == 1
-                && matches!(
-                    e.kind(),
-                    ErrorKind::MissingSubcommand
-                        | ErrorKind::DisplayHelp
-                        | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-                ) =>
-        {
+        Err(e) if missing_subcommand(&e, &args) => {
             let mut new_args = args;
             new_args.push("open".to_string());
             Cli::try_parse_from(new_args).unwrap_or_else(|_| e.exit())
         }
         Err(e) => e.exit(),
+    }
+}
+
+/// True when the parse error means "no subcommand was given" (a bare
+/// invocation, or global flags only — `jyc --pipe`) as opposed to an
+/// explicit help/version request.
+///
+/// `MissingSubcommand` is unambiguous. The help kinds are not: a bare `jyc`
+/// emits `DisplayHelp` too, but `jyc --help` must print help instead of
+/// silently opening the dashboard, hence the explicit flag check.
+fn missing_subcommand(e: &clap::Error, args: &[String]) -> bool {
+    match e.kind() {
+        ErrorKind::MissingSubcommand => true,
+        ErrorKind::DisplayHelp | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => !args
+            .iter()
+            .any(|a| matches!(a.as_str(), "-h" | "--help" | "-V" | "--version")),
+        _ => false,
     }
 }
 
@@ -178,7 +197,9 @@ async fn main() -> Result<()> {
     let workdir = jyc_utils::config_resolve::resolve_workdir(cli.workdir.as_ref())?;
 
     let result = match &cli.command {
-        Commands::Serve(args) => cli::serve::run(args, &workdir, cli.workdir.is_some()).await,
+        Commands::Serve(args) => {
+            cli::serve::run(args, &workdir, cli.workdir.is_some(), cli.pipe).await
+        }
         Commands::Dashboard(args) => match &args.command {
             Some(cli::dashboard::DashboardCommand::Open(open)) => {
                 cli::dashboard::run_open(
@@ -188,10 +209,11 @@ async fn main() -> Result<()> {
                     open.channel.as_deref(),
                     open.path.as_deref(),
                     args.token.as_deref(),
+                    cli.pipe,
                 )
                 .await
             }
-            None => cli::dashboard::run(args, &workdir, None, None).await,
+            None => cli::dashboard::run(args, &workdir, None, None, cli.pipe).await,
         },
         Commands::Open { addr, args } => {
             cli::dashboard::run_open(
@@ -201,6 +223,7 @@ async fn main() -> Result<()> {
                 args.channel.as_deref(),
                 args.path.as_deref(),
                 None,
+                cli.pipe,
             )
             .await
         }
@@ -224,4 +247,47 @@ async fn main() -> Result<()> {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Cli {
+        parse_cli_from(args.iter().map(|a| a.to_string()).collect())
+    }
+
+    #[test]
+    fn bare_invocation_opens_the_dashboard() {
+        assert!(matches!(parse(&["jyc"]).command, Commands::Open { .. }));
+    }
+
+    /// Global flags without a subcommand must not break the bare-invocation
+    /// rewrite (`jyc --pipe` used to exit with a missing-subcommand error).
+    #[test]
+    fn flags_without_subcommand_still_open_the_dashboard() {
+        let cli = parse(&["jyc", "--pipe"]);
+        assert!(cli.pipe);
+        assert!(matches!(cli.command, Commands::Open { .. }));
+    }
+
+    #[test]
+    fn pipe_flag_is_accepted_before_and_after_the_subcommand() {
+        for args in [["jyc", "--pipe", "serve"], ["jyc", "serve", "--pipe"]] {
+            let cli = parse(&args);
+            assert!(cli.pipe, "{args:?}");
+            assert!(matches!(cli.command, Commands::Serve(_)), "{args:?}");
+        }
+    }
+
+    /// `jyc --help` must still print help: the help error kind is only
+    /// treated as "no subcommand" when no help flag was asked for.
+    #[test]
+    fn explicit_help_is_not_a_missing_subcommand() {
+        let args = vec!["jyc".to_string(), "--help".to_string()];
+        match Cli::try_parse_from(&args) {
+            Ok(_) => panic!("`jyc --help` must not parse as a command"),
+            Err(err) => assert!(!missing_subcommand(&err, &args)),
+        }
+    }
 }

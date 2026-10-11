@@ -34,7 +34,7 @@ use crate::imap::monitor::ImapMonitor;
 use crate::pipe::hub::HubPipe;
 use crate::pipe::{
     collect_pipe_target_channels, fetch_topic_file, match_pipe, parse_reply_attachments,
-    retarget_or_drop, warn_on_bad_pipe_patterns,
+    proactive_frame, retarget_or_drop, warn_on_bad_pipe_patterns,
 };
 use crate::state_manager::StateManager;
 
@@ -152,6 +152,7 @@ pub async fn spawn_email_pipe(
                 let config = config.clone();
                 let files_base = files_base.clone();
                 let token = token.clone();
+                let channel_name = channel_name.clone();
                 let target = target.clone();
                 let span = tracing::info_span!("out", ch = %channel_name, target = %target);
                 // Detached, like the pre-migration hub wiring: the forwarder
@@ -184,6 +185,57 @@ pub async fn spawn_email_pipe(
                             ) else {
                                 continue;
                             };
+                            // A proactive message (alert or notification,
+                            // with or without files) names its own recipient
+                            // and subject, so it goes out as a fresh mail and
+                            // never consults the topic → address mapping — a
+                            // missing entry there is normal, not a stale reply.
+                            if let Some(proactive) = proactive_frame(&v, &channel_name) {
+                                let attachments = load_reply_attachments(
+                                    files_base.as_deref(),
+                                    &token,
+                                    &v,
+                                    &config,
+                                )
+                                .await;
+                                let body = crate::email_parser::strip_trailing_separators(
+                                    proactive.text,
+                                );
+                                let mut smtp = smtp.lock().await;
+                                // Lazy connect, same as the reply path.
+                                if !smtp.is_connected()
+                                    && let Err(e) = smtp.connect().await
+                                {
+                                    tracing::error!(
+                                        error = %e,
+                                        recipient = %proactive.recipient,
+                                        "email pipe: SMTP connect failed, proactive message dropped"
+                                    );
+                                    continue;
+                                }
+                                if let Err(e) = smtp
+                                    .send_mail(
+                                        &from_address,
+                                        from_name.as_deref(),
+                                        proactive.recipient,
+                                        proactive.subject,
+                                        &body,
+                                        if attachments.is_empty() {
+                                            None
+                                        } else {
+                                            Some(&attachments)
+                                        },
+                                    )
+                                    .await
+                                {
+                                    tracing::error!(
+                                        error = format!("{e:#}"),
+                                        recipient = %proactive.recipient,
+                                        "email pipe: failed to relay proactive message"
+                                    );
+                                }
+                                continue;
+                            }
                             let Some(state) = topic_state.lock().unwrap().get(topic).cloned()
                             else {
                                 tracing::debug!(
@@ -195,24 +247,13 @@ pub async fn spawn_email_pipe(
 
                             // Download reply attachments (hub files endpoint),
                             // applying the operator's outbound policy.
-                            let mut email_attachments = Vec::new();
-                            for att in parse_reply_attachments(&v) {
-                                let Some(base) = &files_base else {
-                                    tracing::warn!(
-                                        filename = %att.filename,
-                                        "email pipe: attachment dropped (inspect server disabled)"
-                                    );
-                                    continue;
-                                };
-                                match load_reply_attachment(base, &token, &att, &config).await {
-                                    Ok(loaded) => email_attachments.push(loaded),
-                                    Err(e) => tracing::warn!(
-                                        filename = %att.filename,
-                                        error = format!("{e:#}"),
-                                        "email pipe: failed to load attachment"
-                                    ),
-                                }
-                            }
+                            let email_attachments = load_reply_attachments(
+                                files_base.as_deref(),
+                                &token,
+                                &v,
+                                &config,
+                            )
+                            .await;
 
                             let body =
                                 crate::email_parser::strip_trailing_separators(text);
@@ -390,6 +431,38 @@ pub(super) fn email_pipe_with_topic(
         topic: Some(derived_topic.to_string()),
         ..pipe.clone()
     }
+}
+
+/// Load every attachment of a frame from the hub's files endpoint.
+///
+/// Shared by the reply path and a proactive message: both carry the same
+/// `attachments` entries. One bad file never stops the rest and never fails the
+/// message — the text is already sent.
+async fn load_reply_attachments(
+    files_base: Option<&str>,
+    token: &Option<String>,
+    frame: &serde_json::Value,
+    config: &jyc_types::AppConfig,
+) -> Vec<crate::smtp::client::EmailAttachment> {
+    let mut loaded = Vec::new();
+    for att in parse_reply_attachments(frame) {
+        let Some(base) = files_base else {
+            tracing::warn!(
+                filename = %att.filename,
+                "email pipe: attachment dropped (inspect server disabled)"
+            );
+            continue;
+        };
+        match load_reply_attachment(base, token, &att, config).await {
+            Ok(attachment) => loaded.push(attachment),
+            Err(e) => tracing::warn!(
+                filename = %att.filename,
+                error = format!("{e:#}"),
+                "email pipe: failed to load attachment"
+            ),
+        }
+    }
+    loaded
 }
 
 /// Download one reply attachment from the hub's files endpoint, apply the

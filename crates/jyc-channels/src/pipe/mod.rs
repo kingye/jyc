@@ -272,23 +272,9 @@ pub fn loopback_addr(bind: &str) -> String {
 /// Collect the distinct hub-channel targets that a pipe channel's patterns
 /// route through — one pipe connection (and reply relay) per entry.
 ///
-/// Two forms accepted per pattern:
-/// - legacy `pipe = { channel = "x" }` → inserts "x"
-/// - new `pipe = { agent = "x", topic = "..." }` → inserts "agents"
-///   (the synthesized channel name)
-pub fn collect_pipe_target_channels(patterns: &[ChannelPattern]) -> HashSet<String> {
-    let mut out = HashSet::new();
-    for p in patterns.iter().filter(|p| p.enabled) {
-        if let Some(pipe) = &p.pipe {
-            if let Some(ch) = &pipe.channel {
-                out.insert(ch.clone());
-            } else if pipe.agent.is_some() {
-                out.insert("agents".to_string());
-            }
-        }
-    }
-    out
-}
+/// Re-exported from `jyc-types`, where the pattern types live: the hub needs
+/// the same answer to route a proactive message to a pipe-owned channel.
+pub use jyc_types::collect_pipe_target_channels;
 
 /// Validate that every enabled pattern names a pipe target; warn about
 /// deprecated pipe fields and missing pipes (messages matching a
@@ -596,6 +582,46 @@ pub fn lookup_msg_placeholder(key: &str, msg: &jyc_types::InboundMessage) -> Opt
         return Some(msg.topic.clone());
     }
     None
+}
+
+/// One proactive message from the hub, addressed to a pipe channel.
+///
+/// Same frame as a reply (`src` on the hub side marks it with `proactive`),
+/// except that `topic` carries the *recipient* rather than a topic name: a
+/// proactive message answers nothing, so there is no topic state on the pipe
+/// side to look up.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ProactiveFrame<'a> {
+    /// Where the message goes — a channel-specific recipient id, the same one
+    /// the old in-process adapters took.
+    pub recipient: &'a str,
+    /// Message body.
+    pub text: &'a str,
+    /// Mail subject for email, bold lead-in for feishu, ignored by channels
+    /// that have no subject. Empty when the hub sent none.
+    pub subject: &'a str,
+}
+
+/// Parse a proactive frame addressed to `channel_name`.
+///
+/// `None` for a reply frame, and for a proactive frame naming another channel:
+/// several pipe channels can route into the same hub channel, so only the
+/// forwarder the frame names may send it.
+pub fn proactive_frame<'a>(
+    frame: &'a serde_json::Value,
+    channel_name: &str,
+) -> Option<ProactiveFrame<'a>> {
+    if frame.get("proactive").and_then(|p| p.as_bool()) != Some(true) {
+        return None;
+    }
+    if frame.get("channel").and_then(|c| c.as_str()) != Some(channel_name) {
+        return None;
+    }
+    Some(ProactiveFrame {
+        recipient: frame.get("topic").and_then(|t| t.as_str())?,
+        text: frame.get("text").and_then(|t| t.as_str())?,
+        subject: frame.get("subject").and_then(|s| s.as_str()).unwrap_or(""),
+    })
 }
 
 /// One attachment entry parsed from a websocket `reply` broadcast payload.

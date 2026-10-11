@@ -239,6 +239,11 @@ Send a proactive out-of-topic message to an arbitrary recipient.
 - `recipient` (string, required): Channel-specific recipient identifier
 - `message` (string, required): Message body to send
 - `subject` (string, optional): Message subject (channel-dependent)
+- `channel` (string, optional): Target channel for a cross-channel send
+- `attachments` (string[], optional): Files within the current topic directory
+  to attach. Supported by `email`, `feishu` and `wecom_bot` (including when they
+  run in `jyc-pipe`: the hub relays the files through the pipe); every other
+  channel rejects the send instead of dropping the files.
 
 **Recipient Format:**
 - WeCom KF: `wecomkf:{open_kfid}:{external_userid}`

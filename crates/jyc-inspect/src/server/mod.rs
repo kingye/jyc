@@ -811,6 +811,7 @@ mod exchange_route_auth_tests {
 }
 
 mod activity;
+pub mod pipe_proxy;
 mod routes;
 pub mod websocket;
 

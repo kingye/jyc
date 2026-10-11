@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tracing;
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
-use jyc_types::channel::OutboundAttachment;
+use jyc_types::channel::{OutboundAttachment, OutboundMessage};
 
 /// Send message tool — sends a proactive out-of-topic message via the
 /// pre-warmed outbound adapter.
@@ -23,8 +23,9 @@ use jyc_types::channel::OutboundAttachment;
 /// - `channel`: optional target channel name for cross-channel messaging.
 ///   When omitted, uses the current channel's outbound adapter (backward compatible).
 /// - `attachments`: optional list of file paths (relative to working directory)
-///   to include as attachments. Only supported by channels with attachment capability
-///   (e.g. email). Non-email channels return an error if attachments are provided.
+///   to include as attachments. Supported by the channels whose adapter can
+///   send files (email, feishu, wecom_bot); any other channel returns an error
+///   when attachments are provided.
 pub struct SendMessageTool;
 
 #[async_trait]
@@ -65,7 +66,8 @@ impl Tool for SendMessageTool {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Optional list of file paths within the working directory to attach. \
-                                     Only supported by email channels."
+                                     Supported by the email, feishu and wecom_bot channels; every \
+                                     other channel rejects the send."
                 }
             },
             "required": ["recipient", "message"]
@@ -177,64 +179,71 @@ impl Tool for SendMessageTool {
                 None
             };
 
-        // Send the message
-        if let Some(ref atts) = attachment_objs {
-            match outbound
-                .send_message_with_attachments(recipient, subject, message, Some(atts))
-                .await
-            {
-                Ok(result) => {
-                    tracing::info!(
-                        recipient = %recipient,
-                        attachment_count = atts.len(),
-                        message_id = %result.message_id,
-                        channel = ?channel,
-                        "Proactive message with attachments sent"
-                    );
-                    Ok(ToolOutput::success(format!(
-                        "Message sent to '{}' (message_id: {}) with {} attachment(s)",
-                        recipient,
-                        result.message_id,
-                        atts.len()
-                    )))
-                }
-                Err(e) => {
-                    tracing::error!(
-                        recipient = %recipient,
-                        error = %e,
-                        "Failed to send proactive message with attachments"
-                    );
-                    Ok(ToolOutput::error(format!(
-                        "Failed to send message to '{}': {}",
-                        recipient, e
-                    )))
-                }
+        // The channel this message is addressed to: the caller's `channel`
+        // parameter when it named one, else the channel the user actually wrote
+        // on — a turn piped in from feishu runs on the `agents` hub, so the hub
+        // channel alone would name the wrong one. The pipe stamps the origin
+        // (see `ORIGIN_CHANNEL_METADATA_KEY`); empty leaves the adapter to
+        // resolve it from its own pipe routing.
+        let addressed_channel = match channel.as_deref() {
+            Some(name) => name,
+            None => ctx
+                .reply_target
+                .as_ref()
+                .and_then(|target| {
+                    target
+                        .original
+                        .metadata
+                        .get(jyc_types::ORIGIN_CHANNEL_METADATA_KEY)
+                        .and_then(|value| value.as_str())
+                })
+                .unwrap_or(""),
+        };
+
+        // Attachments live in this topic's directory. A channel relayed through
+        // the pipe process downloads them from the inspect server's file
+        // endpoint, which is addressed by the channel owning the topic and the
+        // topic name — both known here and nowhere on the pipe side.
+        let outbound_message = OutboundMessage {
+            recipient,
+            channel: addressed_channel,
+            subject,
+            body: message,
+            attachments: attachment_objs.as_deref(),
+            origin_channel: ctx.current_channel.as_deref().unwrap_or(""),
+            origin_topic: ctx.current_topic.as_deref().unwrap_or(""),
+        };
+
+        match outbound.send_proactive(&outbound_message).await {
+            Ok(result) => {
+                let attachment_count = attachment_objs.as_ref().map_or(0, |atts| atts.len());
+                tracing::info!(
+                    recipient = %recipient,
+                    attachment_count,
+                    message_id = %result.message_id,
+                    channel = ?channel,
+                    "Proactive message sent"
+                );
+                let attachments_suffix = if attachment_count == 0 {
+                    String::new()
+                } else {
+                    format!(" with {attachment_count} attachment(s)")
+                };
+                Ok(ToolOutput::success(format!(
+                    "Message sent to '{}' (message_id: {}){attachments_suffix}",
+                    recipient, result.message_id
+                )))
             }
-        } else {
-            match outbound.send_message(recipient, subject, message).await {
-                Ok(result) => {
-                    tracing::info!(
-                        recipient = %recipient,
-                        message_id = %result.message_id,
-                        channel = ?channel,
-                        "Proactive message sent"
-                    );
-                    Ok(ToolOutput::success(format!(
-                        "Message sent to '{}' (message_id: {})",
-                        recipient, result.message_id
-                    )))
-                }
-                Err(e) => {
-                    tracing::error!(
-                        recipient = %recipient,
-                        error = %e,
-                        "Failed to send proactive message"
-                    );
-                    Ok(ToolOutput::error(format!(
-                        "Failed to send message to '{}': {}",
-                        recipient, e
-                    )))
-                }
+            Err(e) => {
+                tracing::error!(
+                    recipient = %recipient,
+                    error = %e,
+                    "Failed to send proactive message"
+                );
+                Ok(ToolOutput::error(format!(
+                    "Failed to send message to '{}': {}",
+                    recipient, e
+                )))
             }
         }
     }

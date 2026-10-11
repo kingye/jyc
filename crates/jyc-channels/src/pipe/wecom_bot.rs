@@ -28,7 +28,7 @@ use crate::wecom_bot::inbound::{WecomBotInboundAdapter, WecomBotMatcher};
 
 use super::{
     HubPipe, ReplyAttachmentRef, collect_pipe_target_channels, fetch_topic_file, match_pipe,
-    parse_reply_attachments, retarget_or_drop, warn_on_bad_pipe_patterns,
+    parse_reply_attachments, proactive_frame, retarget_or_drop, warn_on_bad_pipe_patterns,
 };
 
 /// State tracked per piped topic for the wecom_bot reply forwarder.
@@ -133,6 +133,7 @@ pub(crate) fn spawn_wecom_bot_pipe(
                 let files_base = files_base.clone();
                 let token = token.clone();
                 let config = config.clone();
+                let channel_name = channel_name.clone();
                 let target = target.clone();
                 tokio::spawn(async move {
                     let mut rx = hub.subscribe_replies();
@@ -164,6 +165,43 @@ pub(crate) fn spawn_wecom_bot_pipe(
                         // correlation id through the hub. Documented
                         // here; consider narrowing the key when a
                         // concrete case appears.
+                        //
+                        // A proactive message is recognized *before* this
+                        // lookup and never touches the state table: it is not
+                        // a reply to anything, so a missing entry is expected
+                        // rather than a sign that the frame is stale.
+                        if let Some(proactive) = proactive_frame(&v, &channel_name) {
+                            let Some(handle) = handle_arc.lock().await.clone() else {
+                                tracing::warn!(
+                                    recipient = %proactive.recipient,
+                                    "wecom_bot pipe: handle not set, dropping proactive message"
+                                );
+                                continue;
+                            };
+                            if let Err(e) = send_wecom_proactive_text(
+                                &handle,
+                                proactive.recipient,
+                                proactive.text,
+                            )
+                            .await
+                            {
+                                tracing::error!(
+                                    error = format!("{e:#}"),
+                                    recipient = %proactive.recipient,
+                                    "wecom_bot pipe: failed to send proactive text"
+                                );
+                            }
+                            relay_wecom_attachments(
+                                &handle,
+                                files_base.as_deref(),
+                                token.as_deref(),
+                                proactive.recipient,
+                                &v,
+                                &config,
+                            )
+                            .await;
+                            continue;
+                        }
                         let state = topic_state.lock().await.remove(topic);
                         let Some(state) = state else {
                             tracing::debug!(
@@ -218,31 +256,15 @@ pub(crate) fn spawn_wecom_bot_pipe(
                         }
 
                         // 2. Relay attachments via proactive aibot_send_msg.
-                        for att in parse_reply_attachments(&v) {
-                            let Some(files_base) = files_base.as_deref() else {
-                                tracing::warn!(
-                                    filename = %att.filename,
-                                    "wecom_bot pipe: attachment dropped (inspect server disabled)"
-                                );
-                                continue;
-                            };
-                            if let Err(e) = relay_wecom_attachment(
-                                &handle,
-                                files_base,
-                                token.as_deref(),
-                                &state.recipient,
-                                &att,
-                                &config,
-                            )
-                            .await
-                            {
-                                tracing::warn!(
-                                    filename = %att.filename,
-                                    error = format!("{e:#}"),
-                                    "wecom_bot pipe: failed to relay attachment"
-                                );
-                            }
-                        }
+                        relay_wecom_attachments(
+                            &handle,
+                            files_base.as_deref(),
+                            token.as_deref(),
+                            &state.recipient,
+                            &v,
+                            &config,
+                        )
+                        .await;
                     }
                 });
             }
@@ -491,6 +513,41 @@ async fn send_aibot_msg(handle: &WecomBotConnectionHandle, body: serde_json::Val
 /// `aibot_respond_msg` because the agent's reply is async and the WeCom
 /// passive reply window may have closed by the time the forwarder
 /// relays attachments.
+/// Relay every attachment of a frame to `recipient` through the proactive
+/// `aibot_send_msg` path.
+///
+/// Both a reply's attachments and a proactive message's go this way: the
+/// passive reply window is usually closed by the time a file is ready, and
+/// `aibot_send_msg` has no such limit. One bad file never stops the rest, and
+/// none of them fails the message — the text is already sent.
+async fn relay_wecom_attachments(
+    handle: &WecomBotConnectionHandle,
+    files_base: Option<&str>,
+    token: Option<&str>,
+    recipient: &str,
+    frame: &serde_json::Value,
+    config: &jyc_types::AppConfig,
+) {
+    for att in parse_reply_attachments(frame) {
+        let Some(files_base) = files_base else {
+            tracing::warn!(
+                filename = %att.filename,
+                "wecom_bot pipe: attachment dropped (inspect server disabled)"
+            );
+            continue;
+        };
+        if let Err(e) =
+            relay_wecom_attachment(handle, files_base, token, recipient, &att, config).await
+        {
+            tracing::warn!(
+                filename = %att.filename,
+                error = format!("{e:#}"),
+                "wecom_bot pipe: failed to relay attachment"
+            );
+        }
+    }
+}
+
 async fn relay_wecom_attachment(
     handle: &WecomBotConnectionHandle,
     files_base: &str,

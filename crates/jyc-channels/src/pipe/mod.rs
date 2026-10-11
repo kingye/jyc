@@ -327,7 +327,7 @@ pub fn warn_on_bad_pipe_patterns(
 /// (skipped when the reply already carries it). Used by the github pipe
 /// reply forwarder; gitee joins in step 4.
 pub fn role_prefixed_body(text: &str, role: &str) -> String {
-    let clean_reply = jyc_core::email_parser::strip_trailing_separators(text);
+    let clean_reply = crate::email_parser::strip_trailing_separators(text);
     if role.is_empty() || clean_reply.trim_start().starts_with(&format!("[{role}]")) {
         clean_reply
     } else {

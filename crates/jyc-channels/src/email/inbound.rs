@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use regex::Regex;
 
-use jyc_core::email_parser;
+use crate::email_parser;
 use jyc_types::{ChannelMatcher, ChannelPattern, InboundMessage, PatternMatch};
 use jyc_utils::helpers::extract_domain;
 

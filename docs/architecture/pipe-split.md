@@ -203,6 +203,18 @@ runs a single service. Remaining: pairing the two
 processes under systemd (left to operators) and the same unmeasured
 dependency audit as above.
 
+A third pairing option landed after that: `jyc serve --pipe` spawns
+`jyc-pipe` as a child of the hub
+(`crates/jyc-cli/src/cli/serve/pipe_child.rs`), reusing the hub's workdir and
+resolved config file, and stops it when the hub exits (SIGTERM, then SIGKILL
+after a 5 s grace). The child is deliberately not restarted — a channel crash
+must not take the agent core down, and the pipe reconnects to the hub on its
+own — so a pipe that dies is only reported at `error` level. `--pipe` is a
+global flag: bare `jyc --pipe` forwards it to the `jyc serve` the dashboard
+auto-starts (an already running hub cannot be retrofitted, and warns about
+it). The Docker image's default command passes it, so the shipped container
+runs one service; the child keeps its own `<data_home>/jyc-pipe.log` there.
+
 ### Outbound (proactive) messages
 
 A reply is not the only thing a user sees: `jyc_send_message` sends alerts and
@@ -230,25 +242,13 @@ the pipe exactly as a reply does.
 - Each channel then sends it the way it would have in-process: wecom_bot
   (`aibot_send_msg` text, then one proactive media message per file), feishu
   (text, then uploaded file/image), email (a fresh mail with the files, no
-  `In-Reply-To`). Channels that never sent files (github, gitee, wecom,
-  wecomkf) still answer with "Attachments not supported for this channel type"
-  rather than reporting a success that sends nothing.
+  `In-Reply-To`). Channels that never took a proactive message at all (github,
+  gitee, wecom, wecomkf) keep failing the send rather than reporting a success
+  that delivers nothing.
 - Cross-channel sends resolve too: the outbound map keys a pipe channel to a
   `PipeProxyOutboundAdapter` onto its hub channel. It deliberately has no
   question box, so `ask_user` keeps asking in plain text instead of drawing a
   box on the hub that the user — reading WeCom or mail — would never see.
-
-A third pairing option landed after that: `jyc serve --pipe` spawns
-`jyc-pipe` as a child of the hub
-(`crates/jyc-cli/src/cli/serve/pipe_child.rs`), reusing the hub's workdir and
-resolved config file, and stops it when the hub exits (SIGTERM, then SIGKILL
-after a 5 s grace). The child is deliberately not restarted — a channel crash
-must not take the agent core down, and the pipe reconnects to the hub on its
-own — so a pipe that dies is only reported at `error` level. `--pipe` is a
-global flag: bare `jyc --pipe` forwards it to the `jyc serve` the dashboard
-auto-starts (an already running hub cannot be retrofitted, and warns about
-it). The Docker image's default command passes it, so the shipped container
-runs one service; the child keeps its own `<data_home>/jyc-pipe.log` there.
 
 ## Open decisions
 

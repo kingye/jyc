@@ -3483,24 +3483,23 @@ Configurable per pattern via `attachments` in the pattern config.
 | --------------------- | -------------------------------------- | --------------------------------- |
 | `tokio`               | 1.x (features: full)                   | Async runtime                     |
 | `clap`                | 4.x (features: derive)                 | CLI argument parsing              |
-| `async-imap`          | 0.11.x (features: runtime-tokio)       | IMAP client with IDLE             |
-| `async-native-tls`    | 0.5.x                                  | TLS for IMAP                      |
-| `mail-parser`         | 0.9.x                                  | MIME email parsing                |
+| `async-imap`          | 0.12.x (features: runtime-tokio)       | IMAP client with IDLE             |
+| `async-native-tls`    | 0.6.x                                  | TLS for IMAP                      |
+| `mail-parser`         | 0.11.x                                 | MIME email parsing                |
 | `lettre`              | 0.11.x (features: tokio1-native-tls)   | SMTP sending                      |
-| `comrak`              | 0.37.x                                 | Markdown → HTML (GFM)             |
+| `comrak`              | 0.56.x                                 | Markdown → HTML (GFM)             |
 | `htmd`                | 0.5.x                                  | HTML → Markdown                   |
 | `reqwest`             | 0.13.x (hub: native-tls, pipe: rustls) | HTTP client                       |
-| `reqwest-eventsource` | 0.6.x                                  | SSE client                        |
-| `rmcp`                | 0.1.x (features: server, transport-io) | MCP server (stdio)                |
+| `rmcp`                | 3.x (client + child-process/streamable-http transports, auth; dev: server, transport-io) | MCP client (and a test MCP server) |
 | `serde`               | 1.x (features: derive)                 | Serialization framework           |
 | `serde_json`          | 1.x                                    | JSON serialization                |
-| `toml`                | 0.8.x                                  | TOML config parsing               |
+| `toml`                | 1.x                                    | TOML config parsing               |
 | `tracing`             | 0.1.x                                  | Structured async-aware logging    |
 | `tracing-subscriber`  | 0.3.x (features: env-filter, fmt)      | Log output formatting + filtering |
 | `anyhow`              | 1.x                                    | Application error handling        |
 | `thiserror`           | 2.x                                    | Typed library errors              |
 | `chrono`              | 0.4.x (features: serde)                | Date/time handling                |
-| `base64`              | 0.22.x                                 | Base64 encoding/decoding          |
+| `base64`              | 0.23.x                                 | Base64 encoding/decoding          |
 | `regex`               | 1.x                                    | Pattern matching                  |
 | `uuid`                | 1.x (features: v4)                     | Internal message IDs              |
 | `tokio-util`          | 0.7.x                                  | CancellationToken                 |

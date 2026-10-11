@@ -7,7 +7,7 @@ description = "Utility functions for the JYC AI agent framework"
 [dependencies]
 jyc-types = { path = "../jyc-types" }
 anyhow = "1"
-dirs = "6"
+dirs = "7"
 thiserror = "2"
 regex = "1"
 serde_json = "1"

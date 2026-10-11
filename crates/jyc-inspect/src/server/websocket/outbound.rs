@@ -291,6 +291,7 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         let payload = serde_json::json!({
             "type": "question",
             "topic": request.topic,
+            "context": request.context,
             "question": request.question,
             "options": request.options,
             "allow_multiple": request.allow_multiple,
@@ -309,6 +310,8 @@ mod tests {
     /// The question frame is assembled field by field, so anything the UI
     /// needs has to be listed here. `allow_multiple` is the one the question
     /// box switches its whole input mode on — dropping it fails silently.
+    /// `context` is the one it shows above the question; dropping it leaves
+    /// the user answering blind.
     #[tokio::test]
     async fn test_send_question_broadcasts_render_fields() {
         let (tx, mut rx) = broadcast::channel(16);
@@ -317,6 +320,7 @@ mod tests {
         let adapter = WebsocketOutboundAdapter::new(tx, storage);
         let request = jyc_types::channel::QuestionRequest {
             topic: "general".to_string(),
+            context: Some("I compared the two options".to_string()),
             question: "Which?".to_string(),
             options: vec!["a".to_string(), "b".to_string()],
             allow_multiple: true,
@@ -328,6 +332,10 @@ mod tests {
         assert!(
             frame.contains("\"allow_multiple\":true"),
             "the question box cannot guess the mode: {frame}"
+        );
+        assert!(
+            frame.contains("\"context\":\"I compared the two options\""),
+            "the question box cannot show what the question is about: {frame}"
         );
     }
 

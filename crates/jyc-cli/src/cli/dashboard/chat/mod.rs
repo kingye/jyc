@@ -27,6 +27,10 @@ pub(super) const STATUS_LINE_ROWS: u16 = 1;
 pub(super) struct PendingQuestion {
     /// Topic the question belongs to (only surfaced in that topic's pane).
     pub topic: String,
+    /// What the question is about: the assistant's own text for the turn that
+    /// asked (the daemon's `context`). Shown above the question — with only
+    /// the question on screen the user has to guess which answer is meant.
+    pub context: Option<String>,
     /// Question text.
     pub question: String,
     /// Selectable options.
@@ -1780,15 +1784,44 @@ fn question_hint(total: usize) -> String {
     format!("Up/Down/j/k move - 1-9/Space pick - d skip - {enter} - Esc closes")
 }
 
-/// Rows a question box spends on everything but the options: the question and
-/// the hint (both wrap, so both are measured instead of assumed), the two blank
-/// spacers, and a row of slack for word-boundary wrapping. The box's own borders
-/// are not in here — the renderer gets them excluded already from `block.inner`,
-/// and the layout adds them. Both sides call this so neither can size the box
-/// short of what the other draws: a row short used to cost the hint, then the
-/// cursor.
-fn question_chrome_rows(question: &str, total: usize, width: u16) -> usize {
-    count_wrapped_lines(question, width) + count_wrapped_lines(&question_hint(total), width) + 3
+/// Rows a question's context may spend above the question. The box is a
+/// fixed-height surface, so an uncapped narration would push the question and
+/// its options off the bottom — the one thing the user opened it to read.
+const QUESTION_CONTEXT_ROWS: usize = 3;
+
+/// The context rows to draw above a question: hard-wrapped to the box, cut
+/// after [`QUESTION_CONTEXT_ROWS`] rows, and marked with an ellipsis that is
+/// paid for by dropping one column of the last row rather than adding a row.
+/// One function, so the renderer and [`question_chrome_rows`] cannot disagree
+/// about the height.
+fn question_context_lines(context: &str, width: u16) -> Vec<String> {
+    let mut lines = wrap_text_to_width(context, width.max(1) as usize);
+    if lines.len() > QUESTION_CONTEXT_ROWS {
+        lines.truncate(QUESTION_CONTEXT_ROWS);
+        if let Some(last) = lines.last_mut() {
+            last.pop();
+            last.push('\u{2026}');
+        }
+    }
+    lines
+}
+
+/// Rows a question box spends on everything but the options: the context, the
+/// question and the hint (all wrap, so all are measured instead of assumed),
+/// the blank spacers, and a row of slack for word-boundary wrapping. The box's
+/// own borders are not in here — the renderer gets them excluded already from
+/// `block.inner`, and the layout adds them. Both sides call this so neither can
+/// size the box short of what the other draws: a row short used to cost the
+/// hint, then the cursor.
+fn question_chrome_rows(question: &str, context: Option<&str>, total: usize, width: u16) -> usize {
+    // +1 for the blank row that separates the context from the question.
+    let context_rows = context
+        .filter(|text| !text.trim().is_empty())
+        .map_or(0, |text| question_context_lines(text, width).len() + 1);
+    context_rows
+        + count_wrapped_lines(question, width)
+        + count_wrapped_lines(&question_hint(total), width)
+        + 3
 }
 
 pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
@@ -1823,14 +1856,26 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
     // among them: `select_question_next` clamps only to `options.len()`, so
     // without a window a list deeper than the box parks the `→` below the clip —
     // selectable, invisible. `question_chrome_rows` says which rows those are.
-    let chrome = question_chrome_rows(&q.question, total, inner.width);
+    let chrome = question_chrome_rows(&q.question, q.context.as_deref(), total, inner.width);
     let room = (inner.height as usize).saturating_sub(chrome).max(1);
     let off = window_offset(q.options.len(), q.selected, room);
 
-    let mut lines: Vec<Line> = vec![Line::from(Span::styled(
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(context) = q.context.as_deref().filter(|text| !text.trim().is_empty()) {
+        // Above the question, dimmer than it: context to read first, question
+        // to act on.
+        for row in question_context_lines(context, inner.width) {
+            lines.push(Line::from(Span::styled(
+                row,
+                Style::default().fg(Color::Gray),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
         q.question.clone(),
         Style::default().add_modifier(Modifier::BOLD),
-    ))];
+    )));
     lines.push(Line::from(""));
     if q.skipped {
         // Replaces the list rather than dimming it: a greyed-out option still
@@ -2672,8 +2717,12 @@ impl ChatState {
     fn input_area_rows(&self, width: u16) -> u16 {
         let body = if self.active_question() {
             let q = self.current_question().expect("active question");
-            (question_chrome_rows(&q.question, self.questions.len(), width.saturating_sub(2))
-                + q.options.len()
+            (question_chrome_rows(
+                &q.question,
+                q.context.as_deref(),
+                self.questions.len(),
+                width.saturating_sub(2),
+            ) + q.options.len()
                 + 3)
             .clamp(6, 15) as u16
         } else {
@@ -2973,6 +3022,10 @@ impl ChatState {
         // goes out as one message on the last Enter.
         self.questions.push(PendingQuestion {
             topic: topic.to_string(),
+            context: parsed
+                .get("context")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             question: parsed
                 .get("question")
                 .and_then(|v| v.as_str())

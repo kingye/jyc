@@ -2101,9 +2101,11 @@ pub(super) fn render_activity_log_inner(
                 .timestamp
                 .as_deref()
                 .and_then(|ts| {
-                    chrono::DateTime::parse_from_rfc3339(ts)
-                        .ok()
-                        .map(|dt| dt.format("%H:%M:%S").to_string())
+                    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
+                        dt.with_timezone(&chrono::Local)
+                            .format("%H:%M:%S")
+                            .to_string()
+                    })
                 })
                 .unwrap_or_else(|| "-".to_string());
             let text_style = match entry.severity {

@@ -2065,6 +2065,49 @@ fn pane_borders_share_the_palette_resting_and_focused() {
     }
 }
 
+/// The same instant written with a different UTC offset must render the same.
+/// The pane converts the parsed timestamp to the local timezone; printing it in
+/// the offset it was written with would make `12:00:00Z` and `20:00:00+08:00`
+/// (one moment) read as two different times.
+#[test]
+fn activity_rows_render_the_same_instant_identically() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let draw = |timestamp: &str| {
+        let entry = jyc_types::ActivityEntry {
+            text: "Tool: bash".to_string(),
+            timestamp: Some(timestamp.to_string()),
+            severity: jyc_types::Severity::Info,
+            id: 0,
+            is_internal: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_activity_log_inner(
+                    frame,
+                    area,
+                    std::slice::from_ref(&entry),
+                    0,
+                    0,
+                    false,
+                    Borders::TOP,
+                    false,
+                );
+            })
+            .expect("draw");
+        terminal.backend().buffer().clone()
+    };
+
+    assert_eq!(
+        draw("2026-08-13T12:00:00+00:00"),
+        draw("2026-08-13T20:00:00+08:00"),
+        "the pane must render the instant, not the offset it was written with"
+    );
+}
+
 /// The three separators on a live chat screen rest in one colour, so the split
 /// does not read as three unrelated widgets. Positions are derived from the same
 /// layout percentages `ui_chat_mode` applies, and every cell is checked for the

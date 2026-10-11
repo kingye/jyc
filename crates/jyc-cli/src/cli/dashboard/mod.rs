@@ -1831,18 +1831,17 @@ fn format_last_active(value: Option<&str>) -> String {
         None => return "-".to_string(),
     };
     let dt = match chrono::DateTime::parse_from_rfc3339(value) {
-        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Ok(dt) => dt.with_timezone(&chrono::Local),
         Err(_) => return "-".to_string(),
     };
-    let now = chrono::Utc::now();
-    let diff = now.signed_duration_since(dt);
-    if diff.num_minutes() <= 60 {
-        let mins = diff.num_minutes();
-        return format!("{}m ago", mins.max(0));
+    let now = chrono::Local::now();
+    let mins = now.signed_duration_since(dt).num_minutes();
+    if (0..=60).contains(&mins) {
+        return format!("{mins}m ago");
     }
-    let dt_utc = dt.format("%H:%M").to_string();
+    let dt_local = dt.format("%H:%M").to_string();
     if dt.date_naive() == now.date_naive() {
-        return dt_utc;
+        return dt_local;
     }
     dt.format("%b %d").to_string()
 }
@@ -2631,6 +2630,20 @@ mod tests {
         assert!(
             !title_row.contains("── Activity"),
             "dashboard activity title should not carry the `── ` box-drawing prefix, got: {title_row:?}"
+        );
+    }
+
+    /// A `last_active_at` ahead of the viewer's clock — hub/TUI clock skew, or
+    /// an activity entry whose timestamp came from the sender's message — must
+    /// not be reported as an age. It falls back to a clock time, like any other
+    /// timestamp that is not recent.
+    #[test]
+    fn future_last_active_at_is_not_rendered_as_minutes_ago() {
+        let future = (chrono::Local::now() + chrono::Duration::minutes(5)).to_rfc3339();
+        let rendered = format_last_active(Some(&future));
+        assert!(
+            !rendered.contains("ago"),
+            "future timestamp rendered as an age: {rendered:?}"
         );
     }
 }

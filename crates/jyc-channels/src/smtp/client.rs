@@ -9,10 +9,15 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use jyc_types::SmtpConfig;
-use jyc_utils::constants::{
-    SMTP_MAX_CONNECTION_RETRIES, SMTP_MAX_TRANSIENT_RETRIES, SMTP_RETRY_BASE_DELAY_SECS,
-    SMTP_RETRY_MAX_DELAY_SECS,
-};
+
+/// Max retries for transient SMTP errors (4xx: 421, 451, 452).
+const SMTP_MAX_TRANSIENT_RETRIES: u32 = 3;
+/// Max retries for connection/timeout/TLS SMTP errors.
+const SMTP_MAX_CONNECTION_RETRIES: u32 = 2;
+/// Base delay for SMTP retry backoff (seconds).
+const SMTP_RETRY_BASE_DELAY_SECS: u64 = 5;
+/// Maximum delay for SMTP retry backoff (seconds).
+const SMTP_RETRY_MAX_DELAY_SECS: u64 = 60;
 
 /// An outbound file attachment.
 #[derive(Debug, Clone)]
@@ -194,66 +199,6 @@ impl SmtpClient {
         Ok(message_id)
     }
 
-    /// Send a fresh (non-reply) email — no References headers.
-    pub async fn send_mail(
-        &mut self,
-        from: &str,
-        to: &str,
-        subject: &str,
-        markdown_body: &str,
-    ) -> Result<String> {
-        // Build a simple email without attachments or References headers
-        let email = self.build_email(from, None, to, subject, markdown_body, None, None, None)?;
-
-        let message_id = email
-            .headers()
-            .get_raw("Message-ID")
-            .unwrap_or_default()
-            .to_string();
-
-        self.send_with_retry(email).await?;
-
-        tracing::info!(to = %to, subject = %subject, "Email sent");
-
-        Ok(message_id)
-    }
-
-    /// Send a fresh (non-reply) email with file attachments — no References headers.
-    ///
-    /// Same as `send_mail` but attaches files to a `multipart/mixed` wrapper.
-    /// No `In-Reply-To` or `References` headers (this is a fresh message, not a reply).
-    pub async fn send_mail_with_attachments(
-        &mut self,
-        from: &str,
-        to: &str,
-        subject: &str,
-        markdown_body: &str,
-        attachments: &[EmailAttachment],
-    ) -> Result<String> {
-        let email = self.build_email(
-            from,
-            None,
-            to,
-            subject,
-            markdown_body,
-            None,
-            None,
-            Some(attachments),
-        )?;
-
-        let message_id = email
-            .headers()
-            .get_raw("Message-ID")
-            .unwrap_or_default()
-            .to_string();
-
-        self.send_with_retry(email).await?;
-
-        tracing::info!(to = %to, subject = %subject, attachments = attachments.len(), "Email with attachments sent");
-
-        Ok(message_id)
-    }
-
     /// Private helper: build a lettre `Message` from the given components.
     ///
     /// Handles markdown→HTML conversion, multipart/alternative body,
@@ -292,7 +237,7 @@ impl SmtpClient {
             .to(to_mailbox)
             .subject(subject);
 
-        // Add References headers (used by send_reply, skipped by send_mail*)
+        // Add References headers (threading)
         if let Some(reply_to) = in_reply_to {
             builder = builder.header(InReplyTo::from(reply_to.to_string()));
         }

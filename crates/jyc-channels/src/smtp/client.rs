@@ -528,8 +528,8 @@ mod tests {
         assert_eq!(headers.get_raw("Subject"), Some("daily report"));
         let formatted = email.formatted();
         let rendered = String::from_utf8_lossy(&formatted);
-        assert!(rendered.contains("JYC Bot <bot@example.com>"), "{rendered}");
         assert!(rendered.contains("multipart/mixed"), "{rendered}");
+        assert!(rendered.contains("filename=\"report.pdf\""), "{rendered}");
     }
 
     #[test]

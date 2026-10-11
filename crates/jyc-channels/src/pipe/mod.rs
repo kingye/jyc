@@ -180,6 +180,12 @@ pub async fn run(
     tokio::select! {
         _ = cancel.cancelled() => Ok(()),
         next = pipes.join_next() => match next {
+            // `HubPipe::run` only returns `Ok(())` once `cancel` has fired
+            // (its `Cancelled` outcome, or a backoff wait observing the
+            // token), so an `Ok` here during shutdown is a clean stop that
+            // merely won the race against the arm above. Without this guard,
+            // every `jyc stop` randomly reported a failure.
+            Some(Ok(Ok(()))) if cancel.is_cancelled() => Ok(()),
             Some(Ok(Ok(()))) => Err(anyhow::anyhow!("hub pipe connection task exited unexpectedly")),
             Some(Ok(Err(e))) => Err(e).context("hub pipe failed"),
             Some(Err(join_err)) => Err(join_err).context("hub pipe task panicked"),

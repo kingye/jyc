@@ -38,6 +38,12 @@ and uses an in-process AI agent to generate replies.
 - 修复分支：`fix/issue-{N}-<简短描述>`（如 `fix/issue-42-fix-timeout-panic`）
 - 使用连字符（`-`）分隔单词，禁止大写字母
 
+### PR 数量与串行
+- 开 PR 的代价高（每次 push 触发完整 CI：fmt、clippy、llvm-cov）。**尽量少开 PR**：同一轮工作的改动合入同一个 PR，即使关注点不同
+- **禁止并行开 PR**：必须等前一个 PR 合并后再开下一个
+- 已有 PR 尚未合并时，后续改动推送到该 PR 的分支，不新开 PR
+- 只有彼此独立且需要独立回滚的改动，才拆成多个 PR
+
 ### PR 前检查清单
 - 本地只跑 `cargo check -p <改动的 crate>`（改了该 crate 的测试才加 `--tests`）和 `cargo fmt -- --check`；**禁止** `--workspace` 全量 check，以及本地运行 `cargo build` / `cargo test` / `cargo clippy` / `cargo llvm-cov`（开发机资源受限：全量 check 会 OOM 并把 `target/` 撑满，完整验证以 CI 为准）
 - `cargo check --tests` **只编译不执行**：绿灯只证明测试能编译，禁止据此声称测试通过；测试结论只能来自 CI 的测试运行

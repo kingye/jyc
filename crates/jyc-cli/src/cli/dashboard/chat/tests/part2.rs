@@ -1110,6 +1110,28 @@ fn question_payload(topic: &str, label: &str, options: &[&str]) -> serde_json::V
     })
 }
 
+/// The context the daemon sends with a question is what the box shows above
+/// it; the frame is the only source, and a daemon that does not send the field
+/// leaves the box exactly as it was.
+#[test]
+fn question_payload_carries_the_context() {
+    let (mut chat, _rx) = chat_for_topic("jyc");
+    let mut payload = question_payload("jyc", "q1", &["a", "b"]);
+    payload["context"] = serde_json::json!("I compared both branches");
+    chat.handle_question_event(&payload);
+    assert_eq!(
+        chat.current_question().unwrap().context.as_deref(),
+        Some("I compared both branches")
+    );
+
+    let (mut chat, _rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q2", &["a"]));
+    assert!(
+        chat.current_question().unwrap().context.is_none(),
+        "no context in the frame, none in the box"
+    );
+}
+
 /// The same frame with `allow_multiple` set - what the daemon sends for a
 /// question the user may answer with several options.
 fn question_payload_multi(topic: &str, label: &str, options: &[&str]) -> serde_json::Value {

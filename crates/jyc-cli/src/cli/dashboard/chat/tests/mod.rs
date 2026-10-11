@@ -1114,6 +1114,7 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
     app.chat.info_visible = false;
     app.chat.questions = vec![PendingQuestion {
         topic: "jyc".to_string(),
+        context: None,
         question: "Pick one?".to_string(),
         options: (0..20).map(|i| format!("opt{i:02}")).collect(),
         multi: false,
@@ -1157,6 +1158,7 @@ fn question_box_numbers_the_batch_in_its_title() {
     app.chat.questions = vec![
         PendingQuestion {
             topic: "jyc".to_string(),
+            context: None,
             question: "Which sections?".to_string(),
             options: vec!["Added".to_string()],
             multi: false,
@@ -1166,6 +1168,7 @@ fn question_box_numbers_the_batch_in_its_title() {
         },
         PendingQuestion {
             topic: "jyc".to_string(),
+            context: None,
             question: "Branch name?".to_string(),
             options: vec!["feat/x".to_string()],
             multi: false,
@@ -1202,6 +1205,7 @@ fn a_batch_hint_says_enter_only_moves_to_the_next() {
     app.chat.questions = vec![
         PendingQuestion {
             topic: "jyc".to_string(),
+            context: None,
             question: "Which sections?".to_string(),
             options: vec!["Added".to_string()],
             multi: false,
@@ -1211,6 +1215,7 @@ fn a_batch_hint_says_enter_only_moves_to_the_next() {
         },
         PendingQuestion {
             topic: "jyc".to_string(),
+            context: None,
             question: "Branch name?".to_string(),
             options: vec!["feat/x".to_string()],
             multi: false,
@@ -1253,6 +1258,7 @@ fn question_box_shows_marks_for_multi_select() {
     app.chat.info_visible = false;
     app.chat.questions = vec![PendingQuestion {
         topic: "jyc".to_string(),
+        context: None,
         question: "Which?".to_string(),
         options: vec!["alpha".to_string(), "beta".to_string()],
         multi: true,
@@ -1276,6 +1282,76 @@ fn question_box_shows_marks_for_multi_select() {
     );
 }
 
+/// The box shows what the question is about, above the question itself: with
+/// nothing but the question on screen the user has to guess which answer is
+/// meant.
+#[test]
+fn question_box_shows_the_context_above_the_question() {
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    app.chat.questions = vec![PendingQuestion {
+        topic: "jyc".to_string(),
+        context: Some("I compared both branches".to_string()),
+        question: "Which one?".to_string(),
+        options: vec!["alpha".to_string(), "beta".to_string()],
+        multi: false,
+        skipped: false,
+        selected: 0,
+        marked: Vec::new(),
+    }];
+    let buffer = draw_80x24(&mut app);
+    let pane: String = (0..buffer.area.height)
+        .map(|y| row_text(&buffer, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let context_at = pane
+        .find("I compared both branches")
+        .expect("context shown");
+    let question_at = pane.find("Which one?").expect("question shown");
+    assert!(context_at < question_at, "the context reads first:\n{pane}");
+    assert!(pane.contains("alpha"), "the options still fit:\n{pane}");
+}
+
+/// A long narration is capped, marked as cut, and measured the same way by the
+/// renderer and the layout: an uncapped one would push the question and its
+/// options out of a box whose height is fixed.
+#[test]
+fn long_question_context_is_capped_to_three_rows() {
+    let long = "A narration long enough to fill the box. ".repeat(10);
+    let rows = question_context_lines(&long, 78);
+    assert_eq!(rows.len(), QUESTION_CONTEXT_ROWS, "capped: {rows:?}");
+    assert!(
+        rows.last().unwrap().ends_with('\u{2026}'),
+        "the cut is marked: {rows:?}"
+    );
+
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    app.chat.questions = vec![PendingQuestion {
+        topic: "jyc".to_string(),
+        context: Some(long.clone()),
+        question: "Which one?".to_string(),
+        options: vec!["alpha".to_string(), "beta".to_string()],
+        multi: false,
+        skipped: false,
+        selected: 0,
+        marked: Vec::new(),
+    }];
+    let buffer = draw_80x24(&mut app);
+    let pane: String = (0..buffer.area.height)
+        .map(|y| row_text(&buffer, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(pane.contains('\u{2026}'), "the cut is visible:\n{pane}");
+    assert!(pane.contains("alpha"), "the options survive:\n{pane}");
+    assert_eq!(
+        question_chrome_rows("Which one?", Some(&long), 1, 78),
+        question_chrome_rows("Which one?", None, 1, 78) + QUESTION_CONTEXT_ROWS + 1,
+        "the layout must measure exactly what the box draws"
+    );
+}
+
 /// The question box marks its selected option the same way, and follows the
 /// cursor instead of always marking the first option.
 #[test]
@@ -1284,6 +1360,7 @@ fn question_box_marks_the_selected_option_with_an_arrow() {
     app.chat.info_visible = false;
     app.chat.questions = vec![PendingQuestion {
         topic: "jyc".to_string(),
+        context: None,
         question: "Pick one?".to_string(),
         options: vec!["alpha".to_string(), "beta".to_string()],
         multi: false,
@@ -1362,6 +1439,7 @@ fn input_area_rows_reserves_the_bottom_rule() {
 
     app.chat.questions = vec![PendingQuestion {
         topic: "jyc".to_string(),
+        context: None,
         question: "Pick one?".to_string(),
         options: vec!["alpha".to_string(), "beta".to_string()],
         multi: false,
@@ -1370,9 +1448,14 @@ fn input_area_rows_reserves_the_bottom_rule() {
         marked: Vec::new(),
     }];
     let q = app.chat.current_question().expect("question");
-    let body =
-        (question_chrome_rows(&q.question, app.chat.questions.len(), 78) + q.options.len() + 3)
-            .clamp(6, 15) as u16;
+    let body = (question_chrome_rows(
+        &q.question,
+        q.context.as_deref(),
+        app.chat.questions.len(),
+        78,
+    ) + q.options.len()
+        + 3)
+    .clamp(6, 15) as u16;
     assert_eq!(app.chat.input_area_rows(80), body + 1);
 }
 

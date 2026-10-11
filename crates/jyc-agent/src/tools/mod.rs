@@ -209,6 +209,12 @@ pub struct ToolContext<'a> {
     /// the persisted `agent-context.json` goes stale mid-loop. Empty when
     /// not injected (unit tests, synthetic progress replies).
     pub raw_context: Vec<serde_json::Value>,
+    /// The assistant's own text for the current tool batch, when that batch
+    /// asks the user a question. Injected by the agent loop next to
+    /// `raw_context`: a channel with a question box has no other way to show
+    /// the user what the question is about, and the same text delivered as a
+    /// separate message can go missing. `None` for every other batch.
+    pub question_context: Option<String>,
     /// Synchronous delivery target for `jyc_reply_message`. When present
     /// together with `outbound`, the reply tool delivers through the channel
     /// adapter immediately and its result reflects the real delivery outcome.
@@ -250,6 +256,7 @@ impl<'a> ToolContext<'a> {
             current_topic: None,
             outbounds: None,
             raw_context: Vec::new(),
+            question_context: None,
             reply_target: None,
         }
     }
@@ -269,6 +276,7 @@ impl<'a> ToolContext<'a> {
             current_topic: None,
             outbounds: None,
             raw_context: Vec::new(),
+            question_context: None,
             reply_target: None,
         }
     }

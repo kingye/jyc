@@ -103,6 +103,13 @@ impl OutboundAdapter for CapturingOutbound {
 
     async fn send_question(&self, request: &QuestionRequest) -> Result<()> {
         self.log.record("question", request.question.clone());
+        // Recorded separately from the question text: the box shows it above
+        // the question, and it is the only copy of the context when the
+        // narration delivery does not reach the user.
+        self.log.record(
+            "question-context",
+            request.context.clone().unwrap_or_default(),
+        );
         Ok(())
     }
 }
@@ -187,6 +194,11 @@ async fn embedded_tag_recovers_question_and_ends_the_turn() {
     let log = log.snapshot();
     assert_eq!(log[0].0, "reply", "message must come first: {log:?}");
     assert_eq!(log[0].1, prose);
+    assert_eq!(
+        log.iter().find(|(kind, _)| *kind == "question-context"),
+        Some(&("question-context", prose.to_string())),
+        "the question carries the prose as its context: {log:?}"
+    );
     let question_pos = log
         .iter()
         .position(|(kind, _)| *kind == "question")
@@ -243,6 +255,11 @@ async fn native_ask_delivers_narration_before_question() {
         log[0],
         ("reply", "方案如下，请定夺。".to_string()),
         "narration must be delivered before the question: {log:?}"
+    );
+    assert_eq!(
+        log.iter().find(|(kind, _)| *kind == "question-context"),
+        Some(&("question-context", "方案如下，请定夺。".to_string())),
+        "the question travels with the narration as its context: {log:?}"
     );
     assert_eq!(
         log.iter().filter(|(k, _)| *k == "question").count(),

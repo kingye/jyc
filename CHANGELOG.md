@@ -3,6 +3,12 @@
 ### Added
 
 - TUI: `ctrl+p space` switches the open topic between plan and build mode, by sending the server-side `/plan` or `/build` command (#889)
+- `ask_user` questions carry the assistant's context with them: `QuestionRequest` gains an optional `context` (the narration for the turn that asked), `ask_user` fills it from the agent loop, the websocket frame passes it through, and the TUI question box draws it dim above the question — wrapped and capped at three rows, measured like the rest of the box. A box showing only the question left the user guessing what was being asked, and the same text delivered as a separate mid-turn message could go missing; plain-text channels (feishu, wecom_bot, email, …) are unchanged, since there the context is the message before the question (#890)
+
+### Fixed
+
+- `jyc stop` no longer reports a clean pipe shutdown as a failure: `jyc-pipe`'s hub connection task returns `Ok` exactly when its cancellation token has fired, so an `Ok` that wins the `select!` race against the token arm is a clean stop — it used to print `Error: hub pipe connection task exited unexpectedly` on every stop (the child's stderr is the hub's terminal), and to log `error: jyc-pipe exited; pipe-only channels are offline` on stop paths that log instead of print (#890)
+- A mid-turn narration delivery that failed is no longer swallowed: the agent loop dropped `deliver_progress_text`'s return value, so an `ask_user` context that reached neither the user's channel nor the reply file left no trace at all — it now logs at `warn`, and travels with the question regardless (#890)
 
 ## [0.5.0] - 2026-10-11
 

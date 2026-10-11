@@ -576,8 +576,17 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             }) = embedded_ask::find_embedded_ask(&response.text)
             {
                 let prose = embedded_ask::remove_span(&response.text, span);
-                if !prose.trim().is_empty() {
-                    deliver_progress_text(tools, &ctx, event_bus, topic_name, &prose).await;
+                let has_prose = !prose.trim().is_empty();
+                // Hand the prose to `ask_user` as well: a box shows the
+                // question, and this is the only place the context can come
+                // from if the delivery below does not reach the user.
+                ctx.question_context = has_prose.then(|| prose.clone());
+                if has_prose
+                    && !deliver_progress_text(tools, &ctx, event_bus, topic_name, &prose).await
+                {
+                    tracing::warn!(
+                        "ask_user prose was not delivered to the channel; the question box carries it instead"
+                    );
                 }
                 let input = serde_json::json!({
                     "question": question,
@@ -703,7 +712,10 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // Question ordering: when this batch asks the user something, deliver
         // the narration text first — the user must read the context before the
         // question arrives. The turn ends at the question, so for a while this
-        // is the last thing they see from us.
+        // is the last thing they see from us. The same text also travels with
+        // the question itself (`ctx.question_context`), because a box has no
+        // other way to show it and this delivery can fail silently.
+        ctx.question_context = None;
         if response.tool_calls.iter().any(|tc| tc.name == "ask_user")
             && !response.text.trim().is_empty()
         {
@@ -717,7 +729,12 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 || response.text.clone(),
                 |span| embedded_ask::remove_span(&response.text, span),
             );
-            deliver_progress_text(tools, &ctx, event_bus, topic_name, &narration).await;
+            ctx.question_context = Some(narration.clone());
+            if !deliver_progress_text(tools, &ctx, event_bus, topic_name, &narration).await {
+                tracing::warn!(
+                    "ask_user narration was not delivered to the channel; the question box carries it instead"
+                );
+            }
         }
 
         // Snapshot for `context_browse` — only when the tool is actually in

@@ -293,6 +293,7 @@ impl Tool for AskUserTool {
         for ask in &asks {
             let request = QuestionRequest {
                 topic: topic.clone(),
+                context: ctx.question_context.clone(),
                 question: ask.question.clone(),
                 options: ask.options.clone(),
                 allow_multiple: ask.allow_multiple,
@@ -483,6 +484,10 @@ mod tests {
 
         let sent = outbound.sent.lock().await;
         assert_eq!(sent.len(), 2, "one frame per question");
+        assert!(
+            sent[0].context.is_none(),
+            "nothing injected, nothing sent: {sent:?}"
+        );
         assert!(!sent[0].allow_multiple);
         assert!(sent[1].allow_multiple, "the multi flag is per question");
         assert_eq!(
@@ -502,6 +507,38 @@ mod tests {
             "a rendered set is not also sent as plain text"
         );
         assert!(started.elapsed().as_secs() < 5, "must not wait for a pick");
+    }
+
+    /// The context the loop injected rides along with every question of the
+    /// batch: the box shows it above the question, and a question without it
+    /// leaves the user answering blind.
+    #[tokio::test]
+    async fn question_frames_carry_the_injected_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outbound = Arc::new(BoxOutbound::default());
+        let mut ctx = live_ctx(tmp.path(), outbound.clone(), None);
+        ctx.question_context = Some("I compared both branches".to_string());
+
+        AskUserTool
+            .execute(
+                json!({
+                    "questions": [
+                        { "question": "Which?", "options": ["a", "b"] },
+                        { "question": "Why?", "options": ["x", "y"] },
+                    ],
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let sent = outbound.sent.lock().await;
+        assert_eq!(sent.len(), 2, "one frame per question");
+        assert!(
+            sent.iter()
+                .all(|r| r.context.as_deref() == Some("I compared both branches")),
+            "every question of the batch carries the context: {sent:?}"
+        );
     }
 
     /// The bug this covers: a turn piped in from a channel that cannot show a

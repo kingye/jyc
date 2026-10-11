@@ -404,6 +404,13 @@ pub trait OutboundAdapter: Send + Sync {
 pub struct QuestionRequest {
     /// Topic the question belongs to.
     pub topic: String,
+    /// What the user needs in order to answer: the assistant's own text for
+    /// the turn that asked. A box that shows only the question leaves the
+    /// user guessing which answer is meant, and the text cannot be relied on
+    /// to arrive separately, so it travels with the question. `None` when the
+    /// model called the tool without writing anything first.
+    #[serde(default)]
+    pub context: Option<String>,
     /// Question text.
     pub question: String,
     /// Selectable options.

@@ -16,6 +16,7 @@ use jyc_core::message_router::MessageRouter;
 use jyc_core::message_storage::MessageStorage;
 use jyc_core::metrics::MetricsCollector;
 use jyc_core::topic_manager::TopicManager;
+use jyc_inspect::server::pipe_proxy::{PipeChannel, PipeProxyOutboundAdapter, PipeRoute};
 use jyc_inspect::server::websocket::inbound::WebsocketInboundAdapter;
 use jyc_types::OutboundAdapter;
 use jyc_types::{load_config_layered, validation};
@@ -147,6 +148,37 @@ pub async fn run(
             None
         };
 
+    // Channels the external `jyc-pipe` process owns: the hub holds none of
+    // their credentials, so the only way to reach them is a broadcast frame on
+    // the hub channel their patterns route into. Collect that mapping once —
+    // the hub channel's outbound adapter needs it to name the channel a
+    // proactive message is for, and the cross-channel outbound map needs it to
+    // resolve `jyc_send_message(channel = "…")` for a pipe channel at all.
+    let pipe_channels: HashMap<String, PipeChannel> = config_snapshot
+        .channels
+        .iter()
+        .filter(|(_, channel_config)| {
+            jyc_types::SUPPORTED_CHANNEL_TYPES.contains(&channel_config.channel_type.as_str())
+        })
+        .map(|(name, channel_config)| {
+            let mut targets: Vec<String> = jyc_types::collect_pipe_target_channels(
+                channel_config.patterns.as_deref().unwrap_or(&[]),
+            )
+            .into_iter()
+            .collect();
+            // Stable order: the proxy registration below picks the first
+            // target, and any of them reaches the pipe's forwarder.
+            targets.sort();
+            (
+                name.clone(),
+                PipeChannel {
+                    channel_type: channel_config.channel_type.clone(),
+                    targets,
+                },
+            )
+        })
+        .collect();
+
     // Collect websocket inbound adapters to register with the inspect server later
     let mut websocket_handlers: Vec<Arc<WebsocketInboundAdapter>> = vec![];
     // Map for setting TopicManager on websocket handlers after creation
@@ -216,7 +248,13 @@ pub async fn run(
             jyc_inspect::server::websocket::outbound::WebsocketOutboundAdapter::new(
                 broadcast_tx.clone(),
                 storage.clone(),
-            ),
+            )
+            .with_pipe_route(PipeRoute::new(
+                channel_name.clone(),
+                pipe_channels
+                    .iter()
+                    .map(|(name, channel)| (name.clone(), channel.clone())),
+            )),
         );
         // Store the inbound adapter for later registration with the inspect server.
         let mut handler =
@@ -339,6 +377,39 @@ pub async fn run(
 
     if tasks.is_empty() {
         anyhow::bail!("No channels configured");
+    }
+
+    // Cross-channel sends to a pipe-owned channel: its entry in the outbound
+    // map is a proxy onto the hub channel that reaches the pipe, so
+    // `jyc_send_message(channel = "wecom_bot", …)` resolves instead of failing
+    // with "Unknown channel". Registered after the loop, and only for the hub
+    // channels that exist — a pipe channel whose patterns route nowhere the hub
+    // hosts cannot be reached from here.
+    {
+        let hub_outbounds: HashMap<String, Arc<dyn OutboundAdapter>> =
+            all_outbounds.iter().cloned().collect();
+        for (name, channel) in &pipe_channels {
+            let Some(hub) = channel
+                .targets
+                .iter()
+                .find_map(|target| hub_outbounds.get(target))
+            else {
+                tracing::warn!(
+                    channel = %name,
+                    targets = ?channel.targets,
+                    "pipe channel routes into no hub channel; cross-channel messages to it will fail"
+                );
+                continue;
+            };
+            all_outbounds.push((
+                name.clone(),
+                Arc::new(PipeProxyOutboundAdapter::new(
+                    name.clone(),
+                    channel.channel_type.clone(),
+                    hub.clone(),
+                )),
+            ));
+        }
     }
 
     // 5.5. Wire cross-channel topic managers and outbound adapters into agent services

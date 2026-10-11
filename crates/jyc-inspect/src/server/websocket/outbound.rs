@@ -11,7 +11,12 @@ use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 use jyc_core::message_storage::MessageStorage;
-use jyc_types::{InboundMessage, OutboundAdapter, OutboundAttachment, SendResult};
+use jyc_types::{
+    InboundMessage, OutboundAdapter, OutboundAttachment, OutboundMessage,
+    PROACTIVE_CAPABLE_CHANNEL_TYPES, SendResult,
+};
+
+use crate::server::pipe_proxy::PipeRoute;
 
 /// WebSocket outbound adapter.
 ///
@@ -22,6 +27,10 @@ pub struct WebsocketOutboundAdapter {
     broadcast_tx: broadcast::Sender<String>,
     /// Message storage for persisting replies to chat log.
     storage: Arc<MessageStorage>,
+    /// Pipe-owned channels whose patterns route into this hub channel. Empty
+    /// for a hub channel the pipe does not feed, which then behaves exactly as
+    /// it did before the split.
+    route: Arc<PipeRoute>,
 }
 
 impl WebsocketOutboundAdapter {
@@ -30,7 +39,17 @@ impl WebsocketOutboundAdapter {
         Self {
             broadcast_tx,
             storage,
+            route: Arc::new(PipeRoute::default()),
         }
+    }
+
+    /// Route proactive messages addressed to pipe-owned channels.
+    ///
+    /// Without this the adapter refuses attachments and broadcasts proactive
+    /// text to dashboard clients only: the pipe never learns about either.
+    pub fn with_pipe_route(mut self, route: PipeRoute) -> Self {
+        self.route = Arc::new(route);
+        self
     }
 
     /// Get the broadcast sender for the inbound adapter to clone.
@@ -61,6 +80,40 @@ impl WebsocketOutboundAdapter {
         // there are no active receivers. We ignore that error since it's fine
         // to have no connected clients.
         let _ = self.broadcast_tx.send(payload);
+        Ok(())
+    }
+
+    /// Broadcast a proactive (non-reply) message.
+    ///
+    /// The frame is a reply frame with `topic` = recipient, so dashboard
+    /// clients keep rendering it as they always have, plus `proactive: true`
+    /// and — when the addressed channel is known — its name, which is what
+    /// lets the pipe pick the forwarder that owns the recipient instead of
+    /// looking the topic up in its reply state (where it would miss).
+    async fn broadcast_proactive(
+        &self,
+        recipient: &str,
+        text: &str,
+        subject: &str,
+        channel: Option<&str>,
+        attachments: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let mut payload = serde_json::json!({
+            "type": "reply",
+            "topic": recipient,
+            "text": text,
+            "proactive": true,
+        });
+        if !subject.is_empty() {
+            payload["subject"] = subject.into();
+        }
+        if let Some(channel) = channel {
+            payload["channel"] = channel.into();
+        }
+        if let Some(atts) = attachments {
+            payload["attachments"] = atts;
+        }
+        let _ = self.broadcast_tx.send(payload.to_string());
         Ok(())
     }
 }
@@ -162,6 +215,78 @@ impl OutboundAdapter for WebsocketOutboundAdapter {
         let message_id = uuid::Uuid::new_v4().to_string();
         tracing::info!(text_len = body.len(), message_id = %message_id, "WebSocket message broadcast");
         Ok(SendResult { message_id })
+    }
+
+    /// Proactive send with the context a pipe-owned channel needs.
+    ///
+    /// A message for a pipe channel leaves the hub as a broadcast frame on this
+    /// channel: the pipe is subscribed to it, and no other path exists — the
+    /// hub has neither the channel's credentials nor a shared filesystem for
+    /// the attachment bytes. Anything else keeps the pre-split behaviour:
+    /// proactive text goes to whoever is listening, attachments are refused.
+    async fn send_proactive(&self, message: &OutboundMessage<'_>) -> Result<SendResult> {
+        let attachments = message.attachments.filter(|a| !a.is_empty());
+        let Some((channel_name, channel)) = self.route.resolve(message.channel)? else {
+            if attachments.is_some() {
+                anyhow::bail!("Attachments not supported for this channel type");
+            }
+            self.broadcast_proactive(message.recipient, message.body, message.subject, None, None)
+                .await?;
+            tracing::info!(
+                recipient = %message.recipient,
+                text_len = message.body.len(),
+                "WebSocket proactive message broadcast"
+            );
+            return Ok(SendResult {
+                message_id: uuid::Uuid::new_v4().to_string(),
+            });
+        };
+
+        if !PROACTIVE_CAPABLE_CHANNEL_TYPES.contains(&channel.channel_type.as_str()) {
+            // The file case keeps the error the tool has always reported;
+            // a channel that takes no proactive message at all says so.
+            if attachments.is_some() {
+                anyhow::bail!("Attachments not supported for this channel type");
+            }
+            anyhow::bail!(
+                "proactive messages are not supported for channel type '{}'",
+                channel.channel_type
+            );
+        }
+        if attachments.is_some() {
+            // The pipe downloads every attachment from the inspect server's
+            // topic-file endpoint, which is addressed by channel and topic.
+            if message.origin_channel.is_empty() || message.origin_topic.is_empty() {
+                anyhow::bail!(
+                    "attachments need the channel and topic holding them (origin is empty)"
+                );
+            }
+        }
+        let attachments_json = attachments.map(|atts| {
+            atts.iter()
+                .map(|a| attachment_entry(message.origin_channel, message.origin_topic, a))
+                .collect::<Vec<_>>()
+                .into()
+        });
+
+        self.broadcast_proactive(
+            message.recipient,
+            message.body,
+            message.subject,
+            Some(channel_name),
+            attachments_json,
+        )
+        .await?;
+        tracing::info!(
+            channel = %channel_name,
+            recipient = %message.recipient,
+            text_len = message.body.len(),
+            attachments = attachments.map_or(0, |a| a.len()),
+            "proactive message relayed to the pipe"
+        );
+        Ok(SendResult {
+            message_id: uuid::Uuid::new_v4().to_string(),
+        })
     }
 
     async fn send_question(&self, request: &jyc_types::channel::QuestionRequest) -> Result<()> {
@@ -409,5 +534,254 @@ mod tests {
         let storage = Arc::new(MessageStorage::new(&topic_path));
         let adapter = WebsocketOutboundAdapter::new(broadcast::channel(16).0, storage);
         assert_eq!(adapter.clean_body("hello\nworld"), "hello\nworld");
+    }
+
+    /// Adapter for a hub channel with the given pipe channels routing into it.
+    fn pipe_adapter(
+        broadcast_tx: broadcast::Sender<String>,
+        storage: Arc<MessageStorage>,
+        hub_channel: &str,
+        pipe_channels: &[(&str, &str)],
+    ) -> WebsocketOutboundAdapter {
+        use crate::server::pipe_proxy::PipeChannel;
+        WebsocketOutboundAdapter::new(broadcast_tx, storage).with_pipe_route(PipeRoute::new(
+            hub_channel,
+            pipe_channels.iter().map(|(name, channel_type)| {
+                (
+                    name.to_string(),
+                    PipeChannel {
+                        channel_type: channel_type.to_string(),
+                        targets: vec![hub_channel.to_string()],
+                    },
+                )
+            }),
+        ))
+    }
+
+    fn storage_at(topic_path: &Path) -> Arc<MessageStorage> {
+        jyc_types::state_dir::register("general", &topic_path.join(".jyc"));
+        std::fs::create_dir_all(topic_path).unwrap();
+        Arc::new(MessageStorage::new(topic_path))
+    }
+
+    /// A proactive message for a pipe-owned channel must name the channel and
+    /// carry attachment *paths*, not files: the pipe holds the credentials and
+    /// has no shared filesystem, so a frame is the only thing that can reach it.
+    #[tokio::test]
+    async fn test_send_proactive_relays_attachments_for_pipe_channel() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let topic_path = tmp.path().join("general");
+        let storage = storage_at(&topic_path);
+        let adapter = pipe_adapter(tx, storage, "agents", &[("wecom_bot", "wecom_bot")]);
+        let atts = vec![OutboundAttachment {
+            filename: "报表 v2.pdf".to_string(),
+            path: topic_path.join("报表 v2.pdf"),
+            content_type: "application/pdf".to_string(),
+        }];
+
+        adapter
+            .send_proactive(&OutboundMessage {
+                recipient: "chat-42",
+                channel: "wecom_bot",
+                subject: "",
+                body: "报表好了",
+                attachments: Some(&atts),
+                origin_channel: "agents",
+                origin_topic: "general",
+            })
+            .await
+            .unwrap();
+
+        let sent = rx.recv().await.expect("should receive broadcast");
+        let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert_eq!(parsed["type"], "reply");
+        assert_eq!(parsed["proactive"], true);
+        assert_eq!(parsed["channel"], "wecom_bot");
+        // `topic` carries the recipient: the pipe has no topic state for a
+        // proactive message, so this frame must not look like a reply to one.
+        assert_eq!(parsed["topic"], "chat-42");
+        assert_eq!(parsed["text"], "报表好了");
+        assert_eq!(
+            parsed["attachments"][0]["path"],
+            "/api/topics/agents/general/files/%E6%8A%A5%E8%A1%A8%20v2.pdf"
+        );
+    }
+
+    /// A channel the pipe owns but whose adapter cannot send files keeps the
+    /// error the tool has always reported — reporting success would send the
+    /// agent looking for a file that never arrived.
+    #[tokio::test]
+    async fn test_send_proactive_refuses_attachments_on_incapable_pipe_channel() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let storage = storage_at(&tmp.path().join("general"));
+        let adapter = pipe_adapter(tx, storage, "agents", &[("github", "github")]);
+        let atts = vec![OutboundAttachment {
+            filename: "log.txt".to_string(),
+            path: tmp.path().join("general").join("log.txt"),
+            content_type: "text/plain".to_string(),
+        }];
+
+        let err = adapter
+            .send_proactive(&OutboundMessage {
+                recipient: "owner/repo#1",
+                channel: "github",
+                subject: "",
+                body: "log attached",
+                attachments: Some(&atts),
+                origin_channel: "agents",
+                origin_topic: "general",
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(err, "Attachments not supported for this channel type");
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing may be broadcast when the send is refused"
+        );
+
+        // Text alone is refused too: this channel's forwarder has no proactive
+        // path, so broadcasting would report a success that sends nothing.
+        let err = adapter
+            .send_proactive(&OutboundMessage {
+                recipient: "owner/repo#1",
+                channel: "github",
+                subject: "",
+                body: "deploy finished",
+                attachments: None,
+                origin_channel: "agents",
+                origin_topic: "general",
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "proactive messages are not supported for channel type 'github'"
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// Two pipe channels on one hub channel: without a name the message could
+    /// go to either, so it is refused rather than guessed.
+    #[tokio::test]
+    async fn test_send_proactive_refuses_ambiguous_channel() {
+        let (tx, _rx) = broadcast::channel(16);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let storage = storage_at(&tmp.path().join("general"));
+        let adapter = pipe_adapter(
+            tx,
+            storage,
+            "agents",
+            &[("wecom_bot", "wecom_bot"), ("feishu", "feishu")],
+        );
+
+        let err = adapter
+            .send_proactive(&OutboundMessage {
+                recipient: "someone",
+                channel: "",
+                subject: "",
+                body: "alert",
+                attachments: None,
+                origin_channel: "agents",
+                origin_topic: "general",
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("several pipe channels"), "{err}");
+    }
+
+    /// A hub channel the pipe does not feed keeps the pre-split behaviour:
+    /// proactive text goes to the dashboard clients, attachments are refused.
+    #[tokio::test]
+    async fn test_send_proactive_without_pipe_route_keeps_old_behaviour() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let storage = storage_at(&tmp.path().join("general"));
+        let adapter = WebsocketOutboundAdapter::new(tx, storage);
+        let atts = vec![OutboundAttachment {
+            filename: "x.txt".to_string(),
+            path: tmp.path().join("general").join("x.txt"),
+            content_type: "text/plain".to_string(),
+        }];
+
+        let err = adapter
+            .send_proactive(&OutboundMessage {
+                recipient: "user",
+                channel: "",
+                subject: "",
+                body: "hello",
+                attachments: Some(&atts),
+                origin_channel: "agents",
+                origin_topic: "general",
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "Attachments not supported for this channel type");
+
+        adapter
+            .send_proactive(&OutboundMessage {
+                recipient: "user",
+                channel: "",
+                subject: "",
+                body: "hello",
+                attachments: None,
+                origin_channel: "agents",
+                origin_topic: "general",
+            })
+            .await
+            .unwrap();
+        let sent = rx.recv().await.expect("should receive broadcast");
+        let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert_eq!(parsed["topic"], "user");
+        assert_eq!(parsed["text"], "hello");
+        assert!(parsed.get("channel").is_none());
+    }
+
+    /// A reply must never look like a proactive message: the pipe's reply path
+    /// keys on topic state and would otherwise take the proactive branch.
+    #[tokio::test]
+    async fn test_send_reply_is_not_marked_proactive() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let topic_path = tmp.path().join("general");
+        let storage = storage_at(&topic_path);
+        let adapter = WebsocketOutboundAdapter::new(tx, storage);
+        let message = InboundMessage {
+            id: "test".to_string(),
+            channel: "agents".to_string(),
+            channel_uid: "user".to_string(),
+            sender: "user".to_string(),
+            sender_address: "user".to_string(),
+            recipients: vec![],
+            topic: "general".to_string(),
+            content: jyc_types::MessageContent {
+                text: Some("hello".to_string()),
+                html: None,
+                markdown: None,
+            },
+            timestamp: chrono::Utc::now(),
+            references: None,
+            reply_to_id: None,
+            external_id: None,
+            attachments: vec![],
+            metadata: std::collections::HashMap::new(),
+            matched_pattern: None,
+        };
+
+        adapter
+            .send_reply(&message, "AI reply", &topic_path, "msg_001", None)
+            .await
+            .unwrap();
+
+        let sent = rx.recv().await.expect("should receive broadcast");
+        let parsed: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert!(parsed.get("proactive").is_none());
     }
 }

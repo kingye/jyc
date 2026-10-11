@@ -247,14 +247,17 @@ mod tests {
         assert!(err.contains("several pipe channels"), "{err}");
     }
 
-    /// A hub channel the pipe does not feed, and a name that is not
-    /// pipe-owned, both report "no pipe channel": the caller keeps the
-    /// pre-split behaviour instead of inventing a route.
+    /// A hub channel no pipe channel routes into, and a name the pipe does not
+    /// own: both report "no pipe channel", so the caller keeps the pre-split
+    /// behaviour instead of inventing a route.
     #[test]
     fn resolve_reports_no_pipe_channel() {
-        let route = route();
-        assert!(route.resolve("").unwrap().is_none());
-        assert!(route.resolve("no_such_channel").unwrap().is_none());
+        let elsewhere = PipeRoute::new(
+            "other",
+            [("wecom_bot".to_string(), channel("wecom_bot", "agents"))],
+        );
+        assert!(elsewhere.resolve("").unwrap().is_none());
+        assert!(route().resolve("no_such_channel").unwrap().is_none());
         assert!(PipeRoute::default().resolve("").unwrap().is_none());
     }
 }

@@ -1979,7 +1979,6 @@ dependencies = [
  "jyc-types",
  "jyc-utils",
  "libc",
- "regex",
  "serde",
  "serde_json",
  "tempfile",

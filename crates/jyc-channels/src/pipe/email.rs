@@ -215,7 +215,7 @@ pub async fn spawn_email_pipe(
                             }
 
                             let body =
-                                jyc_core::email_parser::strip_trailing_separators(text);
+                                crate::email_parser::strip_trailing_separators(text);
                             let mut smtp = smtp.lock().await;
                             // Lazy connect: the transport is built on first use
                             // (and rebuilt by send_with_retry on drops).

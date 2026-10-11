@@ -257,7 +257,6 @@ pub fn restore_state_registry(agents_root: &Path) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::email_parser;
     use crate::message_storage::MessageStorage;
     use jyc_types::{ChannelPattern, InboundMessage, MessageContent};
     use std::collections::HashMap;
@@ -497,9 +496,9 @@ mod tests {
         let storage = MessageStorage::new(&ws);
         let msg = make_message("jiny283a", "Test Subject");
 
-        // derive_topic_name (email) strips Re:/Fw: prefixes
-        let topic_name = email_parser::derive_topic_name("Re: Test Subject", &[]);
-        assert_eq!(topic_name, "Test Subject");
+        // The email adapter strips `Re:`/`Fw:` before handing the topic over;
+        // storage must accept the name as given.
+        let topic_name = "Test Subject".to_string();
 
         let result = storage
             .store_with_match(&msg, &topic_name, true, None)
@@ -525,10 +524,7 @@ mod tests {
         tokio::fs::create_dir_all(&ws).await.unwrap();
 
         let storage = MessageStorage::new(&ws);
-        let topic_name = email_parser::derive_topic_name(
-            "Fw: 您收到来自上海栋菁餐饮管理有限公司的电子发票",
-            &[],
-        );
+        let topic_name = "您收到来自上海栋菁餐饮管理有限公司的电子发票".to_string();
         let msg = make_message("jiny283a", &topic_name);
 
         let result = storage
@@ -556,8 +552,7 @@ mod tests {
 
         // Different subjects all go to same topic
         for subject in &["Invoice food", "发票 office", "Receipt hotel"] {
-            let derived = email_parser::derive_topic_name(subject, &[]);
-            let topic_name = pattern.topic_name.as_deref().unwrap_or(&derived);
+            let topic_name = pattern.topic_name.as_deref().unwrap_or(*subject);
             assert_eq!(topic_name, "invoice-processing");
         }
 

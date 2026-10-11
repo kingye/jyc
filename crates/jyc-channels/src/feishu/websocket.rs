@@ -30,13 +30,12 @@ pub struct FeishuWebSocket {
     config: FeishuConfig,
     client: Arc<FeishuClient>,
     reconnect_count: usize,
-    #[allow(dead_code)]
     attachment_config: Option<InboundAttachmentConfig>,
 }
 
 impl FeishuWebSocket {
     /// Create a new WebSocket handler.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // only the in-file tests use this constructor
     pub fn new(config: &FeishuConfig, client: Arc<FeishuClient>) -> Self {
         Self {
             config: config.clone(),

@@ -18,11 +18,17 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY config.example.toml ./
 
-# Build with cached cargo registry and target directory
+# Build with cached cargo registry and target directory.
+#
+# Two invocations on purpose: feature resolution is per-invocation, and
+# building both packages at once unifies their reqwest features, which links
+# the pipe's rustls backend into the hub binary. The hub uses native-tls, the
+# pipe keeps reqwest's rustls default (see .github/workflows/release.yml).
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build --release -p jyc-cli -p jyc-channels \
+    cargo build --release -p jyc-cli \
+    && cargo build --release -p jyc-channels \
     && cp target/release/jyc /usr/local/bin/jyc \
     && cp target/release/jyc-pipe /usr/local/bin/jyc-pipe
 

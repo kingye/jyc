@@ -40,6 +40,8 @@
 
 - Internal restructure: the websocket channel adapter moved from `jyc-channels` to `jyc-inspect` (`server::websocket`) — it is hub frontend (dashboard UI + pipe endpoint), not a peripheral channel. `jyc-channels` is now the pipe crate and no longer depends on `jyc-inspect`; no behavior change
 
+- The Docker image builds `jyc` and `jyc-pipe` separately, like the release workflow: feature resolution is per-invocation, so one command with both `-p` flags unified their reqwest features and linked the pipe's rustls stack into the image's hub binary (the hub uses native-tls). The tarballs were split in #881; the image was not (#886)
+
 ### Fixed
 
 - `jyc-pipe` now shuts down gracefully on SIGTERM — systemd `stop`, `docker compose down`, a plain `kill`, or the hub that spawned it with `--pipe` — instead of only on Ctrl+C: its handler now mirrors `jyc serve`'s, so both halves of the split stop the same way. SIGTERM used to terminate the process without running its cancel path, which the hub's `--pipe` shutdown depends on (#884)
@@ -55,6 +57,7 @@
 - The `jyc-services` crate (#881): `JobScheduler` moved to `jyc-core` — it is the glue between `job_store` and `topic_manager`, and needed no new dependencies there — and the email transports moved to `jyc-channels` (see above). The hub therefore stops compiling the mail stack (`async-imap`, `mail-parser`, `lettre`, `comrak`, `htmd`): the follow-up promised in #877, closing pipe split step 6. `jyc-channels` and `jyc-cli` no longer depend on the crate.
 - The in-process email adapter (`spawn_email_adapter` in `crates/jyc-cli/src/cli/serve/channels/email.rs`) and the hub-side pipe helpers only it still used: `HubRegistry` (per-channel `MessageRouter` map), `route_into_pipe_target`, `wait_for_broadcast`, `fetch_reply_attachment` and the `ws_broadcasts` map. With the split complete, `jyc-cli` no longer references any pipe adapter or routing helper — it reads `pipe::SUPPORTED_CHANNEL_TYPES` only, to skip the channels `jyc-pipe` owns (#876)
 - Two unused `SmtpClient` senders (`send_mail`, `send_mail_with_attachments`) are gone: `send_reply` is the only path the email pipe has used since #876, and the two were duplicating its body-building minus the threading headers. The SMTP retry constants they shared with it — plus the unreferenced `DEFAULT_SMTP_PORT`, whose real counterpart is `default_465()` in `jyc-types` — moved out of `jyc-utils` into `crates/jyc-channels/src/smtp/client.rs` as private constants; nothing about retry behaviour changed (#882)
+- Unused direct dependencies and dead code across the hub crates: `jyc-cli`'s `url` and `regex`, `jyc-agent`'s `thiserror`, `jyc-core`'s `base64`/`libc`/`futures`, axum's unused `macros` feature, and `jyc-inspect`'s `tokio-tungstenite` moved to dev-dependencies, where its only users live (the integration tests that speak raw WebSocket). Also removed: the unreachable `load_from_chat_history` history fallback in `jyc-agent`, `WecomBotInboundAdapter`'s two `*_with_workspace*` constructors and its never-read workspace root, `WecomBotWsClient::set_sender`/`state()` with the write-only connection-state field, the unused `ConnectionState` enum, and the dead `FeishuEvent`/`FeishuError` types (#886)
 
 ## [0.3.19] - 2026-10-09
 

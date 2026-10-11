@@ -2076,7 +2076,7 @@ Topic files still provide recent conversation context
 
 All non-websocket channels are pipe-only channels: they relay the agent's
 reply text as-is from the agent broadcast (see docs/architecture/overview.md).
-`build_footer()` (`crates/jyc-core/src/email_parser.rs`) builds the
+`build_footer()` (`crates/jyc-channels/src/email_parser.rs`) builds the
 model/mode/tokens footer but currently has **no production caller** —
 `[channels.<name>.footer]` is inert. The agent
 (AgentService/StaticAgentService) never calls it either.
@@ -3026,6 +3026,11 @@ Components report events via `MetricsHandle`:
 Stats are accumulated in `Arc<Mutex<HealthStats>>`, queryable by the inspect server. No email dependency.
 
 ### Source Tree
+
+> Historical: this tree is the pre-split single-crate layout (`src/channels`,
+> `src/core`, `src/services`, …). Those modules now live in separate crates —
+> see [docs/architecture/overview.md](docs/architecture/overview.md) and
+> [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md).
 
 ```
 jyc/

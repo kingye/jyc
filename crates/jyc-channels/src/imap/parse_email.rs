@@ -54,17 +54,17 @@ pub fn parse_raw_email(raw: &[u8], uid: u32) -> Result<InboundMessage> {
 
     let best_text = if let Some(ref html) = html_body {
         let md = crate::smtp::client::html_to_markdown(html);
-        let cleaned = jyc_core::email_parser::clean_email_body(&md);
+        let cleaned = crate::email_parser::clean_email_body(&md);
         if cleaned.trim().is_empty() {
-            text_body.map(|t| jyc_core::email_parser::clean_email_body(&t))
+            text_body.map(|t| crate::email_parser::clean_email_body(&t))
         } else {
             Some(cleaned)
         }
     } else {
-        text_body.map(|t| jyc_core::email_parser::clean_email_body(&t))
+        text_body.map(|t| crate::email_parser::clean_email_body(&t))
     };
 
-    let cleaned_subject = jyc_core::email_parser::strip_reply_prefix(&subject);
+    let cleaned_subject = crate::email_parser::strip_reply_prefix(&subject);
 
     let timestamp = parsed
         .date()

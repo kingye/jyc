@@ -2,7 +2,7 @@ use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
 use crate::imap::client::{ImapClient, MailboxInfo};
-use jyc_core::state_manager::StateManager;
+use crate::state_manager::StateManager;
 use jyc_types::{ImapConfig, InboundMessage, MonitorConfig};
 
 /// Callback invoked for every parsed inbound email.

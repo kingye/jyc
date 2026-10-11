@@ -258,6 +258,9 @@ retains only:
   `InboundAdapterOptions::on_message`) instead of owning a router + matcher.
 - `jyc-channels/src/smtp/client.rs` — SMTP wire format (reply threading,
   attachments).
+- `jyc-channels/src/state_manager.rs` — the mailbox cursor described below.
+- `jyc-channels/src/email_parser.rs` — body/quoting cleanup and topic-name
+  derivation.
 - `jyc-channels/src/email/inbound.rs` — pattern matching only (`EmailMatcher`).
 - The adapter wiring, `spawn_email_pipe` in
   `crates/jyc-channels/src/pipe/email.rs` — it lives in `jyc-pipe` like every

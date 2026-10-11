@@ -18,17 +18,6 @@ pub const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(300);
 /// Threshold for "suspicious jump" in sequence numbers triggering recovery
 pub const RECOVERY_JUMP_THRESHOLD: u32 = 50;
 
-// --- SMTP ---
-pub const DEFAULT_SMTP_PORT: u16 = 465;
-/// Max retries for transient SMTP errors (4xx: 421, 451, 452)
-pub const SMTP_MAX_TRANSIENT_RETRIES: u32 = 3;
-/// Max retries for connection/timeout/TLS SMTP errors
-pub const SMTP_MAX_CONNECTION_RETRIES: u32 = 2;
-/// Base delay for SMTP retry backoff (seconds)
-pub const SMTP_RETRY_BASE_DELAY_SECS: u64 = 5;
-/// Maximum delay for SMTP retry backoff (seconds)
-pub const SMTP_RETRY_MAX_DELAY_SECS: u64 = 60;
-
 // --- SSE / Timeout ---
 /// Activity-based timeout: silence threshold (default, no tool running)
 /// 30 min allows for models with long thinking pauses (e.g., minimax)

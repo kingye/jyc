@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 /// RAII guard that removes a PID file on drop.
 use jyc_agent::JycAgentService;
 
-use jyc_services::job_scheduler::JobScheduler;
+use jyc_core::job_scheduler::JobScheduler;
 use std::collections::HashMap;
 
 use jyc_core::message_router::MessageRouter;

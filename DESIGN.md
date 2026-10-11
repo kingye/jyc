@@ -3481,10 +3481,10 @@ Configurable per pattern via `attachments` in the pattern config.
 | `async-imap`          | 0.11.x (features: runtime-tokio)       | IMAP client with IDLE             |
 | `async-native-tls`    | 0.5.x                                  | TLS for IMAP                      |
 | `mail-parser`         | 0.9.x                                  | MIME email parsing                |
-| `lettre`              | 0.11.x (features: tokio1-rustls-tls)   | SMTP sending                      |
+| `lettre`              | 0.11.x (features: tokio1-native-tls)   | SMTP sending                      |
 | `comrak`              | 0.37.x                                 | Markdown → HTML (GFM)             |
 | `htmd`                | 0.5.x                                  | HTML → Markdown                   |
-| `reqwest`             | 0.12.x (features: json, stream)        | HTTP client                       |
+| `reqwest`             | 0.13.x (hub: native-tls, pipe: rustls) | HTTP client                       |
 | `reqwest-eventsource` | 0.6.x                                  | SSE client                        |
 | `rmcp`                | 0.1.x (features: server, transport-io) | MCP server (stdio)                |
 | `serde`               | 1.x (features: derive)                 | Serialization framework           |
@@ -3858,7 +3858,7 @@ User in topic: "Every day at 8 AM, send me the daily summary"
    - Atomic writes via temp file + rename
    - Methods: `list`, `get`, `create`, `update`, `upsert`, `delete`
 
-3. **JobScheduler** (`jyc-services/src/job_scheduler.rs`) — Background scan-and-fire loop
+3. **JobScheduler** (`jyc-core/src/job_scheduler.rs`) — Background scan-and-fire loop
    - Lists all enabled jobs, checks `next_fire_at <= now`
    - Fires due jobs by injecting `InboundMessage` into `TopicManager`
    - Updates job state (last_fired_at, next_fire_at, enabled for one-time)

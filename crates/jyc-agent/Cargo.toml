@@ -15,7 +15,19 @@ tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
 
 # HTTP + streaming
-reqwest = { version = "0.13", features = ["json", "stream", "form"] }
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "stream",
+    "form",
+    # The hub uses native-tls so rustls (and its aws-lc-rs C dependency) stays
+    # out of the jyc binary's link graph. reqwest 0.13's `default-tls` feature
+    # *is* rustls, so the default features are dropped and the rest of them
+    # (charset, http2, system-proxy) are re-listed explicitly.
+    "native-tls",
+    "charset",
+    "http2",
+    "system-proxy",
+] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

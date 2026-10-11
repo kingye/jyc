@@ -132,7 +132,6 @@ impl WecomBotConnectionHandle {
 /// used by the outbound adapter to send messages through the same WebSocket.
 pub struct WecomBotWsClient {
     config: WecomBotConfig,
-    state: ConnectionState,
     reconnect_count: u32,
     /// Sender for outbound messages. Set after WebSocket connection is established.
     outbound_sender: Option<mpsc::UnboundedSender<String>>,
@@ -145,7 +144,6 @@ impl WecomBotWsClient {
     pub fn new(config: WecomBotConfig) -> Self {
         Self {
             config,
-            state: ConnectionState::Disconnected,
             reconnect_count: 0,
             outbound_sender: None,
             pending_responses: std::sync::Arc::new(Mutex::new(HashMap::new())),
@@ -157,12 +155,6 @@ impl WecomBotWsClient {
     /// Returns `None` if the connection has not been established yet.
     pub fn take_sender(&mut self) -> Option<mpsc::UnboundedSender<String>> {
         self.outbound_sender.take()
-    }
-
-    /// Set the outbound sender (used when sharing sender between inbound/outbound).
-    #[allow(dead_code)]
-    pub fn set_sender(&mut self, sender: mpsc::UnboundedSender<String>) {
-        self.outbound_sender = Some(sender);
     }
 
     /// Run the WebSocket event loop.
@@ -244,7 +236,6 @@ impl WecomBotWsClient {
         on_connect: Option<&(dyn Fn(WecomBotConnectionHandle) + Send + Sync)>,
         cancel: &CancellationToken,
     ) -> Result<()> {
-        self.state = ConnectionState::Connecting;
         tracing::info!(
             url = %self.config.ws_url,
             auth_timeout_secs = self.config.auth_timeout_secs,
@@ -258,7 +249,6 @@ impl WecomBotWsClient {
             )
         })?;
 
-        self.state = ConnectionState::Connected;
         self.reset_reconnect_count();
         tracing::info!("WeCom Bot WebSocket connected");
 
@@ -351,7 +341,6 @@ impl WecomBotWsClient {
             return Err(anyhow::anyhow!("WeCom Bot authentication failed"));
         }
 
-        self.state = ConnectionState::Subscribed;
         tracing::info!(bot_id = %self.config.bot_id, "WeCom Bot subscribed");
 
         // Setup heartbeat (only after successful auth, matching SDK)
@@ -464,8 +453,6 @@ impl WecomBotWsClient {
         drop(outbound_tx);
         let _ = tokio::time::timeout(Duration::from_secs(5), writer_handle).await;
         self.outbound_sender = None;
-
-        self.state = ConnectionState::Disconnected;
 
         if cancel.is_cancelled() {
             Ok(())
@@ -645,12 +632,6 @@ impl WecomBotWsClient {
     /// Reset reconnection count after successful connection.
     fn reset_reconnect_count(&mut self) {
         self.reconnect_count = 0;
-    }
-
-    /// Get current connection state.
-    #[allow(dead_code)]
-    pub fn state(&self) -> ConnectionState {
-        self.state
     }
 }
 

@@ -162,8 +162,6 @@ pub fn wecom_bot_match_message(
 pub struct WecomBotInboundAdapter {
     config: WecomBotConfig,
     channel_name: String,
-    #[allow(dead_code)]
-    workspace_root: std::path::PathBuf,
     /// Shared connection handle Arc for outbound adapter
     handle_arc:
         Option<std::sync::Arc<tokio::sync::Mutex<Option<super::client::WecomBotConnectionHandle>>>>,
@@ -172,13 +170,9 @@ pub struct WecomBotInboundAdapter {
 impl WecomBotInboundAdapter {
     /// Create a new WeCom Bot inbound adapter.
     pub fn new(config: &WecomBotConfig, channel_name: String) -> Self {
-        let workspace_root =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-
         Self {
             config: config.clone(),
             channel_name,
-            workspace_root,
             handle_arc: None,
         }
     }
@@ -191,46 +185,9 @@ impl WecomBotInboundAdapter {
             tokio::sync::Mutex<Option<super::client::WecomBotConnectionHandle>>,
         >,
     ) -> Self {
-        let workspace_root =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-
         Self {
             config: config.clone(),
             channel_name,
-            workspace_root,
-            handle_arc: Some(handle_arc),
-        }
-    }
-
-    /// Create a new adapter with custom workspace root.
-    #[allow(dead_code)]
-    pub fn new_with_workspace(
-        config: &WecomBotConfig,
-        channel_name: String,
-        workspace_root: std::path::PathBuf,
-    ) -> Self {
-        Self {
-            config: config.clone(),
-            channel_name,
-            workspace_root,
-            handle_arc: None,
-        }
-    }
-
-    /// Create a new adapter with custom workspace root and shared handle.
-    #[allow(dead_code)]
-    pub fn with_workspace_and_handle(
-        config: &WecomBotConfig,
-        channel_name: String,
-        workspace_root: std::path::PathBuf,
-        handle_arc: std::sync::Arc<
-            tokio::sync::Mutex<Option<super::client::WecomBotConnectionHandle>>,
-        >,
-    ) -> Self {
-        Self {
-            config: config.clone(),
-            channel_name,
-            workspace_root,
             handle_arc: Some(handle_arc),
         }
     }

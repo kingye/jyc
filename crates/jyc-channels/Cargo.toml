@@ -21,7 +21,7 @@ openlark-client = { version = "0.21", default-features = false, features = ["web
 reqwest = { version = "0.13", features = ["json", "stream"] }
 regex = "1"
 base64 = "0.23"
-md5 = "0.7"
+md5 = "0.8"
 uuid = { version = "1", features = ["v4"] }
 tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
 futures-util = "0.3"
@@ -38,7 +38,7 @@ tempfile = "3"
 # Email transports: the IMAP client/monitor and the SMTP client live here with
 # their only caller (the email pipe adapter), not in a shared services crate.
 async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }
-async-native-tls = "0.5"
+async-native-tls = "0.6"
 mail-parser = "0.11"
 lettre = { version = "0.11", features = ["tokio1-native-tls"] }
 comrak = { version = "0.56", default-features = false }

@@ -168,15 +168,6 @@ pub struct WecomBotInboundAdapter {
 }
 
 impl WecomBotInboundAdapter {
-    /// Create a new WeCom Bot inbound adapter.
-    pub fn new(config: &WecomBotConfig, channel_name: String) -> Self {
-        Self {
-            config: config.clone(),
-            channel_name,
-            handle_arc: None,
-        }
-    }
-
     /// Create a new adapter with a shared connection handle Arc for outbound adapter.
     pub fn with_shared_handle(
         config: &WecomBotConfig,

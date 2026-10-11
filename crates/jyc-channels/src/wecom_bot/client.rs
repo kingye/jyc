@@ -30,15 +30,6 @@ pub fn generate_req_id(prefix: &str) -> String {
     format!("{}_{}_{}", prefix, timestamp, random)
 }
 
-/// WebSocket connection state.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ConnectionState {
-    Disconnected,
-    Connecting,
-    Connected,
-    Subscribed,
-}
-
 /// A WebSocket message from the server (either a BotMessage or BotEvent).
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]

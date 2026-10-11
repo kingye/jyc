@@ -14,36 +14,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
-use thiserror::Error;
 use tokio::sync::RwLock;
 
 use jyc_types::FeishuConfig;
 use jyc_utils::helpers::truncate_str;
-
-/// Feishu client errors.
-#[derive(Debug, Error)]
-#[allow(dead_code)]
-pub enum FeishuError {
-    /// Client not initialized
-    #[error("Feishu client not initialized. Call initialize() first")]
-    NotInitialized,
-
-    /// Configuration error
-    #[error("Feishu configuration error: {0}")]
-    ConfigError(String),
-
-    /// API error
-    #[error("Feishu API error: {0}")]
-    ApiError(String),
-
-    /// Network error
-    #[error("Network error: {0}")]
-    NetworkError(String),
-
-    /// Authentication error
-    #[error("Authentication error: {0}")]
-    AuthError(String),
-}
 
 /// Feishu API client.
 ///

@@ -2491,10 +2491,11 @@ dependencies = [
 
 [[package]]
 name = "openlark-client"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88fd85fc848004a294a0ec951f4b53fc100f34797374bbca14e71e91fb869ff5"
+checksum = "9cfa2bfacdbc1af4a41940b9c9a52fd263056433134900f42da6e02e5999fd20"
 dependencies = [
+ "base64 0.22.1",
  "futures-util",
  "lark-websocket-protobuf",
  "log",
@@ -2511,9 +2512,9 @@ dependencies = [
 
 [[package]]
 name = "openlark-core"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4680bcf2286294227660b63a174bf3a8529d68ada77552129e0326236079d144"
+checksum = "1102d8eecfbb686450d4dfd1e827bff29cfa59ad1a310a79322db04571809ee7"
 dependencies = [
  "base64 0.22.1",
  "chrono",

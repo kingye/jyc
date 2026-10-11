@@ -56,7 +56,14 @@ jobs:
       - name: Build release binaries
         # jyc: agent core + TUI; jyc-pipe: peripheral channel pipe process
         # (pipe process split — docs/architecture/pipe-split.md).
-        run: cargo build --release -p jyc-cli -p jyc-channels --target ${{ matrix.target }}
+        #
+        # Two invocations on purpose: feature resolution is per-invocation, and
+        # building both packages at once unifies their reqwest features, which
+        # links the pipe's rustls backend into the hub binary. The hub uses
+        # native-tls, the pipe keeps reqwest's rustls default.
+        run: |
+          cargo build --release -p jyc-cli --target ${{ matrix.target }}
+          cargo build --release -p jyc-channels --target ${{ matrix.target }}
 
       - name: Package binaries
         run: |

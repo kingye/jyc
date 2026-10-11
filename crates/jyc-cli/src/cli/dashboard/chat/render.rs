@@ -501,7 +501,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     // helper `page_size` uses, so rendering and scrolling always agree.
     // A row missing here is a row the question box loses, or an editor row
     // the field clips.
-    let input_line_count = app.chat.input_area_rows(area.width);
+    let input_line_count = app.chat.input_area_rows(area.width, area.height);
     // Rows reserved for an open popup, directly BELOW the input field: the
     // popup is a layout participant, not an overlay, so it can never be
     // clipped by the pane edge or cover the field the user is typing in.
@@ -956,7 +956,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
     );
     frame.render_widget(&app.chat.editor, body_area);
     if app.chat.active_question() {
-        super::render_question_box(frame, body_area, app);
+        super::render_question_box(frame, body_area, app, area.height);
     }
     // Bottom rule of the input area: also the popup's top boundary — the
     // popups below no longer draw a rule of their own.

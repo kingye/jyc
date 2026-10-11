@@ -1784,20 +1784,63 @@ fn question_hint(total: usize) -> String {
     format!("Up/Down/j/k move - 1-9/Space pick - d skip - {enter} - Esc closes")
 }
 
-/// Rows a question's context may spend above the question. The box is a
-/// fixed-height surface, so an uncapped narration would push the question and
-/// its options off the bottom — the one thing the user opened it to read.
-const QUESTION_CONTEXT_ROWS: usize = 3;
+/// Ceiling on the rows a question's context may spend above the question. The
+/// box is a fixed-height surface, so an uncapped narration would push the
+/// question and its options off the bottom — the one thing the user opened it
+/// to read. On a terminal too short to afford this many rows the context gives
+/// rows back first: [`question_context_budget`] hands out whatever the box can
+/// actually spare.
+const QUESTION_CONTEXT_ROWS: usize = 10;
+
+/// Rows kept for the message pane while a question box is open. The box and
+/// the pane split the body and `Layout` gives the pane `Min(0)`, so without a
+/// ceiling a tall context would leave the conversation behind it no rows.
+const QUESTION_BOX_MESSAGE_ROWS: usize = 3;
+
+/// The tallest a question box may be, borders and rule included: whatever the
+/// body has left once the message pane keeps its rows. Never below 6, the
+/// floor the box shares with the editor.
+fn question_box_max_rows(body_height: u16) -> usize {
+    (body_height as usize)
+        .saturating_sub(QUESTION_BOX_MESSAGE_ROWS)
+        .max(6)
+}
+
+/// The context rows a question may actually show: [`QUESTION_CONTEXT_ROWS`]
+/// unless the box cannot spare them once the question, the hint, the spacers,
+/// the borders and every option row are paid for. The options win — the context
+/// is what the user reads first, but the box exists to answer the question in
+/// it.
+fn question_context_budget(
+    question: &str,
+    options: usize,
+    total: usize,
+    width: u16,
+    body_height: u16,
+) -> usize {
+    let fixed = count_wrapped_lines(question, width)
+        + count_wrapped_lines(&question_hint(total), width)
+        + 3 // the two blank spacers and a row of slack for word-boundary wrapping
+        + options
+        + 3; // the box's two borders and the bottom rule under it
+    question_box_max_rows(body_height)
+        .saturating_sub(fixed)
+        .min(QUESTION_CONTEXT_ROWS)
+}
 
 /// The context rows to draw above a question: hard-wrapped to the box, cut
-/// after [`QUESTION_CONTEXT_ROWS`] rows, and marked with an ellipsis that is
-/// paid for by dropping one column of the last row rather than adding a row.
-/// One function, so the renderer and [`question_chrome_rows`] cannot disagree
-/// about the height.
-fn question_context_lines(context: &str, width: u16) -> Vec<String> {
+/// after `max_rows` rows, and marked with an ellipsis that is paid for by
+/// dropping one column of the last row rather than adding a row. `max_rows`
+/// comes from [`question_context_budget`] and is 0 when the box has nothing to
+/// spare. One function, so the renderer and [`question_chrome_rows`] cannot
+/// disagree about the height.
+fn question_context_lines(context: &str, width: u16, max_rows: usize) -> Vec<String> {
+    if max_rows == 0 {
+        return Vec::new();
+    }
     let mut lines = wrap_text_to_width(context, width.max(1) as usize);
-    if lines.len() > QUESTION_CONTEXT_ROWS {
-        lines.truncate(QUESTION_CONTEXT_ROWS);
+    if lines.len() > max_rows {
+        lines.truncate(max_rows);
         if let Some(last) = lines.last_mut() {
             last.pop();
             last.push('\u{2026}');
@@ -1813,18 +1856,31 @@ fn question_context_lines(context: &str, width: u16) -> Vec<String> {
 /// `block.inner`, and the layout adds them. Both sides call this so neither can
 /// size the box short of what the other draws: a row short used to cost the
 /// hint, then the cursor.
-fn question_chrome_rows(question: &str, context: Option<&str>, total: usize, width: u16) -> usize {
+fn question_chrome_rows(
+    question: &str,
+    context: Option<&str>,
+    options: usize,
+    total: usize,
+    width: u16,
+    body_height: u16,
+) -> usize {
+    let budget = question_context_budget(question, options, total, width, body_height);
     // +1 for the blank row that separates the context from the question.
     let context_rows = context
         .filter(|text| !text.trim().is_empty())
-        .map_or(0, |text| question_context_lines(text, width).len() + 1);
+        .map_or(0, |text| {
+            question_context_lines(text, width, budget).len() + 1
+        });
     context_rows
         + count_wrapped_lines(question, width)
         + count_wrapped_lines(&question_hint(total), width)
         + 3
 }
 
-pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
+/// `body_height` is the rows of the whole body the box lives in, not the box's
+/// own: the context is capped by how much of the body the box may take, and
+/// the layout and the renderer have to derive that from the same number.
+pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App, body_height: u16) {
     let Some(q) = app.chat.current_question() else {
         return;
     };
@@ -1856,7 +1912,21 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
     // among them: `select_question_next` clamps only to `options.len()`, so
     // without a window a list deeper than the box parks the `→` below the clip —
     // selectable, invisible. `question_chrome_rows` says which rows those are.
-    let chrome = question_chrome_rows(&q.question, q.context.as_deref(), total, inner.width);
+    let budget = question_context_budget(
+        &q.question,
+        q.options.len(),
+        total,
+        inner.width,
+        body_height,
+    );
+    let chrome = question_chrome_rows(
+        &q.question,
+        q.context.as_deref(),
+        q.options.len(),
+        total,
+        inner.width,
+        body_height,
+    );
     let room = (inner.height as usize).saturating_sub(chrome).max(1);
     let off = window_offset(q.options.len(), q.selected, room);
 
@@ -1864,7 +1934,7 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App) {
     if let Some(context) = q.context.as_deref().filter(|text| !text.trim().is_empty()) {
         // Above the question, dimmer than it: context to read first, question
         // to act on.
-        for row in question_context_lines(context, inner.width) {
+        for row in question_context_lines(context, inner.width, budget) {
             lines.push(Line::from(Span::styled(
                 row,
                 Style::default().fg(Color::Gray),
@@ -2713,18 +2783,22 @@ impl ChatState {
     /// this number — this helper is the single place that measures it.
     /// Widths mirror where content actually wraps: the editor spans the
     /// full body width, the question box two columns narrower for its own
-    /// borders.
-    fn input_area_rows(&self, width: u16) -> u16 {
+    /// borders. `body_height` is the height of that whole body: a question
+    /// box's ceiling comes from it, so both callers must hand over the same
+    /// number or the box would be sized against a screen it is not drawn on.
+    fn input_area_rows(&self, width: u16, body_height: u16) -> u16 {
         let body = if self.active_question() {
             let q = self.current_question().expect("active question");
             (question_chrome_rows(
                 &q.question,
                 q.context.as_deref(),
+                q.options.len(),
                 self.questions.len(),
                 width.saturating_sub(2),
+                body_height,
             ) + q.options.len()
                 + 3)
-            .clamp(6, 15) as u16
+            .clamp(6, question_box_max_rows(body_height)) as u16
         } else {
             (count_wrapped_lines(&self.text(), width) + 1).clamp(2, 11) as u16
         };
@@ -2743,7 +2817,8 @@ impl ChatState {
                 // input area above it — `STATUS_LINE_ROWS` is the same
                 // count the renderer gives its last chunk.
                 base.saturating_sub(
-                    self.input_area_rows(term_width) as usize + STATUS_LINE_ROWS as usize,
+                    self.input_area_rows(term_width, base as u16) as usize
+                        + STATUS_LINE_ROWS as usize,
                 )
                 .max(1)
             }

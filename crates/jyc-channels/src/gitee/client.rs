@@ -116,22 +116,6 @@ pub struct GiteePullRequestHead {
     pub ref_field: String,
 }
 
-/// Gitee build status (from /commits/{sha}/build_status endpoint).
-#[derive(Debug, Clone, Deserialize)]
-pub struct GiteeBuildStatus {
-    pub sha: String,
-    pub state: String,
-    pub statuses: Vec<GiteeBuildStatusItem>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct GiteeBuildStatusItem {
-    pub context: String,
-    pub state: String,
-    pub description: Option<String>,
-    pub target_url: Option<String>,
-}
-
 impl GiteeClient {
     /// Create a new Gitee API client.
     pub fn new(config: &GiteeConfig) -> Result<Self> {
@@ -321,35 +305,6 @@ impl GiteeClient {
             .context("Failed to parse open pulls response")
     }
 
-    /// Get build status for a commit SHA.
-    pub async fn get_build_status(&self, sha: &str) -> Result<GiteeBuildStatus> {
-        let url = format!(
-            "{}/repos/{}/{}/commits/{}/build_status",
-            self.api_url, self.owner, self.repo, sha
-        );
-
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("Failed to fetch build status")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "GET build status failed: {} — {}",
-                status,
-                truncate_str(&body, 200)
-            );
-        }
-
-        resp.json::<GiteeBuildStatus>()
-            .await
-            .context("Failed to parse build status response")
-    }
-
     /// Create a comment on an issue or PR.
     /// Gitee uses separate endpoints: `/issues/{number}/comments` for issues,
     /// `/pulls/{number}/comments` for PRs.
@@ -390,38 +345,6 @@ impl GiteeClient {
             .context("Failed to parse comment response")?;
 
         Ok(comment.id)
-    }
-
-    /// Get PR head SHA for CI status polling.
-    pub async fn get_pr_head_sha(&self, pr_number: &str) -> Result<String> {
-        let url = format!(
-            "{}/repos/{}/{}/pulls/{}",
-            self.api_url, self.owner, self.repo, pr_number
-        );
-
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .context("Failed to fetch PR detail")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "GET PR detail failed: {} — {}",
-                status,
-                truncate_str(&body, 200)
-            );
-        }
-
-        let pr: GiteePullRequest = resp
-            .json()
-            .await
-            .context("Failed to parse PR detail response")?;
-
-        Ok(pr.head.sha)
     }
 
     /// List comments on a specific PR.

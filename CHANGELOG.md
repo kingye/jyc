@@ -17,6 +17,11 @@
 - `jyc stop` no longer reports a clean pipe shutdown as a failure: `jyc-pipe`'s hub connection task returns `Ok` exactly when its cancellation token has fired, so an `Ok` that wins the `select!` race against the token arm is a clean stop — it used to print `Error: hub pipe connection task exited unexpectedly` on a stop (the child's stderr is the hub's terminal), and to log `error: jyc-pipe exited; pipe-only channels are offline` on stop paths that log instead of print (#890)
 - A mid-turn narration delivery that failed is no longer swallowed: the agent loop dropped `deliver_progress_text`'s return value, so an `ask_user` context that only reached the reply file — whose watcher ends with the turn, leaving nothing to send it — left no trace at all; it now logs at `warn`, and travels with the question regardless (#890)
 
+### Removed
+
+- The GitHub review, review-comment and CI check-run polling are gone, together with the `scan_active_pr_topics` gate that guarded them and `GithubConfig.poll_ci_status`. The gate resolved the pre-pipe channel workspace (`<data dir>/channels/<channel>/workspace`) and looked there for `{prefix}-{N}` directories, while PR topics have lived under the agents dir (named after the target agent — a pipe retargets into the synthesized `agents` channel, whose per-agent pattern carries the agent's name) since the pipe split — so its set was empty on every cycle and none of the three pollers ever issued an API call. Deleted with them: `ci-status.txt` tracking, the client calls left without a caller (`list_reviews`, `list_review_comments`, `list_check_runs`, `get_pr_head_sha`), the Gitee build-status wrappers that were never wired to a poller, and `GiteeConfig.poll_ci_status`. Runtime behaviour is unchanged — the deleted code never ran (#895)
+- The developer skill's `check_run` section: no CI event arrives on its own any more, so `gh pr checks <number>` is the only way that role learns about a red run (#895)
+
 ## [0.5.0] - 2026-10-11
 
 ### Added

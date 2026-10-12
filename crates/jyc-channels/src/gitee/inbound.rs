@@ -743,7 +743,6 @@ mod tests {
             token: "test".to_string(),
             api_url: "https://gitee.com/api/v5".to_string(),
             poll_interval_secs: 60,
-            poll_ci_status: true,
         };
         let tmpdir = tempfile::tempdir().unwrap();
         let adapter = GiteeInboundAdapter::new(&config, "test_gitee".to_string(), tmpdir.path());

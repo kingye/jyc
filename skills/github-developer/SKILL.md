@@ -5,7 +5,7 @@ description: |
   existing PR branch, commit/push after each step, run checks and tests, fix CI
   failures and reviewer feedback, then hand off via the `ready-for-review` label.
   Use ALWAYS when this topic handles GitHub PR development (topic `pr-*`, newly
-  opened spec PRs, `check_run` CI failure events, or reviewer change requests).
+  opened spec PRs, CI failures you spot with `gh pr checks`, or reviewer change requests).
 ---
 
 ## GitHub Developer
@@ -149,7 +149,6 @@ Read the triggering comment at the bottom of the incoming message.
 
 1. **Analyze the task**: Determine what the comment asks for
    - If it's implementing the full implementation plan → treat as planner task
-   - If `github_event: "check_run"` → CI failure on the PR → fix the failing checks
    - Otherwise → treat as specific task (fix, add comments, refactor, etc.)
 
 2. **Execute the task**:
@@ -233,15 +232,14 @@ New issues matching pattern rules or PRs labeled for review will trigger you aga
 
 ### CI Failure Handling
 
-When `github_event: "check_run"` appears in the triggering message, CI checks have failed on the PR.
+No CI event arrives on its own — `gh pr checks <number>` is the only source. When a handoff
+comment or the PR state shows failing checks:
 
-1. **Read the failing checks**: The message body lists which checks failed and their conclusions. The `ci_failed_checks` metadata contains a JSON array of `{name, conclusion}` objects. The `ci_head_sha` metadata contains the failing commit SHA.
+1. **Diagnose**: `gh pr checks <number>` lists every check and its state.
 
-2. **Diagnose**: Run `gh pr checks <number>` to see the current status of all checks.
+2. **Fix**: Checkout the PR branch, fix the failing tests/lint issues, commit, push.
 
-3. **Fix**: Checkout the PR branch, fix the failing tests/lint issues, commit, push.
-
-4. **Hand off to Reviewer**: After pushing fixes, hand off to reviewer as usual.
+3. **Hand off to Reviewer**: After pushing fixes, hand off to reviewer as usual.
 
 ### Rules
 - **#1 RULE: Do what the triggering comment says.** This overrides everything else.

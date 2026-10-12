@@ -88,6 +88,15 @@ and uses an in-process AI agent to generate replies.
 
 ## Agent Behavior Rules
 
+### Subagents
+- 术语以 `DESIGN.md` 的 **Terminology** 为准：`topic_path` = 工作目录（agent 在哪跑、父被授权读写哪），state dir = 该 topic 的 `.jyc`（恒在 agents_root 下、按名字定位）
+- 委派前必须先看系统提示里的子 agent 列表；已有能用的子 agent 就用 `jyc_send_to_topic`（`require_reply=true`）追加任务，**禁止**重复创建
+- 仅当已有子 agent 都不合适时才用 `jyc_spawn_subagent` 新建；它与 `/spawn` 是同一实现：子 agent 继承本 topic 的 state（对话副本、task list、mode、pattern），有自己的 `topic_path` 和队列
+- 子 agent 的输入由父用 `write` 放进它的 `topic_path`（父对该目录有读写权），再用 `jyc_send_to_topic` 派任务；给已存在的子 agent 追加任务同样用 `jyc_send_to_topic`
+- 改子 agent 的可配置项（模式、模型等）：把命令体（`/build`、`/plan`、`/model`）作为消息发给它；正文为空即不进模型，不消耗子 agent 的 turn
+- **禁止**读写子 agent 的 state dir（`.jyc`——那是它自己的状态）；只操作它的 `topic_path` 里的普通文件
+- 子 agent 层级只有一层、每 topic 上限 3 个（`/spawn` 手工创建也计入；超限只拒绝工具，不拒绝手敲的 `/spawn`）；任务为异步：发完即结束本轮，**禁止**轮询等待结果，结果会作为新消息回到本 topic
+
 ### Reply vs. SendMessage
 - The agent's final message at the end of a turn IS the in-topic reply; no reply tool exists.
 - `jyc_send_message` is only for out-of-topic proactive messages; never use it to spam users — limit to alerts and notifications.

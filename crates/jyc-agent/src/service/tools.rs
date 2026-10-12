@@ -74,6 +74,17 @@ impl JycAgentService {
             .effective_base_url();
         crate::tools::builtin::register_publish_file(&mut registry, publish_base_url);
 
+        // Subagents are only reachable on the synthesized "agents" (websocket)
+        // channel: it is the one whose workspace is the agents root that agent
+        // topics live in, and the one a spawned sibling topic is addressable
+        // on. Everywhere else the tool's name would be a promise it cannot
+        // keep, so it is left out entirely.
+        if self.channel_name == "agents" {
+            registry.register(Box::new(
+                crate::tools::builtin::spawn_subagent::SpawnSubagentTool,
+            ));
+        }
+
         // Add MCP bridge tools (reply_message, etc.)
         crate::tools::mcp_bridge::register_mcp_tools(&mut registry);
 

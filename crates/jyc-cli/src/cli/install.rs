@@ -1,8 +1,8 @@
 //! Shared logic for the `agents` and `skills` subcommands.
 //!
 //! Both commands install named directories from a *source* directory
-//! (e.g. the jyc repo checkout) into a *target* directory (a config or
-//! data_dir layer):
+//! (e.g. the jyc repo checkout) into a *target* directory (a config
+//! dir or data dir layer):
 //!
 //! - `jyc agents` operates on `<source>/templates/` → `<target>/templates/`
 //! - `jyc skills` operates on `<source>/skills/` → `<target>/skills/`

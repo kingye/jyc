@@ -1081,7 +1081,7 @@ mode = "agent"
     );
 
     // The pin is registered to its adopted (path-derived) state dir under
-    // agents_dir; the repo dir stays clean.
+    // the agents dir; the repo dir stays clean.
     assert_eq!(
         resolve_state_dir("my-custom-topic", &custom_path),
         adopted_state

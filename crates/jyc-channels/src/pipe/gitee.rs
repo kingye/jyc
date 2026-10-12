@@ -22,7 +22,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use jyc_types::{ChannelConfig, InboundAdapter};
-use jyc_utils::paths::channels_dir;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -163,11 +162,7 @@ pub(crate) fn spawn_gitee_pipe(
 
             // Patterns are a startup snapshot — restart jyc-pipe to apply
             // pattern changes (same trade-off as the github/feishu pipes).
-            let adapter = GiteeInboundAdapter::new(
-                &gitee_config,
-                channel_name.clone(),
-                &channels_dir(&data_dir),
-            );
+            let adapter = GiteeInboundAdapter::new(&gitee_config, channel_name.clone(), &data_dir);
             let patterns: Vec<jyc_types::ChannelPattern> = config
                 .channels
                 .get(&channel_name)

@@ -16,15 +16,16 @@ impl GithubInboundAdapter {
     pub fn new(
         config: &GithubConfig,
         channel_name: String,
-        channels_dir: &Path,
+        data_dir: &Path,
         app_config: Option<Arc<ArcSwap<jyc_types::AppConfig>>>,
     ) -> Self {
+        let channels_dir = jyc_utils::paths::channels_dir(data_dir);
         let state_dir = channels_dir.join(&channel_name).join(".github");
         Self {
             config: config.clone(),
             channel_name,
             state_dir,
-            channels_dir: channels_dir.to_path_buf(),
+            channels_dir,
             app_config,
             test_patterns: None,
         }

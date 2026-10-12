@@ -26,9 +26,6 @@ use crate::constants::DEFAULT_CONFIG_FILENAME;
 /// Directory name appended to platform config/data dirs.
 pub const APP_DIR_NAME: &str = "jyc";
 
-/// Directory name holding every channel's state dir, under the data dir.
-const CHANNELS_DIR_NAME: &str = "channels";
-
 /// User-edited configuration directory (L1).
 ///
 /// Linux/macOS: `$XDG_CONFIG_HOME/jyc` or `~/.config/jyc`.
@@ -84,12 +81,7 @@ pub fn data_dir() -> Option<PathBuf> {
 /// subdirectories. It is not a topic root: topics live under the agents dir,
 /// never under a channel.
 pub fn channels_dir(data_dir: &Path) -> PathBuf {
-    data_dir.join(CHANNELS_DIR_NAME)
-}
-
-/// State dir of one channel: `<data dir>/channels/<channel>/`.
-pub fn channel_dir(data_dir: &Path, channel: &str) -> PathBuf {
-    channels_dir(data_dir).join(channel)
+    data_dir.join("channels")
 }
 
 /// Default config file path: `<config dir>/config.toml`.
@@ -138,6 +130,13 @@ mod tests {
         if let Some(p) = data_dir() {
             assert_eq!(p.file_name().unwrap(), APP_DIR_NAME);
         }
+    }
+
+    #[test]
+    fn channels_dir_holds_one_dir_per_channel() {
+        let channels = channels_dir(Path::new("/data"));
+        assert_eq!(channels, PathBuf::from("/data/channels"));
+        assert_eq!(channels.join("mail"), PathBuf::from("/data/channels/mail"));
     }
 
     #[test]

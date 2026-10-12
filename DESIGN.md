@@ -421,7 +421,7 @@ these names loosely, so they are fixed here.
 | **data dir** | The generated-state root — the instance root | `$XDG_DATA_HOME/jyc` or `~/.local/share/jyc`; Windows `%LOCALAPPDATA%\jyc`. The default `--data-dir` | `jyc_utils::paths::data_dir()` |
 | **channel** | The origin/destination of messages (email, github, gitee, feishu, websocket, …). A channel has **no topic directory**: topics never live under a channel | `[channels.<name>]` in the config; binds a pipe (`agent` + `topic` template) or is a hub channel | — |
 | **channels dir** | The root of every channel's own runtime state | `<data dir>/channels` | `jyc_utils::paths::channels_dir()` |
-| **channel dir** | One channel's runtime state — its IMAP / GitHub / Gitee cursors. Not a topic root, and never scanned as one | `<data dir>/channels/<channel>/` (`.imap/`, `.github/`, `.gitee/`) | `jyc_utils::paths::channel_dir()` |
+| **channel dir** | One channel's runtime state — its IMAP / GitHub / Gitee cursors. Not a topic root, and never scanned as one | `<data dir>/channels/<channel>/` (`.imap/`, `.github/`, `.gitee/`) | `jyc_utils::paths::channels_dir(data_dir).join(<channel>)` |
 | **agents dir** | The root of every agent, topic and state dir | `<data dir>/agents` (`~/.local/share/jyc/agents`) | `topic_path::resolve_agents_dir()`, `topic_path::agents_dir()`, `TopicManager::resolve_agents_dir()` |
 | **agent dir** | One agent's home: its default topic's files while unpinned, or just the `.jyc` when that topic is pinned | `<agents dir>/<agent>/` | — |
 | **default topic** | The one topic every agent has, named after the agent — a message sent to the agent lands on it | `topic_path` is the agent dir unless pinned; state dir `<agents dir>/<agent>/.jyc` | 1:1 topics in `TopicManager` |
@@ -448,7 +448,9 @@ Readings this table exists to rule out:
    `topic_path::resolve_agents_dir()` (topic dirs; prefers the platform data
    home) and `topic_path::agents_dir(data_dir)` = `<data dir>/agents` (adopted
    state dirs; deliberately data-dir-based so multi-instance and test setups stay
-   isolated). With an explicit `--data-dir` the two differ.
+   isolated — where both are in play one function holds both, and the
+   data-dir-based one is the local `instance_agents_dir`). With an explicit
+   `--data-dir` the two differ.
 
 ## Topic State Directory (.jyc)
 

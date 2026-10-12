@@ -16,7 +16,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use jyc_types::{ChannelConfig, InboundAdapter};
-use jyc_utils::paths::channels_dir;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -145,7 +144,7 @@ pub(crate) fn spawn_github_pipe(
             let adapter = GithubInboundAdapter::new(
                 &github_config,
                 channel_name.clone(),
-                &channels_dir(&data_dir),
+                &data_dir,
                 Some(snapshot),
             );
             let patterns: Vec<jyc_types::ChannelPattern> = config

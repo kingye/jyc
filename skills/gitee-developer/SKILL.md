@@ -5,7 +5,7 @@ description: |
   existing PR branch, commit/push after each step, run checks and tests, fix CI
   failures and reviewer feedback, then hand off via the `ready-for-review` label.
   Use ALWAYS when this topic handles Gitee PR development (topic `pr-*`, newly
-  opened spec PRs, CI failure events, or reviewer change requests).
+  opened spec PRs, CI failures you spot in the pipeline, or reviewer change requests).
 ---
 
 ## Gitee Developer
@@ -150,7 +150,6 @@ Read the triggering comment at the bottom of the incoming message.
 
 1. **Analyze the task**: Determine what the comment asks for
    - If it's implementing the full implementation plan → treat as planner task
-   - If `gitee_event` indicates CI failure on the PR → fix the failing checks
    - Otherwise → treat as specific task (fix, add comments, refactor, etc.)
 
 2. **Execute the task**:
@@ -228,15 +227,15 @@ New issues matching pattern rules or PRs labeled for review will trigger you aga
 
 ### CI Failure Handling
 
-When the triggering message indicates a CI failure on the PR, fix the failing checks.
+No CI event arrives on its own — Gitee has no `gh pr checks` equivalent, so the PR's
+`build_status` field (or the commits API) is the only source. When a handoff comment or
+the PR state shows a red pipeline:
 
-1. **Read the failing checks**: The message body lists which checks failed and their conclusions. The `ci_failed_checks` metadata contains a JSON array of `{name, conclusion}` objects. The `ci_head_sha` metadata contains the failing commit SHA.
+1. **Diagnose**: `GET /repos/{owner}/{repo}/commits/{sha}/build_status` lists the states.
 
-2. **Diagnose**: Gitee does NOT have a PR checks API equivalent to `gh pr checks`. CI status should be checked via the PR's `build_status` field or commits API, or the trigger message will contain CI failure info.
+2. **Fix**: Checkout the PR branch, fix the failing tests/lint issues, commit, push.
 
-3. **Fix**: Checkout the PR branch, fix the failing tests/lint issues, commit, push.
-
-4. **Hand off to Reviewer**: After pushing fixes, hand off to reviewer as usual.
+3. **Hand off to Reviewer**: After pushing fixes, hand off to reviewer as usual.
 
 ### Rules
 - **#1 RULE: Do what the triggering comment says.** This overrides everything else.

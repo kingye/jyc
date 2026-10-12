@@ -176,7 +176,7 @@ const GIT_IGNORE_GLOBAL_FILENAME: &str = "git-ignore-global";
 /// `ponytail:` no merge support — append the user's existing excludes file
 /// later, only if that scenario is ever observed in practice.
 fn git_ignore_env() -> Vec<(&'static str, String)> {
-    match jyc_utils::paths::data_home() {
+    match jyc_utils::paths::data_dir() {
         Some(dir) => git_ignore_env_in(&dir),
         None => Vec::new(),
     }

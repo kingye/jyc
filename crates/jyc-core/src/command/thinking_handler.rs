@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
@@ -39,10 +39,10 @@ impl CommandHandler for ThinkingCommandHandler {
             }
         };
 
-        let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
-        tokio::fs::create_dir_all(&jyc_dir).await?;
+        let state_dir = resolve_state_dir(&context.topic_name, &context.topic_path);
+        tokio::fs::create_dir_all(&state_dir).await?;
 
-        let state_path = jyc_dir.join("thinking-state");
+        let state_path = state_dir.join("thinking-state");
         let content = if enabled { "show" } else { "hide" };
         tokio::fs::write(&state_path, content).await?;
 

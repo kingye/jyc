@@ -12,7 +12,7 @@
 //! `.jyc/topic-meta.json`. Outbound events come from the per-channel
 //! `InspectContext.broadcast` bus populated by the `ActivityTracker`.
 
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -110,7 +110,8 @@ impl TopicProxyHandler {
         let Some(topic_path) = tm.topic_path(&self.topic).await else {
             return TopicMeta::default();
         };
-        let meta_path: PathBuf = jyc_dir(&self.topic, &topic_path).join("topic-meta.json");
+        let meta_path: PathBuf =
+            resolve_state_dir(&self.topic, &topic_path).join("topic-meta.json");
         let Ok(content) = tokio::fs::read_to_string(&meta_path).await else {
             return TopicMeta::default();
         };

@@ -49,7 +49,7 @@ pub use hub::{HubPipe, PipeTopicEvent};
 /// caller should exit non-zero.
 pub async fn run(
     config: Arc<jyc_types::AppConfig>,
-    workdir: &std::path::Path,
+    data_dir: &std::path::Path,
     ws_origin: &str,
     token: Option<String>,
     no_idle: bool,
@@ -101,7 +101,7 @@ pub async fn run(
             name,
             config.clone(),
             hubs.clone(),
-            workdir,
+            data_dir,
             cancel.clone(),
             &mut tasks,
         )?;
@@ -112,7 +112,7 @@ pub async fn run(
             name,
             config.clone(),
             hubs.clone(),
-            workdir,
+            data_dir,
             cancel.clone(),
             &mut tasks,
         )?;
@@ -164,7 +164,7 @@ pub async fn run(
         email::spawn_email_pipe(
             &channel_config,
             name,
-            workdir,
+            data_dir,
             config.clone(),
             hubs.clone(),
             files_base.clone(),

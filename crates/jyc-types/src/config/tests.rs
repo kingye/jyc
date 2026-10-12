@@ -566,7 +566,7 @@ mode = "opencode"
         let overlay: toml::Value = toml::from_str(
             r#"
 [agent]
-model = "workdir-model"
+model = "data_dir-model"
 "#,
         )
         .unwrap();
@@ -577,7 +577,7 @@ model = "workdir-model"
             Some(3)
         );
         // Overlay wins on conflicting keys
-        assert_eq!(merged["agent"]["model"].as_str(), Some("workdir-model"));
+        assert_eq!(merged["agent"]["model"].as_str(), Some("data_dir-model"));
         // Base-only keys survive
         assert_eq!(merged["agent"]["mode"].as_str(), Some("opencode"));
     }
@@ -638,10 +638,10 @@ name = "b"
     }
 
     #[test]
-    fn test_load_config_layered_global_base_workdir_overlay() {
+    fn test_load_config_layered_global_base_data_dir_overlay() {
         let tmp = tempfile::tempdir().unwrap();
         let global_path = tmp.path().join("global.toml");
-        let workdir_path = tmp.path().join("config.toml");
+        let data_dir_path = tmp.path().join("config.toml");
 
         std::fs::write(
             &global_path,
@@ -656,11 +656,11 @@ type = "email"
         )
         .unwrap();
         std::fs::write(
-            &workdir_path,
+            &data_dir_path,
             r#"
 [agent]
 mode = "static"
-model = "workdir-model"
+model = "data_dir-model"
 
 [channels.local_chan]
 type = "feishu"
@@ -668,21 +668,21 @@ type = "feishu"
         )
         .unwrap();
 
-        let config = load_config_layered(Some(&global_path), &workdir_path).unwrap();
-        assert_eq!(config.ai.model.as_deref(), Some("workdir-model"));
+        let config = load_config_layered(Some(&global_path), &data_dir_path).unwrap();
+        assert_eq!(config.ai.model.as_deref(), Some("data_dir-model"));
         assert!(config.channels.contains_key("global_chan"));
         assert!(config.channels.contains_key("local_chan"));
     }
 
-    /// L2 `${VAR}` expansion runs *after* the global/workdir deep-merge.
+    /// L2 `${VAR}` expansion runs *after* the global/data_dir deep-merge.
     /// Verifies (a) `${VAR}` from the global is expanded when only the
-    /// global defines it, and (b) the workdir's literal overrides the
+    /// global defines it, and (b) the data_dir's literal overrides the
     /// global's `${VAR}` reference (overlay wins on scalar keys).
     #[test]
     fn test_load_config_layered_expands_env_vars_after_merge() {
         let tmp = tempfile::tempdir().unwrap();
         let global_path = tmp.path().join("global.toml");
-        let workdir_path = tmp.path().join("config.toml");
+        let data_dir_path = tmp.path().join("config.toml");
 
         // Global uses a `${VAR}` reference; expansion happens after the
         // merge, so this is resolved against the env var at load time.
@@ -713,7 +713,7 @@ password = "p"
         // Workdir overrides `host` with a literal — should win over the
         // global's `${VAR}` reference (scalar replacement in `merge_toml`).
         std::fs::write(
-            &workdir_path,
+            &data_dir_path,
             r#"
 [channels.work.inbound]
 host = "literal-host.example.com"
@@ -725,7 +725,7 @@ host = "literal-host.example.com"
         unsafe {
             std::env::set_var("JYC_LAYERED_HOST", "expanded-from-env.example.com");
         }
-        let config = load_config_layered(Some(&global_path), &workdir_path).unwrap();
+        let config = load_config_layered(Some(&global_path), &data_dir_path).unwrap();
         let work = &config.channels["work"];
         let inbound = work.inbound.as_ref().expect("inbound must parse");
         // Workdir's literal wins over the global's `${VAR}` reference.
@@ -737,17 +737,17 @@ host = "literal-host.example.com"
         }
     }
 
-    /// Companion to the above: when the workdir *also* uses `${VAR}`
+    /// Companion to the above: when the data_dir *also* uses `${VAR}`
     /// (and the global is absent), expansion still works. This is the
     /// simpler path through L2.
     #[test]
-    fn test_load_config_layered_expands_env_vars_in_workdir_only() {
+    fn test_load_config_layered_expands_env_vars_in_data_dir_only() {
         let tmp = tempfile::tempdir().unwrap();
-        let workdir_path = tmp.path().join("config.toml");
-        // No global path — workdir alone.
+        let data_dir_path = tmp.path().join("config.toml");
+        // No global path — data_dir alone.
 
         std::fs::write(
-            &workdir_path,
+            &data_dir_path,
             r#"
 [agent]
 mode = "static"
@@ -773,13 +773,13 @@ password = "p"
         unsafe {
             std::env::set_var(
                 "JYC_LAYERED_WORKDIR_ONLY_HOST",
-                "workdir-only-expanded.example.com",
+                "data_dir-only-expanded.example.com",
             );
         }
-        let config = load_config_layered(None, &workdir_path).unwrap();
+        let config = load_config_layered(None, &data_dir_path).unwrap();
         let work = &config.channels["work"];
         let inbound = work.inbound.as_ref().expect("inbound must parse");
-        assert_eq!(inbound.host, "workdir-only-expanded.example.com");
+        assert_eq!(inbound.host, "data_dir-only-expanded.example.com");
         unsafe {
             std::env::remove_var("JYC_LAYERED_WORKDIR_ONLY_HOST");
         }
@@ -789,9 +789,9 @@ password = "p"
     fn test_load_config_layered_missing_global_ignored() {
         let tmp = tempfile::tempdir().unwrap();
         let global_path = tmp.path().join("nonexistent.toml");
-        let workdir_path = tmp.path().join("config.toml");
+        let data_dir_path = tmp.path().join("config.toml");
         std::fs::write(
-            &workdir_path,
+            &data_dir_path,
             r#"
 [agent]
 mode = "static"
@@ -799,7 +799,7 @@ mode = "static"
         )
         .unwrap();
 
-        let config = load_config_layered(Some(&global_path), &workdir_path).unwrap();
+        let config = load_config_layered(Some(&global_path), &data_dir_path).unwrap();
         assert_eq!(config.ai.mode, "static");
     }
 
@@ -943,10 +943,10 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_load_topic_config_agent_overrides";
         crate::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(
-            jyc_dir.join("config.toml"),
+            state_dir.join("config.toml"),
             r#"
 [agent]
 model = "provider/topic-model"
@@ -969,9 +969,9 @@ small_model = "provider/small-model"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_load_topic_config_invalid_toml_ignored";
         crate::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
-        std::fs::write(jyc_dir.join("config.toml"), "not [valid toml").unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join("config.toml"), "not [valid toml").unwrap();
         assert!(load_topic_config(topic, tmp.path()).is_none());
     }
 
@@ -980,10 +980,10 @@ small_model = "provider/small-model"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_load_topic_config_mcps_parsed";
         crate::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(
-            jyc_dir.join("config.toml"),
+            state_dir.join("config.toml"),
             r#"
 [[mcps]]
 name = "local-only"
@@ -1010,10 +1010,10 @@ model = "anthropic/claude-opus-4-7"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_load_topic_config_mcps_replace_flag_explicit";
         crate::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(
-            jyc_dir.join("config.toml"),
+            state_dir.join("config.toml"),
             r#"
 mcps_replace = true
 
@@ -1046,10 +1046,10 @@ url = "https://example.com/mcp"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_load_topic_config_expands_env_vars_in_agent_model";
         crate::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(
-            jyc_dir.join("config.toml"),
+            state_dir.join("config.toml"),
             r#"
 [agent]
 model = "${JYC_LOAD_THREAD_MODEL}"
@@ -1081,10 +1081,10 @@ model = "${JYC_LOAD_THREAD_MODEL}"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_load_topic_config_expands_env_vars_in_mcp_command";
         crate::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(
-            jyc_dir.join("config.toml"),
+            state_dir.join("config.toml"),
             r#"
 [[mcps]]
 name = "local-tools"
@@ -1132,10 +1132,10 @@ TOKEN = "${JYC_LOAD_THREAD_MCP_TOKEN}"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_load_topic_config_missing_env_var_yields_empty";
         crate::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(
-            jyc_dir.join("config.toml"),
+            state_dir.join("config.toml"),
             r#"
 [agent]
 model = "${JYC_LOAD_THREAD_DEFINITELY_UNSET}"

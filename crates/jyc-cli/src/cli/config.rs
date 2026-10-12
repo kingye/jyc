@@ -10,7 +10,7 @@ use super::resolve::resolve_config;
 #[derive(Debug, Subcommand)]
 pub enum ConfigAction {
     /// Create a default config.toml (in the platform config dir, or in
-    /// --workdir when given)
+    /// --data-dir when given)
     Init,
     /// Validate the current configuration
     Validate {
@@ -20,22 +20,22 @@ pub enum ConfigAction {
     },
 }
 
-pub async fn run(action: &ConfigAction, workdir: &Path, workdir_explicit: bool) -> Result<()> {
+pub async fn run(action: &ConfigAction, data_dir: &Path, data_dir_explicit: bool) -> Result<()> {
     match action {
-        ConfigAction::Init => run_init(workdir, workdir_explicit).await,
+        ConfigAction::Init => run_init(data_dir, data_dir_explicit).await,
         ConfigAction::Validate { config } => {
-            run_validate(workdir, config.as_deref(), workdir_explicit).await
+            run_validate(data_dir, config.as_deref(), data_dir_explicit).await
         }
     }
 }
 
-async fn run_init(workdir: &Path, workdir_explicit: bool) -> Result<()> {
-    let config_path = if workdir_explicit {
-        workdir.join(DEFAULT_CONFIG_FILENAME)
+async fn run_init(data_dir: &Path, data_dir_explicit: bool) -> Result<()> {
+    let config_path = if data_dir_explicit {
+        data_dir.join(DEFAULT_CONFIG_FILENAME)
     } else {
         jyc_utils::paths::default_config_path().ok_or_else(|| {
             anyhow::anyhow!(
-                "could not determine platform config directory; pass --workdir explicitly"
+                "could not determine platform config directory; pass --data-dir explicitly"
             )
         })?
     };
@@ -51,9 +51,9 @@ async fn run_init(workdir: &Path, workdir_explicit: bool) -> Result<()> {
     }
 
     // Create skills/ and templates/ skeletons next to the config.
-    if let Some(config_home) = config_path.parent() {
+    if let Some(config_dir) = config_path.parent() {
         for sub in ["skills", "templates"] {
-            let dir = config_home.join(sub);
+            let dir = config_dir.join(sub);
             tokio::fs::create_dir_all(&dir)
                 .await
                 .with_context(|| format!("failed to create {}", dir.display()))?;
@@ -71,11 +71,11 @@ async fn run_init(workdir: &Path, workdir_explicit: bool) -> Result<()> {
 }
 
 async fn run_validate(
-    workdir: &Path,
+    data_dir: &Path,
     config_file: Option<&str>,
-    workdir_explicit: bool,
+    data_dir_explicit: bool,
 ) -> Result<()> {
-    let resolution = resolve_config(workdir, config_file, workdir_explicit)?;
+    let resolution = resolve_config(data_dir, config_file, data_dir_explicit)?;
     let config_path = &resolution.config_path;
     println!("Validating {}...", config_path.display());
     if let Some(global) = resolution

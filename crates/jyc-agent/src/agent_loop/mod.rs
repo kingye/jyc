@@ -113,7 +113,7 @@ pub struct AgentLoopConfig<'a> {
     /// How the active model's provider is paid for. Provider-level: a
     /// subscription plan covers every model under the provider.
     pub billing_mode: jyc_types::config::BillingMode,
-    /// Central billing ledger directory (`<data_home>/billing`), resolved
+    /// Central billing ledger directory (`<data dir>/billing`), resolved
     /// once at construction. `None` drops billing writes with a warning.
     pub billing_dir: Option<std::path::PathBuf>,
     /// Model identifier (`"provider/model"`) recorded on each ledger entry.

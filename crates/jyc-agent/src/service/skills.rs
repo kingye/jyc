@@ -3,7 +3,7 @@
 //! Extracted from the monolithic `service.rs`.
 
 use anyhow::{Context, Result};
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -131,13 +131,13 @@ impl JycAgentService {
                 paths.push(PathBuf::from(&home).join(".claude/skills"));
             }
 
-            // L1 global: <config_home>/skills/ (e.g. ~/.config/jyc/skills)
+            // L1 global: <config dir>/skills/ (e.g. ~/.config/jyc/skills)
             if let Some(global_skills) = jyc_utils::paths::global_skills_dir() {
                 paths.push(global_skills);
             }
 
-            // L2: {workdir}/skills/
-            paths.push(self.workdir.join("skills"));
+            // L2: {data_dir}/skills/
+            paths.push(self.data_dir.join("skills"));
 
             // {topic_path}/repo/.claude/skills/
             paths.push(topic_path.join("repo/.claude/skills"));
@@ -151,7 +151,9 @@ impl JycAgentService {
             // {topic_path}/.opencode/skills/
             paths.push(topic_path.join(".opencode/skills"));
             // {topic_path}/.jyc/skills/ (honors relocated state dir)
-            paths.push(jyc_types::state_dir::jyc_dir(topic_name, topic_path).join("skills"));
+            paths.push(
+                jyc_types::state_dir::resolve_state_dir(topic_name, topic_path).join("skills"),
+            );
 
             paths
         };
@@ -228,10 +230,10 @@ pub(crate) fn persist_skill_names(
     topic_path: &Path,
     skill_names: &[&str],
 ) -> Result<()> {
-    let jyc_dir = jyc_dir(topic_name, topic_path);
-    std::fs::create_dir_all(&jyc_dir)
-        .with_context(|| format!("Failed to create .jyc dir: {}", jyc_dir.display()))?;
-    let skills_path = jyc_dir.join("skills.json");
+    let state_dir = resolve_state_dir(topic_name, topic_path);
+    std::fs::create_dir_all(&state_dir)
+        .with_context(|| format!("Failed to create .jyc dir: {}", state_dir.display()))?;
+    let skills_path = state_dir.join("skills.json");
     let json = serde_json::to_string_pretty(skill_names)?;
     std::fs::write(&skills_path, json)
         .with_context(|| format!("Failed to write skills.json: {}", skills_path.display()))?;

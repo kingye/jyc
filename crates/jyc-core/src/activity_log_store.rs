@@ -1,4 +1,4 @@
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -16,7 +16,7 @@ pub struct ActivityLogStore;
 
 impl ActivityLogStore {
     fn jsonl_path(topic_name: &str, topic_path: &Path) -> std::path::PathBuf {
-        jyc_dir(topic_name, topic_path).join("activity.jsonl")
+        resolve_state_dir(topic_name, topic_path).join("activity.jsonl")
     }
 
     /// Append an activity entry to the topic's JSONL log file.

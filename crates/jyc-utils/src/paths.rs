@@ -16,22 +16,25 @@
 //! `dirs` crate paths are used.
 //!
 //! The **config dir** (L1) holds user-edited files: `config.toml`,
-//! `skills/`, `templates/`. The **data dir** (default workdir, L2) holds
-//! generated state: channel state, workspaces, topics.
+//! `skills/`, `templates/`. The **data dir** (L2) holds generated state:
+//! the agents dir, the channels dir, the inbound dir.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::constants::DEFAULT_CONFIG_FILENAME;
 
 /// Directory name appended to platform config/data dirs.
 pub const APP_DIR_NAME: &str = "jyc";
 
+/// Directory name holding every channel's state dir, under the data dir.
+const CHANNELS_DIR_NAME: &str = "channels";
+
 /// User-edited configuration directory (L1).
 ///
 /// Linux/macOS: `$XDG_CONFIG_HOME/jyc` or `~/.config/jyc`.
 /// Windows: `%APPDATA%\jyc`.
 /// Returns `None` when no home/config directory can be determined.
-pub fn config_home() -> Option<PathBuf> {
+pub fn config_dir() -> Option<PathBuf> {
     #[cfg(not(windows))]
     {
         // XDG convention on all Unix (Linux + macOS)
@@ -49,12 +52,12 @@ pub fn config_home() -> Option<PathBuf> {
     }
 }
 
-/// Generated-data directory (default workdir / data root, L2).
+/// Generated-data directory (the data dir, L2).
 ///
 /// Linux/macOS: `$XDG_DATA_HOME/jyc` or `~/.local/share/jyc`.
 /// Windows: `%LOCALAPPDATA%\jyc`.
 /// Returns `None` when no home/data directory can be determined.
-pub fn data_home() -> Option<PathBuf> {
+pub fn data_dir() -> Option<PathBuf> {
     #[cfg(not(windows))]
     {
         Some(
@@ -74,19 +77,34 @@ pub fn data_home() -> Option<PathBuf> {
     }
 }
 
-/// Default config file path: `<config_home>/config.toml`.
+/// Root of every channel's state dirs: `<data dir>/channels`.
+///
+/// One directory per channel holds that channel's own runtime state — the
+/// IMAP / GitHub / Gitee cursors in its `.imap/`, `.github/`, `.gitee/`
+/// subdirectories. It is not a topic root: topics live under the agents dir,
+/// never under a channel.
+pub fn channels_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(CHANNELS_DIR_NAME)
+}
+
+/// State dir of one channel: `<data dir>/channels/<channel>/`.
+pub fn channel_dir(data_dir: &Path, channel: &str) -> PathBuf {
+    channels_dir(data_dir).join(channel)
+}
+
+/// Default config file path: `<config dir>/config.toml`.
 pub fn default_config_path() -> Option<PathBuf> {
-    config_home().map(|p| p.join(DEFAULT_CONFIG_FILENAME))
+    config_dir().map(|p| p.join(DEFAULT_CONFIG_FILENAME))
 }
 
-/// Default skills directory: `<config_home>/skills`.
+/// Default skills directory: `<config dir>/skills`.
 pub fn global_skills_dir() -> Option<PathBuf> {
-    config_home().map(|p| p.join("skills"))
+    config_dir().map(|p| p.join("skills"))
 }
 
-/// Default templates directory: `<config_home>/templates`.
+/// Default templates directory: `<config dir>/templates`.
 pub fn global_templates_dir() -> Option<PathBuf> {
-    config_home().map(|p| p.join("templates"))
+    config_dir().map(|p| p.join("templates"))
 }
 
 /// Expand a leading `~` to the user's home directory.
@@ -109,15 +127,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_config_home_ends_with_jyc() {
-        if let Some(p) = config_home() {
+    fn test_config_dir_ends_with_jyc() {
+        if let Some(p) = config_dir() {
             assert_eq!(p.file_name().unwrap(), APP_DIR_NAME);
         }
     }
 
     #[test]
-    fn test_data_home_ends_with_jyc() {
-        if let Some(p) = data_home() {
+    fn test_data_dir_ends_with_jyc() {
+        if let Some(p) = data_dir() {
             assert_eq!(p.file_name().unwrap(), APP_DIR_NAME);
         }
     }

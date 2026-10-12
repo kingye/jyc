@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use tracing::instrument;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
@@ -76,7 +76,7 @@ impl ForkCommandHandler {
         &self,
         context: &CommandContext,
         parent_state: &Path,
-        agents_root: &Path,
+        agents_dir: &Path,
     ) -> Result<CommandResult> {
         let requested = context
             .args
@@ -85,7 +85,7 @@ impl ForkCommandHandler {
             .find(|a| !a.is_empty());
         let name = match requested {
             Some(name) => name.to_string(),
-            None => next_free_name(&self.topic_manager, &context.topic_name, agents_root).await,
+            None => next_free_name(&self.topic_manager, &context.topic_name, agents_dir).await,
         };
         if let Some(reason) = invalid_name(&name) {
             return Ok(fail(format!("/fork: {reason}. Usage: /fork [name]")));
@@ -105,13 +105,12 @@ impl ForkCommandHandler {
         //
         // One level under the agents root, not two: `restore_state_registry`
         // scans that depth only, and a registration lost at restart would make
-        // `jyc_dir` fall back to the shared dir's own `.jyc` — state inside the
+        // `state_dir` fall back to the shared dir's own `.jyc` — state inside the
         // user's project. `close_topic` is then safe by construction: with a
         // registered state it deletes the state and leaves the workspace
         // (usually a user-owned project checkout) alone.
-        let state_dir = agents_root.join(&name).join(".jyc");
-        if self.topic_manager.topic_path(&name).await.is_some() || agents_root.join(&name).exists()
-        {
+        let state_dir = agents_dir.join(&name).join(".jyc");
+        if self.topic_manager.topic_path(&name).await.is_some() || agents_dir.join(&name).exists() {
             return Ok(fail(format!(
                 "/fork: topic '{name}' already exists. Give it another name."
             )));
@@ -258,12 +257,12 @@ impl CommandHandler for ForkCommandHandler {
                     .to_string(),
             ));
         }
-        // Production path only: `agents_workspace_root()` resolves the real data
+        // Production path only: `resolve_agents_dir()` resolves the real data
         // home, so a test that reached here would create topics inside the
         // developer's own agents tree. Tests call `fork_under` with both roots.
-        let agents_root = self.topic_manager.agents_workspace_root();
-        let parent_state = jyc_dir(&context.topic_name, &context.topic_path);
-        self.fork_under(&context, &parent_state, &agents_root).await
+        let agents_dir = self.topic_manager.resolve_agents_dir();
+        let parent_state = resolve_state_dir(&context.topic_name, &context.topic_path);
+        self.fork_under(&context, &parent_state, &agents_dir).await
     }
 }
 
@@ -395,12 +394,12 @@ mod tests {
         let (_ptmp, topic_dir) = parent_topic(&[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
-        let agents_root = workspace.path().join("agents");
+        let agents_dir = workspace.path().join("agents");
 
         let handler = ForkCommandHandler::new(tm.clone());
         let ctx = context("src-topic", &topic_dir, "websocket", &["sibling"]);
         let result = handler
-            .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_root)
+            .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
             .await
             .unwrap();
 
@@ -410,10 +409,10 @@ mod tests {
             topic_dir,
             "the fork works where its parent works — that is the point of a fork"
         );
-        let child = jyc_dir("sibling", &topic_dir);
+        let child = resolve_state_dir("sibling", &topic_dir);
         assert_eq!(
             child,
-            agents_root.join("sibling").join(".jyc"),
+            agents_dir.join("sibling").join(".jyc"),
             "its state is private, one level under the agents root where \
              `restore_state_registry` scans after a restart"
         );
@@ -479,15 +478,15 @@ mod tests {
         let (_ptmp, topic_dir) = parent_topic(&[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
-        let agents_root = workspace.path().join("agents");
-        tokio::fs::create_dir_all(agents_root.join("src-topic-2"))
+        let agents_dir = workspace.path().join("agents");
+        tokio::fs::create_dir_all(agents_dir.join("src-topic-2"))
             .await
             .unwrap();
 
         let handler = ForkCommandHandler::new(tm.clone());
         let ctx = context("src-topic", &topic_dir, "websocket", &[]);
         let result = handler
-            .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_root)
+            .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
             .await
             .unwrap();
 
@@ -503,19 +502,19 @@ mod tests {
         let (_ptmp, topic_dir) = parent_topic(&[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
-        let agents_root = workspace.path().join("agents");
+        let agents_dir = workspace.path().join("agents");
         let handler = ForkCommandHandler::new(tm);
 
         for bad in ["../escape", "a/b", ".hidden", "x;y", "src-topic"] {
             let ctx = context("src-topic", &topic_dir, "websocket", &[bad]);
             let result = handler
-                .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_root)
+                .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
                 .await
                 .unwrap();
             assert!(!result.success, "'{bad}' must be rejected: {result:?}");
         }
         assert!(
-            !agents_root.join("escape").exists(),
+            !agents_dir.join("escape").exists(),
             "nothing may be created from a rejected name"
         );
     }
@@ -526,15 +525,15 @@ mod tests {
         let (_ptmp, topic_dir) = parent_topic(&[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
-        let agents_root = workspace.path().join("agents");
-        let taken = agents_root.join("taken");
+        let agents_dir = workspace.path().join("agents");
+        let taken = agents_dir.join("taken");
         tokio::fs::create_dir_all(&taken).await.unwrap();
         tm.set_topic_path("taken", taken).await.unwrap();
 
         let handler = ForkCommandHandler::new(tm);
         let ctx = context("src-topic", &topic_dir, "websocket", &["taken"]);
         let result = handler
-            .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_root)
+            .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
             .await
             .unwrap();
 
@@ -571,18 +570,18 @@ mod tests {
         let (_ptmp, topic_dir) = parent_topic(&[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
-        let agents_root = workspace.path().join("agents");
+        let agents_dir = workspace.path().join("agents");
         let handler = ForkCommandHandler::new(tm.clone());
 
         let mut states = vec![];
         for n in ["fork-a", "fork-b"] {
             let ctx = context("src-topic", &topic_dir, "websocket", &[n]);
             let result = handler
-                .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_root)
+                .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
                 .await
                 .unwrap();
             assert!(result.success, "{n}: {}", result.message);
-            let state = jyc_dir(n, &topic_dir);
+            let state = resolve_state_dir(n, &topic_dir);
             assert_eq!(
                 tokio::fs::read_to_string(state.join("forked-from"))
                     .await
@@ -615,14 +614,14 @@ mod tests {
         let (_ptmp, topic_dir) = parent_topic(&[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
-        let agents_root = workspace.path().join("agents");
+        let agents_dir = workspace.path().join("agents");
         let handler = ForkCommandHandler::new(tm.clone());
         let ctx = context("src-topic", &topic_dir, "websocket", &["fork-close"]);
         handler
-            .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_root)
+            .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
             .await
             .unwrap();
-        let state = agents_root.join("fork-close").join(".jyc");
+        let state = agents_dir.join("fork-close").join(".jyc");
         assert!(state.is_dir());
 
         tm.close_topic("fork-close").await.unwrap();

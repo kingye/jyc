@@ -50,7 +50,7 @@ pub struct DashboardArgs {
     #[arg(long, default_value = "127.0.0.1:9876", global = true)]
     pub addr: String,
 
-    /// Authorization token (defaults to `<workdir>/auth.token`)
+    /// Authorization token (defaults to `<data dir>/auth.token`)
     #[arg(long, env = "JYC_DASHBOARD_TOKEN", global = true)]
     pub token: Option<String>,
 
@@ -324,19 +324,19 @@ impl App {
 /// Arguments for the auto-started `jyc serve`.
 ///
 /// Kept separate from the spawn so the shape is testable (spawning needs a
-/// live address). `--workdir` is skipped when it is the platform default
-/// (`data_home`) so the child uses the standard first-run provisioning path,
+/// live address). `--data-dir` is skipped when it is the platform default
+/// (`data_dir`) so the child uses the standard first-run provisioning path,
 /// and `--pipe` is forwarded so bare `jyc --pipe` also starts the pipe.
 fn serve_spawn_args(
-    workdir: &std::path::Path,
-    default_workdir: &std::path::Path,
+    data_dir: &std::path::Path,
+    default_data_dir: &std::path::Path,
     log_path: &std::path::Path,
     pipe: bool,
 ) -> Vec<std::ffi::OsString> {
     let mut args: Vec<std::ffi::OsString> = vec!["serve".into()];
-    if workdir != default_workdir {
-        args.push("--workdir".into());
-        args.push(workdir.into());
+    if data_dir != default_data_dir {
+        args.push("--data-dir".into());
+        args.push(data_dir.into());
     }
     args.push("--log-file".into());
     args.push(log_path.into());
@@ -348,10 +348,10 @@ fn serve_spawn_args(
 
 /// Auto-spawn `jyc serve` when it's not running, once per dashboard process.
 ///
-/// The spawned `serve` writes its tracing logs to `<workdir>/jyc.log`
+/// The spawned `serve` writes its tracing logs to `<data dir>/jyc.log`
 /// (same file as `/deploy`-started servers). Only works for localhost
 /// addresses (the default).
-async fn ensure_serve_running(addr: &str, workdir: &std::path::Path, pipe: bool) -> Result<()> {
+async fn ensure_serve_running(addr: &str, data_dir: &std::path::Path, pipe: bool) -> Result<()> {
     // Only try to spawn once per dashboard session.
     static SPAWNED: AtomicBool = AtomicBool::new(false);
 
@@ -382,21 +382,26 @@ async fn ensure_serve_running(addr: &str, workdir: &std::path::Path, pipe: bool)
         anyhow::bail!("Could not connect to {addr}. Start jyc serve manually.");
     }
 
-    // Spawn jyc serve as a background child process. Pass --workdir so the
+    // Spawn jyc serve as a background child process. Pass --data-dir so the
     // auth token file is written to the same location the dashboard reads.
-    // Skip --workdir when it's the platform default (data_home) so the
+    // Skip --data-dir when it's the platform default (data_dir) so the
     // spawned serve uses the standard first-run provisioning path.
     // Pass --log-file so the auto-spawned server writes to the same log
-    // file (`<workdir>/jyc.log`) as `/deploy`-started servers — no
+    // file (`<data dir>/jyc.log`) as `/deploy`-started servers — no
     // separate plain `jyc.log` from stderr capture.
-    tokio::fs::create_dir_all(workdir)
+    tokio::fs::create_dir_all(data_dir)
         .await
-        .with_context(|| format!("Failed to create workdir {}", workdir.display()))?;
+        .with_context(|| format!("Failed to create data_dir {}", data_dir.display()))?;
     let exe = std::env::current_exe().context("Could not determine jyc binary path")?;
-    let default_workdir = jyc_utils::paths::data_home().unwrap_or_default();
-    let log_path = workdir.join("jyc.log");
+    let default_data_dir = jyc_utils::paths::data_dir().unwrap_or_default();
+    let log_path = data_dir.join("jyc.log");
     let mut cmd = Command::new(&exe);
-    cmd.args(serve_spawn_args(workdir, &default_workdir, &log_path, pipe));
+    cmd.args(serve_spawn_args(
+        data_dir,
+        &default_data_dir,
+        &log_path,
+        pipe,
+    ));
     cmd.stdin(std::process::Stdio::null()).kill_on_drop(true);
     let mut child = cmd
         .spawn()
@@ -555,14 +560,14 @@ impl MouseFragmentFilter {
 
 pub async fn run(
     args: &DashboardArgs,
-    workdir: &std::path::Path,
+    data_dir: &std::path::Path,
     initial_topic: Option<&str>,
     initial_channel: Option<&str>,
     pipe: bool,
 ) -> Result<()> {
-    // Auto-spawn jyc serve FIRST - it writes <workdir>/auth.token on
+    // Auto-spawn jyc serve FIRST - it writes <data dir>/auth.token on
     // startup, so the token file exists by the time we resolve it.
-    ensure_serve_running(&args.addr, workdir, pipe)
+    ensure_serve_running(&args.addr, data_dir, pipe)
         .await
         .with_context(|| {
             format!(
@@ -572,8 +577,8 @@ pub async fn run(
         })?;
 
     // Resolve the auth token: explicit flag/env wins, otherwise read it
-    // from `<workdir>/auth.token` (which `jyc serve` writes on startup).
-    let token = resolve_dashboard_token(args.token.as_deref(), workdir)?;
+    // from `<data dir>/auth.token` (which `jyc serve` writes on startup).
+    let token = resolve_dashboard_token(args.token.as_deref(), data_dir)?;
 
     let client = match &token {
         Some(t) => InspectClient::with_token(&args.addr, Some(t.as_str())),
@@ -854,19 +859,19 @@ pub async fn run(
 /// working directory.
 pub async fn run_open(
     addr: &str,
-    workdir: &std::path::Path,
+    data_dir: &std::path::Path,
     topic: Option<&str>,
     channel: Option<&str>,
     path: Option<&str>,
     explicit_token: Option<&str>,
     pipe: bool,
 ) -> Result<()> {
-    // Auto-spawn jyc serve FIRST (writes <workdir>/auth.token on startup).
-    ensure_serve_running(addr, workdir, pipe)
+    // Auto-spawn jyc serve FIRST (writes <data dir>/auth.token on startup).
+    ensure_serve_running(addr, data_dir, pipe)
         .await
         .with_context(|| format!("Failed to connect to {addr}. Start jyc serve manually."))?;
 
-    let token = resolve_dashboard_token(explicit_token, workdir)?;
+    let token = resolve_dashboard_token(explicit_token, data_dir)?;
 
     // Resolve topic path and name
     let path = resolve_topic_path(path)?;
@@ -875,7 +880,7 @@ pub async fn run_open(
     // If the directory was previously opened as a topic, the topic-name file
     // records the canonical name. Refuse to re-open it under a different name
     // to avoid diverging history and storage paths.
-    check_existing_topic_name(&path, &topic, workdir)?;
+    check_existing_topic_name(&path, &topic, data_dir)?;
 
     // Resolve websocket channel using inspect state
     let client = match &token {
@@ -915,7 +920,7 @@ pub async fn run_open(
             token,
             command: None,
         },
-        workdir,
+        data_dir,
         Some(&topic),
         Some(&channel),
         pipe,
@@ -923,15 +928,15 @@ pub async fn run_open(
     .await
 }
 
-/// Resolve the dashboard authorization token from explicit input or workdir.
+/// Resolve the dashboard authorization token from explicit input or data_dir.
 fn resolve_dashboard_token(
     explicit: Option<&str>,
-    workdir: &std::path::Path,
+    data_dir: &std::path::Path,
 ) -> Result<Option<String>> {
     if let Some(token) = explicit {
         return Ok(Some(token.to_string()));
     }
-    let path = jyc_utils::auth_token::token_path(workdir);
+    let path = jyc_utils::auth_token::token_path(data_dir);
     match jyc_utils::auth_token::read_token(&path) {
         Ok(token) => Ok(Some(token)),
         Err(e) => {
@@ -1001,15 +1006,15 @@ fn derive_topic_name(path: &str, topic: Option<&str>) -> String {
 /// storage paths. Also honors the adopted state dir (path-derived name) —
 /// serve-side adoption at pin creation is authoritative; this is the CLI's
 /// pre-flight guard over both candidate locations.
-fn check_existing_topic_name(path: &str, topic: &str, workdir: &std::path::Path) -> Result<()> {
+fn check_existing_topic_name(path: &str, topic: &str, data_dir: &std::path::Path) -> Result<()> {
     let p = std::path::Path::new(path);
     let derived =
-        jyc_core::topic_path::state_dir_for(&jyc_core::topic_path::state_root(workdir), p, None);
-    for jyc_dir in [p.join(".jyc"), derived] {
-        if !jyc_dir.is_dir() {
+        jyc_core::topic_path::state_dir_for(&jyc_core::topic_path::agents_dir(data_dir), p, None);
+    for state_dir in [p.join(".jyc"), derived] {
+        if !state_dir.is_dir() {
             continue;
         }
-        let topic_name_file = jyc_dir.join("topic-name");
+        let topic_name_file = state_dir.join("topic-name");
         if topic_name_file.exists() {
             let existing = std::fs::read_to_string(&topic_name_file)
                 .with_context(|| format!("failed to read {}", topic_name_file.display()))?;
@@ -1854,14 +1859,14 @@ mod tests {
     /// forwards `--pipe` when the dashboard was asked for it.
     #[test]
     fn auto_spawned_serve_args_forward_pipe() {
-        let default_workdir = std::path::Path::new("/home/u/.local/share/jyc");
-        let log_path = default_workdir.join("jyc.log");
+        let default_data_dir = std::path::Path::new("/home/u/.local/share/jyc");
+        let log_path = default_data_dir.join("jyc.log");
         assert_eq!(
-            serve_spawn_args(default_workdir, default_workdir, &log_path, false),
+            serve_spawn_args(default_data_dir, default_data_dir, &log_path, false),
             ["serve", "--log-file", "/home/u/.local/share/jyc/jyc.log"]
         );
         assert_eq!(
-            serve_spawn_args(default_workdir, default_workdir, &log_path, true),
+            serve_spawn_args(default_data_dir, default_data_dir, &log_path, true),
             [
                 "serve",
                 "--log-file",
@@ -1872,13 +1877,13 @@ mod tests {
         assert_eq!(
             serve_spawn_args(
                 std::path::Path::new("/srv/jyc"),
-                default_workdir,
+                default_data_dir,
                 &log_path,
                 true
             ),
             [
                 "serve",
-                "--workdir",
+                "--data-dir",
                 "/srv/jyc",
                 "--log-file",
                 "/home/u/.local/share/jyc/jyc.log",
@@ -2057,9 +2062,9 @@ mod tests {
     #[test]
     fn check_existing_topic_name_succeeds_when_matching() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
-        std::fs::write(jyc_dir.join("topic-name"), "abc").unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join("topic-name"), "abc").unwrap();
 
         let path = tmp.path().to_string_lossy().to_string();
         check_existing_topic_name(&path, "abc", tmp.path()).expect("should pass when names match");
@@ -2068,9 +2073,9 @@ mod tests {
     #[test]
     fn check_existing_topic_name_fails_when_mismatch() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
-        std::fs::write(jyc_dir.join("topic-name"), "existing").unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join("topic-name"), "existing").unwrap();
 
         let path = tmp.path().to_string_lossy().to_string();
         let err = check_existing_topic_name(&path, "abc", tmp.path())
@@ -2089,9 +2094,9 @@ mod tests {
     #[test]
     fn check_existing_topic_name_succeeds_when_file_empty() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
-        std::fs::write(jyc_dir.join("topic-name"), "").unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(state_dir.join("topic-name"), "").unwrap();
 
         let path = tmp.path().to_string_lossy().to_string();
         check_existing_topic_name(&path, "new-topic", tmp.path())

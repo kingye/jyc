@@ -11,7 +11,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use jyc_core::session_state::{read_tasks_at, write_tasks_at};
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use jyc_types::task::{TaskItem, TaskList, TaskStatus};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -25,7 +25,7 @@ const MAX_ITEMS: usize = 20;
 /// `working_dir` is the topic directory and `current_topic` keys the state-dir
 /// registry (which can point a topic's state elsewhere).
 fn tasks_dir(ctx: &ToolContext<'_>) -> PathBuf {
-    jyc_dir(ctx.current_topic.as_deref().unwrap_or(""), ctx.working_dir)
+    resolve_state_dir(ctx.current_topic.as_deref().unwrap_or(""), ctx.working_dir)
 }
 
 /// The list as the tools return it: the very lines `/info` shows (one

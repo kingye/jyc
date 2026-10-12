@@ -402,24 +402,24 @@ mode = "agent"
     #[tokio::test]
     async fn build_mode_clears_mode_override() {
         let tmp = tempfile::tempdir().unwrap();
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        tokio::fs::write(jyc_dir.join("mode-override"), "plan")
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(state_dir.join("mode-override"), "plan")
             .await
             .unwrap();
 
         let handler = CustomCommandHandler::new(cmd(Some("build"), None));
         handler.execute(test_context(tmp.path())).await.unwrap();
 
-        assert!(!jyc_dir.join("mode-override").exists());
+        assert!(!state_dir.join("mode-override").exists());
     }
 
     #[tokio::test]
     async fn no_mode_leaves_mode_override_untouched() {
         let tmp = tempfile::tempdir().unwrap();
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        tokio::fs::write(jyc_dir.join("mode-override"), "plan")
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(state_dir.join("mode-override"), "plan")
             .await
             .unwrap();
 
@@ -427,7 +427,7 @@ mode = "agent"
         handler.execute(test_context(tmp.path())).await.unwrap();
 
         // Still in plan mode — the command did not touch it.
-        let mode = tokio::fs::read_to_string(jyc_dir.join("mode-override"))
+        let mode = tokio::fs::read_to_string(state_dir.join("mode-override"))
             .await
             .unwrap();
         assert_eq!(mode, "plan");

@@ -15,7 +15,7 @@ pub struct CommandContext {
     /// Path to the topic directory
     pub topic_path: PathBuf,
     /// Topic name — the identity that state-dir resolution keys on
-    /// (`state_dir::jyc_dir`). Several agents may pin one `topic_path`,
+    /// (`state_dir::state_dir`). Several agents may pin one `topic_path`,
     /// so state access must never go through the dir alone.
     pub topic_name: String,
     /// Application configuration
@@ -26,7 +26,7 @@ pub struct CommandContext {
     pub channel_type: String,
     /// Agent service (optional, for commands that need to query server)
     pub agent: Option<Arc<dyn crate::agent::AgentService>>,
-    /// Template directories (layered: L1 global < L2 workdir; topic L3
+    /// Template directories (layered: L1 global < L2 data_dir; topic L3
     /// `.jyc/templates/` is checked first at lookup time)
     pub template_dirs: crate::template_dirs::TemplateDirs,
     /// Path to the config.toml file (for commands that write config)

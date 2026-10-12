@@ -273,6 +273,154 @@ impl CommandHandler for SpawnCommandHandler {
     }
 }
 
+/// How many subagents one topic may hold at a time.
+pub const MAX_SUBAGENTS: usize = 3;
+
+/// Create an empty subagent topic for `parent`'s agent and widen the parent's
+/// filesystem boundary to it.
+///
+/// The layout is `/spawn`'s (a sibling under the agents root) but nothing is
+/// inherited: no state is seeded, no task is sent. The parent seeds whatever
+/// the child needs through the read+write grant recorded here, then sends the
+/// task itself via `jyc_send_to_topic`. Returns the new topic's name.
+///
+/// Refuses (with a message the model can act on) when `parent` is itself a
+/// subagent — the tree is one level deep — when it already holds
+/// [`MAX_SUBAGENTS`] children, and when the name is taken.
+pub async fn spawn_subagent(
+    tm: &TopicManager,
+    parent: &str,
+    parent_dir: &Path,
+    name: Option<&str>,
+) -> Result<String, String> {
+    // Production path only, like `/spawn`: `agents_workspace_root()` resolves
+    // the real data home, so a test that reached here would create topics
+    // inside the developer's own agents tree. Tests call
+    // `spawn_subagent_under` with every root.
+    let agents_root = tm.agents_workspace_root();
+    spawn_subagent_under(tm, parent, parent_dir, name, &agents_root).await
+}
+
+/// [`spawn_subagent`] with an explicit agents root — the same testable-core
+/// pattern as `spawn_under` / `close_topic_under`.
+pub async fn spawn_subagent_under(
+    tm: &TopicManager,
+    parent: &str,
+    parent_dir: &Path,
+    name: Option<&str>,
+    agents_root: &Path,
+) -> Result<String, String> {
+    // The parent's state dir is not always `parent_dir/.jyc` (a pinned topic
+    // keeps it under the agents root), so ask the registry first; the fallback
+    // only serves topics that predate registration, and this is a guard, not
+    // state access.
+    let parent_state =
+        jyc_types::state_dir::registered_state(parent).unwrap_or_else(|| parent_dir.join(".jyc"));
+    if parent_state.join("spawned-from").exists() {
+        return Err(
+            "this topic is itself a subagent: subagents cannot spawn subagents".to_string(),
+        );
+    }
+    let existing = subagents_of(parent);
+    if existing.len() >= MAX_SUBAGENTS {
+        return Err(format!(
+            "already at {MAX_SUBAGENTS} subagents ({}): continue one with \
+             jyc_send_to_topic, or close one first",
+            format_subagent_names(&existing)
+        ));
+    }
+
+    let name = match name {
+        Some(n) => {
+            if let Some(why) = invalid_name(n) {
+                return Err(format!("'{n}' cannot be a subagent name: {why}"));
+            }
+            n.to_string()
+        }
+        None => next_free_name(tm, parent, agents_root).await,
+    };
+    let dest = agents_root.join(&name);
+    if tm.topic_path(&name).await.is_some() || dest.exists() {
+        return Err(format!(
+            "topic '{name}' already exists ({}): send it a message instead, or spawn under \
+             another name",
+            format_subagent_names(&existing)
+        ));
+    }
+
+    // Same order as `/spawn`: adopting the state dir first keeps it at
+    // `<agents root>/<name>/.jyc` instead of the derived name `set_topic_path`
+    // would pick for a pin with no agent key.
+    let state_dir = dest.join(".jyc");
+    crate::topic_path::adopt_state_dir(&name, &dest, &state_dir)
+        .map_err(|e| format!("failed to create subagent state: {e}"))?;
+    tm.set_topic_path(&name, dest.clone())
+        .await
+        .map_err(|e| format!("failed to register subagent topic: {e}"))?;
+    tokio::fs::write(state_dir.join("spawned-from"), parent)
+        .await
+        .map_err(|e| format!("failed to record subagent lineage: {e}"))?;
+
+    jyc_types::access_grants::grant(parent, dest.clone(), true);
+    tracing::info!(
+        parent,
+        subagent = %name,
+        path = %dest.display(),
+        "Subagent spawned; parent granted read+write access"
+    );
+    Ok(name)
+}
+
+/// The subagent directories `topic` currently holds, as `(name, dir)`.
+///
+/// A granted directory counts as a subagent while it still exists and its
+/// `.jyc/spawned-from` names `topic` — the lineage breadcrumb
+/// [`spawn_subagent`] writes. A stale grant (the child was closed) and a
+/// directory later reused by another topic are both left out, so the count,
+/// the cap check and the prompt's subagent list cannot drift from reality.
+pub fn subagents_of(topic: &str) -> Vec<(String, PathBuf)> {
+    jyc_types::access_grants::grants_for(topic)
+        .into_iter()
+        .filter(|g| {
+            std::fs::read_to_string(g.path.join(".jyc").join("spawned-from"))
+                .is_ok_and(|from| from.trim() == topic)
+        })
+        .filter_map(|g| {
+            let name = g.path.file_name()?.to_string_lossy().into_owned();
+            Some((name, g.path))
+        })
+        .collect()
+}
+
+/// Drop the access `child`'s parent holds on it, called when the child closes.
+///
+/// The lineage breadcrumb names the parent; grants are keyed by topic name and
+/// the parent granted exactly the child's directory, so its own close revokes
+/// it. Read from the directory rather than the state registry: this runs on
+/// every close, and a topic without a breadcrumb (i.e. not an agent-spawned
+/// subagent) must stay a no-op rather than an error.
+pub fn forget_subagent(child: &str, child_dir: &Path) {
+    let Ok(parent) = std::fs::read_to_string(child_dir.join(".jyc").join("spawned-from")) else {
+        return;
+    };
+    if jyc_types::access_grants::ungrant(parent.trim(), child_dir) {
+        tracing::info!(
+            parent = parent.trim(),
+            subagent = %child,
+            "Subagent closed; parent access revoked"
+        );
+    }
+}
+
+/// `a, b, c` — names only, for refusal messages and the prompt's subagent list.
+pub fn format_subagent_names(subagents: &[(String, PathBuf)]) -> String {
+    subagents
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,5 +831,125 @@ mod tests {
         assert!(looks_like_path("../test"));
         assert!(!looks_like_path("scratch"));
         assert!(!looks_like_path("plan-197"));
+    }
+
+    /// A spawned subagent gets an empty topic dir, a lineage breadcrumb and a
+    /// read+write grant for its parent.
+    #[tokio::test]
+    async fn subagent_spawn_creates_empty_topic_and_grants_access() {
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_root = workspace.path().join("agents");
+        let parent = "sa-parent-create";
+        let parent_dir = workspace.path().join("parent");
+        std::fs::create_dir_all(&parent_dir).unwrap();
+        jyc_types::access_grants::clear(parent);
+
+        let name = spawn_subagent_under(&tm, parent, &parent_dir, Some("worker"), &agents_root)
+            .await
+            .unwrap();
+        assert_eq!(name, "worker");
+
+        let dest = agents_root.join("worker");
+        assert_eq!(
+            std::fs::read_to_string(dest.join(".jyc").join("spawned-from")).unwrap(),
+            parent
+        );
+        // Empty: nothing inherited and no task sent, so `.jyc` is all there is.
+        let entries: Vec<_> = std::fs::read_dir(&dest)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from(".jyc")]);
+        assert!(tm.topic_path("worker").await.is_some());
+
+        let grants = jyc_types::access_grants::grants_for(parent);
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].path, dest);
+        assert!(grants[0].write, "the parent must be able to seed the dir");
+        assert_eq!(subagents_of(parent), vec![("worker".to_string(), dest)]);
+
+        jyc_types::access_grants::clear(parent);
+        jyc_types::state_dir::unregister("worker");
+    }
+
+    /// One level only: a subagent cannot spawn its own subagent.
+    #[tokio::test]
+    async fn subagent_spawn_refuses_a_second_level() {
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_root = workspace.path().join("agents");
+        let parent_dir = workspace.path().join("nested");
+        std::fs::create_dir_all(parent_dir.join(".jyc")).unwrap();
+        std::fs::write(parent_dir.join(".jyc").join("spawned-from"), "grandparent").unwrap();
+
+        let err = spawn_subagent_under(
+            &tm,
+            "sa-parent-nested",
+            &parent_dir,
+            Some("worker"),
+            &agents_root,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("cannot spawn subagents"), "{err}");
+        assert!(!agents_root.join("worker").exists());
+    }
+
+    #[tokio::test]
+    async fn subagent_spawn_refuses_past_the_cap() {
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_root = workspace.path().join("agents");
+        let parent = "sa-parent-cap";
+        let parent_dir = workspace.path().join("parent");
+        std::fs::create_dir_all(&parent_dir).unwrap();
+        jyc_types::access_grants::clear(parent);
+        for i in 0..MAX_SUBAGENTS {
+            let dir = agents_root.join(format!("filled-{i}"));
+            std::fs::create_dir_all(dir.join(".jyc")).unwrap();
+            std::fs::write(dir.join(".jyc").join("spawned-from"), parent).unwrap();
+            jyc_types::access_grants::grant(parent, dir, true);
+        }
+
+        let err = spawn_subagent_under(&tm, parent, &parent_dir, Some("one-more"), &agents_root)
+            .await
+            .unwrap_err();
+        assert!(err.contains("already at 3 subagents"), "{err}");
+        assert!(
+            err.contains("filled-0"),
+            "the refusal lists what is already there: {err}"
+        );
+        jyc_types::access_grants::clear(parent);
+    }
+
+    /// A stale grant (child closed) and a directory another topic owns are
+    /// neither counted nor listed.
+    #[test]
+    fn subagents_of_skips_stale_and_foreign_grants() {
+        let workspace = tempdir().unwrap();
+        let parent = "sa-parent-list";
+        jyc_types::access_grants::clear(parent);
+
+        let mine = workspace.path().join("mine");
+        std::fs::create_dir_all(mine.join(".jyc")).unwrap();
+        std::fs::write(mine.join(".jyc").join("spawned-from"), parent).unwrap();
+        let theirs = workspace.path().join("theirs");
+        std::fs::create_dir_all(theirs.join(".jyc")).unwrap();
+        std::fs::write(theirs.join(".jyc").join("spawned-from"), "someone-else").unwrap();
+        let gone = workspace.path().join("gone");
+        for p in [&mine, &theirs, &gone] {
+            jyc_types::access_grants::grant(parent, p.clone(), true);
+        }
+
+        assert_eq!(
+            subagents_of(parent),
+            vec![("mine".to_string(), mine.clone())]
+        );
+
+        forget_subagent("mine", &mine);
+        assert!(subagents_of(parent).is_empty());
+        assert_eq!(format_subagent_names(&[]), "");
+        jyc_types::access_grants::clear(parent);
     }
 }

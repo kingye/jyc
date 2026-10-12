@@ -88,6 +88,12 @@ and uses an in-process AI agent to generate replies.
 
 ## Agent Behavior Rules
 
+### Subagents
+- 委派前必须先看系统提示里的子 agent 列表；已有能用的子 agent 就用 `jyc_send_to_topic`（`require_reply=true`）追加任务，**禁止**重复创建
+- 仅当任务需要干净上下文时才用 `jyc_spawn_subagent` 新建；子 agent 为空、不继承任何状态，其输入由父用 `write` 自行放入子目录
+- **禁止**读写子 agent 的 `.jyc` 状态目录（那是它自己的状态）；只操作它的工作目录中的普通文件
+- 子 agent 任务为异步：发完即结束本轮，**禁止**轮询等待结果；结果会作为新消息回到本 topic
+
 ### Reply vs. SendMessage
 - The agent's final message at the end of a turn IS the in-topic reply; no reply tool exists.
 - `jyc_send_message` is only for out-of-topic proactive messages; never use it to spam users — limit to alerts and notifications.

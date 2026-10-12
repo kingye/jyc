@@ -551,11 +551,15 @@ those roots — which is why a spawn's default dir under `agents/` is never purg
   An **upstream close event** (issue/PR closed, chat disbanded) means the
   topic is done, so it goes one step further: a pipe topic's own dir
   (`<agents dir>/<agent>/<topic>`) is deleted together with its contents,
-  empty or not. Only that exact shape, and the purge guards still apply — an
-  agent's own dir one level up (`<agents dir>/<agent>`, a state namespace), a
-  dir another topic works in (a `/fork` shares its parent's), a dir nesting
-  somebody else's, a symlink out of the tree, and any pin elsewhere are all
-  left in place. `/close` keeps the empty-only rule above.
+  empty or not. A pin *at* that shape goes with it — the shape is the
+  criterion, not pinning, so the one pinned dir an upstream close can take is
+  the one that is itself a pipe topic dir. Otherwise only that exact shape,
+  and the purge guards still apply — an agent's own dir one level up
+  (`<agents dir>/<agent>`, a state namespace), a dir another topic works in
+  (a `/fork` shares its parent's), a dir nesting somebody else's, a symlink
+  out of the tree, and a pin anywhere else are all left in place. `/close`
+  keeps the empty-only rule above, and a topic reopened upstream (issue
+  closed, then reopened) starts with an empty dir.
   Ad-hoc pins (no config key) derive their state name from the dir, so two
   runtime topics opening one dir intentionally share — and closing either
   destroys — that single state: "the dir is the topic". Closing also

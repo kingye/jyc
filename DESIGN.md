@@ -548,6 +548,14 @@ those roots — which is why a spawn's default dir under `agents/` is never purg
   and the pinned topic dir (e.g. a repo) is kept. A sibling topic co-pinning
   the same dir keeps its own state. Unregistered topics keep the legacy
   whole-dir deletion, with the same empty-parent pruning.
+  An **upstream close event** (issue/PR closed, chat disbanded) means the
+  topic is done, so it goes one step further: a pipe topic's own dir
+  (`<agents dir>/<agent>/<topic>`) is deleted together with its contents,
+  empty or not. Only that exact shape, and the purge guards still apply — an
+  agent's own dir one level up (`<agents dir>/<agent>`, a state namespace), a
+  dir another topic works in (a `/fork` shares its parent's), a dir nesting
+  somebody else's, a symlink out of the tree, and any pin elsewhere are all
+  left in place. `/close` keeps the empty-only rule above.
   Ad-hoc pins (no config key) derive their state name from the dir, so two
   runtime topics opening one dir intentionally share — and closing either
   destroys — that single state: "the dir is the topic". Closing also
@@ -912,7 +920,7 @@ The adapter detects issue/PR close events by comparing cached state:
 
 1. Each poll cycle fetches all open issue/PR numbers
 2. Previously-open issues not in the current set are considered closed
-3. Closed topics trigger the `on_topic_close` callback (deletes topic directory)
+3. Closed topics trigger the `on_topic_close` callback (deletes the topic directory — for a pipe topic that is `<agents dir>/<agent>/<topic>` with its contents, empty or not)
 4. Fallback: `list_closed_since()` checks recently-closed issues as a backup
 
 ### Persistent Comment Tracking

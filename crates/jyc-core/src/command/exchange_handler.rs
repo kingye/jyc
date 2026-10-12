@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -54,18 +54,18 @@ impl ExchangeCommandHandler {
 #[async_trait]
 impl CommandHandler for ExchangeCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
+        let state_dir = resolve_state_dir(&context.topic_name, &context.topic_path);
 
         // No token means nothing was ever published (or /reset killed the
         // links). Never mint one here.
         let token = match jyc_utils::auth_token::read_token(
-            &jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME),
+            &state_dir.join(crate::EXCHANGE_TOKEN_FILENAME),
         ) {
             Ok(token) => token,
             Err(_) => return Ok(ok(NO_FILES.into())),
         };
 
-        let mut names = read_published_names(&jyc_dir.join(crate::EXCHANGE_DIR_NAME)).await;
+        let mut names = read_published_names(&state_dir.join(crate::EXCHANGE_DIR_NAME)).await;
         names.sort();
         if names.is_empty() {
             return Ok(ok(NO_FILES.into()));

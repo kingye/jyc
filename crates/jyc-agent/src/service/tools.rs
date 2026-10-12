@@ -3,7 +3,7 @@
 //! Extracted from the monolithic `service.rs`.
 
 use anyhow::Result;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -107,7 +107,7 @@ impl JycAgentService {
         // "topic-local MCP" or "topic config loaded" reveals whether the
         // L3 file was found, valid, and applied. This is the only signal
         // that tells operators whether the topic-local overlay engaged.
-        let topic_cfg_path = jyc_dir(topic_name, topic_path).join("config.toml");
+        let topic_cfg_path = resolve_state_dir(topic_name, topic_path).join("config.toml");
         let configured_mcps = topic_cfg
             .and_then(|t| t.mcps.as_ref())
             .map(|v| v.len())
@@ -454,7 +454,8 @@ impl JycAgentService {
 /// what makes [`JycAgentService::get_or_build_tool_registry`] miss the
 /// cache and rebuild on the next message.
 fn mcp_override_stamp(topic_name: &str, topic_path: &Path) -> u128 {
-    let path = jyc_dir(topic_name, topic_path).join(jyc_core::session_state::MCP_OVERRIDE_FILE);
+    let path =
+        resolve_state_dir(topic_name, topic_path).join(jyc_core::session_state::MCP_OVERRIDE_FILE);
     match std::fs::metadata(&path).and_then(|m| m.modified()) {
         Ok(t) => t
             .duration_since(std::time::UNIX_EPOCH)
@@ -475,7 +476,7 @@ mod tests {
         // Absent file -> 0.
         assert_eq!(mcp_override_stamp("stamp-test-topic", tmp.path()), 0);
 
-        let dir = jyc_dir("stamp-test-topic", tmp.path());
+        let dir = resolve_state_dir("stamp-test-topic", tmp.path());
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join(jyc_core::session_state::MCP_OVERRIDE_FILE);
         std::fs::write(&file, b"{}").unwrap();

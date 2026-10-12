@@ -23,7 +23,7 @@ pub struct MonitorState {
 /// Each channel gets its own StateManager instance to prevent
 /// race conditions when multiple channels run concurrently.
 pub struct StateManager {
-    /// Directory for state files: <channel>/.imap/
+    /// Directory for state files: <data dir>/channels/<channel>/.imap/
     state_dir: PathBuf,
     /// In-memory state
     state: MonitorState,
@@ -39,9 +39,12 @@ impl StateManager {
 
     /// Create a StateManager for a specific channel.
     ///
-    /// State files live in `<workdir>/<channel_name>/.imap/`.
-    pub fn for_channel(workdir: &Path, channel_name: &str) -> Self {
-        let state_dir = workdir.join(channel_name).join(".imap");
+    /// State files live in the channel dir's `.imap/` subdirectory:
+    /// `<data dir>/channels/<channel_name>/.imap/`.
+    pub fn for_channel(data_dir: &Path, channel_name: &str) -> Self {
+        let state_dir = jyc_utils::paths::channels_dir(data_dir)
+            .join(channel_name)
+            .join(".imap");
         Self {
             state_dir,
             state: MonitorState::default(),

@@ -1,7 +1,7 @@
 //! Durable central billing ledger.
 //!
 //! One line is appended per completed LLM call to
-//! `<data_home>/billing/bill-YYYY-MM-DD.jsonl`, tagged with the topic
+//! `<data dir>/billing/bill-YYYY-MM-DD.jsonl`, tagged with the topic
 //! that produced it. Unlike `agent-session.json`s `session_cost` --
 //! which is scoped to the session and zeroed on every reset -- this
 //! ledger is never reset, rotated, or truncated, so it remains the
@@ -145,18 +145,18 @@ fn default_billing_metered() -> String {
 pub struct BillingLogStore;
 
 impl BillingLogStore {
-    /// Central ledger directory: `<data_home>/billing/`. `None` when no
+    /// Central ledger directory: `<data dir>/billing/`. `None` when no
     /// data home is resolvable (callers skip billing with a warning).
     pub fn billing_dir() -> Option<PathBuf> {
-        jyc_utils::paths::data_home().map(|home| home.join("billing"))
+        jyc_utils::paths::data_dir().map(|home| home.join("billing"))
     }
 
     /// Topic label recorded in ledger entries: the topic path relative
-    /// to `data_home` (`agents/jyc`), matching how `/bill` labels
+    /// to `data_dir` (`agents/jyc`), matching how `/bill` labels
     /// topics, or the bare topic name for pinned topics living outside
-    /// `data_home` (matching the state-dir registry's label).
+    /// `data_dir` (matching the state-dir registry's label).
     pub fn label_for(topic_name: &str, topic_path: &Path) -> String {
-        jyc_utils::paths::data_home()
+        jyc_utils::paths::data_dir()
             .and_then(|home| topic_path.strip_prefix(home).ok().map(PathBuf::from))
             .map(|rel| rel.to_string_lossy().into_owned())
             .filter(|rel| !rel.is_empty())

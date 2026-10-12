@@ -34,15 +34,15 @@ JYC is a channel-agnostic AI agent that operates through messaging channels. Use
 > ownership rule is the channel type
 > (`jyc_types::channel::SUPPORTED_CHANNEL_TYPES`), not a config section;
 > the WeCom webhook listener (`[wecom].bind_addr`) and the
-> email mailbox cursor (`<workdir>/channels/<name>/.imap/`) belong to the pipe.
+> email mailbox cursor (`<data dir>/channels/<name>/.imap/`) belong to the pipe.
 > The two processes are paired by `jyc serve --pipe`, which spawns `jyc-pipe` as a
-> child of the hub — same workdir and resolved config file — and stops it when the
+> child of the hub — same data dir and resolved config file — and stops it when the
 > hub exits (SIGTERM, then SIGKILL after a grace period); the child is deliberately
 > not restarted, since a channel crash must not take the agent core down. Running
 > `jyc-pipe` separately (systemd, by hand) stays possible, but the shipped
 > deployment is the hub-owned child.
 > Inbound attachment bytes travel the same way as reply attachments, over the
-> bearer-gated REST API (staged under `<data_home>/.inbound/`, then named in
+> bearer-gated REST API (staged under `<data dir>/.inbound/`, then named in
 > the `message` frame and moved into the routed topic). The staging directory
 > is hub-level on purpose: it must sit outside every topic root, or a topic
 > named `workspace` would share it.
@@ -217,7 +217,7 @@ User sends message (any channel) → Pattern Match → Topic Queue → Worker (A
 21. **Template System** — Initialize new topics with predefined files from `templates/` directory
 22. **AgentService** — Unified agent dispatch trait for static and in-process agent modes; resolves effective model from pattern/channel/global config
 23. **Channel Orchestrator** — Manages channel lifecycle across config reloads. Registers per-channel status (topic manager, cancel token). On reload, diffs old/new config: cancels removed channels gracefully, warns on new channels (requires restart). Updates shared `InspectContext` state (`topic_managers`, `channels`, `workspace_dirs`) via `ArcSwap`.
-24. **BillingLogStore** — Durable central cost ledger. Appends one line per LLM call to `<data_home>/billing/bill-YYYY-MM-DD.jsonl` (topic label + token counts + computed cost + currency). Central rather than per-topic because topic directories are deleted on close, which would destroy cost history. Day-stamped files bound the dashboard's per-poll read to a single day; never rotated or truncated, unlike the bounded `activity.jsonl` debug buffer. Complements `session_cost` in `agent-session.json`, which is session-scoped and zeroes on reset.
+24. **BillingLogStore** — Durable central cost ledger. Appends one line per LLM call to `<data dir>/billing/bill-YYYY-MM-DD.jsonl` (topic label + token counts + computed cost + currency). Central rather than per-topic because topic directories are deleted on close, which would destroy cost history. Day-stamped files bound the dashboard's per-poll read to a single day; never rotated or truncated, unlike the bounded `activity.jsonl` debug buffer. Complements `session_cost` in `agent-session.json`, which is session-scoped and zeroes on reset.
 
 ### Design Principles: Component Responsibilities
 
@@ -411,43 +411,52 @@ Email arrives
 
 ## Terminology
 
-Four names this document, the code comments and the agent-facing prompts all use
-with one meaning. Most of the confusion this file has seen came from using them
-loosely, so they are fixed here.
+The vocabulary this document, the code comments and the agent-facing prompts all
+use with one meaning. Most of the confusion this file has seen came from using
+these names loosely, so they are fixed here.
 
 | Term | What it is | Where it is | In code |
 |---|---|---|---|
-| **data dir** (data root, `--workdir`) | The instance root: config, skills, templates and every generated state hang off it. This is what the rest of this document writes as `<data_home>` | Linux/macOS `$XDG_DATA_HOME/jyc` or `~/.local/share/jyc`; Windows `%LOCALAPPDATA%\jyc`; the default `--workdir` | `jyc_utils::paths::data_home()` |
-| **agents_root** | The parent of every default `topic_path` and of every state dir | `<data dir>/agents` (`~/.local/share/jyc/agents`) | `TopicManager::agents_workspace_root()` |
-| **topic_path** | A topic's **working directory**: where the agent runs, what `read`/`write`/`bash` see, and what a parent is granted when it spawns a subagent | `agents_root/<name>` by default; a pinned topic, a `/spawn <path>` child and a pinned 1:1 agent use the named directory instead — possibly outside `agents_root`, possibly a pre-existing checkout whose files are never touched | `TopicManager::topic_path(name)`, `SpawnRequest::parent_topic_path` |
-| **state dir** | A topic's `.jyc`: transcript, `agent-context.json`, `tasks`, `pattern`, `mode-override`, the lineage `spawned-from`, … — one topic per directory, and this topic's own state | Always under `agents_root`, **located by topic name**: `<agents root>/<name>/.jyc` (a pinned or 1:1 topic's is registered and may sit at `<agents root>/<agent>/.jyc`; a pipe topic's is `<topic_path>/.jyc`, registered at activation) | `jyc_types::state_dir::{registered_state, jyc_dir, adopt_state_dir}` |
+| **config dir** | The user-edited input root | `$XDG_CONFIG_HOME/jyc` or `~/.config/jyc`; Windows `%APPDATA%\jyc`. Holds `config.toml`, `skills/`, `templates/`, `hooks`, `scripts/` | `jyc_utils::paths::config_dir()` |
+| **data dir** | The generated-state root — the instance root | `$XDG_DATA_HOME/jyc` or `~/.local/share/jyc`; Windows `%LOCALAPPDATA%\jyc`. The default `--data-dir` | `jyc_utils::paths::data_dir()` |
+| **channel** | The origin/destination of messages (email, github, gitee, feishu, websocket, …). A channel has **no topic directory**: topics never live under a channel | `[channels.<name>]` in the config; binds a pipe (`agent` + `topic` template) or is a hub channel | — |
+| **channels dir** | The root of every channel's own runtime state | `<data dir>/channels` | `jyc_utils::paths::channels_dir()` |
+| **channel dir** | One channel's runtime state — its IMAP / GitHub / Gitee cursors. Not a topic root, and never scanned as one | `<data dir>/channels/<channel>/` (`.imap/`, `.github/`, `.gitee/`) | `jyc_utils::paths::channels_dir(data_dir).join(<channel>)` |
+| **agents dir** | The root of every agent, topic and state dir | `<data dir>/agents` (`~/.local/share/jyc/agents`) | `topic_path::resolve_agents_dir()`, `topic_path::agents_dir()`, `TopicManager::resolve_agents_dir()` |
+| **agent dir** | One agent's home: its default topic's files while unpinned, or just the `.jyc` when that topic is pinned | `<agents dir>/<agent>/` | — |
+| **default topic** | The one topic every agent has, named after the agent — a message sent to the agent lands on it | `topic_path` is the agent dir unless pinned; state dir `<agents dir>/<agent>/.jyc` | 1:1 topics in `TopicManager` |
+| **topic** (non-default) | A topic a pipe creates from its rule's template (`plan-42`, `review-7`, …) | `topic_path` `<agents dir>/<agent>/<topic>/`; state dir `<agents dir>/<agent>/<topic>/.jyc` | router dynamic topics |
+| **subagent** | An agent `/spawn` (or `jyc_spawn_subagent`) created: an agent with its own default topic, not a second kind of topic | `<agents dir>/<subagent>/`, its state dir as any default topic's | `spawn_handler` |
+| **topic_path** | A topic's **working directory**: where the agent runs, what `read`/`write`/`bash` see, and what a parent is granted when it spawns a subagent. **Any** directory — a pin, a checkout, a `/spawn <path>` child — not necessarily under the agents dir | `<agents dir>/<agent>/` or `<agents dir>/<agent>/<topic>/` by default | `TopicManager::topic_path(name)` |
+| **state dir** | A topic's `.jyc`: transcript, `agent-context.json`, `tasks`, `pattern`, `mode-override`, the lineage `spawned-from`, … — always under the agents dir, located by **topic name**, never inside a pinned `topic_path` | see the table below | `jyc_types::state_dir::resolve_state_dir(name, topic_dir)` |
+| **inbound dir** | Where the hub stages inbound attachment bytes between their upload and the message announcing them, deliberately outside every topic and channel dir | `<data dir>/.inbound` | `topic_path::inbound_dir()` |
+| **L1 / L2 / L3** | Override layers only, not ownership | L1 = config dir; L2 = data dir; L3 = one topic (`topic_path` + state dir) | — |
 
-Four readings that this table exists to rule out:
+Readings this table exists to rule out:
 
-1. `--workdir` and "workdir" in config mean the **data dir**, not any topic's
-   `topic_path`.
-2. The older wording "topic dir" means `topic_path`; and
-   `jyc_dir(name, topic_path)` returns the **state dir** — never
-   `<topic_path>/.jyc`, which is only the fallback for a topic that predates
-   registration.
-3. A spawned topic's state dir is **not** inside its `topic_path`: `/spawn ../test`
-   runs in `…/test` while its state lives in `<agents root>/test/.jyc`. Anything
-   that reads the lineage therefore resolves the state dir by name
-   (`spawn_handler::state_dir_of`); nothing reads the lineage out of a
-   `topic_path`.
-4. Two roots answer to "the agents root" in code, and coincide only by default:
-   `agents_workspace_root()` (topic dirs; prefers the platform data home) and
-   `topic_path::state_root(workdir)` = `<workdir>/agents` (adopted state dirs;
-   deliberately workdir-based so multi-instance and test setups stay isolated).
-   A spawn uses the former for both the child's `topic_path` and its state dir;
-   `close_topic_under` resolves state dirs through the latter. With a custom
-   `--workdir` the two differ.
+1. `--data-dir` (and "data dir" in older notes) means the **data dir**, not any
+   topic's `topic_path`.
+2. A **topic never lives under a channel**. `<data dir>/channels/<channel>/`
+   holds cursors; the older `<data dir>/<channel>/workspace/<topic>/` shape is a
+   pre-pipe leftover with no live writer (dormant data — its migration is a
+   separate change).
+3. The older wording "topic dir" means `topic_path`; and
+   `resolve_state_dir(name, topic_dir)` returns the **state dir** — never
+   `<topic_path>/.jyc`, which is no longer a fallback for anything: an
+   unregistered lookup panics.
+4. Two roots answer to "the agents dir" in code and coincide only by default:
+   `topic_path::resolve_agents_dir()` (topic dirs; prefers the platform data
+   home) and `topic_path::agents_dir(data_dir)` = `<data dir>/agents` (adopted
+   state dirs; deliberately data-dir-based so multi-instance and test setups stay
+   isolated). Where both are in play (cluster close and purge, which prune up to
+   either root) the data-dir-based one is spelled out at the call site as
+   `agents_dir(&self.data_dir)`. With an explicit `--data-dir` the two differ.
 
 ## Topic State Directory (.jyc)
 
 Each topic keeps its runtime state (agent session, chat history,
 jobs, exchange files, L3 topic config) in a `.jyc` directory resolved
-through `jyc_types::state_dir::jyc_dir(topic_name, topic_dir)` — a process-global
+through `jyc_types::state_dir::resolve_state_dir(topic_name, topic_dir)` — a process-global
 registry keyed by **topic name** (the identity that distinguishes topics).
 **Every topic's state must be registered before any state access: an
 unregistered lookup panics instead of falling back to `<topic_dir>/.jyc`.**
@@ -457,14 +466,14 @@ keeps its own state dir.
 
 | Topic kind | topic_path (working dir) | state dir (`.jyc`) |
 |---|---|---|
-| Channel workspace topic | `<workdir>/<channel>/workspace/<topic>/` | `<topic_dir>/.jyc`, registered at activation |
-| Agent 1:1 topic, unpinned | `<data_home>/agents/<agent>/` | same (registered at startup restore) |
-| Agent 1:1 topic, pinned (`topic_path`) | the pinned dir (e.g. a repo) | `<data_home>/agents/<agent>/.jyc` |
-| Ad-hoc pinned topic (`jyc open -p`, non-agents pin) | the pinned dir | `<data_home>/agents/_<path-escaped>/.jyc` |
-| Dynamic pipe topic | `<data_home>/agents/<agent>/<topic>/` | `<topic_dir>/.jyc`, registered at activation |
-| Forked topic (`/fork`) | the **parent's** topic dir (shared workspace) | `<data_home>/agents/<name>/.jyc` |
-| Spawned topic (`/spawn`) | a fresh `<data_home>/agents/<name>/`, or any dir the path names outside the source topic's own dir (a non-empty checkout included — its files are not touched; nesting is refused) | `<data_home>/agents/<name>/.jyc` — located by name, never `<topic_path>/.jyc` |
-| Subagent (`jyc_spawn_subagent`) | the same shape a fresh-name `/spawn` gets — `<data_home>/agents/<name>/` with the parent's state seeded into it (putting the child *in the parent's* working tree is `/fork`) | `<data_home>/agents/<name>/.jyc` |
+| Agent's default topic, unpinned | `<agents dir>/<agent>/` | same dir: `<agents dir>/<agent>/.jyc`, registered at startup restore |
+| Agent's default topic, pinned (`topic_path`) | the pinned dir (e.g. a repo) | `<agents dir>/<agent>/.jyc` |
+| Ad-hoc pinned topic (`jyc open -p`, non-agents pin) | the pinned dir | `<agents dir>/_<path-escaped>/.jyc` |
+| Pipe topic (dynamic) | `<agents dir>/<agent>/<topic>/` | `<topic_path>/.jyc`, registered at activation |
+| Forked topic (`/fork`) | the **parent's** topic dir (shared workspace) | `<agents dir>/<name>/.jyc` |
+| Spawned topic (`/spawn`) | a fresh `<agents dir>/<name>/`, or any dir the path names outside the source topic's own dir (a non-empty checkout included — its files are not touched; nesting is refused) | `<agents dir>/<name>/.jyc` — located by name, never `<topic_path>/.jyc` |
+| Subagent (`jyc_spawn_subagent`) | the same shape a fresh-name `/spawn` gets — `<agents dir>/<name>/` with the parent's state seeded into it (putting the child *in the parent's* working tree is `/fork`) | `<agents dir>/<name>/.jyc` |
+| Legacy channel workspace topic | `<data dir>/<channel>/workspace/<topic>/` | `<topic_path>/.jyc` — no live writer; it is dormant pre-pipe data, and its migration is a separate change |
 
 Registrations happen at four points: startup restore (config pins adopt,
 workspace/agent topics register in-dir), runtime pins (`set_topic_path`,
@@ -489,7 +498,7 @@ files: the conversation is what comes along, so the destination may already hold
 data (a checkout made elsewhere) but never sits inside the parent's dir —
 nesting would inherit the parent's git status, file listings, and close
 semantics — and the only
-things a spawn creates are a missing destination and `<agents_root>/<name>/.jyc`.
+things a spawn creates are a missing destination and `<agents dir>/<name>/.jyc`.
 Its state is registered by name even in that default shape, where the state dir
 happens to sit inside the topic's own dir — so `close_topic` removes the emptied
 dir with its state; a dir that has since gained files is kept, like a pin's. Purge is
@@ -522,7 +531,7 @@ those roots — which is why a spawn's default dir under `agents/` is never purg
   dashboard `open -p`) adopt immediately.
 - **Restore.** Each adopted state dir carries `topic-name` and
   `topic-path` breadcrumbs. At startup `restore_state_registry` scans
-  `<data_home>/agents/*/.jyc` and re-registers each mapping by the
+  `<data dir>/agents/*/.jyc` and re-registers each mapping by the
   `topic-name` breadcrumb (falling back to the folder name for
   config-key dirs predating the breadcrumb; derived `_` dirs with no
   breadcrumb are skipped — they are re-adopted deterministically when the
@@ -561,11 +570,11 @@ the user typed the command, or the agent called the tool:
 
 1. Resolve the name and topic_path (`/spawn` from its arguments — a name, a path,
    or both, told apart by shape — the tool from a single name under
-   `agents_root`), then create that dir and adopt its state dir: always
+   `agents dir`), then create that dir and adopt its state dir: always
    `<agents root>/<name>/.jyc`, even when the child was pointed at a named path
    (the same order as `/fork`: `adopt_state_dir` first, so `set_topic_path`
    keeps the in-dir state instead of deriving `_<path>` state under
-   `state_root`).
+   `agents_dir(data_dir)`).
 2. Seed the parent's state with `seed_state(…, "spawned-from")` — the `/fork`
    allow-list (pattern, conversation, Task List, backlog, `mode-override`,
    model/context/MCP/skill overrides, transcript), never `jobs/` or
@@ -1002,20 +1011,20 @@ JYC separates **user-edited configuration** from **generated data** and supports
 
 Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) the XDG Base Directory convention is used; on Windows native `dirs` paths.
 
-| Platform | Config dir (L1) | Data dir (default workdir, L2) |
+| Platform | Config dir (L1) | Data dir (L2) |
 |---|---|---|
 | Linux/macOS | `$XDG_CONFIG_HOME/jyc` (`~/.config/jyc`) | `$XDG_DATA_HOME/jyc` (`~/.local/share/jyc`) |
 | Windows | `%APPDATA%\jyc` | `%LOCALAPPDATA%\jyc` |
 
 - **Config dir** holds user-edited files: `config.toml`, `skills/`, `templates/`.
-- **Data dir** (= default workdir / data root) holds generated state: `channels/<channel>/.imap/`, `<channel>/.github/`, `<channel>/workspace/<topic>/`.
-- `jyc serve` without `--workdir` uses the data dir (never the current directory). Without `--config`, the config is `<config dir>/config.toml`; with an explicit `--workdir` but no `--config`, it's `<workdir>/config.toml`.
+- **Data dir** (data root, the instance root) holds generated state: the agents dir (`agents/<agent>/<topic>/`), the channels dir (`channels/<channel>/.imap/`, `channels/<channel>/.github/`), the inbound dir (`.inbound/`).
+- `jyc serve` without `--data-dir` uses the data dir (never the current directory). Without `--config`, the config is `<config dir>/config.toml`; with an explicit `--data-dir` but no `--config`, it's `<data dir>/config.toml`.
 - **First run**: if the default config is missing on a flag-less invocation, jyc creates it from `config.example.toml` (plus empty `skills/` and `templates/`), prints edit instructions, and exits.
 
 ### The Three Levels
 
 - **L1 (global)**: `<config dir>/` — `config.toml`, `skills/`, `templates/`
-- **L2 (workdir / data root)**: `--workdir` if given, else the data dir — `config.toml` (via `--config`), `skills/`, `templates/`, plus all generated state
+- **L2 (data dir / data root)**: `--data-dir` if given, else the data dir — `config.toml` (via `--config`), `skills/`, `templates/`, plus all generated state
 - **L3 (topic)**: `<topic_path>/.jyc/` — `config.toml` (restricted `[agent]` subset), `skills/`, `templates/`, sessions, chat history, task list (`.jyc/tasks.json`)
 
 ### Merge & Lookup Rules
@@ -1031,7 +1040,7 @@ Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) 
 
 > **Merge limitation**: L2 can override any L1 value but cannot *remove* entries (e.g. a channel defined in L1 cannot be deleted by L2). If removal is needed, either omit the channel from L1 or add it with `enabled = false` in L2.
 
-**Self-containment invariant**: all generated state follows the *effective data root* — a custom `--workdir` instance never touches the platform data dir, keeping parallel instances and tests isolated.
+**Self-containment invariant**: all generated state follows the *effective data root* — a custom `--data-dir` instance never touches the platform data dir, keeping parallel instances and tests isolated.
 
 ## Config Hot-Reload Architecture
 
@@ -2598,7 +2607,7 @@ channels/<channel-name>/
 
 Only the email adapter keeps state: the IMAP mailbox cursor (sequence number +
 processed UIDs), a protocol-level dedup concern. It lives under
-`<workdir>/channels/<channel_name>/.imap/`.
+`<data dir>/channels/<channel_name>/.imap/`.
 
 ### Per-Pattern Overrides
 
@@ -2643,7 +2652,7 @@ assignees = ["kingye"]
 │       ├── .state.json                  # IMAP monitor state
 │       └── .processed-uids.txt         # One UID per line, append-only
 ├── <channel-name>/                      # Per-channel directory (e.g., "jiny283")
-│   └── workspace/                       # Topic workspaces (hardcoded: <workdir>/<channel_name>/workspace/)
+│   └── workspace/                       # Topic workspaces (hardcoded: <data dir>/<channel_name>/workspace/)
 │       ├── <topic-dir-1>/              # in-process agent cwd for this topic
 │       │   ├── chat_history_2026-03-19.jsonl   # Daily chat log (messages + replies)
 │       │   ├── chat_history_2026-03-20.jsonl   # Next day's chat log
@@ -2686,7 +2695,7 @@ name = "normal"
 # No template - topic starts empty
 ```
 
-Template directory structure (in workdir):
+Template directory structure (in data dir):
 
 ```
 <root-dir>/

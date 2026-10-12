@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 /// Filename used for the dashboard authorization token.
 pub const AUTH_TOKEN_FILENAME: &str = "auth.token";
 
-/// Return the authorization token path for a JYC workdir.
-pub fn token_path(workdir: &Path) -> PathBuf {
-    workdir.join(AUTH_TOKEN_FILENAME)
+/// Return the authorization token path for a JYC data_dir.
+pub fn token_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(AUTH_TOKEN_FILENAME)
 }
 
 /// Generate a random 256-bit authorization token encoded as hexadecimal.
@@ -45,17 +45,17 @@ pub fn write_token(path: &Path, token: &str) -> Result<()> {
 /// generate and persist a fresh one. Generating a new token on every start
 /// invalidates every running dashboard's cached token, surfacing as 401 on
 /// reconnect.
-pub fn resolve_or_generate_token(workdir: &Path) -> Result<String> {
-    let path = token_path(workdir);
+pub fn resolve_or_generate_token(data_dir: &Path) -> Result<String> {
+    let path = token_path(data_dir);
     match read_token(&path) {
         Ok(existing) => Ok(existing),
-        Err(_) => generate_and_write_token(workdir),
+        Err(_) => generate_and_write_token(data_dir),
     }
 }
 
-/// Generate a fresh random token, persist it to the workdir, and return it.
-pub fn generate_and_write_token(workdir: &Path) -> Result<String> {
-    let path = token_path(workdir);
+/// Generate a fresh random token, persist it to the data_dir, and return it.
+pub fn generate_and_write_token(data_dir: &Path) -> Result<String> {
+    let path = token_path(data_dir);
     let token = generate_token();
     write_token(&path, &token).with_context(|| {
         format!(
@@ -104,22 +104,22 @@ mod tests {
     #[test]
     fn resolve_or_generate_reuses_existing_token() {
         let temp = tempfile::TempDir::new().unwrap();
-        let workdir = temp.path();
+        let data_dir = temp.path();
         // First call: no token file yet → generate + write.
-        let t1 = resolve_or_generate_token(workdir).unwrap();
+        let t1 = resolve_or_generate_token(data_dir).unwrap();
         // Second call (restart): token file present → reuse.
-        let t2 = resolve_or_generate_token(workdir).unwrap();
+        let t2 = resolve_or_generate_token(data_dir).unwrap();
         assert_eq!(t1, t2, "token must persist across restarts");
     }
 
     #[test]
     fn resolve_or_generate_regenerates_when_empty() {
         let temp = tempfile::TempDir::new().unwrap();
-        let workdir = temp.path();
-        let path = token_path(workdir);
+        let data_dir = temp.path();
+        let path = token_path(data_dir);
         // Write an empty (invalid) token → read_token bails → regenerate.
         write_token(&path, "   ").unwrap();
-        let t = resolve_or_generate_token(workdir).unwrap();
+        let t = resolve_or_generate_token(data_dir).unwrap();
         assert!(!t.is_empty());
         assert_eq!(t.len(), 64);
     }

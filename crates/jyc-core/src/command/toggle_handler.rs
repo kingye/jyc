@@ -116,7 +116,7 @@ fn ok(message: String) -> CommandResult {
 }
 
 /// Whether a skill is discoverable right now. Mirrors the roots
-/// `discover_skills` scans, minus the process workdir root (its repo skills
+/// `discover_skills` scans, minus the process data dir (its repo skills
 /// ship in the global dir too). A false negative only loses a hint — the
 /// toggle is still written, so it works once the skill materializes.
 fn skill_known(context: &CommandContext, skill: &str) -> bool {
@@ -141,7 +141,9 @@ fn skill_known(context: &CommandContext, skill: &str) -> bool {
     ] {
         roots.push(topic_path.join(rel));
     }
-    roots.push(jyc_types::state_dir::jyc_dir(&context.topic_name, topic_path).join("skills"));
+    roots.push(
+        jyc_types::state_dir::resolve_state_dir(&context.topic_name, topic_path).join("skills"),
+    );
     roots
         .iter()
         .any(|r| r.join(skill).join("SKILL.md").is_file())
@@ -356,7 +358,7 @@ command = ["true"]
         let topic = "apply_toggle_semantics";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
         jyc_types::state_dir::register("toggle-mcp-known", &tmp.path().join(".jyc"));
-        let dir = jyc_types::state_dir::jyc_dir("toggle-mcp-known", tmp.path());
+        let dir = jyc_types::state_dir::resolve_state_dir("toggle-mcp-known", tmp.path());
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("config.toml"),

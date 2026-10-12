@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 
 use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
 
@@ -42,8 +42,8 @@ const MAX_TOOL_RESULT_CAP: usize = 1024 * 1024;
 #[async_trait]
 impl CommandHandler for ContextCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
-        let override_path = jyc_dir.join(crate::session_state::CONTEXT_STRATEGY_FILE);
+        let state_dir = resolve_state_dir(&context.topic_name, &context.topic_path);
+        let override_path = state_dir.join(crate::session_state::CONTEXT_STRATEGY_FILE);
 
         let matched_pattern =
             crate::session_state::read_pattern(&context.topic_name, &context.topic_path).await;
@@ -88,7 +88,7 @@ impl CommandHandler for ContextCommandHandler {
             }
             "full" => {
                 write_override(
-                    &jyc_dir,
+                    &state_dir,
                     &override_path,
                     ContextStrategyConfig {
                         mode: ContextStrategy::Full,
@@ -206,7 +206,7 @@ impl CommandHandler for ContextCommandHandler {
                     note_window,
                     tool_result_cap,
                 };
-                write_override(&jyc_dir, &override_path, cfg.clone()).await?;
+                write_override(&state_dir, &override_path, cfg.clone()).await?;
                 Ok(CommandResult {
                     success: true,
                     message: format!("/context: switched to {}", describe_strategy(&cfg)),
@@ -214,7 +214,7 @@ impl CommandHandler for ContextCommandHandler {
                     append_body: None,
                 })
             }
-            "dump" => handle_dump(&jyc_dir, context.args.get(1).map(|s| s.as_str())).await,
+            "dump" => handle_dump(&state_dir, context.args.get(1).map(|s| s.as_str())).await,
             other => Ok(CommandResult {
                 success: false,
                 message: format!(
@@ -232,9 +232,9 @@ impl CommandHandler for ContextCommandHandler {
 /// When enabled, every LLM call in this topic appends one JSON line to
 /// `<topic>/.jyc/wire-payload.jsonl` (capped at 50 lines, oldest dropped).
 /// No args shows the current state and the dump file path.
-async fn handle_dump(jyc_dir: &std::path::Path, arg: Option<&str>) -> Result<CommandResult> {
-    let flag_path = jyc_dir.join(crate::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE);
-    let dump_path = jyc_dir.join(crate::session_state::WIRE_PAYLOAD_DUMP_FILE);
+async fn handle_dump(state_dir: &std::path::Path, arg: Option<&str>) -> Result<CommandResult> {
+    let flag_path = state_dir.join(crate::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE);
+    let dump_path = state_dir.join(crate::session_state::WIRE_PAYLOAD_DUMP_FILE);
     let enabled = tokio::fs::read(&flag_path)
         .await
         .ok()
@@ -244,7 +244,7 @@ async fn handle_dump(jyc_dir: &std::path::Path, arg: Option<&str>) -> Result<Com
 
     match arg.map(|s| s.to_lowercase()).as_deref() {
         Some("on") => {
-            tokio::fs::create_dir_all(jyc_dir).await?;
+            tokio::fs::create_dir_all(state_dir).await?;
             tokio::fs::write(&flag_path, r#"{"enabled":true}"#).await?;
             Ok(CommandResult {
                 success: true,
@@ -279,11 +279,11 @@ async fn handle_dump(jyc_dir: &std::path::Path, arg: Option<&str>) -> Result<Com
 }
 
 async fn write_override(
-    jyc_dir: &std::path::Path,
+    state_dir: &std::path::Path,
     path: &std::path::Path,
     cfg: ContextStrategyConfig,
 ) -> Result<()> {
-    tokio::fs::create_dir_all(jyc_dir).await?;
+    tokio::fs::create_dir_all(state_dir).await?;
     let json = serde_json::to_string(&cfg)?;
     tokio::fs::write(path, json).await?;
     Ok(())
@@ -539,10 +539,10 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_reset_clears_override";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
-            jyc_dir.join("context-strategy.json"),
+            state_dir.join("context-strategy.json"),
             r#"{"mode":"sliding_window","window":3}"#,
         )
         .await
@@ -553,7 +553,7 @@ mode = "agent"
         ctx.args = vec!["reset".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        assert!(!jyc_dir.join("context-strategy.json").exists());
+        assert!(!state_dir.join("context-strategy.json").exists());
     }
 
     #[tokio::test]
@@ -561,10 +561,10 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_show_after_override";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
-            jyc_dir.join("context-strategy.json"),
+            state_dir.join("context-strategy.json"),
             r#"{"mode":"sliding_window","window":5}"#,
         )
         .await
@@ -748,10 +748,10 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_full_uses_configured_tool_result_cap_not_prior_override";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
-            jyc_dir.join("context-strategy.json"),
+            state_dir.join("context-strategy.json"),
             r#"{"mode":"sliding_window","window":10,"tool_result_cap":8192}"#,
         )
         .await
@@ -762,7 +762,7 @@ mode = "agent"
         ctx.args = vec!["full".into()];
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        let content = tokio::fs::read_to_string(&jyc_dir.join("context-strategy.json"))
+        let content = tokio::fs::read_to_string(&state_dir.join("context-strategy.json"))
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();

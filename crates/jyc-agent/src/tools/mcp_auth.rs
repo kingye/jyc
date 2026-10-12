@@ -107,11 +107,11 @@ impl FileCredentialStore {
         Self { path: path.into() }
     }
 
-    /// Credential path for an MCP server: `<data_home>/mcp_auth/<name>.json`.
+    /// Credential path for an MCP server: `<data dir>/mcp_auth/<name>.json`.
     pub fn path_for(mcp_name: &str) -> Result<PathBuf> {
-        let data_home = jyc_utils::paths::data_home()
+        let data_dir = jyc_utils::paths::data_dir()
             .context("cannot determine jyc data home for MCP credentials")?;
-        Ok(data_home
+        Ok(data_dir
             .join("mcp_auth")
             .join(format!("{}.json", sanitize_name(mcp_name)?)))
     }

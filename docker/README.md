@@ -130,7 +130,7 @@ docker compose restart jyc
 `jyc-pipe` hosts the pipe-only channel adapters (feishu, github, gitee,
 wecom_bot, wecom, wecomkf, email); `jyc serve` skips those channels
 in-process. The image's default command passes `--pipe`, so the hub starts
-`jyc-pipe` as a child of itself: same workdir and config file, its own
+`jyc-pipe` as a child of itself: same data dir and config file, its own
 default log file inside the container
 (`/root/.local/share/jyc/jyc-pipe.log`), stopped together with the hub. One
 container, no second service.

@@ -3,7 +3,7 @@
 //! (`jyc-cli/src/cli/serve/channels/github.rs`) over the hub websocket.
 //!
 //! - Inbound: `GithubInboundAdapter` (poller + dedup state under
-//!   `<workdir>/channels/<channel>/.github/`) → pattern match → retarget →
+//!   `<data dir>/channels/<channel>/.github/`) → pattern match → retarget →
 //!   `message` frame on the target channel's [`HubPipe`].
 //! - Replies: the pipe's reply stream → `[Role]`-prefixed comment via
 //!   `GithubClient::create_comment`.
@@ -33,13 +33,13 @@ use crate::pipe::{
 /// Mirrors `pipe::feishu::spawn_feishu_pipe`. Unlike full channels, owns
 /// no TopicManager/agent/orchestrator — all topics live in the pipe target
 /// (hub) channel. Keeps the adapter state under
-/// `<workdir>/channels/<channel>/.github/` for dedup/cursor continuity.
+/// `<data dir>/channels/<channel>/.github/` for dedup/cursor continuity.
 pub(crate) fn spawn_github_pipe(
     channel_config: &ChannelConfig,
     channel_name: String,
     config: Arc<jyc_types::AppConfig>,
     hubs: Arc<HashMap<String, Arc<HubPipe>>>,
-    workdir: &Path,
+    data_dir: &Path,
     cancel: CancellationToken,
     tasks: &mut Vec<JoinHandle<()>>,
 ) -> Result<()> {
@@ -63,7 +63,7 @@ pub(crate) fn spawn_github_pipe(
     );
 
     let channel_span = tracing::info_span!("in", ch = %channel_name);
-    let workdir = workdir.to_path_buf();
+    let data_dir = data_dir.to_path_buf();
     let cancel_child = cancel.child_token();
 
     tasks.push(tokio::spawn(
@@ -144,7 +144,7 @@ pub(crate) fn spawn_github_pipe(
             let adapter = GithubInboundAdapter::new(
                 &github_config,
                 channel_name.clone(),
-                &workdir.join("channels"),
+                &data_dir,
                 Some(snapshot),
             );
             let patterns: Vec<jyc_types::ChannelPattern> = config

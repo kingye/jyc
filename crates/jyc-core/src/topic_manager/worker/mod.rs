@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 use arc_swap::ArcSwap;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -75,7 +75,8 @@ pub(crate) async fn process_message(
     // can restore it when constructing a synthetic InboundMessage.
     // Without this, the proxy's InboundMessage has empty metadata and
     // channel-specific reply routing fails (e.g., github_number missing → 404).
-    let topic_meta_path = jyc_dir(topic_name, &store_result.topic_path).join("topic-meta.json");
+    let topic_meta_path =
+        resolve_state_dir(topic_name, &store_result.topic_path).join("topic-meta.json");
     let topic_is_new = !topic_meta_path.exists();
     if topic_is_new && item.message.channel_uid != "dashboard" {
         let meta = serde_json::json!({
@@ -85,7 +86,9 @@ pub(crate) async fn process_message(
             "metadata": item.message.metadata,
         });
         if let Ok(json) = serde_json::to_string_pretty(&meta) {
-            let _ = tokio::fs::create_dir_all(jyc_dir(topic_name, &store_result.topic_path)).await;
+            let _ =
+                tokio::fs::create_dir_all(resolve_state_dir(topic_name, &store_result.topic_path))
+                    .await;
             if let Err(e) = tokio::fs::write(&topic_meta_path, json).await {
                 tracing::warn!(error = %e, "Failed to write topic-meta.json");
             } else {
@@ -527,7 +530,8 @@ pub(crate) async fn process_message(
     if result.reply_delivered {
         // The background delivery watcher deletes reply-sent.flag after
         // successful delivery.
-        let signal_path = jyc_dir(topic_name, &store_result.topic_path).join("reply-sent.flag");
+        let signal_path =
+            resolve_state_dir(topic_name, &store_result.topic_path).join("reply-sent.flag");
         if !signal_path.exists() {
             tracing::info!(
                 "Reply already delivered directly by the agent loop (or by the \
@@ -544,7 +548,8 @@ pub(crate) async fn process_message(
             let reply_text = match reply_text {
                 Some(t) => Some(t),
                 None => {
-                    let reply_md = jyc_dir(topic_name, &store_result.topic_path).join("reply.md");
+                    let reply_md =
+                        resolve_state_dir(topic_name, &store_result.topic_path).join("reply.md");
                     if reply_md.exists() {
                         tokio::fs::read_to_string(&reply_md)
                             .await
@@ -575,7 +580,7 @@ pub(crate) async fn process_message(
                     // signal files so the suppression never re-fires.
                     tokio::fs::remove_file(&signal_path).await.ok();
                     let reply_md_gone =
-                        jyc_dir(topic_name, &store_result.topic_path).join("reply.md");
+                        resolve_state_dir(topic_name, &store_result.topic_path).join("reply.md");
                     tokio::fs::remove_file(&reply_md_gone).await.ok();
                 } else {
                     tracing::info!(
@@ -603,7 +608,7 @@ pub(crate) async fn process_message(
                     // Clean up signal files after successful delivery to prevent re-delivery on restart
                     tokio::fs::remove_file(&signal_path).await.ok();
                     let reply_md_path =
-                        jyc_dir(topic_name, &store_result.topic_path).join("reply.md");
+                        resolve_state_dir(topic_name, &store_result.topic_path).join("reply.md");
                     tokio::fs::remove_file(&reply_md_path).await.ok();
                     topic_manager.metrics.reply_by_tool(topic_name);
                 }
@@ -681,7 +686,7 @@ pub(crate) fn build_hook_set(cfg: &jyc_types::AppConfig, pattern_name: &str) -> 
 
 /// Read skills from topic's .jyc/skills.json file.
 pub(crate) async fn read_skills(topic_name: &str, topic_path: &Path) -> Vec<String> {
-    let skills_path = jyc_dir(topic_name, topic_path).join("skills.json");
+    let skills_path = resolve_state_dir(topic_name, topic_path).join("skills.json");
     match tokio::fs::read_to_string(&skills_path).await {
         Ok(content) => serde_json::from_str::<Vec<String>>(&content).unwrap_or_default(),
         Err(_) => Vec::new(),

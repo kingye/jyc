@@ -8,7 +8,7 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -119,8 +119,9 @@ impl Tool for PublishFileTool {
             }
         };
 
-        let jyc_dir = jyc_dir(ctx.current_topic.as_deref().unwrap_or(""), ctx.working_dir);
-        let exchange_dir = jyc_dir.join(jyc_core::EXCHANGE_DIR_NAME);
+        let state_dir =
+            resolve_state_dir(ctx.current_topic.as_deref().unwrap_or(""), ctx.working_dir);
+        let exchange_dir = state_dir.join(jyc_core::EXCHANGE_DIR_NAME);
         tokio::fs::create_dir_all(&exchange_dir)
             .await
             .context("failed to create exchange directory")?;
@@ -136,7 +137,7 @@ impl Tool for PublishFileTool {
                 .context("failed to copy file into exchange directory")?;
         }
 
-        let token = load_or_create_token(&jyc_dir)?;
+        let token = load_or_create_token(&state_dir)?;
         let url = jyc_core::exchange_url(&self.base_url, &channel, &topic, name, &token);
 
         tracing::info!(
@@ -155,8 +156,8 @@ impl Tool for PublishFileTool {
 
 /// Read the per-topic exchange-access token, generating and persisting it
 /// (owner-only permissions) on first use.
-fn load_or_create_token(jyc_dir: &Path) -> Result<String> {
-    let token_path: PathBuf = jyc_dir.join(jyc_core::EXCHANGE_TOKEN_FILENAME);
+fn load_or_create_token(state_dir: &Path) -> Result<String> {
+    let token_path: PathBuf = state_dir.join(jyc_core::EXCHANGE_TOKEN_FILENAME);
     if let Ok(token) = jyc_utils::auth_token::read_token(&token_path) {
         return Ok(token);
     }

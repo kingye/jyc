@@ -64,7 +64,7 @@ pub struct TopicManager {
     // and silently fail to cancel the running worker.
     pub(crate) topic_cancels: Arc<Mutex<HashMap<String, CancellationToken>>>,
 
-    // Template directories for topic initialization (layered: L1 global < L2 workdir)
+    // Template directories for topic initialization (layered: L1 global < L2 data_dir)
     template_dirs: crate::template_dirs::TemplateDirs,
 
     // Channel name this TopicManager belongs to
@@ -73,9 +73,9 @@ pub struct TopicManager {
     channel_type: String,
 
     // Workdir (data root) for this channel.
-    workdir: PathBuf,
+    data_dir: PathBuf,
 
-    // Workspace directory for this channel (<workdir>/<channel>/workspace/)
+    // Workspace directory for this channel (<data dir>/<channel>/workspace/)
     workspace_dir: PathBuf,
 
     // Application config (for command handlers that need channel/pattern info)
@@ -108,7 +108,7 @@ pub struct TopicManager {
 
     /// Test/override hook for the central billing ledger directory.
     /// When unset, `billing_dir()` falls back to
-    /// `BillingLogStore::billing_dir()` (`<data_home>/billing`).
+    /// `BillingLogStore::billing_dir()` (`<data dir>/billing`).
     billing_dir_override: std::sync::OnceLock<PathBuf>,
 }
 
@@ -127,7 +127,7 @@ impl TopicManager {
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
         channel_name: String,
         channel_type: String,
-        workdir: PathBuf,
+        data_dir: PathBuf,
         workspace_dir: PathBuf,
         metrics: MetricsHandle,
     ) -> Self {
@@ -143,7 +143,7 @@ impl TopicManager {
             config,
             channel_name,
             channel_type,
-            workdir,
+            data_dir,
             workspace_dir,
             metrics,
             None,
@@ -164,7 +164,7 @@ impl TopicManager {
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
         channel_name: String,
         channel_type: String,
-        workdir: PathBuf,
+        data_dir: PathBuf,
         workspace_dir: PathBuf,
         metrics: MetricsHandle,
         config_path: Option<PathBuf>,
@@ -182,7 +182,7 @@ impl TopicManager {
             template_dirs: template_dirs.into(),
             channel_name,
             channel_type,
-            workdir,
+            data_dir,
             workspace_dir,
             config,
             config_path,
@@ -216,9 +216,9 @@ impl TopicManager {
         &self.channel_type
     }
 
-    /// Return the workdir (data root) for this channel.
+    /// Return the data_dir (data root) for this channel.
     pub fn data_root(&self) -> &Path {
-        &self.workdir
+        &self.data_dir
     }
 
     /// Override the central billing ledger directory (tests).
@@ -227,7 +227,7 @@ impl TopicManager {
     }
 
     /// Central billing ledger directory: the override when set, else
-    /// `<data_home>/billing` (`None` when no data home is resolvable).
+    /// `<data dir>/billing` (`None` when no data home is resolvable).
     pub(crate) fn billing_dir(&self) -> Option<PathBuf> {
         self.billing_dir_override
             .get()

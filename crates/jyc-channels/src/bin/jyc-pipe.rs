@@ -14,7 +14,7 @@
 //! `jyc serve` skips exactly those in-process. No config section is
 //! involved.
 //!
-//! Usage: jyc-pipe [--workdir DIR] [--config FILE] [--hub WS-URL]
+//! Usage: jyc-pipe [--data-dir DIR] [--config FILE] [--hub WS-URL]
 //!                  [--no-idle] [--reset] [-v]
 
 use std::path::PathBuf;
@@ -24,7 +24,7 @@ use anyhow::{Context, Result};
 use tokio_util::sync::CancellationToken;
 
 struct PipeArgs {
-    workdir: Option<PathBuf>,
+    data_dir: Option<PathBuf>,
     config: Option<String>,
     hub: Option<String>,
     log_file: Option<Option<PathBuf>>,
@@ -46,17 +46,18 @@ Runs the configured pipe-only channels (feishu, github, gitee, wecom_bot,
 wecom, wecomkf, email) as a separate process, forwarding messages to the hub
 over websocket. `jyc serve` skips those channels in-process; the WeCom
 webhook listener (`[wecom].bind_addr`) and the email mailbox cursor
-(`<workdir>/channels/<name>/.imap/`) belong to this process.
+(`<data dir>/channels/<name>/.imap/`) belong to this process.
 
 Usage: jyc-pipe [OPTIONS]
 
 Options:
-  -w, --workdir <DIR>   Working directory / data root (default: platform data dir)
+      --data-dir <DIR>   Data dir (default: platform data dir, e.g.
+                        ~/.local/share/jyc on Linux)
   -c, --config <FILE>   Config file (default: resolved like `jyc serve`)
       --hub <WS-URL>    Hub websocket origin (default: ws://<inspect.bind>,
                         derived from the config's [inspect] section)
-      --log-file [PATH] Write logs to PATH (no value: <data_home>/jyc-pipe.log);
-                        default: <data_home>/jyc-pipe.log (jyc-pipe is a
+      --log-file [PATH] Write logs to PATH (no value: <data dir>/jyc-pipe.log);
+                        default: <data dir>/jyc-pipe.log (jyc-pipe is a
                         daemon, like bare `jyc`); use /dev/stderr for stderr
       --no-idle         Use polling instead of IMAP IDLE (email channels)
       --reset           Reset monitoring state before starting (email channels)
@@ -68,7 +69,7 @@ Options:
 
 fn parse_args_from<I: Iterator<Item = String>>(it: I) -> Result<ParseOutcome> {
     let mut args = PipeArgs {
-        workdir: None,
+        data_dir: None,
         config: None,
         hub: None,
         log_file: None,
@@ -83,7 +84,7 @@ fn parse_args_from<I: Iterator<Item = String>>(it: I) -> Result<ParseOutcome> {
                 .with_context(|| format!("missing value for {flag}"))
         };
         match arg.as_str() {
-            "-w" | "--workdir" => args.workdir = Some(PathBuf::from(take_value("--workdir")?)),
+            "--data-dir" => args.data_dir = Some(PathBuf::from(take_value("--data-dir")?)),
             "-c" | "--config" => args.config = Some(take_value("--config")?),
             "--hub" => args.hub = Some(take_value("--hub")?),
             // Optional value (clap-style `num_args = 0..=1`): consume the
@@ -96,8 +97,8 @@ fn parse_args_from<I: Iterator<Item = String>>(it: I) -> Result<ParseOutcome> {
             "--reset" => args.reset = true,
             "-v" | "--verbose" => args.verbose = true,
             "-h" | "--help" => return Ok(ParseOutcome::Help),
-            other if other.starts_with("--workdir=") => {
-                args.workdir = Some(PathBuf::from(&other["--workdir=".len()..]));
+            other if other.starts_with("--data-dir=") => {
+                args.data_dir = Some(PathBuf::from(&other["--data-dir=".len()..]));
             }
             other if other.starts_with("--config=") => {
                 args.config = Some(other["--config=".len()..].to_string());
@@ -195,7 +196,7 @@ fn filter_directives(default_filter: &str, rust_log: Option<&str>) -> String {
 /// long-running process with no one-shot mode, so it aligns with bare
 /// `jyc` (which defaults to `jyc.log`), not with explicit `jyc`
 /// subcommands (which default to stderr). Default: append to
-/// `<data_home>/jyc-pipe.log`; `--log-file [PATH]` overrides, and
+/// `<data dir>/jyc-pipe.log`; `--log-file [PATH]` overrides, and
 /// `--log-file /dev/stderr` restores stderr. Under systemd
 /// (`JOURNAL_STREAM` set) stderr logs drop the timestamp — journal adds
 /// its own. Plain append-only file, no rotation (same trade-off as
@@ -216,7 +217,7 @@ fn init_tracing(filter: &str, log_file: Option<Option<PathBuf>>) -> Result<()> {
 
     let path = match log_file {
         Some(Some(path)) => Some(path),
-        Some(None) | None => jyc_utils::paths::data_home().map(|home| home.join("jyc-pipe.log")),
+        Some(None) | None => jyc_utils::paths::data_dir().map(|home| home.join("jyc-pipe.log")),
     };
     if let Some(path) = path {
         let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -249,11 +250,11 @@ async fn main() -> Result<()> {
     };
     init_tracing(filter, args.log_file)?;
 
-    let workdir = jyc_utils::config_resolve::resolve_workdir(args.workdir.as_ref())?;
+    let data_dir = jyc_utils::config_resolve::resolve_data_dir(args.data_dir.as_ref())?;
     let resolution = jyc_utils::config_resolve::resolve_config(
-        &workdir,
+        &data_dir,
         args.config.as_deref(),
-        args.workdir.is_some(),
+        args.data_dir.is_some(),
     )?;
     let config = jyc_types::load_config_layered(
         resolution.global_config_path.as_deref(),
@@ -270,7 +271,7 @@ async fn main() -> Result<()> {
     let hub_origin = resolve_hub_origin(args.hub.as_deref(), &config)?;
     // Reuse-or-generate matches the hub's own semantics: whoever starts
     // first creates the token file, the other reuses it.
-    let token = jyc_utils::auth_token::resolve_or_generate_token(&workdir)?;
+    let token = jyc_utils::auth_token::resolve_or_generate_token(&data_dir)?;
 
     let cancel = CancellationToken::new();
     {
@@ -284,7 +285,7 @@ async fn main() -> Result<()> {
 
     jyc_channels::pipe::run(
         Arc::new(config),
-        &workdir,
+        &data_dir,
         &hub_origin,
         Some(token),
         args.no_idle,
@@ -369,7 +370,7 @@ mod tests {
         let ParseOutcome::Args(args) = parse(&[]).unwrap() else {
             panic!("expected Args");
         };
-        assert!(args.workdir.is_none());
+        assert!(args.data_dir.is_none());
         assert!(args.config.is_none());
         assert!(args.hub.is_none());
         assert!(!args.verbose);
@@ -378,7 +379,7 @@ mod tests {
     #[test]
     fn test_parse_long_and_short_flags() {
         let ParseOutcome::Args(args) = parse(&[
-            "--workdir",
+            "--data-dir",
             "/data",
             "-c",
             "custom.toml",
@@ -389,7 +390,7 @@ mod tests {
         .unwrap() else {
             panic!("expected Args");
         };
-        assert_eq!(args.workdir, Some(PathBuf::from("/data")));
+        assert_eq!(args.data_dir, Some(PathBuf::from("/data")));
         assert_eq!(args.config.as_deref(), Some("custom.toml"));
         assert_eq!(args.hub.as_deref(), Some("ws://127.0.0.1:9876"));
         assert!(args.verbose);

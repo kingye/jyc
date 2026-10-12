@@ -2,7 +2,7 @@
 //!
 //! Extracted from the monolithic `config.rs`.
 
-use crate::state_dir::jyc_dir;
+use crate::state_dir::resolve_state_dir;
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde::Deserialize;
@@ -64,7 +64,7 @@ pub struct TopicAiConfig {
 }
 
 /// Load topic-level overrides from the topic's resolved state dir
-/// (`jyc_dir(topic_name, topic_path)/config.toml`; in-dir `.jyc` for
+/// (`resolve_state_dir(topic_name, topic_path)/config.toml`; in-dir `.jyc` for
 /// unpinned topics).
 ///
 /// Returns `None` when the file does not exist, when it cannot be read
@@ -77,7 +77,7 @@ pub struct TopicAiConfig {
 /// `Option<TopicConfig>` and swallows errors. `${VAR}` expansion runs
 /// on every string field (via [`parse_and_deserialize`]).
 pub fn load_topic_config(topic_name: &str, topic_path: &Path) -> Option<TopicConfig> {
-    let path = jyc_dir(topic_name, topic_path).join("config.toml");
+    let path = resolve_state_dir(topic_name, topic_path).join("config.toml");
     let path_label = path.display().to_string();
     if !path.exists() {
         return None;
@@ -147,7 +147,7 @@ pub fn apply_topic_mcp_overlay(
 /// Deep-merge two TOML values: tables merge recursively; all other values
 /// (strings, arrays, scalars) are replaced by the overlay.
 ///
-/// Used for layered configuration: the workdir config (overlay) overrides
+/// Used for layered configuration: the data_dir config (overlay) overrides
 /// the global config (base) on a per-key basis.
 pub(crate) fn merge_toml(base: toml::Value, overlay: toml::Value) -> toml::Value {
     match (base, overlay) {
@@ -267,7 +267,7 @@ fn drop_empty_string_markers(value: &mut toml::Value) {
     }
 }
 
-/// Load configuration with global/workdir layering.
+/// Load configuration with global/data dir layering.
 ///
 /// When `global` is `Some` and differs from `path`, the global config is
 /// loaded first as the base layer and `path` is merged on top of it via
@@ -276,7 +276,7 @@ fn drop_empty_string_markers(value: &mut toml::Value) {
 /// A missing global config file is silently ignored (layering is optional);
 /// a missing `path` config file is an error.
 pub fn load_config_layered(global: Option<&Path>, path: &Path) -> Result<AppConfig> {
-    // Read + parse the workdir file. L2 is the overlay; L1 (if any) is
+    // Read + parse the data_dir file. L2 is the overlay; L1 (if any) is
     // the base, deep-merged underneath.
     let mut value = read_and_parse(path)?;
 

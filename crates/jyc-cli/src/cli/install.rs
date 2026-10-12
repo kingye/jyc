@@ -1,8 +1,8 @@
 //! Shared logic for the `agents` and `skills` subcommands.
 //!
 //! Both commands install named directories from a *source* directory
-//! (e.g. the jyc repo checkout) into a *target* directory (a config or
-//! workdir layer):
+//! (e.g. the jyc repo checkout) into a *target* directory (a config
+//! dir or data dir layer):
 //!
 //! - `jyc agents` operates on `<source>/templates/` → `<target>/templates/`
 //! - `jyc skills` operates on `<source>/skills/` → `<target>/skills/`
@@ -26,7 +26,7 @@ pub fn resolve_source(explicit: Option<&Path>) -> Result<PathBuf> {
 pub fn resolve_target(explicit: Option<&Path>) -> Result<PathBuf> {
     match explicit {
         Some(d) => Ok(jyc_utils::paths::expand_tilde(&d.to_string_lossy())),
-        None => jyc_utils::paths::config_home().ok_or_else(|| {
+        None => jyc_utils::paths::config_dir().ok_or_else(|| {
             anyhow::anyhow!(
                 "could not determine platform config directory; pass --target explicitly"
             )

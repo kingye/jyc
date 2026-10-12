@@ -141,4 +141,4 @@ Required scopes:
 
 1. **PR Reviews**: Gitee does not have a formal PR review API equivalent to GitHub's. The reviewer agent posts comments instead.
 2. **API Rate Limits**: Gitee's free tier has stricter rate limits than GitHub. Consider increasing `poll_interval_secs` if you encounter rate limiting.
-3. **CI Integration**: Gitee Go CI status polling is supported but may require additional configuration.
+3. **CI Integration**: Gitee Go CI status is **not** polled. The channel fetches no build status; check the PR's `build_status` field yourself when you need it.

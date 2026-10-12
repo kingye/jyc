@@ -134,19 +134,10 @@ pub(crate) fn spawn_github_pipe(
                 );
             }
 
-            // Patterns are a startup snapshot: the ArcSwap is seeded once
-            // and never reloaded — hot pattern reload was a hub-side
-            // convenience; restart jyc-pipe to apply pattern changes
-            // (same trade-off as the feishu pipe). The adapter itself
-            // reads patterns (PR topic prefixes), so it gets the same
-            // snapshot.
-            let snapshot = Arc::new(arc_swap::ArcSwap::from_pointee((*config).clone()));
-            let adapter = GithubInboundAdapter::new(
-                &github_config,
-                channel_name.clone(),
-                &data_dir,
-                Some(snapshot),
-            );
+            // Patterns are a startup snapshot; restart jyc-pipe to apply
+            // pattern changes (same trade-off as the feishu pipe).
+            let adapter =
+                GithubInboundAdapter::new(&github_config, channel_name.clone(), &data_dir);
             let patterns: Vec<jyc_types::ChannelPattern> = config
                 .channels
                 .get(&channel_name)

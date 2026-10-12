@@ -10,10 +10,6 @@ fn default_poll_interval() -> u64 {
     60
 }
 
-fn default_true() -> bool {
-    true
-}
-
 /// Gitee-specific configuration for a channel.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GiteeConfig {
@@ -34,10 +30,6 @@ pub struct GiteeConfig {
     /// Polling interval in seconds (default: 60)
     #[serde(default = "default_poll_interval")]
     pub poll_interval_secs: u64,
-
-    /// Whether to poll CI build status on open PRs (default: true)
-    #[serde(default = "default_true")]
-    pub poll_ci_status: bool,
 }
 
 impl Default for GiteeConfig {
@@ -48,7 +40,6 @@ impl Default for GiteeConfig {
             token: String::new(),
             api_url: default_api_url(),
             poll_interval_secs: default_poll_interval(),
-            poll_ci_status: true,
         }
     }
 }
@@ -108,30 +99,5 @@ mod tests {
         assert_eq!(config.owner, "myorg");
         assert_eq!(config.repo, "myrepo");
         assert_eq!(config.api_url, "https://gitee.example.com/api/v5");
-    }
-
-    #[test]
-    fn test_config_deserialize_poll_ci_status_default() {
-        let toml_str = r#"
-            owner = "myuser"
-            repo = "myproject"
-            token = "gitee_token_123"
-        "#;
-
-        let config: GiteeConfig = toml::from_str(toml_str).unwrap();
-        assert!(config.poll_ci_status);
-    }
-
-    #[test]
-    fn test_config_deserialize_poll_ci_status_disabled() {
-        let toml_str = r#"
-            owner = "myuser"
-            repo = "myproject"
-            token = "gitee_token_123"
-            poll_ci_status = false
-        "#;
-
-        let config: GiteeConfig = toml::from_str(toml_str).unwrap();
-        assert!(!config.poll_ci_status);
     }
 }

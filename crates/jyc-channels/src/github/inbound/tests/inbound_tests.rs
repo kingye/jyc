@@ -754,9 +754,8 @@ async fn test_load_processed_comments_empty() {
         token: "test".to_string(),
         api_url: "https://api.github.com".to_string(),
         poll_interval_secs: 60,
-        poll_ci_status: true,
     };
-    let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
+    let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
     tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
     let comments = adapter.load_processed_comments().await;
@@ -772,9 +771,8 @@ async fn test_track_and_load_comments() {
         token: "test".to_string(),
         api_url: "https://api.github.com".to_string(),
         poll_interval_secs: 60,
-        poll_ci_status: true,
     };
-    let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
+    let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
     tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
     let mut processed = HashSet::new();
@@ -810,9 +808,8 @@ async fn test_edited_comment_reprocessed() {
         token: "test".to_string(),
         api_url: "https://api.github.com".to_string(),
         poll_interval_secs: 60,
-        poll_ci_status: true,
     };
-    let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
+    let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
     tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
     let mut processed = HashSet::new();
@@ -846,9 +843,8 @@ async fn test_compact_processed_comments() {
         token: "test".to_string(),
         api_url: "https://api.github.com".to_string(),
         poll_interval_secs: 60,
-        poll_ci_status: true,
     };
-    let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
+    let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
     tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
     // Create a set with 3000 entries (key format: "id:timestamp")
@@ -882,9 +878,8 @@ async fn test_compact_no_op_under_threshold() {
         token: "test".to_string(),
         api_url: "https://api.github.com".to_string(),
         poll_interval_secs: 60,
-        poll_ci_status: true,
     };
-    let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
+    let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path());
     tokio::fs::create_dir_all(&adapter.state_dir).await.unwrap();
 
     // Set with fewer than 2000 entries — compact should be a no-op
@@ -905,11 +900,9 @@ fn test_build_trigger_message() {
         token: "test".to_string(),
         api_url: "https://api.github.com".to_string(),
         poll_interval_secs: 60,
-        poll_ci_status: true,
     };
     let tmpdir = tempfile::tempdir().unwrap();
-    let adapter =
-        GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path(), None);
+    let adapter = GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path());
 
     let msg = adapter.build_trigger_message(
         "issue_comment",
@@ -945,11 +938,9 @@ fn test_build_trigger_message_pr() {
         token: "test".to_string(),
         api_url: "https://api.github.com".to_string(),
         poll_interval_secs: 60,
-        poll_ci_status: true,
     };
     let tmpdir = tempfile::tempdir().unwrap();
-    let adapter =
-        GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path(), None);
+    let adapter = GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path());
 
     let msg = adapter.build_trigger_message(
         "pull_request",
@@ -982,11 +973,9 @@ fn test_build_trigger_message_number_aliases_are_type_gated() {
         token: "test".to_string(),
         api_url: "https://api.github.com".to_string(),
         poll_interval_secs: 60,
-        poll_ci_status: true,
     };
     let tmpdir = tempfile::tempdir().unwrap();
-    let adapter =
-        GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path(), None);
+    let adapter = GithubInboundAdapter::new(&config, "test_github".to_string(), tmpdir.path());
 
     let issue = adapter.build_trigger_message(
         "issue_comment",
@@ -1029,11 +1018,9 @@ fn test_build_trigger_message_enterprise_gh_host() {
         token: "test".to_string(),
         api_url: "https://github.tools.sap/api/v3".to_string(),
         poll_interval_secs: 60,
-        poll_ci_status: true,
     };
     let tmpdir = tempfile::tempdir().unwrap();
-    let adapter =
-        GithubInboundAdapter::new(&config, "networkcalc".to_string(), tmpdir.path(), None);
+    let adapter = GithubInboundAdapter::new(&config, "networkcalc".to_string(), tmpdir.path());
 
     let msg = adapter.build_trigger_message(
         "pull_request",

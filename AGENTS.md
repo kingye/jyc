@@ -15,6 +15,14 @@ and uses an in-process AI agent to generate replies.
 - Error handling: propagate with `?`, use `.context()` for meaningful errors
 - All public functions must have doc comments
 
+## 路径命名（统一术语）
+
+- 术语以 `DESIGN.md` 的 **Terminology** 为准，代码、文档、日志、提交信息一律使用统一名称
+- 禁止使用的旧名：`workdir`/`--workdir`、`data_home`、`config_home`、`jyc_dir`、`state_root`、`agents_root`、`agents_workspace_root`、`staging_dir`
+- 数据目录参数固定为 `--data-dir`（无短选项）
+- topic 的工作目录一律称 `topic_path`；`.jyc` 一律称 state dir，且恒在 agents dir 下
+- topic 永不落在 channel 下；`<data dir>/channels/<channel>/` 是该 channel 的运行状态（游标），不是 topic
+
 ## Git Rules
 - NEVER run `git config user.name` or `git config user.email` (local or global)
 - NEVER run `git config --global` for any setting
@@ -89,7 +97,7 @@ and uses an in-process AI agent to generate replies.
 ## Agent Behavior Rules
 
 ### Subagents
-- 术语以 `DESIGN.md` 的 **Terminology** 为准：`topic_path` = 工作目录（agent 在哪跑、父被授权读写哪），state dir = 该 topic 的 `.jyc`（恒在 agents_root 下、按名字定位）
+- 术语以 `DESIGN.md` 的 **Terminology** 为准：`topic_path` = 工作目录（agent 在哪跑、父被授权读写哪），state dir = 该 topic 的 `.jyc`（恒在 agents dir 下、按名字定位）
 - 委派前必须先看系统提示里的子 agent 列表；已有能用的子 agent 就用 `jyc_send_to_topic`（`require_reply=true`）追加任务，**禁止**重复创建
 - 仅当已有子 agent 都不合适时才用 `jyc_spawn_subagent` 新建；它与 `/spawn` 是同一实现：子 agent 继承本 topic 的 state（对话副本、task list、mode、pattern），有自己的 `topic_path` 和队列
 - 子 agent 的输入由父用 `write` 放进它的 `topic_path`（父对该目录有读写权），再用 `jyc_send_to_topic` 派任务；给已存在的子 agent 追加任务同样用 `jyc_send_to_topic`

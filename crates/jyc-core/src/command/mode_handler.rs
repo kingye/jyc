@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::session_state;
@@ -13,11 +13,11 @@ use crate::session_state;
 ///
 /// Shared by `/plan`, `/build`, and user-defined commands that declare a mode.
 pub async fn set_mode(context: &CommandContext, mode: &str) -> Result<()> {
-    let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
-    let override_path = jyc_dir.join("mode-override");
+    let state_dir = resolve_state_dir(&context.topic_name, &context.topic_path);
+    let override_path = state_dir.join("mode-override");
 
     if mode == "plan" {
-        tokio::fs::create_dir_all(&jyc_dir).await?;
+        tokio::fs::create_dir_all(&state_dir).await?;
         tokio::fs::write(&override_path, "plan").await?;
     } else if override_path.exists() {
         tokio::fs::remove_file(&override_path).await?;
@@ -153,9 +153,9 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_build_mode";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        tokio::fs::write(jyc_dir.join("mode-override"), "plan")
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(state_dir.join("mode-override"), "plan")
             .await
             .unwrap();
 
@@ -164,7 +164,7 @@ mode = "agent"
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        assert!(!jyc_dir.join("mode-override").exists());
+        assert!(!state_dir.join("mode-override").exists());
     }
 
     #[tokio::test]
@@ -172,9 +172,9 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_plan_preserves_session";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        tokio::fs::write(jyc_dir.join("agent-session.json"), r#"{"created_at":"2026-01-01","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#)
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(state_dir.join("agent-session.json"), r#"{"created_at":"2026-01-01","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#)
             .await
             .unwrap();
 
@@ -183,7 +183,7 @@ mode = "agent"
         handler.execute(ctx).await.unwrap();
 
         // Session file should still exist
-        assert!(jyc_dir.join("agent-session.json").exists());
+        assert!(state_dir.join("agent-session.json").exists());
     }
 
     #[tokio::test]
@@ -246,15 +246,15 @@ context_window = 256000
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_build_writes_max_input_tokens";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         // Start in plan mode (so /build transitions away from it)
-        tokio::fs::write(jyc_dir.join("mode-override"), "plan")
+        tokio::fs::write(state_dir.join("mode-override"), "plan")
             .await
             .unwrap();
         // Pre-existing session with old max_input_tokens from plan
         tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
+            state_dir.join("agent-session.json"),
             r#"{"max_input_tokens":950000}"#,
         )
         .await
@@ -302,9 +302,9 @@ context_window = 256000
         handler.execute(ctx).await.unwrap();
 
         // mode-override removed
-        assert!(!jyc_dir.join("mode-override").exists());
+        assert!(!state_dir.join("mode-override").exists());
         // max_input_tokens now reflects build-256k (95% of 256k = 243200)
-        let content = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
+        let content = tokio::fs::read_to_string(state_dir.join("agent-session.json"))
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();

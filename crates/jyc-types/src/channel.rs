@@ -506,7 +506,7 @@ pub struct ChannelPattern {
     pub rules: PatternRules,
     /// Attachment download configuration for messages matching this pattern
     pub attachments: Option<InboundAttachmentConfig>,
-    /// Template name to initialize topic (from workdir/templates/)
+    /// Template name to initialize topic (from data_dir/templates/)
     /// If not specified, no template is applied
     #[serde(default)]
     pub template: Option<String>,

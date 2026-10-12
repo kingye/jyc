@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -37,7 +37,7 @@ pub struct ChatLogStore {
 /// Tries `.jyc/` first (new location), falls back to topic root (legacy).
 /// Returns sorted paths (oldest first) and the directory they were found in.
 pub fn list_chat_history_files(topic_name: &str, topic_path: &Path) -> (Vec<PathBuf>, PathBuf) {
-    let new_dir = jyc_dir(topic_name, topic_path);
+    let new_dir = resolve_state_dir(topic_name, topic_path);
     let files = read_chat_history_dir(&new_dir);
     if !files.is_empty() {
         return (files, new_dir);
@@ -141,7 +141,7 @@ impl ChatLogStore {
     /// Get the path for today's chat history file.
     /// New location: `.jyc/chat_history_YYYY-MM-DD.jsonl`
     fn get_today_file_path(&self) -> PathBuf {
-        jyc_dir(&self.topic_name, &self.topic_path)
+        resolve_state_dir(&self.topic_name, &self.topic_path)
             .join(format!("chat_history_{}.jsonl", self.current_date))
     }
 
@@ -515,10 +515,10 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let topic = "test_load_recent_chat_history_reads_jyc_subdir";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(
-            jyc_dir.join("chat_history_2026-07-22.jsonl"),
+            state_dir.join("chat_history_2026-07-22.jsonl"),
             r#"{"ts":"2026-07-22T10:00:00Z","type":"received","matched":true,"sender":"user","channel":"test","topic":"test","from":"user","content":"hello"}"#,
         )
         .unwrap();
@@ -534,10 +534,10 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let topic = "test_load_recent_chat_history_reads_reply";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(
-            jyc_dir.join("chat_history_2026-07-22.jsonl"),
+            state_dir.join("chat_history_2026-07-22.jsonl"),
             r#"{"ts":"2026-07-22T10:00:00Z","type":"reply","matched":true,"sender":"bot","channel":"test","content":"AI reply"}"#,
         )
         .unwrap();
@@ -553,8 +553,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let topic = "test_load_recent_chat_history_respects_max";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
         let mut lines = String::new();
         for i in 0..10 {
             lines.push_str(&format!(
@@ -563,7 +563,7 @@ mod tests {
             ));
             lines.push('\n');
         }
-        std::fs::write(jyc_dir.join("chat_history_2026-07-22.jsonl"), lines).unwrap();
+        std::fs::write(state_dir.join("chat_history_2026-07-22.jsonl"), lines).unwrap();
 
         let entries = load_recent_chat_history(topic, tmp.path(), 3);
         assert_eq!(entries.len(), 3);
@@ -576,10 +576,10 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let topic = "test_load_recent_chat_history_skips_unknown_types";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(
-            jyc_dir.join("chat_history_2026-07-22.jsonl"),
+            state_dir.join("chat_history_2026-07-22.jsonl"),
             concat!(
                 r#"{"ts":"2026-07-22T10:00:00Z","type":"received","content":"hello"}"#,
                 "\n",

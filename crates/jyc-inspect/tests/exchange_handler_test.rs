@@ -86,9 +86,9 @@ fn make_topic_manager(tmp: &TempDir, workspace: &Path) -> Arc<TopicManager> {
 
 /// Seed a published file plus the token that guards it — through the same
 /// state-dir resolver production uses (the topic's state may be adopted
-/// to data_home when the topic has been registered).
+/// to data_dir when the topic has been registered).
 async fn seed_published(topic_name: &str, topic_dir: &Path, name: &str, token: &str) {
-    let jyc = jyc_types::state_dir::jyc_dir(topic_name, topic_dir);
+    let jyc = jyc_types::state_dir::resolve_state_dir(topic_name, topic_dir);
     let exchange = jyc.join("exchange");
     tokio::fs::create_dir_all(&exchange).await.unwrap();
     tokio::fs::write(exchange.join(name), b"bytes")

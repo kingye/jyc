@@ -521,9 +521,9 @@ mod tests {
     async fn adopts_the_staged_attachment_of_a_pipe_message() {
         let tmp = tempdir().unwrap();
         let topic_path = tmp.path().join("topic");
-        let staging_dir = tmp.path().join(".inbound");
-        std::fs::create_dir_all(&staging_dir).unwrap();
-        let staged = staging_dir.join("ab12-invoice.pdf");
+        let inbound_dir = tmp.path().join(".inbound");
+        std::fs::create_dir_all(&inbound_dir).unwrap();
+        let staged = inbound_dir.join("ab12-invoice.pdf");
         std::fs::write(&staged, b"pdf-bytes").unwrap();
 
         let mut message = staged_message(Some(staged.clone()), "invoice.pdf");

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::collections::HashMap;
 
 use jyc_types::{ModelInfo, ProviderDef};
@@ -41,8 +41,8 @@ pub fn list_available_models(providers: &HashMap<String, ProviderDef>) -> Vec<Mo
 #[async_trait]
 impl CommandHandler for ModelCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
-        tokio::fs::create_dir_all(&jyc_dir).await?;
+        let state_dir = resolve_state_dir(&context.topic_name, &context.topic_path);
+        tokio::fs::create_dir_all(&state_dir).await?;
 
         let providers = &context.config.ai.providers;
 
@@ -83,9 +83,9 @@ impl CommandHandler for ModelCommandHandler {
             })
         } else if context.args.len() == 1 && context.args[0] == "reset" {
             // /model reset — remove mode-specific and legacy overrides
-            let plan_path = jyc_dir.join("plan-model-override");
-            let build_path = jyc_dir.join("build-model-override");
-            let legacy_path = jyc_dir.join("model-override");
+            let plan_path = state_dir.join("plan-model-override");
+            let build_path = state_dir.join("build-model-override");
+            let legacy_path = state_dir.join("model-override");
             let mut removed = false;
             for path in [&plan_path, &build_path, &legacy_path] {
                 if path.exists() {
@@ -154,7 +154,7 @@ impl CommandHandler for ModelCommandHandler {
                         Some("build") => "build-model-override",
                         _ => "build-model-override", // None = default build mode
                     };
-                    let override_path = jyc_dir.join(filename);
+                    let override_path = state_dir.join(filename);
                     tokio::fs::write(&override_path, &model_id).await?;
 
                     // Update `max_input_tokens` for the newly-active model.
@@ -348,10 +348,10 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_reset_model";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
-            jyc_dir.join("build-model-override"),
+            state_dir.join("build-model-override"),
             "deepseek/deepseek-chat\n",
         )
         .await
@@ -363,7 +363,7 @@ mode = "agent"
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(result.message.contains("reset to default model"));
-        assert!(!jyc_dir.join("build-model-override").exists());
+        assert!(!state_dir.join("build-model-override").exists());
     }
 
     #[tokio::test]
@@ -423,10 +423,10 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_switch_model_in_plan_mode_writes_plan_override";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         // Simulate plan mode
-        tokio::fs::write(jyc_dir.join("mode-override"), "plan\n")
+        tokio::fs::write(state_dir.join("mode-override"), "plan\n")
             .await
             .unwrap();
 
@@ -437,9 +437,9 @@ mode = "agent"
         assert!(result.success);
 
         // Should write to plan-model-override, not model-override
-        assert!(jyc_dir.join("plan-model-override").exists());
-        assert!(!jyc_dir.join("model-override").exists());
-        let content = tokio::fs::read_to_string(jyc_dir.join("plan-model-override"))
+        assert!(state_dir.join("plan-model-override").exists());
+        assert!(!state_dir.join("model-override").exists());
+        let content = tokio::fs::read_to_string(state_dir.join("plan-model-override"))
             .await
             .unwrap();
         assert_eq!(content, "deepseek/deepseek-reasoner");
@@ -453,11 +453,11 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_switch_model_with_pattern_mode_writes_plan_override";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         // Topic created by pattern "p1" (mode = "plan" in config below);
         // no .jyc/mode-override file.
-        tokio::fs::write(jyc_dir.join("pattern"), "p1\n")
+        tokio::fs::write(state_dir.join("pattern"), "p1\n")
             .await
             .unwrap();
 
@@ -502,10 +502,10 @@ context_window = 64000
         assert!(result.success);
 
         // Pattern mode "plan" must select the plan override file.
-        assert!(jyc_dir.join("plan-model-override").exists());
-        assert!(!jyc_dir.join("build-model-override").exists());
-        assert!(!jyc_dir.join("model-override").exists());
-        let content = tokio::fs::read_to_string(jyc_dir.join("plan-model-override"))
+        assert!(state_dir.join("plan-model-override").exists());
+        assert!(!state_dir.join("build-model-override").exists());
+        assert!(!state_dir.join("model-override").exists());
+        let content = tokio::fs::read_to_string(state_dir.join("plan-model-override"))
             .await
             .unwrap();
         assert_eq!(content, "deepseek/deepseek-reasoner");
@@ -516,10 +516,10 @@ context_window = 64000
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_switch_model_in_build_mode_writes_build_override";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         // Simulate build mode
-        tokio::fs::write(jyc_dir.join("mode-override"), "build\n")
+        tokio::fs::write(state_dir.join("mode-override"), "build\n")
             .await
             .unwrap();
 
@@ -530,9 +530,9 @@ context_window = 64000
         assert!(result.success);
 
         // Should write to build-model-override
-        assert!(jyc_dir.join("build-model-override").exists());
-        assert!(!jyc_dir.join("model-override").exists());
-        let content = tokio::fs::read_to_string(jyc_dir.join("build-model-override"))
+        assert!(state_dir.join("build-model-override").exists());
+        assert!(!state_dir.join("model-override").exists());
+        let content = tokio::fs::read_to_string(state_dir.join("build-model-override"))
             .await
             .unwrap();
         assert_eq!(content, "deepseek/deepseek-chat");
@@ -543,15 +543,15 @@ context_window = 64000
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_reset_clears_all_mode_overrides";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        tokio::fs::write(jyc_dir.join("plan-model-override"), "deepseek/some\n")
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(state_dir.join("plan-model-override"), "deepseek/some\n")
             .await
             .unwrap();
-        tokio::fs::write(jyc_dir.join("build-model-override"), "ark/glm\n")
+        tokio::fs::write(state_dir.join("build-model-override"), "ark/glm\n")
             .await
             .unwrap();
-        tokio::fs::write(jyc_dir.join("model-override"), "legacy-model\n")
+        tokio::fs::write(state_dir.join("model-override"), "legacy-model\n")
             .await
             .unwrap();
 
@@ -562,9 +562,9 @@ context_window = 64000
         assert!(result.success);
         assert!(result.message.contains("reset to default model"));
 
-        assert!(!jyc_dir.join("plan-model-override").exists());
-        assert!(!jyc_dir.join("build-model-override").exists());
-        assert!(!jyc_dir.join("model-override").exists());
+        assert!(!state_dir.join("plan-model-override").exists());
+        assert!(!state_dir.join("build-model-override").exists());
+        assert!(!state_dir.join("model-override").exists());
     }
 
     #[tokio::test]
@@ -572,11 +572,11 @@ context_window = 64000
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_model_writes_max_input_tokens";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         // Pre-existing session with a different max_input_tokens
         tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
+            state_dir.join("agent-session.json"),
             r#"{"max_input_tokens":100}"#,
         )
         .await
@@ -621,9 +621,9 @@ context_window = 64000
         assert!(result.success);
 
         // build-model-override was written
-        assert!(jyc_dir.join("build-model-override").exists());
+        assert!(state_dir.join("build-model-override").exists());
         // and max_input_tokens in agent-session.json reflects the new model
-        let content = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
+        let content = tokio::fs::read_to_string(state_dir.join("agent-session.json"))
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();

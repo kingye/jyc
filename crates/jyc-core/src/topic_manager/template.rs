@@ -4,7 +4,7 @@
 //! directory from a template and guards against template mismatch.
 
 use anyhow::{Context, Result};
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::path::Path;
 
 use crate::template_utils::copy_template_files;
@@ -25,10 +25,10 @@ pub(crate) async fn initialize_topic_from_template(
     template_name: &str,
     template_dirs: &crate::template_dirs::TemplateDirs,
 ) -> Result<()> {
-    let jyc_dir = jyc_dir(topic_name, topic_path);
-    let template_marker = jyc_dir.join("template");
+    let state_dir = resolve_state_dir(topic_name, topic_path);
+    let template_marker = state_dir.join("template");
 
-    if jyc_dir.exists() {
+    if state_dir.exists() {
         match tokio::fs::read_to_string(&template_marker).await {
             Ok(existing) => {
                 let existing = existing.trim();
@@ -64,7 +64,7 @@ pub(crate) async fn initialize_topic_from_template(
 
     copy_template_files(&template_src, topic_path).await?;
 
-    tokio::fs::create_dir_all(&jyc_dir).await?;
+    tokio::fs::create_dir_all(&state_dir).await?;
 
     tokio::fs::write(&template_marker, template_name)
         .await

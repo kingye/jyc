@@ -8,7 +8,7 @@
 //! On reset: session state is cleared, conversation is summarized (last few turns kept).
 
 use jyc_types::channel::{CompressionMode, ResetCompressionConfig};
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tracing;
@@ -94,9 +94,9 @@ pub async fn save_raw_context(
     topic_path: &Path,
     raw_context: &[serde_json::Value],
 ) {
-    let jyc_dir = jyc_dir(topic_name, topic_path);
-    tokio::fs::create_dir_all(&jyc_dir).await.ok();
-    let path = jyc_dir.join(CONTEXT_FILE);
+    let state_dir = resolve_state_dir(topic_name, topic_path);
+    tokio::fs::create_dir_all(&state_dir).await.ok();
+    let path = state_dir.join(CONTEXT_FILE);
 
     tracing::info!(
         message_count = raw_context.len(),
@@ -125,8 +125,8 @@ pub async fn save_raw_context(
 /// flag file is absent or malformed — the absence of the file is the
 /// default "off" state.
 pub async fn read_wire_payload_dump_enabled(topic_name: &str, topic_path: &Path) -> bool {
-    let path =
-        jyc_dir(topic_name, topic_path).join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE);
+    let path = resolve_state_dir(topic_name, topic_path)
+        .join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE);
     let Ok(bytes) = tokio::fs::read(&path).await else {
         return false;
     };
@@ -152,11 +152,11 @@ pub async fn append_wire_payload_dump(
     regions: &[u8],
     wire: &[serde_json::Value],
 ) {
-    let jyc_dir = jyc_dir(topic_name, topic_path);
-    if tokio::fs::create_dir_all(&jyc_dir).await.is_err() {
+    let state_dir = resolve_state_dir(topic_name, topic_path);
+    if tokio::fs::create_dir_all(&state_dir).await.is_err() {
         return;
     }
-    let path = jyc_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FILE);
+    let path = state_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FILE);
 
     let entry = serde_json::json!({
         "ts": chrono::Utc::now().to_rfc3339(),
@@ -199,9 +199,9 @@ pub async fn load_context(
     topic_name: &str,
     topic_path: &Path,
 ) -> (Vec<Message>, Vec<serde_json::Value>) {
-    let jyc_dir = jyc_dir(topic_name, topic_path);
-    let session_path = jyc_dir.join(SESSION_FILE);
-    let context_path = jyc_dir.join(CONTEXT_FILE);
+    let state_dir = resolve_state_dir(topic_name, topic_path);
+    let session_path = state_dir.join(SESSION_FILE);
+    let context_path = state_dir.join(CONTEXT_FILE);
 
     // No session file = fresh start. No prior context.
     if !session_path.exists() {
@@ -383,7 +383,7 @@ pub async fn ensure_session_file(
     context_window: Option<u64>,
     auto_reset_threshold: f64,
 ) {
-    let session_path = jyc_dir(topic_name, topic_path).join(SESSION_FILE);
+    let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     if session_path.exists() {
         // Already there — never overwrite existing token data.
         return;
@@ -465,7 +465,7 @@ async fn persist_tokens_returning_state(
     auto_reset_threshold: f64,
     call_cost: f64,
 ) -> (std::path::PathBuf, SessionState) {
-    let session_path = jyc_dir(topic_name, topic_path).join(SESSION_FILE);
+    let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
 
     state.context_input_tokens = input_tokens;
@@ -504,7 +504,7 @@ pub async fn add_session_cost(topic_name: &str, topic_path: &Path, cost: f64) {
     if cost <= 0.0 {
         return;
     }
-    let session_path = jyc_dir(topic_name, topic_path).join(SESSION_FILE);
+    let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
     state.session_cost += cost;
     if state.created_at.is_empty() {
@@ -633,7 +633,7 @@ pub async fn maybe_reset_for_new_context(
     if new_max_input_tokens == 0 {
         return false;
     }
-    let session_path = jyc_dir(topic_name, topic_path).join(SESSION_FILE);
+    let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     let state = load_session_state(&session_path).await;
     if state.context_input_tokens < new_max_input_tokens {
         return false;
@@ -669,7 +669,7 @@ pub struct BillingContext {
     pub billing: jyc_types::config::BillingMode,
     /// `"provider/model"` label recorded on the ledger entry.
     pub model_label: String,
-    /// Central billing ledger directory (`<data_home>/billing`).
+    /// Central billing ledger directory (`<data dir>/billing`).
     /// `None` drops billing writes with a warning.
     pub billing_dir: Option<std::path::PathBuf>,
 }
@@ -694,21 +694,21 @@ pub async fn reset_session(
     provider: Option<&dyn crate::provider::Provider>,
     billing: Option<&BillingContext>,
 ) {
-    let jyc_dir = jyc_dir(topic_name, topic_path);
+    let state_dir = resolve_state_dir(topic_name, topic_path);
 
     match config.mode {
         CompressionMode::None => {
             // Delete everything — no summary
-            let context_path = jyc_dir.join(CONTEXT_FILE);
+            let context_path = state_dir.join(CONTEXT_FILE);
             tokio::fs::remove_file(&context_path).await.ok();
-            let session_path = jyc_dir.join(SESSION_FILE);
+            let session_path = state_dir.join(SESSION_FILE);
             tokio::fs::remove_file(&session_path).await.ok();
             tracing::info!("Agent session reset (no compression)");
         }
         CompressionMode::Heuristic => {
             // Heuristic compaction: keep last N pairs, then delete session
             summarize_context_heuristic(topic_name, topic_path, config.keep_pairs).await;
-            let session_path = jyc_dir.join(SESSION_FILE);
+            let session_path = state_dir.join(SESSION_FILE);
             tokio::fs::remove_file(&session_path).await.ok();
             tracing::info!("Agent session reset (heuristic compression)");
         }
@@ -724,7 +724,7 @@ pub async fn reset_session(
                 );
                 summarize_context_heuristic(topic_name, topic_path, config.keep_pairs).await;
             }
-            let session_path = jyc_dir.join(SESSION_FILE);
+            let session_path = state_dir.join(SESSION_FILE);
             tokio::fs::remove_file(&session_path).await.ok();
             tracing::info!("Agent session reset (LLM compression)");
         }
@@ -748,7 +748,7 @@ async fn summarize_context(
     provider: &dyn crate::provider::Provider,
     billing: Option<&BillingContext>,
 ) {
-    let context_path = jyc_dir(topic_name, topic_path).join(CONTEXT_FILE);
+    let context_path = resolve_state_dir(topic_name, topic_path).join(CONTEXT_FILE);
 
     if !context_path.exists() {
         return;
@@ -1574,7 +1574,7 @@ pub(crate) fn is_history_note(msg: &serde_json::Value) -> bool {
 ///
 /// `keep_pairs` controls how many user+assistant pairs to retain.
 async fn summarize_context_heuristic(topic_name: &str, topic_path: &Path, keep_pairs: usize) {
-    let context_path = jyc_dir(topic_name, topic_path).join(CONTEXT_FILE);
+    let context_path = resolve_state_dir(topic_name, topic_path).join(CONTEXT_FILE);
 
     if !context_path.exists() {
         return;
@@ -2191,10 +2191,10 @@ mod tests {
     async fn wire_payload_dump_flag_roundtrip() {
         let tmp = tempfile::TempDir::new().unwrap();
         jyc_types::state_dir::register("wire-flag-roundtrip", &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
-            jyc_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE),
+            state_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE),
             r#"{"enabled":true}"#,
         )
         .await
@@ -2202,7 +2202,7 @@ mod tests {
         assert!(super::read_wire_payload_dump_enabled("wire-flag-roundtrip", tmp.path()).await);
 
         tokio::fs::write(
-            jyc_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE),
+            state_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE),
             r#"{"enabled":false}"#,
         )
         .await
@@ -2211,7 +2211,7 @@ mod tests {
 
         // Malformed JSON must be tolerated as "off", not panic.
         tokio::fs::write(
-            jyc_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE),
+            state_dir.join(jyc_core::session_state::WIRE_PAYLOAD_DUMP_FLAG_FILE),
             "not json",
         )
         .await

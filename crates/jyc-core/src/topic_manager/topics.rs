@@ -2,7 +2,7 @@
 //!
 //! Extracted from the monolithic `topic_manager.rs`.
 
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -129,7 +129,7 @@ impl TopicManager {
             Some(p) => p,
             None => self.workspace_dir.join(topic_name),
         };
-        let path = jyc_dir(topic_name, &topic_path).join("pattern");
+        let path = resolve_state_dir(topic_name, &topic_path).join("pattern");
         let from_disk = tokio::fs::read_to_string(&path)
             .await
             .ok()
@@ -203,9 +203,9 @@ impl TopicManager {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
             }
-            let plan_path = jyc_dir(topic_name, topic_path).join("plan-model-override");
-            let build_path = jyc_dir(topic_name, topic_path).join("build-model-override");
-            let legacy_path = jyc_dir(topic_name, topic_path).join("model-override");
+            let plan_path = resolve_state_dir(topic_name, topic_path).join("plan-model-override");
+            let build_path = resolve_state_dir(topic_name, topic_path).join("build-model-override");
+            let legacy_path = resolve_state_dir(topic_name, topic_path).join("model-override");
 
             let mode_specific = match mode.as_deref() {
                 Some("plan") => read_trimmed(&plan_path).await,
@@ -292,7 +292,7 @@ impl TopicManager {
     /// instead of the default `<workspace>/<topic_name>/`. The directory
     /// is created if it does not already exist. `.jyc/topic-name` is also
     /// written so `list_topics` recognises the entry — without it, the
-    /// `jyc_dir(&path).is_dir()` filter in `list_topics` drops the
+    /// `resolve_state_dir(&path).is_dir()` filter in `list_topics` drops the
     /// entry and `wait_for_topic` times out for fresh ad-hoc topics.
     pub async fn set_topic_path(&self, topic_name: &str, path: PathBuf) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&path).await?;
@@ -301,14 +301,14 @@ impl TopicManager {
         // one (config pins adopt at startup under their topic name) — a
         // topic's state location is chosen once and never moved.
         let state = crate::topic_path::state_dir_for(
-            &crate::topic_path::state_root(&self.workdir),
+            &crate::topic_path::agents_dir(&self.data_dir),
             &path,
             None,
         );
         crate::topic_path::adopt_state_dir(topic_name, &path, &state)?;
-        let jyc_dir = jyc_dir(topic_name, &path);
-        tokio::fs::create_dir_all(&jyc_dir).await?;
-        tokio::fs::write(jyc_dir.join("topic-name"), topic_name)
+        let state_dir = resolve_state_dir(topic_name, &path);
+        tokio::fs::create_dir_all(&state_dir).await?;
+        tokio::fs::write(state_dir.join("topic-name"), topic_name)
             .await
             .ok();
         let mut paths = self.topic_paths.lock().await;
@@ -393,7 +393,7 @@ impl TopicManager {
             let jyc_name = if pattern.topic_path.is_some() {
                 let agent_key = (self.channel_name == "agents").then_some(pattern.name.as_str());
                 let state = crate::topic_path::state_dir_for(
-                    &crate::topic_path::state_root(&self.workdir),
+                    &crate::topic_path::agents_dir(&self.data_dir),
                     &resolved,
                     agent_key,
                 );
@@ -420,8 +420,8 @@ impl TopicManager {
                 jyc_types::state_dir::register_if_absent(pin_name, &resolved.join(".jyc"));
                 pin_name.to_string()
             };
-            let jyc_dir = jyc_dir(&jyc_name, &resolved);
-            let topic_name_file = jyc_dir.join("topic-name");
+            let state_dir = resolve_state_dir(&jyc_name, &resolved);
+            let topic_name_file = state_dir.join("topic-name");
             match tokio::fs::read_to_string(&topic_name_file).await {
                 Ok(name) => {
                     let name = name.trim().to_string();
@@ -566,7 +566,7 @@ impl TopicManager {
         {
             let mut paths = self.topic_paths.lock().await;
             paths.retain(|name, path| {
-                let exists = jyc_dir(name.as_str(), path.as_path()).is_dir();
+                let exists = resolve_state_dir(name.as_str(), path.as_path()).is_dir();
                 if !exists {
                     tracing::info!(
                         topic = %name,
@@ -629,16 +629,17 @@ impl TopicManager {
             let status = TopicStatus::Idle;
 
             // Fallback: read .jyc directory mtime if no activity tracker data
-            let last_active_at = match tokio::fs::metadata(jyc_dir(&name, &topic_path)).await {
-                Ok(meta) => match meta.modified() {
-                    Ok(mtime) => {
-                        let dt: chrono::DateTime<chrono::Utc> = mtime.into();
-                        Some(dt.to_rfc3339())
-                    }
+            let last_active_at =
+                match tokio::fs::metadata(resolve_state_dir(&name, &topic_path)).await {
+                    Ok(meta) => match meta.modified() {
+                        Ok(mtime) => {
+                            let dt: chrono::DateTime<chrono::Utc> = mtime.into();
+                            Some(dt.to_rfc3339())
+                        }
+                        Err(_) => None,
+                    },
                     Err(_) => None,
-                },
-                Err(_) => None,
-            };
+                };
 
             // Resolve accumulated cost: session-scoped from the session
             // file, today's durable total from the central billing
@@ -710,7 +711,7 @@ impl TopicManager {
                     &topic_path,
                 )
                 .await,
-                tasks: crate::session_state::read_tasks_at(&jyc_dir(&name, &topic_path))
+                tasks: crate::session_state::read_tasks_at(&resolve_state_dir(&name, &topic_path))
                     .await
                     .unwrap_or_default(),
                 activity: vec![], // Filled by InspectServer from event bus
@@ -922,8 +923,14 @@ mode = "agent"
         );
 
         let state_b = tmp.path().join("agents/co-beta/.jyc");
-        assert_eq!(jyc_types::state_dir::jyc_dir("co-alpha", &repo), state_a);
-        assert_eq!(jyc_types::state_dir::jyc_dir("co-beta", &repo), state_b);
+        assert_eq!(
+            jyc_types::state_dir::resolve_state_dir("co-alpha", &repo),
+            state_a
+        );
+        assert_eq!(
+            jyc_types::state_dir::resolve_state_dir("co-beta", &repo),
+            state_b
+        );
         assert_ne!(state_a, state_b);
         assert!(
             state_a.join("marker").exists(),

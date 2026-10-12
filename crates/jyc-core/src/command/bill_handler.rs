@@ -1,6 +1,6 @@
 //! /bill command — cross-topic usage/cost report.
 //!
-//! Aggregates the central billing ledger (`<data_home>/billing/
+//! Aggregates the central billing ledger (`<data dir>/billing/
 //! bill-*.jsonl`, written by `BillingLogStore`) and renders one
 //! markdown report grouped by provider → model → topic, so it works on
 //! every channel (the reply is a normal command result, not TUI-only

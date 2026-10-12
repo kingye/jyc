@@ -2,7 +2,7 @@
 //!
 //! Extracted from the monolithic `topic_manager.rs`.
 
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -79,8 +79,8 @@ impl TopicManager {
         // Activation registration (#825) at the single enqueue funnel —
         // covers the router, scheduled jobs, `jyc_send_to_topic`, and the
         // dashboard proxy. A user-dir pin without a registration fails
-        // loudly at `jyc_dir` instead of polluting the dir. Must run
-        // before the worker spawn below: worker code resolves `jyc_dir`
+        // loudly at `state_dir` instead of polluting the dir. Must run
+        // before the worker spawn below: worker code resolves `state_dir`
         // immediately.
         {
             let workspace = self.storage.workspace();
@@ -158,7 +158,7 @@ impl TopicManager {
             template_dirs: self.template_dirs.clone(),
             channel_name: self.channel_name.clone(),
             channel_type: self.channel_type.clone(),
-            workdir: self.workdir.clone(),
+            data_dir: self.data_dir.clone(),
             workspace_dir: self.workspace_dir.clone(),
             config: self.config.clone(),
             config_path: self.config_path.clone(),
@@ -351,15 +351,15 @@ impl TopicManager {
                 // even when no template is configured. This is critical for
                 // custom topic_path directories to be rediscovered after
                 // restart (via .jyc/topic-name).
-                let jyc_dir = jyc_dir(&item.topic_name, &topic_path);
-                if let Err(e) = tokio::fs::create_dir_all(&jyc_dir).await {
+                let state_dir = resolve_state_dir(&item.topic_name, &topic_path);
+                if let Err(e) = tokio::fs::create_dir_all(&state_dir).await {
                     tracing::warn!(error = %e, "Failed to create .jyc directory");
                 }
                 // Injected messages (jyc_send_to_topic, dashboard topic
                 // proxy) carry an empty pattern_name when no pattern could be
                 // resolved; don't let them erase the topic's real pattern.
                 if !item.pattern_match.pattern_name.is_empty() {
-                    let pattern_file = jyc_dir.join("pattern");
+                    let pattern_file = state_dir.join("pattern");
                     if let Err(e) = tokio::fs::write(&pattern_file, &item.pattern_match.pattern_name).await {
                         tracing::warn!(error = %e, "Failed to write pattern file");
                     }
@@ -375,7 +375,7 @@ impl TopicManager {
                 }
                 // Persist the logical topic name so custom topic_path
                 // directories can be rediscovered after restart.
-                let topic_name_file = jyc_dir.join("topic-name");
+                let topic_name_file = state_dir.join("topic-name");
                 if let Err(e) = tokio::fs::write(&topic_name_file, &topic_name).await {
                     tracing::warn!(error = %e, "Failed to write topic-name file");
                 }

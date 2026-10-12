@@ -44,7 +44,7 @@ out of its link graph — expected, not measured: no local
 artifacts. Step 5 done (email
 migrated, `pipe/email.rs`): the IMAP monitor + SMTP reply relay run in
 `jyc-pipe`, which also owns the mailbox cursor state
-(`<workdir>/channels/<name>/.imap/`); `--no-idle` / `--reset` moved to the
+(`<data dir>/channels/<name>/.imap/`); `--no-idle` / `--reset` moved to the
 `jyc-pipe` CLI (email was their only consumer), and reply attachments
 download through the hub's files endpoint with the pipe's bearer token —
 the same helper feishu and wecom_bot use. With that, `jyc serve` spawns no
@@ -154,7 +154,7 @@ it still used (`HubRegistry`, `route_into_pipe_target`,
 `wait_for_broadcast`, `fetch_reply_attachment`, `ws_broadcasts`) are
 deleted.
 
-- Mailbox cursor state (`<workdir>/channels/<channel>/.imap/`) stays with
+- Mailbox cursor state (`<data dir>/channels/<channel>/.imap/`) stays with
   the adapter: protocol-level dedup state, not conversation state.
 - `jyc serve --no-idle` / `--reset` moved to the `jyc-pipe` CLI. Email was
   their only consumer, so on the hub they would be no-ops after the move.
@@ -170,7 +170,7 @@ deleted.
   `attachments` field, so the topic worker can move the file into the routed
   topic — the two processes do not share a filesystem, and the topic is only
   known after routing. Staging is a single hub-level directory,
-  `<data_home>/.inbound/`: outside every topic root by construction (a
+  `<data dir>/.inbound/`: outside every topic root by construction (a
   channel workspace is not — for the "agents" channel it *is* the directory
   a topic named `workspace` would own), and on the shared volume, so the
   worker's move is a same-filesystem rename. The same applies to feishu and
@@ -205,7 +205,7 @@ dependency audit as above.
 
 A third pairing option landed after that: `jyc serve --pipe` spawns
 `jyc-pipe` as a child of the hub
-(`crates/jyc-cli/src/cli/serve/pipe_child.rs`), reusing the hub's workdir and
+(`crates/jyc-cli/src/cli/serve/pipe_child.rs`), reusing the hub's data dir and
 resolved config file, and stops it when the hub exits (SIGTERM, then SIGKILL
 after a 5 s grace). The child is deliberately not restarted — a channel crash
 must not take the agent core down, and the pipe reconnects to the hub on its
@@ -213,7 +213,7 @@ own — so a pipe that dies is only reported at `error` level. `--pipe` is a
 global flag: bare `jyc --pipe` forwards it to the `jyc serve` the dashboard
 auto-starts (an already running hub cannot be retrofitted, and warns about
 it). The Docker image's default command passes it, so the shipped container
-runs one service; the child keeps its own `<data_home>/jyc-pipe.log` there.
+runs one service; the child keeps its own `<data dir>/jyc-pipe.log` there.
 
 ### Outbound (proactive) messages
 

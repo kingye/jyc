@@ -24,7 +24,7 @@
 //! Response shape: success returns `200` + JSON body. Errors use `ApiError`
 //! which carries an HTTP status and a `{"error": "..."}` JSON body.
 
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -37,7 +37,7 @@ use axum::{
 };
 use jyc_core::{
     activity_log_store::ActivityLogStore, chat_log_store::load_recent_chat_history,
-    topic_path::inbound_staging_root,
+    topic_path::inbound_dir,
 };
 use jyc_types::{
     ActivityEntry, ChatMessageEntry, InboundAttachmentConfig, InspectOverview, InspectState,
@@ -199,9 +199,9 @@ async fn serve_exchange_file(
     token: Option<&str>,
     rel_path: &str,
 ) -> Result<Response, ApiError> {
-    let jyc_dir = jyc_dir(topic_name, topic_path);
+    let state_dir = resolve_state_dir(topic_name, topic_path);
 
-    let expected = tokio::fs::read_to_string(jyc_dir.join(jyc_core::EXCHANGE_TOKEN_FILENAME))
+    let expected = tokio::fs::read_to_string(state_dir.join(jyc_core::EXCHANGE_TOKEN_FILENAME))
         .await
         .map_err(|_| ApiError::forbidden("exchange access not enabled for this topic"))?;
     let expected = expected.trim();
@@ -211,7 +211,7 @@ async fn serve_exchange_file(
         return Err(ApiError::forbidden("missing or invalid token"));
     }
 
-    let base = jyc_dir.join(jyc_core::EXCHANGE_DIR_NAME);
+    let base = state_dir.join(jyc_core::EXCHANGE_DIR_NAME);
     let rel = std::path::Path::new(rel_path);
     if rel
         .components()
@@ -319,7 +319,7 @@ pub struct StagedFile {
 ///
 /// Pipe processes (`jyc-pipe`) have no access to the hub's filesystem, so they
 /// upload the bytes here and then name the returned file in a `message` frame.
-/// The file lands in the hub's staging directory ([`inbound_staging_root`]),
+/// The file lands in the hub's staging directory ([`inbound_dir`]),
 /// deliberately outside every topic directory: the topic is only known once the
 /// message is routed, and staged bytes must not be reachable through the topic
 /// files endpoint. The topic worker moves the file into the topic's attachment
@@ -339,7 +339,7 @@ pub async fn post_inbound_file(
         .and_then(|attachments| attachments.inbound);
 
     let staged = store_staged_file(
-        &inbound_staging_root(),
+        &inbound_dir(),
         &query.filename,
         &body,
         inbound_config.as_ref(),
@@ -357,12 +357,12 @@ pub async fn post_inbound_file(
 /// (sanitized) as its readable part. The name is what the pipe passes back in
 /// its frame, so it stays a plain file name.
 pub(crate) async fn store_staged_file(
-    staging_dir: &std::path::Path,
+    inbound_dir: &std::path::Path,
     filename: &str,
     bytes: &[u8],
     inbound_config: Option<&InboundAttachmentConfig>,
 ) -> Result<StagedFile, ApiError> {
-    tokio::fs::create_dir_all(staging_dir)
+    tokio::fs::create_dir_all(inbound_dir)
         .await
         .map_err(|e| ApiError::internal(format!("failed to create the staging dir: {e}")))?;
 
@@ -371,7 +371,7 @@ pub(crate) async fn store_staged_file(
         uuid::Uuid::new_v4(),
         sanitize_for_filesystem(filename)
     );
-    let stored_path = staging_dir.join(&stored_name);
+    let stored_path = inbound_dir.join(&stored_name);
     tokio::fs::write(&stored_path, bytes)
         .await
         .map_err(|e| ApiError::internal(format!("failed to write the attachment: {e}")))?;
@@ -725,7 +725,7 @@ mod topic_file_tests {
     }
 
     #[tokio::test]
-    async fn rejects_jyc_dir() {
+    async fn rejects_state_dir() {
         let tmp = tempfile::tempdir().unwrap();
         seed(&tmp, ".jyc/config.toml", b"secret");
 
@@ -762,7 +762,7 @@ mod topic_file_tests {
     /// secrets even though the requested path has no `.jyc` component.
     #[cfg(unix)]
     #[tokio::test]
-    async fn rejects_symlink_into_jyc_dir() {
+    async fn rejects_symlink_into_state_dir() {
         let tmp = tempfile::tempdir().unwrap();
         seed(&tmp, ".jyc/exchange-token", b"tok");
         std::os::unix::fs::symlink(
@@ -790,17 +790,17 @@ mod staged_upload_tests {
         }
     }
 
-    /// Path of a staged file inside `staging_dir`, from its response name.
+    /// Path of a staged file inside `inbound_dir`, from its response name.
     ///
     /// The frame carries this name, so it has to stay a plain file name — the
     /// hub refuses anything else (see `FrameAttachment::into_attachment`).
-    fn stored_file(staging_dir: &std::path::Path, staged: &StagedFile) -> PathBuf {
+    fn stored_file(inbound_dir: &std::path::Path, staged: &StagedFile) -> PathBuf {
         assert!(
             !staged.path.contains('/'),
             "the staged name must be a plain file name: {}",
             staged.path
         );
-        staging_dir.join(&staged.path)
+        inbound_dir.join(&staged.path)
     }
 
     #[tokio::test]

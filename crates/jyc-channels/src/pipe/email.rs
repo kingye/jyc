@@ -10,7 +10,7 @@
 //!   original mail thread (plain text — no model/mode footer), with
 //!   attachments downloaded from the hub's files endpoint.
 //! - Mailbox cursor state: a `StateManager`
-//!   (`<workdir>/channels/<channel>/.imap/`) tracks the sequence number
+//!   (`<data dir>/channels/<channel>/.imap/`) tracks the sequence number
 //!   and processed UIDs — protocol-level dedup state, not conversation
 //!   state, so it stays with the adapter.
 //!
@@ -70,7 +70,7 @@ struct EmailReplyState {
 pub async fn spawn_email_pipe(
     channel_config: &ChannelConfig,
     channel_name: String,
-    workdir: &Path,
+    data_dir: &Path,
     config: Arc<jyc_types::AppConfig>,
     hubs: Arc<HashMap<String, Arc<HubPipe>>>,
     files_base: Option<String>,
@@ -109,8 +109,8 @@ pub async fn spawn_email_pipe(
         collect_pipe_target_channels(channel_config.patterns.as_deref().unwrap_or(&[]));
     warn_on_bad_pipe_patterns("email", &channel_name, channel_config);
 
-    // Mailbox cursor state lives under <workdir>/channels/<channel>/.imap/.
-    let mut state_manager = StateManager::for_channel(&workdir.join("channels"), &channel_name);
+    // Mailbox cursor state lives under <data dir>/channels/<channel>/.imap/.
+    let mut state_manager = StateManager::for_channel(data_dir, &channel_name);
     state_manager.initialize().await?;
     if reset {
         state_manager.reset().await?;

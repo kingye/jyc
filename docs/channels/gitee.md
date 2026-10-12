@@ -15,8 +15,8 @@ The Gitee channel uses the Gitee API v5 to:
 
 Like `github`, the Gitee channel owns **no** TopicManager, agent service,
 outbound adapter, or orchestrator registration — all topics live in the pipe
-target. Dedup/cursor state lives at `<workdir>/channels/<channel>/.gitee/`
-(one-time rename from the old `<workdir>/<channel>/.gitee/`). See
+target. Dedup/cursor state lives at `<data dir>/channels/<channel>/.gitee/`
+(one-time rename from the old `<data dir>/<channel>/.gitee/`). See
 `docs/architecture/overview.md` for the full pipe architecture.
 
 ## Configuration
@@ -104,7 +104,7 @@ A closed issue/PR closes the routed agent topics in the agent workspace
 
 Like GitHub, Gitee patterns no longer inject a `template`. The agent
 initializes its own topic directory by following a skill. Two ready-made
-skills ship in `skills/`; copy them into `{workdir}/skills/`:
+skills ship in `skills/`; copy them into `{data dir}/skills/`:
 
 | skill | job |
 |---|---|

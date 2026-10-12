@@ -28,7 +28,7 @@ jyc-data
 **/__pycache__/
 .opencode/
 
-# Local runtime state when workdir == repo root
+# Local runtime state when the data dir == repo root
 /channels/
 /auth.token
 /nohup.out

@@ -1,57 +1,61 @@
 //! Central topic path resolution.
 //!
-//! The topic directory follows the convention:
-//!   `<workdir>/<channel>/workspace/<topic_name>/`
+//! A topic directory lives under the agents dir:
+//!   `<agents dir>/<agent>/<topic_name>/`
 //!
-//! For agents (`[agents.<name>]`), the default lives under
-//! `<data_home>/agents/<agent_name>/`, platform-resolved.
+//! An agent's default topic uses the agent dir itself,
+//! `<agents dir>/<agent_name>/`. A pinned topic's `topic_path` is wherever
+//! the pin points — the state dir is registered separately and always stays
+//! under the agents dir.
 
 use std::path::{Path, PathBuf};
 
-/// Resolve the workspace directory for a channel.
+/// Resolve a channel's legacy workspace directory: `<data dir>/<channel>/workspace/`.
 ///
-/// Convention: `<workdir>/<channel>/workspace/`
-pub fn resolve_workspace(workdir: &Path, channel: &str) -> PathBuf {
-    workdir.join(channel).join("workspace")
+/// Not a topic root — topics live under the agents dir and never under a
+/// channel. Kept for the non-pipe websocket channel shape and the GitHub
+/// PR-topic scan; both are removal candidates in the channel-workspace
+/// migration.
+pub fn resolve_workspace(data_dir: &Path, channel: &str) -> PathBuf {
+    data_dir.join(channel).join("workspace")
 }
 
 /// Name of the hub-level directory holding the bytes of an inbound attachment
 /// between their upload and the message that announces them.
 ///
-/// It lives directly under `data_home()` — see [`inbound_staging_root`] —
+/// It lives directly under `data_dir()` — see [`inbound_dir`] —
 /// deliberately outside every topic root and every channel workspace: staged
 /// bytes must not be reachable through the topic files endpoint, and the topic
 /// a message belongs to is only known once it has been routed.
-pub const INBOUND_STAGING_DIR: &str = ".inbound";
+pub const INBOUND_DIR_NAME: &str = ".inbound";
 
-/// Resolve the workspace root for the synthesized "agents" channel.
+/// Resolve the agents dir: the root holding every agent's subtree.
 ///
-/// This is the parent directory holding every agent's subtree:
-/// `<data_home>/agents/`. Each agent's topics live one level deeper at
-/// `<data_home>/agents/<agent>/<topic>/` — the 1:1 dashboard topic and
-/// every pipe-routed dynamic topic (`plan-42`, `review-7`, …) get their
-/// own directory. An agent that configures `topic_path` pins only its
-/// 1:1 topic there.
+/// Each agent's topics live one level deeper, at
+/// `<agents dir>/<agent>/<topic>/` — the 1:1 dashboard topic and every
+/// pipe-routed dynamic topic (`plan-42`, `review-7`, …) get their own
+/// directory. An agent that configures `topic_path` pins only its 1:1
+/// topic there.
 ///
-/// Falls back to `<workdir>/agents` when `data_home()` is unavailable —
-/// using `workdir` (the jyc instance root) instead of cwd so
-/// multi-instance setups don't accidentally share state.
-pub fn resolve_agents_workspace_root(workdir: &Path) -> PathBuf {
-    if let Some(home) = jyc_utils::paths::data_home() {
+/// Falls back to `<data dir>/agents` when `data_dir()` is unavailable —
+/// using the data dir (the instance root) instead of cwd so multi-instance
+/// setups don't accidentally share state.
+pub fn resolve_agents_dir(data_dir: &Path) -> PathBuf {
+    if let Some(home) = jyc_utils::paths::data_dir() {
         home.join("agents")
     } else {
-        tracing::warn!("data_home() returned None; falling back to <workdir>/agents");
-        workdir.join("agents")
+        tracing::warn!("data_dir() returned None; falling back to <data dir>/agents");
+        data_dir.join("agents")
     }
 }
 
 /// Directory where the hub stages the bytes of inbound attachments:
-/// `<data_home>/.inbound/`.
+/// `<data dir>/.inbound/`.
 ///
 /// A sibling of `agents/` and `channels/`, so no topic directory can ever be
 /// this path — which is the point: the inbound endpoint used to stage in the
 /// uploading channel's workspace, and for the synthesized "agents" channel that
-/// is `<data_home>/agents/workspace/`, i.e. exactly where a topic *named*
+/// is `<data dir>/agents/workspace/`, i.e. exactly where a topic *named*
 /// `workspace` lives. Staged bytes were then reachable through that topic's
 /// files endpoint.
 ///
@@ -59,30 +63,28 @@ pub fn resolve_agents_workspace_root(workdir: &Path) -> PathBuf {
 /// the agent workers can run in different containers sharing only this volume,
 /// and the worker moves staged files out with a same-filesystem rename.
 ///
-/// Falls back to a temp dir when `data_home()` is unavailable (never to the
+/// Falls back to a temp dir when `data_dir()` is unavailable (never to the
 /// cwd, which multi-instance setups would share). Callers that need an isolated
 /// root — tests — pass their own directory to the staging helpers instead.
-pub fn inbound_staging_root() -> PathBuf {
-    match jyc_utils::paths::data_home() {
-        Some(home) => home.join(INBOUND_STAGING_DIR),
+pub fn inbound_dir() -> PathBuf {
+    match jyc_utils::paths::data_dir() {
+        Some(home) => home.join(INBOUND_DIR_NAME),
         None => {
-            tracing::warn!(
-                "data_home() returned None; staging inbound attachments in the temp dir"
-            );
+            tracing::warn!("data_dir() returned None; staging inbound attachments in the temp dir");
             std::env::temp_dir().join("jyc-inbound")
         }
     }
 }
 
-/// Root directory holding adopted topic state dirs: `<workdir>/agents/`.
+/// Root directory holding adopted topic state dirs: `<agents dir>`.
 ///
-/// Deliberately workdir-based (NOT [`resolve_agents_workspace_root`], which
+/// Deliberately data-dir-based (unlike [`resolve_agents_dir`], which
 /// prefers the platform data home for topic *dirs*): adopted state belongs
-/// to the jyc instance that pinned it, so multi-instance setups and tests
-/// with an explicit `--workdir` stay isolated. With the default workdir
-/// (== `data_home()`) this coincides with `~/.local/share/jyc/agents/`.
-pub fn state_root(workdir: &Path) -> PathBuf {
-    workdir.join("agents")
+/// to the instance that pinned it, so multi-instance setups and tests with
+/// an explicit `--data-dir` stay isolated. With the default data dir
+/// (== `data_dir()`) this coincides with `~/.local/share/jyc/agents/`.
+pub fn agents_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("agents")
 }
 
 /// Resolve a custom topic path from a pattern's `topic_path` config.
@@ -111,23 +113,23 @@ pub fn resolve_topic_path(path: &str, base: &Path) -> PathBuf {
 /// Resolve the canonical state dir for a pinned/ad-hoc topic dir.
 ///
 /// - Agent-keyed topic (config `[agents.<key>]` or the 1:1 "agents" channel):
-///   `<agents_root>/<key>/.jyc` — config keys are unique by construction.
-/// - Ad-hoc topic (any other pinned dir): `<agents_root>/<derived>/.jyc` with
+///   `<agents dir>/<key>/.jyc` — config keys are unique by construction.
+/// - Ad-hoc topic (any other pinned dir): `<agents dir>/<derived>/.jyc` with
 ///   the path-derived `_`-prefixed name from
 ///   [`jyc_types::state_dir::derive_state_name`] (the prefix keeps derived
 ///   names out of the config-key namespace).
-pub fn state_dir_for(agents_root: &Path, topic_dir: &Path, agent_key: Option<&str>) -> PathBuf {
+pub fn state_dir_for(agents_dir: &Path, topic_dir: &Path, agent_key: Option<&str>) -> PathBuf {
     let name = match agent_key {
         Some(key) => key.to_string(),
         None => jyc_types::state_dir::derive_state_name(topic_dir),
     };
-    agents_root.join(name).join(".jyc")
+    agents_dir.join(name).join(".jyc")
 }
 
 /// Register `<topic_dir>/.jyc` as the state dir for a topic whose dir lives
 /// under `workspace` (jyc-owned). No-op when the topic already has a
 /// registration (e.g. an adopted pin). A dir outside the workspace without
-/// a registration is a lost adoption: left unregistered so `jyc_dir` fails
+/// a registration is a lost adoption: left unregistered so `state_dir` fails
 /// loudly instead of silently writing state into a user-owned dir (#825).
 pub fn activate_workspace_state(topic_name: &str, topic_dir: &Path, workspace: &Path) {
     if topic_dir.starts_with(workspace) {
@@ -203,10 +205,10 @@ pub(crate) fn resolved(path: &Path) -> PathBuf {
 
 /// Re-register state dirs of previously adopted topics at startup.
 ///
-/// Scans every `<agents_root>/*/.jyc` carrying a `topic-path` breadcrumb
+/// Scans every `<agents dir>/*/.jyc` carrying a `topic-path` breadcrumb
 /// and registers **topic name → state dir** from its `topic-name`
 /// breadcrumb (falling back to the folder name for config-key state dirs
-/// written before the breadcrumb existed). Pure `jyc_dir` bootstrap for
+/// written before the breadcrumb existed). Pure `state_dir` bootstrap for
 /// processes without config access (e.g. per-topic hook commands);
 /// several agents may share one topic dir, so the mapping is keyed by
 /// name, never by dir. Derived (`_`-prefixed) state
@@ -215,8 +217,8 @@ pub(crate) fn resolved(path: &Path) -> PathBuf {
 /// dashboard or `/pin` re-opens the dir. Config-pin processes additionally
 /// adopt from config; re-registering an identical mapping is idempotent.
 /// Returns the number of registrations restored.
-pub fn restore_state_registry(agents_root: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(agents_root) else {
+pub fn restore_state_registry(agents_dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(agents_dir) else {
         return 0;
     };
     let mut restored = 0;
@@ -322,11 +324,17 @@ mod tests {
             !state.join("topic-name").exists(),
             "topic-name is never created by adopt"
         );
-        assert_eq!(jyc_types::state_dir::jyc_dir("adopt-name", &topic), state);
+        assert_eq!(
+            jyc_types::state_dir::resolve_state_dir("adopt-name", &topic),
+            state
+        );
 
         // second adopt is a no-op (already registered)
         adopt_state_dir("adopt-name", &topic, &state).unwrap();
-        assert_eq!(jyc_types::state_dir::jyc_dir("adopt-name", &topic), state);
+        assert_eq!(
+            jyc_types::state_dir::resolve_state_dir("adopt-name", &topic),
+            state
+        );
     }
 
     #[test]
@@ -343,7 +351,7 @@ mod tests {
         adopt_state_dir("beta", &dir, &state_b).unwrap();
 
         assert_ne!(state_a, state_b, "each topic gets its own state dir");
-        let jyc = |n: &str| jyc_types::state_dir::jyc_dir(n, &dir);
+        let jyc = |n: &str| jyc_types::state_dir::resolve_state_dir(n, &dir);
         assert_eq!(jyc("alpha"), state_a);
         assert_eq!(jyc("beta"), state_b);
 
@@ -359,7 +367,7 @@ mod tests {
         assert!(super::restore_state_registry(&root) >= 2);
         assert_eq!(
             jyc_types::state_dir::registered_state("alpha"),
-            Some(jyc_types::state_dir::jyc_dir("alpha", &dir))
+            Some(jyc_types::state_dir::resolve_state_dir("alpha", &dir))
         );
         assert_eq!(
             jyc_types::state_dir::registered_state("beta"),
@@ -382,7 +390,10 @@ mod tests {
         // Prove the scan (not the adopt) rebuilds the name-keyed mapping.
         jyc_types::state_dir::unregister("scanned-name");
         assert!(restore_state_registry(&root) >= 1);
-        assert_eq!(jyc_types::state_dir::jyc_dir("scanned-name", &topic), state);
+        assert_eq!(
+            jyc_types::state_dir::resolve_state_dir("scanned-name", &topic),
+            state
+        );
 
         // Config-key state dirs whose topic-name breadcrumb is missing
         // fall back to the folder name (pre-breadcrumb layout).
@@ -429,7 +440,10 @@ mod tests {
             !second.exists(),
             "candidate dir not provisioned when a registration exists"
         );
-        assert_eq!(jyc_types::state_dir::jyc_dir("repin-name", &topic), first);
+        assert_eq!(
+            jyc_types::state_dir::resolve_state_dir("repin-name", &topic),
+            first
+        );
 
         // A DIFFERENT name pinning the same dir gets its own clean state.
         let other = tmp.path().join("agents").join("other").join(".jyc");
@@ -505,7 +519,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Verify: <workdir>/jiny283a/workspace/Test Subject/
+        // Verify: <data dir>/jiny283a/workspace/Test Subject/
         assert_eq!(result.topic_path, ws.join("Test Subject"));
         assert!(result.topic_path.exists());
         // No double nesting
@@ -718,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_resolve_topic_path_relative() {
-        // Relative paths are resolved against the data root (workdir)
+        // Relative paths are resolved against the data root (data_dir)
         let p = resolve_topic_path("my-project", Path::new("/data"));
         assert_eq!(p, PathBuf::from("/data/my-project"));
     }
@@ -754,17 +768,17 @@ mod tests {
         );
     }
 
-    /// Agents workspace root is `<data_home>/agents`, distinct from a
-    /// regular channel's `<workdir>/<channel>/workspace/`.
+    /// Agents workspace root is `<data dir>/agents`, distinct from a
+    /// regular channel's `<data dir>/<channel>/workspace/`.
     #[test]
-    fn test_agents_workspace_root_differs_from_channel_workspace() {
-        let workdir = Path::new("/tmp/jyc-data");
-        let agents_root = resolve_agents_workspace_root(workdir);
-        let chan_ws = resolve_workspace(workdir, "work");
-        assert!(chan_ws.starts_with(workdir));
+    fn test_resolve_agents_dir_is_not_a_channel_workspace() {
+        let data_dir = Path::new("/tmp/jyc-data");
+        let agents_dir = resolve_agents_dir(data_dir);
+        let chan_ws = resolve_workspace(data_dir, "work");
+        assert!(chan_ws.starts_with(data_dir));
         assert!(
-            !agents_root.starts_with(workdir) || agents_root == workdir.join("agents"),
-            "agents root should resolve via data_home, not under workdir"
+            !agents_dir.starts_with(data_dir) || agents_dir == data_dir.join("agents"),
+            "agents root should resolve via data_dir, not under data_dir"
         );
     }
 
@@ -772,20 +786,20 @@ mod tests {
     /// "agents" channel a topic named `workspace` *is* its channel workspace,
     /// which is what staging under a channel workspace used to collide with.
     #[test]
-    fn test_inbound_staging_root_is_outside_every_topic_root() {
-        let staging = inbound_staging_root();
-        assert_eq!(staging.file_name().unwrap(), INBOUND_STAGING_DIR);
+    fn test_inbound_dir_is_outside_every_topic_root() {
+        let staging = inbound_dir();
+        assert_eq!(staging.file_name().unwrap(), INBOUND_DIR_NAME);
 
-        let workdir = Path::new("/tmp/jyc-data");
-        let agents_root = resolve_agents_workspace_root(workdir);
+        let data_dir = Path::new("/tmp/jyc-data");
+        let agents_dir = resolve_agents_dir(data_dir);
         assert!(
-            !staging.starts_with(&agents_root),
-            "staging {staging:?} must stay outside the agents topic root {agents_root:?}"
+            !staging.starts_with(&agents_dir),
+            "staging {staging:?} must stay outside the agents topic root {agents_dir:?}"
         );
-        if jyc_utils::paths::data_home().is_some() {
+        if jyc_utils::paths::data_dir().is_some() {
             assert_eq!(
                 staging.parent(),
-                agents_root.parent(),
+                agents_dir.parent(),
                 "staging is a sibling of the agents root, not a topic path"
             );
         }

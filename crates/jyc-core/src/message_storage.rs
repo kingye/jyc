@@ -82,7 +82,7 @@ impl MessageStorage {
         is_matched: bool,
     ) -> Result<StoreResult> {
         // Activation registration for jyc-owned dirs only; a user-dir pin
-        // without a registration fails loudly at `jyc_dir` (#825).
+        // without a registration fails loudly at `state_dir` (#825).
         crate::topic_path::activate_workspace_state(topic_name, topic_path, &self.workspace);
         let message_dir = Utc::now().format("%Y-%m-%d_%H-%M-%S").to_string();
         self.append_to_chat_log(topic_name, topic_path, message, is_matched)

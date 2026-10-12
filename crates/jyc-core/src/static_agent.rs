@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::path::Path;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -62,22 +62,22 @@ impl AgentService for StaticAgentService {
     ) -> Result<()> {
         use jyc_types::channel::CompressionMode;
 
-        let jyc_dir = jyc_dir(topic_name, topic_path);
+        let state_dir = resolve_state_dir(topic_name, topic_path);
         match config.mode {
             CompressionMode::None => {
-                tokio::fs::remove_file(jyc_dir.join("agent-context.json"))
+                tokio::fs::remove_file(state_dir.join("agent-context.json"))
                     .await
                     .ok();
-                tokio::fs::remove_file(jyc_dir.join("agent-session.json"))
+                tokio::fs::remove_file(state_dir.join("agent-session.json"))
                     .await
                     .ok();
             }
             CompressionMode::Heuristic | CompressionMode::Llm => {
                 // For static agent, heuristic and LLM are equivalent: just delete
-                tokio::fs::remove_file(jyc_dir.join("agent-context.json"))
+                tokio::fs::remove_file(state_dir.join("agent-context.json"))
                     .await
                     .ok();
-                tokio::fs::remove_file(jyc_dir.join("agent-session.json"))
+                tokio::fs::remove_file(state_dir.join("agent-session.json"))
                     .await
                     .ok();
             }

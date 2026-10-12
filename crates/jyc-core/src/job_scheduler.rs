@@ -10,7 +10,7 @@ use crate::job_store::JobStore;
 use crate::topic_manager::TopicManager;
 use anyhow::Result;
 use chrono::Utc;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use jyc_types::{InboundMessage, MessageContent, PatternMatch};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -179,12 +179,12 @@ impl JobScheduler {
                 // A workspace child that is not a registered topic is channel
                 // infrastructure (e.g. the email channel's `.imap` cursor dir
                 // under the agents-root workspace), not a topic — only
-                // registered names may go through `jyc_dir`.
+                // registered names may go through `state_dir`.
                 if jyc_types::state_dir::registered_state(&topic_name).is_none() {
                     continue;
                 }
 
-                let jobs_dir = jyc_dir(&topic_name, &topic_path).join("jobs");
+                let jobs_dir = resolve_state_dir(&topic_name, &topic_path).join("jobs");
                 if !jobs_dir.exists() {
                     continue;
                 }
@@ -243,7 +243,7 @@ impl JobScheduler {
         for tm in tms.values() {
             let custom_paths = tm.custom_topic_paths().await;
             for (topic_name, topic_path) in &custom_paths {
-                let jobs_dir = jyc_dir(topic_name, topic_path).join("jobs");
+                let jobs_dir = resolve_state_dir(topic_name, topic_path).join("jobs");
                 if !jobs_dir.exists() {
                     continue;
                 }
@@ -378,7 +378,7 @@ impl JobScheduler {
                 if jyc_types::state_dir::registered_state(topic_name).is_none() {
                     continue;
                 }
-                let jobs_dir = jyc_dir(topic_name, &topic_path).join("jobs");
+                let jobs_dir = resolve_state_dir(topic_name, &topic_path).join("jobs");
                 if !jobs_dir.exists() {
                     continue;
                 }
@@ -438,7 +438,7 @@ mod tests {
     ) {
         let topic_path = workspace.join(topic_name);
         tokio::fs::create_dir_all(&topic_path).await.unwrap();
-        // Discovery resolves jyc_dir(dir_basename, dir) — register it (#825).
+        // Discovery resolves resolve_state_dir(dir_basename, dir) — register it (#825).
         // Topic names are unique per test (parallel registry, first-wins).
         jyc_types::state_dir::register(topic_name, &topic_path.join(".jyc"));
         let store = JobStore::new(topic_name, &topic_path, 10).await.unwrap();
@@ -525,7 +525,7 @@ mod tests {
         // Create a topic directory WITHOUT .jyc/jobs/ — should be silently skipped
         let topic_path = workspace.join("pend-no-jobs-topic");
         tokio::fs::create_dir_all(&topic_path).await.unwrap();
-        // Discovery resolves jyc_dir before its jobs-dir existence check.
+        // Discovery resolves state_dir before its jobs-dir existence check.
         jyc_types::state_dir::register("pend-no-jobs-topic", &topic_path.join(".jyc"));
 
         let scheduler = create_test_scheduler(vec![workspace], true).await;
@@ -654,7 +654,7 @@ mod tests {
         // Topic 4: no jobs dir at all (should be silently skipped)
         let no_jobs_topic = workspace.join("disco-topic-4");
         tokio::fs::create_dir_all(&no_jobs_topic).await.unwrap();
-        // Discovery resolves jyc_dir before its jobs-dir existence check.
+        // Discovery resolves state_dir before its jobs-dir existence check.
         jyc_types::state_dir::register("disco-topic-4", &no_jobs_topic.join(".jyc"));
 
         let scheduler = create_test_scheduler(vec![workspace], true).await;

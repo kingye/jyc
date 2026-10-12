@@ -73,7 +73,7 @@ fn service_with_patterns(
     channels.insert("test".to_string(), channel);
     JycAgentService::new(
         app_config_with_channels(config_model, channels),
-        PathBuf::from("/tmp/test-workdir"),
+        PathBuf::from("/tmp/test-data_dir"),
         patterns,
         None,
         None,
@@ -116,7 +116,7 @@ fn service_with_full_exclusion(
     channels.insert("test".to_string(), channel);
     JycAgentService::new(
         app_config_with_channels(None, channels),
-        PathBuf::from("/tmp/test-workdir"),
+        PathBuf::from("/tmp/test-data_dir"),
         patterns,
         None,
         None,
@@ -141,7 +141,7 @@ fn service_with_skills(
     channels.insert("test".to_string(), channel);
     JycAgentService::new(
         app_config_with_channels(None, channels),
-        PathBuf::from("/tmp/test-workdir"),
+        PathBuf::from("/tmp/test-data_dir"),
         patterns,
         None,
         None,
@@ -334,7 +334,7 @@ fn reload_picks_up_new_model_context_window_without_restart() {
     let config = Arc::new(ArcSwap::from_pointee(app));
     let svc = JycAgentService::new(
         config.clone(),
-        PathBuf::from("/tmp/test-workdir"),
+        PathBuf::from("/tmp/test-data_dir"),
         vec![],
         None,
         None,
@@ -803,10 +803,10 @@ async fn topic_config_with_mcps_does_not_panic() {
     let tmp = tempfile::tempdir().unwrap();
     let topic = "topic_config_with_mcps_does_not_panic";
     jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-    let jyc_dir = tmp.path().join(".jyc");
-    std::fs::create_dir_all(&jyc_dir).unwrap();
+    let state_dir = tmp.path().join(".jyc");
+    std::fs::create_dir_all(&state_dir).unwrap();
     std::fs::write(
-        jyc_dir.join("config.toml"),
+        state_dir.join("config.toml"),
         r#"
 mcps_replace = true
 

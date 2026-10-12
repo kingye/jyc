@@ -277,12 +277,12 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "save_and_load_raw_context";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
 
         // Create session file (needed for load_context to proceed)
         tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
+            state_dir.join("agent-session.json"),
             r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
         ).await.unwrap();
 
@@ -304,12 +304,12 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "load_context_filters_invalid_assistant_messages";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
 
         // Create session file
         tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
+            state_dir.join("agent-session.json"),
             r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
         ).await.unwrap();
 
@@ -320,7 +320,7 @@ mod session {
             serde_json::json!({"role": "assistant", "content": "Valid reply"}),
         ];
         tokio::fs::write(
-            jyc_dir.join("agent-context.json"),
+            state_dir.join("agent-context.json"),
             serde_json::to_string(&context).unwrap(),
         )
         .await
@@ -337,12 +337,12 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "load_context_discards_all_user_only_context";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
 
         // Create session file
         tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
+            state_dir.join("agent-session.json"),
             r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
         ).await.unwrap();
 
@@ -352,7 +352,7 @@ mod session {
             serde_json::json!({"role": "user", "content": "hello again"}),
         ];
         tokio::fs::write(
-            jyc_dir.join("agent-context.json"),
+            state_dir.join("agent-context.json"),
             serde_json::to_string(&context).unwrap(),
         )
         .await
@@ -369,9 +369,9 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "update_tokens_creates_session_file";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
+        let state_dir = tmp.path().join(".jyc");
 
-        assert!(!jyc_dir.join("agent-session.json").exists());
+        assert!(!state_dir.join("agent-session.json").exists());
         session::update_tokens(
             topic,
             tmp.path(),
@@ -388,10 +388,10 @@ mod session {
             None,
         )
         .await;
-        assert!(jyc_dir.join("agent-session.json").exists());
+        assert!(state_dir.join("agent-session.json").exists());
 
         // Verify content
-        let content = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
+        let content = tokio::fs::read_to_string(state_dir.join("agent-session.json"))
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -464,14 +464,14 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "reset_session_deletes_session_file";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
 
         // Create session and context files
-        tokio::fs::write(jyc_dir.join("agent-session.json"), "{}")
+        tokio::fs::write(state_dir.join("agent-session.json"), "{}")
             .await
             .unwrap();
-        tokio::fs::write(jyc_dir.join("agent-context.json"), "[]")
+        tokio::fs::write(state_dir.join("agent-context.json"), "[]")
             .await
             .unwrap();
 
@@ -482,9 +482,9 @@ mod session {
         };
         session::reset_session(topic, tmp.path(), &config, None, None).await;
 
-        assert!(!jyc_dir.join("agent-session.json").exists());
+        assert!(!state_dir.join("agent-session.json").exists());
         // Context should be summarized (empty in this case = deleted)
-        assert!(!jyc_dir.join("agent-context.json").exists());
+        assert!(!state_dir.join("agent-context.json").exists());
     }
 
     /// `update_tokens` post-loop auto-reset now honors `reset_compression.mode = None`.
@@ -494,18 +494,18 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "update_tokens_auto_reset_with_none_mode_deletes_files";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
 
         // Session with tokens already over the (small) max — will trigger
         // auto-reset on the very next update_tokens call.
         tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
+            state_dir.join("agent-session.json"),
             r#"{"created_at":"2026-01-01","context_input_tokens":5000,"total_output_tokens":100,"max_input_tokens":1000}"#,
         )
         .await
         .unwrap();
-        tokio::fs::write(jyc_dir.join("agent-context.json"), "[]")
+        tokio::fs::write(state_dir.join("agent-context.json"), "[]")
             .await
             .unwrap();
 
@@ -534,7 +534,7 @@ mod session {
         // then recreated by update_tokens with zeroed counters. The
         // `output_tokens` from THIS call is also discarded because the
         // reset path explicitly zeros all counters before save.
-        let content = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
+        let content = tokio::fs::read_to_string(state_dir.join("agent-session.json"))
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -553,18 +553,18 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "maybe_reset_for_new_context_resets_when_oversized";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
 
         // Loaded session: 600k tokens, max_input_tokens irrelevant here
         tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
+            state_dir.join("agent-session.json"),
             r#"{"created_at":"2026-01-01","context_input_tokens":600000,"total_output_tokens":0,"max_input_tokens":950000}"#,
         )
         .await
         .unwrap();
         // Some context to compact
-        tokio::fs::write(jyc_dir.join("agent-context.json"), "[]")
+        tokio::fs::write(state_dir.join("agent-context.json"), "[]")
             .await
             .unwrap();
 
@@ -588,7 +588,7 @@ mod session {
         // reset_session path ran (context deleted, session gone or reset).
         // The exact on-disk state depends on whether anyone re-saves the
         // session; reset_session itself deletes it.
-        assert!(!jyc_dir.join("agent-context.json").exists());
+        assert!(!state_dir.join("agent-context.json").exists());
     }
 
     /// Pre-check is a no-op when the loaded session fits the new window.
@@ -597,16 +597,16 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "maybe_reset_for_new_context_is_noop_when_under_threshold";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
 
         tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
+            state_dir.join("agent-session.json"),
             r#"{"created_at":"2026-01-01","context_input_tokens":100000,"total_output_tokens":0,"max_input_tokens":950000}"#,
         )
         .await
         .unwrap();
-        tokio::fs::write(jyc_dir.join("agent-context.json"), "[]")
+        tokio::fs::write(state_dir.join("agent-context.json"), "[]")
             .await
             .unwrap();
 
@@ -617,10 +617,10 @@ mod session {
         assert!(!reset, "should not have triggered reset");
 
         // Both files unchanged
-        let session = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
+        let session = tokio::fs::read_to_string(state_dir.join("agent-session.json"))
             .await
             .unwrap();
-        let context = tokio::fs::read_to_string(jyc_dir.join("agent-context.json"))
+        let context = tokio::fs::read_to_string(state_dir.join("agent-context.json"))
             .await
             .unwrap();
         assert!(session.contains("\"context_input_tokens\":100000"));
@@ -634,11 +634,11 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "maybe_reset_for_new_context_zero_max_is_noop";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
 
         tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
+            state_dir.join("agent-session.json"),
             r#"{"created_at":"2026-01-01","context_input_tokens":999999,"total_output_tokens":0,"max_input_tokens":0}"#,
         )
         .await
@@ -654,7 +654,7 @@ mod session {
         )
         .await;
         assert!(!reset);
-        assert!(jyc_dir.join("agent-session.json").exists());
+        assert!(state_dir.join("agent-session.json").exists());
     }
 
     /// Ordering regression (service/mod.rs message flow): after the pre-loop
@@ -668,12 +668,12 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "pre_check_ensure_then_load_returns_compacted_context";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
 
         // Oversized session carried over from a previous larger-window model.
         tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
+            state_dir.join("agent-session.json"),
             r#"{"created_at":"2026-01-01","context_input_tokens":600000,"total_output_tokens":0,"max_input_tokens":950000}"#,
         )
         .await
@@ -690,7 +690,7 @@ mod session {
             {"role":"assistant","content":"third answer"}
         ]);
         tokio::fs::write(
-            jyc_dir.join("agent-context.json"),
+            state_dir.join("agent-context.json"),
             serde_json::to_string(&big_context).unwrap(),
         )
         .await
@@ -727,12 +727,12 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "persist_tokens_does_not_trigger_reset";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
+        let state_dir = tmp.path().join(".jyc");
 
         // Seed a context file the reset would otherwise delete.
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         let context_before = r#"[{"role":"user","content":"seed"}]"#;
-        tokio::fs::write(jyc_dir.join("agent-context.json"), context_before)
+        tokio::fs::write(state_dir.join("agent-context.json"), context_before)
             .await
             .unwrap();
 
@@ -753,13 +753,13 @@ mod session {
         .await;
 
         // Context file untouched.
-        let context_after = tokio::fs::read_to_string(jyc_dir.join("agent-context.json"))
+        let context_after = tokio::fs::read_to_string(state_dir.join("agent-context.json"))
             .await
             .unwrap();
         assert_eq!(context_after, context_before);
 
         // Session file got the new values.
-        let session = tokio::fs::read_to_string(jyc_dir.join("agent-session.json"))
+        let session = tokio::fs::read_to_string(state_dir.join("agent-session.json"))
             .await
             .unwrap();
         let state: serde_json::Value = serde_json::from_str(&session).unwrap();
@@ -1041,11 +1041,11 @@ mod session {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "ensure_session_file_skips_when_file_exists";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
 
         let original = r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":42000,"total_output_tokens":7000,"max_input_tokens":123000}"#;
-        let session_path = jyc_dir.join("agent-session.json");
+        let session_path = state_dir.join("agent-session.json");
         tokio::fs::write(&session_path, original).await.unwrap();
 
         // Even with a different context_window / threshold, the file must
@@ -1491,9 +1491,9 @@ mod mcp_bridge {
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].0, "done!");
         // No file relay leftovers.
-        let jyc_dir = tmp.path().join(".jyc");
-        assert!(!jyc_dir.join("reply.md").exists());
-        assert!(!jyc_dir.join("reply-sent.flag").exists());
+        let state_dir = tmp.path().join(".jyc");
+        assert!(!state_dir.join("reply.md").exists());
+        assert!(!state_dir.join("reply-sent.flag").exists());
     }
 
     /// Without a live reply target (tests, sub-agents) the reply is queued
@@ -1510,11 +1510,11 @@ mod mcp_bridge {
             .unwrap();
 
         assert!(!delivery.direct);
-        let jyc_dir = tmp.path().join(".jyc");
-        assert!(jyc_dir.join("reply-sent.flag").exists());
-        assert!(jyc_dir.join("reply.md").exists());
+        let state_dir = tmp.path().join(".jyc");
+        assert!(state_dir.join("reply-sent.flag").exists());
+        assert!(state_dir.join("reply.md").exists());
         assert_eq!(
-            std::fs::read_to_string(jyc_dir.join("reply.md")).unwrap(),
+            std::fs::read_to_string(state_dir.join("reply.md")).unwrap(),
             "Hello user!"
         );
     }
@@ -1540,12 +1540,12 @@ mod mcp_bridge {
 
         assert!(!delivery.direct);
         assert!(replies.lock().unwrap().is_empty());
-        let jyc_dir = tmp.path().join(".jyc");
+        let state_dir = tmp.path().join(".jyc");
         assert_eq!(
-            std::fs::read_to_string(jyc_dir.join("reply.md")).unwrap(),
+            std::fs::read_to_string(state_dir.join("reply.md")).unwrap(),
             "done!"
         );
-        assert!(jyc_dir.join("reply-sent.flag").exists());
+        assert!(state_dir.join("reply-sent.flag").exists());
     }
 
     /// The proactive send-message tool still reports a clean tool error
@@ -1599,8 +1599,8 @@ mod skills {
         }
     }
 
-    /// Helper: create a JycAgentService with a specific workdir.
-    fn make_service(workdir: PathBuf) -> JycAgentService {
+    /// Helper: create a JycAgentService with a specific data_dir.
+    fn make_service(data_dir: PathBuf) -> JycAgentService {
         let app = AppConfig {
             general: jyc_types::GeneralConfig::default(),
             channels: std::collections::HashMap::new(),
@@ -1633,7 +1633,7 @@ mod skills {
         };
         JycAgentService::new(
             Arc::new(ArcSwap::from_pointee(app)),
-            workdir,
+            data_dir,
             vec![],
             None,
             None,
@@ -1737,10 +1737,10 @@ mod skills {
         .unwrap();
 
         // Create .jyc/skills/my-skill/ (higher priority — scanned later, overwrites)
-        let jyc_dir = tmp.path().join(".jyc/skills/my-skill");
-        std::fs::create_dir_all(&jyc_dir).unwrap();
+        let state_dir = tmp.path().join(".jyc/skills/my-skill");
+        std::fs::create_dir_all(&state_dir).unwrap();
         std::fs::write(
-            jyc_dir.join("SKILL.md"),
+            state_dir.join("SKILL.md"),
             "---\nname: my-skill\ndescription: From JYC (overrides)\n---\n",
         )
         .unwrap();

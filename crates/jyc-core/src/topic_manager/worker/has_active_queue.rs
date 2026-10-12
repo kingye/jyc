@@ -1,16 +1,16 @@
 use super::*;
 
-/// Test helper replacing the old `jyc_dir("", ...)` fallback: register the
+/// Test helper replacing the old `resolve_state_dir("", ...)` fallback: register the
 /// test's unique topic name at `dir/.jyc` and resolve it (#825).
 fn state_dir(tname: &str, dir: &std::path::Path) -> std::path::PathBuf {
     jyc_types::state_dir::register_if_absent(tname, &dir.join(".jyc"));
-    jyc_types::state_dir::jyc_dir(tname, dir)
+    jyc_types::state_dir::resolve_state_dir(tname, dir)
 }
 use crate::agent::{AgentResult, AgentService};
 use crate::message_storage::MessageStorage;
 use crate::metrics::MetricsCollector;
 use crate::static_agent::StaticAgentService;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use jyc_types::{ChangeKind, ChangedFileEntry, InboundMessage, PatternMatch};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -124,11 +124,11 @@ impl AgentService for RelayWritingAgent {
         _pending_rx: &mut mpsc::Receiver<jyc_types::QueueItem>,
         _topic_cancel: CancellationToken,
     ) -> Result<AgentResult> {
-        let jyc_dir = jyc_dir(topic_name, topic_path);
-        std::fs::create_dir_all(&jyc_dir)?;
-        std::fs::write(jyc_dir.join("reply.md"), "ok")?;
+        let state_dir = resolve_state_dir(topic_name, topic_path);
+        std::fs::create_dir_all(&state_dir)?;
+        std::fs::write(state_dir.join("reply.md"), "ok")?;
         std::fs::write(
-            jyc_dir.join("reply-sent.flag"),
+            state_dir.join("reply-sent.flag"),
             r#"{"sent_at": "2026-09-26T00:00:00Z", "message_len": 2,
                 "attachment_count": 0, "attachments": []}"#,
         )?;
@@ -949,12 +949,12 @@ async fn test_custom_topic_paths_empty_initially() {
 /// Regression test for the `jyc open` ad-hoc topic timeout:
 ///
 /// `set_topic_path` must create `.jyc/topic-name` so that the
-/// `jyc_dir(&path).is_dir()` filter in `list_topics` keeps the
+/// `resolve_state_dir(&path).is_dir()` filter in `list_topics` keeps the
 /// entry. Without it, a freshly-registered ad-hoc topic is dropped
 /// from the overview and `wait_for_topic` in `run_open` times out
 /// with "Timeout waiting for topic ... to be created".
 #[tokio::test]
-async fn test_set_topic_path_creates_jyc_dir_and_appears_in_list() {
+async fn test_set_topic_path_creates_state_dir_and_appears_in_list() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -1002,7 +1002,7 @@ async fn test_restore_custom_topic_paths_from_disk() {
     // Simulate a previously initialized topic: its adopted state dir
     // carries the identity breadcrumb.
     let adopted_state = crate::topic_path::state_dir_for(
-        &crate::topic_path::state_root(tmp.path()),
+        &crate::topic_path::agents_dir(tmp.path()),
         &custom_path,
         None,
     );
@@ -1081,8 +1081,11 @@ mode = "agent"
     );
 
     // The pin is registered to its adopted (path-derived) state dir under
-    // state_root; the repo dir stays clean.
-    assert_eq!(jyc_dir("my-custom-topic", &custom_path), adopted_state);
+    // the agents dir; the repo dir stays clean.
+    assert_eq!(
+        resolve_state_dir("my-custom-topic", &custom_path),
+        adopted_state
+    );
     assert!(
         adopted_state.join("topic-name").exists(),
         "identity breadcrumb intact"
@@ -1244,7 +1247,7 @@ async fn test_restore_multi_topic_per_agent_layout() {
     std::fs::create_dir_all(&workspace).unwrap();
 
     // Agent root sits OUTSIDE the workspace (it's the
-    // `<data_home>/agents/<agent_name>/` dir).
+    // `<data dir>/agents/<agent_name>/` dir).
     let agent_root = tmp.path().join("agents").join("jyc");
     let topic_a = agent_root.join("topic-a");
     let topic_b = agent_root.join("topic-b");
@@ -1339,7 +1342,7 @@ mode = "agent"
 async fn test_restore_agent_default_root_without_topic_path() {
     let tmp = tempdir().unwrap();
     let tname = "test_restore_agent_default_root_without_topic_path";
-    // The agents channel's workspace is `<data_home>/agents/`.
+    // The agents channel's workspace is `<data dir>/agents/`.
     let workspace = tmp.path().join("agents");
     let agent_root = workspace.join("planner");
     let topic = agent_root.join("plan-197");
@@ -1510,7 +1513,7 @@ async fn list_topics_preserves_mixed_currency_from_ledger() {
             &BillingEntry {
                 ts: chrono::Utc::now().to_rfc3339(),
                 // label_for() falls back to the bare topic name for
-                // paths outside data_home, as in this tempdir test.
+                // paths outside data_dir, as in this tempdir test.
                 topic: "t1".to_string(),
                 model: "cnprov/m1".to_string(),
                 input_tokens: 100,

@@ -23,8 +23,8 @@ impl PidFileGuard {
 
 #[derive(Debug, Args)]
 pub struct ServeArgs {
-    /// Config file path (default: <config_home>/config.toml, e.g.
-    /// ~/.config/jyc/config.toml; or config.toml in --workdir when given)
+    /// Config file path (default: <config dir>/config.toml, e.g.
+    /// ~/.config/jyc/config.toml; or config.toml in --data-dir when given)
     #[arg(short, long)]
     pub config: Option<String>,
 }

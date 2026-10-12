@@ -23,18 +23,18 @@ use jyc_types::{load_config_layered, validation};
 
 pub async fn run(
     args: &ServeArgs,
-    workdir: &Path,
-    workdir_explicit: bool,
+    data_dir: &Path,
+    data_dir_explicit: bool,
     pipe: bool,
 ) -> Result<()> {
     // 1. Resolve config locations, provision default config on first run
     let resolution =
-        super::resolve::resolve_config(workdir, args.config.as_deref(), workdir_explicit)?;
+        super::resolve::resolve_config(data_dir, args.config.as_deref(), data_dir_explicit)?;
     if super::resolve::provision_default_config(&resolution).await? {
         return Ok(());
     }
 
-    // 2. Load (layered: global base + workdir overlay) and validate config
+    // 2. Load (layered: global base + data_dir overlay) and validate config
     let config_path = resolution.config_path.clone();
     let global_config_path = resolution.global_config_path.clone();
     tracing::info!(
@@ -56,7 +56,7 @@ pub async fn run(
     }
     // Re-register state dirs of previously adopted ad-hoc topics so every
     // `.jyc` lookup resolves before any channel/tmux work starts.
-    jyc_core::topic_path::restore_state_registry(&jyc_core::topic_path::state_root(workdir));
+    jyc_core::topic_path::restore_state_registry(&jyc_core::topic_path::agents_dir(data_dir));
     let config = Arc::new(ArcSwap::from_pointee(config));
 
     // 3. Setup cancellation (Ctrl+C and SIGTERM)
@@ -68,7 +68,7 @@ pub async fn run(
     });
 
     // Write PID file for `jyc stop` command (removed automatically on drop)
-    let pid_path = workdir.join("jyc.pid");
+    let pid_path = data_dir.join("jyc.pid");
     let _pid_guard = if let Err(e) =
         tokio::fs::write(&pid_path, std::process::id().to_string()).await
     {
@@ -92,7 +92,7 @@ pub async fn run(
 
     let orchestrator = Arc::new(jyc_core::channel_orchestrator::ChannelOrchestrator::new(
         config.clone(),
-        workdir,
+        data_dir,
     ));
 
     // Synthesize the implicit `channels.agents` channel from
@@ -138,9 +138,9 @@ pub async fn run(
     // token is generated only when no token file exists yet.
     let inspect_auth_token: Option<String> =
         if config_snapshot.inspect.as_ref().is_some_and(|i| i.enabled) {
-            let auth_token = jyc_utils::auth_token::resolve_or_generate_token(workdir)?;
+            let auth_token = jyc_utils::auth_token::resolve_or_generate_token(data_dir)?;
             tracing::info!(
-                path = %jyc_utils::auth_token::token_path(workdir).display(),
+                path = %jyc_utils::auth_token::token_path(data_dir).display(),
                 "Authorization token ready; retrieve with `jyc token show`"
             );
             Some(auth_token)
@@ -221,13 +221,13 @@ pub async fn run(
             .and_then(|att| att.inbound.clone());
 
         // Workspace directory:
-        //   - regular channels: <workdir>/<channel>/workspace/
-        //   - synthesized "agents" channel: <data_home>/agents/
+        //   - regular channels: <data dir>/<channel>/workspace/
+        //   - synthesized "agents" channel: <data dir>/agents/
         //     (each agent pattern has its own topic_path under there)
         let workspace_dir = if channel_name == "agents" {
-            jyc_core::topic_path::resolve_agents_workspace_root(workdir)
+            jyc_core::topic_path::resolve_agents_dir(data_dir)
         } else {
-            jyc_core::topic_path::resolve_workspace(workdir, channel_name)
+            jyc_core::topic_path::resolve_workspace(data_dir, channel_name)
         };
         let storage = Arc::new(MessageStorage::new(&workspace_dir));
 
@@ -281,7 +281,7 @@ pub async fn run(
             config.clone(),
             &agent_config,
             channel_config,
-            workdir,
+            data_dir,
             outbound.clone(),
             patterns.clone(),
             inbound_attachment_config.clone(),
@@ -292,12 +292,12 @@ pub async fn run(
         }
         let agent = agent_result.agent;
 
-        // Layered template dirs (low → high priority): L1 global < L2 workdir.
+        // Layered template dirs (low → high priority): L1 global < L2 data_dir.
         // Topic-level (L3) .jyc/templates/ is checked first at lookup time.
         let template_dirs = jyc_core::template_dirs::TemplateDirs::new(
             [
                 jyc_utils::paths::global_templates_dir(),
-                Some(workdir.join("templates")),
+                Some(data_dir.join("templates")),
             ]
             .into_iter()
             .flatten()
@@ -316,7 +316,7 @@ pub async fn run(
             config.clone(),
             channel_name.clone(),
             channel_type.to_string(),
-            workdir.to_path_buf(),
+            data_dir.to_path_buf(),
             workspace_dir.clone(),
             metrics_handle.clone(),
             Some(config_path.clone()),
@@ -549,7 +549,7 @@ pub async fn run(
     // is not started; anything else is passed through untouched.
     let pipe_child = if pipe {
         if config_snapshot.inspect.as_ref().is_some_and(|i| i.enabled) {
-            Some(PipeChild::spawn(workdir, &config_path)?)
+            Some(PipeChild::spawn(data_dir, &config_path)?)
         } else {
             tracing::warn!(
                 "`--pipe` ignored: the [inspect] server is disabled, so jyc-pipe has no \

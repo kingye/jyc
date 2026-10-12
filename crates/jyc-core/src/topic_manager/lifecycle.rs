@@ -68,20 +68,18 @@ impl TopicManager {
     /// `.jyc`) is removed, empty parents pruned the same way. In-memory
     /// state is cleaned up in both cases.
     pub async fn close_topic(&self, topic_name: &str) -> Result<()> {
-        let agents_root = self.agents_workspace_root();
-        self.close_topic_under(topic_name, &agents_root).await
+        let agents_dir = self.resolve_agents_dir();
+        self.close_topic_under(topic_name, &agents_dir).await
     }
 
     /// [`Self::close_topic`] with an explicit agents root — the same
     /// testable-core pattern as `purge_topic_dir_under` / `auto_close_topic_under`.
-    async fn close_topic_under(&self, topic_name: &str, agents_root: &Path) -> Result<()> {
+    async fn close_topic_under(&self, topic_name: &str, agents_dir: &Path) -> Result<()> {
         // Freeze the topic's state *before* deleting: bookkeeping writes that
         // land after the deletion (the close reply's chat-history line,
         // activity-log entries from event subscribers) are dropped instead of
         // recreating the directory. The topic-open path lifts the freeze.
         jyc_types::state_dir::mark_closed(topic_name);
-        let state_root = crate::topic_path::state_root(&self.workdir);
-        let roots = [agents_root, state_root.as_path()];
         let topic_path = self
             .topic_path(topic_name)
             .await
@@ -138,7 +136,11 @@ impl TopicManager {
                     ),
                 }
             } else {
-                prune_empty_parents(&state, &roots).await;
+                prune_empty_parents(
+                    &state,
+                    &[agents_dir, &crate::topic_path::agents_dir(&self.data_dir)],
+                )
+                .await;
                 tracing::info!(
                     topic = %topic_name,
                     state = %state.display(),
@@ -152,7 +154,11 @@ impl TopicManager {
 
         if topic_path.exists() {
             remove_topic_dir(topic_name, &topic_path).await?;
-            prune_empty_parents(&topic_path, &roots).await;
+            prune_empty_parents(
+                &topic_path,
+                &[agents_dir, &crate::topic_path::agents_dir(&self.data_dir)],
+            )
+            .await;
             tracing::info!(topic = %topic_name, "Topic directory deleted");
         }
 
@@ -176,9 +182,8 @@ impl TopicManager {
     /// - it *is* one of jyc's own roots, contains one, or sits directly under
     ///   one holding another topic's state (`agents/<name>/.jyc`).
     pub async fn purge_topic_dir(&self, topic_name: &str) -> Result<PurgeOutcome> {
-        let agents_root = self.agents_workspace_root();
-        let state_root = crate::topic_path::state_root(&self.workdir);
-        self.purge_topic_dir_under(topic_name, &agents_root, &state_root)
+        let agents_dir = self.resolve_agents_dir();
+        self.purge_topic_dir_under(topic_name, &agents_dir, &self.data_dir)
             .await
     }
 
@@ -204,14 +209,14 @@ impl TopicManager {
         dirs
     }
 
-    /// Testable core of [`Self::purge_topic_dir`] with jyc's own roots passed
-    /// in, so no test can reach the real data home (mirrors
-    /// [`Self::auto_close_topic_under`]).
+    /// Testable core of [`Self::purge_topic_dir`] with the resolved agents root
+    /// and the instance's data dir passed in, so no test can reach the real
+    /// data home (mirrors [`Self::auto_close_topic_under`]).
     async fn purge_topic_dir_under(
         &self,
         topic_name: &str,
-        agents_root: &Path,
-        state_root: &Path,
+        agents_dir: &Path,
+        data_dir: &Path,
     ) -> Result<PurgeOutcome> {
         // Not the kept-dir case: an unpinned topic's dir is
         // `<workspace>/<name>`, which `close_topic` deletes on its own, and a
@@ -249,7 +254,7 @@ impl TopicManager {
                 nested.join(", ")
             )));
         }
-        for root in [agents_root, state_root] {
+        for root in [agents_dir, &crate::topic_path::agents_dir(data_dir)] {
             let root = crate::topic_path::resolved(root);
             if path.parent().is_some_and(|p| p == root.as_path()) {
                 return Ok(PurgeOutcome::Refused(format!(
@@ -271,37 +276,37 @@ impl TopicManager {
         Ok(PurgeOutcome::Deleted)
     }
 
-    /// The root that holds every agent's topic subtree (`<data_home>/agents/`).
+    /// The root that holds every agent's topic subtree (`<data dir>/agents/`).
     ///
     /// A forked topic lands at `<root>/<agent>/<name>` — the same place the
     /// router puts runtime topics, and the same boundary
     /// [`Self::auto_close_topic`] refuses to delete above.
-    pub fn agents_workspace_root(&self) -> std::path::PathBuf {
-        crate::topic_path::resolve_agents_workspace_root(&self.workdir)
+    pub fn resolve_agents_dir(&self) -> std::path::PathBuf {
+        crate::topic_path::resolve_agents_dir(&self.data_dir)
     }
 
     /// Close a topic in response to an upstream close event (issue/PR
     /// closed, chat disbanded, ...).
     ///
     /// Hard safety rule: the topic directory is only deleted when it
-    /// resolves UNDER the agents workspace root (`<data_home>/agents/`).
+    /// resolves UNDER the agents workspace root (`<data dir>/agents/`).
     /// Topics pinned to a custom `topic_path` (e.g. a real project
     /// checkout) are never deleted by automation — they are skipped with
     /// an info log.
     ///
     /// Returns `true` when the topic was actually closed.
     pub async fn auto_close_topic(&self, topic_name: &str) -> Result<bool> {
-        let agents_root = self.agents_workspace_root();
-        self.auto_close_topic_under(topic_name, &agents_root).await
+        let agents_dir = self.resolve_agents_dir();
+        self.auto_close_topic_under(topic_name, &agents_dir).await
     }
 
     /// Testable core of `auto_close_topic` with an explicit agents root.
-    async fn auto_close_topic_under(&self, topic_name: &str, agents_root: &Path) -> Result<bool> {
+    async fn auto_close_topic_under(&self, topic_name: &str, agents_dir: &Path) -> Result<bool> {
         let topic_path = self
             .topic_path(topic_name)
             .await
             .unwrap_or_else(|| self.storage.workspace().join(topic_name));
-        if !path_is_under(&topic_path, agents_root).await {
+        if !path_is_under(&topic_path, agents_dir).await {
             tracing::info!(
                 topic = %topic_name,
                 path = %topic_path.display(),
@@ -382,7 +387,8 @@ impl TopicManager {
 
 /// Remove the emptied parent dirs a deleted state/topic dir leaves behind —
 /// the `agents/<topic>/` shells and empty nested parents like `agents/<agent>/`
-/// — up to but never including jyc's own roots (`agents_root`, `state_root`).
+/// — up to but never including jyc's own roots (the resolved agents dir and
+/// the agents dir under the instance's data dir).
 /// Stops at the first dir that still holds anything; a non-empty shell is
 /// kept, like any pinned topic's dir. `dir` itself is expected to be already
 /// deleted by the caller.
@@ -553,16 +559,16 @@ mode = "agent"
 
     /// Topic inside the agents root: auto-close deletes it.
     #[tokio::test]
-    async fn auto_close_deletes_topic_under_agents_root() {
+    async fn auto_close_deletes_topic_under_agents_dir() {
         let tmp = tempdir().unwrap();
-        let agents_root = tmp.path().join("agents");
-        let workspace = agents_root.join("agent-x");
+        let agents_dir = tmp.path().join("agents");
+        let workspace = agents_dir.join("agent-x");
         let topic_dir = workspace.join("plan-42");
         std::fs::create_dir_all(&topic_dir).unwrap();
 
         let tm = make_tm(&workspace);
         let closed = tm
-            .auto_close_topic_under("plan-42", &agents_root)
+            .auto_close_topic_under("plan-42", &agents_dir)
             .await
             .unwrap();
         assert!(closed);
@@ -571,10 +577,10 @@ mode = "agent"
 
     /// Topic pinned to a custom path outside the agents root: never deleted.
     #[tokio::test]
-    async fn auto_close_skips_custom_path_outside_agents_root() {
+    async fn auto_close_skips_custom_path_outside_agents_dir() {
         let tmp = tempdir().unwrap();
-        let agents_root = tmp.path().join("agents");
-        let workspace = agents_root.join("agent-x");
+        let agents_dir = tmp.path().join("agents");
+        let workspace = agents_dir.join("agent-x");
         std::fs::create_dir_all(&workspace).unwrap();
         let outside = tmp.path().join("projects").join("jyc");
         std::fs::create_dir_all(&outside).unwrap();
@@ -585,10 +591,7 @@ mode = "agent"
             .await
             .insert("jyc".to_string(), outside.clone());
 
-        let closed = tm
-            .auto_close_topic_under("jyc", &agents_root)
-            .await
-            .unwrap();
+        let closed = tm.auto_close_topic_under("jyc", &agents_dir).await.unwrap();
         assert!(!closed);
         assert!(outside.exists());
     }
@@ -599,8 +602,8 @@ mode = "agent"
     #[tokio::test]
     async fn auto_close_refuses_symlink_escape() {
         let tmp = tempdir().unwrap();
-        let agents_root = tmp.path().join("agents");
-        let workspace = agents_root.join("agent-x");
+        let agents_dir = tmp.path().join("agents");
+        let workspace = agents_dir.join("agent-x");
         std::fs::create_dir_all(&workspace).unwrap();
         let real = tmp.path().join("real-project");
         std::fs::create_dir_all(&real).unwrap();
@@ -609,7 +612,7 @@ mode = "agent"
 
         let tm = make_tm(&workspace);
         let closed = tm
-            .auto_close_topic_under("evil", &agents_root)
+            .auto_close_topic_under("evil", &agents_dir)
             .await
             .unwrap();
         assert!(!closed);
@@ -631,7 +634,7 @@ mode = "agent"
         let repo = tmp.path().join("probe-pin-repo");
         let namespace = tmp.path().join("agents/probe-pin-app");
         let state = namespace.join(".jyc");
-        let agents_root = tmp.path().join("agents");
+        let agents_dir = tmp.path().join("agents");
         std::fs::create_dir_all(&repo).unwrap();
         std::fs::write(repo.join("main.rs"), "fn main() {}").unwrap();
         std::fs::create_dir_all(&state).unwrap();
@@ -642,7 +645,7 @@ mode = "agent"
             .await
             .unwrap();
 
-        tm.close_topic_under("probe-pin-app", &agents_root)
+        tm.close_topic_under("probe-pin-app", &agents_dir)
             .await
             .unwrap();
 
@@ -659,13 +662,16 @@ mode = "agent"
             !namespace.exists(),
             "emptied agents/<topic> shell must be pruned"
         );
-        assert!(agents_root.exists(), "the agents root itself must survive");
+        assert!(agents_dir.exists(), "the agents root itself must survive");
         assert_eq!(
             jyc_types::state_dir::registered_state("probe-pin-app"),
             Some(state.clone()),
             "registration kept so a reopen reuses the same state dir"
         );
-        assert_eq!(jyc_types::state_dir::jyc_dir("probe-pin-app", &repo), state);
+        assert_eq!(
+            jyc_types::state_dir::resolve_state_dir("probe-pin-app", &repo),
+            state
+        );
     }
 
     /// A state namespace shell that still holds non-`.jyc` files survives
@@ -679,7 +685,7 @@ mode = "agent"
 
         let namespace = tmp.path().join("agents/probe-prune-full");
         let state = namespace.join(".jyc");
-        let agents_root = tmp.path().join("agents");
+        let agents_dir = tmp.path().join("agents");
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(namespace.join("notes.txt"), "keep me").unwrap();
         jyc_types::state_dir::register("probe-prune-full", &state);
@@ -687,7 +693,7 @@ mode = "agent"
             .await
             .unwrap();
 
-        tm.close_topic_under("probe-prune-full", &agents_root)
+        tm.close_topic_under("probe-prune-full", &agents_dir)
             .await
             .unwrap();
 
@@ -697,7 +703,7 @@ mode = "agent"
             "non-empty namespace shell must survive"
         );
         assert!(
-            namespace.exists() && agents_root.exists(),
+            namespace.exists() && agents_dir.exists(),
             "the shell and the agents root itself must survive"
         );
     }
@@ -708,8 +714,8 @@ mode = "agent"
     #[tokio::test]
     async fn close_prunes_empty_legacy_topic_parents() {
         let tmp = tempdir().unwrap();
-        let agents_root = tmp.path().join("agents");
-        let workspace = agents_root.join("probe-agent-x");
+        let agents_dir = tmp.path().join("agents");
+        let workspace = agents_dir.join("probe-agent-x");
         std::fs::create_dir_all(&workspace).unwrap();
         let tm = make_tm(&workspace);
 
@@ -717,7 +723,7 @@ mode = "agent"
         std::fs::create_dir_all(topic_dir.join(".jyc")).unwrap();
         std::fs::write(topic_dir.join("f.txt"), "x").unwrap();
 
-        tm.close_topic_under("probe-plan-42", &agents_root)
+        tm.close_topic_under("probe-plan-42", &agents_dir)
             .await
             .unwrap();
 
@@ -726,7 +732,7 @@ mode = "agent"
             !workspace.exists(),
             "emptied agents/<agent> parent must be pruned"
         );
-        assert!(agents_root.exists(), "the agents root itself must survive");
+        assert!(agents_dir.exists(), "the agents root itself must survive");
     }
 
     /// Two topics pinning the same dir: closing one deletes only its own
@@ -923,15 +929,15 @@ mode = "agent"
         std::fs::create_dir_all(&workspace).unwrap();
         let tm = make_tm(&workspace);
 
-        let agents_root = tmp.path().join("agents");
-        let namespace = agents_root.join("jin");
+        let agents_dir = tmp.path().join("agents");
+        let namespace = agents_dir.join("jin");
         std::fs::create_dir_all(namespace.join(".jyc")).unwrap();
         tm.set_topic_path("probe-ns", namespace.clone())
             .await
             .unwrap();
 
         let outcome = tm
-            .purge_topic_dir_under("probe-ns", &agents_root, &tmp.path().join("state"))
+            .purge_topic_dir_under("probe-ns", &agents_dir, &tmp.path().join("state"))
             .await
             .unwrap();
         let PurgeOutcome::Refused(reason) = outcome else {
@@ -951,17 +957,17 @@ mode = "agent"
         std::fs::create_dir_all(&workspace).unwrap();
         let tm = make_tm(&workspace);
 
-        let agents_root = tmp.path().join("agents");
-        let state_root = tmp.path().join("state").join("agents");
+        let agents_dir = tmp.path().join("agents");
+        let data_dir = tmp.path().join("state");
         for (name, pin) in [
-            ("probe-agents-root", agents_root.clone()),
+            ("probe-agents-root", agents_dir.clone()),
             ("probe-data-home", tmp.path().to_path_buf()),
         ] {
             std::fs::create_dir_all(&pin).unwrap();
             tm.set_topic_path(name, pin.clone()).await.unwrap();
 
             let outcome = tm
-                .purge_topic_dir_under(name, &agents_root, &state_root)
+                .purge_topic_dir_under(name, &agents_dir, &data_dir)
                 .await
                 .unwrap();
             assert!(

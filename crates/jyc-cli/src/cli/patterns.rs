@@ -17,16 +17,20 @@ pub enum PatternsAction {
     },
 }
 
-pub async fn run(action: &PatternsAction, workdir: &Path, workdir_explicit: bool) -> Result<()> {
+pub async fn run(action: &PatternsAction, data_dir: &Path, data_dir_explicit: bool) -> Result<()> {
     match action {
         PatternsAction::List { config } => {
-            run_list(workdir, config.as_deref(), workdir_explicit).await
+            run_list(data_dir, config.as_deref(), data_dir_explicit).await
         }
     }
 }
 
-async fn run_list(workdir: &Path, config_file: Option<&str>, workdir_explicit: bool) -> Result<()> {
-    let resolution = resolve_config(workdir, config_file, workdir_explicit)?;
+async fn run_list(
+    data_dir: &Path,
+    config_file: Option<&str>,
+    data_dir_explicit: bool,
+) -> Result<()> {
+    let resolution = resolve_config(data_dir, config_file, data_dir_explicit)?;
     let config = load_config_layered(
         resolution.global_config_path.as_deref(),
         &resolution.config_path,

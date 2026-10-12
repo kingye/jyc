@@ -10,10 +10,9 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(name = "jyc", version, about)]
 struct Cli {
-    /// Working directory / data root (default: platform data dir,
-    /// e.g. ~/.local/share/jyc on Linux)
-    #[arg(short, long, global = true)]
-    workdir: Option<PathBuf>,
+    /// Data dir (default: platform data dir, e.g. ~/.local/share/jyc on Linux)
+    #[arg(long, global = true)]
+    data_dir: Option<PathBuf>,
 
     /// Enable debug logging
     #[arg(short, long, global = true)]
@@ -25,9 +24,9 @@ struct Cli {
 
     /// Write tracing logs to a file (default) instead of stderr.
     ///
-    /// Without a value: <data_home>/jyc.log.
+    /// Without a value: <data dir>/jyc.log.
     /// With a value: that path (e.g. /dev/stderr forces stderr).
-    /// Default (no flag): <data_home>/jyc.log — the log file is named
+    /// Default (no flag): <data dir>/jyc.log — the log file is named
     /// after the binary, regardless of subcommand.
     #[arg(long, global = true, num_args = 0..=1, value_name = "PATH")]
     log_file: Option<Option<PathBuf>>,
@@ -186,25 +185,25 @@ async fn main() -> Result<()> {
     let cli = parse_cli();
 
     // Log destination: the log file is named after the binary —
-    // <data_home>/jyc.log for every invocation. `--log-file PATH`
+    // <data dir>/jyc.log for every invocation. `--log-file PATH`
     // overrides; `--log-file /dev/stderr` restores stderr.
     let log_file = match &cli.log_file {
         Some(Some(path)) => Some(path.clone()),
-        Some(None) | None => jyc_utils::paths::data_home().map(|h| h.join("jyc.log")),
+        Some(None) | None => jyc_utils::paths::data_dir().map(|h| h.join("jyc.log")),
     };
     init_tracing(cli.debug, cli.verbose, log_file.as_deref())?;
 
-    let workdir = jyc_utils::config_resolve::resolve_workdir(cli.workdir.as_ref())?;
+    let data_dir = jyc_utils::config_resolve::resolve_data_dir(cli.data_dir.as_ref())?;
 
     let result = match &cli.command {
         Commands::Serve(args) => {
-            cli::serve::run(args, &workdir, cli.workdir.is_some(), cli.pipe).await
+            cli::serve::run(args, &data_dir, cli.data_dir.is_some(), cli.pipe).await
         }
         Commands::Dashboard(args) => match &args.command {
             Some(cli::dashboard::DashboardCommand::Open(open)) => {
                 cli::dashboard::run_open(
                     &args.addr,
-                    &workdir,
+                    &data_dir,
                     open.topic.as_deref(),
                     open.channel.as_deref(),
                     open.path.as_deref(),
@@ -213,12 +212,12 @@ async fn main() -> Result<()> {
                 )
                 .await
             }
-            None => cli::dashboard::run(args, &workdir, None, None, cli.pipe).await,
+            None => cli::dashboard::run(args, &data_dir, None, None, cli.pipe).await,
         },
         Commands::Open { addr, args } => {
             cli::dashboard::run_open(
                 addr,
-                &workdir,
+                &data_dir,
                 args.topic.as_deref(),
                 args.channel.as_deref(),
                 args.path.as_deref(),
@@ -228,16 +227,16 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::Config { action } => {
-            cli::config::run(action, &workdir, cli.workdir.is_some()).await
+            cli::config::run(action, &data_dir, cli.data_dir.is_some()).await
         }
         Commands::Patterns { action } => {
-            cli::patterns::run(action, &workdir, cli.workdir.is_some()).await
+            cli::patterns::run(action, &data_dir, cli.data_dir.is_some()).await
         }
         Commands::Agents { action } => cli::agents::run(action).await,
         Commands::Skills { action } => cli::skills::run(action).await,
-        Commands::Mcp { action } => cli::mcp::run(action, &workdir, cli.workdir.is_some()).await,
-        Commands::Stop(args) => cli::stop::run(args, &workdir).await,
-        Commands::Token(args) => cli::token::run(args, &workdir),
+        Commands::Mcp { action } => cli::mcp::run(action, &data_dir, cli.data_dir.is_some()).await,
+        Commands::Stop(args) => cli::stop::run(args, &data_dir).await,
+        Commands::Token(args) => cli::token::run(args, &data_dir),
     };
 
     if let Err(ref e) = result {

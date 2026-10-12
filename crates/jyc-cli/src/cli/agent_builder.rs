@@ -43,7 +43,7 @@ pub struct AgentServiceResult {
 ///   passed for vision-client wiring which still needs a stable handle at
 ///   construction time).
 /// - `channel_config` – per-channel configuration
-/// - `workdir` – JYC working directory
+/// - `data_dir` – JYC working directory
 /// - `outbound` – outbound adapter for the channel
 /// - `patterns` – channel patterns (used for per-pattern overrides)
 /// - `global_mcp_configs` – global MCP server configurations
@@ -54,7 +54,7 @@ pub fn build_agent_service(
     live_config: Arc<ArcSwap<jyc_types::AppConfig>>,
     agent_config: &jyc_types::AiConfig,
     channel_config: &ChannelConfig,
-    workdir: &Path,
+    data_dir: &Path,
     outbound: Arc<dyn OutboundAdapter>,
     patterns: Vec<ChannelPattern>,
     inbound_attachment_config: Option<InboundAttachmentConfig>,
@@ -109,7 +109,7 @@ pub fn build_agent_service(
 
             let jyc_agent_svc = Arc::new(JycAgentService::new(
                 live_config,
-                workdir.to_path_buf(),
+                data_dir.to_path_buf(),
                 patterns,
                 inbound_attachment_config,
                 vision_client,

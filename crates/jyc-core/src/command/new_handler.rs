@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
@@ -75,7 +75,8 @@ impl CommandHandler for NewCommandHandler {
 
         context.session_end_hook("new").await;
 
-        let state = jyc_types::state_dir::jyc_dir(&context.topic_name, &context.topic_path);
+        let state =
+            jyc_types::state_dir::resolve_state_dir(&context.topic_name, &context.topic_path);
         let agent_path = state.join("agent-session.json");
         let context_path = state.join("agent-context.json");
         let activity_path = state.join("activity.jsonl");
@@ -96,23 +97,24 @@ impl CommandHandler for NewCommandHandler {
 
         // Clear exchange-published files and the exchange token, mirroring
         // /reset: /new starts fresh, so previously shared links must die.
-        let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
-        tokio::fs::remove_dir_all(jyc_dir.join(crate::EXCHANGE_DIR_NAME))
+        let state_dir = resolve_state_dir(&context.topic_name, &context.topic_path);
+        tokio::fs::remove_dir_all(state_dir.join(crate::EXCHANGE_DIR_NAME))
             .await
             .ok();
-        tokio::fs::remove_file(jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME))
+        tokio::fs::remove_file(state_dir.join(crate::EXCHANGE_TOKEN_FILENAME))
             .await
             .ok();
 
         // The task list goes with the session: `/new` starts a topic over.
-        crate::session_state::clear_tasks_at(&jyc_dir).await;
+        crate::session_state::clear_tasks_at(&state_dir).await;
 
         // Delete all chat_history_*.jsonl files in the topic directory (both locations)
         let mut deleted_history = 0u64;
 
         // New location: .jyc/
-        let new_pattern = jyc_types::state_dir::jyc_dir(&context.topic_name, &context.topic_path)
-            .join("chat_history_*.jsonl");
+        let new_pattern =
+            jyc_types::state_dir::resolve_state_dir(&context.topic_name, &context.topic_path)
+                .join("chat_history_*.jsonl");
         deleted_history += delete_glob_files(&new_pattern).await;
 
         // Legacy location: topic root
@@ -192,10 +194,10 @@ mode = "agent"
     }
 
     async fn setup_session(tmp: &tempfile::TempDir) {
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
+            state_dir.join("agent-session.json"),
             r#"{"sessionId":"test","createdAt":"2026-01-01","totalInputTokens":100,"maxInputTokens":1000}"#,
         )
         .await
@@ -332,10 +334,10 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_new_deletes_activity_log";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
-            jyc_dir.join("activity.jsonl"),
+            state_dir.join("activity.jsonl"),
             r#"{"text":"test","timestamp":"2026-06-25T10:00:00Z","severity":"info"}"#,
         )
         .await
@@ -357,13 +359,13 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_new_clears_exchange_files_and_token";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        let exchange_dir = jyc_dir.join(crate::EXCHANGE_DIR_NAME);
+        let state_dir = tmp.path().join(".jyc");
+        let exchange_dir = state_dir.join(crate::EXCHANGE_DIR_NAME);
         tokio::fs::create_dir_all(&exchange_dir).await.unwrap();
         tokio::fs::write(exchange_dir.join("report.pdf"), b"pdf")
             .await
             .unwrap();
-        tokio::fs::write(jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME), "abc123")
+        tokio::fs::write(state_dir.join(crate::EXCHANGE_TOKEN_FILENAME), "abc123")
             .await
             .unwrap();
 
@@ -373,6 +375,6 @@ mode = "agent"
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(!exchange_dir.exists());
-        assert!(!jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME).exists());
+        assert!(!state_dir.join(crate::EXCHANGE_TOKEN_FILENAME).exists());
     }
 }

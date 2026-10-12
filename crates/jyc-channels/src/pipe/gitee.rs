@@ -8,7 +8,7 @@
 //! and `create_comment`'s explicit `is_pr` flag.
 //!
 //! - Inbound: `GiteeInboundAdapter` (poller + dedup state under
-//!   `<workdir>/channels/<channel>/.gitee/`) → pattern match → retarget →
+//!   `<data dir>/channels/<channel>/.gitee/`) → pattern match → retarget →
 //!   `message` frame on the target channel's [`HubPipe`].
 //! - Replies: the pipe's reply stream → `[Role]`-prefixed comment via
 //!   `GiteeClient::create_comment`.
@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use jyc_types::{ChannelConfig, InboundAdapter};
+use jyc_utils::paths::channels_dir;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -53,13 +54,13 @@ struct GiteeReplyState {
 /// Mirrors `pipe::github::spawn_github_pipe`. Unlike full channels, owns
 /// no TopicManager/agent/orchestrator — all topics live in the pipe target
 /// (hub) channel. Keeps the adapter state under
-/// `<workdir>/channels/<channel>/.gitee/` for dedup/cursor continuity.
+/// `<data dir>/channels/<channel>/.gitee/` for dedup/cursor continuity.
 pub(crate) fn spawn_gitee_pipe(
     channel_config: &ChannelConfig,
     channel_name: String,
     config: Arc<jyc_types::AppConfig>,
     hubs: Arc<HashMap<String, Arc<HubPipe>>>,
-    workdir: &Path,
+    data_dir: &Path,
     cancel: CancellationToken,
     tasks: &mut Vec<JoinHandle<()>>,
 ) -> Result<()> {
@@ -82,7 +83,7 @@ pub(crate) fn spawn_gitee_pipe(
     );
 
     let channel_span = tracing::info_span!("in", ch = %channel_name);
-    let workdir = workdir.to_path_buf();
+    let data_dir = data_dir.to_path_buf();
     let cancel_child = cancel.child_token();
 
     tasks.push(tokio::spawn(
@@ -165,7 +166,7 @@ pub(crate) fn spawn_gitee_pipe(
             let adapter = GiteeInboundAdapter::new(
                 &gitee_config,
                 channel_name.clone(),
-                &workdir.join("channels"),
+                &channels_dir(&data_dir),
             );
             let patterns: Vec<jyc_types::ChannelPattern> = config
                 .channels

@@ -4,13 +4,13 @@
 //! that lived inside the topic's working directory (`<topic_dir>/.jyc`),
 //! which pollutes pinned repos and (worse) shares identity with the folder
 //! name. This module decouples them: a globally-unique **state dir**
-//! (`<agents_root>/<name>/.jyc`) is registered for a topic *name*, and all
-//! state access resolves through [`jyc_dir`].
+//! (`<agents dir>/<name>/.jyc`) is registered for a topic *name*, and all
+//! state access resolves through [`state_dir`].
 //!
 //! Naming rules for state dirs:
-//! - Config-key agents (`[agents.<key>]` pins) → `<agents_root>/<key>/.jyc`.
+//! - Config-key agents (`[agents.<key>]` pins) → `<agents dir>/<key>/.jyc`.
 //!   Config keys are unique by construction, so no collisions are possible.
-//! - Ad-hoc/pinned dirs without a config key → `<agents_root>/<derived>/.jyc`
+//! - Ad-hoc/pinned dirs without a config key → `<agents dir>/<derived>/.jyc`
 //!   where `derived` encodes the absolute path (see [`derive_state_name`]).
 //! - Jyc-owned workspace topics (email/dynamic topics whose dir lives under
 //!   the data home) keep `<topic_dir>/.jyc` — but as an explicit
@@ -156,7 +156,7 @@ pub fn unregister(topic_name: &str) {
 /// deliberately no `topic_dir/.jyc` fallback — silently writing state into
 /// a topic's working directory is what polluted pinned user repos (#825).
 /// `topic_dir` is accepted only to make the panic message actionable.
-pub fn jyc_dir(topic_name: &str, topic_dir: impl AsRef<Path>) -> PathBuf {
+pub fn resolve_state_dir(topic_name: &str, topic_dir: impl AsRef<Path>) -> PathBuf {
     let topic_dir = topic_dir.as_ref();
     let map = registry().read().unwrap_or_else(|e| e.into_inner());
     map.get(topic_name).cloned().unwrap_or_else(|| {
@@ -226,11 +226,11 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "no registered state dir")]
-    fn jyc_dir_panics_when_unregistered() {
+    fn state_dir_panics_when_unregistered() {
         let tmp = tempdir().unwrap();
         // `probe-` prefix keeps this key unique across parallel tests.
         let dir = tmp.path().join("probe-fallback");
-        let _ = jyc_dir("probe-fallback-name", &dir);
+        let _ = resolve_state_dir("probe-fallback-name", &dir);
     }
 
     #[test]
@@ -239,7 +239,7 @@ mod tests {
         let topic = tmp.path().join("probe-reg-topic");
         let state = tmp.path().join("probe-reg-state");
         register("probe-reg-name", &state);
-        assert_eq!(jyc_dir("probe-reg-name", &topic), state);
+        assert_eq!(resolve_state_dir("probe-reg-name", &topic), state);
         assert_eq!(registered_state("probe-reg-name"), Some(state));
     }
 
@@ -253,8 +253,8 @@ mod tests {
         let b = tmp.path().join("probe-state-b");
         register("probe-a", &a);
         register("probe-b", &b);
-        assert_eq!(jyc_dir("probe-a", &shared), a);
-        assert_eq!(jyc_dir("probe-b", &shared), b);
+        assert_eq!(resolve_state_dir("probe-a", &shared), a);
+        assert_eq!(resolve_state_dir("probe-b", &shared), b);
     }
 
     #[test]
@@ -270,13 +270,13 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "no registered state dir")]
-    fn jyc_dir_panics_after_unregister() {
+    fn state_dir_panics_after_unregister() {
         let tmp = tempdir().unwrap();
         let topic = tmp.path().join("probe-unreg-topic");
         let state = tmp.path().join("probe-unreg-state2");
         register("probe-unreg-name2", &state);
         unregister("probe-unreg-name2");
-        let _ = jyc_dir("probe-unreg-name2", &topic);
+        let _ = resolve_state_dir("probe-unreg-name2", &topic);
     }
 
     #[test]
@@ -296,6 +296,6 @@ mod tests {
         let state = tmp.path().join("probe-dot-state");
         register("probe-dot-name", &state.join(".").join(""));
         // Registered value is normalized; lookups return the clean path.
-        assert_eq!(jyc_dir("probe-dot-name", &topic), state);
+        assert_eq!(resolve_state_dir("probe-dot-name", &topic), state);
     }
 }

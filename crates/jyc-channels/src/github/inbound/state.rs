@@ -16,15 +16,15 @@ impl GithubInboundAdapter {
     pub fn new(
         config: &GithubConfig,
         channel_name: String,
-        workdir: &Path,
+        channels_dir: &Path,
         app_config: Option<Arc<ArcSwap<jyc_types::AppConfig>>>,
     ) -> Self {
-        let state_dir = workdir.join(&channel_name).join(".github");
+        let state_dir = channels_dir.join(&channel_name).join(".github");
         Self {
             config: config.clone(),
             channel_name,
             state_dir,
-            workdir: workdir.to_path_buf(),
+            channels_dir: channels_dir.to_path_buf(),
             app_config,
             test_patterns: None,
         }
@@ -232,7 +232,8 @@ impl GithubInboundAdapter {
     /// prefixes (see `pr_topic_prefixes`) and `{N}` is a valid `u64`.
     /// Returns an empty set if the workspace directory does not exist.
     pub(crate) fn scan_active_pr_topics(&self) -> HashSet<u64> {
-        let workspace = jyc_core::topic_path::resolve_workspace(&self.workdir, &self.channel_name);
+        let workspace =
+            jyc_core::topic_path::resolve_workspace(&self.channels_dir, &self.channel_name);
 
         let Ok(entries) = std::fs::read_dir(&workspace) else {
             return HashSet::new();

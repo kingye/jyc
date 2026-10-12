@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
@@ -44,17 +44,17 @@ impl CommandHandler for ResetCommandHandler {
         // Clear agent-published files and the exchange-access token: /reset must
         // kill previously shared links (token rotation forces regeneration on
         // the next publish). Done for both the agent and fallback branches.
-        let jyc_dir = jyc_dir(&context.topic_name, &context.topic_path);
-        tokio::fs::remove_dir_all(jyc_dir.join(crate::EXCHANGE_DIR_NAME))
+        let state_dir = resolve_state_dir(&context.topic_name, &context.topic_path);
+        tokio::fs::remove_dir_all(state_dir.join(crate::EXCHANGE_DIR_NAME))
             .await
             .ok();
-        tokio::fs::remove_file(jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME))
+        tokio::fs::remove_file(state_dir.join(crate::EXCHANGE_TOKEN_FILENAME))
             .await
             .ok();
 
         // The task list is part of the session being reset — chat history is
         // kept, the agent's plan for the current piece of work is not.
-        crate::session_state::clear_tasks_at(&jyc_dir).await;
+        crate::session_state::clear_tasks_at(&state_dir).await;
 
         // Resolve ResetCompressionConfig. Best signal we have at command time:
         // read the matched pattern from disk (written by the message router
@@ -85,10 +85,10 @@ impl CommandHandler for ResetCommandHandler {
             })
         } else {
             // No agent service available — fallback to direct file deletion
-            tokio::fs::remove_file(jyc_dir.join("agent-session.json"))
+            tokio::fs::remove_file(state_dir.join("agent-session.json"))
                 .await
                 .ok();
-            tokio::fs::remove_file(jyc_dir.join("agent-context.json"))
+            tokio::fs::remove_file(state_dir.join("agent-context.json"))
                 .await
                 .ok();
             context.session_start_hook("reset").await;
@@ -218,9 +218,9 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_reset_without_force_warns_and_keeps_session";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        let session = jyc_dir.join("agent-session.json");
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        let session = state_dir.join("agent-session.json");
         tokio::fs::write(
             &session,
             r#"{"created_at":"2026-01-01","context_input_tokens":100,"total_output_tokens":50,"max_input_tokens":1000}"#,
@@ -247,17 +247,17 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_reset_existing_session";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(
-            jyc_dir.join("agent-session.json"),
+            state_dir.join("agent-session.json"),
             r#"{"created_at":"2026-01-01","context_input_tokens":100,"total_output_tokens":50,"max_input_tokens":1000}"#,
         )
         .await
         .unwrap();
 
         crate::session_state::write_tasks_at(
-            &jyc_dir,
+            &state_dir,
             &jyc_types::task::TaskList {
                 items: vec![jyc_types::task::TaskItem {
                     id: 1,
@@ -274,9 +274,9 @@ mode = "agent"
 
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
-        assert!(!jyc_dir.join("agent-session.json").exists());
+        assert!(!state_dir.join("agent-session.json").exists());
         assert!(
-            crate::session_state::read_tasks_at(&jyc_dir)
+            crate::session_state::read_tasks_at(&state_dir)
                 .await
                 .is_none(),
             "/reset must clear the task list"
@@ -293,13 +293,13 @@ mode = "agent"
         let tmp = tempfile::tempdir().unwrap();
         let topic = "test_reset_clears_exchange_files_and_token";
         jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let jyc_dir = tmp.path().join(".jyc");
-        let exchange_dir = jyc_dir.join(crate::EXCHANGE_DIR_NAME);
+        let state_dir = tmp.path().join(".jyc");
+        let exchange_dir = state_dir.join(crate::EXCHANGE_DIR_NAME);
         tokio::fs::create_dir_all(&exchange_dir).await.unwrap();
         tokio::fs::write(exchange_dir.join("report.pdf"), b"pdf")
             .await
             .unwrap();
-        tokio::fs::write(jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME), "abc123")
+        tokio::fs::write(state_dir.join(crate::EXCHANGE_TOKEN_FILENAME), "abc123")
             .await
             .unwrap();
 
@@ -309,7 +309,7 @@ mode = "agent"
         let result = handler.execute(ctx).await.unwrap();
         assert!(result.success);
         assert!(!exchange_dir.exists());
-        assert!(!jyc_dir.join(crate::EXCHANGE_TOKEN_FILENAME).exists());
+        assert!(!state_dir.join(crate::EXCHANGE_TOKEN_FILENAME).exists());
     }
 
     #[tokio::test]

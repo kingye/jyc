@@ -37,7 +37,7 @@ pub struct ChannelOrchestrator {
 }
 
 impl ChannelOrchestrator {
-    pub fn new(config: Arc<ArcSwap<AppConfig>>, _workdir: &Path) -> Self {
+    pub fn new(config: Arc<ArcSwap<AppConfig>>, _data_dir: &Path) -> Self {
         Self {
             channels: Mutex::new(HashMap::new()),
             config,

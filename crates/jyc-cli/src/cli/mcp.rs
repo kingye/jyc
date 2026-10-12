@@ -23,10 +23,10 @@ pub enum McpAction {
     },
 }
 
-pub async fn run(action: &McpAction, workdir: &Path, workdir_explicit: bool) -> Result<()> {
+pub async fn run(action: &McpAction, data_dir: &Path, data_dir_explicit: bool) -> Result<()> {
     match action {
         McpAction::Auth { name, config } => {
-            let resolution = resolve_config(workdir, config.as_deref(), workdir_explicit)?;
+            let resolution = resolve_config(data_dir, config.as_deref(), data_dir_explicit)?;
             let config_path = &resolution.config_path;
             let app = load_config_layered(resolution.global_config_path.as_deref(), config_path)?;
             let (url, dcr) = find_oauth_dcr_server(&app, name, config_path)?;

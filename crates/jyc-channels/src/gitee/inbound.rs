@@ -111,8 +111,8 @@ pub struct GiteeInboundAdapter {
 }
 
 impl GiteeInboundAdapter {
-    pub fn new(config: &GiteeConfig, channel_name: String, workdir: &Path) -> Self {
-        let state_dir = workdir.join(&channel_name).join(".gitee");
+    pub fn new(config: &GiteeConfig, channel_name: String, channels_dir: &Path) -> Self {
+        let state_dir = channels_dir.join(&channel_name).join(".gitee");
         Self {
             config: config.clone(),
             channel_name,

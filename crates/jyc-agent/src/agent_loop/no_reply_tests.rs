@@ -278,8 +278,8 @@ async fn final_text_is_queued_via_file_relay() {
     assert_eq!(result.text, "Here is the final answer.");
     assert!(result.reply_delivered, "final text must be delivered");
 
-    let jyc_dir = jyc_types::state_dir::jyc_dir("relay-delivery-test", &working_dir);
-    let reply_md = std::fs::read_to_string(jyc_dir.join("reply.md")).unwrap();
+    let state_dir = jyc_types::state_dir::resolve_state_dir("relay-delivery-test", &working_dir);
+    let reply_md = std::fs::read_to_string(state_dir.join("reply.md")).unwrap();
     assert_eq!(reply_md, "Here is the final answer.");
-    assert!(jyc_dir.join("reply-sent.flag").exists());
+    assert!(state_dir.join("reply-sent.flag").exists());
 }

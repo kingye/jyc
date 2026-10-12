@@ -242,7 +242,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # Pipe-only adapter: the poller matches patterns and re-targets each event
 # into a hub channel / agent topic; a reply forwarder posts agent replies
 # back as issue/PR comments. State (dedup/cursor) lives under
-# <workdir>/channels/<channel>/.github/. Topic initialization is a skill
+# <data dir>/channels/<channel>/.github/. Topic initialization is a skill
 # (github-init), not a per-pattern template.
 
 # [channels.my_repo]

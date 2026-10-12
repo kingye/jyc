@@ -2,7 +2,7 @@
 //!
 //! Extracted from the monolithic `service.rs`.
 
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::path::{Path, PathBuf};
 
 use jyc_types::InboundMessage;
@@ -144,7 +144,7 @@ impl JycAgentService {
 
         // Chat history access instructions — point at the resolved state dir
         // (relocated out of the topic dir for pinned topics).
-        let state_dir = jyc_types::state_dir::jyc_dir(topic_name, topic_path);
+        let state_dir = jyc_types::state_dir::resolve_state_dir(topic_name, topic_path);
         prompt.push_str(&format!(
             "## Chat History\n\
              This topic maintains a chronological chat history in \
@@ -158,7 +158,7 @@ impl JycAgentService {
 
         // Version control hygiene: only relevant while `.jyc` still sits
         // inside the topic dir (unpinned topics). Adopted state dirs live in
-        // data_home and cannot leak into the repo.
+        // data_dir and cannot leak into the repo.
         if state_dir.starts_with(topic_path) {
             // The bash tool already injects a global git excludes file that
             // ignores `.jyc/` everywhere; this rule is the backstop against
@@ -466,9 +466,9 @@ impl JycAgentService {
         if let Some(global_skills) = jyc_utils::paths::global_skills_dir().filter(|d| d.is_dir()) {
             roots.push(global_skills);
         }
-        let workdir_skills = self.workdir.join("skills");
-        if workdir_skills.exists() && workdir_skills.is_dir() {
-            roots.push(workdir_skills);
+        let data_dir_skills = self.data_dir.join("skills");
+        if data_dir_skills.exists() && data_dir_skills.is_dir() {
+            roots.push(data_dir_skills);
         }
 
         // 3. Per-pattern configured read paths
@@ -496,7 +496,7 @@ impl JycAgentService {
         // 4. Relocated topic state dir (outside the topic dir since the
         // `.jyc` adoption refactor) — the agent reads its own chat history,
         // sessions and jobs from it.
-        let state = jyc_types::state_dir::jyc_dir(&message.topic, topic_path);
+        let state = jyc_types::state_dir::resolve_state_dir(&message.topic, topic_path);
         if !state.starts_with(topic_path) {
             roots.push(state);
         }
@@ -536,7 +536,7 @@ impl JycAgentService {
                 }
             }
         }
-        let state = jyc_types::state_dir::jyc_dir(&message.topic, topic_path);
+        let state = jyc_types::state_dir::resolve_state_dir(&message.topic, topic_path);
         if !state.starts_with(topic_path) {
             roots.push(state);
         }
@@ -683,7 +683,8 @@ impl JycAgentService {
 /// than `"hide"`. The `/thinking hide` command writes `"hide"` to this file;
 /// `/thinking show` writes `"show"`.
 pub(crate) fn read_thinking_enabled(topic_name: &str, topic_path: &Path) -> bool {
-    match std::fs::read_to_string(jyc_dir(topic_name, topic_path).join("thinking-state")) {
+    match std::fs::read_to_string(resolve_state_dir(topic_name, topic_path).join("thinking-state"))
+    {
         Ok(content) => content.trim() != "hide",
         Err(_) => true,
     }

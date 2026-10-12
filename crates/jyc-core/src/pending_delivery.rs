@@ -5,7 +5,7 @@
 //! Watches for `reply-sent.flag` + `reply.md` files and delivers immediately.
 
 use chrono::Utc;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::path::Path;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -134,9 +134,9 @@ pub async fn watch_pending_deliveries(
     event_bus: Option<TopicEventBusRef>,
     topic_name: &str,
 ) {
-    let jyc_dir = jyc_dir(topic_name, topic_path);
-    let signal_path = jyc_dir.join("reply-sent.flag");
-    let reply_path = jyc_dir.join("reply.md");
+    let state_dir = resolve_state_dir(topic_name, topic_path);
+    let signal_path = state_dir.join("reply-sent.flag");
+    let reply_path = state_dir.join("reply.md");
 
     loop {
         tokio::select! {
@@ -337,14 +337,14 @@ mod tests {
         let message_dir = "2026-01-01_00-00-00";
 
         // Create directories
-        let jyc_dir = topic_path.join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = topic_path.join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
 
         // Write signal and reply files to .jyc/
-        tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}")
+        tokio::fs::write(state_dir.join("reply-sent.flag"), "{}")
             .await
             .unwrap();
-        tokio::fs::write(jyc_dir.join("reply.md"), "❓ What color?")
+        tokio::fs::write(state_dir.join("reply.md"), "❓ What color?")
             .await
             .unwrap();
 
@@ -380,8 +380,8 @@ mod tests {
         assert_eq!(msgs[0], "❓ What color?");
 
         // Verify cleanup
-        assert!(!jyc_dir.join("reply-sent.flag").exists());
-        assert!(!jyc_dir.join("reply.md").exists());
+        assert!(!state_dir.join("reply-sent.flag").exists());
+        assert!(!state_dir.join("reply.md").exists());
     }
 
     /// Attachments recorded in the signal file must reach the outbound
@@ -392,18 +392,18 @@ mod tests {
         let topic_path = tmp.path().to_path_buf();
         let message_dir = "2026-01-01_00-00-00";
 
-        let jyc_dir = topic_path.join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = topic_path.join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         tokio::fs::write(topic_path.join("report.pdf"), b"%PDF")
             .await
             .unwrap();
         tokio::fs::write(
-            jyc_dir.join("reply-sent.flag"),
+            state_dir.join("reply-sent.flag"),
             r#"{"attachments": ["report.pdf"]}"#,
         )
         .await
         .unwrap();
-        tokio::fs::write(jyc_dir.join("reply.md"), "here you go")
+        tokio::fs::write(state_dir.join("reply.md"), "here you go")
             .await
             .unwrap();
 
@@ -444,10 +444,10 @@ mod tests {
         let topic_path = tmp.path().to_path_buf();
         let message_dir = "2026-01-01_00-00-00";
 
-        let jyc_dir = topic_path.join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = topic_path.join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
         // reply.md exists but no signal file
-        tokio::fs::write(jyc_dir.join("reply.md"), "test")
+        tokio::fs::write(state_dir.join("reply.md"), "test")
             .await
             .unwrap();
 
@@ -485,13 +485,13 @@ mod tests {
         let topic_path = tmp.path().to_path_buf();
         let message_dir = "2026-01-01_00-00-00";
 
-        let jyc_dir = topic_path.join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
+        let state_dir = topic_path.join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
 
-        tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}")
+        tokio::fs::write(state_dir.join("reply-sent.flag"), "{}")
             .await
             .unwrap();
-        tokio::fs::write(jyc_dir.join("reply.md"), "   ")
+        tokio::fs::write(state_dir.join("reply.md"), "   ")
             .await
             .unwrap();
 
@@ -565,12 +565,12 @@ mod tests {
         let tmp = tempdir().unwrap();
         let topic_path = tmp.path().to_path_buf();
         let message_dir = "2026-01-01_00-00-00";
-        let jyc_dir = topic_path.join(".jyc");
-        tokio::fs::create_dir_all(&jyc_dir).await.unwrap();
-        tokio::fs::write(jyc_dir.join("reply-sent.flag"), "{}")
+        let state_dir = topic_path.join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(state_dir.join("reply-sent.flag"), "{}")
             .await
             .unwrap();
-        tokio::fs::write(jyc_dir.join("reply.md"), "Hi from watcher")
+        tokio::fs::write(state_dir.join("reply.md"), "Hi from watcher")
             .await
             .unwrap();
 
@@ -612,8 +612,8 @@ mod tests {
             event
         );
         assert_eq!(delivered.lock().unwrap().len(), 1);
-        assert!(!jyc_dir.join("reply-sent.flag").exists());
-        assert!(!jyc_dir.join("reply.md").exists());
+        assert!(!state_dir.join("reply-sent.flag").exists());
+        assert!(!state_dir.join("reply.md").exists());
     }
 
     #[tokio::test]

@@ -1229,7 +1229,7 @@ fn parse_toml_value(content: &str, ctx: &str) -> Result<toml::Value> {
 
 /// Read a TOML file into a string and parse it to `toml::Value`. Used by
 /// [`load_config`] (single file) and [`load_config_layered`] (twice — once
-/// for the workdir overlay, once for the global base). No `${VAR}` expansion
+/// for the data_dir overlay, once for the global base). No `${VAR}` expansion
 /// at this step; that happens after merging in L2.
 pub(crate) fn read_and_parse(path: &Path) -> Result<toml::Value> {
     let content = std::fs::read_to_string(path)

@@ -676,8 +676,8 @@ mod next_id_tests {
     fn seed_next_id_falls_back_to_disk_when_memory_is_empty() {
         let tmp = TempDir::new().unwrap();
         let topic_path = tmp.path().to_path_buf();
-        let jyc_dir = topic_path.join(".jyc");
-        fs::create_dir_all(&jyc_dir).unwrap();
+        let state_dir = topic_path.join(".jyc");
+        fs::create_dir_all(&state_dir).unwrap();
         let entry = ActivityEntry {
             id: 7,
             text: "disk".to_string(),
@@ -686,12 +686,12 @@ mod next_id_tests {
             is_internal: false,
         };
         fs::write(
-            jyc_dir.join("activity.jsonl"),
+            state_dir.join("activity.jsonl"),
             serde_json::to_string(&entry).unwrap(),
         )
         .unwrap();
         let topic = "seed_next_id_falls_back_to_disk_when_memory_is_empty";
-        jyc_types::state_dir::register(topic, &jyc_dir);
+        jyc_types::state_dir::register(topic, &state_dir);
         let mut state = TopicActivityState::default();
         seed_next_id_from_disk(&mut state, topic, Some(&topic_path));
         assert_eq!(state.next_id, 8);
@@ -774,7 +774,7 @@ mod exchange_route_auth_tests {
 
     /// Authed, the request reaches the handler, so a missing `filename` is a
     /// `400`. Nothing is written: only that rejection is safe to exercise
-    /// here, because the handler resolves the real `<data_home>/.inbound/`
+    /// here, because the handler resolves the real `<data dir>/.inbound/`
     /// and a test must not stage files in it.
     #[tokio::test]
     async fn inbound_upload_route_reaches_the_handler() {

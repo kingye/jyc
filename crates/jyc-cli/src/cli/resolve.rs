@@ -18,15 +18,15 @@ pub async fn provision_default_config(res: &ConfigResolution) -> Result<bool> {
         return Ok(false);
     }
 
-    let config_home = res
+    let config_dir = res
         .config_path
         .parent()
         .context("config path has no parent directory")?;
-    tokio::fs::create_dir_all(config_home)
+    tokio::fs::create_dir_all(config_dir)
         .await
-        .with_context(|| format!("failed to create {}", config_home.display()))?;
+        .with_context(|| format!("failed to create {}", config_dir.display()))?;
     for sub in ["skills", "templates"] {
-        let dir = config_home.join(sub);
+        let dir = config_dir.join(sub);
         tokio::fs::create_dir_all(&dir)
             .await
             .with_context(|| format!("failed to create {}", dir.display()))?;

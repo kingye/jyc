@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::{Mutex, mpsc};
@@ -40,8 +40,8 @@ pub struct JycAgentService {
     config: Arc<ArcSwap<jyc_types::AppConfig>>,
     /// Per-topic event bus map.
     event_buses: Mutex<HashMap<String, TopicEventBusRef>>,
-    /// JYC workdir (for discovering global skills).
-    workdir: PathBuf,
+    /// JYC data_dir (for discovering global skills).
+    data_dir: PathBuf,
     /// Channel patterns for the current channel (not cross-channel flattened).
     /// Used to look up per-pattern agent runtime flags (e.g.
     /// `inject_inbound_images`, model/small_model overrides, mcps,
@@ -89,7 +89,7 @@ impl JycAgentService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Arc<ArcSwap<jyc_types::AppConfig>>,
-        workdir: PathBuf,
+        data_dir: PathBuf,
         patterns: Vec<ChannelPattern>,
         global_inbound_attachments: Option<jyc_types::InboundAttachmentConfig>,
         vision_client: Option<Arc<VisionClient>>,
@@ -101,7 +101,7 @@ impl JycAgentService {
         Self {
             config,
             event_buses: Mutex::new(HashMap::new()),
-            workdir,
+            data_dir,
             patterns,
             global_inbound_attachments,
             vision_client,
@@ -245,9 +245,9 @@ impl AgentService for JycAgentService {
                     Some("plan") => "plan",
                     _ => "build", // default = build mode
                 };
-            let mode_specific_path =
-                jyc_dir(topic_name, topic_path).join(format!("{mode_suffix}-model-override"));
-            let legacy_path = jyc_dir(topic_name, topic_path).join("model-override");
+            let mode_specific_path = resolve_state_dir(topic_name, topic_path)
+                .join(format!("{mode_suffix}-model-override"));
+            let legacy_path = resolve_state_dir(topic_name, topic_path).join("model-override");
             if mode_specific_path.exists() {
                 tokio::fs::read_to_string(&mode_specific_path)
                     .await

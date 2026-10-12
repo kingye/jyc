@@ -11,7 +11,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
-use jyc_core::topic_path::inbound_staging_root;
+use jyc_core::topic_path::inbound_dir;
 use jyc_types::{
     ChannelMatcher, ChannelPattern, InboundAdapter, InboundAdapterOptions, InboundMessage,
     MessageAttachment, MessageContent, PatternMatch,
@@ -139,7 +139,7 @@ impl FrameAttachment {
     /// single plain file name — the frame is client input.
     ///
     /// `staging_root` is the hub's inbound staging directory
-    /// ([`inbound_staging_root`]), so the topic worker needs no knowledge of
+    /// ([`inbound_dir`]), so the topic worker needs no knowledge of
     /// the layout — it just moves the file it is handed.
     fn into_attachment(self, staging_root: &Path) -> Option<MessageAttachment> {
         let name = Path::new(&self.path);
@@ -477,7 +477,7 @@ async fn handle_connection_impl(
                                     reply_to_id: None,
                                     external_id: None,
                                     attachments: {
-                                        let staging_root = inbound_staging_root();
+                                        let staging_root = inbound_dir();
                                         attachments
                                             .into_iter()
                                             .filter_map(|att| {
@@ -994,7 +994,7 @@ mod tests {
     #[tokio::test]
     async fn test_staged_upload_is_resolved_by_the_frame_handler() {
         let tmp = tempfile::tempdir().unwrap();
-        // Stands in for `inbound_staging_root()`: the two sides only have to
+        // Stands in for `inbound_dir()`: the two sides only have to
         // agree on the directory, whatever it is.
         let staging = tmp.path().join(".inbound");
 

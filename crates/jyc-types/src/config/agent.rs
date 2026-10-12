@@ -25,7 +25,7 @@ use crate::channel::{
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
-    /// Template name to initialize the topic (from workdir/templates/).
+    /// Template name to initialize the topic (from data_dir/templates/).
     #[serde(default)]
     pub template: Option<String>,
 
@@ -35,7 +35,7 @@ pub struct AgentConfig {
 
     /// Custom filesystem path for the topic directory.
     ///
-    /// When unset, the default is `<data_home>/agents/<agent_name>/`,
+    /// When unset, the default is `<data dir>/agents/<agent_name>/`,
     /// with the topic as a subdirectory beneath that.
     /// `~` expands to `$HOME`. Absolute paths are used as-is.
     #[serde(default)]

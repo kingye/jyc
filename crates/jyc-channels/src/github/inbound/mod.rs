@@ -11,10 +11,10 @@ pub struct GithubMatcher;
 pub struct GithubInboundAdapter {
     config: GithubConfig,
     channel_name: String,
-    /// Directory for persistent state: <workdir>/<channel>/.github/
+    /// Directory for persistent state: <data dir>/channels/<channel>/.github/
     state_dir: PathBuf,
-    /// Workdir for workspace resolution: <workdir>/
-    workdir: PathBuf,
+    /// Channels dir, anchor for workspace resolution: <data dir>/channels/
+    channels_dir: PathBuf,
     /// Live application config for dynamic pattern reading.
     app_config: Option<Arc<ArcSwap<jyc_types::AppConfig>>>,
     /// Test-only override for patterns. When set, takes priority over app_config.

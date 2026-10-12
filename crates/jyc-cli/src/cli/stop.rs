@@ -15,8 +15,8 @@ pub struct StopArgs {
 }
 
 /// Run the `jyc stop` command: read the PID file and send a signal.
-pub async fn run(args: &StopArgs, workdir: &Path) -> Result<()> {
-    let pid_path = workdir.join("jyc.pid");
+pub async fn run(args: &StopArgs, data_dir: &Path) -> Result<()> {
+    let pid_path = data_dir.join("jyc.pid");
 
     // Read PID file
     let pid_str = tokio::fs::read_to_string(&pid_path)

@@ -20,7 +20,7 @@ use jyc_core::topic_manager::TopicManager;
 use jyc_types::InboundMessage;
 use jyc_types::channel::OutboundAdapter;
 use jyc_types::config::HookEvent;
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use jyc_utils::hooks::{HookCtx, HookOutcome, HookSet};
 
 /// Everything the reply delivery path needs to send a reply synchronously
@@ -112,9 +112,9 @@ pub async fn deliver_reply(
 
     // File relay: queue for the background delivery watcher / post-loop
     // worker delivery.
-    let jyc_dir = jyc_dir(topic_name, ctx.working_dir);
-    tokio::fs::create_dir_all(&jyc_dir).await.ok();
-    tokio::fs::write(jyc_dir.join("reply.md"), text)
+    let state_dir = resolve_state_dir(topic_name, ctx.working_dir);
+    tokio::fs::create_dir_all(&state_dir).await.ok();
+    tokio::fs::write(state_dir.join("reply.md"), text)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to write reply.md: {e}"))?;
     let signal = serde_json::json!({
@@ -124,7 +124,7 @@ pub async fn deliver_reply(
         "attachments": Vec::<String>::new(),
     });
     tokio::fs::write(
-        jyc_dir.join("reply-sent.flag"),
+        state_dir.join("reply-sent.flag"),
         serde_json::to_string_pretty(&signal)?,
     )
     .await

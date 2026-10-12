@@ -1,14 +1,14 @@
 //! Layered template directory resolution.
 //!
 //! Templates are looked up across three levels (see issue #393):
-//! - **L1 (global)**: `<config_home>/templates/` (e.g. `~/.config/jyc/templates`)
-//! - **L2 (workdir/data root)**: `<workdir>/templates/`
+//! - **L1 (global)**: `<config dir>/templates/` (e.g. `~/.config/jyc/templates`)
+//! - **L2 (data_dir/data root)**: `<data dir>/templates/`
 //! - **L3 (topic)**: `<topic_path>/.jyc/templates/`
 //!
 //! Higher levels win when a template with the same name exists in multiple
 //! levels.
 
-use jyc_types::state_dir::jyc_dir;
+use jyc_types::state_dir::resolve_state_dir;
 use std::path::{Path, PathBuf};
 
 /// Ordered template directories, low → high priority.
@@ -48,7 +48,9 @@ impl TemplateDirs {
         topic_path: &Path,
         name: &str,
     ) -> Option<PathBuf> {
-        let topic_level = jyc_dir(topic_name, topic_path).join("templates").join(name);
+        let topic_level = resolve_state_dir(topic_name, topic_path)
+            .join("templates")
+            .join(name);
         if topic_level.is_dir() {
             return Some(topic_level);
         }
@@ -85,14 +87,14 @@ mod tests {
     fn test_resolve_higher_priority_wins() {
         let tmp = tempfile::tempdir().unwrap();
         let global = tmp.path().join("global");
-        let workdir = tmp.path().join("workdir");
+        let data_dir = tmp.path().join("data_dir");
         make_template(&global, "alpha");
-        make_template(&workdir, "alpha");
+        make_template(&data_dir, "alpha");
         make_template(&global, "beta");
 
-        let dirs = TemplateDirs::new(vec![global.clone(), workdir.clone()]);
-        // Present in both → workdir (higher priority) wins
-        assert_eq!(dirs.resolve("alpha"), Some(workdir.join("alpha")));
+        let dirs = TemplateDirs::new(vec![global.clone(), data_dir.clone()]);
+        // Present in both → data_dir (higher priority) wins
+        assert_eq!(dirs.resolve("alpha"), Some(data_dir.join("alpha")));
         // Present only in global → found there
         assert_eq!(dirs.resolve("beta"), Some(global.join("beta")));
     }
@@ -101,15 +103,15 @@ mod tests {
     fn test_resolve_with_topic_level_first() {
         let tmp = tempfile::tempdir().unwrap();
         let tname = "test_resolve_with_topic_level_first";
-        let workdir = tmp.path().join("workdir");
+        let data_dir = tmp.path().join("data_dir");
         let topic = tmp.path().join("topic");
         jyc_types::state_dir::register(tname, &topic.join(".jyc"));
-        make_template(&workdir, "alpha");
+        make_template(&data_dir, "alpha");
         make_template(&topic.join(".jyc").join("templates"), "alpha");
         make_template(&topic.join(".jyc").join("templates"), "gamma");
 
-        let dirs = TemplateDirs::single(workdir.clone());
-        // Topic level wins over workdir
+        let dirs = TemplateDirs::single(data_dir.clone());
+        // Topic level wins over data_dir
         assert_eq!(
             dirs.resolve_with_topic(tname, &topic, "alpha"),
             Some(topic.join(".jyc/templates/alpha"))
@@ -119,11 +121,11 @@ mod tests {
             dirs.resolve_with_topic(tname, &topic, "gamma"),
             Some(topic.join(".jyc/templates/gamma"))
         );
-        // Only at workdir level
-        make_template(&workdir, "beta");
+        // Only at data_dir level
+        make_template(&data_dir, "beta");
         assert_eq!(
             dirs.resolve_with_topic(tname, &topic, "beta"),
-            Some(workdir.join("beta"))
+            Some(data_dir.join("beta"))
         );
     }
 }

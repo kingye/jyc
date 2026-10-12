@@ -41,15 +41,15 @@ pub(crate) fn pipe_binary() -> PathBuf {
 
 /// Command line for the pipe.
 ///
-/// `--workdir` and `--config` are both passed on purpose: the pipe resolves
-/// its config through the same helper the hub uses, where `--workdir` alone
-/// means "read `<workdir>/config.toml`" — not necessarily the file the hub
+/// `--data-dir` and `--config` are both passed on purpose: the pipe resolves
+/// its config through the same helper the hub uses, where `--data-dir` alone
+/// means "read `<data dir>/config.toml`" — not necessarily the file the hub
 /// loaded. The log destination is left alone, so the pipe keeps writing its
-/// own `<data_home>/jyc-pipe.log`.
-pub(crate) fn pipe_command(bin: &Path, workdir: &Path, config_path: &Path) -> Command {
+/// own `<data dir>/jyc-pipe.log`.
+pub(crate) fn pipe_command(bin: &Path, data_dir: &Path, config_path: &Path) -> Command {
     let mut cmd = Command::new(bin);
-    cmd.arg("--workdir")
-        .arg(workdir)
+    cmd.arg("--data-dir")
+        .arg(data_dir)
         .arg("--config")
         .arg(config_path);
     cmd.stdin(std::process::Stdio::null()).kill_on_drop(true);
@@ -63,10 +63,10 @@ pub(crate) struct PipeChild {
 }
 
 impl PipeChild {
-    /// Spawn `jyc-pipe` against the hub's own workdir and config file.
-    pub(crate) fn spawn(workdir: &Path, config_path: &Path) -> Result<Self> {
+    /// Spawn `jyc-pipe` against the hub's own data_dir and config file.
+    pub(crate) fn spawn(data_dir: &Path, config_path: &Path) -> Result<Self> {
         let bin = pipe_binary();
-        let child = pipe_command(&bin, workdir, config_path)
+        let child = pipe_command(&bin, data_dir, config_path)
             .spawn()
             .with_context(|| format!("Failed to spawn {}", bin.display()))?;
         let pid = child.id().unwrap_or(0);
@@ -127,7 +127,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn command_line_passes_the_hub_workdir_and_config() {
+    fn command_line_passes_the_hub_data_dir_and_config() {
         let cmd = pipe_command(
             Path::new("/usr/local/bin/jyc-pipe"),
             Path::new("/data/jyc"),
@@ -141,7 +141,7 @@ mod tests {
         assert_eq!(
             args,
             [
-                "--workdir",
+                "--data-dir",
                 "/data/jyc",
                 "--config",
                 "/data/jyc/config.toml"

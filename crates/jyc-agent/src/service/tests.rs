@@ -1542,8 +1542,9 @@ fn subagent_section_names_children_and_the_reuse_rule() {
         ),
     ];
     let s = JycAgentService::format_subagents_section(&subagents);
-    assert!(s.contains("Your subagents (2 of 3): fix-timeout, parser-check."));
+    assert!(s.contains("Your subagents (2 of at most 3): fix-timeout, parser-check."));
     assert!(s.contains("instead of spawning a duplicate"));
+    assert!(s.contains("expect a refusal once you are at the cap"));
 }
 
 #[tokio::test]

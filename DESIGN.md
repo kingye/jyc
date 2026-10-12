@@ -448,9 +448,9 @@ Readings this table exists to rule out:
    `topic_path::resolve_agents_dir()` (topic dirs; prefers the platform data
    home) and `topic_path::agents_dir(data_dir)` = `<data dir>/agents` (adopted
    state dirs; deliberately data-dir-based so multi-instance and test setups stay
-   isolated — where both are in play one function holds both, and the
-   data-dir-based one is the local `instance_agents_dir`). With an explicit
-   `--data-dir` the two differ.
+   isolated). Where both are in play (cluster close and purge, which prune up to
+   either root) the data-dir-based one is spelled out at the call site as
+   `agents_dir(&self.data_dir)`. With an explicit `--data-dir` the two differ.
 
 ## Topic State Directory (.jyc)
 

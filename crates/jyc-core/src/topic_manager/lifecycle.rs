@@ -80,8 +80,6 @@ impl TopicManager {
         // activity-log entries from event subscribers) are dropped instead of
         // recreating the directory. The topic-open path lifts the freeze.
         jyc_types::state_dir::mark_closed(topic_name);
-        let instance_agents_dir = crate::topic_path::agents_dir(&self.data_dir);
-        let roots = [agents_dir, instance_agents_dir.as_path()];
         let topic_path = self
             .topic_path(topic_name)
             .await
@@ -138,7 +136,11 @@ impl TopicManager {
                     ),
                 }
             } else {
-                prune_empty_parents(&state, &roots).await;
+                prune_empty_parents(
+                    &state,
+                    &[agents_dir, &crate::topic_path::agents_dir(&self.data_dir)],
+                )
+                .await;
                 tracing::info!(
                     topic = %topic_name,
                     state = %state.display(),
@@ -152,7 +154,11 @@ impl TopicManager {
 
         if topic_path.exists() {
             remove_topic_dir(topic_name, &topic_path).await?;
-            prune_empty_parents(&topic_path, &roots).await;
+            prune_empty_parents(
+                &topic_path,
+                &[agents_dir, &crate::topic_path::agents_dir(&self.data_dir)],
+            )
+            .await;
             tracing::info!(topic = %topic_name, "Topic directory deleted");
         }
 
@@ -177,8 +183,7 @@ impl TopicManager {
     ///   one holding another topic's state (`agents/<name>/.jyc`).
     pub async fn purge_topic_dir(&self, topic_name: &str) -> Result<PurgeOutcome> {
         let agents_dir = self.resolve_agents_dir();
-        let instance_agents_dir = crate::topic_path::agents_dir(&self.data_dir);
-        self.purge_topic_dir_under(topic_name, &agents_dir, &instance_agents_dir)
+        self.purge_topic_dir_under(topic_name, &agents_dir, &self.data_dir)
             .await
     }
 
@@ -204,14 +209,14 @@ impl TopicManager {
         dirs
     }
 
-    /// Testable core of [`Self::purge_topic_dir`] with jyc's own roots passed
-    /// in, so no test can reach the real data home (mirrors
-    /// [`Self::auto_close_topic_under`]).
+    /// Testable core of [`Self::purge_topic_dir`] with the resolved agents root
+    /// and the instance's data dir passed in, so no test can reach the real
+    /// data home (mirrors [`Self::auto_close_topic_under`]).
     async fn purge_topic_dir_under(
         &self,
         topic_name: &str,
         agents_dir: &Path,
-        instance_agents_dir: &Path,
+        data_dir: &Path,
     ) -> Result<PurgeOutcome> {
         // Not the kept-dir case: an unpinned topic's dir is
         // `<workspace>/<name>`, which `close_topic` deletes on its own, and a
@@ -249,7 +254,7 @@ impl TopicManager {
                 nested.join(", ")
             )));
         }
-        for root in [agents_dir, instance_agents_dir] {
+        for root in [agents_dir, &crate::topic_path::agents_dir(data_dir)] {
             let root = crate::topic_path::resolved(root);
             if path.parent().is_some_and(|p| p == root.as_path()) {
                 return Ok(PurgeOutcome::Refused(format!(
@@ -382,7 +387,8 @@ impl TopicManager {
 
 /// Remove the emptied parent dirs a deleted state/topic dir leaves behind —
 /// the `agents/<topic>/` shells and empty nested parents like `agents/<agent>/`
-/// — up to but never including jyc's own roots (`agents_dir`, `instance_agents_dir`).
+/// — up to but never including jyc's own roots (the resolved agents dir and
+/// the agents dir under the instance's data dir).
 /// Stops at the first dir that still holds anything; a non-empty shell is
 /// kept, like any pinned topic's dir. `dir` itself is expected to be already
 /// deleted by the caller.
@@ -952,7 +958,7 @@ mode = "agent"
         let tm = make_tm(&workspace);
 
         let agents_dir = tmp.path().join("agents");
-        let instance_agents_dir = tmp.path().join("state").join("agents");
+        let data_dir = tmp.path().join("state");
         for (name, pin) in [
             ("probe-agents-root", agents_dir.clone()),
             ("probe-data-home", tmp.path().to_path_buf()),
@@ -961,7 +967,7 @@ mode = "agent"
             tm.set_topic_path(name, pin.clone()).await.unwrap();
 
             let outcome = tm
-                .purge_topic_dir_under(name, &agents_dir, &instance_agents_dir)
+                .purge_topic_dir_under(name, &agents_dir, &data_dir)
                 .await
                 .unwrap();
             assert!(

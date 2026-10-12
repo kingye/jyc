@@ -786,7 +786,11 @@ fn test_scan_active_pr_topics_with_pr_dirs() {
     let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None)
         .with_patterns(vec![reviewer_pattern]);
 
-    let workspace = tmpdir.path().join("test_ch").join("workspace");
+    let workspace = tmpdir
+        .path()
+        .join("channels")
+        .join("test_ch")
+        .join("workspace");
     std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
     std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
     std::fs::create_dir_all(workspace.join("issue-5")).unwrap();
@@ -818,7 +822,11 @@ fn test_scan_active_pr_topics_review_prefix_legacy_fallback() {
     let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None)
         .with_patterns(vec![reviewer_pattern]);
 
-    let workspace = tmpdir.path().join("test_ch").join("workspace");
+    let workspace = tmpdir
+        .path()
+        .join("channels")
+        .join("test_ch")
+        .join("workspace");
     std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
     std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
 
@@ -846,7 +854,11 @@ fn test_scan_active_pr_topics_review_prefix_unknown_pattern_ignored() {
     let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None)
         .with_patterns(vec![qa_pattern]);
 
-    let workspace = tmpdir.path().join("test_ch").join("workspace");
+    let workspace = tmpdir
+        .path()
+        .join("channels")
+        .join("test_ch")
+        .join("workspace");
     std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
     std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
 
@@ -862,7 +874,11 @@ fn test_scan_active_pr_topics_non_numeric_suffix() {
     let config = make_ci_test_config();
     let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None);
 
-    let workspace = tmpdir.path().join("test_ch").join("workspace");
+    let workspace = tmpdir
+        .path()
+        .join("channels")
+        .join("test_ch")
+        .join("workspace");
     std::fs::create_dir_all(workspace.join("pr-abc")).unwrap();
 
     let result = adapter.scan_active_pr_topics();
@@ -886,7 +902,11 @@ fn test_ci_polling_filters_by_active_topics() {
     let adapter = GithubInboundAdapter::new(&config, "test_ch".to_string(), tmpdir.path(), None)
         .with_patterns(vec![reviewer_pattern]);
 
-    let workspace = tmpdir.path().join("test_ch").join("workspace");
+    let workspace = tmpdir
+        .path()
+        .join("channels")
+        .join("test_ch")
+        .join("workspace");
     std::fs::create_dir_all(workspace.join("pr-42")).unwrap();
     std::fs::create_dir_all(workspace.join("review-pr-43")).unwrap();
 

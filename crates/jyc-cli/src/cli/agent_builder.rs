@@ -43,7 +43,7 @@ pub struct AgentServiceResult {
 ///   passed for vision-client wiring which still needs a stable handle at
 ///   construction time).
 /// - `channel_config` – per-channel configuration
-/// - `data_dir` – JYC working directory
+/// - `data_dir` – the JYC data dir (the instance root)
 /// - `outbound` – outbound adapter for the channel
 /// - `patterns` – channel patterns (used for per-pattern overrides)
 /// - `global_mcp_configs` – global MCP server configurations

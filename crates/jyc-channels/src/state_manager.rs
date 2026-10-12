@@ -42,7 +42,9 @@ impl StateManager {
     /// State files live in the channel dir's `.imap/` subdirectory:
     /// `<data dir>/channels/<channel_name>/.imap/`.
     pub fn for_channel(data_dir: &Path, channel_name: &str) -> Self {
-        let state_dir = jyc_utils::paths::channel_dir(data_dir, channel_name).join(".imap");
+        let state_dir = jyc_utils::paths::channels_dir(data_dir)
+            .join(channel_name)
+            .join(".imap");
         Self {
             state_dir,
             state: MonitorState::default(),

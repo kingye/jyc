@@ -267,7 +267,7 @@ fn drop_empty_string_markers(value: &mut toml::Value) {
     }
 }
 
-/// Load configuration with global/data_dir layering.
+/// Load configuration with global/data dir layering.
 ///
 /// When `global` is `Some` and differs from `path`, the global config is
 /// loaded first as the base layer and `path` is merged on top of it via

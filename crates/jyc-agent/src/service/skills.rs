@@ -136,7 +136,7 @@ impl JycAgentService {
                 paths.push(global_skills);
             }
 
-            // L2: {data_dir}/skills/
+            // L2: {data dir}/skills/
             paths.push(self.data_dir.join("skills"));
 
             // {topic_path}/repo/.claude/skills/

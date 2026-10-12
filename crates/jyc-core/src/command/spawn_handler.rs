@@ -107,7 +107,7 @@ impl SpawnCommandHandler {
         agents_dir: &Path,
     ) -> Result<CommandResult> {
         // One name and one path, told apart by shape rather than position, so
-        // `/spawn scratch`, `/spawn ../test` and `/spawn scratch data_dir` all
+        // `/spawn scratch`, `/spawn ../test` and `/spawn scratch/some-dir` all
         // read naturally.
         let mut name = None;
         let mut path = None;

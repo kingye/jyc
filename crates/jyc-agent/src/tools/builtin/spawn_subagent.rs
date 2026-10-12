@@ -1,12 +1,14 @@
-//! Builtin tool: `jyc_spawn_subagent` — create an empty subagent topic.
+//! Builtin tool: `jyc_spawn_subagent` — create a subagent topic for this agent.
 //!
 //! Registered only on the synthesized `agents` channel (see
 //! `JycAgentService::build_tool_registry`), where a spawned sibling topic is
-//! addressable. The tool itself is a thin adapter over
-//! `jyc_core::command::spawn_handler::spawn_subagent`: it creates the topic,
-//! records its lineage and grants this topic read+write access to the child's
-//! directory. Seeding the directory and sending the first task stay with the
-//! caller — `write` for the former, `jyc_send_to_topic` for the latter.
+//! addressable. The tool is the agent's trigger for the one implementation
+//! `/spawn` also runs (`jyc_core::command::spawn_handler::spawn_subagent`):
+//! same inheritance of this topic's state, same lineage breadcrumb, same
+//! read+write grant on the child's directory. Seeding that directory and
+//! sending the first task stay with the caller — `write` for the former,
+//! `jyc_send_to_topic` for the latter — and so does reconfiguring the child,
+//! which is a command away (`/build`, `/model`, … sent as a message body).
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -15,7 +17,7 @@ use serde_json::{Value, json};
 use crate::tools::{Tool, ToolContext, ToolOutput};
 use jyc_core::command::spawn_handler;
 
-/// Tool for spawning an empty subagent topic under this topic's own.
+/// Tool for spawning a subagent topic that inherits this topic's state.
 pub struct SpawnSubagentTool;
 
 #[async_trait]
@@ -25,10 +27,12 @@ impl Tool for SpawnSubagentTool {
     }
 
     fn description(&self) -> &str {
-        "Create an empty subagent topic — a sibling topic with its own context — and grant \
-         yourself read+write access to its directory. Nothing is inherited and no task is \
-         sent: put whatever the subagent needs into its directory with `write`, then send \
-         the task with `jyc_send_to_topic` (require_reply=true). Subagents are one level \
+        "Create a subagent topic — a sibling topic that inherits a copy of this topic's state \
+         (conversation, task list, mode, pattern) and runs on its own queue — and grant \
+         yourself read+write access to its directory. Put whatever it needs into that \
+         directory with `write`, then send the task with `jyc_send_to_topic` \
+         (require_reply=true). To reconfigure it, send it a command body (`/build`, `/plan`, \
+         `/model`, …), which runs without spending one of its turns. Subagents are one level \
          deep and capped at three per topic; when the subagent list in your system prompt \
          already holds one that fits, continue it instead of spawning another."
     }
@@ -76,12 +80,15 @@ impl Tool for SpawnSubagentTool {
                     .unwrap_or_else(|| child.clone());
                 let children = spawn_handler::subagents_of(&parent);
                 Ok(ToolOutput::success(format!(
-                    "Spawned subagent '{child}' at {dir} — you now hold read+write access to it.\n\
+                    "Spawned subagent '{child}' at {dir} — you hold read+write access to it, \
+                     and it inherits this topic's state (a copy of the conversation, the task \
+                     list, the mode, the pattern) as it is now.\n\
                      Put its inputs in that directory with `write`, then send it the task with \
                      jyc_send_to_topic (channel \"{channel}\", topic \"{child}\", \
-                     require_reply=true). Do not touch its `.jyc` directory.\n\
-                     Your subagents ({} of {}): {}. Continue an existing one instead of \
-                     spawning a duplicate.",
+                     require_reply=true). Send it a command body (`/build`, `/model`, …) to \
+                     reconfigure it. Do not touch its `.jyc` directory.\n\
+                     Your subagents ({} of at most {}): {}. Continue an existing one instead \
+                     of spawning a duplicate.",
                     children.len(),
                     spawn_handler::MAX_SUBAGENTS,
                     spawn_handler::format_subagent_names(&children)

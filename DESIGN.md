@@ -430,7 +430,7 @@ keeps its own state dir.
 | Dynamic pipe topic | `<data_home>/agents/<agent>/<topic>/` | `<topic_dir>/.jyc`, registered at activation |
 | Forked topic (`/fork`) | the **parent's** topic dir (shared workspace) | `<data_home>/agents/<name>/.jyc` |
 | Spawned topic (`/spawn`) | a fresh `<data_home>/agents/<name>/`, or any dir the path names outside the source topic's own dir (a non-empty checkout included — its files are not touched; nesting is refused) | `<data_home>/agents/<name>/.jyc` |
-| Subagent (`jyc_spawn_subagent`) | a fresh, **empty** `<data_home>/agents/<name>/` (nothing inherited, no task sent; pinned to the parent's tree by nobody — that is `/fork`) | `<data_home>/agents/<name>/.jyc` |
+| Subagent (`jyc_spawn_subagent`) | the same shape a fresh-name `/spawn` gets — `<data_home>/agents/<name>/` with the parent's state seeded into it (putting the child *in the parent's* working tree is `/fork`) | `<data_home>/agents/<name>/.jyc` |
 
 Registrations happen at four points: startup restore (config pins adopt,
 workspace/agent topics register in-dir), runtime pins (`set_topic_path`,
@@ -520,37 +520,55 @@ those roots — which is why a spawn's default dir under `agents/` is never purg
 
 ### Subagents (`jyc_spawn_subagent`)
 
-A topic's agent can create a **subagent**: an empty sibling topic with its own
-context, its own state and its own turn queue. `jyc_spawn_subagent` — registered
-only on the synthesized `agents` (websocket) channel, the one whose workspace is
-the agents root every agent topic lives in — does four things:
+A topic's agent can create a **subagent**: a sibling topic that inherits this
+topic's state and runs on its own queue. `/spawn` and the `jyc_spawn_subagent`
+tool are one implementation (`spawn_handler::spawn_under`) with two triggers —
+the user typed the command, or the agent called the tool:
 
-1. Creates `<data_home>/agents/<name>/` with an adopted `<name>/.jyc` state dir
-   (the same order as `/spawn`: `adopt_state_dir` first, so `set_topic_path`
-   keeps the in-dir state instead of deriving `_<path>` state under
-   `state_root`).
-2. Writes the lineage breadcrumb `<name>/.jyc/spawned-from` = the parent's topic
-   name. This is the only new state — [`.jyc` ownership][state] stays one topic
-   per directory, and `/spawn`'s inheritance (`seed_state`) is deliberately not
-   applied: a subagent starts empty.
-3. Grants the parent read+write access to that directory through the existing
+1. Resolve the name and destination (`/spawn` from its arguments, the tool from
+   a single name under the agents root), then create
+   `<data_home>/agents/<name>/` with an adopted `<name>/.jyc` state dir (the
+   same order as `/fork`: `adopt_state_dir` first, so `set_topic_path` keeps the
+   in-dir state instead of deriving `_<path>` state under `state_root`).
+2. Seed the parent's state with `seed_state(…, "spawned-from")` — the `/fork`
+   allow-list (pattern, conversation, Task List, backlog, `mode-override`,
+   model/context/MCP/skill overrides, transcript), never `jobs/` or
+   `agent-session.json`, and never the workspace. [`.jyc` ownership][state] stays one topic per directory:
+   the seeded copy is the child's own, and the breadcrumb
+   `<name>/.jyc/spawned-from` = the parent's topic name is the only file added
+   on top of it.
+3. Grant the parent read+write access to that directory through the existing
    runtime grant registry (`jyc_types::access_grants`, the `/grant` mechanism),
    so both access-root resolvers in `jyc-agent/src/service/prompt.rs` pick it up
    on the next turn with no resolver change.
-4. Reports the subagent list, which the system prompt also renders every turn
+4. Report the subagent list, which the system prompt also renders every turn
    (`format_subagents_section`) so the model continues an existing subagent with
    `jyc_send_to_topic` instead of spawning a duplicate.
 
+Because the grant comes from the same place `/spawn` writes it, a hand-typed
+spawn is a subagent too: it shows up in the list, in the parent's read+write
+boundary, and in the cap count. The cap refuses the *tool* only — a user typing
+`/spawn` is not told to stop, and the prompt prints the real count (`N of at
+most 3`) rather than a number it had to clamp.
+
 Everything after that is the parent's own work with tools it already has:
 `write`/`bash` seed the directory, `jyc_send_to_topic` (with
-`require_reply=true`) sends the task and carries the result back as a new
-message to the parent's topic.
+`require_reply=true`) sends the task and carries the result back as a new message
+to the parent's topic. Reconfiguring the child needs no new tool either: the
+worker runs commands for *every* queued message, so sending `/build`, `/model`,
+`/context`, … as the body of a message to the child topic switches it, and an
+empty remaining body stops before the model call — the child spends no turn on
+it. A command's receipt is broadcast to the child's own chat pane (the websocket
+outbound keys on the original topic), so the parent reads
+`<child>/.jyc/mode-override` (which it may read) if it wants to confirm.
 
-Guardrails: one level deep (`spawned-from` present ⇒ refuse), at most 3 subagents
-per topic (`subagents_of` counts grants whose directory still exists *and* whose
-breadcrumb names this topic), and a closed subagent revokes its parent's grant in
-`TopicManager::close_topic_under` — which `auto_close_topic` and `purge` route
-through, so every teardown path revokes.
+Guardrails, all of them the tool's: one level deep (`spawned-from` present ⇒
+refuse), at most 3 subagents per topic (`subagents_of` counts grants whose
+directory still exists *and* whose breadcrumb names this topic), and the name is
+validated here — `spawn_under` tells a name from a path by shape, so an
+unchecked `../evil` would be resolved as a path, off the agents root. A closed
+subagent revokes its parent's grant in `TopicManager::close_topic_under` — which
+`auto_close_topic` and `purge` route through, so every teardown path revokes.
 
 Known boundaries: grants are process-global and in-memory (same "temporary"
 semantics as `/grant`), so a restart drops the access, not the subagent; the

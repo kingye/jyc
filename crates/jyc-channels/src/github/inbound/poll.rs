@@ -146,7 +146,7 @@ impl InboundAdapter for GithubInboundAdapter {
 impl GithubInboundAdapter {
     /// Execute one poll cycle: fetch comments and route via pattern matching.
     /// Routes events to topics via on_message callback.
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     async fn poll_once(
         &self,
         client: &GithubClient,

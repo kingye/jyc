@@ -1,7 +1,7 @@
 # GitHub Channel
 
 The GitHub channel uses the GitHub REST API to:
-- Poll for new issues, PRs, comments, reviews, and CI check-run results
+- Poll for new issues, PRs, and comments
 - Relay agent replies as comments on issues/PRs
 - Support label-based routing for planner/developer/reviewer roles
 
@@ -37,8 +37,6 @@ not apply.
 |-------|-------|
 | Issues / PRs opened | New items in the repo |
 | Issue & PR comments | Skipped for closed items and for the bot's own role-tagged echoes (see Reply Relaying) |
-| PR reviews & review comments | Polled only for open PRs with an **active topic** |
-| CI check runs | Polled per open PR's head SHA (active topics only); a `check_run` event fires once all runs complete and the status transitions to failure/timed_out, listing the failed checks |
 | Closes | Issue/PR closed → close event (see Close Events) |
 
 Events are deduplicated by stable UIDs plus an on-disk cursor, so restarts

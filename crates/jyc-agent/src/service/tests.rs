@@ -1529,6 +1529,24 @@ fn access_boundary_read_only_roots_keep_write_restricted() {
     assert!(s.contains("You MUST only write files within the working directory."));
 }
 
+#[test]
+fn subagent_section_names_children_and_the_reuse_rule() {
+    let subagents = vec![
+        (
+            "fix-timeout".to_string(),
+            PathBuf::from("/agents/fix-timeout"),
+        ),
+        (
+            "parser-check".to_string(),
+            PathBuf::from("/agents/parser-check"),
+        ),
+    ];
+    let s = JycAgentService::format_subagents_section(&subagents);
+    assert!(s.contains("Your subagents (2 of at most 3): fix-timeout, parser-check."));
+    assert!(s.contains("instead of spawning a duplicate"));
+    assert!(s.contains("expect a refusal once you are at the cap"));
+}
+
 #[tokio::test]
 async fn system_prompt_enumerates_configured_access_roots() {
     let pattern = ChannelPattern {

@@ -87,6 +87,11 @@ impl TopicManager {
             .await
             .unwrap_or_else(|| self.storage.workspace().join(topic_name));
 
+        // An agent-spawned subagent hands its parent's filesystem access back
+        // here, before anything is deleted: the grant is keyed by this very
+        // directory (a no-op for every other topic).
+        crate::command::spawn_handler::forget_subagent(topic_name, &topic_path);
+
         // Pinned topic: relocated state is the topic's data; the dir is
         // user property. Remove the former, preserve the latter. The
         // lookup is by *name*, so topics co-pinning the same dir never

@@ -68,6 +68,25 @@ pub struct SpawnCommandHandler {
     topic_manager: Arc<TopicManager>,
 }
 
+/// What a spawn works from: the parent's identity, the parent's topic_path
+/// (relative destinations resolve against it), and the arguments.
+///
+/// `/spawn` fills it from its [`CommandContext`]; [`spawn_subagent_under`] —
+/// the `jyc_spawn_subagent` tool's entry — fills the same three fields from its
+/// own context and passes a single name. That is what lets both triggers run
+/// [`SpawnCommandHandler::spawn_under`] instead of one implementation apiece:
+/// the only difference between them is who decided to spawn.
+///
+/// Terminology (`DESIGN.md` → Terminology): a topic's **topic_path** is the
+/// working directory it runs in — possibly outside the agents root, possibly a
+/// pre-existing checkout; its **state dir** is the `.jyc` that always sits
+/// under the agents root, located by name.
+struct SpawnRequest<'a> {
+    parent_topic: &'a str,
+    parent_topic_path: &'a Path,
+    args: &'a [String],
+}
+
 impl SpawnCommandHandler {
     pub fn new(topic_manager: Arc<TopicManager>) -> Self {
         Self { topic_manager }
@@ -75,11 +94,15 @@ impl SpawnCommandHandler {
 
     /// Testable core of [`Self::execute`] with every root passed in, so no test
     /// can reach the real data home (mirrors `ForkCommandHandler::fork_under`).
-    /// A relative destination resolves against `context.topic_path`, which is
+    /// A relative destination resolves against `req.topic_path`, which is
     /// what makes `../test` mean "beside this topic".
+    ///
+    /// The one implementation behind both triggers: `/spawn` and the
+    /// `jyc_spawn_subagent` tool ([`spawn_subagent_under`]) both seed the
+    /// parent's state and both grant the parent access.
     async fn spawn_under(
         &self,
-        context: &CommandContext,
+        req: SpawnRequest<'_>,
         parent_state: &Path,
         agents_root: &Path,
     ) -> Result<CommandResult> {
@@ -88,12 +111,7 @@ impl SpawnCommandHandler {
         // read naturally.
         let mut name = None;
         let mut path = None;
-        for arg in context
-            .args
-            .iter()
-            .map(|a| a.trim())
-            .filter(|a| !a.is_empty())
-        {
+        for arg in req.args.iter().map(|a| a.trim()).filter(|a| !a.is_empty()) {
             let slot = if looks_like_path(arg) {
                 &mut path
             } else {
@@ -119,22 +137,25 @@ impl SpawnCommandHandler {
         // root. No arguments at all means `<this>-2` there too.
         let requested = path
             .as_deref()
-            .map(|p| resolve_topic_path(p, &context.topic_path));
+            .map(|p| resolve_topic_path(p, req.parent_topic_path));
         let name = match name {
             Some(name) => name,
             None => match requested.as_ref().and_then(|p| p.file_name()) {
                 Some(file) => file.to_string_lossy().into_owned(),
-                None => next_free_name(&self.topic_manager, &context.topic_name, agents_root).await,
+                None => next_free_name(&self.topic_manager, req.parent_topic, agents_root).await,
             },
         };
-        let dest = requested
+        // The child's topic_path: the named dir, or the path's last component,
+        // or `<agents root>/<name>`. Where its *state* goes is a different
+        // question, answered from the name further down.
+        let topic_path = requested
             .map(|p| normalize_lexically(&p))
             .unwrap_or_else(|| agents_root.join(&name));
 
         if let Some(reason) = invalid_name(&name) {
             return Ok(fail(format!("/spawn: {reason}. Usage: {USAGE}")));
         }
-        if name == context.topic_name {
+        if name == req.parent_topic {
             return Ok(fail(format!(
                 "/spawn: '{name}' is the topic you are already in."
             )));
@@ -153,28 +174,28 @@ impl SpawnCommandHandler {
         // exists and leaves the rest as written: a path that exists cannot reach
         // two names through `..` or a symlink, and a path that does not exist
         // yet cannot already be somebody else's topic dir.
-        let source_dir = resolved(&context.topic_path);
-        let dest_dir = resolved(&dest);
-        if dest_dir == source_dir {
+        let parent_resolved = resolved(req.parent_topic_path);
+        let child_resolved = resolved(&topic_path);
+        if child_resolved == parent_resolved {
             return Ok(fail(format!(
                 "/spawn: {} is the directory you are in — pick another path.",
-                dest.display()
+                topic_path.display()
             )));
         }
         // A nested working dir would inherit the parent's git status, file
         // listings, and close semantics, so the destination must stay
         // strictly outside the source topic's own dir.
-        if dest_dir.starts_with(&source_dir) {
+        if child_resolved.starts_with(&parent_resolved) {
             return Ok(fail(format!(
                 "/spawn: {} is inside the current topic's directory — pick a path outside it.",
-                dest.display()
+                topic_path.display()
             )));
         }
-        match tokio::fs::metadata(&dest).await {
+        match tokio::fs::metadata(&topic_path).await {
             Ok(meta) if !meta.is_dir() => {
                 return Ok(fail(format!(
                     "/spawn: {} exists and is not a directory.",
-                    dest.display()
+                    topic_path.display()
                 )));
             }
             _ => {}
@@ -185,44 +206,48 @@ impl SpawnCommandHandler {
             .await
             .into_iter()
             .find(|(name, pin)| {
-                name.as_str() != context.topic_name.as_str() && resolved(pin) == dest_dir
+                name.as_str() != req.parent_topic && resolved(pin) == child_resolved
             })
             .map(|(name, _)| name)
         {
             return Ok(fail(format!(
                 "/spawn: {} is the topic dir of '{owner}'.",
-                dest.display()
+                topic_path.display()
             )));
         }
 
         // Created now, so a fresh `../new-dir` is canonical by the time it is
         // registered — a topic's path should not carry `..` in it. An existing
         // directory is left alone.
-        tokio::fs::create_dir_all(&dest)
+        tokio::fs::create_dir_all(&topic_path)
             .await
-            .with_context(|| format!("/spawn: could not create {}", dest.display()))?;
-        let dest = resolved(&dest);
+            .with_context(|| format!("/spawn: could not create {}", topic_path.display()))?;
+        let topic_path = resolved(&topic_path);
 
         // Register the spawn's own state under its name, then pin the dir —
         // `/fork`'s order, so `set_topic_path` reuses this registration instead
-        // of deriving one of its own.
+        // of deriving one of its own. Two different things, never conflated:
+        // the state dir is always `<agents root>/<name>/.jyc` and is never
+        // inside `topic_path`.
         let state_dir = agents_root.join(&name).join(".jyc");
-        crate::topic_path::adopt_state_dir(&name, &dest, &state_dir)?;
+        crate::topic_path::adopt_state_dir(&name, &topic_path, &state_dir)?;
         self.topic_manager
-            .set_topic_path(&name, dest.clone())
+            .set_topic_path(&name, topic_path.clone())
             .await?;
-        let seeded = seed_state(
-            parent_state,
-            &state_dir,
-            &context.topic_name,
-            "spawned-from",
-        )
-        .await?;
+        let seeded = seed_state(parent_state, &state_dir, req.parent_topic, "spawned-from").await?;
+
+        // The parent keeps its spawn in sight: this one grant — on the child's
+        // **topic_path**, so the parent can put the child's input files there —
+        // is what the prompt's subagent list, the cap check, `/close`'s
+        // revocation and the parent's own read+write boundary all read
+        // (`subagents_of`, which finds the lineage in the state dir above).
+        // `/grant`'s registry, so the same "process-lifetime" semantics apply.
+        jyc_types::access_grants::grant(req.parent_topic, topic_path.clone(), true);
 
         tracing::info!(
-            from = %context.topic_name,
+            from = %req.parent_topic,
             to = %name,
-            dir = %dest.display(),
+            topic_path = %topic_path.display(),
             state = %state_dir.display(),
             seeded,
             "Topic spawned"
@@ -233,9 +258,9 @@ impl SpawnCommandHandler {
                 "✅ Spawned '{}' → '{}' — it works in {} with its own state in {} ({} state \
                  file(s) inherited, no workspace files copied).\n/spawn does not switch by \
                  itself — pick '{name}' in the topic list.",
-                context.topic_name,
+                req.parent_topic,
                 name,
-                dest.display(),
+                topic_path.display(),
                 state_dir.display(),
                 seeded
             ),
@@ -268,9 +293,172 @@ impl CommandHandler for SpawnCommandHandler {
         // developer's own agents tree. Tests call `spawn_under` with every root.
         let agents_root = self.topic_manager.agents_workspace_root();
         let parent_state = jyc_dir(&context.topic_name, &context.topic_path);
-        self.spawn_under(&context, &parent_state, &agents_root)
-            .await
+        let req = SpawnRequest {
+            parent_topic: &context.topic_name,
+            parent_topic_path: &context.topic_path,
+            args: &context.args,
+        };
+        self.spawn_under(req, &parent_state, &agents_root).await
     }
+}
+
+/// How many subagents one topic may hold at a time.
+pub const MAX_SUBAGENTS: usize = 3;
+
+/// Create a subagent topic for `parent`'s agent — the `jyc_spawn_subagent`
+/// tool's trigger for [`SpawnCommandHandler::spawn_under`].
+///
+/// The layout, the inheritance and the grant are `/spawn`'s: a sibling under
+/// the agents root carrying a copy of the parent's state (`pattern`,
+/// conversation, task list, `mode-override`, …) with its own `.jyc`, marked
+/// `spawned-from` and granted to the parent read+write. What is *not* `/spawn`'s
+/// is the guard set — one level deep, [`MAX_SUBAGENTS`] children at most — and
+/// the fact that the name is resolved here rather than taken from arguments.
+/// Returns the new topic's name.
+///
+/// Seeding the child's directory and sending it the task stay with the caller:
+/// `write` for the former, `jyc_send_to_topic` for the latter. Reconfiguring the
+/// child is a command away — `jyc_send_to_topic` with a body of `/build`,
+/// `/model`, `/context`, … runs it in the child's topic without spending one of
+/// its turns (an empty body stops before the model call).
+pub async fn spawn_subagent(
+    tm: &Arc<TopicManager>,
+    parent: &str,
+    parent_dir: &Path,
+    name: Option<&str>,
+) -> Result<String, String> {
+    // Production path only, like `/spawn`: `agents_workspace_root()` resolves
+    // the real data home, so a test that reached here would create topics
+    // inside the developer's own agents tree. Tests call
+    // `spawn_subagent_under` with every root.
+    let agents_root = tm.agents_workspace_root();
+    spawn_subagent_under(tm, parent, parent_dir, name, &agents_root).await
+}
+
+/// [`spawn_subagent`] with an explicit agents root — the same testable-core
+/// pattern as `spawn_under` / `close_topic_under`.
+pub async fn spawn_subagent_under(
+    tm: &Arc<TopicManager>,
+    parent: &str,
+    parent_dir: &Path,
+    name: Option<&str>,
+    agents_root: &Path,
+) -> Result<String, String> {
+    let parent_state = state_dir_of(parent, parent_dir);
+    if parent_state.join("spawned-from").exists() {
+        return Err(
+            "this topic is itself a subagent: subagents cannot spawn subagents".to_string(),
+        );
+    }
+    let existing = subagents_of(parent);
+    if existing.len() >= MAX_SUBAGENTS {
+        return Err(format!(
+            "already at {MAX_SUBAGENTS} subagents ({}): continue one with \
+             jyc_send_to_topic, or close one first",
+            format_subagent_names(&existing)
+        ));
+    }
+
+    // Resolved here because the caller reports the name back, and validated
+    // because `spawn_under` tells a name from a path by shape: a `../evil` that
+    // reached it unchecked would be resolved as a path, off the agents root and
+    // outside everything this module assumes about a subagent's directory.
+    let name = match name {
+        Some(n) => {
+            if let Some(why) = invalid_name(n) {
+                return Err(format!("'{n}' cannot be a subagent name: {why}"));
+            }
+            n.to_string()
+        }
+        None => next_free_name(tm, parent, agents_root).await,
+    };
+
+    let args = vec![name.clone()];
+    let req = SpawnRequest {
+        parent_topic: parent,
+        parent_topic_path: parent_dir,
+        args: &args,
+    };
+    let handler = SpawnCommandHandler::new(tm.clone());
+    match handler.spawn_under(req, &parent_state, agents_root).await {
+        Ok(result) if result.success => Ok(name),
+        // `/spawn`'s refusals are worded for the command; this caller is a tool.
+        Ok(refusal) => Err(refusal
+            .message
+            .strip_prefix("/spawn: ")
+            .unwrap_or(&refusal.message)
+            .to_string()),
+        Err(e) => Err(format!("failed to create subagent: {e:#}")),
+    }
+}
+
+/// A topic's **state dir** — its `.jyc`, which always sits under the agents
+/// root and is found by name; `topic_path` is only the fallback for a topic
+/// that predates registration.
+///
+/// [`jyc_dir`] cannot be used here: it panics on an unregistered name, and a
+/// grant can name a directory no topic owns (a hand-made `/grant`). This is the
+/// single answer to "where is this topic's state", shared by both spawn
+/// triggers and both readers below, so no caller has to guess whether the state
+/// of a `/spawn <path>` child sits inside the path it was given.
+fn state_dir_of(name: &str, topic_path: &Path) -> PathBuf {
+    jyc_types::state_dir::registered_state(name).unwrap_or_else(|| topic_path.join(".jyc"))
+}
+
+/// The subagent directories `topic` currently holds, as `(name, topic_path)`.
+///
+/// A granted directory counts as a subagent while it still exists and its state
+/// dir's `spawned-from` names `topic` — the lineage breadcrumb
+/// [`SpawnCommandHandler::spawn_under`] writes for every spawn, whether `/spawn`
+/// (with or without a path) or the `jyc_spawn_subagent` tool made it. The
+/// breadcrumb is read from the **state dir**, located by the granted dir's name
+/// and never assumed to be `<granted dir>/.jyc`: a `/spawn <path>` child runs
+/// in the path it was given while its state stays under the agents root. A
+/// stale grant (the child was closed) and a directory later reused by another
+/// topic are both left out, so the count, the cap check and the prompt's
+/// subagent list cannot drift from reality.
+pub fn subagents_of(topic: &str) -> Vec<(String, PathBuf)> {
+    jyc_types::access_grants::grants_for(topic)
+        .into_iter()
+        .filter_map(|g| {
+            let name = g.path.file_name()?.to_string_lossy().into_owned();
+            let lineage = state_dir_of(&name, &g.path).join("spawned-from");
+            std::fs::read_to_string(lineage)
+                .is_ok_and(|from| from.trim() == topic)
+                .then_some((name, g.path))
+        })
+        .collect()
+}
+
+/// Drop the access `child`'s parent holds on it, called when the child closes.
+///
+/// The lineage breadcrumb names the parent; grants are keyed by topic name and
+/// the parent granted exactly the child's topic_path, so its own close revokes
+/// it. Read from the child's **state dir** (`topic_path` is only the fallback),
+/// so a child spawned into a named path revokes too. A topic without a
+/// breadcrumb — i.e. not a subagent — must stay a no-op rather than an error,
+/// which is why a missing state dir and an unregistered name are both fine.
+pub fn forget_subagent(child: &str, child_dir: &Path) {
+    let Ok(parent) = std::fs::read_to_string(state_dir_of(child, child_dir).join("spawned-from"))
+    else {
+        return;
+    };
+    if jyc_types::access_grants::ungrant(parent.trim(), child_dir) {
+        tracing::info!(
+            parent = parent.trim(),
+            subagent = %child,
+            "Subagent closed; parent access revoked"
+        );
+    }
+}
+
+/// `a, b, c` — names only, for refusal messages and the prompt's subagent list.
+pub fn format_subagent_names(subagents: &[(String, PathBuf)]) -> String {
+    subagents
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -373,6 +561,7 @@ mod tests {
             ("agent-session.json", "{\"current_input_tokens\":900}"),
             (session_state::TASKS_FILE, "{\"items\":[]}"),
             ("chat_history_2026-09-24.jsonl", "{}"),
+            ("mode-override", "plan"),
             ("activity.jsonl", "{}"),
             ("notes.md", "the user's own note"),
         ] {
@@ -394,6 +583,16 @@ mod tests {
         }
     }
 
+    /// The `/spawn` side of a call: the three fields `spawn_under` reads, off
+    /// the context the production path would have built.
+    fn spawn_request(ctx: &CommandContext) -> SpawnRequest<'_> {
+        SpawnRequest {
+            parent_topic: &ctx.topic_name,
+            parent_topic_path: &ctx.topic_path,
+            args: &ctx.args,
+        }
+    }
+
     /// No argument: a fresh dir under the agents root, the conversation in it,
     /// and none of the workspace content — a spawn hands over state, not files.
     #[tokio::test]
@@ -406,7 +605,7 @@ mod tests {
 
         let ctx = context("src-topic", &dir, "websocket", &[]);
         let result = handler
-            .spawn_under(&ctx, &dir.join(".jyc"), &agents_root)
+            .spawn_under(spawn_request(&ctx), &dir.join(".jyc"), &agents_root)
             .await
             .unwrap();
         assert!(result.success, "{}", result.message);
@@ -443,6 +642,7 @@ mod tests {
             session_state::TASKS_FILE,
             "pattern",
             "chat_history_2026-09-24.jsonl",
+            "mode-override",
         ] {
             assert!(state.join(keep).exists(), "{keep} must be inherited");
         }
@@ -457,15 +657,35 @@ mod tests {
             "a copy of the parent's scheduled jobs would double-fire them"
         );
 
+        // A spawn is one of the parent's subagents: this grant is what the
+        // parent's read+write boundary, the prompt's subagent list and the cap
+        // check all read — the same for `/spawn` and for the tool.
+        let grants = jyc_types::access_grants::grants_for("src-topic");
+        assert_eq!(grants.len(), 1, "one spawn, one grant: {grants:?}");
+        assert_eq!(grants[0].path, dest);
+        assert!(
+            grants[0].write,
+            "the parent seeds its spawn through this grant"
+        );
+        assert_eq!(
+            subagents_of("src-topic"),
+            vec![("src-topic-2".to_string(), dest.clone())]
+        );
+
         // Closing the spawn removes the emptied shell with its state — the
-        // close-side half of the default shape.
+        // close-side half of the default shape — and hands the access back.
         tm.close_topic("src-topic-2").await.unwrap();
         assert!(
             !dest.exists(),
             "an emptied spawn dir goes away with its state"
         );
+        assert!(
+            subagents_of("src-topic").is_empty(),
+            "closing the spawn revokes the parent's access"
+        );
 
         jyc_types::state_dir::unregister("src-topic-2");
+        jyc_types::access_grants::clear("src-topic");
     }
 
     /// A spawn's dir that gained files is user property by then: `/close`
@@ -478,9 +698,9 @@ mod tests {
         let agents_root = workspace.path().join("agents");
         let handler = SpawnCommandHandler::new(tm.clone());
 
-        let ctx = context("src-topic", &dir, "websocket", &["filed-shell"]);
+        let ctx = context("filed-parent", &dir, "websocket", &["filed-shell"]);
         let result = handler
-            .spawn_under(&ctx, &dir.join(".jyc"), &agents_root)
+            .spawn_under(spawn_request(&ctx), &dir.join(".jyc"), &agents_root)
             .await
             .unwrap();
         assert!(result.success, "{}", result.message);
@@ -495,6 +715,7 @@ mod tests {
         tokio::fs::remove_dir_all(&dest).await.unwrap();
 
         jyc_types::state_dir::unregister("filed-shell");
+        jyc_types::access_grants::clear("filed-parent");
     }
 
     /// The reason `/spawn` exists: continue the conversation where the files
@@ -516,13 +737,17 @@ mod tests {
             .unwrap();
 
         let ctx = context(
-            "src-topic",
+            "checkout-parent",
             &dir,
             "websocket",
             &[checkout.to_str().unwrap()],
         );
         let result = handler
-            .spawn_under(&ctx, &dir.join(".jyc"), &workspace.path().join("agents"))
+            .spawn_under(
+                spawn_request(&ctx),
+                &dir.join(".jyc"),
+                &workspace.path().join("agents"),
+            )
             .await
             .unwrap();
         assert!(result.success, "{}", result.message);
@@ -543,6 +768,20 @@ mod tests {
             !checkout.join(".jyc").exists(),
             "the conversation goes to the agents root, never into the user's checkout"
         );
+        // A path-form spawn is a subagent too: the dir it was given is the dir
+        // the parent may now read and write.
+        assert_eq!(
+            jyc_types::access_grants::grants_for("checkout-parent")
+                .iter()
+                .map(|g| g.path.clone())
+                .collect::<Vec<_>>(),
+            vec![resolved(&checkout)],
+        );
+        assert_eq!(
+            subagents_of("checkout-parent"),
+            vec![("checkout".to_string(), resolved(&checkout))],
+            "awareness reads the state dir by name, not the topic_path it granted"
+        );
 
         // Closing it deletes the conversation and leaves the checkout: the
         // state lives outside the dir, so the emptied-dir cleanup never fires.
@@ -556,8 +795,17 @@ mod tests {
             !agents_root.join("checkout").join(".jyc").exists(),
             "the state is deleted"
         );
+        assert!(
+            jyc_types::access_grants::grants_for("checkout-parent").is_empty(),
+            "closing the spawn revokes the parent's access"
+        );
+        assert!(
+            subagents_of("checkout-parent").is_empty(),
+            "and drops it from the parent's subagent list"
+        );
 
         jyc_types::state_dir::unregister("checkout");
+        jyc_types::access_grants::clear("checkout-parent");
     }
 
     /// A relative destination is taken against this topic's dir, so `../test`
@@ -570,9 +818,13 @@ mod tests {
         let handler = SpawnCommandHandler::new(tm.clone());
         let expected = dir.parent().unwrap().join("test");
 
-        let ctx = context("src-topic", &dir, "websocket", &["../test"]);
+        let ctx = context("relative-parent", &dir, "websocket", &["../test"]);
         let result = handler
-            .spawn_under(&ctx, &dir.join(".jyc"), &workspace.path().join("agents"))
+            .spawn_under(
+                spawn_request(&ctx),
+                &dir.join(".jyc"),
+                &workspace.path().join("agents"),
+            )
             .await
             .unwrap();
         assert!(result.success, "../test: {}", result.message);
@@ -585,8 +837,23 @@ mod tests {
             !expected.join(".jyc").exists(),
             "'../test' must not put state in the destination"
         );
+        // State and awareness ride on the name, not on the path: the lineage
+        // lives in the state dir under the agents root, and the parent sees the
+        // child even though its topic_path is beside the parent's.
+        assert!(
+            state_dir_of("test", &expected)
+                .join("spawned-from")
+                .exists(),
+            "the lineage belongs to the state dir, never to the topic_path"
+        );
+        assert_eq!(
+            subagents_of("relative-parent"),
+            vec![("test".to_string(), resolved(&expected))],
+            "a relative-path spawn is a subagent of its parent"
+        );
 
         jyc_types::state_dir::unregister("test");
+        jyc_types::access_grants::clear("relative-parent");
     }
 
     /// Look-once, refuse-before-creating: none of these may leave a directory,
@@ -636,7 +903,7 @@ mod tests {
         ] {
             let ctx = context("src-topic", &dir, "websocket", &args);
             let result = handler
-                .spawn_under(&ctx, &dir.join(".jyc"), &agents_root)
+                .spawn_under(spawn_request(&ctx), &dir.join(".jyc"), &agents_root)
                 .await
                 .unwrap();
             assert!(!result.success, "'{args:?}' must be refused: {result:?}");
@@ -683,5 +950,181 @@ mod tests {
         assert!(looks_like_path("../test"));
         assert!(!looks_like_path("scratch"));
         assert!(!looks_like_path("plan-197"));
+    }
+
+    /// The tool's entry runs `/spawn`'s implementation: the same inheritance (the
+    /// parent's state, `mode-override` included), the same breadcrumb, the same
+    /// grant — the guards and the name resolution are what it adds.
+    #[tokio::test]
+    async fn subagent_spawn_inherits_state_and_grants_access() {
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_root = workspace.path().join("agents");
+        let parent = "sa-parent-create";
+        let parent_dir = workspace.path().join("parent");
+        let parent_state = parent_dir.join(".jyc");
+        std::fs::create_dir_all(&parent_state).unwrap();
+        for (name, body) in [
+            ("pattern", "jyc"),
+            ("agent-context.json", "{\"messages\":[]}"),
+            ("chat_history_2026-09-24.jsonl", "{}"),
+            ("mode-override", "plan"),
+            ("agent-session.json", "{\"current_input_tokens\":900}"),
+            ("activity.jsonl", "{}"),
+        ] {
+            std::fs::write(parent_state.join(name), body).unwrap();
+        }
+        jyc_types::access_grants::clear(parent);
+
+        let name = spawn_subagent_under(&tm, parent, &parent_dir, Some("worker"), &agents_root)
+            .await
+            .unwrap();
+        assert_eq!(name, "worker");
+
+        let dest = agents_root.join("worker");
+        assert_eq!(
+            std::fs::read_to_string(dest.join(".jyc").join("spawned-from")).unwrap(),
+            parent
+        );
+        assert!(tm.topic_path("worker").await.is_some());
+        // The parent's own `.jyc` (a pinned topic's, say) keeps its name, and
+        // the child's state is the child's: its dir is its own, not the
+        // parent's working tree (that is `/fork`).
+        for keep in [
+            "pattern",
+            "agent-context.json",
+            "chat_history_2026-09-24.jsonl",
+            "mode-override",
+        ] {
+            assert!(
+                dest.join(".jyc").join(keep).exists(),
+                "{keep} must be inherited, exactly as `/spawn` does it"
+            );
+        }
+        for drop in ["agent-session.json", "activity.jsonl"] {
+            assert!(
+                !dest.join(".jyc").join(drop).exists(),
+                "{drop} must stay with the parent"
+            );
+        }
+        // Only the state: a spawn hands over the conversation, never workspace
+        // files (the parent dir holds no files here, so `.jyc` is all there is).
+        let entries: Vec<_> = std::fs::read_dir(&dest)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from(".jyc")]);
+
+        let grants = jyc_types::access_grants::grants_for(parent);
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].path, dest);
+        assert!(grants[0].write, "the parent must be able to seed the dir");
+        assert_eq!(subagents_of(parent), vec![("worker".to_string(), dest)]);
+
+        jyc_types::access_grants::clear(parent);
+        jyc_types::state_dir::unregister("worker");
+    }
+
+    /// A name is not an argument here: `spawn_under` tells names from paths by
+    /// shape, so `../evil` left unchecked would be resolved as a path — off the
+    /// agents root, outside everything this module assumes about a subagent.
+    #[tokio::test]
+    async fn subagent_spawn_refuses_a_path_shaped_name() {
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_root = workspace.path().join("agents");
+        let parent = "sa-parent-name";
+        let parent_dir = workspace.path().join("parent");
+        std::fs::create_dir_all(parent_dir.join(".jyc")).unwrap();
+        jyc_types::access_grants::clear(parent);
+
+        let err = spawn_subagent_under(&tm, parent, &parent_dir, Some("../evil"), &agents_root)
+            .await
+            .unwrap_err();
+        assert!(err.contains("cannot be a subagent name"), "{err}");
+        assert!(
+            !workspace.path().join("evil").exists() && !agents_root.exists(),
+            "a refusal creates nothing anywhere"
+        );
+    }
+
+    /// One level only: a subagent cannot spawn its own subagent.
+    #[tokio::test]
+    async fn subagent_spawn_refuses_a_second_level() {
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_root = workspace.path().join("agents");
+        let parent_dir = workspace.path().join("nested");
+        std::fs::create_dir_all(parent_dir.join(".jyc")).unwrap();
+        std::fs::write(parent_dir.join(".jyc").join("spawned-from"), "grandparent").unwrap();
+
+        let err = spawn_subagent_under(
+            &tm,
+            "sa-parent-nested",
+            &parent_dir,
+            Some("worker"),
+            &agents_root,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("cannot spawn subagents"), "{err}");
+        assert!(!agents_root.join("worker").exists());
+    }
+
+    #[tokio::test]
+    async fn subagent_spawn_refuses_past_the_cap() {
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_root = workspace.path().join("agents");
+        let parent = "sa-parent-cap";
+        let parent_dir = workspace.path().join("parent");
+        std::fs::create_dir_all(&parent_dir).unwrap();
+        jyc_types::access_grants::clear(parent);
+        for i in 0..MAX_SUBAGENTS {
+            let dir = agents_root.join(format!("filled-{i}"));
+            std::fs::create_dir_all(dir.join(".jyc")).unwrap();
+            std::fs::write(dir.join(".jyc").join("spawned-from"), parent).unwrap();
+            jyc_types::access_grants::grant(parent, dir, true);
+        }
+
+        let err = spawn_subagent_under(&tm, parent, &parent_dir, Some("one-more"), &agents_root)
+            .await
+            .unwrap_err();
+        assert!(err.contains("already at 3 subagents"), "{err}");
+        assert!(
+            err.contains("filled-0"),
+            "the refusal lists what is already there: {err}"
+        );
+        jyc_types::access_grants::clear(parent);
+    }
+
+    /// A stale grant (child closed) and a directory another topic owns are
+    /// neither counted nor listed.
+    #[test]
+    fn subagents_of_skips_stale_and_foreign_grants() {
+        let workspace = tempdir().unwrap();
+        let parent = "sa-parent-list";
+        jyc_types::access_grants::clear(parent);
+
+        let mine = workspace.path().join("mine");
+        std::fs::create_dir_all(mine.join(".jyc")).unwrap();
+        std::fs::write(mine.join(".jyc").join("spawned-from"), parent).unwrap();
+        let theirs = workspace.path().join("theirs");
+        std::fs::create_dir_all(theirs.join(".jyc")).unwrap();
+        std::fs::write(theirs.join(".jyc").join("spawned-from"), "someone-else").unwrap();
+        let gone = workspace.path().join("gone");
+        for p in [&mine, &theirs, &gone] {
+            jyc_types::access_grants::grant(parent, p.clone(), true);
+        }
+
+        assert_eq!(
+            subagents_of(parent),
+            vec![("mine".to_string(), mine.clone())]
+        );
+
+        forget_subagent("mine", &mine);
+        assert!(subagents_of(parent).is_empty());
+        assert_eq!(format_subagent_names(&[]), "");
+        jyc_types::access_grants::clear(parent);
     }
 }

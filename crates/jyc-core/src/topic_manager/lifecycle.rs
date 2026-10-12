@@ -288,11 +288,13 @@ impl TopicManager {
     /// Close a topic in response to an upstream close event (issue/PR
     /// closed, chat disbanded, ...).
     ///
-    /// Hard safety rule: the topic directory is only deleted when it
-    /// resolves UNDER the agents workspace root (`<data dir>/agents/`).
-    /// Topics pinned to a custom `topic_path` (e.g. a real project
-    /// checkout) are never deleted by automation — they are skipped with
-    /// an info log.
+    /// Unlike `/close`, an upstream close means the topic is done, so the
+    /// working dir goes with it — contents and all. Hard safety rule: only a
+    /// dir that is *exactly* `<agents dir>/<agent>/<topic>` (a pipe rule's own
+    /// dir) is deleted, and the purge guards still have the last word: an
+    /// agent's own dir one level up, a dir shared with a `/fork`, a dir
+    /// nested with somebody else's, or a pin elsewhere is skipped with an
+    /// info log.
     ///
     /// Returns `true` when the topic was actually closed.
     pub async fn auto_close_topic(&self, topic_name: &str) -> Result<bool> {
@@ -315,6 +317,23 @@ impl TopicManager {
             return Ok(false);
         }
         self.close_topic(topic_name).await?;
+
+        // `close_topic` above only removes a topic dir it emptied, which
+        // leaves a pipe topic's own dir behind as soon as anything was
+        // written into it. An upstream close owns it outright, so take it —
+        // guarded, and only in the one shape jyc creates for a topic.
+        if !is_dynamic_topic_dir(&topic_path, agents_dir, topic_name) {
+            tracing::info!(
+                topic = %topic_name,
+                dir = %topic_path.display(),
+                "Auto-close kept the topic dir: not a <agents dir>/<agent>/<topic> dir"
+            );
+        } else if let PurgeOutcome::Refused(reason) = self
+            .purge_topic_dir_under(topic_name, agents_dir, &self.data_dir)
+            .await?
+        {
+            tracing::info!(topic = %topic_name, reason = %reason, "Auto-close kept the topic dir");
+        }
         Ok(true)
     }
 
@@ -415,6 +434,20 @@ async fn path_is_under(path: &Path, root: &Path) -> bool {
     let path = crate::topic_path::resolved(path);
     let root = crate::topic_path::resolved(root);
     path != root && path.starts_with(&root)
+}
+
+/// Is `path` exactly `<agents dir>/<agent>/<topic>` — the working dir a pipe
+/// rule creates for one topic, and the only shape an upstream close deletes
+/// with its contents?
+///
+/// Two levels, leaf named after the topic: one level up is an agent's own dir
+/// (`<agents dir>/<agent>`, a state namespace), a different leaf is somebody
+/// else's topic (a `/fork` works in its parent's dir).
+fn is_dynamic_topic_dir(path: &Path, agents_dir: &Path, topic_name: &str) -> bool {
+    let path = crate::topic_path::resolved(path);
+    let agents_dir = crate::topic_path::resolved(agents_dir);
+    path.file_name() == Some(std::ffi::OsStr::new(topic_name))
+        && path.parent().and_then(Path::parent) == Some(agents_dir.as_path())
 }
 
 /// What [`TopicManager::purge_topic_dir`] did, or refused to do.
@@ -618,6 +651,167 @@ mode = "agent"
         assert!(!closed);
         assert!(real.exists());
         assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+    }
+
+    /// The shape rule behind the upstream-close deletion: exactly
+    /// `<agents dir>/<agent>/<topic>`, leaf named after the topic.
+    #[tokio::test]
+    async fn is_dynamic_topic_dir_matches_only_the_agent_topic_shape() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        std::fs::create_dir_all(agents_dir.join("agent-x").join("pr-7")).unwrap();
+        std::fs::create_dir_all(agents_dir.join("agent-x")).unwrap();
+
+        assert!(is_dynamic_topic_dir(
+            &agents_dir.join("agent-x").join("pr-7"),
+            &agents_dir,
+            "pr-7"
+        ));
+        assert!(
+            !is_dynamic_topic_dir(&agents_dir.join("pr-7"), &agents_dir, "pr-7"),
+            "one level (an agent's own dir / state namespace) is not a topic dir"
+        );
+        assert!(
+            !is_dynamic_topic_dir(
+                &agents_dir.join("a").join("b").join("pr-7"),
+                &agents_dir,
+                "pr-7"
+            ),
+            "deeper nesting is not the shape jyc creates"
+        );
+        assert!(
+            !is_dynamic_topic_dir(
+                &agents_dir.join("agent-x").join("pr-8"),
+                &agents_dir,
+                "pr-7"
+            ),
+            "a different leaf is somebody else's topic (a fork shares its parent's dir)"
+        );
+    }
+
+    /// The reported case: a pipe topic dir holding work files, with its state
+    /// inside it. An upstream close takes the whole dir — `/close` alone would
+    /// only have removed the state and kept the dir.
+    #[tokio::test]
+    async fn auto_close_deletes_nonempty_dynamic_topic_dir() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        let topic_dir = agents_dir.join("agent-x").join("pr-dyn-1");
+        let state = topic_dir.join(".jyc");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(topic_dir.join("work.rs"), "fn wip() {}").unwrap();
+        std::fs::write(state.join("chat.jsonl"), "{}").unwrap();
+        jyc_types::state_dir::register("pr-dyn-1", &state);
+
+        let tm = make_tm(&agents_dir);
+        tm.set_topic_path("pr-dyn-1", topic_dir.clone())
+            .await
+            .unwrap();
+
+        let closed = tm
+            .auto_close_topic_under("pr-dyn-1", &agents_dir)
+            .await
+            .unwrap();
+
+        assert!(closed);
+        assert!(
+            !topic_dir.exists(),
+            "the whole topic dir must go, files and all"
+        );
+        jyc_types::state_dir::unregister("pr-dyn-1");
+    }
+
+    /// One level up is an agent's own dir, not a topic: upstream close removes
+    /// the state and leaves the dir and its files alone.
+    #[tokio::test]
+    async fn auto_close_keeps_agent_own_dir() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        let agent_dir = agents_dir.join("agent-own-1");
+        let state = agent_dir.join(".jyc");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(agent_dir.join("notes.md"), "# notes").unwrap();
+        jyc_types::state_dir::register("agent-own-1", &state);
+
+        let tm = make_tm(&agents_dir);
+        tm.set_topic_path("agent-own-1", agent_dir.clone())
+            .await
+            .unwrap();
+
+        let closed = tm
+            .auto_close_topic_under("agent-own-1", &agents_dir)
+            .await
+            .unwrap();
+
+        assert!(closed);
+        assert!(
+            agent_dir.join("notes.md").exists(),
+            "agent dir must survive"
+        );
+        assert!(!state.exists(), "its state dir still goes");
+        jyc_types::state_dir::unregister("agent-own-1");
+    }
+
+    /// A dir another topic also works in (a `/fork` shares its parent's dir)
+    /// survives an upstream close of the parent, even in the dynamic shape.
+    #[tokio::test]
+    async fn auto_close_keeps_dir_shared_with_another_topic() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        let shared = agents_dir.join("agent-x").join("pr-share-1");
+        let state = shared.join(".jyc");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(shared.join("work.rs"), "fn wip() {}").unwrap();
+        jyc_types::state_dir::register("pr-share-1", &state);
+
+        let tm = make_tm(&agents_dir);
+        tm.set_topic_path("pr-share-1", shared.clone())
+            .await
+            .unwrap();
+        tm.set_topic_path("pr-share-1-fork", shared.clone())
+            .await
+            .unwrap();
+
+        let closed = tm
+            .auto_close_topic_under("pr-share-1", &agents_dir)
+            .await
+            .unwrap();
+
+        assert!(closed);
+        assert!(
+            shared.join("work.rs").exists(),
+            "a dir another topic works in must survive"
+        );
+        jyc_types::state_dir::unregister("pr-share-1");
+    }
+
+    /// `/close` keeps its old contract: a dynamic topic dir that gained files
+    /// is left in place, only the state dir goes.
+    #[tokio::test]
+    async fn manual_close_keeps_nonempty_dynamic_dir() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        let topic_dir = agents_dir.join("agent-x").join("pr-manual-1");
+        let state = topic_dir.join(".jyc");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(topic_dir.join("work.rs"), "fn wip() {}").unwrap();
+        jyc_types::state_dir::register("pr-manual-1", &state);
+
+        let tm = make_tm(&agents_dir);
+        tm.set_topic_path("pr-manual-1", topic_dir.clone())
+            .await
+            .unwrap();
+
+        tm.close_topic_under("pr-manual-1", &agents_dir)
+            .await
+            .unwrap();
+
+        assert!(
+            topic_dir.join("work.rs").exists(),
+            "/close must keep a dir that holds files"
+        );
+        assert!(!state.exists(), "the state dir goes either way");
+        jyc_types::state_dir::unregister("pr-manual-1");
     }
 
     /// Pinned topic with a registered state dir: close deletes the state

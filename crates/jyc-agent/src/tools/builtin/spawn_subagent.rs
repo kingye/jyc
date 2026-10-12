@@ -4,8 +4,8 @@
 //! `JycAgentService::build_tool_registry`), where a spawned sibling topic is
 //! addressable. The tool is the agent's trigger for the one implementation
 //! `/spawn` also runs (`jyc_core::command::spawn_handler::spawn_subagent`):
-//! same inheritance of this topic's state, same lineage breadcrumb, same
-//! read+write grant on the child's directory. Seeding that directory and
+//! same inheritance of this topic's state dir, same lineage breadcrumb, same
+//! read+write grant on the child's topic_path. Seeding that topic_path and
 //! sending the first task stay with the caller — `write` for the former,
 //! `jyc_send_to_topic` for the latter — and so does reconfiguring the child,
 //! which is a command away (`/build`, `/model`, … sent as a message body).
@@ -29,12 +29,13 @@ impl Tool for SpawnSubagentTool {
     fn description(&self) -> &str {
         "Create a subagent topic — a sibling topic that inherits a copy of this topic's state \
          (conversation, task list, mode, pattern) and runs on its own queue — and grant \
-         yourself read+write access to its directory. Put whatever it needs into that \
-         directory with `write`, then send the task with `jyc_send_to_topic` \
-         (require_reply=true). To reconfigure it, send it a command body (`/build`, `/plan`, \
-         `/model`, …), which runs without spending one of its turns. Subagents are one level \
-         deep and capped at three per topic; when the subagent list in your system prompt \
-         already holds one that fits, continue it instead of spawning another."
+         yourself read+write access to its topic_path, the working directory it runs in. Put \
+         whatever it needs into that directory with `write`, then send the task with \
+         `jyc_send_to_topic` (require_reply=true). To reconfigure it, send it a command body \
+         (`/build`, `/plan`, `/model`, …), which runs without spending one of its turns. \
+         Subagents are one level deep and capped at three per topic; when the subagent list in \
+         your system prompt already holds one that fits, continue it instead of spawning \
+         another."
     }
 
     fn input_schema(&self) -> Value {
@@ -78,20 +79,11 @@ impl Tool for SpawnSubagentTool {
                     .await
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| child.clone());
-                let children = spawn_handler::subagents_of(&parent);
                 Ok(ToolOutput::success(format!(
-                    "Spawned subagent '{child}' at {dir} — you hold read+write access to it, \
-                     and it inherits this topic's state (a copy of the conversation, the task \
-                     list, the mode, the pattern) as it is now.\n\
-                     Put its inputs in that directory with `write`, then send it the task with \
+                    "Spawned subagent '{child}' at {dir} — you hold read+write access there. Put \
+                     its inputs in {dir} with `write`, then send the task with \
                      jyc_send_to_topic (channel \"{channel}\", topic \"{child}\", \
-                     require_reply=true). Send it a command body (`/build`, `/model`, …) to \
-                     reconfigure it. Do not touch its `.jyc` directory.\n\
-                     Your subagents ({} of at most {}): {}. Continue an existing one instead \
-                     of spawning a duplicate.",
-                    children.len(),
-                    spawn_handler::MAX_SUBAGENTS,
-                    spawn_handler::format_subagent_names(&children)
+                     require_reply=true)."
                 )))
             }
         }

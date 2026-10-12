@@ -409,6 +409,40 @@ Email arrives
 - **reply-context.json** is a minimal routing token (5 fields) — all message metadata comes from chat log frontmatter
 - **Chat log entries** = exactly what the recipient receives (minus HTML formatting)
 
+## Terminology
+
+Four names this document, the code comments and the agent-facing prompts all use
+with one meaning. Most of the confusion this file has seen came from using them
+loosely, so they are fixed here.
+
+| Term | What it is | Where it is | In code |
+|---|---|---|---|
+| **data dir** (data root, `--workdir`) | The instance root: config, skills, templates and every generated state hang off it. This is what the rest of this document writes as `<data_home>` | Linux/macOS `$XDG_DATA_HOME/jyc` or `~/.local/share/jyc`; Windows `%LOCALAPPDATA%\jyc`; the default `--workdir` | `jyc_utils::paths::data_home()` |
+| **agents_root** | The parent of every default `topic_path` and of every state dir | `<data dir>/agents` (`~/.local/share/jyc/agents`) | `TopicManager::agents_workspace_root()` |
+| **topic_path** | A topic's **working directory**: where the agent runs, what `read`/`write`/`bash` see, and what a parent is granted when it spawns a subagent | `agents_root/<name>` by default; a pinned topic, a `/spawn <path>` child and a pinned 1:1 agent use the named directory instead — possibly outside `agents_root`, possibly a pre-existing checkout whose files are never touched | `TopicManager::topic_path(name)`, `SpawnRequest::parent_topic_path` |
+| **state dir** | A topic's `.jyc`: transcript, `agent-context.json`, `tasks`, `pattern`, `mode-override`, the lineage `spawned-from`, … — one topic per directory, and this topic's own state | Always under `agents_root`, **located by topic name**: `<agents root>/<name>/.jyc` (a pinned or 1:1 topic's is registered and may sit at `<agents root>/<agent>/.jyc`; a pipe topic's is `<topic_path>/.jyc`, registered at activation) | `jyc_types::state_dir::{registered_state, jyc_dir, adopt_state_dir}` |
+
+Four readings that this table exists to rule out:
+
+1. `--workdir` and "workdir" in config mean the **data dir**, not any topic's
+   `topic_path`.
+2. The older wording "topic dir" means `topic_path`; and
+   `jyc_dir(name, topic_path)` returns the **state dir** — never
+   `<topic_path>/.jyc`, which is only the fallback for a topic that predates
+   registration.
+3. A spawned topic's state dir is **not** inside its `topic_path`: `/spawn ../test`
+   runs in `…/test` while its state lives in `<agents root>/test/.jyc`. Anything
+   that reads the lineage therefore resolves the state dir by name
+   (`spawn_handler::state_dir_of`); nothing reads the lineage out of a
+   `topic_path`.
+4. Two roots answer to "the agents root" in code, and coincide only by default:
+   `agents_workspace_root()` (topic dirs; prefers the platform data home) and
+   `topic_path::state_root(workdir)` = `<workdir>/agents` (adopted state dirs;
+   deliberately workdir-based so multi-instance and test setups stay isolated).
+   A spawn uses the former for both the child's `topic_path` and its state dir;
+   `close_topic_under` resolves state dirs through the latter. With a custom
+   `--workdir` the two differ.
+
 ## Topic State Directory (.jyc)
 
 Each topic keeps its runtime state (agent session, chat history,
@@ -421,7 +455,7 @@ That fallback once silently created state inside pinned user repos (#825).
 Keying by name is what lets several agents pin the same directory while each
 keeps its own state dir.
 
-| Topic kind | Topic dir | State dir |
+| Topic kind | topic_path (working dir) | state dir (`.jyc`) |
 |---|---|---|
 | Channel workspace topic | `<workdir>/<channel>/workspace/<topic>/` | `<topic_dir>/.jyc`, registered at activation |
 | Agent 1:1 topic, unpinned | `<data_home>/agents/<agent>/` | same (registered at startup restore) |
@@ -429,7 +463,7 @@ keeps its own state dir.
 | Ad-hoc pinned topic (`jyc open -p`, non-agents pin) | the pinned dir | `<data_home>/agents/_<path-escaped>/.jyc` |
 | Dynamic pipe topic | `<data_home>/agents/<agent>/<topic>/` | `<topic_dir>/.jyc`, registered at activation |
 | Forked topic (`/fork`) | the **parent's** topic dir (shared workspace) | `<data_home>/agents/<name>/.jyc` |
-| Spawned topic (`/spawn`) | a fresh `<data_home>/agents/<name>/`, or any dir the path names outside the source topic's own dir (a non-empty checkout included — its files are not touched; nesting is refused) | `<data_home>/agents/<name>/.jyc` |
+| Spawned topic (`/spawn`) | a fresh `<data_home>/agents/<name>/`, or any dir the path names outside the source topic's own dir (a non-empty checkout included — its files are not touched; nesting is refused) | `<data_home>/agents/<name>/.jyc` — located by name, never `<topic_path>/.jyc` |
 | Subagent (`jyc_spawn_subagent`) | the same shape a fresh-name `/spawn` gets — `<data_home>/agents/<name>/` with the parent's state seeded into it (putting the child *in the parent's* working tree is `/fork`) | `<data_home>/agents/<name>/.jyc` |
 
 Registrations happen at four points: startup restore (config pins adopt,
@@ -525,11 +559,13 @@ topic's state and runs on its own queue. `/spawn` and the `jyc_spawn_subagent`
 tool are one implementation (`spawn_handler::spawn_under`) with two triggers —
 the user typed the command, or the agent called the tool:
 
-1. Resolve the name and destination (`/spawn` from its arguments, the tool from
-   a single name under the agents root), then create
-   `<data_home>/agents/<name>/` with an adopted `<name>/.jyc` state dir (the
-   same order as `/fork`: `adopt_state_dir` first, so `set_topic_path` keeps the
-   in-dir state instead of deriving `_<path>` state under `state_root`).
+1. Resolve the name and topic_path (`/spawn` from its arguments — a name, a path,
+   or both, told apart by shape — the tool from a single name under
+   `agents_root`), then create that dir and adopt its state dir: always
+   `<agents root>/<name>/.jyc`, even when the child was pointed at a named path
+   (the same order as `/fork`: `adopt_state_dir` first, so `set_topic_path`
+   keeps the in-dir state instead of deriving `_<path>` state under
+   `state_root`).
 2. Seed the parent's state with `seed_state(…, "spawned-from")` — the `/fork`
    allow-list (pattern, conversation, Task List, backlog, `mode-override`,
    model/context/MCP/skill overrides, transcript), never `jobs/` or
@@ -537,19 +573,26 @@ the user typed the command, or the agent called the tool:
    the seeded copy is the child's own, and the breadcrumb
    `<name>/.jyc/spawned-from` = the parent's topic name is the only file added
    on top of it.
-3. Grant the parent read+write access to that directory through the existing
-   runtime grant registry (`jyc_types::access_grants`, the `/grant` mechanism),
-   so both access-root resolvers in `jyc-agent/src/service/prompt.rs` pick it up
-   on the next turn with no resolver change.
+3. Grant the parent read+write access to the child's **topic_path** through the
+   existing runtime grant registry (`jyc_types::access_grants`, the `/grant`
+   mechanism), so both access-root resolvers in `jyc-agent/src/service/prompt.rs`
+   pick it up on the next turn with no resolver change. The state dir is not
+   granted and must not be: it is the child's own.
 4. Report the subagent list, which the system prompt also renders every turn
    (`format_subagents_section`) so the model continues an existing subagent with
    `jyc_send_to_topic` instead of spawning a duplicate.
 
 Because the grant comes from the same place `/spawn` writes it, a hand-typed
 spawn is a subagent too: it shows up in the list, in the parent's read+write
-boundary, and in the cap count. The cap refuses the *tool* only — a user typing
-`/spawn` is not told to stop, and the prompt prints the real count (`N of at
-most 3`) rather than a number it had to clamp.
+boundary, and in the cap count. That holds whichever form the command took,
+because both readers (`subagents_of`, `forget_subagent`) locate the lineage by
+resolving the child's **state dir** from the granted dir's name
+(`spawn_handler::state_dir_of`) rather than assuming `<granted dir>/.jyc` — a
+`/spawn ../test` child runs beside its parent while its state stays under the
+agents root. The same lookup is what `/close` uses to revoke, so a path-form
+spawn gives the parent's access back when it closes. The cap refuses the *tool*
+only — a user typing `/spawn` is not told to stop, and the prompt prints the real
+count (`N of at most 3`) rather than a number it had to clamp.
 
 Everything after that is the parent's own work with tools it already has:
 `write`/`bash` seed the directory, `jyc_send_to_topic` (with
@@ -562,13 +605,20 @@ it. A command's receipt is broadcast to the child's own chat pane (the websocket
 outbound keys on the original topic), so the parent reads
 `<child>/.jyc/mode-override` (which it may read) if it wants to confirm.
 
-Guardrails, all of them the tool's: one level deep (`spawned-from` present ⇒
-refuse), at most 3 subagents per topic (`subagents_of` counts grants whose
-directory still exists *and* whose breadcrumb names this topic), and the name is
-validated here — `spawn_under` tells a name from a path by shape, so an
-unchecked `../evil` would be resolved as a path, off the agents root. A closed
-subagent revokes its parent's grant in `TopicManager::close_topic_under` — which
-`auto_close_topic` and `purge` route through, so every teardown path revokes.
+Guardrails, all of them the tool's: the tool refuses a second level (its own
+parent already carries the `spawned-from` breadcrumb — a user typing `/spawn`
+inside a subagent is not stopped), at most 3 subagents per topic
+(`subagents_of` counts grants whose state dir still holds a breadcrumb naming
+this topic), and the name is validated here — `spawn_under` tells a name from a
+path by shape, so an unchecked `../evil` would be resolved as a path, off the
+agents root. A closed subagent revokes its parent's grant in
+`TopicManager::close_topic_under` — which `auto_close_topic` and `purge` route
+through, so every teardown path revokes.
+
+One deliberate non-guardrail: because the worker runs commands for *every* queued
+message, any topic's agent can send itself a command body and switch its own mode
+(`/build`) — the plan mode is a working convention, not a sandbox. The same
+mechanism is what lets a parent reconfigure a child from outside.
 
 Known boundaries: grants are process-global and in-memory (same "temporary"
 semantics as `/grant`), so a restart drops the access, not the subagent; the

@@ -30,6 +30,15 @@ impl JycAgentService {
             additional_write_roots,
         ));
 
+        // Subagents this topic spawned (their directories are the grants listed
+        // just above). Naming them here — every turn, from the same lineage the
+        // cap check reads — is what stops the model from spawning a duplicate
+        // for work one of them already holds.
+        let subagents = jyc_core::command::spawn_handler::subagents_of(topic_name);
+        if !subagents.is_empty() {
+            prompt.push_str(&Self::format_subagents_section(&subagents));
+        }
+
         // Resolve skill filters: pattern > channel > none (shared with
         // `available_skills` so the `/` popup lists exactly what config allows).
         let (include_base, mut exclude_list) = self.config_skill_filters(matched_pattern);
@@ -394,6 +403,20 @@ impl JycAgentService {
             "- Never access files outside these locations; the tools will deny such attempts.\n\n",
         );
         s
+    }
+
+    /// The subagent section: who this topic already spawned, out of how many,
+    /// and the reuse rule. Names only — the directories are the grants the
+    /// boundary section above already lists.
+    pub(crate) fn format_subagents_section(subagents: &[(String, std::path::PathBuf)]) -> String {
+        format!(
+            "Your subagents ({} of {}): {}.\n\
+             Continue an existing one with jyc_send_to_topic instead of spawning a duplicate; \
+             spawn a new one only when a task needs a clean context.\n\n",
+            subagents.len(),
+            jyc_core::command::spawn_handler::MAX_SUBAGENTS,
+            jyc_core::command::spawn_handler::format_subagent_names(subagents),
+        )
     }
 
     /// Resolve the additional absolute read roots granted to this topic's agent:

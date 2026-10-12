@@ -11,6 +11,7 @@ pub mod publish_file;
 pub mod read;
 pub mod read_image;
 pub mod send_to_topic;
+pub mod spawn_subagent;
 pub mod task_tools;
 pub mod webfetch;
 pub mod write;

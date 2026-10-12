@@ -117,7 +117,7 @@ mentions = ["jyc"]                     # Your bot's display name
 ## Step 8: Start JYC
 
 ```bash
-./target/release/jyc serve --workdir /path/to/data
+./target/release/jyc serve --data-dir /path/to/data
 ```
 
 You should see in the logs:
@@ -211,7 +211,7 @@ half-minutes of silence waiting for a card that would never show up.
 
 Piped topics live in the **agent channel's** workspace, named by the pipe
 mapping — typically the sanitized chat name (`${msg.chat_name}`), e.g.
-`<workdir>/local_dev/workspace/Project Alpha`. The feishu adapter itself owns
+`<data dir>/local_dev/workspace/Project Alpha`. The feishu adapter itself owns
 no topic directories.
 
 If you rename the bot's display name in Feishu or change group names, new messages will create new topic directories. Rename old directories manually if you want to preserve conversation history.

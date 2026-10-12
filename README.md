@@ -86,7 +86,7 @@ Add `--debug` for debug-level logging or `--verbose` for trace-level.
 
 JYC separates **user-edited configuration** from **generated data**, following platform conventions:
 
-| Platform | Config dir (L1) | Data dir (default workdir, L2) |
+| Platform | Config dir (L1) | Data dir (L2) |
 |---|---|---|
 | Linux/macOS | `$XDG_CONFIG_HOME/jyc` (`~/.config/jyc`) | `$XDG_DATA_HOME/jyc` (`~/.local/share/jyc`) |
 | Windows | `%APPDATA%\jyc` | `%LOCALAPPDATA%\jyc` |
@@ -94,7 +94,7 @@ JYC separates **user-edited configuration** from **generated data**, following p
 Three-level layering applies to `config.toml`, `skills/`, and `templates/`:
 
 - **L1 (global)** — `<config dir>/`: shared `config.toml`, `skills/`, `templates/`
-- **L2 (workdir / data root)** — `--workdir` if given, else the data dir: its own `config.toml` (`--config`), `skills/`, `templates/`, and all generated state (`channels/<channel>/.imap/`, `<channel>/.github/`, `<channel>/workspace/<topic>/`)
+- **L2 (data dir / data root)** — `--data-dir` if given, else the data dir: its own `config.toml` (`--config`), `skills/`, `templates/`, and all generated state (`channels/<channel>/.imap/`, `channels/<channel>/.github/`, `agents/<agent>/<topic>/`)
 - **L3 (topic)** — `<topic_path>/.jyc/`: `config.toml` (restricted `[agent]` model overrides), `skills/`, `templates/`, sessions, chat history
 
 Merge/lookup rules:
@@ -119,7 +119,7 @@ The Docker image supports automatic restarts and AI self-bootstrapping (the AI c
 JYC is designed to be channel-agnostic. Currently implemented channels:
 
 ### ✅ Email (IMAP/SMTP)
-- **Status:** Production ready; pipe-only channel, runs in `jyc-pipe` — which owns the mailbox cursor (`<workdir>/channels/<name>/.imap/`) (see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
+- **Status:** Production ready; pipe-only channel, runs in `jyc-pipe` — which owns the mailbox cursor (`<data dir>/channels/<name>/.imap/`) (see [docs/architecture/pipe-split.md](docs/architecture/pipe-split.md))
 - **Features:** Full email support with References, HTML formatting, and reply attachments — note the known gap: **attachments on incoming mail are not relayed** (`jyc-pipe` logs them as dropped)
 - **Protocols:** IMAP for inbound, SMTP for outbound
 - **Authentication:** TLS/SSL with username/password or OAuth2
@@ -307,8 +307,8 @@ Place a `system.md` file in a topic's workspace directory to customize the AI's 
 ### Global Flags
 
 ```bash
--w, --workdir <PATH>   # Working directory / data root (default: platform data dir,
-                       #   e.g. ~/.local/share/jyc on Linux)
+    --data-dir <PATH>   # Data dir (default: platform data dir,
+                       #   e.g. ~/.local/share/jyc on Linux); no short form
 -d, --debug            # Enable debug logging
 -v, --verbose         # Enable verbose (trace) logging
     --pipe             # Run jyc-pipe as a child process (required for the
@@ -321,12 +321,12 @@ Place a `system.md` file in a topic's workspace directory to customize the AI's 
 ```bash
 jyc serve              # Start the agent (main command)
                        #   --config <FILE>    Config file path (default:
-                       #     <config dir>/config.toml, or config.toml in --workdir)
+                       #     <config dir>/config.toml, or config.toml in --data-dir)
 jyc dashboard            # Live TUI dashboard (connects via inspect server)
                          #   --addr <ADDR>     Inspect server address (default: 127.0.0.1:9876)
                          #                     Also used for WebSocket chat on /ws
 #   --token <TOKEN>   Auth token. Falls back to $JYC_DASHBOARD_TOKEN,
-#                     then to <workdir>/auth.token
+#                     then to <data dir>/auth.token
                          #   Keyboard: q=quit, ↑/↓=select topic, r=refresh, c=chat pane
 jyc open                 # Create a new ad-hoc websocket topic and open chat
                          #   (shortcut for `jyc dashboard open`)
@@ -334,8 +334,8 @@ jyc open                 # Create a new ad-hoc websocket topic and open chat
                          #   -p, --path <PATH>     Topic working directory (default: CWD)
                          #   -c, --channel <NAME>  Websocket channel (auto-detected if only one)
                          #   --addr <ADDR>        Inspect server address (default: 127.0.0.1:9876)
-jyc config init        # Generate config template (in <config dir>, or --workdir)
-jyc config validate    # Validate config file (layered: global + workdir)
+jyc config init        # Generate config template (in <config dir>, or --data-dir)
+jyc config validate    # Validate config file (layered: global + data dir)
                        #   --config <FILE>   Config file path (default: as serve)
 jyc-pipe               # Peripheral pipe process (separate binary, not a `jyc`
                        # subcommand): hosts the pipe-only channels
@@ -343,7 +343,7 @@ jyc-pipe               # Peripheral pipe process (separate binary, not a `jyc`
                        # forwarding to the hub over websocket; required for
                        # those channels to work. See
                        # docs/architecture/pipe-split.md
-                       #   -w, --workdir <DIR> Working directory / data root
+                       #       --data-dir <DIR> Data dir (default: platform data dir)
                        #   -c, --config <FILE> Config file (default: as serve)
                        #   --hub <WS-URL>      Hub websocket origin (default: from
                        #     the config's [inspect] bind)
@@ -629,13 +629,13 @@ podman logs -f jyc
 **Direct (foreground):**
 ```bash
 # Debug level
-jyc serve --workdir /path/to/data --debug
+jyc serve --data-dir /path/to/data --debug
 
 # Trace level (very verbose)
-jyc serve --workdir /path/to/data --verbose
+jyc serve --data-dir /path/to/data --verbose
 
 # Or use RUST_LOG for fine-grained control
-RUST_LOG=jyc=debug,async_imap=warn jyc serve --workdir /path/to/data
+RUST_LOG=jyc=debug,async_imap=warn jyc serve --data-dir /path/to/data
 ```
 
 ### Checking MCP Reply Tool Logs
@@ -643,7 +643,7 @@ RUST_LOG=jyc=debug,async_imap=warn jyc serve --workdir /path/to/data
 The MCP reply tool (subprocess spawned by the agent) logs to a per-topic file:
 
 ```
-<workdir>/<channel>/workspace/<topic>/.jyc/reply-tool.log
+<agents dir>/<agent>/<topic>/.jyc/reply-tool.log
 ```
 
 This is useful for diagnosing reply delivery failures.
@@ -651,7 +651,7 @@ This is useful for diagnosing reply delivery failures.
 ### Common Issues
 
 **JYC starts but no emails are processed:**
-- Check pattern matching: `jyc patterns list --workdir /path/to/data`
+- Check pattern matching: `jyc patterns list --data-dir /path/to/data`
 - Verify IMAP connection in logs (look for `IMAP connected and authenticated`)
 - Check that sender/subject rules match incoming emails
 

@@ -64,7 +64,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 | `bind`    | no       | `127.0.0.1:9876`     | TCP bind address. Loopback by default; expose externally only with auth enabled.     |
 
 When `enabled = true`, the server generates a random 256-bit authorization token
-at startup, persists it to `<workdir>/auth.token` (mode `0600`), and uses it
+at startup, persists it to `<data dir>/auth.token` (mode `0600`), and uses it
 to gate every REST and WebSocket request (see §2.2, §3.1). Retrieve it with
 `jyc token show`; the dashboard auto-loads it from the same path.
 
@@ -124,7 +124,7 @@ users who have no dashboard token.
 | GET    | `/api/topics/{channel}/{topic}/files/{file...}` | Topic-local file (bearer-gated; see §2.4.9).     |
 | POST   | `/api/inbound?filename=`                     | Stage an inbound attachment for a pipe (see §2.4.10). |
 | POST   | `/api/topics`                                | Register a new ad-hoc topic.                      |
-| POST   | `/api/config/reload`                          | Reload the layered config (global + workdir).      |
+| POST   | `/api/config/reload`                          | Reload the layered config (global + data dir).      |
 | GET    | `/exchange/{channel}/{topic}/{file...}?token=` | Agent-published file (no bearer auth; see §2.2).   |
 
 WebSocket routes are documented in §3.
@@ -373,7 +373,7 @@ sanitized, as the readable part of the stored name. A per-pattern
 Pipe processes (`jyc-pipe`) do not share a filesystem with the hub, so an
 adapter uploads an attachment here and then names the returned `path` in
 the `attachments` field of the `message` frame it sends next (§3.3). The
-file is staged in the hub's staging directory `<data_home>/.inbound/` —
+file is staged in the hub's staging directory `<data dir>/.inbound/` —
 deliberately outside every topic directory, because the topic is only known
 once the message has been routed. When the frame arrives, the topic worker
 moves the file into the topic's attachment directory and the agent sees it
@@ -386,7 +386,7 @@ channel used for routing.
 A file still staged once its message is long gone is an orphan: its frame
 never arrived (a hub restart in between, a message the hub refused) or the
 move failed. **Nothing collects orphans automatically** — check
-`<data_home>/.inbound/` by hand and delete what you find there (a failed
+`<data dir>/.inbound/` by hand and delete what you find there (a failed
 move also logs the file's path).
 
 **Request:**

@@ -60,20 +60,20 @@ The WebSocket handler rides on the same port as the inspect server. Dashboard cl
 1. Start the server with a websocket channel configured:
 
 ```bash
-jyc serve --workdir /path/to/data
+jyc serve --data-dir /path/to/data
 ```
 
 2. Open the dashboard in another terminal:
 
 ```bash
-jyc dashboard --workdir /path/to/data
+jyc dashboard --data-dir /path/to/data
 ```
 
 Or create an ad-hoc topic directly from the CLI:
 
 ```bash
 cd /path/to/project
-jyc open --workdir /path/to/data
+jyc open --data-dir /path/to/data
 ```
 
 The `open` command creates a websocket topic named after the current
@@ -351,7 +351,7 @@ When a message's `topic` field is non-empty, it is used as the topic name. When 
 Workspace files are stored under:
 
 ```
-{workdir}/workspace/{channel_name}/
+{data dir}/workspace/{channel_name}/
 ```
 
 ### Multi-Topic Workspace Isolation
@@ -359,7 +359,7 @@ Workspace files are stored under:
 Each unique `topic` value creates a separate workspace directory:
 
 ```
-{workdir}/workspace/{channel_name}/
+{data dir}/workspace/{channel_name}/
 ├── general/                 # topic="general"
 │   ├── message_001/
 │   └── .jyc/
@@ -407,7 +407,7 @@ The full resolution chain for websocket channels (highest to lowest priority):
 The websocket channel creates a workspace directory:
 
 ```
-{workdir}/workspace/{channel_name}/
+{data dir}/workspace/{channel_name}/
 ├── message_001/
 │   ├── message.json
 │   └── reply.json

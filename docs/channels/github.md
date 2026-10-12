@@ -7,7 +7,7 @@ The GitHub channel uses the GitHub REST API to:
 
 Like `gitee`, the GitHub channel owns **no** TopicManager, agent service,
 outbound adapter, or orchestrator registration — all topics live in the pipe
-target. Dedup/cursor state lives at `<workdir>/channels/<channel>/.github/`.
+target. Dedup/cursor state lives at `<data dir>/channels/<channel>/.github/`.
 See `docs/architecture/overview.md` for the full pipe architecture.
 
 ## Configuration
@@ -133,7 +133,7 @@ mapped from pattern `topic` templates and the routing state and closes them.
 
 Topic initialization is a **skill** (`github-init`, `github-planner`,
 `github-developer` — bundled under `skills/`, copy them to your runtime
-`{workdir}/skills/`), not a per-pattern template. The `github-reviewer`
+`{data dir}/skills/`), not a per-pattern template. The `github-reviewer`
 skill is **not bundled yet**; until it is ported, a reviewer topic is created
 but the agent has no reviewer instructions. `github-init` clones the
 repository into the topic directory itself, so the topic *is* the checkout.

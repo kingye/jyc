@@ -275,12 +275,12 @@ Removed in the migration: `EmailOutboundAdapter` (whole file), the dead
 `build_outbound_adapter` / `InboundSpawner::spawn`.
 
 **Mailbox cursor state.** Unlike feishu/wecom_bot, the email channel keeps a
-`StateManager` at `<workdir>/channels/<channel_name>/.imap/` — the IMAP
+`StateManager` at `<data dir>/channels/<channel_name>/.imap/` — the IMAP
 sequence number + processed UIDs. That is protocol-level dedup state, not
 conversation state, so it stays with the channel. `jyc-pipe --reset` clears it and
 `jyc-pipe --no-idle` forces poll mode: both flags moved from `jyc serve` to
 the pipe CLI, since email was their only consumer. The directory is resolved
-against `jyc-pipe --workdir`, so a pipe started with a different workdir
+against `jyc-pipe --data-dir`, so a pipe started with a different data dir
 looks for its cursor elsewhere.
 
 **Topic identity.** Email's natural topic is its subject, so a `pipe` without
@@ -350,9 +350,9 @@ Removed: `GithubOutboundAdapter` (whole file), the `"github"` arms in
 `repo_group` shared-repo feature.
 
 **Dedup/cursor state.** Like email, the channel keeps its own protocol state,
-at `<workdir>/channels/<channel_name>/.github/` (processed comments, seen
+at `<data dir>/channels/<channel_name>/.github/` (processed comments, seen
 issues, CI status, close-event notifications). A one-time rename migrates the
-old `<workdir>/<channel_name>/.github/` location on first start; if the rename
+old `<data dir>/<channel_name>/.github/` location on first start; if the rename
 fails, dedup starts fresh — the comment cursor starts at startup so no comment
 flood, but already-open issues/PRs re-trigger once as "opened" events, as on a
 first deploy.
@@ -412,7 +412,7 @@ using the name-based `on_topic_close` and is unaffected. Feishu reports
 the serve layer reverse-maps it via its topic→chat_id relay map and closes
 every piped topic for that chat. **All** auto-close paths funnel into
 `TopicManager::auto_close_topic`, which deletes only directories that resolve
-under the agents workspace root (`<data_home>/agents/`) — topics pinned to a
+under the agents workspace root (`<data dir>/agents/`) — topics pinned to a
 custom `topic_path` (e.g. a real project checkout) are skipped with an info
 log, and canonicalization blocks symlink escapes. Manual `/close` (with
 `--force`) goes through `close_topic`, which for adopted/pinned topics
@@ -443,13 +443,13 @@ stateDiagram-v2
 **No templates — initialization is a skill.** GitHub/Gitee patterns no longer
 inject a `template`; the agent initializes its own topic directory by following
 an init skill. Skills are discovered from the layered skill roots, so
-`{workdir}/skills/<name>/SKILL.md` is visible to every topic — that is where the
+`{data dir}/skills/<name>/SKILL.md` is visible to every topic — that is where the
 init skill belongs. Note that per-pattern `skills`, `mode`, and `attachments`
 settings on GitHub/Gitee patterns stop applying (the agent channel's patterns
 are matched at route time), same as the other pipe-only channels. The `template`
 machinery itself stays for wecom.
 
-Two ready-made skills ship in `skills/`; copy them into `{workdir}/skills/`:
+Two ready-made skills ship in `skills/`; copy them into `{data dir}/skills/`:
 
 | skill | job |
 |---|---|
@@ -488,9 +488,9 @@ Removed: `GiteeOutboundAdapter` (whole file, plus its inclusion in `mod.rs`),
 and the `"gitee"` arms in `build_outbound_adapter` / `InboundSpawner::spawn`.
 
 **Dedup/cursor state.** Like GitHub, the channel keeps its own protocol state,
-at `<workdir>/channels/<channel>/.gitee/` (processed comments, seen issues,
+at `<data dir>/channels/<channel>/.gitee/` (processed comments, seen issues,
 close-event notifications). A one-time rename migrates the old
-`<workdir>/<channel>/.gitee/` location on first start; if the rename fails,
+`<data dir>/<channel>/.gitee/` location on first start; if the rename fails,
 dedup starts fresh — the comment cursor starts at startup so no comment flood,
 but already-open issues/PRs re-trigger once as "opened" events, as on a first
 deploy.

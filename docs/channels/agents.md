@@ -13,19 +13,19 @@ historical websocket channel; only the **config surface** moves.
   empty; routing is by topic (URL segment or WS payload `topic`).
 - **Multiple topics** under each agent — each WS message's `topic`
   selects a sub-topic; every topic gets **its own directory**.
-- **Default topic directory**: `<data_home>/agents/<agent_name>/<topic_name>/`
+- **Default topic directory**: `<data dir>/agents/<agent_name>/<topic_name>/`
   - Linux/macOS: `~/.local/share/jyc/agents/<agent_name>/<topic_name>/`
   - Windows: `%LOCALAPPDATA%\jyc\agents\<agent_name>\<topic_name>\`
   - Every topic of an agent is a sibling under that agent's root, so
     `plan-197` and `plan-198` never share a directory.
   - For the 1:1 case (topic name == agent name) this is
-    `<data_home>/agents/<agent_name>/<agent_name>/`.
-  - `topic_path` (relative paths resolve against the jyc workdir;
+    `<data dir>/agents/<agent_name>/<agent_name>/`.
+  - `topic_path` (relative paths resolve against the jyc data dir;
     absolute paths used as-is; `~` expands) **pins the agent's 1:1
     topic** — the topic whose name equals the agent name — to that
     directory. It is the agent's own home (usually a code checkout), so
     other topics of the agent are never placed inside it; they stay
-    under `<data_home>/agents/<agent_name>/<topic_name>/`.
+    under `<data dir>/agents/<agent_name>/<topic_name>/`.
 
 ## Configuration
 
@@ -53,7 +53,7 @@ attachments = { enabled = true, allowed_extensions = [".pdf", ".md"] }
 | Field | Description |
 |-------|-------------|
 | `template` | Topic template name (from `templates/`) |
-| `topic_path` | Pins this agent's **1:1 topic** (topic name == agent name) to a fixed directory — the agent's own home, typically a code checkout. Other topics of the agent are never placed inside it; they stay at `<data_home>/agents/<agent_name>/<topic_name>/`. |
+| `topic_path` | Pins this agent's **1:1 topic** (topic name == agent name) to a fixed directory — the agent's own home, typically a code checkout. Other topics of the agent are never placed inside it; they stay at `<data dir>/agents/<agent_name>/<topic_name>/`. |
 | `skills` | Whitelist; when set, only these skills are loaded for topics of this agent |
 | `disabled_skills` | Skills to disable for this agent |
 | `access` | Filesystem read/write whitelist (`{ read = [...], write = [...] }`) |
@@ -89,8 +89,8 @@ list.
 ## Usage
 
 ```bash
-jyc serve --workdir /path/to/data
-jyc dashboard --workdir /path/to/data
+jyc serve --data-dir /path/to/data
+jyc dashboard --data-dir /path/to/data
 ```
 
 In the dashboard:
@@ -152,7 +152,7 @@ Each agent owns a subtree; its topics are siblings inside it, one
 directory per topic name:
 
 ```
-<data_home>/agents/
+<data dir>/agents/
 ├── jyc_git_planner/          # agent root (a container, not a topic)
 │   ├── plan-197/             # pipe-routed topic
 │   │   ├── .jyc/
@@ -179,7 +179,7 @@ topic templates (`plan-`, `review-`, `dev-`) to keep them distinct.
 An agent with an explicit `topic_path` places only its 1:1 topic there
 (e.g. agent `jyc` with `topic_path = "~/projects/jyc"` → topic `jyc`
 lives in the checkout). Its pipe-routed topics still land under
-`<data_home>/agents/jyc/<topic>/`, so dynamic topics never litter the
+`<data dir>/agents/jyc/<topic>/`, so dynamic topics never litter the
 pinned directory.
 
 ## Cross-channel piping (feishu / pipe)

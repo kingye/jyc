@@ -365,9 +365,9 @@ footer{padding:52px 0 64px}
   <div class="duo rv">
     <div class="cell">
       <div class="sub">Three levels</div>
-      <h3>Global &rarr; workdir &rarr; topic</h3>
+      <h3>Global &rarr; data dir &rarr; topic</h3>
       <div class="layer"><span class="lv">L1</span><div class="layer-b"><strong>config dir</strong><span>shared config.toml, skills/, templates/</span></div></div>
-      <div class="layer"><span class="lv l2">L2</span><div class="layer-b"><strong>workdir / data root</strong><span>own config.toml plus all generated state per channel and topic</span></div></div>
+      <div class="layer"><span class="lv l2">L2</span><div class="layer-b"><strong>data dir / data root</strong><span>own config.toml plus all generated state per channel and topic</span></div></div>
       <div class="layer"><span class="lv l3">L3</span><div class="layer-b"><strong>topic</strong><span>restricted model overrides, sessions, chat history, published files</span></div></div>
       <p style="margin-top:16px">L2 is deep-merged over L1: tables merge recursively, arrays and scalars are replaced.
          Skills are scanned at every level with higher levels winning; templates resolve L3 to L2 to L1, first match wins.</p>

@@ -4,7 +4,7 @@
 #
 # Locations & layering (see README "Configuration & Data Layout"):
 #   L1 (global):  <config dir>/config.toml   (Linux/macOS: ~/.config/jyc/config.toml)
-#   L2 (workdir): <workdir>/config.toml      (--workdir, or platform data dir)
+#   L2 (data dir): <data dir>/config.toml      (--data-dir, or platform data dir)
 #   L3 (topic):  <topic>/.jyc/config.toml  (restricted [ai] model overrides)
 # L2 is deep-merged over L1 (tables merge; arrays/scalars are replaced).
 
@@ -27,8 +27,8 @@ max_queue_size_per_topic = 10
 # topics or agents — every enabled pattern must pipe into an agent channel /
 # agent. IMAP still receives and SMTP still replies (threaded into the
 # original mail thread); only the mailbox cursor lives with the adapter, at
-# <workdir>/channels/<channel_name>/.imap/ — resolved against the *jyc-pipe*
-# process's --workdir, since that process hosts the adapter now (`jyc serve`
+# <data dir>/channels/<channel_name>/.imap/ — resolved against the *jyc-pipe*
+# process's --data-dir, since that process hosts the adapter now (`jyc serve`
 # skips every pipe-capable channel type). Run jyc-pipe for email to work.
 
 [channels.jiny283]
@@ -610,7 +610,7 @@ max_per_message = 5
 # Run `jyc dashboard` to connect.
 #
 # When enabled, `jyc serve` generates a random authorization token and
-# writes it to <workdir>/auth.token. The dashboard auto-loads it; use
+# writes it to <data dir>/auth.token. The dashboard auto-loads it; use
 # `jyc token show` to retrieve it manually.
 
 [inspect]
@@ -807,7 +807,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # Pipe-only adapter: the poller matches patterns and re-targets each event
 # into an agent channel / agent topic; a reply forwarder posts agent replies
 # back as issue/PR comments. State (dedup/cursor) lives under
-# <workdir>/channels/<channel>/.gitee/. Topic initialization is a skill
+# <data dir>/channels/<channel>/.gitee/. Topic initialization is a skill
 # (gitee-init), not a per-pattern template.
 # Uses Gitee API v5 for polling and comment posting.
 
@@ -872,7 +872,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # Pipe-only adapter: the poller matches patterns and re-targets each event
 # into an agent channel / agent topic; a reply forwarder posts agent replies
 # back as issue/PR comments. State (dedup/cursor) lives under
-# <workdir>/channels/<channel>/.github/. Topic initialization is a skill
+# <data dir>/channels/<channel>/.github/. Topic initialization is a skill
 # (github-init), not a per-pattern template.
 # Uses GitHub REST API for polling and comment posting.
 
@@ -1210,11 +1210,11 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # the agent name. WebSocket mechanism (broadcast, dashboard chat pane,
 # /ws/agents/<topic> URL) stays the same.
 #
-# Default workspace root: <data_home>/agents/<agent_name>/
+# Default workspace root: <data dir>/agents/<agent_name>/
 # (Linux/macOS: ~/.local/share/jyc/agents/<agent_name>/
 #  Windows:     %LOCALAPPDATA%\jyc\agents\<agent_name>\
 # Override with topic_path. A pinned topic's runtime state (.jyc) is NOT
-# left in the pinned dir: it is adopted to <data_home>/agents/<name>/
+# left in the pinned dir: it is adopted to <data dir>/agents/<name>/
 # automatically on first start (existing .jyc is moved out of the repo).
 # Ad-hoc pins without an agent key (e.g. dashboard `jyc open -p`) derive a
 # unique folder name from the absolute path: /home/u/proj -> agents/_home_u_proj
@@ -1313,7 +1313,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # --- Per-Topic MCP Overrides (L3) ---
 #
 # Place a `<topic_path>/.jyc/config.toml` (for adopted/pinned topics the
-# state dir: `<data_home>/agents/<name>/.jyc/config.toml`) to add or
+# state dir: `<data dir>/agents/<name>/.jyc/config.toml`) to add or
 # replace MCPs for a
 # specific topic (e.g. one GitHub PR, one WeCom conversation). Layered on
 # top of the pattern → channel → global chain. The same `[ai] model`

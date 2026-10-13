@@ -67,6 +67,9 @@ impl TopicManager {
     /// keep the legacy behavior: the whole directory (with its in-dir
     /// `.jyc`) is removed, empty parents pruned the same way. In-memory
     /// state is cleaned up in both cases.
+    ///
+    /// The topic's subagents close with it
+    /// ([`Self::subagent_closure`]).
     pub async fn close_topic(&self, topic_name: &str) -> Result<()> {
         let agents_dir = self.resolve_agents_dir();
         self.close_topic_under(topic_name, &agents_dir).await
@@ -74,7 +77,54 @@ impl TopicManager {
 
     /// [`Self::close_topic`] with an explicit agents root — the same
     /// testable-core pattern as `purge_topic_dir_under` / `auto_close_topic_under`.
+    ///
+    /// The subagents go first, and through [`Self::close_one_topic_under`]:
+    /// this method *is* the cascade, so a child must not run it again.
     async fn close_topic_under(&self, topic_name: &str, agents_dir: &Path) -> Result<()> {
+        for child in self.subagent_closure(topic_name) {
+            if let Err(e) = self.close_one_topic_under(&child, agents_dir).await {
+                tracing::warn!(
+                    parent = %topic_name,
+                    subagent = %child,
+                    error = %e,
+                    "Failed to close a subagent with its parent"
+                );
+            }
+        }
+        self.close_one_topic_under(topic_name, agents_dir).await
+    }
+
+    /// Every subagent of `topic_name`, deepest first and never including
+    /// `topic_name` itself.
+    ///
+    /// A subagent exists to serve one topic's work and nothing else can find it
+    /// again: the parent's grant is the only pointer to it (the `spawned-from`
+    /// breadcrumb says who the parent is, but nothing lists a topic's children
+    /// from it), so a closed parent would leave it orphaned. A shared
+    /// topic_path makes that concrete: the parent's close is what may take that
+    /// directory with it (`auto_close_topic`), and a live child pointing into a
+    /// deleted dir is nothing anyone asked for.
+    ///
+    /// Depth-first, not one level: the tool refuses nesting but a typed
+    /// `/spawn` does not, so the whole subtree goes. A subagent has exactly one
+    /// parent (the breadcrumb is a single name), so this terminates.
+    fn subagent_closure(&self, topic_name: &str) -> Vec<String> {
+        let mut stack = vec![topic_name.to_string()];
+        let mut doomed = Vec::new();
+        while let Some(name) = stack.pop() {
+            doomed.push(name.clone());
+            stack.extend(
+                crate::command::spawn_handler::subagents_of(&name)
+                    .into_iter()
+                    .map(|(child, _)| child),
+            );
+        }
+        doomed.into_iter().skip(1).rev().collect()
+    }
+
+    /// Close one topic: no subagent handling, no recursion — what
+    /// [`Self::close_topic_under`] calls, once per topic in the subtree.
+    async fn close_one_topic_under(&self, topic_name: &str, agents_dir: &Path) -> Result<()> {
         // Freeze the topic's state *before* deleting: bookkeeping writes that
         // land after the deletion (the close reply's chat-history line,
         // activity-log entries from event subscribers) are dropped instead of
@@ -191,12 +241,19 @@ impl TopicManager {
     /// workspace itself holds. Pins alone cannot answer "who else works
     /// here?" — an unpinned topic lives at `<workspace>/<name>` and a fork
     /// shares exactly that dir.
+    ///
+    /// A pin is not evidence on its own, though: nothing removes a pin when its
+    /// topic closes, and a shared subagent's pin names a topic that closes with
+    /// this one. Both would keep a purged dir alive forever, so the filter asks
+    /// [`pin_still_held_by_another`] rather than trusting the map.
     async fn other_topic_dirs(&self, self_name: &str) -> Vec<(String, PathBuf)> {
         let mut dirs: Vec<(String, PathBuf)> = self
             .custom_topic_paths()
             .await
             .into_iter()
-            .filter(|(name, _)| name != self_name)
+            .filter(|(name, pin)| {
+                name != self_name && pin_still_held_by_another(name, pin, self_name)
+            })
             .collect();
         if let Ok(entries) = std::fs::read_dir(self.storage.workspace()) {
             for entry in entries.flatten() {
@@ -402,6 +459,25 @@ impl TopicManager {
 
         tracing::debug!(topic = %topic_name, "Topic in-memory state cleaned up");
     }
+}
+
+/// Whether another topic's pin still stands for a topic that holds its own dir:
+/// false for one that has closed, and false for a *dependent*.
+///
+/// The pin map cannot answer this on its own. Nothing removes a pin when its
+/// topic closes, so a closed topic would keep somebody else's directory alive
+/// forever — `state_dir`'s closed set is what says the topic is done. (After a
+/// restart the stale pin is gone anyway: the map is in-memory, and the state dir
+/// whose `topic-path` breadcrumb could restore it has been deleted.)
+///
+/// A subagent spawned into `self_name`'s own dir is even less of a claim: it is
+/// closed with this topic (and its dir with it), so it does not make that dir
+/// somebody else's — whichever of the two orders it closes in. A `/fork` child
+/// is neither: an independent topic that co-pins its parent's dir on purpose and
+/// outlives it, so it keeps the guard's word.
+fn pin_still_held_by_another(name: &str, pin: &Path, self_name: &str) -> bool {
+    !jyc_types::state_dir::is_closed(name)
+        && crate::command::spawn_handler::spawned_from(name, pin).as_deref() != Some(self_name)
 }
 
 /// Remove the emptied parent dirs a deleted state/topic dir leaves behind —
@@ -1041,6 +1117,162 @@ mode = "agent"
         };
         assert!(reason.contains("probe-two"), "{reason}");
         assert!(shared.exists(), "nothing may be deleted on a refusal");
+    }
+
+    /// A pin is not evidence of a live topic: nothing removes one when its topic
+    /// closes, and a closed co-pinner must not keep the dir out of reach — while
+    /// a *live* one still must, which is the same check's whole point.
+    #[tokio::test]
+    async fn purge_ignores_a_pin_whose_topic_is_gone() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let shared = tmp.path().join("probe-shared-repo");
+        std::fs::create_dir_all(&shared).unwrap();
+        tm.set_topic_path("stale-one", shared.clone())
+            .await
+            .unwrap();
+        tm.set_topic_path("stale-two", shared.clone())
+            .await
+            .unwrap();
+        let agents_dir = tmp.path().join("agents");
+        let state_root = tmp.path().join("state");
+
+        let outcome = tm
+            .purge_topic_dir_under("stale-one", &agents_dir, &state_root)
+            .await
+            .unwrap();
+        let PurgeOutcome::Refused(reason) = outcome else {
+            panic!("a live co-pinner owns the dir, got {outcome:?}");
+        };
+        assert!(reason.contains("stale-two"), "{reason}");
+
+        // Its topic closes — through the real path, which is what marks it
+        // closed — and the pin stays in the map: exactly the case that used to
+        // keep the dir forever.
+        tm.close_topic("stale-two").await.unwrap();
+        let outcome = tm
+            .purge_topic_dir_under("stale-one", &agents_dir, &state_root)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, PurgeOutcome::Deleted),
+            "a closed topic's pin must not keep another topic's dir: {outcome:?}"
+        );
+        assert!(!shared.exists());
+        assert!(
+            tm.custom_topic_paths().await.contains_key("stale-two"),
+            "the guard is what changed, not the pin map"
+        );
+
+        for name in ["stale-one", "stale-two"] {
+            jyc_types::state_dir::unregister(name);
+            jyc_types::state_dir::clear_closed(name);
+        }
+    }
+
+    /// A subagent that works in its parent's directory is not a co-owner: it
+    /// closes with the parent, so its pin must not keep that dir alive — in the
+    /// shape a restart leaves behind too, where the grant is gone and only the
+    /// breadcrumb is left.
+    #[tokio::test]
+    async fn purge_ignores_a_subagents_pin_on_its_parents_dir() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let tm = make_tm(&workspace);
+
+        let shared = tmp.path().join("probe-shared-repo");
+        std::fs::create_dir_all(&shared).unwrap();
+        tm.set_topic_path("sub-parent", shared.clone())
+            .await
+            .unwrap();
+        tm.set_topic_path("sub-child", shared.clone())
+            .await
+            .unwrap();
+        let child_state = jyc_types::state_dir::registered_state("sub-child").unwrap();
+        std::fs::write(child_state.join("spawned-from"), "sub-parent").unwrap();
+
+        let outcome = tm
+            .purge_topic_dir_under(
+                "sub-parent",
+                &tmp.path().join("agents"),
+                &tmp.path().join("state"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, PurgeOutcome::Deleted),
+            "a subagent's pin is not a claim on the parent's dir: {outcome:?}"
+        );
+        assert!(!shared.exists());
+
+        for name in ["sub-parent", "sub-child"] {
+            jyc_types::state_dir::unregister(name);
+        }
+    }
+
+    /// An upstream close takes a shared subagent's parent dir with it: the child
+    /// closes first (the cascade, so its pin is gone by the time the guards run)
+    /// and the dir goes contents and all, exactly as it would without a child.
+    #[tokio::test]
+    async fn auto_close_deletes_a_shared_subagents_parent_dir() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        let workspace = agents_dir.join("agent-x");
+        let topic_dir = workspace.join("plan-42");
+        std::fs::create_dir_all(topic_dir.join(".jyc")).unwrap();
+        std::fs::write(topic_dir.join("notes.md"), "written into it").unwrap();
+
+        let tm = make_tm(&workspace);
+        // A pipe topic: path and state registered, the in-dir `.jyc` the router
+        // adopts when it activates the topic.
+        jyc_types::state_dir::register("plan-42", &topic_dir.join(".jyc"));
+        tm.topic_paths
+            .lock()
+            .await
+            .insert("plan-42".to_string(), topic_dir.clone());
+
+        crate::command::spawn_handler::spawn_subagent_under(
+            &tm,
+            "plan-42",
+            &topic_dir,
+            Some("plan-42-review"),
+            false,
+            true,
+            &agents_dir,
+        )
+        .await
+        .unwrap();
+        let child_state = agents_dir.join("plan-42-review").join(".jyc");
+        assert!(child_state.is_dir(), "the child's state is its own");
+
+        assert!(
+            tm.auto_close_topic_under("plan-42", &agents_dir)
+                .await
+                .unwrap(),
+            "a pipe topic's upstream close still closes it"
+        );
+        assert!(
+            !topic_dir.exists(),
+            "the shared dir goes with its contents, child or no child"
+        );
+        assert!(
+            !child_state.exists(),
+            "the child's state went with the child"
+        );
+        // Not asserted: the emptied `agents/<child>/` shell. That pruning runs
+        // against the instance's own agents root (`resolve_agents_dir`, which
+        // prefers the platform data home), while this test's temp `agents_dir`
+        // is deliberately not it.
+
+        for name in ["plan-42", "plan-42-review"] {
+            jyc_types::state_dir::unregister(name);
+            jyc_types::state_dir::clear_closed(name);
+        }
+        jyc_types::access_grants::clear("plan-42");
     }
 
     /// A topic dir that contains another topic's dir is refused: deleting it

@@ -11,6 +11,8 @@ attachments/
 # Config files with credentials
 config.toml
 config.test.toml
+# ...but the subagent roles this repo ships are config.toml by design
+!subagents/*/config.toml
 
 # Docker env (contains local paths)
 docker/.env

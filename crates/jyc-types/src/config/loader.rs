@@ -5,7 +5,7 @@
 use crate::state_dir::resolve_state_dir;
 use anyhow::{Context, Result, bail};
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::config::{
@@ -28,11 +28,22 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
 /// - `[mcps]`: MCP overrides (additive by default, opt-in full replace via
 ///   `mcps_replace`). Precedence: `.jyc/config.toml` > pattern > channel >
 ///   global. No `<mode>-model-override` higher layer exists for MCPs.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// - `mode`, `skills`, `disabled_skills`, `disabled_tools`, `instructions`:
+///   settings the topic sets for itself, above the pattern/channel layers and
+///   below the runtime override files. A **subagent type**
+///   (`[subagents.<type>]`, or `<config dir>/subagents/<type>/config.toml`) is
+///   written into a child's `.jyc/config.toml` at spawn time, which is how one
+///   file declares a role's model, skills, tools and instructions at once.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TopicConfig {
     /// AI overrides for this topic.
     /// Legacy key `agent` is accepted as an alias (deprecated).
-    #[serde(rename = "ai", alias = "agent", default)]
+    #[serde(
+        rename = "ai",
+        alias = "agent",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub ai: Option<TopicAiConfig>,
 
     /// MCPs added for this topic.
@@ -41,26 +52,175 @@ pub struct TopicConfig {
     /// MCPs, and a topic MCP with the same `name` as an inherited one wins.
     /// Set `mcps_replace = true` to fully replace the inherited set (mirror of
     /// how `ChannelPattern.mcps` overrides channel-level MCPs).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcps: Option<Vec<McpServerConfig>>,
 
     /// When `true`, ignore the matched pattern/channel/global MCPs entirely
     /// and use only `mcps`. Default `false` (additive).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub mcps_replace: bool,
+
+    /// Mode this topic starts in (`"plan"` or `"build"`).
+    ///
+    /// A config layer, not an override: precedence is `.jyc/mode-override`
+    /// (the user's `/mode`, `/plan`, `/build`) > this > pattern/channel >
+    /// default build — the same shape as `[ai]` models, so config-derived mode
+    /// never lands in `.jyc/mode-override`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+
+    /// Skill allow-list for this topic: when set, only these skills exist here.
+    ///
+    /// Replaces (does not extend) a pattern/channel allow-list — "only these"
+    /// has to mean only these. The runtime `/skill` toggle layers on top of the
+    /// result, so `on` can re-add and `off` can remove, but neither can widen a
+    /// list this field did not already contain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+
+    /// Skill deny-list for this topic, applied after `skills`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_skills: Option<Vec<String>>,
+
+    /// Built-in tool names disabled for this topic (plain names, or
+    /// `server/tool` for one MCP tool — see `docs/tools.md`).
+    ///
+    /// Unioned with the channel/pattern lists, not replaced: disabling is
+    /// subtractive at every layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_tools: Option<Vec<String>>,
+
+    /// Extra instructions for this topic's system prompt, injected as a
+    /// `## Topic Instructions` section.
+    ///
+    /// Static text, so it stays cache-friendly: it changes when the file does,
+    /// not per turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+impl TopicConfig {
+    /// Overlay `self` (higher priority) onto `base`, key by key.
+    ///
+    /// This is how a `[subagents.<type>]` table in `config.toml` refines the
+    /// same type's `<config dir>/subagents/<type>/config.toml`: the two are the
+    /// same shape, and the in-config table (the running instance's own setting)
+    /// wins per key over the installed file. `mcps` and `mcps_replace` are taken
+    /// as a pair, since a list means nothing without its replace flag.
+    pub fn overlay(self, base: TopicConfig) -> TopicConfig {
+        let ai = match (self.ai, base.ai) {
+            (Some(over), Some(under)) => Some(TopicAiConfig {
+                model: over.model.or(under.model),
+                plan_model: over.plan_model.or(under.plan_model),
+                build_model: over.build_model.or(under.build_model),
+                small_model: over.small_model.or(under.small_model),
+            }),
+            (over, under) => over.or(under),
+        };
+        let (mcps, mcps_replace) = if self.mcps.is_some() {
+            (self.mcps, self.mcps_replace)
+        } else {
+            (base.mcps, base.mcps_replace)
+        };
+        TopicConfig {
+            ai,
+            mcps,
+            mcps_replace,
+            mode: self.mode.or(base.mode),
+            skills: self.skills.or(base.skills),
+            disabled_skills: self.disabled_skills.or(base.disabled_skills),
+            disabled_tools: self.disabled_tools.or(base.disabled_tools),
+            instructions: self.instructions.or(base.instructions),
+        }
+    }
+}
+
+/// `false` is the default of every bool here, so it stays out of a written
+/// config file ([`TopicConfig`] is serialized when a spawn expands a subagent
+/// type into a child's `.jyc/config.toml`).
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Agent model overrides for a single topic.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct TopicAiConfig {
     /// Model override for all modes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Model override for plan mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_model: Option<String>,
     /// Model override for build mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_model: Option<String>,
     /// Small model override (used for lightweight tasks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub small_model: Option<String>,
+}
+
+/// Load a subagent type from `<config dir>/subagents/<type>/config.toml`.
+///
+/// The file is a topic config (see [`TopicConfig`]) standing outside any topic:
+/// a preset a spawn expands into the child's own `.jyc/config.toml`. It is the
+/// second half of the type lookup — `[subagents.<type>]` in the config file is
+/// the first, and [`TopicConfig::overlay`] combines them.
+///
+/// Unlike [`load_topic_config`] the errors are *not* swallowed: a type the user
+/// asked for by name must either load or say why, and a spawn that silently
+/// dropped a role's settings would be worse than one that refused.
+pub fn load_subagent_type(
+    type_name: &str,
+    config_dir: Option<&Path>,
+) -> Result<Option<TopicConfig>> {
+    let Some(dir) = config_dir else {
+        return Ok(None);
+    };
+    let path = subagent_type_path(dir, type_name);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let path_label = path.display().to_string();
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read subagent type config: {path_label}"))?;
+    parse_and_deserialize::<TopicConfig>(&content, &path_label)
+        .map(Some)
+        .with_context(|| format!("invalid subagent type config: {path_label}"))
+}
+
+/// `<config dir>/subagents/<type>/config.toml` — where an installed type's
+/// settings live, beside the `skills/` and `templates/` collections.
+pub fn subagent_type_path(config_dir: &Path, type_name: &str) -> std::path::PathBuf {
+    config_dir
+        .join("subagents")
+        .join(type_name)
+        .join("config.toml")
+}
+
+/// The subagent type names available on this machine, from both sources
+/// (`[subagents.<type>]` tables and installed `subagents/<type>/` dirs).
+///
+/// Used to answer "what can I pass as `type`?" — the error a bad type name gets,
+/// and the tool description.
+pub fn available_subagent_types(config: &AppConfig, config_dir: Option<&Path>) -> Vec<String> {
+    let mut names: Vec<String> = config.subagents.keys().cloned().collect();
+    if let Some(dir) = config_dir
+        && let Ok(entries) = std::fs::read_dir(dir.join("subagents"))
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.join("config.toml").is_file() {
+                continue;
+            }
+            if let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned())
+                && !names.contains(&name)
+            {
+                names.push(name);
+            }
+        }
+    }
+    names.sort();
+    names
 }
 
 /// Load topic-level overrides from the topic's resolved state dir

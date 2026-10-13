@@ -99,12 +99,17 @@ and uses an in-process AI agent to generate replies.
 ### Subagents
 - 术语以 `DESIGN.md` 的 **Terminology** 为准：`topic_path` = 工作目录（agent 在哪跑、父被授权读写哪），state dir = 该 topic 的 `.jyc`（恒在 agents dir 下、按名字定位）
 - 委派前必须先看系统提示里的子 agent 列表；已有能用的子 agent 就用 `jyc_send_to_topic`（`require_reply=true`）追加任务，**禁止**重复创建
+- 子 agent 的角色用 `type` 声明，不要用散文描述：`type` 指向一个 subagent type（`[subagents.<type>]` 或 `<config dir>/subagents/<type>/config.toml`），spawn 时把该角色的 model、技能白名单、`disabled_tools`、mode、instructions 写入子的 `.jyc/config.toml` → 评审这类"不能改文件、只看某几个技能"的角色因此是**结构性**约束（技能被限定、列出的工具被禁），不是靠提示词约束
+- `type` 由两个入口用**运行中**的 config 解析（`/spawn` 的 `CommandContext`、spawn 工具的共享 `ArcSwap`），不读盘：`--config` 指定的文件里定义的角色同样可见；type 目录只扫 L1 配置目录，不分层
+- `disabled_tools` 只作用于它列出的工具：`bash` 能绕开（本项目自带评审角色 `subagents/review/config.toml` 就保留 `bash` 以便 `git diff`），要留就靠 mode 与 instructions 兜底，别把"只读"说成结构性保证
+- 本项目自带评审角色 `subagents/review/config.toml`：用前 `cp -r subagents/review <config dir>/subagents/`；评审未提交改动用 `type="review"` + `share_topic_path=true`
 - 仅当已有子 agent 都不合适时才用 `jyc_spawn_subagent` 新建；它与 `/spawn` 是同一实现：子 agent 继承本 topic 的**设置**（task list、mode、pattern、各类 override），**对话与 transcript 默认不继承**——要延续同一思路才传 `inherit_context=true`（`/spawn --inherit`）；它默认有自己的 `topic_path`，传 `share_topic_path=true` 才借用父的目录（评审未提交改动专用，其 state 仍在自己名下）
 - 子 agent 的输入由父用 `write` 放进它的 `topic_path`（父对该目录有读写权），再用 `jyc_send_to_topic` 派任务；给已存在的子 agent 追加任务同样用 `jyc_send_to_topic`
 - 改子 agent 的可配置项（模式、模型等）：把命令体（`/build`、`/plan`、`/model`）作为消息发给它；正文为空即不进模型，不消耗子 agent 的 turn
+- type 决定子的**起始**状态，不是枷锁：之后给子发的 `/plan`、`/model`、`/skill` 照旧优先于它；要改角色就按新 type 重 spawn（type 在 spawn 时展开，改 type 定义不影响已存在的子）
 - **禁止**读写子 agent 的 state dir（`.jyc`——那是它自己的状态）；只操作它的 `topic_path` 里的普通文件
-- 子 agent 层级只有一层、每 topic 上限 3 个（`/spawn` 手工创建也计入；超限只拒绝工具，不拒绝手敲的 `/spawn`）；任务为异步：发完即结束本轮，**禁止**轮询等待结果，结果会作为新消息回到本 topic
-- 父 topic 关闭（含上游 auto-close）会连同其子 agent 一起关闭（各自的 `<agents dir>/<child>` 一并清理）：禁止假设子 agent 能活过父；共享目录的子 agent 关闭时只删自己的 state，父的目录由父决定
+- 子 agent 可以再派子 agent，层级不限；一个 topic 能建多少子 agent 也不设上限。任务为异步：发完即结束本轮，**禁止**轮询等待结果，结果会作为新消息回到本 topic
+- 父 topic 关闭（含上游 auto-close）会连同整棵子树一起关闭（子、孙……各自的 `<agents dir>/<child>` 一并清理）：禁止假设子 agent 能活过父；共享目录的子 agent 关闭时只删自己的 state，父的目录由父决定
 
 ### Reply vs. SendMessage
 - The agent's final message at the end of a turn IS the in-topic reply; no reply tool exists.

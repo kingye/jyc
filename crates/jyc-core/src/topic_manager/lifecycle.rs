@@ -105,16 +105,16 @@ impl TopicManager {
     /// directory with it (`auto_close_topic`), and a live child pointing into a
     /// deleted dir is nothing anyone asked for.
     ///
-    /// Depth-first, not one level: the tool refuses nesting but a typed
-    /// `/spawn` does not, so the whole subtree goes. A subagent has exactly one
-    /// parent (the breadcrumb is a single name), so this terminates.
+    /// Depth-first: a subagent may have subagents of its own, so the whole
+    /// subtree goes. A subagent has exactly one parent (the breadcrumb is a
+    /// single name), so this terminates.
     ///
     /// ponytail: the grants this reads are process-wide and keyed by the
     /// parent's *name* alone — no channel — so a topic of the same name in
     /// another channel would have its subagents closed here too. The ceiling is
-    /// `subagents_of`'s own (the prompt list and the cap read the same registry,
-    /// by the same key); the upgrade path is a channel-scoped grant key, which
-    /// is a change to `access_grants`, not to this function.
+    /// `subagents_of`'s own (the prompt list reads the same registry, by the
+    /// same key); the upgrade path is a channel-scoped grant key, which is a
+    /// change to `access_grants`, not to this function.
     fn subagent_closure(&self, topic_name: &str) -> Vec<String> {
         let mut stack = vec![topic_name.to_string()];
         let mut doomed = Vec::new();
@@ -1261,6 +1261,7 @@ mode = "agent"
             Some("sh-plan-9-review"),
             false,
             true,
+            None,
             &agents_dir,
         )
         .await

@@ -1672,6 +1672,193 @@ mod shell_command_timeout_tests {
         );
     }
 
+    /// A topic config carries the role fields a subagent type needs, and a
+    /// missing file still means "no topic config" — not an error.
+    #[test]
+    fn test_load_topic_config_role_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "test_load_topic_config_role_fields";
+        crate::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(
+            state_dir.join("config.toml"),
+            r#"
+mode = "plan"
+skills = ["pr-review", "ponytail-review"]
+disabled_skills = ["forked-review"]
+disabled_tools = ["write", "edit", "bash"]
+instructions = "read-only: report, do not edit"
+"#,
+        )
+        .unwrap();
+
+        let cfg = load_topic_config(topic, tmp.path()).unwrap();
+        assert_eq!(cfg.mode.as_deref(), Some("plan"));
+        assert_eq!(
+            cfg.skills.as_deref(),
+            Some(["pr-review".to_string(), "ponytail-review".to_string()].as_slice())
+        );
+        assert_eq!(
+            cfg.disabled_skills.as_deref(),
+            Some(["forked-review".to_string()].as_slice())
+        );
+        assert_eq!(cfg.disabled_tools.as_ref().map(Vec::len), Some(3));
+        assert_eq!(
+            cfg.instructions.as_deref(),
+            Some("read-only: report, do not edit")
+        );
+    }
+
+    /// `overlay` is the merge between an installed type and the same type in
+    /// the config: key by key, the overlay winning, nothing else lost.
+    #[test]
+    fn topic_config_overlay_merges_key_by_key() {
+        let installed = parse_toml_value(
+            r#"
+mode = "build"
+skills = ["installed-skill"]
+disabled_tools = ["bash"]
+instructions = "installed text"
+[ai]
+model = "provider/base"
+plan_model = "provider/installed-plan"
+"#,
+            "<test>",
+        )
+        .unwrap();
+        let installed: TopicConfig = parse_and_deserialize_from_value(installed, "<test>").unwrap();
+
+        let from_config = parse_toml_value(
+            r#"
+mode = "plan"
+disabled_skills = ["forked-review"]
+[ai]
+plan_model = "provider/config-plan"
+small_model = "provider/config-small"
+"#,
+            "<test>",
+        )
+        .unwrap();
+        let from_config: TopicConfig =
+            parse_and_deserialize_from_value(from_config, "<test>").unwrap();
+
+        let merged = from_config.overlay(installed);
+        // Winner per key.
+        assert_eq!(merged.mode.as_deref(), Some("plan"));
+        assert_eq!(
+            merged.ai.as_ref().unwrap().plan_model.as_deref(),
+            Some("provider/config-plan")
+        );
+        // Keys only one side sets survive.
+        assert_eq!(
+            merged.skills.as_deref(),
+            Some(["installed-skill".to_string()].as_slice())
+        );
+        assert_eq!(merged.instructions.as_deref(), Some("installed text"));
+        assert_eq!(
+            merged.ai.as_ref().unwrap().model.as_deref(),
+            Some("provider/base")
+        );
+        assert_eq!(
+            merged.ai.as_ref().unwrap().small_model.as_deref(),
+            Some("provider/config-small")
+        );
+        assert_eq!(
+            merged.disabled_skills.as_deref(),
+            Some(["forked-review".to_string()].as_slice())
+        );
+        assert_eq!(
+            merged.disabled_tools.as_deref(),
+            Some(["bash".to_string()].as_slice())
+        );
+    }
+
+    /// An installed type is read from `<config dir>/subagents/<type>/
+    /// config.toml`; absent is `Ok(None)`, malformed names the file.
+    #[test]
+    fn load_subagent_type_reads_the_installed_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("subagents/review");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "mode = \"plan\"\nskills = [\"pr-review\"]\n",
+        )
+        .unwrap();
+
+        let cfg = load_subagent_type("review", Some(tmp.path()))
+            .unwrap()
+            .expect("installed type loads");
+        assert_eq!(cfg.mode.as_deref(), Some("plan"));
+        assert_eq!(
+            cfg.skills.as_deref(),
+            Some(["pr-review".to_string()].as_slice())
+        );
+
+        assert!(
+            load_subagent_type("nope", Some(tmp.path()))
+                .unwrap()
+                .is_none(),
+            "an absent type is not an error"
+        );
+        assert!(
+            load_subagent_type("review", None).unwrap().is_none(),
+            "no config dir: nothing installed"
+        );
+
+        std::fs::write(dir.join("config.toml"), "not [valid toml").unwrap();
+        let err = load_subagent_type("review", Some(tmp.path())).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("config.toml"), "error names the file: {msg}");
+    }
+
+    /// Both sources are listed, sorted, and deduplicated.
+    #[test]
+    fn available_subagent_types_merges_both_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["review", "builder"] {
+            let dir = tmp.path().join("subagents").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("config.toml"), "mode = \"plan\"\n").unwrap();
+        }
+        // A directory without a config.toml is not a type.
+        std::fs::create_dir_all(tmp.path().join("subagents/empty")).unwrap();
+
+        let config = load_config_from_str(
+            "[ai]\nenabled = true\n[subagents.review]\nmode = \"build\"\n[subagents.analyst]\nmode = \"plan\"\n",
+        )
+        .unwrap();
+
+        let names = available_subagent_types(&config, Some(tmp.path()));
+        assert_eq!(names, vec!["analyst", "builder", "review"]);
+    }
+
+    /// Serializing a topic config writes only what is set — a spawned child's
+    /// `.jyc/config.toml` should be readable, not a wall of `None`.
+    #[test]
+    fn topic_config_serializes_only_set_keys() {
+        let cfg: TopicConfig = parse_and_deserialize_from_value(
+            parse_toml_value("mode = \"plan\"\nskills = [\"pr-review\"]\n", "<test>").unwrap(),
+            "<test>",
+        )
+        .unwrap();
+        let body = toml::to_string_pretty(&cfg).unwrap();
+        assert!(body.contains("mode = \"plan\""), "{body}");
+        assert!(body.contains("pr-review"), "{body}");
+        assert!(
+            !body.contains("mcps_replace"),
+            "default false is not written: {body}"
+        );
+        assert!(!body.contains("disabled_skills"), "{body}");
+        // Round-trips back to the same settings.
+        let back: TopicConfig =
+            parse_and_deserialize_from_value(parse_toml_value(&body, "<test>").unwrap(), "<test>")
+                .unwrap();
+        assert_eq!(back.mode.as_deref(), Some("plan"));
+        assert_eq!(back.skills, cfg.skills);
+    }
+
     #[test]
     fn leftover_pipe_section_is_ignored() {
         // The `[pipe]` section was removed in pipe split step 3 (channel

@@ -354,14 +354,15 @@ pub async fn clear_tasks_at(state_dir: &Path) {
 }
 
 /// Resolve the effective mode for a topic:
-/// `.jyc/mode-override` > pattern `mode` from channel config (looked up via
-/// `.jyc/pattern`) > `None` (= build default).
+/// `.jyc/mode-override` > topic config `mode` > pattern `mode` from channel
+/// config (looked up via `.jyc/pattern`) > `None` (= build default).
 ///
 /// Mirrors the runtime chain in `jyc-agent::service::process()` so that
 /// non-runtime paths (dashboard topic list, `/model` command) agree with the
 /// mode the agent actually runs in. Config-derived mode is never persisted
 /// to `.jyc/mode-override`; that file remains reserved for explicit user
-/// overrides via `/mode`.
+/// overrides via `/mode`, which is why a subagent type's `mode = "plan"` is
+/// read as a config layer here instead.
 pub async fn resolve_effective_mode(
     topic_name: &str,
     topic_path: &Path,
@@ -369,6 +370,9 @@ pub async fn resolve_effective_mode(
     channel_name: &str,
 ) -> Option<String> {
     if let Some(mode) = read_mode_override(topic_name, topic_path).await {
+        return Some(mode);
+    }
+    if let Some(mode) = jyc_types::load_topic_config(topic_name, topic_path).and_then(|c| c.mode) {
         return Some(mode);
     }
     let pattern_name = read_pattern(topic_name, topic_path).await?;

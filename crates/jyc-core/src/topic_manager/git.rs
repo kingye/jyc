@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use jyc_types::{ChangeKind, ChangedFileEntry};
+use jyc_types::{ChangeKind, ChangedFileEntry, LineStats};
 
 /// Locate a checkout's git metadata: the working dir to run `git` in and the
 /// on-disk `HEAD` file to read the branch from.
@@ -68,26 +68,50 @@ pub(crate) fn branch_for_topic_path(path: &Path) -> Option<String> {
 
 /// Run `git diff --name-only <revspec>` in `cwd` and return the trimmed
 /// stdout lines, or `None` on spawn / non-zero exit / non-UTF8.
-fn run_git_diff(cwd: &Path, revspec: &str) -> Option<Vec<String>> {
+/// Run `git diff --numstat <revspec>` and parse each line as
+/// `(path, counts)`. A binary file reports `-`/`-` and is skipped
+/// entirely — it has no line counts to show. Run with `--no-renames` so
+/// the path is always a single field: a rename then arrives as its
+/// delete+add pair, which is also what the counts describe. Returns
+/// `None` on spawn / non-zero exit, like the other diff runners.
+fn run_git_diff_numstat(cwd: &Path, revspec: &str) -> Option<Vec<(String, LineStats)>> {
     let output = std::process::Command::new("git")
-        .args(["diff", "--name-only", revspec])
+        .args(["diff", "--numstat", "--no-renames", revspec])
         .current_dir(cwd)
         .output()
         .ok()?;
     if !output.status.success() {
         return None;
     }
-    Some(
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(String::from)
-            .collect(),
-    )
+    let mut out = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.split('\t');
+        let (Some(insertions), Some(deletions), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        // `-` on a binary file fails the parse, and that is the point:
+        // no counts, no entry.
+        let (Ok(insertions), Ok(deletions)) = (insertions.parse(), deletions.parse()) else {
+            continue;
+        };
+        if !path.is_empty() {
+            out.push((
+                path.to_string(),
+                LineStats {
+                    insertions,
+                    deletions,
+                },
+            ));
+        }
+    }
+    Some(out)
 }
 
 /// Run `git diff --name-status <revspec>` and parse each line as
 /// `(status_letter, path)`. Returns `None` on spawn / non-zero exit /
-/// non-UTF8, mirroring [`run_git_diff`]. Renames (`R<score><TAB>old<TAB>new`),
+/// non-UTF8, mirroring [`run_git_diff_numstat`]. Renames (`R<score><TAB>old<TAB>new`),
 /// copies (`C<score><TAB>src<TAB>dst`), and type changes (`T<TAB>path`)
 /// are normalized to `ChangeKind::Modified` — the chat info pane only
 /// distinguishes the three primary statuses (Added / Modified / Deleted),
@@ -128,6 +152,28 @@ fn run_git_diff_name_status(cwd: &Path, revspec: &str) -> Option<Vec<(ChangeKind
     Some(out)
 }
 
+/// One `git diff` pass over `revspec`, as `(kind, path, counts)` rows.
+///
+/// The status letters and the line counts come from two `git diff`
+/// invocations joined by path. A failed numstat pass costs only the
+/// counts: the status rows still ship without them.
+fn diff_rows(cwd: &Path, revspec: &str) -> Option<Vec<(ChangeKind, String, Option<LineStats>)>> {
+    let status = run_git_diff_name_status(cwd, revspec)?;
+    let counts = run_git_diff_numstat(cwd, revspec);
+    Some(
+        status
+            .into_iter()
+            .map(|(kind, path)| {
+                let lines = counts
+                    .as_ref()
+                    .and_then(|c| c.iter().find(|(p, _)| p == &path))
+                    .map(|(_, lines)| *lines);
+                (kind, path, lines)
+            })
+            .collect(),
+    )
+}
+
 /// Resolve the base ref to diff the topic branch against.
 ///
 /// Probes in order: `origin/HEAD` (set by clone to the remote's default
@@ -152,22 +198,22 @@ fn base_ref(cwd: &Path) -> Option<String> {
 }
 
 /// List files changed relative to the repo's default branch, with
-/// per-file `uncommitted` flag and `change` kind.
+/// per-file `uncommitted` flag, `change` kind, and line counts.
 ///
-/// Runs two `git diff` invocations against the topic's working directory:
-/// 1. `git diff --name-status <base>...HEAD` — files committed on the
-///    branch vs the default branch (resolved by [`base_ref`]), with
-///    status letter parsed into [`ChangeKind`].
-/// 2. `git diff --name-only HEAD` — files modified in the working tree
-///    but not yet committed (staged + unstaged); kind defaults to
-///    `Modified` since these are tracked files that exist in HEAD.
+/// Runs two [`diff_rows`] passes against the topic's working directory:
+/// 1. `<base>...HEAD` — files committed on the branch vs the default
+///    branch (resolved by [`base_ref`]).
+/// 2. `HEAD` — files changed in the working tree but not yet committed
+///    (staged + unstaged), status letter included: a file that is only
+///    `git add`ed is `Added` here, which is what gives it its `+` glyph
+///    before the commit.
 ///
 /// The two are unioned by path; any path in the dirty list gets
 /// `uncommitted: true`. A path appearing in both is emitted once with the
-/// branch-side kind and `uncommitted: true` (the more-noisy state wins
-/// for the flag; kind is branch-side because the dirty-in-tree state
-/// alone doesn't reveal whether the file was Added / Modified /
-/// Deleted on the branch).
+/// branch-side kind and counts, and `uncommitted: true` (the more-noisy
+/// state wins for the flag; kind and counts are branch-side because they
+/// describe the file's change against the default branch, which is what
+/// this list is about).
 ///
 /// Mirrors [`branch_for_topic_path`]: looks first at `<path>/.git/HEAD`,
 /// then falls back at `<path>/repo/.git/HEAD`. Returns:
@@ -177,7 +223,7 @@ fn base_ref(cwd: &Path) -> Option<String> {
 ///   resolvable base ref, etc.). If one succeeds, the successful one
 ///   still contributes its files.
 /// - `Some(vec![])` when both diffs come back empty.
-/// - `Some(vec![{path, change, uncommitted}, ...])` for the union,
+/// - `Some(vec![{path, change, uncommitted, lines}, ...])` for the union,
 ///   sorted alphabetically by path.
 ///
 /// Synchronous `std::process::Command` to match `branch_for_topic_path`'s
@@ -187,9 +233,8 @@ pub(crate) fn changed_files_for_topic_path(path: &Path) -> Option<Vec<ChangedFil
     // file-typed `.git`, so only the probe needs to know that layout.
     let (cwd, _) = git_probe(path)?;
 
-    let branch =
-        base_ref(&cwd).and_then(|base| run_git_diff_name_status(&cwd, &format!("{base}...HEAD")));
-    let dirty = run_git_diff(&cwd, "HEAD");
+    let branch = base_ref(&cwd).and_then(|base| diff_rows(&cwd, &format!("{base}...HEAD")));
+    let dirty = diff_rows(&cwd, "HEAD");
 
     // Skip rule: not a git repo at all is the only path to `None`. If
     // either diff produces output (or an empty Vec) we have something
@@ -198,26 +243,27 @@ pub(crate) fn changed_files_for_topic_path(path: &Path) -> Option<Vec<ChangedFil
         return None;
     }
 
-    let mut map: std::collections::HashMap<String, (ChangeKind, bool)> =
+    let mut map: std::collections::HashMap<String, (ChangeKind, Option<LineStats>, bool)> =
         std::collections::HashMap::new();
     if let Some(branch) = branch {
-        for (kind, path) in branch {
-            map.insert(path, (kind, false));
+        for (kind, path, lines) in branch {
+            map.insert(path, (kind, lines, false));
         }
     }
     if let Some(dirty) = dirty {
-        for path in dirty {
+        for (kind, path, lines) in dirty {
             map.entry(path)
-                .and_modify(|(_, uncommitted)| *uncommitted = true)
-                .or_insert((ChangeKind::Modified, true));
+                .and_modify(|(_, _, uncommitted)| *uncommitted = true)
+                .or_insert((kind, lines, true));
         }
     }
     let mut out: Vec<ChangedFileEntry> = map
         .into_iter()
-        .map(|(path, (change, uncommitted))| ChangedFileEntry {
+        .map(|(path, (change, lines, uncommitted))| ChangedFileEntry {
             path,
             change,
             uncommitted,
+            lines,
         })
         .collect();
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -320,7 +366,7 @@ mod branch_resolution_tests {
 #[cfg(test)]
 mod changed_files_resolution_tests {
     use super::{branch_for_topic_path, changed_files_for_topic_path};
-    use jyc_types::{ChangeKind, ChangedFileEntry};
+    use jyc_types::{ChangeKind, ChangedFileEntry, LineStats};
     use std::process::Command;
     use tempfile::tempdir;
 
@@ -412,6 +458,10 @@ mod changed_files_resolution_tests {
                 path: "a.txt".to_string(),
                 change: ChangeKind::Modified,
                 uncommitted: true,
+                lines: Some(LineStats {
+                    insertions: 1,
+                    deletions: 1,
+                }),
             }]
         );
     }
@@ -461,6 +511,10 @@ mod changed_files_resolution_tests {
                 path: "alpha.rs".into(),
                 uncommitted: false,
                 change: ChangeKind::Added,
+                lines: Some(LineStats {
+                    insertions: 1,
+                    deletions: 0,
+                }),
             }]
         );
     }
@@ -518,6 +572,10 @@ mod changed_files_resolution_tests {
                 path: "f.rs".into(),
                 uncommitted: false,
                 change: ChangeKind::Added,
+                lines: Some(LineStats {
+                    insertions: 1,
+                    deletions: 0,
+                }),
             }]
         );
     }
@@ -555,6 +613,10 @@ mod changed_files_resolution_tests {
                 path: "tracked.rs".into(),
                 uncommitted: true,
                 change: ChangeKind::Modified,
+                lines: Some(LineStats {
+                    insertions: 1,
+                    deletions: 1,
+                }),
             }]
         );
     }
@@ -604,11 +666,19 @@ mod changed_files_resolution_tests {
                     path: "alpha.rs".into(),
                     uncommitted: false,
                     change: ChangeKind::Added,
+                    lines: Some(LineStats {
+                        insertions: 1,
+                        deletions: 0,
+                    }),
                 },
                 ChangedFileEntry {
                     path: "beta.rs".into(),
                     uncommitted: false,
                     change: ChangeKind::Added,
+                    lines: Some(LineStats {
+                        insertions: 1,
+                        deletions: 0,
+                    }),
                 },
             ]
         );
@@ -661,6 +731,10 @@ mod changed_files_resolution_tests {
                 path: "gamma.rs".into(),
                 uncommitted: false,
                 change: ChangeKind::Added,
+                lines: Some(LineStats {
+                    insertions: 1,
+                    deletions: 0,
+                }),
             }]
         );
     }
@@ -692,8 +766,11 @@ mod changed_files_resolution_tests {
 
     #[test]
     fn lists_uncommitted_only_files() {
-        // Feature branch, tracked-but-not-committed file → `git diff HEAD`
-        // surfaces it as uncommitted, `main...HEAD` is empty.
+        // Feature branch, staged-but-not-committed file → `git diff HEAD`
+        // surfaces it as uncommitted with its `A` letter, so the row
+        // carries its `+` glyph *before* the commit. Regression: the
+        // dirty pass used `--name-only`, so every such row fell back to
+        // `Modified` and lost its glyph until the commit landed.
         let dir = git_init_with_main();
         let run = |args: &[&str]| {
             Command::new("git")
@@ -713,7 +790,11 @@ mod changed_files_resolution_tests {
             vec![ChangedFileEntry {
                 path: "draft.rs".into(),
                 uncommitted: true,
-                change: ChangeKind::Modified,
+                change: ChangeKind::Added,
+                lines: Some(LineStats {
+                    insertions: 1,
+                    deletions: 0,
+                }),
             }]
         );
     }
@@ -750,6 +831,15 @@ mod changed_files_resolution_tests {
         assert_eq!(files.len(), 1, "must dedupe to one entry");
         assert_eq!(files[0].path, "shared.rs");
         assert!(files[0].uncommitted, "more-noisy state must win");
+        // Counts are branch-side for a path in both sets — one line added
+        // there, and the local edit does not get to speak for the row.
+        assert_eq!(
+            files[0].lines,
+            Some(LineStats {
+                insertions: 1,
+                deletions: 0,
+            })
+        );
     }
 
     #[test]
@@ -799,6 +889,10 @@ mod changed_files_resolution_tests {
                 path: "doomed.rs".into(),
                 uncommitted: false,
                 change: ChangeKind::Deleted,
+                lines: Some(LineStats {
+                    insertions: 0,
+                    deletions: 1,
+                }),
             }]
         );
     }
@@ -851,6 +945,13 @@ mod changed_files_resolution_tests {
                 path: "renamed.rs".into(),
                 uncommitted: false,
                 change: ChangeKind::Modified,
+                // Counts come from the numstat pass, which runs with
+                // `--no-renames`: the rename arrives as its add half
+                // under the new path, and that is the half this row is.
+                lines: Some(LineStats {
+                    insertions: 1,
+                    deletions: 0,
+                }),
             }],
             "rename must surface under the new path with kind=Modified"
         );
@@ -858,9 +959,10 @@ mod changed_files_resolution_tests {
 
     #[test]
     fn dirty_only_paths_label_as_modified() {
-        // Path only in `git diff --name-only HEAD` (not committed on
-        // the branch). Kind defaults to `Modified` since the file
-        // exists in HEAD and was edited locally.
+        // Path only in `git diff --name-status HEAD` (not committed on
+        // the branch). The `M` letter of that pass labels it
+        // `Modified`, and the numstat pass on the same revspec supplies
+        // its counts.
         let dir = git_init_with_main();
         let run = |args: &[&str]| {
             Command::new("git")
@@ -892,8 +994,83 @@ mod changed_files_resolution_tests {
                 path: "existing.rs".into(),
                 uncommitted: true,
                 change: ChangeKind::Modified,
+                lines: Some(LineStats {
+                    insertions: 1,
+                    deletions: 1,
+                }),
             }],
-            "dirty-only path: kind=Modified (it exists in HEAD), uncommitted=true"
+            "dirty-only path: kind from the dirty pass's letter, uncommitted=true"
+        );
+    }
+
+    #[test]
+    fn staged_deletion_carries_its_minus_glyph() {
+        // The `D` half of the same fix: a tracked file removed with
+        // `git rm` but not yet committed must show `-` and its counts
+        // before the commit, not a blank prefix.
+        let dir = git_init_with_main();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git failed")
+        };
+        std::fs::write(dir.path().join("doomed.rs"), "fn d() {}\n").unwrap();
+        run(&["add", "doomed.rs"]);
+        run(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "seed",
+        ]);
+        run(&["rm", "-q", "doomed.rs"]);
+
+        let files = changed_files_for_topic_path(dir.path()).expect("git diff must run");
+        assert_eq!(
+            files,
+            vec![ChangedFileEntry {
+                path: "doomed.rs".into(),
+                uncommitted: true,
+                change: ChangeKind::Deleted,
+                lines: Some(LineStats {
+                    insertions: 0,
+                    deletions: 1,
+                }),
+            }]
+        );
+    }
+
+    #[test]
+    fn binary_files_report_no_line_counts() {
+        // `--numstat` prints `-`/`-` for a binary file. The row must
+        // ship without counts rather than with a made-up `+0 -0`.
+        let dir = git_init_with_main();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .expect("git failed")
+        };
+        run(&["checkout", "-q", "-b", "feature"]);
+        // The NUL byte is what makes git call it binary.
+        std::fs::write(dir.path().join("blob.bin"), [0u8, 1, 2, 0, 255, 10]).unwrap();
+        run(&["add", "blob.bin"]);
+
+        let files = changed_files_for_topic_path(dir.path()).expect("git diff must run");
+        assert_eq!(
+            files,
+            vec![ChangedFileEntry {
+                path: "blob.bin".into(),
+                uncommitted: true,
+                change: ChangeKind::Added,
+                lines: None,
+            }]
         );
     }
 }

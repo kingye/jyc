@@ -11,7 +11,7 @@ use crate::message_storage::MessageStorage;
 use crate::metrics::MetricsCollector;
 use crate::static_agent::StaticAgentService;
 use jyc_types::state_dir::resolve_state_dir;
-use jyc_types::{ChangeKind, ChangedFileEntry, InboundMessage, PatternMatch};
+use jyc_types::{ChangeKind, ChangedFileEntry, InboundMessage, LineStats, PatternMatch};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tempfile::tempdir;
@@ -1709,6 +1709,10 @@ async fn list_topics_populates_changed_files_from_git_diff() {
                 path: "x.rs".into(),
                 uncommitted: false,
                 change: ChangeKind::Added,
+                lines: Some(LineStats {
+                    insertions: 1,
+                    deletions: 0,
+                }),
             }][..]
         ),
         "feature branch with one new file must list it"

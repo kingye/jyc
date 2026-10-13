@@ -108,8 +108,8 @@ and uses an in-process AI agent to generate replies.
 - 改子 agent 的可配置项（模式、模型等）：把命令体（`/build`、`/plan`、`/model`）作为消息发给它；正文为空即不进模型，不消耗子 agent 的 turn
 - type 决定子的**起始**状态，不是枷锁：之后给子发的 `/plan`、`/model`、`/skill` 照旧优先于它；要改角色就按新 type 重 spawn（type 在 spawn 时展开，改 type 定义不影响已存在的子）
 - **禁止**读写子 agent 的 state dir（`.jyc`——那是它自己的状态）；只操作它的 `topic_path` 里的普通文件
-- 子 agent 层级只有一层、每 topic 上限 3 个（`/spawn` 手工创建也计入；超限只拒绝工具，不拒绝手敲的 `/spawn`）；任务为异步：发完即结束本轮，**禁止**轮询等待结果，结果会作为新消息回到本 topic
-- 父 topic 关闭（含上游 auto-close）会连同其子 agent 一起关闭（各自的 `<agents dir>/<child>` 一并清理）：禁止假设子 agent 能活过父；共享目录的子 agent 关闭时只删自己的 state，父的目录由父决定
+- 子 agent 可以再派子 agent，层级不限；一个 topic 能建多少子 agent 也不设上限。任务为异步：发完即结束本轮，**禁止**轮询等待结果，结果会作为新消息回到本 topic
+- 父 topic 关闭（含上游 auto-close）会连同整棵子树一起关闭（子、孙……各自的 `<agents dir>/<child>` 一并清理）：禁止假设子 agent 能活过父；共享目录的子 agent 关闭时只删自己的 state，父的目录由父决定
 
 ### Reply vs. SendMessage
 - The agent's final message at the end of a turn IS the in-topic reply; no reply tool exists.

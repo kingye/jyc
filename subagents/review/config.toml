@@ -27,8 +27,8 @@ disabled_skills = ["forked-review"]
 # `bash` is deliberately left in place: a review of uncommitted work needs
 # `git status` and `git diff`, and no read-only shell exists. Plan mode and the
 # instructions below are what restrain it; the file-editing tools are gone.
-# (`jyc_spawn_subagent` is belt-and-braces: the one-level-deep guard already
-# refuses a subagent that tries to spawn.)
+# `jyc_spawn_subagent` is what keeps the review one hop: nothing else refuses a
+# subagent that tries to spawn one of its own, so the role does.
 disabled_tools = ["write", "edit", "jyc_spawn_subagent"]
 
 instructions = """

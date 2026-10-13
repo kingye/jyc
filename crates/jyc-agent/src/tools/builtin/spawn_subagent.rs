@@ -61,7 +61,7 @@ impl Tool for SpawnSubagentTool {
          see which types exist. Put whatever it needs into that directory with `write`, then send \
          the task with `jyc_send_to_topic` (require_reply=true). To reconfigure it, send it a \
          command body (`/build`, `/plan`, `/model`, …), which runs without spending one of its \
-         turns. Subagents are one level deep and capped at three per topic; when the subagent \
+         turns. When the subagent \
          list in your system prompt already holds one that fits, continue it instead of spawning \
          another."
     }

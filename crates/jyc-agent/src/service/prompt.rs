@@ -422,19 +422,16 @@ impl JycAgentService {
         s
     }
 
-    /// The subagent section: who this topic already spawned, out of how many,
-    /// and the reuse rule. Names only — the directories are the grants the
-    /// boundary section above already lists. `/spawn` counts here too, and the
-    /// cap refuses the tool rather than the command, so the count may exceed it:
-    /// the section reports what is, not what the cap wishes.
+    /// The subagent section: who this topic already spawned, and the reuse rule.
+    /// Names only — the directories are the grants the boundary section above
+    /// already lists. `/spawn` counts here too: the section reports what is.
     pub(crate) fn format_subagents_section(subagents: &[(String, std::path::PathBuf)]) -> String {
         format!(
-            "Your subagents ({} of at most {}): {}.\n\
+            "Your subagents ({}): {}.\n\
              Continue an existing one with jyc_send_to_topic — it keeps its own context — \
              instead of spawning a duplicate; spawn a new one only when nothing you already \
-             spawned fits, and expect a refusal once you are at the cap.\n\n",
+             spawned fits.\n\n",
             subagents.len(),
-            jyc_core::command::spawn_handler::MAX_SUBAGENTS,
             jyc_core::command::spawn_handler::format_subagent_names(subagents),
         )
     }

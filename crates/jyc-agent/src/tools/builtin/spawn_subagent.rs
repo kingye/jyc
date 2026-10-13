@@ -10,13 +10,17 @@
 //! `jyc_send_to_topic` for the latter — and so does reconfiguring the child,
 //! which is a command away (`/build`, `/model`, … sent as a message body).
 //!
-//! Two optional flags decide what the child *starts* from, and both default to
-//! the lazier, more independent choice: `inherit_context` copies this topic's
-//! conversation and transcript (off — a subagent given a task of its own does
-//! not need them, and they cost tokens every turn), and `share_topic_path` puts
-//! the child in **this** topic's working directory instead of one of its own
-//! (off — for a reviewer that has to read uncommitted work, which no separate
-//! copy would show).
+//! Three optional parameters decide what the child *starts* from. Two are flags
+//! that default to the lazier, more independent choice: `inherit_context` copies
+//! this topic's conversation and transcript (off — a subagent given a task of its
+//! own does not need them, and they cost tokens every turn), and
+//! `share_topic_path` puts the child in **this** topic's working directory
+//! instead of one of its own (off — for a reviewer that has to read uncommitted
+//! work, which no separate copy would show). The third, `type`, names a role
+//! (`[subagents.<type>]` in the config, or `<config dir>/subagents/<type>/
+//! config.toml`) whose settings the child starts with — its model, skills,
+//! disabled tools, mode and instructions, written into the child's own state at
+//! spawn time.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -40,12 +44,17 @@ impl Tool for SpawnSubagentTool {
          topic_path, the working directory it runs in. Its conversation starts empty: pass \
          inherit_context=true only when the child must continue this conversation. Pass \
          share_topic_path=true to have it work in *your* directory (a reviewer of uncommitted \
-         work needs that; its own state still goes to its own state dir). Put whatever it needs \
-         into that directory with `write`, then send the task with `jyc_send_to_topic` \
-         (require_reply=true). To reconfigure it, send it a command body (`/build`, `/plan`, \
-         `/model`, …), which runs without spending one of its turns. Subagents are one level deep \
-         and capped at three per topic; when the subagent list in your system prompt already \
-         holds one that fits, continue it instead of spawning another."
+         work needs that; its own state still goes to its own state dir). Pass type=\"<name>\" to \
+         start it as a configured role — the settings under that name (its model, skill \
+         allow-list, disabled tools, mode, instructions) are written into the child's state, so \
+         e.g. a reviewer starts in plan mode with only the review skills and without the tools \
+         that could change your files; `read` the subagents directory under the config dir to \
+         see which types exist. Put whatever it needs into that directory with `write`, then send \
+         the task with `jyc_send_to_topic` (require_reply=true). To reconfigure it, send it a \
+         command body (`/build`, `/plan`, `/model`, …), which runs without spending one of its \
+         turns. Subagents are one level deep and capped at three per topic; when the subagent \
+         list in your system prompt already holds one that fits, continue it instead of spawning \
+         another."
     }
 
     fn input_schema(&self) -> Value {
@@ -66,6 +75,14 @@ impl Tool for SpawnSubagentTool {
                     "description": "Let the subagent work in your own directory, for work that has \
                                     to see your files as they are (a review of uncommitted \
                                     changes). Default false: it gets a directory of its own."
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Optional subagent type: the child starts with that role's \
+                                    settings (model, skills, disabled tools, mode, \
+                                    instructions), taken from [subagents.<type>] in the config or \
+                                    <config dir>/subagents/<type>/config.toml. Default: no type — \
+                                    the child inherits this topic's settings."
                 }
             }
         })
@@ -100,6 +117,11 @@ impl Tool for SpawnSubagentTool {
             .get("share_topic_path")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let type_name = input
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
         match spawn_handler::spawn_subagent(
             &tm,
             &parent,
@@ -107,6 +129,7 @@ impl Tool for SpawnSubagentTool {
             name,
             inherit_context,
             share_topic_path,
+            type_name,
         )
         .await
         {
@@ -164,5 +187,11 @@ mod tests {
                 "{flag}"
             );
         }
+        // The role is opt-in too, and its absence is the documented default
+        // (inherit this topic's settings).
+        assert_eq!(
+            SpawnSubagentTool.input_schema()["properties"]["type"]["type"],
+            "string"
+        );
     }
 }

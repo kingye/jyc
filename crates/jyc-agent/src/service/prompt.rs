@@ -6,6 +6,7 @@ use jyc_types::state_dir::resolve_state_dir;
 use std::path::{Path, PathBuf};
 
 use jyc_types::InboundMessage;
+use jyc_types::TopicConfig;
 
 use super::JycAgentService;
 use super::skills::{format_skills_section, persist_skill_names};
@@ -16,6 +17,7 @@ impl JycAgentService {
         topic_name: &str,
         topic_path: &Path,
         matched_pattern: Option<&str>,
+        topic_cfg: Option<&TopicConfig>,
         additional_read_roots: &[PathBuf],
         additional_write_roots: &[PathBuf],
     ) -> String {
@@ -39,9 +41,11 @@ impl JycAgentService {
             prompt.push_str(&Self::format_subagents_section(&subagents));
         }
 
-        // Resolve skill filters: pattern > channel > none (shared with
-        // `available_skills` so the `/` popup lists exactly what config allows).
-        let (include_base, mut exclude_list) = self.config_skill_filters(matched_pattern);
+        // Resolve skill filters: topic config > pattern > channel > none (shared
+        // with `available_skills` so the `/` popup lists exactly what config
+        // allows).
+        let (include_base, mut exclude_list) =
+            self.config_skill_filters(matched_pattern, topic_cfg);
         let include_list: Option<&[String]> = include_base.as_deref();
         // Runtime `/skill` toggle override (persisted until `/skill reset`).
         // `on` joins the whitelist and cancels config-level exclusions;
@@ -91,6 +95,19 @@ impl JycAgentService {
         let skill_names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         if let Err(e) = persist_skill_names(topic_name, topic_path, &skill_names) {
             tracing::warn!(error = %e, "Failed to persist skill names to skills.json");
+        }
+
+        // Topic config `instructions` — the topic's own standing orders, and
+        // where a subagent type's role text lands. Static (it changes when the
+        // file does, not per turn), so it stays cache-friendly.
+        if let Some(instructions) = topic_cfg
+            .and_then(|c| c.instructions.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            prompt.push_str("## Topic Instructions\n\n");
+            prompt.push_str(instructions);
+            prompt.push_str("\n\n");
         }
 
         // Load AGENTS.md if present in the working directory

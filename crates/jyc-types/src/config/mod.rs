@@ -137,6 +137,17 @@ pub struct AppConfig {
     #[serde(default)]
     pub agents: HashMap<String, AgentConfig>,
 
+    /// Named subagent types — settings a spawn hands to a child topic.
+    ///
+    /// A type is a topic config selected by name: `jyc_spawn_subagent(type =
+    /// "review")` expands `[subagents.review]` (and/or the installed
+    /// `<config dir>/subagents/review/config.toml`) into the child's own
+    /// `.jyc/config.toml`, which is where its model, skills, disabled tools,
+    /// mode and instructions then come from. Agent-level, not channel-level:
+    /// a type describes a *role*, and roles are not routed.
+    #[serde(default)]
+    pub subagents: HashMap<String, TopicConfig>,
+
     /// AI configuration (model, prompts, providers) — the shared brain.
     /// Legacy key `[agent]` is accepted as an alias (deprecated).
     #[serde(rename = "ai", alias = "agent")]

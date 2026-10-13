@@ -31,12 +31,11 @@ use crate::topic_manager::TopicManager;
 ///   would make the fork run the parent's jobs too. Directories are skipped.
 /// - Anything else in the state dir belongs to the user, not to the framework.
 const SEED_FILES: &[&str] = &[
-    CONVERSATION_FILE,         // the running context: the conversation
-    session_state::TASKS_FILE, // the task list, so the fork continues it (#810)
-    "backlog.jsonl",           // the topic's own backlog
-    "pattern",                 // which agent pattern runs the topic
-    "mode-override",           // plan/build mode
-    "plan-model-override",     // per-mode model choice
+    CONVERSATION_FILE,     // the running context: the conversation
+    "backlog.jsonl",       // the topic's own backlog
+    "pattern",             // which agent pattern runs the topic
+    "mode-override",       // plan/build mode
+    "plan-model-override", // per-mode model choice
     "build-model-override",
     session_state::CONTEXT_STRATEGY_FILE, // `/context`
     session_state::MCP_OVERRIDE_FILE,     // `/mcp`
@@ -231,13 +230,16 @@ pub(super) fn invalid_name(name: &str) -> Option<&'static str> {
 ///
 /// `fresh` skips the conversation ([`CONVERSATION_FILE`]) and the transcript
 /// ([`CHAT_HISTORY_PREFIX`]): the child gets every *setting* the parent
-/// configured — pattern, mode, Task List, model/context/MCP/skill overrides —
-/// and a head of its own. This is the default for every trigger (`/spawn`,
-/// `/fork`, the `jyc_spawn_subagent` tool): inheriting a long development
-/// conversation is expensive and anchors the child to a line of reasoning
-/// nobody asked it to continue, which is exactly wrong for the common case —
-/// a reviewer or a second worker starting on a task of its own. `--inherit` /
-/// `inherit_context` opts back into the copy.
+/// configured — pattern, mode, model/context/MCP/skill overrides — and a head
+/// of its own. This is the default for every trigger (`/spawn`, `/fork`, the
+/// `jyc_spawn_subagent` tool): inheriting a long development conversation is
+/// expensive and anchors the child to a line of reasoning nobody asked it to
+/// continue, which is exactly wrong for the common case — a reviewer or a
+/// second worker starting on a task of its own. `--inherit` / `inherit_context`
+/// opts back into the copy. The task list is never among them, `--inherit`
+/// included: a child plans its own work. #810 seeded it so a `/fork` could
+/// continue the parent's plan, but the same seed ran for `/spawn` and the
+/// spawn tool, where the parent's plan is somebody else's.
 pub(super) async fn seed_state(
     parent: &Path,
     child: &Path,
@@ -485,9 +487,11 @@ mod tests {
                 .unwrap(),
             "src-topic"
         );
-        for keep in [session_state::TASKS_FILE, "pattern"] {
-            assert!(child.join(keep).exists(), "{keep} must be inherited");
-        }
+        assert!(child.join("pattern").exists(), "pattern must be inherited");
+        assert!(
+            !child.join(session_state::TASKS_FILE).exists(),
+            "a fork plans its own work: the parent's task list stays behind"
+        );
         let mut days = 0;
         let mut entries = tokio::fs::read_dir(&child).await.unwrap();
         while let Some(entry) = entries.next_entry().await.unwrap() {

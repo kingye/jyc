@@ -104,7 +104,7 @@ and uses an in-process AI agent to generate replies.
 - `type` 由两个入口用**运行中**的 config 解析（`/spawn` 的 `CommandContext`、spawn 工具的共享 `ArcSwap`），不读盘：`--config` 指定的文件里定义的角色同样可见；type 目录只扫 L1 配置目录，不分层
 - `disabled_tools` 只作用于它列出的工具：`bash` 能绕开（本项目自带评审角色 `subagents/review/config.toml` 就保留 `bash` 以便 `git diff`），要留就靠 mode 与 instructions 兜底，别把"只读"说成结构性保证
 - 本项目自带评审角色 `subagents/review/config.toml`：用前 `cp -r subagents/review <config dir>/subagents/`；评审改动用 `type="review"` + `share_topic_path=true`（未提交的、刚提交的都算，范围给 `git diff <base>..HEAD`）；它异步运行，不占 turn、不阻塞 push
-- 仅当已有子 agent 都不合适时才用 `jyc_spawn_subagent` 新建；它与 `/spawn` 是同一实现：子 agent 继承本 topic 的**设置**（task list、mode、pattern、各类 override），**对话与 transcript 默认不继承**——要延续同一思路才传 `inherit_context=true`（`/spawn --inherit`）；它默认有自己的 `topic_path`，传 `share_topic_path=true` 才借用父的目录（评审改动专用，未提交的与刚提交的都算；其 state 仍在自己名下）
+- 仅当已有子 agent 都不合适时才用 `jyc_spawn_subagent` 新建；它与 `/spawn` 是同一实现：子 agent 继承本 topic 的**设置**（mode、pattern、各类 override——传 `type` 时只有该类型**未声明**的键继承：类型声明了 `mode`/`[ai]` 模型/`skills`/`mcps`，对应的 override 文件才被丢弃；任务列表从不继承，子 agent 从空列表开始、自己做 `task_create`），**对话与 transcript 默认不继承**——要延续同一思路才传 `inherit_context=true`（`/spawn --inherit`；带对话也不带任务列表）；它默认有自己的 `topic_path`，传 `share_topic_path=true` 才借用父的目录（评审改动专用，未提交的与刚提交的都算；其 state 仍在自己名下）
 - 子 agent 的输入由父用 `write` 放进它的 `topic_path`（父对该目录有读写权），再用 `jyc_send_to_topic` 派任务；给已存在的子 agent 追加任务同样用 `jyc_send_to_topic`
 - 改子 agent 的可配置项（模式、模型等）：把命令体（`/build`、`/plan`、`/model`）作为消息发给它；正文为空即不进模型，不消耗子 agent 的 turn
 - type 决定子的**起始**状态，不是枷锁：之后给子发的 `/plan`、`/model`、`/skill` 照旧优先于它；要改角色就按新 type 重 spawn（type 在 spawn 时展开，改 type 定义不影响已存在的子）

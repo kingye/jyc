@@ -742,28 +742,55 @@ fn take_type_flag(args: &[String]) -> Result<(Option<String>, Vec<String>), Stri
     Ok((found, rest))
 }
 
+/// The runtime override files a resolved type supersedes.
+///
+/// Each one sits *above* a topic config in its resolution chain, so leaving it
+/// behind would silently outrank the type's own value. Only the keys the type
+/// sets itself are superseded: where it has no opinion the parent's runtime
+/// choice stands, which is what makes a role with no `[ai]` inherit the
+/// parent's model instead of falling back to the configured default.
+fn superseded_overrides(config: &TopicConfig) -> Vec<&'static str> {
+    let mut files = Vec::new();
+    if config.mode.is_some() {
+        files.push("mode-override");
+    }
+    if let Some(ai) = &config.ai {
+        // The legacy file is mode-agnostic and still read ahead of the config,
+        // so any model at all has to take it out; a per-mode file only holds a
+        // value for the mode it names, and `[ai].model` covers both.
+        if ai.model.is_some() || ai.plan_model.is_some() || ai.build_model.is_some() {
+            files.push("model-override");
+        }
+        if ai.model.is_some() || ai.plan_model.is_some() {
+            files.push("plan-model-override");
+        }
+        if ai.model.is_some() || ai.build_model.is_some() {
+            files.push("build-model-override");
+        }
+    }
+    if config.skills.is_some() {
+        files.push(crate::session_state::SKILL_OVERRIDE_FILE);
+    }
+    if config.mcps.is_some() {
+        files.push(crate::session_state::MCP_OVERRIDE_FILE);
+    }
+    files
+}
+
 /// Write a resolved `type` into the child's state dir.
 ///
 /// Two steps, in this order:
-/// 1. **The parent's runtime choices go.** `seed_state` copied the override
-///    files the parent happened to be running with — `mode-override`, the
-///    per-mode model overrides, the `/skill` and `/mcp` toggles — and every one
-///    of them sits *above* a topic config in its resolution chain. A role the
-///    parent's ad-hoc switches cannot override is the point of a type, so they
-///    are removed rather than layered under it.
+/// 1. **The parent's runtime choices the type answers for itself go.**
+///    `seed_state` copied the override files the parent happened to be running
+///    with, and [`superseded_overrides`] names the ones whose key the type sets
+///    itself. A key it leaves out keeps the parent's choice.
 /// 2. **The type's settings are written** to `.jyc/config.toml` — a config
 ///    layer, so the child's own `/mode`, `/model` and `/skill` still win over it
 ///    afterwards (the type is where the child *starts*, not a cage) — plus the
 ///    name in `.jyc/subagent-type`, which nothing reads yet (the dashboard is
 ///    where it is headed) and which carries no behavior of its own.
 fn apply_subagent_type(state_dir: &Path, subagent_type: &SubagentType) -> Result<()> {
-    for file in [
-        "mode-override",
-        "plan-model-override",
-        "build-model-override",
-        crate::session_state::SKILL_OVERRIDE_FILE,
-        crate::session_state::MCP_OVERRIDE_FILE,
-    ] {
+    for file in superseded_overrides(&subagent_type.config) {
         let path = state_dir.join(file);
         if path.exists() {
             std::fs::remove_file(&path)
@@ -1157,10 +1184,10 @@ mod tests {
         assert!(err.contains("twice"), "{err}");
     }
 
-    /// A typed spawn hands the child the role instead of the parent's runtime
-    /// choices: the override files it just inherited go (each of them outranks a
-    /// topic config in its chain), the type's settings are written to
-    /// `.jyc/config.toml` where the child's own `/mode`, `/model` and `/skill`
+    /// A typed spawn hands the child the role, dropping only the parent runtime
+    /// choices the role answers for itself — each of those outranks a topic
+    /// config in its chain. The type's settings are written to
+    /// `.jyc/config.toml`, where the child's own `/mode`, `/model` and `/skill`
     /// can still win over them, and the name is recorded for the dashboard.
     #[tokio::test]
     async fn spawn_with_a_type_replaces_the_parents_runtime_choices() {
@@ -1222,15 +1249,18 @@ mod tests {
 
         let dest = resolved(&agents_dir.join("worker"));
         let state = resolve_state_dir("worker", &dest);
-        for gone in [
-            "mode-override",
-            "plan-model-override",
-            session_state::SKILL_OVERRIDE_FILE,
-            session_state::MCP_OVERRIDE_FILE,
-        ] {
+        // The role declares `mode` and `skills`, so those two files go; it says
+        // nothing about models or MCPs, so those choices stay the parent's.
+        for gone in ["mode-override", session_state::SKILL_OVERRIDE_FILE] {
             assert!(
                 !state.join(gone).exists(),
-                "{gone} was the parent's runtime choice, not the role's"
+                "{gone} is a key the role sets itself"
+            );
+        }
+        for kept in ["plan-model-override", session_state::MCP_OVERRIDE_FILE] {
+            assert!(
+                state.join(kept).exists(),
+                "{kept} is a choice the role leaves to the parent"
             );
         }
 
@@ -1256,9 +1286,107 @@ mod tests {
             "review",
             "the dashboard reads the role from here"
         );
-        // Everything a spawn hands over besides runtime choices still arrives.
-        for keep in [session_state::TASKS_FILE, "pattern"] {
-            assert!(state.join(keep).exists(), "{keep} must be inherited");
+        // Everything a spawn hands over besides runtime choices still arrives —
+        // except the parent's task list, which is the child's own to write.
+        assert!(state.join("pattern").exists(), "pattern must be inherited");
+        assert!(
+            !state.join(session_state::TASKS_FILE).exists(),
+            "a child plans its own work"
+        );
+    }
+
+    /// The other half of the rule: a key the role says nothing about keeps the
+    /// parent's runtime choice, and the mapping runs key by key rather than
+    /// all-or-nothing.
+    #[tokio::test]
+    async fn a_type_supersedes_only_the_overrides_it_declares() {
+        // (the role's config, the files that must go, the files that must stay)
+        let cases: &[(&str, &[&str], &[&str])] = &[
+            (
+                // No `[ai]`: the parent's model is the role's model.
+                "mode = \"plan\"\n",
+                &["mode-override"],
+                &[
+                    "plan-model-override",
+                    "build-model-override",
+                    "model-override",
+                ],
+            ),
+            (
+                // `[ai].model` covers both modes, so all three files go.
+                "[ai]\nmodel = \"provider/role\"\n",
+                &[
+                    "plan-model-override",
+                    "build-model-override",
+                    "model-override",
+                ],
+                &["mode-override"],
+            ),
+            (
+                // Per mode: a build model says nothing about plan.
+                "[ai]\nbuild_model = \"provider/role\"\n",
+                &["build-model-override", "model-override"],
+                &["plan-model-override"],
+            ),
+        ];
+
+        for (role, gone, kept) in cases {
+            let (_tmp, dir) = parent_topic().await;
+            let parent_state = dir.join(".jyc");
+            for name in [
+                "plan-model-override",
+                "build-model-override",
+                "model-override",
+            ] {
+                tokio::fs::write(parent_state.join(name), "provider/parent")
+                    .await
+                    .unwrap();
+            }
+
+            let workspace = tempdir().unwrap();
+            let tm = make_topic_manager(workspace.path());
+            let agents_dir = workspace.path().join("agents");
+            let handler = SpawnCommandHandler::new(tm.clone());
+
+            let types_root = tempdir().unwrap();
+            let type_dir = types_root.path().join("subagents/role");
+            std::fs::create_dir_all(&type_dir).unwrap();
+            tokio::fs::write(type_dir.join("config.toml"), role)
+                .await
+                .unwrap();
+            let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+            let subagent_type =
+                resolve_subagent_type("role", Some(&config), Some(types_root.path())).unwrap();
+
+            let args = vec!["worker".to_string()];
+            let req = SpawnRequest {
+                parent_topic: "src-topic",
+                parent_topic_path: &dir,
+                args: &args,
+                inherit: false,
+                share_topic_path: false,
+                subagent_type: Some(&subagent_type),
+            };
+            let result = handler
+                .spawn_under(req, &parent_state, &agents_dir)
+                .await
+                .unwrap();
+            assert!(result.success, "{}", result.message);
+
+            let dest = resolved(&agents_dir.join("worker"));
+            let state = resolve_state_dir("worker", &dest);
+            for name in *gone {
+                assert!(
+                    !state.join(name).exists(),
+                    "role {role:?} declares that key, so {name} must go"
+                );
+            }
+            for name in *kept {
+                assert!(
+                    state.join(name).exists(),
+                    "role {role:?} has no opinion on {name}, so it stays"
+                );
+            }
         }
     }
 
@@ -1306,9 +1434,13 @@ mod tests {
                 .unwrap(),
             "src-topic"
         );
-        for keep in [session_state::TASKS_FILE, "pattern", "mode-override"] {
+        for keep in ["pattern", "mode-override"] {
             assert!(state.join(keep).exists(), "{keep} must be inherited");
         }
+        assert!(
+            !state.join(session_state::TASKS_FILE).exists(),
+            "a child plans its own work: the parent's list stays behind"
+        );
         // The default is a child with a head of its own: settings yes, the
         // parent's train of thought no. `--inherit` is the opt-out.
         for drop in [
@@ -1407,6 +1539,10 @@ mod tests {
         ] {
             assert!(state.join(kept).exists(), "{kept} must be inherited");
         }
+        assert!(
+            !state.join(session_state::TASKS_FILE).exists(),
+            "even `--inherit` leaves the parent's task list behind"
+        );
         assert!(
             result.message.contains("conversation included"),
             "the receipt says what it took: {}",

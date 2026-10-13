@@ -14,6 +14,10 @@
 # expanded into the child's own `.jyc/config.toml` at spawn time. It decides
 # where the child *starts*, not what it is stuck with: the child's own `/mode`,
 # `/model` and `/skill` still win over it afterwards.
+#
+# A key this file leaves out is inherited from the parent: with no `[ai]` here,
+# the reviewer starts on the parent's model. Add `[ai] model = "…"` to pin the
+# role to a model of its own.
 
 mode = "plan"
 

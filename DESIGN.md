@@ -621,8 +621,12 @@ uncommitted work needs:
 3. Grant the parent read+write access to the child's **topic_path** through the
    existing runtime grant registry (`jyc_types::access_grants`, the `/grant`
    mechanism), so both access-root resolvers in `jyc-agent/src/service/prompt.rs`
-   pick it up on the next turn with no resolver change. The state dir is not
-   granted and must not be: it is the child's own.
+   pick it up on the next turn with no resolver change. The entry also records
+   the child's **name** (`grant_subagent`), which is what
+   `spawn_handler::subagents_of` reads: the path cannot identify a child, since a
+   shared topic_path is the parent's own dir and may hold more than one child —
+   they are separate grants, and `/grant`'s own unnamed entries are access, not
+   lineage. The state dir is not granted and must not be: it is the child's own.
 4. Report the subagent list, which the system prompt also renders every turn
    (`format_subagents_section`) so the model continues an existing subagent with
    `jyc_send_to_topic` instead of spawning a duplicate.
@@ -683,7 +687,11 @@ restarted hub can be re-granted by the user's `/grant` or by a fresh spawn. The
 subagent's queue is in-memory as well: a task enqueued but not yet consumed when
 the process stops is lost. Its topic_path is its own by default and the parent's
 when it was asked to share — either way the state is the child's, and either way
-the child goes when the parent does. The registry is also keyed by the parent's
+the child goes when the parent does. `/grant`ing a child's directory again after
+a restart re-lists it only when that directory is named after the child, which is
+the shape every default spawn has and a shared one does not: a shared child that
+a restart forgot is reached by its name (the parent knows it) or replaced by a
+fresh spawn, not re-discovered from its parent's own directory. The registry is also keyed by the parent's
 **name alone**, with no channel in the key: a topic of the same name in another
 channel reads the same subagent list (shows it, counts it against the cap, and
 now closes and deletes it), which is the price of one process-wide registry

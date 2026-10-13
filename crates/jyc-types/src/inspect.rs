@@ -178,10 +178,21 @@ pub enum ChangeKind {
     Deleted,
 }
 
+/// Line counts of a file's change, straight from `git diff --numstat`.
+///
+/// Both numbers describe the same diff as the entry's `change`: the
+/// branch-side diff for a committed file, the working-tree-vs-HEAD one
+/// for a file that is only dirty.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LineStats {
+    pub insertions: u32,
+    pub deletions: u32,
+}
+
 /// A file in `TopicSummary.changed_files` / `TopicInfo.changed_files`.
 ///
 /// `uncommitted == true` iff the working tree has changes vs HEAD
-/// (`git diff --name-only HEAD`); the chat info pane renders such
+/// (`git diff --name-status HEAD`); the chat info pane renders such
 /// paths in yellow. `change` carries the branch-side status
 /// (Added / Modified / Deleted) and is `#[serde(default)]` so old
 /// payloads without the field deserialize as `Modified`.
@@ -192,6 +203,12 @@ pub struct ChangedFileEntry {
     pub uncommitted: bool,
     #[serde(default)]
     pub change: ChangeKind,
+    /// `None` when the change has no line counts to report — a binary
+    /// file (`-`/`-` in `--numstat`), or a numstat pass that failed.
+    /// `#[serde(default)]` keeps payloads from a server that predates
+    /// the field readable (the pane then renders no counts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<LineStats>,
 }
 
 /// Accumulated cost for a topic, in `currency`.

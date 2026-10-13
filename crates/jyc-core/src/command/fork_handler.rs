@@ -13,8 +13,10 @@ use crate::topic_manager::TopicManager;
 /// State files a forked topic inherits from its parent.
 ///
 /// An allow-list, not a directory walk: whatever is absent here stays in the
-/// parent. What is deliberately missing, and why, is worth knowing before
-/// adding to it:
+/// parent. The allow-list is the *settings* a child needs to be itself — the
+/// conversation and the transcript are a separate question, decided by `fresh`
+/// (see [`seed_state`]). What is deliberately missing, and why, is worth knowing
+/// before adding to it:
 ///
 /// - `agent-session.json` — the token/cost meter. The usage it counts was
 ///   billed to the parent, and a fork must not inherit a bill it did not run
@@ -29,7 +31,7 @@ use crate::topic_manager::TopicManager;
 ///   would make the fork run the parent's jobs too. Directories are skipped.
 /// - Anything else in the state dir belongs to the user, not to the framework.
 const SEED_FILES: &[&str] = &[
-    "agent-context.json",      // the running context: the conversation
+    CONVERSATION_FILE,         // the running context: the conversation
     session_state::TASKS_FILE, // the task list, so the fork continues it (#810)
     "backlog.jsonl",           // the topic's own backlog
     "pattern",                 // which agent pattern runs the topic
@@ -42,8 +44,13 @@ const SEED_FILES: &[&str] = &[
     "skills.json",
 ];
 
+/// The running conversation, as opposed to the settings around it.
+const CONVERSATION_FILE: &str = "agent-context.json";
+
 /// Chat history is one file per day, so it is matched by prefix instead of
-/// listed. A fork inherits it: the transcript is what you fork *for*.
+/// listed. Together with [`CONVERSATION_FILE`] this is what `fresh` leaves
+/// behind: a new topic can run in the parent's directory and inherit every
+/// setting without inheriting the parent's train of thought.
 const CHAT_HISTORY_PREFIX: &str = "chat_history_";
 
 /// `/fork` — branch another topic off this one.
@@ -56,7 +63,8 @@ const CHAT_HISTORY_PREFIX: &str = "chat_history_";
 /// [`TopicManager::close_topic`] relies on: given a registered state dir it
 /// deletes the state and leaves the topic dir (usually a user-owned project
 /// checkout) alone. What makes it a *fork* rather than a new topic is where it
-/// starts: this topic's context, transcript, task list and settings.
+/// starts: this topic's settings, task list — and, with `--inherit`, the
+/// conversation and transcript it is continuing.
 ///
 /// Websocket topics only, like `/pin`: on every other channel the topic name
 /// *is* the routing address, so forking one would mean inventing an address.
@@ -78,17 +86,16 @@ impl ForkCommandHandler {
         parent_state: &Path,
         agents_dir: &Path,
     ) -> Result<CommandResult> {
-        let requested = context
-            .args
-            .iter()
-            .map(|a| a.trim())
-            .find(|a| !a.is_empty());
+        let (inherit, args) = take_inherit_flag(&context.args);
+        let requested = args.iter().map(|a| a.trim()).find(|a| !a.is_empty());
         let name = match requested {
             Some(name) => name.to_string(),
             None => next_free_name(&self.topic_manager, &context.topic_name, agents_dir).await,
         };
         if let Some(reason) = invalid_name(&name) {
-            return Ok(fail(format!("/fork: {reason}. Usage: /fork [name]")));
+            return Ok(fail(format!(
+                "/fork: {reason}. Usage: /fork [--inherit] [name]"
+            )));
         }
         if name == context.topic_name {
             return Ok(fail(format!(
@@ -122,8 +129,14 @@ impl ForkCommandHandler {
         self.topic_manager
             .set_topic_path(&name, context.topic_path.clone())
             .await?;
-        let seeded =
-            seed_state(parent_state, &state_dir, &context.topic_name, "forked-from").await?;
+        let seeded = seed_state(
+            parent_state,
+            &state_dir,
+            &context.topic_name,
+            "forked-from",
+            !inherit,
+        )
+        .await?;
 
         tracing::info!(
             from = %context.topic_name,
@@ -131,16 +144,22 @@ impl ForkCommandHandler {
             workspace = %context.topic_path.display(),
             state = %state_dir.display(),
             seeded,
+            inherit,
             "Topic forked"
         );
         let message = format!(
             "✅ Forked '{}' → '{}' — it works in {} with its own state in {} ({} state file(s) \
-             inherited).\n/fork does not switch by itself — pick '{name}' in the topic list.",
+             inherited{}).\n/fork does not switch by itself — pick '{name}' in the topic list.",
             context.topic_name,
             name,
             context.topic_path.display(),
             state_dir.display(),
-            seeded
+            seeded,
+            if inherit {
+                ", conversation included"
+            } else {
+                ", conversation left behind (--inherit to copy it)"
+            }
         );
         Ok(CommandResult {
             success: true,
@@ -209,11 +228,22 @@ pub(super) fn invalid_name(name: &str) -> Option<&'static str> {
 /// new topic came from under `marker` (`forked-from` / `spawned-from`). Parent
 /// files that do not exist are simply not copied — a young topic has few of
 /// them.
+///
+/// `fresh` skips the conversation ([`CONVERSATION_FILE`]) and the transcript
+/// ([`CHAT_HISTORY_PREFIX`]): the child gets every *setting* the parent
+/// configured — pattern, mode, Task List, model/context/MCP/skill overrides —
+/// and a head of its own. This is the default for every trigger (`/spawn`,
+/// `/fork`, the `jyc_spawn_subagent` tool): inheriting a long development
+/// conversation is expensive and anchors the child to a line of reasoning
+/// nobody asked it to continue, which is exactly wrong for the common case —
+/// a reviewer or a second worker starting on a task of its own. `--inherit` /
+/// `inherit_context` opts back into the copy.
 pub(super) async fn seed_state(
     parent: &Path,
     child: &Path,
     from: &str,
     marker: &str,
+    fresh: bool,
 ) -> Result<usize> {
     let mut copied = 0;
     let mut entries = tokio::fs::read_dir(parent).await?;
@@ -225,8 +255,13 @@ pub(super) async fn seed_state(
         if !path.is_file() {
             continue;
         }
-        let inherit = SEED_FILES.contains(&file_name)
-            || (file_name.starts_with(CHAT_HISTORY_PREFIX) && file_name.ends_with(".jsonl"));
+        let transcript =
+            file_name.starts_with(CHAT_HISTORY_PREFIX) && file_name.ends_with(".jsonl");
+        let conversation = transcript || file_name == CONVERSATION_FILE;
+        if fresh && conversation {
+            continue;
+        }
+        let inherit = SEED_FILES.contains(&file_name) || transcript;
         if inherit && tokio::fs::copy(&path, child.join(file_name)).await.is_ok() {
             copied += 1;
         }
@@ -234,6 +269,24 @@ pub(super) async fn seed_state(
     tokio::fs::write(child.join(marker), from).await?;
     Ok(copied)
 }
+
+/// Split the `--inherit` flag out of a command's arguments.
+///
+/// The flag is not a name: `/fork --inherit` must take its topic name from the
+/// next argument, and `/spawn --inherit ../dir` from the one after. Both
+/// callers strip it here rather than teaching each positional parser about it.
+pub(super) fn take_inherit_flag(args: &[String]) -> (bool, Vec<String>) {
+    let inherit = args.iter().any(|a| a.trim() == INHERIT_FLAG);
+    let rest = args
+        .iter()
+        .filter(|a| a.trim() != INHERIT_FLAG)
+        .cloned()
+        .collect();
+    (inherit, rest)
+}
+
+/// The flag that opts out of the default: see [`seed_state`].
+pub(super) const INHERIT_FLAG: &str = "--inherit";
 
 /// A refused command: reported to the user, never an `error` (nothing broke).
 /// Shared with `/spawn`, which refuses the same way.
@@ -388,7 +441,9 @@ mod tests {
     }
 
     /// The happy path: the fork works where its parent works, keeps private
-    /// state, and inherits the inheritable files and nothing else.
+    /// state, and inherits the inheritable *settings* and nothing else — the
+    /// conversation and its transcript stay with the parent unless `--inherit`
+    /// asks for them.
     #[tokio::test]
     async fn fork_shares_the_parent_workspace_with_private_state() {
         let (_ptmp, topic_dir) = parent_topic(&[]).await;
@@ -430,7 +485,7 @@ mod tests {
                 .unwrap(),
             "src-topic"
         );
-        for keep in ["agent-context.json", session_state::TASKS_FILE, "pattern"] {
+        for keep in [session_state::TASKS_FILE, "pattern"] {
             assert!(child.join(keep).exists(), "{keep} must be inherited");
         }
         let mut days = 0;
@@ -444,8 +499,9 @@ mod tests {
                 days += 1;
             }
         }
-        assert_eq!(days, 2, "both days of the transcript come along");
+        assert_eq!(days, 0, "a fresh fork starts with no transcript of its own");
         for drop in [
+            "agent-context.json",
             "agent-session.json",
             "activity.jsonl",
             "wire-payload.jsonl",
@@ -469,6 +525,48 @@ mod tests {
         // breadcrumb assert above are also exactly what the pre-fix placement —
         // a fresh nested dir — failed on.)
         jyc_types::state_dir::unregister("sibling");
+    }
+
+    /// `--inherit` copies exactly what the default leaves behind — the
+    /// conversation and the transcript. It is a flag rather than a name: this
+    /// fork names no topic and still gets the automatic one.
+    #[tokio::test]
+    async fn fork_inherit_copies_the_conversation_and_transcript() {
+        let (_ptmp, topic_dir) = parent_topic(&[]).await;
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_dir = workspace.path().join("agents");
+
+        let handler = ForkCommandHandler::new(tm.clone());
+        let ctx = context("src-topic", &topic_dir, "websocket", &["--inherit"]);
+        let result = handler
+            .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
+            .await
+            .unwrap();
+
+        assert!(result.success, "{}", result.message);
+        assert!(result.message.contains("src-topic-2"), "{}", result.message);
+        assert!(
+            result.message.contains("conversation included"),
+            "{}",
+            result.message
+        );
+        let child = resolve_state_dir("src-topic-2", &topic_dir);
+        assert!(child.join("agent-context.json").exists());
+        let mut days = 0;
+        let mut entries = tokio::fs::read_dir(&child).await.unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(CHAT_HISTORY_PREFIX)
+            {
+                days += 1;
+            }
+        }
+        assert_eq!(days, 2, "both days of the transcript come along");
+
+        jyc_types::state_dir::unregister("src-topic-2");
     }
 
     /// No argument means an automatic name, and it must step past siblings

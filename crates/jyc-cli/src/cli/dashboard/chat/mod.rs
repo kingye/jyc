@@ -1695,9 +1695,10 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         // as `Vec<ChangedFileEntry>`. The whole list is rendered (no
         // cap) — the parent pane scrolls when the list overflows. Each
         // path is plain when only committed on the branch, yellow when
-        // currently dirty in the working tree. The section is skipped
-        // entirely when the field is `None` (not a git repo, both
-        // `git diff` invocations failed). Empty `Some(vec![])` is shown
+        // currently dirty in the working tree, and followed by that same
+        // diff's line counts in dim when git reported them. The section
+        // is skipped entirely when the field is `None` (not a git repo,
+        // both `git diff` invocations failed). Empty `Some(vec![])` is shown
         // as `Files: (none)` so the user knows the field resolved to
         // "no changes".
         if let Some(files) = t.changed_files.as_deref() {
@@ -1727,10 +1728,16 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
                     } else {
                         Style::default()
                     };
-                    out.push(Line::from(Span::styled(
-                        format!("{}{}", prefix, entry.path),
-                        style,
-                    )));
+                    let mut spans = vec![Span::styled(format!("{}{}", prefix, entry.path), style)];
+                    // Line counts of that same diff, dim so the path
+                    // stays the loud part. Absent for a binary file.
+                    if let Some(lines) = entry.lines {
+                        spans.push(Span::styled(
+                            format!(" +{} -{}", lines.insertions, lines.deletions),
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                    out.push(Line::from(spans));
                 }
             }
         }

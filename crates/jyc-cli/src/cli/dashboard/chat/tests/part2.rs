@@ -2404,18 +2404,20 @@ fn deep_nesting_freezes_the_indent() {
 }
 
 // A cycle's back-edge must not leave the sibling drawn before it as a non-last
-// child with nothing under it: kids the walk has already shown are dropped
-// before the last one is picked, not skipped inside the loop.
+// child with nothing under it. The fixture order is what makes this a test of
+// the filter rather than of the shape: the walk starts at the lowest flat
+// index, so `zz` has to come first for `aa`'s kids to be `[a, seen zz]` — with
+// the two swapped, `last` comes out the same either way and a revert passes.
 #[test]
 fn a_cycle_back_edge_leaves_no_dangling_branch_mark() {
-    let mut aa = explorer_topic("aa");
-    aa.parent = Some("zz".to_string());
     let mut zz = explorer_topic("zz");
     zz.parent = Some("aa".to_string());
+    let mut aa = explorer_topic("aa");
+    aa.parent = Some("zz".to_string());
     let mut a = explorer_topic("a");
     a.parent = Some("aa".to_string());
     let s = jyc_types::InspectOverview {
-        topics: vec![aa, zz, a],
+        topics: vec![zz, aa, a],
         ..Default::default()
     };
 
@@ -2426,7 +2428,7 @@ fn a_cycle_back_edge_leaves_no_dangling_branch_mark() {
         .collect();
     assert_eq!(
         drawn,
-        [("aa", ""), ("a", "├─ "), ("zz", "└─ ")],
+        [("zz", ""), ("aa", "└─ "), ("a", "   └─ ")],
         "the last sibling still carries the corner mark"
     );
 }

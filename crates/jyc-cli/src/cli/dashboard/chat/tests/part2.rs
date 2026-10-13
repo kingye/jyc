@@ -560,6 +560,7 @@ fn explorer_topic(name: &str) -> jyc_types::TopicSummary {
 fn files_section_colors_uncommitted_paths_yellow() {
     use jyc_types::ChangeKind;
     use jyc_types::ChangedFileEntry;
+    use jyc_types::LineStats;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -580,36 +581,47 @@ fn files_section_colors_uncommitted_paths_yellow() {
             mode: None,
             branch: None,
             // One of each kind — sorted alphabetically on render.
-            // added.rs       Added      clean
-            // deleted.rs     Deleted    clean
-            // dirty_add.rs   Added      dirty (yellow)
-            // dirty_mod.rs   Modified   dirty (yellow)
-            // modified.rs    Modified   clean
+            // added.rs       Added      clean    +7 -0
+            // deleted.rs     Deleted    clean    (binary: no counts)
+            // dirty_add.rs   Added      dirty (yellow) +2 -0
+            // dirty_mod.rs   Modified   dirty (yellow) (no counts)
+            // modified.rs    Modified   clean    (no counts)
             changed_files: Some(vec![
                 ChangedFileEntry {
                     path: "modified.rs".into(),
                     uncommitted: false,
                     change: ChangeKind::Modified,
+                    lines: None,
                 },
                 ChangedFileEntry {
                     path: "added.rs".into(),
                     uncommitted: false,
                     change: ChangeKind::Added,
+                    lines: Some(LineStats {
+                        insertions: 7,
+                        deletions: 0,
+                    }),
                 },
                 ChangedFileEntry {
                     path: "deleted.rs".into(),
                     uncommitted: false,
                     change: ChangeKind::Deleted,
+                    lines: None,
                 },
                 ChangedFileEntry {
                     path: "dirty_add.rs".into(),
                     uncommitted: true,
                     change: ChangeKind::Added,
+                    lines: Some(LineStats {
+                        insertions: 2,
+                        deletions: 0,
+                    }),
                 },
                 ChangedFileEntry {
                     path: "dirty_mod.rs".into(),
                     uncommitted: true,
                     change: ChangeKind::Modified,
+                    lines: None,
                 },
             ]),
             context_input_tokens: None,
@@ -734,6 +746,38 @@ fn files_section_colors_uncommitted_paths_yellow() {
         '+',
         "uncommitted Added still uses '+' prefix"
     );
+
+    // Counts ride at the end of a row when git reported them, and are
+    // absent (rather than a made-up `+0 -0`) when it did not.
+    let row_text = |needle: &str| -> Option<String> {
+        for y in 0..buffer.area.height {
+            let row: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect();
+            if row.contains(needle) {
+                return Some(row);
+            }
+        }
+        None
+    };
+    assert!(
+        row_text("dirty_add.rs")
+            .expect("dirty_add.rs row")
+            .contains("+ dirty_add.rs +2 -0"),
+        "a dirty Added row carries its counts before the commit"
+    );
+    assert!(
+        row_text("added.rs")
+            .expect("added.rs row")
+            .contains("+ added.rs +7 -0"),
+        "a clean Added row carries its counts"
+    );
+    assert!(
+        !row_text("modified.rs")
+            .expect("modified.rs row")
+            .contains('-'),
+        "a row git gave no counts for renders without them"
+    );
 }
 
 /// Regression: when `info_scroll` is set past the pane height, the
@@ -768,16 +812,19 @@ fn info_scroll_is_clamped_after_render() {
                     path: "a.rs".into(),
                     uncommitted: false,
                     change: jyc_types::ChangeKind::Modified,
+                    lines: None,
                 },
                 ChangedFileEntry {
                     path: "b.rs".into(),
                     uncommitted: false,
                     change: jyc_types::ChangeKind::Modified,
+                    lines: None,
                 },
                 ChangedFileEntry {
                     path: "c.rs".into(),
                     uncommitted: false,
                     change: jyc_types::ChangeKind::Modified,
+                    lines: None,
                 },
             ]),
             context_input_tokens: None,
@@ -1612,6 +1659,7 @@ fn info_pane_status_block_stays_when_topic_info_scrolls() {
                     path: format!("file_{i:02}.rs"),
                     uncommitted: false,
                     change: ChangeKind::Modified,
+                    lines: None,
                 })
                 .collect(),
         );
@@ -1907,6 +1955,7 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
             path: filler.to_string(),
             uncommitted: false,
             change: jyc_types::ChangeKind::Modified,
+            lines: None,
         })
         .collect();
     // Unique to the final entry, and narrow enough to stay on one row, so the
@@ -1915,6 +1964,7 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
         path: "crates/jyc-cli/src/cli/dashboard/chat/LASTENTRY_probe.rs".to_string(),
         uncommitted: false,
         change: jyc_types::ChangeKind::Added,
+        lines: None,
     });
     let mut topic = explorer_topic("t");
     topic.changed_files = Some(files);

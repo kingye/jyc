@@ -127,9 +127,14 @@ fn format_topic_info(t: &TopicInfo) -> String {
                     ChangeKind::Modified => "  ",
                 };
                 // The pane paints uncommitted entries yellow; plain text
-                // gets a trailing `*` marker instead.
+                // gets a trailing `*` marker instead. Counts sit before
+                // that marker so the marker still ends the line.
                 let marker = if f.uncommitted { " *" } else { "" };
-                lines.push(format!("{prefix}{}{marker}", f.path));
+                let counts = match f.lines {
+                    Some(lines) => format!(" +{} -{}", lines.insertions, lines.deletions),
+                    None => String::new(),
+                };
+                lines.push(format!("{prefix}{}{counts}{marker}", f.path));
             }
         }
     }
@@ -140,7 +145,7 @@ fn format_topic_info(t: &TopicInfo) -> String {
 mod tests {
     use super::*;
     use jyc_types::task::{TaskItem, TaskList, TaskStatus};
-    use jyc_types::{ChangedFileEntry, TopicCost, TopicStatus};
+    use jyc_types::{ChangedFileEntry, LineStats, TopicCost, TopicStatus};
     use std::path::PathBuf;
 
     /// A task list with sequential ids, the way `task_create` assigns them.
@@ -191,11 +196,17 @@ mod tests {
                     path: "src/new.rs".into(),
                     uncommitted: false,
                     change: ChangeKind::Added,
+                    lines: Some(LineStats {
+                        insertions: 12,
+                        deletions: 0,
+                    }),
                 },
                 ChangedFileEntry {
                     path: "src/edited.rs".into(),
                     uncommitted: true,
                     change: ChangeKind::Modified,
+                    // Binary: git reports no counts.
+                    lines: None,
                 },
             ]),
             cost: Some(TopicCost {
@@ -230,7 +241,7 @@ Tasks (1/3):
   [~] 2. wire the pane
   [ ] 3. ship it
 Files (2):
-+ src/new.rs
++ src/new.rs +12 -0
   src/edited.rs *";
         assert_eq!(text, expected);
     }

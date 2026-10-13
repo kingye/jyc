@@ -1425,9 +1425,15 @@ fn children_index(s: &InspectOverview) -> HashMap<(&str, &str), Vec<usize>> {
     index
 }
 
+/// Columns of indent a nesting level may add before the levels stop being
+/// drawn. The explorer pane is 20% wide — about fifteen columns — so past this
+/// the indent collapses to a single `… ` marker and the name keeps its room.
+const MAX_INDENT_COLS: usize = 3;
+
 /// Append `topic`'s descendants to `rows`, depth-first, each indented under
-/// its parent. `seen` stops a breadcrumb cycle — only hand-edited state can
-/// produce one — from recursing forever.
+/// its parent — up to [`MAX_INDENT_COLS`] columns of it, past which the indent
+/// stops growing so the names stay readable. `seen` stops a breadcrumb cycle —
+/// only hand-edited state can produce one — from recursing forever.
 fn push_subtree(
     rows: &mut Vec<TreeRow>,
     s: &InspectOverview,
@@ -1452,7 +1458,12 @@ fn push_subtree(
         let mut next = String::with_capacity(child_prefix.len() + 3);
         next.push_str(child_prefix);
         next.push_str(if last { "   " } else { "│  " });
-        push_subtree(rows, s, index, &s.topics[kid], &next, seen);
+        let next = if next.chars().count() > MAX_INDENT_COLS {
+            "… "
+        } else {
+            next.as_str()
+        };
+        push_subtree(rows, s, index, &s.topics[kid], next, seen);
     }
 }
 
@@ -1462,24 +1473,53 @@ fn push_subtree(
 /// no topic disappears from the pane.
 fn explorer_rows(s: &InspectOverview) -> Vec<TreeRow> {
     let index = children_index(s);
+    let listed: HashSet<(&str, &str)> = s
+        .topics
+        .iter()
+        .map(|t| (t.name.as_str(), t.channel.as_str()))
+        .collect();
     let mut rows = Vec::with_capacity(s.topics.len());
     let mut seen = HashSet::new();
     for (i, t) in s.topics.iter().enumerate() {
-        let nested = t
-            .parent
+        // Nesting turns on the parent being *listed* — never on the index key,
+        // which holds a topic the moment it names a parent, so asking about it
+        // would read as "has a parent" and hide every orphan instead of
+        // promoting it to a root.
+        if t.parent
             .as_deref()
-            .is_some_and(|p| index.contains_key(&(p, t.channel.as_str())));
-        if nested {
+            .is_some_and(|p| listed.contains(&(p, t.channel.as_str())))
+        {
             continue;
         }
-        rows.push(TreeRow {
-            topic: i,
-            prefix: String::new(),
-        });
-        seen.insert(i);
-        push_subtree(&mut rows, s, &index, t, "", &mut seen);
+        push_root(&mut rows, s, &index, i, &mut seen);
+    }
+    // A breadcrumb cycle (hand-edited state only) has no root to start from,
+    // so the walk above leaves its members unreached — and that is the only
+    // case `seen` could not have caught by itself. Anything still unvisited
+    // belongs in the pane too rather than blanking it.
+    for i in 0..s.topics.len() {
+        push_root(&mut rows, s, &index, i, &mut seen);
     }
     rows
+}
+
+/// Push `i` as a root row, then its subtree. A topic the walk has already
+/// reached is left alone, so a second call is a no-op.
+fn push_root(
+    rows: &mut Vec<TreeRow>,
+    s: &InspectOverview,
+    index: &HashMap<(&str, &str), Vec<usize>>,
+    i: usize,
+    seen: &mut HashSet<usize>,
+) {
+    if !seen.insert(i) {
+        return;
+    }
+    rows.push(TreeRow {
+        topic: i,
+        prefix: String::new(),
+    });
+    push_subtree(rows, s, index, &s.topics[i], "", seen);
 }
 
 /// The info pane's rows for the topic `root`: its descendants as a tree, the
@@ -1488,6 +1528,15 @@ fn subagent_tree(s: &InspectOverview, root: &jyc_types::TopicSummary) -> Vec<Tre
     let index = children_index(s);
     let mut rows = Vec::new();
     let mut seen = HashSet::new();
+    // The root draws no row of its own, but a breadcrumb cycle leading back to
+    // it must stop here rather than list it as its own descendant.
+    if let Some(i) = s
+        .topics
+        .iter()
+        .position(|t| t.name == root.name && t.channel == root.channel)
+    {
+        seen.insert(i);
+    }
     push_subtree(&mut rows, s, &index, root, "", &mut seen);
     rows
 }

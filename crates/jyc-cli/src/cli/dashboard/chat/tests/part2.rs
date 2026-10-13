@@ -2265,6 +2265,142 @@ fn explorer_rows_nest_subagents_under_their_parent() {
     assert_eq!(row_of(&rows, &s, "nope", "test"), None);
 }
 
+// A breadcrumb cycle — hand-edited state only — has no root for the walk to
+// start from, so its members are emitted as the leftovers of that walk. They
+// must not blank the pane, and `seen` is what stops the recursion the row
+// starts from running forever.
+#[test]
+fn explorer_rows_keep_a_breadcrumb_cycle_visible() {
+    let mut a = explorer_topic("a");
+    a.parent = Some("b".to_string());
+    let mut b = explorer_topic("b");
+    b.parent = Some("a".to_string());
+    let s = jyc_types::InspectOverview {
+        topics: vec![a, b],
+        ..Default::default()
+    };
+
+    let rows = explorer_rows(&s);
+    let names: Vec<&str> = rows
+        .iter()
+        .map(|r| s.topics[r.topic].name.as_str())
+        .collect();
+    assert_eq!(names, ["a", "b"], "both members stay listed, once each");
+}
+
+// The explorer's selection lives in row space. A child sorting before its
+// parent is where row space and the overview's flat list disagree, so this is
+// what pins `explorer_open_selected` — and the clamp in `explorer_move` — to
+// the tree rows rather than to `state.topics`.
+#[test]
+fn explorer_selection_follows_the_tree_row_not_the_flat_index() {
+    let mut child = explorer_topic("b");
+    child.parent = Some("z".to_string());
+    let s = jyc_types::InspectOverview {
+        // Flat order: the child `b` first, then its parent `z`.
+        topics: vec![child, explorer_topic("z")],
+        ..Default::default()
+    };
+
+    let rows = explorer_rows(&s);
+    let names: Vec<&str> = rows
+        .iter()
+        .map(|r| s.topics[r.topic].name.as_str())
+        .collect();
+    assert_eq!(names, ["z", "b"], "the parent comes first in the tree");
+    assert_eq!(row_of(&rows, &s, "b", "test"), Some(1));
+
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.open_addr = Some("test-addr".to_string());
+    app.chat.token = None;
+    app.state = Some(s);
+    app.chat.explorer_selected = 0;
+
+    explorer_open_selected(&mut app);
+
+    assert_eq!(app.chat.topic.as_deref(), Some("z"), "row 0 is the parent");
+    assert_eq!(
+        app.pending_hydrate.as_ref(),
+        Some(&("test".to_string(), "z".to_string()))
+    );
+}
+
+// The pane draws the tree: a nested row carries its branch prefix before the
+// status dot, so the child reads as sitting under its parent rather than as
+// another top-level topic.
+#[test]
+fn explorer_renders_a_nested_row_indented() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.explorer_visible = true;
+    app.chat.topic = Some("a".to_string());
+    app.chat.channel = Some("test".to_string());
+    let mut child = explorer_topic("b");
+    child.parent = Some("a".to_string());
+    app.state = Some(jyc_types::InspectOverview {
+        topics: vec![explorer_topic("a"), child],
+        ..Default::default()
+    });
+
+    let (w, h) = (80, 10);
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("terminal");
+    terminal
+        .draw(|f| ui_chat_mode(f, f.area(), &mut app))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let rows: Vec<String> = (0..h)
+        .map(|y| {
+            (0..w)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect()
+        })
+        .collect();
+    let pane = rows.join("\n");
+
+    assert!(
+        rows.iter().any(|r| r.contains("└─ ● b")),
+        "the child is drawn indented under its parent:\n{pane}"
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("● a")),
+        "the parent is still drawn:\n{pane}"
+    );
+}
+
+// Past the indent cap the levels collapse into one `… ` marker: the explorer
+// pane is 20% wide — about fifteen columns — so a column per nesting level
+// would soon leave a deep name nothing to print in.
+#[test]
+fn deep_nesting_collapses_the_indent() {
+    let mut topics = vec![explorer_topic("r")];
+    for i in 0..4usize {
+        let mut t = explorer_topic(&format!("n{i}"));
+        t.parent = Some(if i == 0 {
+            "r".to_string()
+        } else {
+            format!("n{}", i - 1)
+        });
+        topics.push(t);
+    }
+    let s = jyc_types::InspectOverview {
+        topics,
+        ..Default::default()
+    };
+
+    let rows = explorer_rows(&s);
+    let prefixes: Vec<&str> = rows.iter().map(|r| r.prefix.as_str()).collect();
+    assert_eq!(
+        prefixes,
+        ["", "└─ ", "   └─ ", "… └─ ", "… └─ "],
+        "the indent stops growing"
+    );
+}
+
 // The info pane's tree holds a topic's descendants only (the pane already
 // names the topic itself) and closes the last branch of each level with `└─ `,
 // so the sibling after a nested child lines up under its parent.

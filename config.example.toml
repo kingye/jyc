@@ -1378,7 +1378,9 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #
 #   1. `[subagents.<type>]` below (this file), or
 #   2. `<config dir>/subagents/<type>/config.toml` — an installed preset, the
-#      same "one directory per entry" shape as `skills/` and `templates/`.
+#      same "one directory per entry" shape as `skills/` and `templates/`. Only
+#      the config dir is scanned: unlike skills, a type is not layered, so
+#      `{data dir}/subagents/` is not a source.
 #
 # The second form is a plain topic config (the L3 shape above, `mode` included),
 # so a type can be copied straight into a topic's `.jyc/config.toml` and back.
@@ -1391,25 +1393,31 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # parent's runtime overrides are dropped when a type is applied (they outrank a
 # topic config in every chain, so inheriting them would silently undo the role).
 #
-# Example: a reviewer that can read but not change anything.
+# Example: a reviewer that can read but not change anything. This is the role
+# the jyc repo ships at `subagents/review/config.toml` (install it with
+# `cp -r subagents/review <config dir>/subagents/`; see the `forked-review`
+# skill). `write` and `edit` are gone; `bash` is kept because a review of
+# uncommitted work needs `git status` and `git diff`, and there is no read-only
+# shell — plan mode and the instructions below are what restrain it.
 #
 # [subagents.review]
 # mode = "plan"
-# skills = ["pr-review", "ponytail-review"]
+# skills = ["pr-review", "ponytail-review", "coding-principles", "ponytail"]
 # disabled_skills = ["forked-review"]
-# disabled_tools = ["write", "edit", "bash", "jyc_spawn_subagent"]
+# disabled_tools = ["write", "edit", "jyc_spawn_subagent"]
 # instructions = """
 # You are the reviewer for this delegation: read, verify, report. Change no file.
 # """
 #
-# The same type as an installed preset:
+# The same type as an installed preset — this is the file the jyc repo ships
+# (`subagents/review/config.toml`), which is the whole of it:
 #
-#   ~/.config/jyc/subagents/review/config.toml
+#   <config dir>/subagents/review/config.toml
 #
 #   mode = "plan"
-#   skills = ["pr-review", "ponytail-review"]
+#   skills = ["pr-review", "ponytail-review", "coding-principles", "ponytail"]
 #   disabled_skills = ["forked-review"]
-#   disabled_tools = ["write", "edit", "bash", "jyc_spawn_subagent"]
-#   instructions = "You are the reviewer for this delegation: read, verify, report. Change no file."
+#   disabled_tools = ["write", "edit", "jyc_spawn_subagent"]
+#   instructions = "…"   # report-only standing orders, see the file itself
 
 

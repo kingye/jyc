@@ -473,7 +473,7 @@ keeps its own state dir.
 | Pipe topic (dynamic) | `<agents dir>/<agent>/<topic>/` | `<topic_path>/.jyc`, registered at activation |
 | Forked topic (`/fork`) | the **parent's** topic dir (shared workspace) | `<agents dir>/<name>/.jyc` |
 | Spawned topic (`/spawn`) | a fresh `<agents dir>/<name>/`, or any dir the path names outside the source topic's own dir (a non-empty checkout included — its files are not touched; nesting is refused) | `<agents dir>/<name>/.jyc` — located by name, never `<topic_path>/.jyc` |
-| Subagent (`jyc_spawn_subagent`) | the same shape a fresh-name `/spawn` gets — `<agents dir>/<name>/` with the parent's state seeded into it — or, with `share_topic_path`, the **parent's** dir (the `/fork` shape: that is what lets a reviewer read uncommitted work) | `<agents dir>/<name>/.jyc` — located by name, never in the shared dir |
+| Subagent (`jyc_spawn_subagent`) | the same shape a fresh-name `/spawn` gets — `<agents dir>/<name>/` with the parent's state seeded into it — or, with `share_topic_path`, the **parent's** dir (the `/fork` shape: that is what lets a reviewer read the work as it is) | `<agents dir>/<name>/.jyc` — located by name, never in the shared dir |
 | Legacy channel workspace topic | `<data dir>/<channel>/workspace/<topic>/` | `<topic_path>/.jyc` — no live writer; it is dormant pre-pipe data, and its migration is a separate change |
 
 Registrations happen at four points: startup restore (config pins adopt,
@@ -597,7 +597,7 @@ child's *starting point* are the caller's to decide, and both default to the
 more independent choice: `inherit_context` (or `/spawn --inherit`) copies the
 conversation and transcript as well, and `share_topic_path` (tool only) puts the
 child in the parent's directory — `/fork`'s shape, which is what a reviewer of
-uncommitted work needs:
+the work as it is needs:
 
 1. Resolve the name and topic_path (`/spawn` from its arguments — a name, a path,
    or both, told apart by shape — the tool from a single name under

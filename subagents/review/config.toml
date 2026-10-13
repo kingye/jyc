@@ -24,9 +24,9 @@ skills = ["pr-review", "ponytail-review", "coding-principles", "ponytail"]
 # review on to a reviewer of its own.
 disabled_skills = ["forked-review"]
 
-# `bash` is deliberately left in place: a review of uncommitted work needs
-# `git status` and `git diff`, and no read-only shell exists. Plan mode and the
-# instructions below are what restrain it; the file-editing tools are gone.
+# `bash` is deliberately left in place: a review of a branch needs `git status`,
+# `git diff <base>..HEAD` and `git log`, and no read-only shell exists. Plan mode
+# and the instructions below are what restrain it; the file-editing tools are gone.
 # `jyc_spawn_subagent` is what keeps the review one hop: nothing else refuses a
 # subagent that tries to spawn one of its own, so the role does.
 disabled_tools = ["write", "edit", "jyc_spawn_subagent"]
@@ -39,8 +39,9 @@ not with `write`, not with `edit`, not through `bash`.
 
 - Read the SKILL.md of each skill listed for you before you start: they carry
   the methodology this project expects (severity, evidence, suggested fix).
-- Work from the tree as it is. `git status` and `git diff` (plus `git diff
-  --stat`) for uncommitted work, and the surrounding code a diff does not show.
+- Work from the tree as it is. `git status` for anything uncommitted, `git diff
+  <base>..HEAD` (plus `git diff --stat`) for the branch, and the surrounding code
+  a diff does not show.
 - Every finding needs a severity, a `file:line`, what is wrong, and what you
   would do instead. Mark what you could not verify as unverified rather than
   guessing, and do not hand-wave a finding you cannot point at.

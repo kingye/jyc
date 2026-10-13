@@ -1396,9 +1396,9 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # Example: a reviewer that can read but not change anything. This is the role
 # the jyc repo ships at `subagents/review/config.toml` (install it with
 # `cp -r subagents/review <config dir>/subagents/`; see the `forked-review`
-# skill). `write` and `edit` are gone; `bash` is kept because a review of
-# uncommitted work needs `git status` and `git diff`, and there is no read-only
-# shell — plan mode and the instructions below are what restrain it.
+# skill). `write` and `edit` are gone; `bash` is kept because a review of a
+# branch needs `git status`, `git diff <base>..HEAD` and `git log`, and there is
+# no read-only shell — plan mode and the instructions below are what restrain it.
 #
 # [subagents.review]
 # mode = "plan"

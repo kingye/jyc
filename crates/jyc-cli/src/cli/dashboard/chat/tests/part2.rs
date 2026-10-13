@@ -2292,8 +2292,12 @@ fn explorer_rows_keep_a_breadcrumb_cycle_visible() {
 // parent is where row space and the overview's flat list disagree, so this is
 // what pins `explorer_open_selected` — and the clamp in `explorer_move` — to
 // the tree rows rather than to `state.topics`.
-#[test]
-fn explorer_selection_follows_the_tree_row_not_the_flat_index() {
+//
+// `#[tokio::test]`: opening a topic goes through `Chat::open`, which spawns the
+// websocket client task — the sync `#[test]` above panics with "there is no
+// reactor running" the moment `open_addr` is set.
+#[tokio::test]
+async fn explorer_selection_follows_the_tree_row_not_the_flat_index() {
     let mut child = explorer_topic("b");
     child.parent = Some("z".to_string());
     let s = jyc_types::InspectOverview {

@@ -1261,6 +1261,7 @@ mode = "agent"
             Some("sh-plan-9-review"),
             false,
             true,
+            None,
             &agents_dir,
         )
         .await

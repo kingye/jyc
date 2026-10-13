@@ -1630,6 +1630,7 @@ mod skills {
             commands: Vec::new(),
             hooks: Vec::new(),
             agents: std::collections::HashMap::new(),
+            subagents: std::collections::HashMap::new(),
         };
         JycAgentService::new(
             Arc::new(ArcSwap::from_pointee(app)),

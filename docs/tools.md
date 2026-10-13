@@ -367,7 +367,7 @@ the optional `scopes` / `redirect_uri` fields.
 
 ## Tool Exclusion
 
-Tools can be disabled at channel and pattern levels.
+Tools can be disabled at channel, pattern and topic levels.
 
 ### Configuration
 
@@ -392,13 +392,15 @@ disabled_mcps = []
 | `disabled_tools` | Channel / Pattern | List of tool names to remove. Matches built-in tools, MCP bridge tools, and external MCP tools by registration name. **External MCP tools can also be targeted as `server_name/tool_name` for precise exclusion when multiple servers provide the same tool name.** |
 | `disabled_mcps` | Channel / Pattern | List of MCP server names to skip during tool loading. **Renamed from `disabled_mcp_servers`; the old key is still accepted.** |
 | `disabled_builtin_tools` | Pattern only | **Backward-compatible alias.** Merged into `disabled_tools` for built-in tool names. |
+| `disabled_tools` | Topic (L3) | Same list in the topic's own `.jyc/config.toml` — where a subagent type's `disabled_tools` lands, so a spawned role can be structurally read-only (e.g. `["write", "edit", "bash", "jyc_spawn_subagent"]`) instead of read-only by instruction. |
 
 ### Merge Behavior
 
-Channel-level and pattern-level exclusions are **additive** (merged, not overriding):
+Channel-level, pattern-level and topic-level exclusions are **additive** (merged,
+not overriding):
 
 ```
-Effective disabled_tools = channel.disabled_tools ∪ pattern.disabled_tools
+Effective disabled_tools = channel.disabled_tools ∪ pattern.disabled_tools ∪ topic.disabled_tools
 Effective disabled_mcps = channel.disabled_mcps ∪ pattern.disabled_mcps
 ```
 

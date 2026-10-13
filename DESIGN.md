@@ -417,7 +417,7 @@ these names loosely, so they are fixed here.
 
 | Term | What it is | Where it is | In code |
 |---|---|---|---|
-| **config dir** | The user-edited input root | `$XDG_CONFIG_HOME/jyc` or `~/.config/jyc`; Windows `%APPDATA%\jyc`. Holds `config.toml`, `skills/`, `templates/`, `hooks`, `scripts/` | `jyc_utils::paths::config_dir()` |
+| **config dir** | The user-edited input root | `$XDG_CONFIG_HOME/jyc` or `~/.config/jyc`; Windows `%APPDATA%\jyc`. Holds `config.toml`, `skills/`, `templates/`, `subagents/`, `hooks`, `scripts/` | `jyc_utils::paths::config_dir()` |
 | **data dir** | The generated-state root — the instance root | `$XDG_DATA_HOME/jyc` or `~/.local/share/jyc`; Windows `%LOCALAPPDATA%\jyc`. The default `--data-dir` | `jyc_utils::paths::data_dir()` |
 | **channel** | The origin/destination of messages (email, github, gitee, feishu, websocket, …). A channel has **no topic directory**: topics never live under a channel | `[channels.<name>]` in the config; binds a pipe (`agent` + `topic` template) or is a hub channel | — |
 | **channels dir** | The root of every channel's own runtime state | `<data dir>/channels` | `jyc_utils::paths::channels_dir()` |
@@ -426,6 +426,7 @@ these names loosely, so they are fixed here.
 | **agent dir** | One agent's home: its default topic's files while unpinned, or just the `.jyc` when that topic is pinned | `<agents dir>/<agent>/` | — |
 | **default topic** | The one topic every agent has, named after the agent — a message sent to the agent lands on it | `topic_path` is the agent dir unless pinned; state dir `<agents dir>/<agent>/.jyc` | 1:1 topics in `TopicManager` |
 | **topic** (non-default) | A topic a pipe creates from its rule's template (`plan-42`, `review-7`, …) | `topic_path` `<agents dir>/<agent>/<topic>/`; state dir `<agents dir>/<agent>/<topic>/.jyc` | router dynamic topics |
+| **subagent type** | A named **role** a spawn hands its child: a topic config selected by name (`type = "review"`), defined by `[subagents.<type>]` in the config or by `<config dir>/subagents/<type>/config.toml`, and expanded into the child's own `.jyc/config.toml` at spawn time. Not a topic, not a channel, not a pattern: nothing routes to it, and nothing about it is inherited by anything else | `[subagents.<type>]`; `<config dir>/subagents/<type>/config.toml` | `jyc_types::load_subagent_type`, `spawn_handler::{resolve_subagent_type, SubagentType}` |
 | **subagent** | An agent `/spawn` (or `jyc_spawn_subagent`) created: an agent with its own default topic, not a second kind of topic | `<agents dir>/<subagent>/`, its state dir as any default topic's — or the parent's dir when the tool was asked to share it | `spawn_handler` |
 | **topic_path** | A topic's **working directory**: where the agent runs, what `read`/`write`/`bash` see, and what a parent is granted when it spawns a subagent. **Any** directory — a pin, a checkout, a `/spawn <path>` child — not necessarily under the agents dir | `<agents dir>/<agent>/` or `<agents dir>/<agent>/<topic>/` by default | `TopicManager::topic_path(name)` |
 | **state dir** | A topic's `.jyc`: transcript, `agent-context.json`, `tasks`, `pattern`, `mode-override`, the lineage `spawned-from`, … — always under the agents dir, located by **topic name**, never inside a pinned `topic_path` | see the table below | `jyc_types::state_dir::resolve_state_dir(name, topic_dir)` |
@@ -1084,17 +1085,21 @@ Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) 
 
 ### The Three Levels
 
-- **L1 (global)**: `<config dir>/` — `config.toml`, `skills/`, `templates/`
+- **L1 (global)**: `<config dir>/` — `config.toml`, `skills/`, `templates/`, `subagents/<type>/config.toml` (subagent types; see Terminology)
 - **L2 (data dir / data root)**: `--data-dir` if given, else the data dir — `config.toml` (via `--config`), `skills/`, `templates/`, plus all generated state
-- **L3 (topic)**: `<topic_path>/.jyc/` — `config.toml` (restricted `[agent]` subset), `skills/`, `templates/`, sessions, chat history, task list (`.jyc/tasks.json`)
+- **L3 (topic)**: `<topic_path>/.jyc/` — `config.toml` (the topic's own overrides, see the table below), `skills/`, `templates/`, sessions, chat history, task list (`.jyc/tasks.json`)
 
 ### Merge & Lookup Rules
 
 | Asset | Rule |
 |---|---|
 | `config.toml` (L1/L2) | Deep merge at `toml::Value` level (`merge_toml`): tables merge recursively, arrays/scalars replaced by L2. `${VAR}` expansion after merge. Applies to startup and hot-reload (`load_config_layered`). |
-| `config.toml` (L3) | Restricted `[agent]` subset (`TopicConfig`): `model`, `plan_model`, `build_model`, `small_model`. Invalid files are ignored with a warning. |
+| `config.toml` (L3) | `TopicConfig`: `[ai]` models (`model`, `plan_model`, `build_model`, `small_model`), `[[mcps]]` + `mcps_replace`, and the topic's own `mode`, `skills` (allow-list), `disabled_skills`, `disabled_tools`, `instructions`. Invalid files are ignored with a warning. |
 | Model precedence | `.jyc/<mode>-model-override` file > L3 `config.toml` > pattern > L2/L1 config |
+| Mode precedence | `.jyc/mode-override` (the user's `/mode`) > L3 `config.toml` > pattern > build. A configured mode is never written to `.jyc/mode-override`, which stays reserved for explicit user overrides. |
+| Skill filters | Allow-list: L3 `skills` **replaces** pattern/channel (it is the narrowest statement of intent); deny-list: L3 `disabled_skills` ∪ pattern ∪ channel. Runtime `/skill` layers on top of both (`on` re-adds, `off` removes). |
+| `disabled_tools` | Union of channel ∪ pattern ∪ L3 `config.toml` — subtractive at every layer. |
+| Subagent types | `[subagents.<type>]` in the config, or `<config dir>/subagents/<type>/config.toml`; both are `TopicConfig`, merged key by key with the table winning. `spawn_handler::resolve_subagent_type` resolves the name (a refusal before anything is created), `apply_subagent_type` expands it into the child's state dir at spawn time. |
 | `skills/` | All levels scanned low→high; same-named skills are overridden by higher levels. Order: `~/.config/jyc/skills`, `~/.claude/skills` → L1 → L2 → topic repo → L3. |
 | `templates/` | Lookup L3 → L2 → L1 (`TemplateDirs::resolve_with_topic`); first match wins. |
 | Custom `topic_path` | Absolute/`~` paths used as-is (outside the data root); **relative paths resolve against the data root** (previously process cwd). L3 applies to any topic directory, including ad-hoc topics (`jyc open <path>`). |

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
+use jyc_types::{AppConfig, TopicConfig};
 use tracing::instrument;
 
 use super::fork_handler::{fail, invalid_name, next_free_name, seed_state, take_inherit_flag};
@@ -12,7 +13,7 @@ use crate::topic_manager::TopicManager;
 use crate::topic_path::{resolve_topic_path, resolved};
 
 /// How to call it, repeated in every refusal so a typo self-corrects.
-const USAGE: &str = "/spawn [--inherit] [name] [path]";
+const USAGE: &str = "/spawn [--inherit] [--type=<name>] [name] [path]";
 
 /// Collapse `.` and `..` components lexically — `canonicalize` without
 /// touching the filesystem, for destinations that do not exist yet.
@@ -98,6 +99,10 @@ struct SpawnRequest<'a> {
     /// can name, and sharing is a decision about the *child's* role (a
     /// reviewer reading uncommitted work).
     share_topic_path: bool,
+    /// The role the child starts in, already resolved from its name by the
+    /// trigger ([`resolve_subagent_type`]) — the request carries the answer, not
+    /// the name, so this core never needs a config to read.
+    subagent_type: Option<&'a SubagentType>,
 }
 
 impl SpawnCommandHandler {
@@ -278,6 +283,21 @@ impl SpawnCommandHandler {
         )
         .await?;
 
+        // The role, on top of what the child just inherited: its settings, its
+        // mode, and the name it answers to in the dashboard. `seed_state` has
+        // already copied the *parent's* runtime choices (the override files it
+        // was running with) — those are exactly what a role replaces, so they
+        // go first.
+        if let Some(subagent_type) = req.subagent_type {
+            apply_subagent_type(&state_dir, subagent_type).with_context(|| {
+                format!(
+                    "/spawn: could not apply subagent type '{}' to {}",
+                    subagent_type.name,
+                    state_dir.display()
+                )
+            })?;
+        }
+
         // The parent keeps its spawn in sight: this one grant — on the child's
         // **topic_path**, so the parent can put the child's input files there,
         // and **naming the child**, since a shared dir cannot name it — is what
@@ -295,16 +315,21 @@ impl SpawnCommandHandler {
             seeded,
             inherit = req.inherit,
             shared = req.share_topic_path,
+            subagent_type = req.subagent_type.map(|t| t.name.as_str()).unwrap_or("-"),
             "Topic spawned"
         );
         Ok(CommandResult {
             success: true,
             message: format!(
-                "✅ Spawned '{}' → '{}' — it works in {} with its own state in {} ({} state \
+                "✅ Spawned '{}' → '{}'{} — it works in {} with its own state in {} ({} state \
                  file(s) inherited{}, no workspace files copied).\n/spawn does not switch by \
                  itself — pick '{name}' in the topic list.",
                 req.parent_topic,
                 name,
+                match req.subagent_type {
+                    Some(t) => format!(" as type '{}'", t.name),
+                    None => String::new(),
+                },
                 topic_path.display(),
                 state_dir.display(),
                 seeded,
@@ -347,12 +372,31 @@ impl CommandHandler for SpawnCommandHandler {
         // and it is the caller that reads it off the arguments — a typed
         // `/spawn` never shares its topic_path, which is what `false` says.
         let (inherit, args) = take_inherit_flag(&context.args);
+        let (type_name, args) = match take_type_flag(&args) {
+            Ok(parsed) => parsed,
+            Err(refusal) => return Ok(fail(format!("/spawn: {refusal}. Usage: {USAGE}"))),
+        };
+        // Which role the child starts in, resolved before anything is created:
+        // an unknown or malformed type refuses here, not halfway through a spawn.
+        let config = effective_config(self.topic_manager.data_root());
+        let subagent_type = match type_name.as_deref() {
+            Some(name) => match resolve_subagent_type(
+                name,
+                config.as_ref(),
+                jyc_utils::paths::config_dir().as_deref(),
+            ) {
+                Ok(resolved) => Some(resolved),
+                Err(refusal) => return Ok(fail(format!("/spawn: {refusal}"))),
+            },
+            None => None,
+        };
         let req = SpawnRequest {
             parent_topic: &context.topic_name,
             parent_topic_path: &context.topic_path,
             args: &args,
             inherit,
             share_topic_path: false,
+            subagent_type: subagent_type.as_ref(),
         };
         self.spawn_under(req, &parent_state, &agents_dir).await
     }
@@ -392,12 +436,25 @@ pub async fn spawn_subagent(
     name: Option<&str>,
     inherit_context: bool,
     share_topic_path: bool,
+    type_name: Option<&str>,
 ) -> Result<String, String> {
     // Production path only, like `/spawn`: `resolve_agents_dir()` resolves
     // the real data home, so a test that reached here would create topics
     // inside the developer's own agents tree. Tests call
     // `spawn_subagent_under` with every root.
     let agents_dir = tm.resolve_agents_dir();
+    // The role comes from the same two sources `/spawn` reads: the live config
+    // and the installed type dirs. Resolved here so an unknown type is a refusal
+    // before a directory exists.
+    let config = effective_config(tm.data_root());
+    let subagent_type = match type_name {
+        Some(name) => Some(resolve_subagent_type(
+            name,
+            config.as_ref(),
+            jyc_utils::paths::config_dir().as_deref(),
+        )?),
+        None => None,
+    };
     spawn_subagent_under(
         tm,
         parent,
@@ -405,6 +462,7 @@ pub async fn spawn_subagent(
         name,
         inherit_context,
         share_topic_path,
+        subagent_type.as_ref(),
         &agents_dir,
     )
     .await
@@ -419,6 +477,7 @@ pub async fn spawn_subagent_under(
     name: Option<&str>,
     inherit_context: bool,
     share_topic_path: bool,
+    subagent_type: Option<&SubagentType>,
     agents_dir: &Path,
 ) -> Result<String, String> {
     let parent_state = state_dir_of(parent, parent_dir);
@@ -457,6 +516,7 @@ pub async fn spawn_subagent_under(
         args: &args,
         inherit: inherit_context,
         share_topic_path,
+        subagent_type,
     };
     let handler = SpawnCommandHandler::new(tm.clone());
     match handler.spawn_under(req, &parent_state, agents_dir).await {
@@ -552,6 +612,187 @@ pub fn format_subagent_names(subagents: &[(String, PathBuf)]) -> String {
         .map(|(name, _)| name.as_str())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// A spawn's `type`, resolved: the name the caller asked for and the settings
+/// that name stands for.
+///
+/// Resolution happens before a spawn creates anything (in the two entry points,
+/// [`resolve_subagent_type`]), so the core below carries the answer rather than
+/// the name — it needs no config to read, and a typo refuses before a directory
+/// exists.
+#[derive(Debug)]
+pub struct SubagentType {
+    /// The name as given (`review`), recorded in the child's state so the
+    /// dashboard can say which role it runs.
+    pub name: String,
+    /// What to write into the child's own `.jyc/config.toml`.
+    pub config: TopicConfig,
+}
+
+/// Resolve a `type` name into the settings a spawn hands its child.
+///
+/// Two sources, either of which can define a type:
+/// - `[subagents.<type>]` in the effective config — what this instance was
+///   configured with;
+/// - `<config dir>/subagents/<type>/config.toml` — an installed preset, the
+///   shape a shipped bundle can carry.
+///
+/// When both exist, [`TopicConfig::overlay`] combines them key by key with the
+/// in-config table (the running instance's own setting) winning. When neither
+/// does, the refusal lists what *is* available: a typo should cost one turn,
+/// not a debugging session.
+pub fn resolve_subagent_type(
+    type_name: &str,
+    config: Option<&AppConfig>,
+    config_dir: Option<&Path>,
+) -> Result<SubagentType, String> {
+    let name = type_name.trim();
+    // Same guard as a topic name: the type is a directory component under the
+    // config dir, and the name arrives from a model-authored tool argument.
+    if let Some(reason) = invalid_name(name) {
+        return Err(format!("'{name}' cannot be a subagent type name: {reason}"));
+    }
+
+    let from_config = config.and_then(|c| c.subagents.get(name)).cloned();
+    let installed =
+        jyc_types::load_subagent_type(name, config_dir).map_err(|e| format!("{e:#}"))?;
+
+    let settings = match (from_config, installed) {
+        (Some(from_config), None) => from_config,
+        (None, Some(installed)) => installed,
+        (Some(from_config), Some(installed)) => from_config.overlay(installed),
+        (None, None) => return Err(unknown_type_message(name, config, config_dir)),
+    };
+
+    // A typo in `mode` would otherwise read as "not plan", i.e. build — a
+    // reviewer quietly starting able to write. Refuse instead, where the user
+    // can still see which name caused it.
+    if let Some(mode) = settings.mode.as_deref()
+        && !matches!(mode, "plan" | "build")
+    {
+        return Err(format!(
+            "subagent type '{name}': mode = \"{mode}\" is not a mode — use \"plan\" or \"build\""
+        ));
+    }
+
+    Ok(SubagentType {
+        name: name.to_string(),
+        config: settings,
+    })
+}
+
+/// The refusal for a type nobody defines, naming the ones that do exist.
+fn unknown_type_message(
+    name: &str,
+    config: Option<&AppConfig>,
+    config_dir: Option<&Path>,
+) -> String {
+    let available = config
+        .map(|c| jyc_types::available_subagent_types(c, config_dir))
+        .unwrap_or_default();
+    let dir = config_dir
+        .map(|d| d.join("subagents").display().to_string())
+        .unwrap_or_else(|| "<config dir>/subagents".to_string());
+    if available.is_empty() {
+        format!(
+            "unknown subagent type '{name}': no types are defined. Add [subagents.{name}] to the \
+             config, or {dir}/{name}/config.toml"
+        )
+    } else {
+        format!(
+            "unknown subagent type '{name}'. Available: {} (from [subagents.*] or {dir}/*)",
+            available.join(", ")
+        )
+    }
+}
+
+/// The effective app config, read the way the daemon reads it: the global
+/// `config.toml` with the data dir's own config merged over it.
+///
+/// A spawn is rare, and a type is declared in files the user edits, so this
+/// reads them instead of threading the live config through the tool layer — with
+/// the *same* two calls `jyc serve` makes ([`jyc_utils::config_resolve::
+/// resolve_config`] + [`jyc_types::load_config_layered`]), so there is one
+/// answer to "where does config come from". `None` when it cannot be read: the
+/// type lookup then reports the type as undefined, which is what an unreadable
+/// config means for it.
+fn effective_config(data_dir: &Path) -> Option<AppConfig> {
+    let resolution = jyc_utils::config_resolve::resolve_config(data_dir, None, false).ok()?;
+    jyc_types::load_config_layered(
+        resolution.global_config_path.as_deref(),
+        &resolution.config_path,
+    )
+    .ok()
+}
+
+/// Peel `--type=<name>` off `/spawn`'s arguments.
+///
+/// Shaped like `take_inherit_flag`, and for the same reason: `--type=x` is not a
+/// topic name, so it has to leave the argument list before [`spawn_under`] tells
+/// names from paths. `--type` with no value is a refusal rather than a topic
+/// that happens to start with dashes.
+fn take_type_flag(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
+    let mut found: Option<String> = None;
+    let mut rest = Vec::new();
+    for arg in args {
+        let trimmed = arg.trim();
+        match trimmed.strip_prefix("--type=") {
+            Some(value) if value.trim().is_empty() => {
+                return Err("--type needs a name (--type=review)".to_string());
+            }
+            Some(value) => {
+                if found.is_some() {
+                    return Err("--type given twice".to_string());
+                }
+                found = Some(value.trim().to_string());
+            }
+            None if trimmed == "--type" => {
+                return Err("--type needs a name (--type=review)".to_string());
+            }
+            None => rest.push(arg.clone()),
+        }
+    }
+    Ok((found, rest))
+}
+
+/// Write a resolved `type` into the child's state dir.
+///
+/// Two steps, in this order:
+/// 1. **The parent's runtime choices go.** `seed_state` copied the override
+///    files the parent happened to be running with — `mode-override`, the
+///    per-mode model overrides, the `/skill` and `/mcp` toggles — and every one
+///    of them sits *above* a topic config in its resolution chain. A role the
+///    parent's ad-hoc switches cannot override is the point of a type, so they
+///    are removed rather than layered under it.
+/// 2. **The type's settings are written** to `.jyc/config.toml` — a config
+///    layer, so the child's own `/mode`, `/model` and `/skill` still win over it
+///    afterwards (the type is where the child *starts*, not a cage) — plus the
+///    name in `.jyc/subagent-type` for the dashboard.
+fn apply_subagent_type(state_dir: &Path, subagent_type: &SubagentType) -> Result<()> {
+    for file in [
+        "mode-override",
+        "plan-model-override",
+        "build-model-override",
+        crate::session_state::SKILL_OVERRIDE_FILE,
+        crate::session_state::MCP_OVERRIDE_FILE,
+    ] {
+        let path = state_dir.join(file);
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+    }
+
+    let path = state_dir.join("config.toml");
+    let body = toml::to_string_pretty(&subagent_type.config)
+        .context("failed to serialize the subagent type as TOML")?;
+    std::fs::write(&path, body).with_context(|| format!("failed to write {}", path.display()))?;
+
+    let type_path = state_dir.join("subagent-type");
+    std::fs::write(&type_path, format!("{}\n", subagent_type.name))
+        .with_context(|| format!("failed to write {}", type_path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -688,6 +929,265 @@ mod tests {
             args: &ctx.args,
             inherit: false,
             share_topic_path: false,
+            subagent_type: None,
+        }
+    }
+
+    /// A type comes from either source: the config's `[subagents.<type>]` table,
+    /// or an installed `<config dir>/subagents/<type>/config.toml`. Defined in
+    /// both, they merge key by key with the config table winning.
+    #[test]
+    fn resolve_subagent_type_reads_both_sources() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("subagents/review");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "mode = \"build\"\nskills = [\"installed\"]\ndisabled_tools = [\"bash\"]\n",
+        )
+        .unwrap();
+        let base = "[ai]\nenabled = true\n";
+
+        // Installed only.
+        let config = jyc_types::load_config_from_str(base).unwrap();
+        let installed = resolve_subagent_type("review", Some(&config), Some(tmp.path())).unwrap();
+        assert_eq!(installed.name, "review");
+        assert_eq!(installed.config.mode.as_deref(), Some("build"));
+        assert_eq!(
+            installed.config.skills.as_deref(),
+            Some(["installed".to_string()].as_slice())
+        );
+
+        // Config table only.
+        let config = jyc_types::load_config_from_str(&format!(
+            "{base}[subagents.analyst]\nmode = \"plan\"\n"
+        ))
+        .unwrap();
+        let from_config =
+            resolve_subagent_type("analyst", Some(&config), Some(tmp.path())).unwrap();
+        assert_eq!(from_config.config.mode.as_deref(), Some("plan"));
+        assert!(from_config.config.skills.is_none());
+
+        // Both: per key, the config table wins; what only the installed file
+        // sets survives.
+        let config = jyc_types::load_config_from_str(&format!(
+            "{base}[subagents.review]\nmode = \"plan\"\n"
+        ))
+        .unwrap();
+        let merged = resolve_subagent_type("review", Some(&config), Some(tmp.path())).unwrap();
+        assert_eq!(
+            merged.config.mode.as_deref(),
+            Some("plan"),
+            "the running instance's own definition wins"
+        );
+        assert_eq!(
+            merged.config.skills.as_deref(),
+            Some(["installed".to_string()].as_slice())
+        );
+        assert_eq!(merged.config.disabled_tools.as_ref().map(Vec::len), Some(1));
+    }
+
+    /// A type nobody defines is refused, and the refusal names the ones that do
+    /// exist — a typo should cost one turn, not a debugging session.
+    #[test]
+    fn unknown_subagent_type_lists_what_exists() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("subagents/review");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "mode = \"plan\"\n").unwrap();
+        let config = jyc_types::load_config_from_str(
+            "[ai]\nenabled = true\n[subagents.analyst]\nmode = \"plan\"\n",
+        )
+        .unwrap();
+
+        let err = resolve_subagent_type("reveiw", Some(&config), Some(tmp.path())).unwrap_err();
+        assert!(err.contains("unknown subagent type 'reveiw'"), "{err}");
+        assert!(
+            err.contains("analyst") && err.contains("review"),
+            "both sources are offered: {err}"
+        );
+
+        // Nothing defined anywhere: the message says where a type would go.
+        let empty = tempdir().unwrap();
+        let bare = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+        let err = resolve_subagent_type("review", Some(&bare), Some(empty.path())).unwrap_err();
+        assert!(err.contains("no types are defined"), "{err}");
+        assert!(err.contains("subagents"), "{err}");
+    }
+
+    /// `mode` is checked here rather than tolerated downstream: an unknown mode
+    /// resolves to build, which for a reviewer means "able to write files".
+    #[test]
+    fn subagent_type_mode_is_validated() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("subagents/review");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "mode = \"planning\"\n").unwrap();
+
+        let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+        let err = resolve_subagent_type("review", Some(&config), Some(tmp.path())).unwrap_err();
+        assert!(err.contains("is not a mode"), "{err}");
+
+        std::fs::write(dir.join("config.toml"), "mode = \"build\"\n").unwrap();
+        let ok = resolve_subagent_type("review", Some(&config), Some(tmp.path())).unwrap();
+        assert_eq!(ok.config.mode.as_deref(), Some("build"));
+    }
+
+    /// The type names a directory under the config dir, and the name arrives
+    /// from a model-authored tool argument — a traversal must not reach the
+    /// lookup at all.
+    #[test]
+    fn subagent_type_names_are_guarded() {
+        let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+        for bad in ["", "..", "../evil", "sub/type", ".hidden"] {
+            let err = resolve_subagent_type(bad, Some(&config), None).unwrap_err();
+            assert!(
+                err.contains("cannot be a subagent type name"),
+                "{bad:?} must be refused: {err}"
+            );
+        }
+    }
+
+    /// An installed type that does not parse is an error naming its file — the
+    /// user asked for it by name, so silence would be worse than a refusal
+    /// (unlike a topic config, whose absence is normal).
+    #[test]
+    fn broken_installed_type_is_an_error() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("subagents/review");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.toml"), "not [valid toml").unwrap();
+
+        let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+        let err = resolve_subagent_type("review", Some(&config), Some(tmp.path())).unwrap_err();
+        assert!(err.contains("config.toml"), "{err}");
+    }
+
+    /// `--type=<name>` leaves the argument list before names and paths are told
+    /// apart, and a malformed flag is a refusal rather than a topic named
+    /// `--type`.
+    #[test]
+    fn take_type_flag_parses_and_refuses() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        let (name, rest) = take_type_flag(&args(&["--type=review", "worker"])).unwrap();
+        assert_eq!(name.as_deref(), Some("review"));
+        assert_eq!(rest, args(&["worker"]));
+
+        let (name, rest) = take_type_flag(&args(&["worker", "../out"])).unwrap();
+        assert_eq!(name, None, "no flag: nothing to peel");
+        assert_eq!(rest, args(&["worker", "../out"]));
+
+        for broken in [args(&["--type"]), args(&["--type="]), args(&["--type=  "])] {
+            let err = take_type_flag(&broken).unwrap_err();
+            assert!(err.contains("--type needs a name"), "{broken:?}: {err}");
+        }
+        let err = take_type_flag(&args(&["--type=a", "--type=b"])).unwrap_err();
+        assert!(err.contains("twice"), "{err}");
+    }
+
+    /// A typed spawn hands the child the role instead of the parent's runtime
+    /// choices: the override files it just inherited go (each of them outranks a
+    /// topic config in its chain), the type's settings are written to
+    /// `.jyc/config.toml` where the child's own `/mode`, `/model` and `/skill`
+    /// can still win over them, and the name is recorded for the dashboard.
+    #[tokio::test]
+    async fn spawn_with_a_type_replaces_the_parents_runtime_choices() {
+        let (_tmp, dir) = parent_topic().await;
+        let parent_state = dir.join(".jyc");
+        // The parent is running with /mode, /model, /skill and /mcp set — the
+        // state `seed_state` copies and a role must not inherit.
+        for (name, body) in [
+            ("plan-model-override", "provider/parent-plan"),
+            (
+                session_state::SKILL_OVERRIDE_FILE,
+                "{\"on\":[\"alpha\"],\"off\":[]}",
+            ),
+            (session_state::MCP_OVERRIDE_FILE, "{\"on\":[],\"off\":[]}"),
+        ] {
+            tokio::fs::write(parent_state.join(name), body)
+                .await
+                .unwrap();
+        }
+
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_dir = workspace.path().join("agents");
+        let handler = SpawnCommandHandler::new(tm.clone());
+
+        let types_root = tempdir().unwrap();
+        let type_dir = types_root.path().join("subagents/review");
+        std::fs::create_dir_all(&type_dir).unwrap();
+        tokio::fs::write(
+            type_dir.join("config.toml"),
+            "mode = \"plan\"\nskills = [\"pr-review\"]\ndisabled_skills = [\"forked-review\"]\n\
+             disabled_tools = [\"write\", \"bash\"]\ninstructions = \"read-only review\"\n",
+        )
+        .await
+        .unwrap();
+        let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+        let subagent_type =
+            resolve_subagent_type("review", Some(&config), Some(types_root.path())).unwrap();
+
+        let args = vec!["worker".to_string()];
+        let req = SpawnRequest {
+            parent_topic: "src-topic",
+            parent_topic_path: &dir,
+            args: &args,
+            inherit: false,
+            share_topic_path: false,
+            subagent_type: Some(&subagent_type),
+        };
+        let result = handler
+            .spawn_under(req, &parent_state, &agents_dir)
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.message);
+        assert!(
+            result.message.contains("as type 'review'"),
+            "{}",
+            result.message
+        );
+
+        let dest = resolved(&agents_dir.join("worker"));
+        let state = resolve_state_dir("worker", &dest);
+        for gone in [
+            "mode-override",
+            "plan-model-override",
+            session_state::SKILL_OVERRIDE_FILE,
+            session_state::MCP_OVERRIDE_FILE,
+        ] {
+            assert!(
+                !state.join(gone).exists(),
+                "{gone} was the parent's runtime choice, not the role's"
+            );
+        }
+
+        let cfg = jyc_types::load_topic_config("worker", &dest)
+            .expect("the child starts with a topic config");
+        assert_eq!(cfg.mode.as_deref(), Some("plan"));
+        assert_eq!(
+            cfg.skills.as_deref(),
+            Some(["pr-review".to_string()].as_slice())
+        );
+        assert_eq!(
+            cfg.disabled_skills.as_deref(),
+            Some(["forked-review".to_string()].as_slice())
+        );
+        assert_eq!(cfg.disabled_tools.as_ref().map(Vec::len), Some(2));
+        assert_eq!(cfg.instructions.as_deref(), Some("read-only review"));
+
+        assert_eq!(
+            tokio::fs::read_to_string(state.join("subagent-type"))
+                .await
+                .unwrap()
+                .trim(),
+            "review",
+            "the dashboard reads the role from here"
+        );
+        // Everything a spawn hands over besides runtime choices still arrives.
+        for keep in [session_state::TASKS_FILE, "pattern"] {
+            assert!(state.join(keep).exists(), "{keep} must be inherited");
         }
     }
 
@@ -814,6 +1314,7 @@ mod tests {
             args: &args,
             inherit,
             share_topic_path: false,
+            subagent_type: None,
         };
         let result = handler
             .spawn_under(req, &dir.join(".jyc"), &agents_dir)
@@ -1142,6 +1643,7 @@ mod tests {
             Some("worker"),
             true,
             false,
+            None,
             &agents_dir,
         )
         .await
@@ -1217,6 +1719,7 @@ mod tests {
             Some("shared-review"),
             false,
             true,
+            None,
             &agents_dir,
         )
         .await
@@ -1286,9 +1789,18 @@ mod tests {
         let parent = "cascade-parent";
 
         for (name, share) in [("cascade-review", true), ("cascade-work", false)] {
-            spawn_subagent_under(&tm, parent, &dir, Some(name), false, share, &agents_dir)
-                .await
-                .unwrap();
+            spawn_subagent_under(
+                &tm,
+                parent,
+                &dir,
+                Some(name),
+                false,
+                share,
+                None,
+                &agents_dir,
+            )
+            .await
+            .unwrap();
         }
         let states = ["cascade-review", "cascade-work"].map(|n| agents_dir.join(n).join(".jyc"));
         assert!(states.iter().all(|s| s.is_dir()));
@@ -1335,6 +1847,7 @@ mod tests {
             Some("../evil"),
             false,
             false,
+            None,
             &agents_dir,
         )
         .await
@@ -1363,6 +1876,7 @@ mod tests {
             Some("worker"),
             false,
             false,
+            None,
             &agents_dir,
         )
         .await
@@ -1394,6 +1908,7 @@ mod tests {
             Some("one-more"),
             false,
             false,
+            None,
             &agents_dir,
         )
         .await

@@ -2,16 +2,18 @@
 name: forked-review
 description: |
   Delegate a review to a subagent that works in your own directory with a fresh context —
-  it reads your uncommitted changes, not a copy of them. Use when: review my changes,
-  second opinion, independent review, delegate a review, check my work before committing.
+  it reads the changes on your branch as they are now (uncommitted, or the commits you
+  just made), not a copy of them. Use when: you finished a non-trivial change and are
+  about to push or open a PR, review my changes, second opinion, independent review,
+  delegate a review, check my work before committing.
 ---
 
 ## Delegated review in your own tree
 
 An independent review needs three things: the tree as it is *now* (uncommitted
-changes included), a context that has not already decided the answer, and a
-reviewer that cannot quietly fix what it finds. `jyc_spawn_subagent` gives all
-three in one call, the third through the `review` type.
+changes, or the commits you just made), a context that has not already decided
+the answer, and a reviewer that cannot quietly fix what it finds. `jyc_spawn_subagent`
+gives all three in one call, the third through the `review` type.
 
 ### Steps
 
@@ -23,9 +25,10 @@ three in one call, the third through the `review` type.
 2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` with the
    task. Name the question, where to start, and what the report looks like:
 
-   > Review the uncommitted changes in this directory (`git status`, `git diff`).
-   > Read the surrounding code, not only the diff. Report findings as: severity,
-   > file:line, what is wrong, and what you would do instead.
+   > Review this branch against its base (`git diff <base>..HEAD`, plus `git
+   > status` for anything still uncommitted). Read the surrounding code, not only
+   > the diff. Report findings as: severity, file:line, what is wrong, and what
+   > you would do instead.
 
 3. End your turn. The report arrives as a new message in this topic.
 
@@ -41,10 +44,11 @@ This repository ships the role at `subagents/review/config.toml`. What it sets:
 | `disabled_tools` | `write`, `edit`, `jyc_spawn_subagent` | It cannot change your files |
 | `instructions` | report-only standing orders | Severity + `file:line` + suggested fix, unverified claims marked as such |
 
-`bash` is deliberately **not** disabled: a review of uncommitted work needs
-`git status` and `git diff`, and no read-only shell exists. Plan mode and the
-role's instructions are what restrain it — the tools that edit files are simply
-absent, which is the part wording cannot undo.
+`bash` is deliberately **not** disabled: a review of a branch needs `git status`
+(anything still uncommitted), `git diff <base>..HEAD` and `git log`, and no
+read-only shell exists. Plan mode and the role's instructions are what restrain
+it — the tools that edit files are simply absent, which is the part wording
+cannot undo.
 
 Install it once, if the spawn refuses with `unknown subagent type 'review'`:
 

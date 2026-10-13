@@ -1425,14 +1425,17 @@ fn children_index(s: &InspectOverview) -> HashMap<(&str, &str), Vec<usize>> {
     index
 }
 
-/// Columns of indent a nesting level may add before the levels stop being
-/// drawn. The explorer pane is 20% wide — about fifteen columns — so past this
-/// the indent collapses to a single `… ` marker and the name keeps its room.
-const MAX_INDENT_COLS: usize = 3;
+/// The most columns of indent a level hands down to the next. A row is drawn
+/// as that prefix plus its branch mark, so this is what caps how far a row
+/// starts: the explorer pane is 20% wide — about fifteen columns — and a level
+/// per three columns would leave a deep name nothing to print in. A level that
+/// would add more freezes at `…  `, the same width as the one before it, so a
+/// child never starts further left than its parent.
+const MAX_PREFIX_COLS: usize = 3;
 
 /// Append `topic`'s descendants to `rows`, depth-first, each indented under
-/// its parent — up to [`MAX_INDENT_COLS`] columns of it, past which the indent
-/// stops growing so the names stay readable. `seen` stops a breadcrumb cycle —
+/// its parent — up to [`MAX_PREFIX_COLS`] columns handed down, past which the
+/// indent freezes so the names stay readable. `seen` stops a breadcrumb cycle —
 /// only hand-edited state can produce one — from recursing forever.
 fn push_subtree(
     rows: &mut Vec<TreeRow>,
@@ -1442,14 +1445,18 @@ fn push_subtree(
     child_prefix: &str,
     seen: &mut HashSet<usize>,
 ) {
-    let kids = index
+    // Drop the kids a cycle already showed *before* picking the last one: a
+    // back-edge in the middle of a list would otherwise leave the sibling
+    // before it drawn as a non-last child with nothing under it.
+    let kids: Vec<usize> = index
         .get(&(topic.name.as_str(), topic.channel.as_str()))
         .map(Vec::as_slice)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .iter()
+        .copied()
+        .filter(|&kid| seen.insert(kid))
+        .collect();
     for (n, &kid) in kids.iter().enumerate() {
-        if !seen.insert(kid) {
-            continue;
-        }
         let last = n + 1 == kids.len();
         let mut prefix = String::with_capacity(child_prefix.len() + 3);
         prefix.push_str(child_prefix);
@@ -1458,8 +1465,8 @@ fn push_subtree(
         let mut next = String::with_capacity(child_prefix.len() + 3);
         next.push_str(child_prefix);
         next.push_str(if last { "   " } else { "│  " });
-        let next = if next.chars().count() > MAX_INDENT_COLS {
-            "… "
+        let next = if next.chars().count() > MAX_PREFIX_COLS {
+            "…  "
         } else {
             next.as_str()
         };

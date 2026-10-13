@@ -268,7 +268,12 @@ impl InspectServer {
                     commands_for_topic(t.pattern.as_deref(), cfg_ref, &t.available_skills, &models);
                 // Lineage for the tree views: read before the struct literal
                 // moves `t.name`. A topic whose state dir can't be read (or
-                // has no breadcrumb) is a root.
+                // has no breadcrumb) is a root. `spawned_from` looks the state
+                // dir up by name, and that suffices here: a listed topic got
+                // its path from `set_topic_path`, which adopts a state dir, so
+                // the `topic_path` fallback cannot fire. (Registration is
+                // name-keyed and global, so two same-named topics on different
+                // channels share one dir and read the same breadcrumb.)
                 let parent = t
                     .topic_path
                     .as_deref()

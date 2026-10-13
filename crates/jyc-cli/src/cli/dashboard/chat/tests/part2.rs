@@ -2372,11 +2372,13 @@ fn explorer_renders_a_nested_row_indented() {
     );
 }
 
-// Past the indent cap the levels collapse into one `… ` marker: the explorer
-// pane is 20% wide — about fifteen columns — so a column per nesting level
-// would soon leave a deep name nothing to print in.
+// Past the prefix cap a level freezes at the `…  ` marker — three columns, as
+// wide as the level before it, so a deeper row never starts further left than
+// its parent. The explorer pane is 20% wide (about fifteen columns), so an
+// indent that grew with every level would soon leave a deep name nothing to
+// print in.
 #[test]
-fn deep_nesting_collapses_the_indent() {
+fn deep_nesting_freezes_the_indent() {
     let mut topics = vec![explorer_topic("r")];
     for i in 0..4usize {
         let mut t = explorer_topic(&format!("n{i}"));
@@ -2396,8 +2398,36 @@ fn deep_nesting_collapses_the_indent() {
     let prefixes: Vec<&str> = rows.iter().map(|r| r.prefix.as_str()).collect();
     assert_eq!(
         prefixes,
-        ["", "└─ ", "   └─ ", "… └─ ", "… └─ "],
-        "the indent stops growing"
+        ["", "└─ ", "   └─ ", "…  └─ ", "…  └─ "],
+        "the indent freezes rather than shrinking"
+    );
+}
+
+// A cycle's back-edge must not leave the sibling drawn before it as a non-last
+// child with nothing under it: kids the walk has already shown are dropped
+// before the last one is picked, not skipped inside the loop.
+#[test]
+fn a_cycle_back_edge_leaves_no_dangling_branch_mark() {
+    let mut aa = explorer_topic("aa");
+    aa.parent = Some("zz".to_string());
+    let mut zz = explorer_topic("zz");
+    zz.parent = Some("aa".to_string());
+    let mut a = explorer_topic("a");
+    a.parent = Some("aa".to_string());
+    let s = jyc_types::InspectOverview {
+        topics: vec![aa, zz, a],
+        ..Default::default()
+    };
+
+    let rows = explorer_rows(&s);
+    let drawn: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|r| (s.topics[r.topic].name.as_str(), r.prefix.as_str()))
+        .collect();
+    assert_eq!(
+        drawn,
+        [("aa", ""), ("a", "├─ "), ("zz", "└─ ")],
+        "the last sibling still carries the corner mark"
     );
 }
 

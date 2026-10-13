@@ -108,6 +108,18 @@ pub struct TopicSummary {
     /// a pattern's `topic_path` override is active).
     #[serde(default)]
     pub topic_path: Option<std::path::PathBuf>,
+    /// Name of the topic that spawned this one — read server-side from the
+    /// `spawned-from` breadcrumb in the topic's state dir, the same file the
+    /// subagent grants are validated against. `None` for topics the user
+    /// started (and for a subagent whose breadcrumb can't be read), so the
+    /// renderers treat it as "a root" and show it at the top level.
+    ///
+    /// The channel is not carried: a spawn always creates its child in the
+    /// parent's channel (the tool spawns through the parent's own topic
+    /// manager), so `(parent, channel)` names the parent uniquely.
+    /// `#[serde(default)]` so old payloads (pre-this-field) still load.
+    #[serde(default)]
+    pub parent: Option<String>,
     /// Resolved git branch for the topic's working directory, when it is
     /// a git repo. `None` when the path isn't a git repo, or the server
     /// couldn't read `.git/HEAD` (perms, etc.). When the agent clones into
@@ -599,6 +611,7 @@ mod tests {
                 recent_messages: vec![],
                 thinking_text: None,
                 topic_path: None,
+                parent: None,
                 branch: None,
                 changed_files: None,
                 cost: None,
@@ -769,6 +782,7 @@ mod tests {
             last_active_at: Some("2026-01-01T00:00:00Z".to_string()),
             skills: vec![],
             topic_path: None,
+            parent: None,
             branch: None,
             changed_files: None,
             cost: None,

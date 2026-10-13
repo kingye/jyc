@@ -110,9 +110,9 @@ undo/redo, and standard readline-style editing keys.
 | `yy` / `y3y` / `3yy` | Copy that many transcript rows, starting at the message cursor, to the clipboard |
 | `y` with a selection | Copy every selected row (both ends included), then drop the selection and move the cursor to its first row |
 | `Ctrl+P` → `a` | Toggle activity pane: hidden ↔ bottom 20% |
-| `Ctrl+P` → `e` | Toggle the topic explorer pane (left side); `Enter` in it switches the chat to the selected topic |
+| `Ctrl+P` → `e` | Toggle the topic explorer pane (left side); `Enter` in it switches the chat to the selected topic. Subagents are nested under the topic that spawned them — a tree, deepest last |
 | `Ctrl+P` → `s` | Toggle the bottom status bar |
-| `Ctrl+P` → `i` | Toggle the topic info pane (right side) |
+| `Ctrl+P` → `i` | Toggle the topic info pane (right side). It lists the selected topic's subagents as a tree, each with the explorer's status dot |
 | `Ctrl+P` → `c` | Focus the chat message area, which shows the cursor bar (j/k/arrows move it, Shift selects, `y` copies); pressing any other key returns focus to the input (the key itself is consumed) |
 | `Ctrl+P` → `z` | Toggle zen mode: snapshot and hide all aux panes (activity, topic info, status bar, explorer); pressing again restores the exact pre-zen state |
 | `Ctrl+P` → `p` | Toggle minimal progress mode (on by default): the chat progress tail collapses to a single animated line (`⠹ 12.4s · thinking... | bash` — spinner, loop elapsed, current phase, with the most recent tool kept after `|` so a thinking streak does not overwrite it), and the completed-turn thinking line is left out of the history |

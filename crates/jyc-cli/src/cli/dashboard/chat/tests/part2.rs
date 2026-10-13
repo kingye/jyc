@@ -63,6 +63,7 @@ fn explorer_move_clamps_and_saturates() {
                 last_active_at: None,
                 skills: vec![],
                 topic_path: None,
+                parent: None,
                 cost: None,
                 commands: vec![],
             })
@@ -108,6 +109,7 @@ fn opening_explorer_snaps_selection_to_chat_topic() {
                 last_active_at: None,
                 skills: vec![],
                 topic_path: None,
+                parent: None,
                 cost: None,
                 commands: vec![],
             })
@@ -152,6 +154,7 @@ fn opening_explorer_keeps_selection_when_chat_topic_not_in_list() {
             last_active_at: None,
             skills: vec![],
             topic_path: None,
+            parent: None,
             cost: None,
             commands: vec![],
         }],
@@ -241,6 +244,7 @@ async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
                 last_active_at: None,
                 skills: vec![],
                 topic_path: None,
+                parent: None,
                 cost: None,
                 commands: vec![],
             },
@@ -263,6 +267,7 @@ async fn explorer_switch_sets_pending_hydrate_and_hides_explorer() {
                 last_active_at: None,
                 skills: vec![],
                 topic_path: None,
+                parent: None,
                 cost: None,
                 commands: vec![],
             },
@@ -545,6 +550,7 @@ fn explorer_topic(name: &str) -> jyc_types::TopicSummary {
         last_active_at: None,
         skills: vec![],
         topic_path: None,
+        parent: None,
         cost: None,
         commands: vec![],
     }
@@ -633,6 +639,7 @@ fn files_section_colors_uncommitted_paths_yellow() {
             last_active_at: None,
             skills: vec![],
             topic_path: None,
+            parent: None,
             cost: None,
             commands: vec![],
         }],
@@ -836,6 +843,7 @@ fn info_scroll_is_clamped_after_render() {
             last_active_at: None,
             skills: vec![],
             topic_path: None,
+            parent: None,
             cost: None,
             commands: vec![],
         }],
@@ -1523,6 +1531,7 @@ fn info_pane_app(tasks: jyc_types::task::TaskList) -> App {
             last_active_at: None,
             skills: vec![],
             topic_path: None,
+            parent: None,
             cost: Some(jyc_types::TopicCost {
                 session: 0.42,
                 today: 1.23,
@@ -2216,4 +2225,113 @@ fn chat_screen_separators_all_rest_in_one_colour() {
         assert_eq!(cell.symbol(), glyph, "{what} is not where the layout says");
         assert_eq!(cell.fg, PANE_BORDER, "{what} carries another colour");
     }
+}
+
+// The explorer walks parent → subagent: a subagent row sits under the topic
+// that spawned it, a deeper chain keeps indenting, and a topic whose parent is
+// gone (closed, or spawned by something no longer listed) stays a root so
+// nothing drops out of the pane.
+#[test]
+fn explorer_rows_nest_subagents_under_their_parent() {
+    let mut child = explorer_topic("b");
+    child.parent = Some("a".to_string());
+    let mut grandchild = explorer_topic("c");
+    grandchild.parent = Some("b".to_string());
+    let mut orphan = explorer_topic("d");
+    orphan.parent = Some("gone".to_string());
+    let s = jyc_types::InspectOverview {
+        topics: vec![explorer_topic("a"), child, grandchild, orphan],
+        ..Default::default()
+    };
+
+    let rows = explorer_rows(&s);
+    let names: Vec<&str> = rows
+        .iter()
+        .map(|r| s.topics[r.topic].name.as_str())
+        .collect();
+    assert_eq!(names, ["a", "b", "c", "d"], "tree order");
+    assert_eq!(rows[0].prefix, "", "a root is not indented");
+    assert_eq!(rows[1].prefix, "└─ ");
+    assert_eq!(
+        rows[2].prefix, "   └─ ",
+        "a grandchild keeps the branch open"
+    );
+    assert_eq!(rows[3].prefix, "", "an orphan is a root");
+
+    // Selection follows the tree rows, not the overview's flat list: the
+    // explorer's row index is what `explorer_selected` holds.
+    assert_eq!(row_of(&rows, &s, "c", "test"), Some(2));
+    assert_eq!(row_of(&rows, &s, "d", "test"), Some(3));
+    assert_eq!(row_of(&rows, &s, "nope", "test"), None);
+}
+
+// The info pane's tree holds a topic's descendants only (the pane already
+// names the topic itself) and closes the last branch of each level with `└─ `,
+// so the sibling after a nested child lines up under its parent.
+#[test]
+fn subagent_tree_lists_descendants_with_branch_prefixes() {
+    let mut child = explorer_topic("b");
+    child.parent = Some("a".to_string());
+    let mut grandchild = explorer_topic("c");
+    grandchild.parent = Some("b".to_string());
+    let mut sibling = explorer_topic("e");
+    sibling.parent = Some("a".to_string());
+    let s = jyc_types::InspectOverview {
+        topics: vec![explorer_topic("a"), child, grandchild, sibling],
+        ..Default::default()
+    };
+
+    let rows = subagent_tree(&s, &s.topics[0]);
+    let names: Vec<&str> = rows
+        .iter()
+        .map(|r| s.topics[r.topic].name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["b", "c", "e"],
+        "depth-first, name order, root excluded"
+    );
+    assert_eq!(rows[0].prefix, "├─ ");
+    assert_eq!(rows[1].prefix, "│  └─ ");
+    assert_eq!(rows[2].prefix, "└─ ");
+
+    // A leaf gets no rows, so its pane omits the section entirely.
+    assert!(subagent_tree(&s, &s.topics[2]).is_empty());
+}
+
+// The rendered pane: the subagent tree sits between the cost row and the files
+// section, nested by depth, with the explorer's own status dot.
+#[test]
+fn info_pane_renders_subagents_as_a_tree() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.topic = Some("jyc".to_string());
+    app.chat.channel = Some("test".to_string());
+    app.chat.info_visible = true;
+
+    let mut child = explorer_topic("jyc-1");
+    child.parent = Some("jyc".to_string());
+    let mut grandchild = explorer_topic("jyc-2");
+    grandchild.parent = Some("jyc-1".to_string());
+    let mut sibling = explorer_topic("jyc-3");
+    sibling.parent = Some("jyc".to_string());
+    app.state = Some(jyc_types::InspectOverview {
+        topics: vec![explorer_topic("jyc"), child, grandchild, sibling],
+        ..Default::default()
+    });
+    app.table_state.select(Some(0));
+
+    // Tall enough that the section is not scrolled out of the pane.
+    let pane = info_pane_text(&mut app, 40, 40);
+    assert!(
+        pane.contains("Subagents (3):"),
+        "no subagent section:\n{pane}"
+    );
+    assert!(pane.contains("├─ ● jyc-1"), "first child unmarked:\n{pane}");
+    assert!(
+        pane.contains("│  └─ ● jyc-2"),
+        "grandchild not nested:\n{pane}"
+    );
+    assert!(pane.contains("└─ ● jyc-3"), "last child wrong:\n{pane}");
 }

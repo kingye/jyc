@@ -459,7 +459,10 @@ pub async fn spawn_subagent(
 }
 
 /// [`spawn_subagent`] with an explicit agents root — the same testable-core
-/// pattern as `spawn_under` / `close_topic_under`.
+/// pattern as `spawn_under` / `close_topic_under`, and the same deliberate
+/// argument list: every root arrives as an argument, which is what keeps a
+/// test out of the developer's own agents tree.
+#[allow(clippy::too_many_arguments)]
 pub async fn spawn_subagent_under(
     tm: &Arc<TopicManager>,
     parent: &str,

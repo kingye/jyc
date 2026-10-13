@@ -635,7 +635,8 @@ no `activity`, no `recent_messages`, no `thinking_text` per topic.
 ### 4.3 `TopicInfo` vs `TopicSummary`
 
 Both have the fields below, except `TopicSummary` **omits** `activity`,
-`recent_messages`, and `thinking_text`.
+`recent_messages`, and `thinking_text`, and carries `parent`, which
+`TopicInfo` does not.
 
 | Field                        | Type                  | In `TopicInfo` | In `TopicSummary` |
 |------------------------------|-----------------------|:---------------:|:------------------:|
@@ -655,6 +656,7 @@ Both have the fields below, except `TopicSummary` **omits** `activity`,
 | `skills`                     | `Vec<string>`         | ✓               | ✓                  |
 | `available_skills`           | `Vec<SkillMeta>`      | ✓               | —                  |
 | `topic_path`                | `PathBuf?`            | ✓               | ✓                  |
+| `parent`                     | string?               | —               | ✓                  |
 | `branch`                     | string?               | ✓               | ✓                  |
 | `changed_files`              | `Vec<{path, uncommitted, change, lines?}?>` | ✓          | ✓                  |
 | `tasks`                      | `TaskList`            | ✓               | ✓                  |

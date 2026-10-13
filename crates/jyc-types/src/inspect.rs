@@ -611,7 +611,6 @@ mod tests {
                 recent_messages: vec![],
                 thinking_text: None,
                 topic_path: None,
-                parent: None,
                 branch: None,
                 changed_files: None,
                 cost: None,

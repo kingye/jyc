@@ -683,7 +683,12 @@ restarted hub can be re-granted by the user's `/grant` or by a fresh spawn. The
 subagent's queue is in-memory as well: a task enqueued but not yet consumed when
 the process stops is lost. Its topic_path is its own by default and the parent's
 when it was asked to share — either way the state is the child's, and either way
-the child goes when the parent does.
+the child goes when the parent does. The registry is also keyed by the parent's
+**name alone**, with no channel in the key: a topic of the same name in another
+channel reads the same subagent list (shows it, counts it against the cap, and
+now closes and deletes it), which is the price of one process-wide registry
+shared by `access_grants` and `/grant`. The fix, when it is worth paying for, is
+a channel-scoped grant key rather than a local guard here.
 
 [state]: #topic-state-directory-jyc
 ## Lifecycle Hooks

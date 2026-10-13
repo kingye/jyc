@@ -6,9 +6,7 @@ use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 use tracing::instrument;
 
-use super::fork_handler::{
-    INHERIT_FLAG, fail, invalid_name, next_free_name, seed_state, take_inherit_flag,
-};
+use super::fork_handler::{fail, invalid_name, next_free_name, seed_state, take_inherit_flag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::topic_manager::TopicManager;
 use crate::topic_path::{resolve_topic_path, resolved};
@@ -123,16 +121,12 @@ impl SpawnCommandHandler {
     ) -> Result<CommandResult> {
         // One name and one path, told apart by shape rather than position, so
         // `/spawn scratch`, `/spawn ../test` and `/spawn scratch/some-dir` all
-        // read naturally. `--inherit` is neither: it is read off the arguments
-        // by the caller, and filtered here so it can never become a name.
+        // read naturally. `--inherit` is neither: both callers take it out of
+        // the arguments before building the request (`take_inherit_flag`), so
+        // what arrives here is only ever a name or a path.
         let mut name = None;
         let mut path = None;
-        for arg in req
-            .args
-            .iter()
-            .map(|a| a.trim())
-            .filter(|a| !a.is_empty() && *a != INHERIT_FLAG)
-        {
+        for arg in req.args.iter().map(|a| a.trim()).filter(|a| !a.is_empty()) {
             let slot = if looks_like_path(arg) {
                 &mut path
             } else {
@@ -196,7 +190,9 @@ impl SpawnCommandHandler {
             )));
         }
 
-        // A destination that exists must be a directory (shared or not).
+        // A destination that exists must be a directory (shared or not) — asked
+        // first, so the refusals below all speak about ownership rather than
+        // about a shape the destination does not have.
         match tokio::fs::metadata(&topic_path).await {
             Ok(meta) if !meta.is_dir() => {
                 return Ok(fail(format!(
@@ -218,7 +214,9 @@ impl SpawnCommandHandler {
         // dir?", and a shared topic_path is *this* topic's own dir by
         // construction — the one case they exist to keep a spawn out of, and
         // the one of its kind that is not refused for being somebody else's too
-        // (a repo two agents co-pin is what `/fork` already does).
+        // (a repo two agents co-pin is what `/fork` already does). So all three
+        // step aside on purpose, the "topic dir of '<owner>'" one included:
+        // taking the parent's own dir cannot take anybody else's.
         if !req.share_topic_path {
             if child_resolved == parent_resolved {
                 return Ok(fail(format!(
@@ -673,14 +671,16 @@ mod tests {
     }
 
     /// The `/spawn` side of a call: the fields `spawn_under` reads, off the
-    /// context the production path would have built — the flag included, which
-    /// `execute` reads the same way.
+    /// context the production path would have built. `execute` takes the
+    /// `--inherit` flag out of the arguments before this point, so the test
+    /// that exercises it builds its [`SpawnRequest`] by hand the same way:
+    /// `args` here is only ever a name and a path.
     fn spawn_request(ctx: &CommandContext) -> SpawnRequest<'_> {
         SpawnRequest {
             parent_topic: &ctx.topic_name,
             parent_topic_path: &ctx.topic_path,
             args: &ctx.args,
-            inherit: ctx.args.iter().any(|a| a.trim() == INHERIT_FLAG),
+            inherit: false,
             share_topic_path: false,
         }
     }
@@ -799,8 +799,18 @@ mod tests {
             "websocket",
             &["--inherit", "with-context"],
         );
+        // What `execute` does before it builds the request: the flag comes off
+        // the arguments, so it can never be mistaken for a name.
+        let (inherit, args) = take_inherit_flag(&ctx.args);
+        let req = SpawnRequest {
+            parent_topic: &ctx.topic_name,
+            parent_topic_path: &ctx.topic_path,
+            args: &args,
+            inherit,
+            share_topic_path: false,
+        };
         let result = handler
-            .spawn_under(spawn_request(&ctx), &dir.join(".jyc"), &agents_dir)
+            .spawn_under(req, &dir.join(".jyc"), &agents_dir)
             .await
             .unwrap();
         assert!(result.success, "{}", result.message);
@@ -1183,6 +1193,10 @@ mod tests {
     /// root, and closing the child deletes that state and leaves the dir (and
     /// the parent's in-dir `.jyc`) exactly as it was.
     #[tokio::test]
+    /// Every topic name in the tests below is this test's own: `state_dir` and
+    /// `access_grants` are process-wide and keyed by topic name alone, and
+    /// `cargo test` runs this binary's tests in parallel — so a name another
+    /// test already uses is a collision waiting to happen, not a detail.
     async fn shared_subagent_works_in_the_parents_dir() {
         let (_tmp, dir) = parent_topic().await;
         let workspace = tempdir().unwrap();
@@ -1194,24 +1208,24 @@ mod tests {
             &tm,
             parent,
             &dir,
-            Some("reviewer"),
+            Some("shared-review"),
             false,
             true,
             &agents_dir,
         )
         .await
         .unwrap();
-        assert_eq!(name, "reviewer");
+        assert_eq!(name, "shared-review");
 
         let shared = resolved(&dir);
         assert_eq!(
-            tm.topic_path("reviewer").await.unwrap(),
+            tm.topic_path("shared-review").await.unwrap(),
             shared,
             "the child works where the parent works"
         );
-        let state = agents_dir.join("reviewer").join(".jyc");
+        let state = agents_dir.join("shared-review").join(".jyc");
         assert_eq!(
-            state_dir_of("reviewer", &shared),
+            state_dir_of("shared-review", &shared),
             state,
             "its state is still its own, under the agents root, never in the shared dir"
         );
@@ -1238,18 +1252,18 @@ mod tests {
         );
         assert_eq!(
             subagents_of(parent),
-            vec![("reviewer".to_string(), shared.clone())]
+            vec![("shared-review".to_string(), shared.clone())]
         );
 
         // Closing the child: its state goes, the shared dir and its files do
         // not — including the parent's own in-dir `.jyc`.
-        tm.close_topic("reviewer").await.unwrap();
+        tm.close_topic("shared-review").await.unwrap();
         assert!(dir.join("README.md").exists() && dir.join("src/main.rs").exists());
         assert!(dir.join(".jyc").join("pattern").exists());
         assert!(!state.exists(), "the child's own state goes with the child");
         assert!(subagents_of(parent).is_empty());
 
-        jyc_types::state_dir::unregister("reviewer");
+        jyc_types::state_dir::unregister("shared-review");
         jyc_types::access_grants::clear(parent);
     }
 
@@ -1265,12 +1279,12 @@ mod tests {
         let agents_dir = workspace.path().join("agents");
         let parent = "cascade-parent";
 
-        for (name, share) in [("reviewer", true), ("worker", false)] {
+        for (name, share) in [("cascade-review", true), ("cascade-work", false)] {
             spawn_subagent_under(&tm, parent, &dir, Some(name), false, share, &agents_dir)
                 .await
                 .unwrap();
         }
-        let states = ["reviewer", "worker"].map(|n| agents_dir.join(n).join(".jyc"));
+        let states = ["cascade-review", "cascade-work"].map(|n| agents_dir.join(n).join(".jyc"));
         assert!(states.iter().all(|s| s.is_dir()));
         assert_eq!(subagents_of(parent).len(), 2);
 
@@ -1289,7 +1303,7 @@ mod tests {
             "the parent's own dir and state are untouched by its close"
         );
 
-        for name in ["reviewer", "worker"] {
+        for name in ["cascade-review", "cascade-work"] {
             jyc_types::state_dir::unregister(name);
         }
         jyc_types::access_grants::clear(parent);

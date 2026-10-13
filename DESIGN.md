@@ -642,15 +642,13 @@ going nor claims it as somebody else's.
 
 Because the grant comes from the same place `/spawn` writes it, a hand-typed
 spawn is a subagent too: it shows up in the list, in the parent's read+write
-boundary, and in the cap count. That holds whichever form the command took,
-because both readers (`subagents_of`, `forget_subagent`) locate the lineage by
-resolving the child's **state dir** from the granted dir's name
-(`spawn_handler::state_dir_of`) rather than assuming `<granted dir>/.jyc` — a
-`/spawn ../test` child runs beside its parent while its state stays under the
+boundary, and the two forms are one feature rather than two. That holds whichever
+form the command took, because both readers (`subagents_of`, `forget_subagent`)
+locate the lineage by resolving the child's **state dir** from the granted dir's
+name (`spawn_handler::state_dir_of`) rather than assuming `<granted dir>/.jyc` —
+a `/spawn ../test` child runs beside its parent while its state stays under the
 agents root. The same lookup is what `/close` uses to revoke, so a path-form
-spawn gives the parent's access back when it closes. The cap refuses the *tool*
-only — a user typing `/spawn` is not told to stop, and the prompt prints the real
-count (`N of at most 3`) rather than a number it had to clamp.
+spawn gives the parent's access back when it closes.
 
 Everything after that is the parent's own work with tools it already has:
 `write`/`bash` seed the directory, `jyc_send_to_topic` (with
@@ -663,17 +661,15 @@ it. A command's receipt is broadcast to the child's own chat pane (the websocket
 outbound keys on the original topic), so the parent reads
 `<child>/.jyc/mode-override` (which it may read) if it wants to confirm.
 
-Guardrails, all of them the tool's: the tool refuses a second level (its own
-parent already carries the `spawned-from` breadcrumb — a user typing `/spawn`
-inside a subagent is not stopped), at most 3 subagents per topic
-(`subagents_of` counts grants whose state dir still holds a breadcrumb naming
-this topic), and the name is validated here — `spawn_under` tells a name from a
-path by shape, so an unchecked `../evil` would be resolved as a path, off the
-agents root. A closed subagent revokes its parent's grant in
-`TopicManager::close_topic_under` — which `auto_close_topic` and `purge` route
+Guardrails, all of them the tool's: the name is validated here — `spawn_under`
+tells a name from a path by shape, so an unchecked `../evil` would be resolved as
+a path, off the agents root. Nothing bounds how many subagents a topic spawns or
+how deep they go: a subagent may spawn its own subagent, and the close cascade
+below is depth-first because of it. A closed subagent revokes its parent's grant
+in `TopicManager::close_topic_under` — which `auto_close_topic` and `purge` route
 through, so every teardown path revokes — and a closed *parent* closes its
-subagents there too (depth-first, children first, so a typed `/spawn` chain goes
-whole), which is what stops an orphan from pointing into a directory the close
+subagents there too (depth-first, children first, so a nested chain goes whole),
+which is what stops an orphan from pointing into a directory the close
 took with it.
 
 One deliberate non-guardrail: because the worker runs commands for *every* queued

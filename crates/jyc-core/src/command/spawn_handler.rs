@@ -397,18 +397,14 @@ impl CommandHandler for SpawnCommandHandler {
     }
 }
 
-/// How many subagents one topic may hold at a time.
-pub const MAX_SUBAGENTS: usize = 3;
-
 /// Create a subagent topic for `parent`'s agent — the `jyc_spawn_subagent`
 /// tool's trigger for [`SpawnCommandHandler::spawn_under`].
 ///
 /// The layout, the inheritance and the grant are `/spawn`'s: a sibling under
 /// the agents root carrying a copy of the parent's state (`pattern`, task list,
 /// `mode-override`, …) with its own `.jyc`, marked `spawned-from` and granted to
-/// the parent read+write. What is *not* `/spawn`'s is the guard set — one level
-/// deep, [`MAX_SUBAGENTS`] children at most — and the fact that the name is
-/// resolved here rather than taken from arguments.
+/// the parent read+write. What is *not* `/spawn`'s is that the name is resolved
+/// here rather than taken from arguments.
 ///
 /// `inherit_context` and `share_topic_path` are the tool's two decisions about
 /// the child's *starting point*, both off by default: the conversation and
@@ -474,19 +470,6 @@ pub async fn spawn_subagent_under(
     agents_dir: &Path,
 ) -> Result<String, String> {
     let parent_state = state_dir_of(parent, parent_dir);
-    if parent_state.join("spawned-from").exists() {
-        return Err(
-            "this topic is itself a subagent: subagents cannot spawn subagents".to_string(),
-        );
-    }
-    let existing = subagents_of(parent);
-    if existing.len() >= MAX_SUBAGENTS {
-        return Err(format!(
-            "already at {MAX_SUBAGENTS} subagents ({}): continue one with \
-             jyc_send_to_topic, or close one first",
-            format_subagent_names(&existing)
-        ));
-    }
 
     // Resolved here because the caller reports the name back, and validated
     // because `spawn_under` tells a name from a path by shape: a `../evil` that
@@ -1945,68 +1928,6 @@ mod tests {
             !workspace.path().join("evil").exists() && !agents_dir.exists(),
             "a refusal creates nothing anywhere"
         );
-    }
-
-    /// One level only: a subagent cannot spawn its own subagent.
-    #[tokio::test]
-    async fn subagent_spawn_refuses_a_second_level() {
-        let workspace = tempdir().unwrap();
-        let tm = make_topic_manager(workspace.path());
-        let agents_dir = workspace.path().join("agents");
-        let parent_dir = workspace.path().join("nested");
-        std::fs::create_dir_all(parent_dir.join(".jyc")).unwrap();
-        std::fs::write(parent_dir.join(".jyc").join("spawned-from"), "grandparent").unwrap();
-
-        let err = spawn_subagent_under(
-            &tm,
-            "sa-parent-nested",
-            &parent_dir,
-            Some("worker"),
-            false,
-            false,
-            None,
-            &agents_dir,
-        )
-        .await
-        .unwrap_err();
-        assert!(err.contains("cannot spawn subagents"), "{err}");
-        assert!(!agents_dir.join("worker").exists());
-    }
-
-    #[tokio::test]
-    async fn subagent_spawn_refuses_past_the_cap() {
-        let workspace = tempdir().unwrap();
-        let tm = make_topic_manager(workspace.path());
-        let agents_dir = workspace.path().join("agents");
-        let parent = "sa-parent-cap";
-        let parent_dir = workspace.path().join("parent");
-        std::fs::create_dir_all(&parent_dir).unwrap();
-        jyc_types::access_grants::clear(parent);
-        for i in 0..MAX_SUBAGENTS {
-            let dir = agents_dir.join(format!("filled-{i}"));
-            std::fs::create_dir_all(dir.join(".jyc")).unwrap();
-            std::fs::write(dir.join(".jyc").join("spawned-from"), parent).unwrap();
-            jyc_types::access_grants::grant(parent, dir, true);
-        }
-
-        let err = spawn_subagent_under(
-            &tm,
-            parent,
-            &parent_dir,
-            Some("one-more"),
-            false,
-            false,
-            None,
-            &agents_dir,
-        )
-        .await
-        .unwrap_err();
-        assert!(err.contains("already at 3 subagents"), "{err}");
-        assert!(
-            err.contains("filled-0"),
-            "the refusal lists what is already there: {err}"
-        );
-        jyc_types::access_grants::clear(parent);
     }
 
     /// A spawn's grant is what lists a child, by the name it carries — and a

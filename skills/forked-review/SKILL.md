@@ -68,8 +68,8 @@ earlier keeps the role it started with.
   different type — do not talk the reviewer out of its role.
 - **One reviewer, one task.** Continue the same child with `jyc_send_to_topic`
   for follow-ups (it keeps its own context); spawning a second reviewer on the
-  same files buys nothing. Three subagents per topic is the cap.
+  same files buys nothing.
 - The child's state is its own (`.jyc` under the agents root) and yours is not
   shared with it — read the report, not its state dir.
 - Closing your topic closes the reviewer with it; close it yourself
-  (`/close`) if you want the slot back for something else.
+  (`/close`) when the review is done and you want nothing more from it.

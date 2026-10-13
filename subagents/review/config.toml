@@ -17,8 +17,10 @@
 #
 # A key this file leaves out is inherited from the parent: with no `[ai]` here
 # the reviewer keeps the parent's model files, and only falls back to the
-# configured default where the parent had none. Add `[ai] model = "…"` to pin
-# the role to a model of its own.
+# configured default where the parent had none *in the build file* — this role
+# sets `mode`, so that is the file the chain reads for it, and a parent that
+# only ever set its model in plan mode is not reachable. Add `[ai] model = "…"`
+# to pin the role to a model of its own.
 
 mode = "plan"
 

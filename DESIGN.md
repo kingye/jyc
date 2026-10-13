@@ -633,6 +633,24 @@ the work as it is needs:
    (`format_subagents_section`) so the model continues an existing subagent with
    `jyc_send_to_topic` instead of spawning a duplicate.
 
+A **subagent type** (`type = "review"`) changes what step 2 hands over: the
+role's settings are written to the child's `.jyc/config.toml`, a config layer the
+child's own `/mode`, `/model` and `/skill` still outrank, and of the runtime
+overrides `seed_state` copied, only the ones whose key the type sets itself are
+removed — each of those sits *above* a topic config in its chain, so a kept one
+would silently outrank the role, while a key the type has no opinion about keeps
+what the parent was running. Models are the one place the mapping is not
+key-for-key: which `<mode>-model-override` the runtime reads is decided by the
+**file** mode (`.jyc/mode-override`, never a topic-config mode —
+`service/mod.rs`'s `file_override`), and a type that declares `mode` is exactly
+what removes that file, so such a child reads `build-model-override` whatever
+mode the type declares. A declared model therefore takes the build file out too,
+not only one matching the key it declared. Two consequences worth knowing: a
+declared model always beats an inherited one, so the other mode's file is left
+dormant and a later `/mode` switch inherits nothing from it; and a role that
+declares `mode` reads the build file only, so a parent whose model lived in the
+plan file alone still leaves that role on the configured default.
+
 A **shared** subagent (`share_topic_path`) takes the parent's dir and nothing
 else of it: its own state stays in `<agents root>/<name>/.jyc`, which is what
 keeps `close_topic` — and `auto_close_topic`'s dir removal — from ever touching

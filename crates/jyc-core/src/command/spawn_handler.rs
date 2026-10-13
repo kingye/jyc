@@ -772,6 +772,12 @@ fn superseded_overrides(config: &TopicConfig) -> Vec<&'static str> {
         // picked plan — so that child reads the build file whatever mode the
         // type declares. A plan-only model has to take it out for the same
         // reason a build one does: left in place it shadows the type's value.
+        //
+        // The trade, deliberate: a plan-only model under a declared `mode` also
+        // takes the *build* file out, so a later `/mode build` switch inherits
+        // nothing from the parent on that side. A declared key beats a
+        // hypothetical later inheritance, and keeping the file would shadow the
+        // role's own value the moment the child is in build mode.
         if ai.model.is_some()
             || ai.build_model.is_some()
             || (ai.plan_model.is_some() && config.mode.is_some())

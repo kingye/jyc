@@ -225,8 +225,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut ctx = ToolContext::new(tmp.path());
         ctx.current_topic = Some("parent".to_string());
-        let config =
-            jyc_types::load_config_from_str("[subagents.review]\nmode = \"plan\"\n").unwrap();
+        let config = jyc_types::load_config_from_str(
+            "[ai]\nenabled = true\n[subagents.review]\nmode = \"plan\"\n",
+        )
+        .unwrap();
         let tool = SpawnSubagentTool {
             config: Arc::new(ArcSwap::from_pointee(config)),
         };

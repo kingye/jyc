@@ -15,9 +15,10 @@
 # where the child *starts*, not what it is stuck with: the child's own `/mode`,
 # `/model` and `/skill` still win over it afterwards.
 #
-# A key this file leaves out is inherited from the parent: with no `[ai]` here,
-# the reviewer starts on the parent's model. Add `[ai] model = "…"` to pin the
-# role to a model of its own.
+# A key this file leaves out is inherited from the parent: with no `[ai]` here
+# the reviewer keeps the parent's model files, and only falls back to the
+# configured default where the parent had none. Add `[ai] model = "…"` to pin
+# the role to a model of its own.
 
 mode = "plan"
 

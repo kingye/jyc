@@ -48,8 +48,9 @@ impl Tool for SpawnSubagentTool {
     }
 
     fn description(&self) -> &str {
-        "Create a subagent topic — a sibling topic that inherits this topic's settings (task list, \
-         mode, pattern) and runs on its own queue — and grant yourself read+write access to its \
+        "Create a subagent topic — a sibling topic that inherits this topic's settings (mode, \
+         pattern, and the runtime overrides you do not pin with `type`), starts with an empty task \
+         list, and runs on its own queue — and grant yourself read+write access to its \
          topic_path, the working directory it runs in. Its conversation starts empty: pass \
          inherit_context=true only when the child must continue this conversation. Pass \
          share_topic_path=true to have it work in *your* directory (a reviewer of uncommitted \

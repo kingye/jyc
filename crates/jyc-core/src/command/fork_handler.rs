@@ -62,8 +62,9 @@ const CHAT_HISTORY_PREFIX: &str = "chat_history_";
 /// [`TopicManager::close_topic`] relies on: given a registered state dir it
 /// deletes the state and leaves the topic dir (usually a user-owned project
 /// checkout) alone. What makes it a *fork* rather than a new topic is where it
-/// starts: this topic's settings, task list — and, with `--inherit`, the
-/// conversation and transcript it is continuing.
+/// starts: this topic's settings — and, with `--inherit`, the conversation and
+/// transcript it is continuing. Its task list starts empty: a plan is the work
+/// of the topic that writes it, so a fork makes its own.
 ///
 /// Websocket topics only, like `/pin`: on every other channel the topic name
 /// *is* the routing address, so forking one would mean inventing an address.
@@ -412,7 +413,10 @@ mod tests {
             ("pattern", "jyc"),
             ("agent-context.json", "{\"messages\":[]}"),
             ("agent-session.json", "{\"current_input_tokens\":900}"),
-            (session_state::TASKS_FILE, "{\"items\":[]}"),
+            (
+                session_state::TASKS_FILE,
+                "{\"items\":[{\"id\":1,\"text\":\"the parent's plan\",\"status\":\"pending\"}]}",
+            ),
             ("chat_history_2026-09-23.jsonl", "{}"),
             ("chat_history_2026-09-24.jsonl", "{}"),
             ("activity.jsonl", "{}"),

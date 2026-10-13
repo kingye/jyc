@@ -608,8 +608,9 @@ the work as it is needs:
    keeps the in-dir state instead of deriving `_<path>` state under
    `agents_dir(data_dir)`).
 2. Seed the parent's state with `seed_state(…, "spawned-from")` — the `/fork`
-   allow-list minus the conversation-shaped entries (pattern, Task List,
-   backlog, `mode-override`, model/context/MCP/skill overrides), never `jobs/`
+   allow-list minus the conversation-shaped entries (pattern, backlog,
+   `mode-override`, model/context/MCP/skill overrides; the task list is never
+   inherited, so a child plans its own work), never `jobs/`
    or `agent-session.json`, and never the workspace. The conversation
    (`agent-context.json`) and the transcript (`chat_history_*.jsonl`) are copied
    only when they were asked for: a child starting on a task of its own would

@@ -2194,6 +2194,7 @@ mod tests {
                     last_active_at: None,
                     skills: vec![],
                     topic_path: None,
+                    parent: None,
                     cost: None,
                     commands: vec![],
                 })
@@ -2242,6 +2243,7 @@ mod tests {
                     last_active_at: None,
                     skills: vec![],
                     topic_path: None,
+                    parent: None,
                     cost: None,
                     commands: cmds.get(i).cloned().unwrap_or_default(),
                 })

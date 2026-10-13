@@ -13,6 +13,7 @@ use crate::scoped_ws::ScopedWsHandler;
 use crate::topic_proxy::TopicProxyHandler;
 use jyc_core::activity_log_store::ActivityLogStore;
 use jyc_core::command::list_available_models;
+use jyc_core::command::spawn_handler::spawned_from;
 use jyc_core::command::{ArgCtx, all_commands_with, command_args, per_agent_commands};
 use jyc_core::metrics::SharedHealthStats;
 use jyc_core::topic_manager::TopicManager;
@@ -265,6 +266,13 @@ impl InspectServer {
             .map(|t| {
                 let commands =
                     commands_for_topic(t.pattern.as_deref(), cfg_ref, &t.available_skills, &models);
+                // Lineage for the tree views: read before the struct literal
+                // moves `t.name`. A topic whose state dir can't be read (or
+                // has no breadcrumb) is a root.
+                let parent = t
+                    .topic_path
+                    .as_deref()
+                    .and_then(|path| spawned_from(&t.name, path));
                 TopicSummary {
                     name: t.name,
                     channel: t.channel,
@@ -281,6 +289,7 @@ impl InspectServer {
                     last_active_at: t.last_active_at,
                     skills: t.skills,
                     topic_path: t.topic_path,
+                    parent,
                     branch: t.branch,
                     changed_files: t.changed_files,
                     cost: t.cost,

@@ -192,6 +192,7 @@ mod tests {
             last_active_at: None,
             skills: vec![],
             topic_path: None,
+            parent: None,
             cost: None,
             commands: vec![],
         }

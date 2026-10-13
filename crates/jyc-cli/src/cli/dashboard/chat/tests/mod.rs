@@ -1567,6 +1567,7 @@ fn app_with_topic_summary() -> App {
             last_active_at: None,
             skills: vec![],
             topic_path: None,
+            parent: None,
             cost: None,
             commands: vec![],
         }],

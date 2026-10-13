@@ -23,14 +23,23 @@
 //! spawn time.
 
 use anyhow::Result;
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 use crate::tools::{Tool, ToolContext, ToolOutput};
 use jyc_core::command::spawn_handler;
+use jyc_types::AppConfig;
 
 /// Tool for spawning a subagent topic that inherits this topic's state.
-pub struct SpawnSubagentTool;
+pub struct SpawnSubagentTool {
+    /// The service's shared config, so a `type` is resolved against the config
+    /// this instance is actually running with (`--config <FILE>` included, and
+    /// config reloads applied) — the same ArcSwap `build_tool_registry` reads
+    /// its MCP and pattern settings from.
+    pub config: Arc<ArcSwap<AppConfig>>,
+}
 
 #[async_trait]
 impl Tool for SpawnSubagentTool {
@@ -47,8 +56,8 @@ impl Tool for SpawnSubagentTool {
          work needs that; its own state still goes to its own state dir). Pass type=\"<name>\" to \
          start it as a configured role — the settings under that name (its model, skill \
          allow-list, disabled tools, mode, instructions) are written into the child's state, so \
-         e.g. a reviewer starts in plan mode with only the review skills and without the tools \
-         that could change your files; `read` the subagents directory under the config dir to \
+         e.g. the `review` type starts a child in plan mode with only the review skills and \
+         without `write`/`edit`; `read` the subagents directory under the config dir to \
          see which types exist. Put whatever it needs into that directory with `write`, then send \
          the task with `jyc_send_to_topic` (require_reply=true). To reconfigure it, send it a \
          command body (`/build`, `/plan`, `/model`, …), which runs without spending one of its \
@@ -95,6 +104,18 @@ impl Tool for SpawnSubagentTool {
                  standalone agent.",
             ));
         };
+        // The role is resolved first, and against the live config: an unknown or
+        // malformed type is refused before a directory exists, and before this
+        // context is asked for anything else it may lack.
+        let type_name = input
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        let subagent_type = match spawn_handler::resolve_type_arg(type_name, &self.config.load()) {
+            Ok(resolved) => resolved,
+            Err(refusal) => return Ok(ToolOutput::error(format!("jyc_spawn_subagent: {refusal}"))),
+        };
         let (Some(channel), Some(managers)) =
             (ctx.current_channel.clone(), ctx.topic_managers.as_ref())
         else {
@@ -117,11 +138,6 @@ impl Tool for SpawnSubagentTool {
             .get("share_topic_path")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let type_name = input
-            .get("type")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|v| !v.is_empty());
         match spawn_handler::spawn_subagent(
             &tm,
             &parent,
@@ -129,7 +145,7 @@ impl Tool for SpawnSubagentTool {
             name,
             inherit_context,
             share_topic_path,
-            type_name,
+            subagent_type.as_ref(),
         )
         .await
         {
@@ -160,29 +176,84 @@ impl Tool for SpawnSubagentTool {
 mod tests {
     use super::*;
 
+    /// The tool as the service registers it: what the tests exercise is the
+    /// argument handling, not any configured type.
+    fn tool() -> SpawnSubagentTool {
+        SpawnSubagentTool {
+            config: Arc::new(ArcSwap::from_pointee(AppConfig::default())),
+        }
+    }
+
     /// Without a channel context there is nothing to resolve, and the tool says
     /// so instead of panicking.
     #[tokio::test]
     async fn refuses_without_channel_context() {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = ToolContext::new(tmp.path());
-        let out = SpawnSubagentTool.execute(json!({}), &ctx).await.unwrap();
+        let out = tool().execute(json!({}), &ctx).await.unwrap();
         assert!(out.is_error);
         assert!(out.content.contains("topic context"), "{}", out.content);
     }
 
+    /// A type that nothing defines is refused before any topic is created, and
+    /// the refusal comes from the tool (which holds the live config) rather
+    /// than from the core it calls.
+    #[tokio::test]
+    async fn refuses_an_unknown_type_before_spawning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ctx = ToolContext::new(tmp.path());
+        ctx.current_topic = Some("parent".to_string());
+        let out = tool()
+            .execute(json!({"type": "no-such-role"}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("unknown subagent type 'no-such-role'"),
+            "{}",
+            out.content
+        );
+    }
+
+    /// A type defined in the config *this instance is running with* resolves — the
+    /// tool reads the service's live `ArcSwap`, not the default config path, so a
+    /// `--config <FILE>` (or a reloaded config) is what decides. The spawn then
+    /// proceeds to the next missing piece of context instead of refusing the
+    /// type, which is what a disk read would do here.
+    #[tokio::test]
+    async fn resolves_a_type_from_the_live_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ctx = ToolContext::new(tmp.path());
+        ctx.current_topic = Some("parent".to_string());
+        let config =
+            jyc_types::load_config_from_str("[subagents.review]\nmode = \"plan\"\n").unwrap();
+        let tool = SpawnSubagentTool {
+            config: Arc::new(ArcSwap::from_pointee(config)),
+        };
+
+        let out = tool.execute(json!({"type": "review"}), &ctx).await.unwrap();
+
+        assert!(out.is_error, "no channel context yet: {}", out.content);
+        assert!(
+            !out.content.contains("unknown subagent type"),
+            "the type came from the live config, so it is known: {}",
+            out.content
+        );
+        assert!(out.content.contains("topic managers"), "{}", out.content);
+    }
+
     #[test]
     fn name_and_schema_are_stable() {
-        assert_eq!(SpawnSubagentTool.name(), "jyc_spawn_subagent");
+        assert_eq!(tool().name(), "jyc_spawn_subagent");
         assert_eq!(
-            SpawnSubagentTool.input_schema()["properties"]["name"]["type"],
+            tool().input_schema()["properties"]["name"]["type"],
             "string"
         );
         // Both start-from decisions are the caller's to make, and both default
         // to off — the schema is where the model reads that.
         for flag in ["inherit_context", "share_topic_path"] {
             assert_eq!(
-                SpawnSubagentTool.input_schema()["properties"][flag]["type"],
+                tool().input_schema()["properties"][flag]["type"],
                 "boolean",
                 "{flag}"
             );
@@ -190,7 +261,7 @@ mod tests {
         // The role is opt-in too, and its absence is the documented default
         // (inherit this topic's settings).
         assert_eq!(
-            SpawnSubagentTool.input_schema()["properties"]["type"]["type"],
+            tool().input_schema()["properties"]["type"]["type"],
             "string"
         );
     }

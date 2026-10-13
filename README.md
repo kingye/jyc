@@ -93,14 +93,14 @@ JYC separates **user-edited configuration** from **generated data**, following p
 
 Three-level layering applies to `config.toml`, `skills/`, and `templates/`:
 
-- **L1 (global)** — `<config dir>/`: shared `config.toml`, `skills/`, `templates/`, `subagents/` (one directory per subagent type)
+- **L1 (global)** — `<config dir>/`: shared `config.toml`, `skills/`, `templates/`, `subagents/` (one directory per subagent type — this one is L1-only, see below)
 - **L2 (data dir / data root)** — `--data-dir` if given, else the data dir: its own `config.toml` (`--config`), `skills/`, `templates/`, and all generated state (`channels/<channel>/.imap/`, `channels/<channel>/.github/`, `agents/<agent>/<topic>/`)
 - **L3 (topic)** — `<topic_path>/.jyc/`: `config.toml` (model overrides plus the topic's own `mode`, skill allow/deny lists, `disabled_tools` and `instructions`), `skills/`, `templates/`, sessions, chat history
 
 Merge/lookup rules:
 
 - **config.toml**: L2 is deep-merged over L1 (tables merge recursively, arrays/scalars are replaced). L3 sets the topic's own model overrides, `mode`, `skills` (allow-list), `disabled_skills` / `disabled_tools` (deny-lists) and `instructions`; a broken L3 file is ignored with a warning. Model precedence: `.jyc/<mode>-model-override` file > L3 `config.toml` > pattern > L2/L1 config; mode precedence: `.jyc/mode-override` (your `/mode`) > L3 `config.toml` > pattern > build.
-- **subagent types**: `jyc_spawn_subagent(type = "…")` and `/spawn --type=…` name a role, defined by `[subagents.<type>]` in `config.toml` or by `<config dir>/subagents/<type>/config.toml` (a plain topic config; defined in both, the in-config table wins key by key). The spawn writes it into the child's own `.jyc/config.toml`, dropping the runtime overrides the child inherited from its parent. See `config.example.toml` → "Subagent Types".
+- **subagent types**: `jyc_spawn_subagent(type = "…")` and `/spawn --type=…` name a role, defined by `[subagents.<type>]` in `config.toml` or by `<config dir>/subagents/<type>/config.toml` (a plain topic config; defined in both, the in-config table wins key by key). The spawn writes it into the child's own `.jyc/config.toml`, dropping the runtime overrides the child inherited from its parent. Only the L1 config dir is scanned — unlike `skills/` and `templates/`, a type is not layered, so `{data dir}/subagents/` is not a source. This repo ships one: `subagents/review/config.toml` is a read-only reviewer (plan mode, the review skills as an allow-list, no `write`/`edit`), installed with `cp -r subagents/review <config dir>/subagents/` and delegated to from the `forked-review` skill. See `config.example.toml` → "Subagent Types".
 - **skills**: all levels are scanned; higher levels override same-named skills.
 - **templates**: looked up L3 → L2 → L1; first match wins.
 - A pattern's custom `topic_path` (absolute or `~`) lives outside the data root; relative paths resolve against the data root. L3 applies to any topic directory, including ad-hoc ones (`jyc open <path>`).

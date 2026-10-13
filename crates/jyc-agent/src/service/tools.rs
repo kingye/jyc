@@ -81,7 +81,12 @@ impl JycAgentService {
         // keep, so it is left out entirely.
         if self.channel_name == "agents" {
             registry.register(Box::new(
-                crate::tools::builtin::spawn_subagent::SpawnSubagentTool,
+                crate::tools::builtin::spawn_subagent::SpawnSubagentTool {
+                    // The same live config this registry's other settings come
+                    // from, so `type` resolves against what the instance runs
+                    // with rather than a fresh read of the default path.
+                    config: self.config.clone(),
+                },
             ));
         }
 

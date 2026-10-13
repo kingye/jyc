@@ -377,18 +377,13 @@ impl CommandHandler for SpawnCommandHandler {
             Err(refusal) => return Ok(fail(format!("/spawn: {refusal}. Usage: {USAGE}"))),
         };
         // Which role the child starts in, resolved before anything is created:
-        // an unknown or malformed type refuses here, not halfway through a spawn.
-        let config = effective_config(self.topic_manager.data_root());
-        let subagent_type = match type_name.as_deref() {
-            Some(name) => match resolve_subagent_type(
-                name,
-                config.as_ref(),
-                jyc_utils::paths::config_dir().as_deref(),
-            ) {
-                Ok(resolved) => Some(resolved),
-                Err(refusal) => return Ok(fail(format!("/spawn: {refusal}"))),
-            },
-            None => None,
+        // an unknown or malformed type refuses here, not halfway through a
+        // spawn. The config is the one this inbound message was routed with —
+        // not a fresh read of the default config path, which would miss the
+        // `--config <FILE>` the daemon was started with.
+        let subagent_type = match resolve_type_arg(type_name.as_deref(), &context.config) {
+            Ok(resolved) => resolved,
+            Err(refusal) => return Ok(fail(format!("/spawn: {refusal}"))),
         };
         let req = SpawnRequest {
             parent_topic: &context.topic_name,
@@ -429,6 +424,9 @@ pub const MAX_SUBAGENTS: usize = 3;
 /// child is a command away — `jyc_send_to_topic` with a body of `/build`,
 /// `/model`, `/context`, … runs it in the child's topic without spending one of
 /// its turns (an empty body stops before the model call).
+///
+/// `subagent_type` is resolved by the caller ([`resolve_type_arg`]), which has
+/// the live config: this function only needs the answer.
 pub async fn spawn_subagent(
     tm: &Arc<TopicManager>,
     parent: &str,
@@ -436,25 +434,17 @@ pub async fn spawn_subagent(
     name: Option<&str>,
     inherit_context: bool,
     share_topic_path: bool,
-    type_name: Option<&str>,
+    subagent_type: Option<&SubagentType>,
 ) -> Result<String, String> {
     // Production path only, like `/spawn`: `resolve_agents_dir()` resolves
     // the real data home, so a test that reached here would create topics
     // inside the developer's own agents tree. Tests call
     // `spawn_subagent_under` with every root.
     let agents_dir = tm.resolve_agents_dir();
-    // The role comes from the same two sources `/spawn` reads: the live config
-    // and the installed type dirs. Resolved here so an unknown type is a refusal
-    // before a directory exists.
-    let config = effective_config(tm.data_root());
-    let subagent_type = match type_name {
-        Some(name) => Some(resolve_subagent_type(
-            name,
-            config.as_ref(),
-            jyc_utils::paths::config_dir().as_deref(),
-        )?),
-        None => None,
-    };
+    // The role arrives already resolved, by the caller that has a config to
+    // resolve it against ([`resolve_type_arg`]): the tool layer holds the live
+    // `AppConfig`, and a config read here would be a *second* answer to "where
+    // does config come from" — one that misses `--config`.
     spawn_subagent_under(
         tm,
         parent,
@@ -462,7 +452,7 @@ pub async fn spawn_subagent(
         name,
         inherit_context,
         share_topic_path,
-        subagent_type.as_ref(),
+        subagent_type,
         &agents_dir,
     )
     .await
@@ -623,8 +613,10 @@ pub fn format_subagent_names(subagents: &[(String, PathBuf)]) -> String {
 /// exists.
 #[derive(Debug)]
 pub struct SubagentType {
-    /// The name as given (`review`), recorded in the child's state so the
-    /// dashboard can say which role it runs.
+    /// The name as given (`review`), recorded in the child's state as
+    /// `.jyc/subagent-type` so a role is legible after the fact. Nothing reads
+    /// it yet — the dashboard is where it is headed — and the spawn does not
+    /// depend on it: what the child runs with is the config it was written.
     pub name: String,
     /// What to write into the child's own `.jyc/config.toml`.
     pub config: TopicConfig,
@@ -707,23 +699,31 @@ fn unknown_type_message(
     }
 }
 
-/// The effective app config, read the way the daemon reads it: the global
-/// `config.toml` with the data dir's own config merged over it.
+/// Resolve a spawn's `type` argument against the **live** config and the
+/// installed type dirs — the one step both entry points run before they call
+/// [`spawn_subagent`] / [`SpawnCommandHandler::spawn_under`]: `/spawn`, which
+/// holds the config it was dispatched with (`CommandContext::config`), and the
+/// `jyc_spawn_subagent` tool, which holds the service's shared `ArcSwap`.
 ///
-/// A spawn is rare, and a type is declared in files the user edits, so this
-/// reads them instead of threading the live config through the tool layer — with
-/// the *same* two calls `jyc serve` makes ([`jyc_utils::config_resolve::
-/// resolve_config`] + [`jyc_types::load_config_layered`]), so there is one
-/// answer to "where does config come from". `None` when it cannot be read: the
-/// type lookup then reports the type as undefined, which is what an unreadable
-/// config means for it.
-fn effective_config(data_dir: &Path) -> Option<AppConfig> {
-    let resolution = jyc_utils::config_resolve::resolve_config(data_dir, None, false).ok()?;
-    jyc_types::load_config_layered(
-        resolution.global_config_path.as_deref(),
-        &resolution.config_path,
-    )
-    .ok()
+/// Both resolve here so an unknown or malformed type refuses before anything is
+/// created, and so neither has to read a config off disk: a fresh read would
+/// answer with the *default* config path, not the one this instance is running
+/// with (`--config <FILE>`), and would be a second answer to "where does config
+/// come from". `None` for an absent `type` is not a refusal — it is the default,
+/// a child that inherits this topic's settings.
+pub fn resolve_type_arg(
+    type_name: Option<&str>,
+    config: &AppConfig,
+) -> Result<Option<SubagentType>, String> {
+    match type_name {
+        Some(name) => resolve_subagent_type(
+            name,
+            Some(config),
+            jyc_utils::paths::config_dir().as_deref(),
+        )
+        .map(Some),
+        None => Ok(None),
+    }
 }
 
 /// Peel `--type=<name>` off `/spawn`'s arguments.
@@ -768,7 +768,8 @@ fn take_type_flag(args: &[String]) -> Result<(Option<String>, Vec<String>), Stri
 /// 2. **The type's settings are written** to `.jyc/config.toml` — a config
 ///    layer, so the child's own `/mode`, `/model` and `/skill` still win over it
 ///    afterwards (the type is where the child *starts*, not a cage) — plus the
-///    name in `.jyc/subagent-type` for the dashboard.
+///    name in `.jyc/subagent-type`, which nothing reads yet (the dashboard is
+///    where it is headed) and which carries no behavior of its own.
 fn apply_subagent_type(state_dir: &Path, subagent_type: &SubagentType) -> Result<()> {
     for file in [
         "mode-override",
@@ -1061,6 +1062,90 @@ mod tests {
         let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
         let err = resolve_subagent_type("review", Some(&config), Some(tmp.path())).unwrap_err();
         assert!(err.contains("config.toml"), "{err}");
+    }
+
+    /// The role this repository ships — `subagents/review/config.toml`, the type
+    /// the `forked-review` skill tells a spawn to name — loads through the same
+    /// installed-type path a user's `~/.config/jyc/subagents/review/` does. It is
+    /// checked here so the file cannot rot into a role nobody can spawn.
+    #[test]
+    fn the_repos_own_review_type_loads() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+
+        let review = resolve_subagent_type("review", Some(&config), Some(&repo)).unwrap();
+
+        assert_eq!(review.name, "review");
+        assert_eq!(review.config.mode.as_deref(), Some("plan"));
+        assert_eq!(
+            review.config.skills.as_deref(),
+            Some(
+                [
+                    "pr-review",
+                    "ponytail-review",
+                    "coding-principles",
+                    "ponytail"
+                ]
+                .map(str::to_string)
+                .as_slice()
+            )
+        );
+        assert_eq!(
+            review.config.disabled_skills.as_deref(),
+            Some(["forked-review".to_string()].as_slice()),
+            "a reviewer must not delegate the review onward"
+        );
+        // `bash` stays: there is no read-only shell, and a review of uncommitted
+        // work needs `git diff`. The file-editing tools are the ones that go.
+        assert_eq!(
+            review.config.disabled_tools.as_deref(),
+            Some(
+                ["write", "edit", "jyc_spawn_subagent"]
+                    .map(str::to_string)
+                    .as_slice()
+            )
+        );
+        assert!(
+            review
+                .config
+                .instructions
+                .as_deref()
+                .is_some_and(|i| i.contains("Change no file")),
+            "the role carries its own standing orders"
+        );
+    }
+
+    /// A type is resolved against the config the caller holds — for `/spawn` the
+    /// one it was dispatched with, for the tool the service's live `ArcSwap` —
+    /// which is the only way a type declared under `--config <FILE>` or added by
+    /// a config reload is visible. Nothing in this path reads config from disk:
+    /// `resolve_type_arg` is the single step both entry points run, and an
+    /// absent `type` is not a refusal but the documented default.
+    #[test]
+    fn resolve_type_arg_uses_the_config_it_is_handed() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[ai]\nenabled = true\n\n[subagents.review]\nmode = \"plan\"\n\
+             skills = [\"pr-review\"]\n",
+        )
+        .unwrap();
+        // The config as an instance running with `--config <path>` would have it.
+        let config = jyc_types::load_config(&path).unwrap();
+
+        let review = resolve_type_arg(Some("review"), &config)
+            .expect("a type in the live config resolves")
+            .expect("Some for a named type");
+        assert_eq!(review.name, "review");
+        assert_eq!(review.config.mode.as_deref(), Some("plan"));
+        assert_eq!(
+            review.config.skills.as_deref(),
+            Some(["pr-review".to_string()].as_slice())
+        );
+
+        // No `type` at all is the default, not an error.
+        assert!(resolve_type_arg(None, &config).unwrap().is_none());
     }
 
     /// `--type=<name>` leaves the argument list before names and paths are told

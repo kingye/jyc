@@ -17,10 +17,9 @@ three in one call, the third through the `review` type.
 
 1. `jyc_spawn_subagent(name="review-<what>", share_topic_path=true, type="review")`
    — the child works in your `topic_path`, so it reads exactly what you have,
-   and it starts as the `review` role: plan mode, the review skills only, and
-   `write`/`edit`/`bash` disabled. Do **not** pass `inherit_context`: a review
-   that starts with your reasoning in it is not a second opinion (this is the
-   default, so just leave it out).
+   and it starts as the `review` role (see below). Do **not** pass
+   `inherit_context`: a review that starts with your reasoning in it is not a
+   second opinion (this is the default, so just leave it out).
 2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` with the
    task. Name the question, where to start, and what the report looks like:
 
@@ -32,31 +31,38 @@ three in one call, the third through the `review` type.
 
 ### The `review` type
 
-If the spawn refuses with `unknown subagent type 'review'`, the type is not
-defined on this machine yet. Install it once, either way round (see
-`config.example.toml` → "Subagent Types"):
+This repository ships the role at `subagents/review/config.toml`. What it sets:
 
-```toml
-# ~/.config/jyc/subagents/review/config.toml
-mode = "plan"
-skills          = ["pr-review", "ponytail-review"]
-disabled_skills = ["forked-review"]
-disabled_tools  = ["write", "edit", "bash", "jyc_spawn_subagent"]
-instructions    = """
-You are the reviewer for this delegation: read, verify, report. Change no file.
-"""
+| Key | Value | Why |
+|---|---|---|
+| `mode` | `plan` | It reasons about the change, it does not act on it |
+| `skills` | `pr-review`, `ponytail-review`, `coding-principles`, `ponytail` | The review methodology and the review lenses, nothing else |
+| `disabled_skills` | `forked-review` | It does not hand the review on |
+| `disabled_tools` | `write`, `edit`, `jyc_spawn_subagent` | It cannot change your files |
+| `instructions` | report-only standing orders | Severity + `file:line` + suggested fix, unverified claims marked as such |
+
+`bash` is deliberately **not** disabled: a review of uncommitted work needs
+`git status` and `git diff`, and no read-only shell exists. Plan mode and the
+role's instructions are what restrain it — the tools that edit files are simply
+absent, which is the part wording cannot undo.
+
+Install it once, if the spawn refuses with `unknown subagent type 'review'`:
+
+```bash
+cp -r subagents/review ~/.config/jyc/subagents/      # from a jyc checkout
 ```
 
-or, equivalently, `[subagents.review]` in `~/.config/jyc/config.toml` with the
-same keys (`instructions` then lives under the same table). A type is expanded
-at spawn time, so a child spawned earlier keeps the role it started with.
+Equivalently, the same keys as `[subagents.review]` in
+`~/.config/jyc/config.toml`; defined both ways, they merge key by key with the
+in-config table winning. A type is expanded at spawn time, so a child spawned
+earlier keeps the role it started with.
 
 ### Rules
 
 - **The type is the boundary, not your wording.** With `type="review"` the child
-  cannot write files or spawn its own reviewer, and it cannot see the skills it
-  would need to do your job instead of judging it. Say what to review; the role
-  takes care of what it may do.
+  has no `write` and no `edit` and cannot spawn its own reviewer, and it cannot
+  see the skills it would need to do your job instead of judging it. Say what to
+  review; the role takes care of what it may do.
 - **Sharpen the task, not the permissions.** If the review needs something the
   role forbids (running a test build, say), that is a different job with a
   different type — do not talk the reviewer out of its role.

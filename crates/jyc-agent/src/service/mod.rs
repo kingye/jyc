@@ -148,19 +148,27 @@ impl JycAgentService {
     }
 }
 
-/// Mode resolution chain: `.jyc/mode-override` > `pattern.mode` > default
-/// "build" downstream. Scheduled-job turns are non-interactive automation —
-/// a plan-mode job turn would wait for a user approval that can never
-/// arrive and emit nothing — so they always resolve to `None` (build).
+/// Mode resolution chain: `.jyc/mode-override` > topic config `mode` >
+/// `pattern.mode` > default "build" downstream. Scheduled-job turns are
+/// non-interactive automation — a plan-mode job turn would wait for a user
+/// approval that can never arrive and emit nothing — so they always resolve to
+/// `None` (build).
+///
+/// The topic-config layer sits here rather than in `.jyc/mode-override` on
+/// purpose: that file means "the user chose this via `/mode`", while a
+/// config-derived mode (a subagent type's `mode = "plan"`) has to stay in a
+/// config layer to keep the two distinguishable (see
+/// `session_state::resolve_effective_mode`).
 fn resolve_turn_mode(
     file_mode: Option<String>,
+    topic_mode: Option<String>,
     pattern_mode: Option<String>,
     scheduled: bool,
 ) -> Option<String> {
     if scheduled {
         return None;
     }
-    file_mode.or(pattern_mode)
+    file_mode.or(topic_mode).or(pattern_mode)
 }
 
 #[async_trait]
@@ -176,7 +184,8 @@ impl AgentService for JycAgentService {
         topic_path: &Path,
         matched_pattern: Option<&str>,
     ) -> Vec<SkillMeta> {
-        let (include, exclude) = self.config_skill_filters(matched_pattern);
+        let topic_cfg = jyc_types::load_topic_config(topic_name, topic_path);
+        let (include, exclude) = self.config_skill_filters(matched_pattern, topic_cfg.as_ref());
         self.discover_skills(
             topic_name,
             topic_path,
@@ -239,9 +248,10 @@ impl AgentService for JycAgentService {
         //     (Skip file overrides in default mode to avoid stale data from
         //      the old /model command which wrote model-override for all modes.)
         let file_override = {
-            // File-override paths follow the FILE mode only (never pattern.mode).
+            // File-override paths follow the FILE mode only (never pattern.mode
+            // or a topic-config mode).
             let mode_suffix =
-                match resolve_turn_mode(mode_override.clone(), None, scheduled).as_deref() {
+                match resolve_turn_mode(mode_override.clone(), None, None, scheduled).as_deref() {
                     Some("plan") => "plan",
                     _ => "build", // default = build mode
                 };
@@ -268,9 +278,10 @@ impl AgentService for JycAgentService {
             .matched_pattern
             .as_deref()
             .and_then(|name| self.patterns.iter().find(|p| p.name == name));
-        // Mode resolution chain: .jyc/mode-override file > pattern.mode > default "build"
+        // Mode resolution chain: .jyc/mode-override file > topic config > pattern.mode > default "build"
         let mode_override = resolve_turn_mode(
             mode_override,
+            topic_cfg.as_ref().and_then(|c| c.mode.clone()),
             pattern.and_then(|p| p.mode.clone()),
             scheduled,
         );
@@ -374,6 +385,7 @@ impl AgentService for JycAgentService {
                 topic_name,
                 topic_path,
                 message.matched_pattern.as_deref(),
+                topic_cfg.as_ref(),
                 &additional_read_roots,
                 &additional_write_roots,
             )
@@ -391,6 +403,7 @@ impl AgentService for JycAgentService {
         );
         let current_mode = resolve_turn_mode(
             jyc_core::session_state::read_mode_override(topic_name, topic_path).await,
+            topic_cfg.as_ref().and_then(|c| c.mode.clone()),
             pattern.and_then(|p| p.mode.clone()),
             scheduled,
         );

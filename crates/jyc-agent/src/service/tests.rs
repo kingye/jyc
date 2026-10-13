@@ -37,6 +37,7 @@ fn base_app_config(model: Option<&str>) -> jyc_types::AppConfig {
         commands: Vec::new(),
         hooks: Vec::new(),
         agents: std::collections::HashMap::new(),
+        subagents: std::collections::HashMap::new(),
     }
 }
 
@@ -330,6 +331,7 @@ fn reload_picks_up_new_model_context_window_without_restart() {
         commands: Vec::new(),
         hooks: Vec::new(),
         agents: std::collections::HashMap::new(),
+        subagents: std::collections::HashMap::new(),
     };
     let config = Arc::new(ArcSwap::from_pointee(app));
     let svc = JycAgentService::new(
@@ -442,6 +444,7 @@ fn derive_agent_config_applies_channel_overrides() {
         commands: Vec::new(),
         hooks: Vec::new(),
         agents: std::collections::HashMap::new(),
+        subagents: std::collections::HashMap::new(),
     };
     let cfg = derive_agent_config(&app, "test");
     assert_eq!(cfg.model.as_deref(), Some("override/main"));
@@ -1131,6 +1134,113 @@ fn no_filters_loads_all_skills() {
     });
 }
 
+/// Register a topic whose `.jyc/config.toml` holds `body`, and return the
+/// loaded topic config — the shape a spawned subagent type leaves behind.
+fn topic_with_config(topic: &str, tmp: &tempfile::TempDir, body: &str) -> jyc_types::TopicConfig {
+    let state = tmp.path().join(".jyc");
+    std::fs::create_dir_all(&state).unwrap();
+    jyc_types::state_dir::register(topic, &state);
+    std::fs::write(state.join("config.toml"), body).unwrap();
+    jyc_types::load_topic_config(topic, tmp.path()).expect("topic config parses")
+}
+
+/// A topic config's skill allow-list is the narrowest statement of intent there
+/// is, so it *replaces* the pattern/channel list instead of extending it — while
+/// every deny-list in the chain still applies (disabling is subtractive).
+#[test]
+fn topic_config_skills_replace_the_pattern_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let topic = "topic_config_skills_replace_the_pattern_list";
+    let topic_cfg = topic_with_config(
+        topic,
+        &tmp,
+        "skills = [\"pr-review\"]\ndisabled_skills = [\"forked-review\"]\n",
+    );
+
+    let patterns = vec![ChannelPattern {
+        name: "test-pattern".to_string(),
+        skills: Some(vec!["gamma".to_string()]),
+        disabled_skills: Some(vec!["beta".to_string()]),
+        ..ChannelPattern::default()
+    }];
+    let svc = service_with_skills(
+        patterns,
+        Some(vec!["alpha".to_string()]),
+        Some(vec!["delta".to_string()]),
+    );
+
+    let (include, exclude) = svc.config_skill_filters(Some("test-pattern"), Some(&topic_cfg));
+    assert_eq!(
+        include.as_deref(),
+        Some(["pr-review".to_string()].as_slice()),
+        "the topic's allow-list wins over the pattern's and the channel's"
+    );
+    for name in ["delta", "beta", "forked-review"] {
+        assert!(
+            exclude.contains(&name.to_string()),
+            "'{name}' must stay excluded: {exclude:?}"
+        );
+    }
+}
+
+/// Without a topic config nothing changes: the pattern/channel chain is what it
+/// was before topic configs could express skills at all.
+#[test]
+fn no_topic_config_keeps_the_pattern_chain() {
+    let patterns = vec![ChannelPattern {
+        name: "test-pattern".to_string(),
+        skills: Some(vec!["gamma".to_string()]),
+        ..ChannelPattern::default()
+    }];
+    let svc = service_with_skills(patterns, Some(vec!["alpha".to_string()]), None);
+    let (include, exclude) = svc.config_skill_filters(Some("test-pattern"), None);
+    assert_eq!(include.as_deref(), Some(["gamma".to_string()].as_slice()));
+    assert!(exclude.is_empty(), "{exclude:?}");
+}
+
+/// `disabled_tools` in a topic config reaches the tool registry, like the
+/// channel and pattern lists do — this is what makes a role structurally
+/// read-only instead of read-only by instruction.
+#[tokio::test]
+async fn topic_config_disabled_tools_are_excluded() {
+    let tmp = tempfile::tempdir().unwrap();
+    let topic = "topic_config_disabled_tools_are_excluded";
+    let topic_cfg = topic_with_config(topic, &tmp, "disabled_tools = [\"bash\", \"write\"]\n");
+
+    let svc = service_with_exclusion(vec![], None, None);
+    let registry = svc
+        .build_tool_registry(topic, tmp.path(), Some(&topic_cfg), false, Some("test"))
+        .await;
+    let defs = registry.definitions();
+    let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+    assert!(!names.contains(&"bash"), "{names:?}");
+    assert!(!names.contains(&"write"), "{names:?}");
+    assert!(
+        names.contains(&"read"),
+        "only the listed tools go: {names:?}"
+    );
+}
+
+/// `instructions` is the topic's own standing text — where a subagent type's
+/// role description lands — and it reaches the system prompt.
+#[tokio::test]
+async fn topic_config_instructions_reach_the_system_prompt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let topic = "topic_config_instructions_reach_the_system_prompt";
+    let topic_cfg = topic_with_config(
+        topic,
+        &tmp,
+        "instructions = \"report findings only, change nothing\"\n",
+    );
+
+    let svc = service_with_skills(vec![], None, None);
+    let prompt = svc
+        .build_system_prompt(topic, tmp.path(), None, Some(&topic_cfg), &[], &[])
+        .await;
+    assert!(prompt.contains("## Topic Instructions"), "{prompt}");
+    assert!(prompt.contains("report findings only, change nothing"));
+}
+
 #[test]
 fn build_user_prompt_injects_build_mode_tag() {
     let svc = service_with_skills(vec![], None, None);
@@ -1542,9 +1652,8 @@ fn subagent_section_names_children_and_the_reuse_rule() {
         ),
     ];
     let s = JycAgentService::format_subagents_section(&subagents);
-    assert!(s.contains("Your subagents (2 of at most 3): fix-timeout, parser-check."));
+    assert!(s.contains("Your subagents (2): fix-timeout, parser-check."));
     assert!(s.contains("instead of spawning a duplicate"));
-    assert!(s.contains("expect a refusal once you are at the cap"));
 }
 
 #[tokio::test]
@@ -1601,6 +1710,7 @@ async fn system_prompt_enumerates_configured_access_roots() {
             tname,
             topic,
             message.matched_pattern.as_deref(),
+            None,
             &reads,
             &writes,
         )
@@ -1621,30 +1731,41 @@ async fn system_prompt_enumerates_configured_access_roots() {
 
 #[test]
 fn test_resolve_turn_mode() {
-    // Mode resolution: file > pattern > default build (None downstream).
-    // Scheduled-job turns are non-interactive automation — no user will ever
-    // approve a plan — so they always resolve to build (None), ignoring both
-    // the .jyc/mode-override file and pattern.mode.
+    // Mode resolution: file > topic config > pattern > default build (None
+    // downstream). Scheduled-job turns are non-interactive automation — no user
+    // will ever approve a plan — so they always resolve to build (None),
+    // ignoring every configured layer.
     let cases = [
-        // (scheduled, file_mode, pattern_mode, expected)
-        (false, Some("plan"), None, Some("plan")),
-        (false, None, Some("plan"), Some("plan")),
-        (false, Some("plan"), Some("build"), Some("plan")), // file wins
-        (false, None, None, None),                          // default: build
-        (true, Some("plan"), None, None),
-        (true, None, Some("plan"), None),
-        (true, Some("plan"), Some("plan"), None),
+        // (scheduled, file_mode, topic_mode, pattern_mode, expected)
+        (false, Some("plan"), None, None, Some("plan")),
+        (false, None, Some("plan"), None, Some("plan")),
+        (false, None, None, Some("plan"), Some("plan")),
+        // The user's own /mode beats a configured mode, which beats the pattern.
+        (
+            false,
+            Some("plan"),
+            Some("build"),
+            Some("build"),
+            Some("plan"),
+        ),
+        (false, None, Some("build"), Some("plan"), Some("build")),
+        (false, None, None, None, None), // default: build
+        (true, Some("plan"), None, None, None),
+        (true, None, Some("plan"), None, None),
+        (true, None, None, Some("plan"), None),
+        (true, Some("plan"), Some("plan"), Some("plan"), None),
     ];
-    for (scheduled, file_mode, pattern_mode, expected) in cases {
+    for (scheduled, file_mode, topic_mode, pattern_mode, expected) in cases {
         let got = super::resolve_turn_mode(
             file_mode.map(|s| s.to_string()),
+            topic_mode.map(|s| s.to_string()),
             pattern_mode.map(|s| s.to_string()),
             scheduled,
         );
         assert_eq!(
             got.as_deref(),
             expected,
-            "scheduled={scheduled} file={file_mode:?} pattern={pattern_mode:?}"
+            "scheduled={scheduled} file={file_mode:?} topic={topic_mode:?} pattern={pattern_mode:?}"
         );
     }
 }

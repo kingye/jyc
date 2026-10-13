@@ -3,6 +3,7 @@
 //! Extracted from the monolithic `service.rs`.
 
 use anyhow::{Context, Result};
+use jyc_types::TopicConfig;
 use jyc_types::state_dir::resolve_state_dir;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -70,22 +71,30 @@ pub fn parse_skill_frontmatter(content: &str) -> Option<SkillMeta> {
 
 /// In-process AI agent service.
 impl JycAgentService {
-    /// Config-derived skill filters for a topic: pattern > channel > none.
+    /// Config-derived skill filters for a topic: topic config > pattern >
+    /// channel > none.
     ///
     /// The single source of truth for both callers:
     /// [`Self::build_system_prompt`] layers the runtime `/skill` toggle on top
     /// of this, and [`AgentService::available_skills`] uses it as-is.
     ///
+    /// An allow-list is a statement of what a topic *is*, so the narrowest one
+    /// wins outright (a topic-level `skills` replaces the pattern/channel list
+    /// rather than extending it — "only these" has to mean only these). Every
+    /// deny-list is unioned instead: disabling is subtractive at each layer.
+    ///
     /// [`AgentService::available_skills`]: jyc_core::agent::AgentService::available_skills
     pub(crate) fn config_skill_filters(
         &self,
         matched_pattern: Option<&str>,
+        topic_cfg: Option<&TopicConfig>,
     ) -> (Option<Vec<String>>, Vec<String>) {
         let pattern =
             matched_pattern.and_then(|name| self.patterns.iter().find(|p| p.name == name));
 
-        let include = pattern
-            .and_then(|p| p.skills.as_deref())
+        let include = topic_cfg
+            .and_then(|t| t.skills.as_deref())
+            .or_else(|| pattern.and_then(|p| p.skills.as_deref()))
             .or(self.channel_skills.as_deref())
             .map(|list| list.to_vec());
 
@@ -93,8 +102,14 @@ impl JycAgentService {
         if let Some(channel_excluded) = &self.channel_disabled_skills {
             exclude.extend(channel_excluded.iter().cloned());
         }
-        if let Some(pattern_excluded) = pattern.and_then(|p| p.disabled_skills.as_ref()) {
-            for name in pattern_excluded {
+        for layer in [
+            pattern.and_then(|p| p.disabled_skills.as_ref()),
+            topic_cfg.and_then(|t| t.disabled_skills.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for name in layer {
                 if !exclude.contains(name) {
                     exclude.push(name.clone());
                 }

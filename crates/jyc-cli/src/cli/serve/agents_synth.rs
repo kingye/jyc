@@ -53,6 +53,7 @@ mod tests {
             general: Default::default(),
             channels: Default::default(),
             agents: Default::default(),
+            subagents: Default::default(),
             ai: AiConfig::default(),
             inspect: None,
             attachments: None,

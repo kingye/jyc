@@ -417,7 +417,7 @@ these names loosely, so they are fixed here.
 
 | Term | What it is | Where it is | In code |
 |---|---|---|---|
-| **config dir** | The user-edited input root | `$XDG_CONFIG_HOME/jyc` or `~/.config/jyc`; Windows `%APPDATA%\jyc`. Holds `config.toml`, `skills/`, `templates/`, `hooks`, `scripts/` | `jyc_utils::paths::config_dir()` |
+| **config dir** | The user-edited input root | `$XDG_CONFIG_HOME/jyc` or `~/.config/jyc`; Windows `%APPDATA%\jyc`. Holds `config.toml`, `skills/`, `templates/`, `subagents/`, `hooks`, `scripts/` | `jyc_utils::paths::config_dir()` |
 | **data dir** | The generated-state root — the instance root | `$XDG_DATA_HOME/jyc` or `~/.local/share/jyc`; Windows `%LOCALAPPDATA%\jyc`. The default `--data-dir` | `jyc_utils::paths::data_dir()` |
 | **channel** | The origin/destination of messages (email, github, gitee, feishu, websocket, …). A channel has **no topic directory**: topics never live under a channel | `[channels.<name>]` in the config; binds a pipe (`agent` + `topic` template) or is a hub channel | — |
 | **channels dir** | The root of every channel's own runtime state | `<data dir>/channels` | `jyc_utils::paths::channels_dir()` |
@@ -426,6 +426,7 @@ these names loosely, so they are fixed here.
 | **agent dir** | One agent's home: its default topic's files while unpinned, or just the `.jyc` when that topic is pinned | `<agents dir>/<agent>/` | — |
 | **default topic** | The one topic every agent has, named after the agent — a message sent to the agent lands on it | `topic_path` is the agent dir unless pinned; state dir `<agents dir>/<agent>/.jyc` | 1:1 topics in `TopicManager` |
 | **topic** (non-default) | A topic a pipe creates from its rule's template (`plan-42`, `review-7`, …) | `topic_path` `<agents dir>/<agent>/<topic>/`; state dir `<agents dir>/<agent>/<topic>/.jyc` | router dynamic topics |
+| **subagent type** | A named **role** a spawn hands its child: a topic config selected by name (`type = "review"`), defined by `[subagents.<type>]` in the config or by `<config dir>/subagents/<type>/config.toml`, and expanded into the child's own `.jyc/config.toml` at spawn time. Not a topic, not a channel, not a pattern: nothing routes to it, and nothing about it is inherited by anything else. Only the L1 config dir is scanned — unlike skills, a type is not layered. Resolution happens in the entry points, against the config the instance is *running* with (never a fresh read of the default path), and the repo ships one at `subagents/review/config.toml` | `[subagents.<type>]`; `<config dir>/subagents/<type>/config.toml` | `jyc_types::load_subagent_type`, `spawn_handler::{resolve_type_arg, resolve_subagent_type, SubagentType}` |
 | **subagent** | An agent `/spawn` (or `jyc_spawn_subagent`) created: an agent with its own default topic, not a second kind of topic | `<agents dir>/<subagent>/`, its state dir as any default topic's — or the parent's dir when the tool was asked to share it | `spawn_handler` |
 | **topic_path** | A topic's **working directory**: where the agent runs, what `read`/`write`/`bash` see, and what a parent is granted when it spawns a subagent. **Any** directory — a pin, a checkout, a `/spawn <path>` child — not necessarily under the agents dir | `<agents dir>/<agent>/` or `<agents dir>/<agent>/<topic>/` by default | `TopicManager::topic_path(name)` |
 | **state dir** | A topic's `.jyc`: transcript, `agent-context.json`, `tasks`, `pattern`, `mode-override`, the lineage `spawned-from`, … — always under the agents dir, located by **topic name**, never inside a pinned `topic_path` | see the table below | `jyc_types::state_dir::resolve_state_dir(name, topic_dir)` |
@@ -641,15 +642,13 @@ going nor claims it as somebody else's.
 
 Because the grant comes from the same place `/spawn` writes it, a hand-typed
 spawn is a subagent too: it shows up in the list, in the parent's read+write
-boundary, and in the cap count. That holds whichever form the command took,
-because both readers (`subagents_of`, `forget_subagent`) locate the lineage by
-resolving the child's **state dir** from the granted dir's name
-(`spawn_handler::state_dir_of`) rather than assuming `<granted dir>/.jyc` — a
-`/spawn ../test` child runs beside its parent while its state stays under the
+boundary, and the two forms are one feature rather than two. That holds whichever
+form the command took, because both readers (`subagents_of`, `forget_subagent`)
+locate the lineage by resolving the child's **state dir** from the granted dir's
+name (`spawn_handler::state_dir_of`) rather than assuming `<granted dir>/.jyc` —
+a `/spawn ../test` child runs beside its parent while its state stays under the
 agents root. The same lookup is what `/close` uses to revoke, so a path-form
-spawn gives the parent's access back when it closes. The cap refuses the *tool*
-only — a user typing `/spawn` is not told to stop, and the prompt prints the real
-count (`N of at most 3`) rather than a number it had to clamp.
+spawn gives the parent's access back when it closes.
 
 Everything after that is the parent's own work with tools it already has:
 `write`/`bash` seed the directory, `jyc_send_to_topic` (with
@@ -662,17 +661,15 @@ it. A command's receipt is broadcast to the child's own chat pane (the websocket
 outbound keys on the original topic), so the parent reads
 `<child>/.jyc/mode-override` (which it may read) if it wants to confirm.
 
-Guardrails, all of them the tool's: the tool refuses a second level (its own
-parent already carries the `spawned-from` breadcrumb — a user typing `/spawn`
-inside a subagent is not stopped), at most 3 subagents per topic
-(`subagents_of` counts grants whose state dir still holds a breadcrumb naming
-this topic), and the name is validated here — `spawn_under` tells a name from a
-path by shape, so an unchecked `../evil` would be resolved as a path, off the
-agents root. A closed subagent revokes its parent's grant in
-`TopicManager::close_topic_under` — which `auto_close_topic` and `purge` route
+Guardrails, all of them the tool's: the name is validated here — `spawn_under`
+tells a name from a path by shape, so an unchecked `../evil` would be resolved as
+a path, off the agents root. Nothing bounds how many subagents a topic spawns or
+how deep they go: a subagent may spawn its own subagent, and the close cascade
+below is depth-first because of it. A closed subagent revokes its parent's grant
+in `TopicManager::close_topic_under` — which `auto_close_topic` and `purge` route
 through, so every teardown path revokes — and a closed *parent* closes its
-subagents there too (depth-first, children first, so a typed `/spawn` chain goes
-whole), which is what stops an orphan from pointing into a directory the close
+subagents there too (depth-first, children first, so a nested chain goes whole),
+which is what stops an orphan from pointing into a directory the close
 took with it.
 
 One deliberate non-guardrail: because the worker runs commands for *every* queued
@@ -1084,17 +1081,21 @@ Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) 
 
 ### The Three Levels
 
-- **L1 (global)**: `<config dir>/` — `config.toml`, `skills/`, `templates/`
+- **L1 (global)**: `<config dir>/` — `config.toml`, `skills/`, `templates/`, `subagents/<type>/config.toml` (subagent types; see Terminology — L1 only, types are not layered)
 - **L2 (data dir / data root)**: `--data-dir` if given, else the data dir — `config.toml` (via `--config`), `skills/`, `templates/`, plus all generated state
-- **L3 (topic)**: `<topic_path>/.jyc/` — `config.toml` (restricted `[agent]` subset), `skills/`, `templates/`, sessions, chat history, task list (`.jyc/tasks.json`)
+- **L3 (topic)**: `<topic_path>/.jyc/` — `config.toml` (the topic's own overrides, see the table below), `skills/`, `templates/`, sessions, chat history, task list (`.jyc/tasks.json`)
 
 ### Merge & Lookup Rules
 
 | Asset | Rule |
 |---|---|
 | `config.toml` (L1/L2) | Deep merge at `toml::Value` level (`merge_toml`): tables merge recursively, arrays/scalars replaced by L2. `${VAR}` expansion after merge. Applies to startup and hot-reload (`load_config_layered`). |
-| `config.toml` (L3) | Restricted `[agent]` subset (`TopicConfig`): `model`, `plan_model`, `build_model`, `small_model`. Invalid files are ignored with a warning. |
+| `config.toml` (L3) | `TopicConfig`: `[ai]` models (`model`, `plan_model`, `build_model`, `small_model`), `[[mcps]]` + `mcps_replace`, and the topic's own `mode`, `skills` (allow-list), `disabled_skills`, `disabled_tools`, `instructions`. Invalid files are ignored with a warning. |
 | Model precedence | `.jyc/<mode>-model-override` file > L3 `config.toml` > pattern > L2/L1 config |
+| Mode precedence | `.jyc/mode-override` (the user's `/mode`) > L3 `config.toml` > pattern > build. A configured mode is never written to `.jyc/mode-override`, which stays reserved for explicit user overrides. |
+| Skill filters | Allow-list: L3 `skills` **replaces** pattern/channel (it is the narrowest statement of intent); deny-list: L3 `disabled_skills` ∪ pattern ∪ channel. Runtime `/skill` layers on top of both (`on` re-adds, `off` removes). |
+| `disabled_tools` | Union of channel ∪ pattern ∪ L3 `config.toml` — subtractive at every layer. |
+| Subagent types | `[subagents.<type>]` in the config, or `<config dir>/subagents/<type>/config.toml` (L1 only); both are `TopicConfig`, merged key by key with the table winning. `spawn_handler::resolve_type_arg` resolves the name against the **live** config — the one the instance was started with (`--config` included) and reloads into — from the two entry points that hold it (`/spawn`'s `CommandContext`, the tool's shared `ArcSwap`); a refusal before anything is created, `apply_subagent_type` expands it into the child's state dir at spawn time. |
 | `skills/` | All levels scanned low→high; same-named skills are overridden by higher levels. Order: `~/.config/jyc/skills`, `~/.claude/skills` → L1 → L2 → topic repo → L3. |
 | `templates/` | Lookup L3 → L2 → L1 (`TemplateDirs::resolve_with_topic`); first match wins. |
 | Custom `topic_path` | Absolute/`~` paths used as-is (outside the data root); **relative paths resolve against the data root** (previously process cwd). L3 applies to any topic directory, including ad-hoc topics (`jyc open <path>`). |
@@ -3455,7 +3456,7 @@ INFO worker{channel=jiny283, topic=weather}: Worker finished
 | `/model <id>`  | Switch AI model for this topic                               | `/model SiliconFlow/Pro/deepseek-ai/DeepSeek-V3.2` |
 | `/model`       | List available models                                         | `/model`                                           |
 | `/model reset` | Reset to default model from config                            | `/model reset`                                     |
-| `/plan`        | Switch to plan mode (read-only, enforced by in-process agent)         | `/plan`                                            |
+| `/plan`        | Switch to plan mode (read-only by convention — the prompt; a system boundary needs `disabled_tools`)         | `/plan`                                            |
 | `/build`       | Switch to build mode (full execution, default)                | `/build`                                           |
 | `/reset`       | Clear the current in-process agent session (start fresh context)      | `/reset`                                           |
 | `/close`       | Close the current topic (deletes topic directory and state; requires `--force`) | `/close --force`                                   |
@@ -3615,7 +3616,7 @@ The `/model` command writes the model ID to `.jyc/model-override` in the topic d
 
 ### Plan/Build Mode
 
-- **Plan mode**: in-process agent enforces read-only at the tool level — the AI cannot edit files or run modifying commands
+- **Plan mode**: the in-process agent is told, in the prompt, that it is read-only — the AI is not supposed to edit files or run modifying commands, and it says so in the turn it answers with. This is **not** enforced at the tool level: `write`, `edit` and `bash` are still registered, so a role that must not change files gets that from `disabled_tools` (a plain prompt is a convention, and the model can be talked out of it)
 - **Build mode**: Default. Full execution — AI can edit files, run tests, commit, etc.
 - `.jyc/mode-override` contains `"plan"` when plan mode active; file absent = build mode
 

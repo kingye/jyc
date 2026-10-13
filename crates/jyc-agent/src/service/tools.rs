@@ -81,7 +81,12 @@ impl JycAgentService {
         // keep, so it is left out entirely.
         if self.channel_name == "agents" {
             registry.register(Box::new(
-                crate::tools::builtin::spawn_subagent::SpawnSubagentTool,
+                crate::tools::builtin::spawn_subagent::SpawnSubagentTool {
+                    // The same live config this registry's other settings come
+                    // from, so `type` resolves against what the instance runs
+                    // with rather than a fresh read of the default path.
+                    config: self.config.clone(),
+                },
             ));
         }
 
@@ -218,7 +223,9 @@ impl JycAgentService {
         }
 
         // --- Tool exclusion (disabled_tools) ---
-        // Merge channel-level + pattern-level + backward-compatible alias
+        // Merge channel-level + pattern-level + topic-level (L3) + the
+        // backward-compatible alias. Every layer adds to the set: disabling a
+        // tool is subtractive, and a subagent type says `disabled_tools` here.
         let disabled_tools: Vec<&str> = {
             let mut set = Vec::new();
             if let Some(ref tools) = channel_disabled_tools {
@@ -226,15 +233,15 @@ impl JycAgentService {
                     set.push(t.as_str());
                 }
             }
-            if let Some(tools) = matched_pattern.and_then(|p| p.disabled_tools.as_ref()) {
-                for t in tools {
-                    if !set.contains(&t.as_str()) {
-                        set.push(t.as_str());
-                    }
-                }
-            }
-            // Backward-compatible alias: disabled_builtin_tools
-            if let Some(tools) = matched_pattern.and_then(|p| p.disabled_builtin_tools.as_ref()) {
+            for tools in [
+                matched_pattern.and_then(|p| p.disabled_tools.as_ref()),
+                topic_cfg.and_then(|t| t.disabled_tools.as_ref()),
+                // Backward-compatible alias: disabled_builtin_tools
+                matched_pattern.and_then(|p| p.disabled_builtin_tools.as_ref()),
+            ]
+            .into_iter()
+            .flatten()
+            {
                 for t in tools {
                     if !set.contains(&t.as_str()) {
                         set.push(t.as_str());

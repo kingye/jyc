@@ -426,7 +426,7 @@ these names loosely, so they are fixed here.
 | **agent dir** | One agent's home: its default topic's files while unpinned, or just the `.jyc` when that topic is pinned | `<agents dir>/<agent>/` | — |
 | **default topic** | The one topic every agent has, named after the agent — a message sent to the agent lands on it | `topic_path` is the agent dir unless pinned; state dir `<agents dir>/<agent>/.jyc` | 1:1 topics in `TopicManager` |
 | **topic** (non-default) | A topic a pipe creates from its rule's template (`plan-42`, `review-7`, …) | `topic_path` `<agents dir>/<agent>/<topic>/`; state dir `<agents dir>/<agent>/<topic>/.jyc` | router dynamic topics |
-| **subagent** | An agent `/spawn` (or `jyc_spawn_subagent`) created: an agent with its own default topic, not a second kind of topic | `<agents dir>/<subagent>/`, its state dir as any default topic's | `spawn_handler` |
+| **subagent** | An agent `/spawn` (or `jyc_spawn_subagent`) created: an agent with its own default topic, not a second kind of topic | `<agents dir>/<subagent>/`, its state dir as any default topic's — or the parent's dir when the tool was asked to share it | `spawn_handler` |
 | **topic_path** | A topic's **working directory**: where the agent runs, what `read`/`write`/`bash` see, and what a parent is granted when it spawns a subagent. **Any** directory — a pin, a checkout, a `/spawn <path>` child — not necessarily under the agents dir | `<agents dir>/<agent>/` or `<agents dir>/<agent>/<topic>/` by default | `TopicManager::topic_path(name)` |
 | **state dir** | A topic's `.jyc`: transcript, `agent-context.json`, `tasks`, `pattern`, `mode-override`, the lineage `spawned-from`, … — always under the agents dir, located by **topic name**, never inside a pinned `topic_path` | see the table below | `jyc_types::state_dir::resolve_state_dir(name, topic_dir)` |
 | **inbound dir** | Where the hub stages inbound attachment bytes between their upload and the message announcing them, deliberately outside every topic and channel dir | `<data dir>/.inbound` | `topic_path::inbound_dir()` |
@@ -472,7 +472,7 @@ keeps its own state dir.
 | Pipe topic (dynamic) | `<agents dir>/<agent>/<topic>/` | `<topic_path>/.jyc`, registered at activation |
 | Forked topic (`/fork`) | the **parent's** topic dir (shared workspace) | `<agents dir>/<name>/.jyc` |
 | Spawned topic (`/spawn`) | a fresh `<agents dir>/<name>/`, or any dir the path names outside the source topic's own dir (a non-empty checkout included — its files are not touched; nesting is refused) | `<agents dir>/<name>/.jyc` — located by name, never `<topic_path>/.jyc` |
-| Subagent (`jyc_spawn_subagent`) | the same shape a fresh-name `/spawn` gets — `<agents dir>/<name>/` with the parent's state seeded into it (putting the child *in the parent's* working tree is `/fork`) | `<agents dir>/<name>/.jyc` |
+| Subagent (`jyc_spawn_subagent`) | the same shape a fresh-name `/spawn` gets — `<agents dir>/<name>/` with the parent's state seeded into it — or, with `share_topic_path`, the **parent's** dir (the `/fork` shape: that is what lets a reviewer read uncommitted work) | `<agents dir>/<name>/.jyc` — located by name, never in the shared dir |
 | Legacy channel workspace topic | `<data dir>/<channel>/workspace/<topic>/` | `<topic_path>/.jyc` — no live writer; it is dormant pre-pipe data, and its migration is a separate change |
 
 Registrations happen at four points: startup restore (config pins adopt,
@@ -486,7 +486,9 @@ than writing into the user's directory.
 Multiple agent rows may pin the same topic dir (e.g. one repo shared by
 `jyc` and `jyc_git_planner`); they still get one state dir per topic name. A
 `/fork` is that mechanism used deliberately: the child continues the parent's
-files, so it co-pins the parent's dir while keeping its own transcript. It is
+files, so it co-pins the parent's dir while keeping its own state — its own
+transcript as well, now that inheriting the conversation is opt-in
+(`--inherit`; see the subagent section for why). It is
 therefore *not* subject to the "the dir is the topic" note below — its state was
 registered by name before the dir was pinned (`adopt_state_dir` →
 `set_topic_path`, and the latter keeps an existing registration). The name still
@@ -494,7 +496,8 @@ occupies a top-level entry under `agents/`, which is why `/fork` refuses a name
 that is already a topic.
 
 A `/spawn` is the same mechanism pointed at a dir of its own, and it moves no
-files: the conversation is what comes along, so the destination may already hold
+files: the parent's *settings* are what comes along (`--inherit` adds the
+conversation and the transcript), so the destination may already hold
 data (a checkout made elsewhere) but never sits inside the parent's dir —
 nesting would inherit the parent's git status, file listings, and close
 semantics — and the only
@@ -560,6 +563,16 @@ those roots — which is why a spawn's default dir under `agents/` is never purg
   out of the tree, and a pin anywhere else are all left in place. `/close`
   keeps the empty-only rule above, and a topic reopened upstream (issue
   closed, then reopened) starts with an empty dir.
+  Closing also closes the topic's **subagents**, before anything of its own is
+  touched: they exist to serve its work, the grant is what makes them findable
+  at all, and a shared one (below) would otherwise point into a directory this
+  close is about to remove. That is also what keeps the guards above from
+  tripping over them: a shared subagent's pin is a *borrowed* one, so
+  `other_topic_dirs` ignores a pin whose topic is marked closed (which the
+  cascade itself did) and one held by a subagent of the topic being purged
+  (which is the one path that purges first: `/close --force --purge`). A
+  `/fork` child's co-pin — an independent topic that outlives its parent — still
+  refuses.
   Ad-hoc pins (no config key) derive their state name from the dir, so two
   runtime topics opening one dir intentionally share — and closing either
   destroys — that single state: "the dir is the topic". Closing also
@@ -576,32 +589,55 @@ those roots — which is why a spawn's default dir under `agents/` is never purg
 ### Subagents (`jyc_spawn_subagent`)
 
 A topic's agent can create a **subagent**: a sibling topic that inherits this
-topic's state and runs on its own queue. `/spawn` and the `jyc_spawn_subagent`
+topic's settings and runs on its own queue. `/spawn` and the `jyc_spawn_subagent`
 tool are one implementation (`spawn_handler::spawn_under`) with two triggers —
-the user typed the command, or the agent called the tool:
+the user typed the command, or the agent called the tool. Two things about the
+child's *starting point* are the caller's to decide, and both default to the
+more independent choice: `inherit_context` (or `/spawn --inherit`) copies the
+conversation and transcript as well, and `share_topic_path` (tool only) puts the
+child in the parent's directory — `/fork`'s shape, which is what a reviewer of
+uncommitted work needs:
 
 1. Resolve the name and topic_path (`/spawn` from its arguments — a name, a path,
    or both, told apart by shape — the tool from a single name under
-   `agents dir`), then create that dir and adopt its state dir: always
+   `agents dir`, or from the parent's own dir when it was asked to share), then
+   create that dir and adopt its state dir: always
    `<agents root>/<name>/.jyc`, even when the child was pointed at a named path
    (the same order as `/fork`: `adopt_state_dir` first, so `set_topic_path`
    keeps the in-dir state instead of deriving `_<path>` state under
    `agents_dir(data_dir)`).
 2. Seed the parent's state with `seed_state(…, "spawned-from")` — the `/fork`
-   allow-list (pattern, conversation, Task List, backlog, `mode-override`,
-   model/context/MCP/skill overrides, transcript), never `jobs/` or
-   `agent-session.json`, and never the workspace. [`.jyc` ownership][state] stays one topic per directory:
+   allow-list minus the conversation-shaped entries (pattern, Task List,
+   backlog, `mode-override`, model/context/MCP/skill overrides), never `jobs/`
+   or `agent-session.json`, and never the workspace. The conversation
+   (`agent-context.json`) and the transcript (`chat_history_*.jsonl`) are copied
+   only when they were asked for: a child starting on a task of its own would
+   otherwise pay for the parent's whole train of thought, in tokens, on every
+   turn — and arrive anchored to it, which is the opposite of the independent
+   view a delegated review is for. [`.jyc` ownership][state] stays one topic per directory:
    the seeded copy is the child's own, and the breadcrumb
    `<name>/.jyc/spawned-from` = the parent's topic name is the only file added
    on top of it.
 3. Grant the parent read+write access to the child's **topic_path** through the
    existing runtime grant registry (`jyc_types::access_grants`, the `/grant`
    mechanism), so both access-root resolvers in `jyc-agent/src/service/prompt.rs`
-   pick it up on the next turn with no resolver change. The state dir is not
-   granted and must not be: it is the child's own.
+   pick it up on the next turn with no resolver change. The entry also records
+   the child's **name** (`grant_subagent`), which is what
+   `spawn_handler::subagents_of` reads: the path cannot identify a child, since a
+   shared topic_path is the parent's own dir and may hold more than one child —
+   they are separate grants, and `/grant`'s own unnamed entries are access, not
+   lineage. The state dir is not granted and must not be: it is the child's own.
 4. Report the subagent list, which the system prompt also renders every turn
    (`format_subagents_section`) so the model continues an existing subagent with
    `jyc_send_to_topic` instead of spawning a duplicate.
+
+A **shared** subagent (`share_topic_path`) takes the parent's dir and nothing
+else of it: its own state stays in `<agents root>/<name>/.jyc`, which is what
+keeps `close_topic` — and `auto_close_topic`'s dir removal — from ever touching
+that directory when the child closes. The child's pin is a borrowed one: it is
+closed with the parent (below), and the purge guards above read a pin's lineage,
+not just its presence, so a shared child neither blocks its parent's dir from
+going nor claims it as somebody else's.
 
 Because the grant comes from the same place `/spawn` writes it, a hand-typed
 spawn is a subagent too: it shows up in the list, in the parent's read+write
@@ -634,7 +670,10 @@ this topic), and the name is validated here — `spawn_under` tells a name from 
 path by shape, so an unchecked `../evil` would be resolved as a path, off the
 agents root. A closed subagent revokes its parent's grant in
 `TopicManager::close_topic_under` — which `auto_close_topic` and `purge` route
-through, so every teardown path revokes.
+through, so every teardown path revokes — and a closed *parent* closes its
+subagents there too (depth-first, children first, so a typed `/spawn` chain goes
+whole), which is what stops an orphan from pointing into a directory the close
+took with it.
 
 One deliberate non-guardrail: because the worker runs commands for *every* queued
 message, any topic's agent can send itself a command body and switch its own mode
@@ -646,8 +685,18 @@ semantics as `/grant`), so a restart drops the access, not the subagent; the
 cap and the prompt list then go quiet too, since both read the same grants. A
 restarted hub can be re-granted by the user's `/grant` or by a fresh spawn. The
 subagent's queue is in-memory as well: a task enqueued but not yet consumed when
-the process stops is lost. And a subagent pins no directory of its own — pinning
-a subagent to the parent's working tree is `/fork`'s job, not this tool's.
+the process stops is lost. Its topic_path is its own by default and the parent's
+when it was asked to share — either way the state is the child's, and either way
+the child goes when the parent does. `/grant`ing a child's directory again after
+a restart re-lists it only when that directory is named after the child, which is
+the shape every default spawn has and a shared one does not: a shared child that
+a restart forgot is reached by its name (the parent knows it) or replaced by a
+fresh spawn, not re-discovered from its parent's own directory. The registry is also keyed by the parent's
+**name alone**, with no channel in the key: a topic of the same name in another
+channel reads the same subagent list (shows it, counts it against the cap, and
+now closes and deletes it), which is the price of one process-wide registry
+shared by `access_grants` and `/grant`. The fix, when it is worth paying for, is
+a channel-scoped grant key rather than a local guard here.
 
 [state]: #topic-state-directory-jyc
 ## Lifecycle Hooks

@@ -108,6 +108,13 @@ impl TopicManager {
     /// Depth-first, not one level: the tool refuses nesting but a typed
     /// `/spawn` does not, so the whole subtree goes. A subagent has exactly one
     /// parent (the breadcrumb is a single name), so this terminates.
+    ///
+    /// ponytail: the grants this reads are process-wide and keyed by the
+    /// parent's *name* alone — no channel — so a topic of the same name in
+    /// another channel would have its subagents closed here too. The ceiling is
+    /// `subagents_of`'s own (the prompt list and the cap read the same registry,
+    /// by the same key); the upgrade path is a channel-scoped grant key, which
+    /// is a change to `access_grants`, not to this function.
     fn subagent_closure(&self, topic_name: &str) -> Vec<String> {
         let mut stack = vec![topic_name.to_string()];
         let mut doomed = Vec::new();
@@ -1217,40 +1224,45 @@ mode = "agent"
     /// An upstream close takes a shared subagent's parent dir with it: the child
     /// closes first (the cascade, so its pin is gone by the time the guards run)
     /// and the dir goes contents and all, exactly as it would without a child.
+    ///
+    /// The names here are this test's own — `state_dir` and `access_grants` are
+    /// process-wide and keyed by topic name alone while this binary's tests run
+    /// in parallel, so reusing another test's `agent-x/plan-42` would make each
+    /// test hijack the other's state registration.
     #[tokio::test]
     async fn auto_close_deletes_a_shared_subagents_parent_dir() {
         let tmp = tempdir().unwrap();
         let agents_dir = tmp.path().join("agents");
-        let workspace = agents_dir.join("agent-x");
-        let topic_dir = workspace.join("plan-42");
+        let workspace = agents_dir.join("agent-share");
+        let topic_dir = workspace.join("sh-plan-9");
         std::fs::create_dir_all(topic_dir.join(".jyc")).unwrap();
         std::fs::write(topic_dir.join("notes.md"), "written into it").unwrap();
 
         let tm = make_tm(&workspace);
         // A pipe topic: path and state registered, the in-dir `.jyc` the router
         // adopts when it activates the topic.
-        jyc_types::state_dir::register("plan-42", &topic_dir.join(".jyc"));
+        jyc_types::state_dir::register("sh-plan-9", &topic_dir.join(".jyc"));
         tm.topic_paths
             .lock()
             .await
-            .insert("plan-42".to_string(), topic_dir.clone());
+            .insert("sh-plan-9".to_string(), topic_dir.clone());
 
         crate::command::spawn_handler::spawn_subagent_under(
             &tm,
-            "plan-42",
+            "sh-plan-9",
             &topic_dir,
-            Some("plan-42-review"),
+            Some("sh-plan-9-review"),
             false,
             true,
             &agents_dir,
         )
         .await
         .unwrap();
-        let child_state = agents_dir.join("plan-42-review").join(".jyc");
+        let child_state = agents_dir.join("sh-plan-9-review").join(".jyc");
         assert!(child_state.is_dir(), "the child's state is its own");
 
         assert!(
-            tm.auto_close_topic_under("plan-42", &agents_dir)
+            tm.auto_close_topic_under("sh-plan-9", &agents_dir)
                 .await
                 .unwrap(),
             "a pipe topic's upstream close still closes it"
@@ -1268,11 +1280,11 @@ mode = "agent"
         // prefers the platform data home), while this test's temp `agents_dir`
         // is deliberately not it.
 
-        for name in ["plan-42", "plan-42-review"] {
+        for name in ["sh-plan-9", "sh-plan-9-review"] {
             jyc_types::state_dir::unregister(name);
             jyc_types::state_dir::clear_closed(name);
         }
-        jyc_types::access_grants::clear("plan-42");
+        jyc_types::access_grants::clear("sh-plan-9");
     }
 
     /// A topic dir that contains another topic's dir is refused: deleting it

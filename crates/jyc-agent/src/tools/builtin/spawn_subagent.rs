@@ -92,8 +92,14 @@ impl Tool for SpawnSubagentTool {
         };
 
         let name = input.get("name").and_then(|v| v.as_str());
-        let inherit_context = flag(&input, "inherit_context");
-        let share_topic_path = flag(&input, "share_topic_path");
+        let inherit_context = input
+            .get("inherit_context")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let share_topic_path = input
+            .get("share_topic_path")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         match spawn_handler::spawn_subagent(
             &tm,
             &parent,
@@ -125,11 +131,6 @@ impl Tool for SpawnSubagentTool {
             }
         }
     }
-}
-
-/// A boolean tool argument, absent meaning `false`.
-fn flag(input: &Value, key: &str) -> bool {
-    input.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
 #[cfg(test)]

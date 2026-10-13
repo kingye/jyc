@@ -279,12 +279,13 @@ impl SpawnCommandHandler {
         .await?;
 
         // The parent keeps its spawn in sight: this one grant — on the child's
-        // **topic_path**, so the parent can put the child's input files there —
-        // is what the prompt's subagent list, the cap check, `/close`'s
-        // revocation and the parent's own read+write boundary all read
-        // (`subagents_of`, which finds the lineage in the state dir above).
-        // `/grant`'s registry, so the same "process-lifetime" semantics apply.
-        jyc_types::access_grants::grant(req.parent_topic, topic_path.clone(), true);
+        // **topic_path**, so the parent can put the child's input files there,
+        // and **naming the child**, since a shared dir cannot name it — is what
+        // the prompt's subagent list, the cap check, `/close`'s revocation and
+        // the parent's own read+write boundary all read (`subagents_of`, which
+        // checks the lineage breadcrumb in the state dir above). `/grant`'s
+        // registry, so the same "process-lifetime" semantics apply.
+        jyc_types::access_grants::grant_subagent(req.parent_topic, &name, topic_path.clone());
 
         tracing::info!(
             from = %req.parent_topic,
@@ -485,22 +486,27 @@ fn state_dir_of(name: &str, topic_path: &Path) -> PathBuf {
 
 /// The subagent directories `topic` currently holds, as `(name, topic_path)`.
 ///
-/// A granted directory counts as a subagent while it still exists and its state
-/// dir's `spawned-from` names `topic` — the lineage breadcrumb
-/// [`SpawnCommandHandler::spawn_under`] writes for every spawn, whether `/spawn`
-/// (with or without a path) or the `jyc_spawn_subagent` tool made it. The
-/// breadcrumb is read from the **state dir**, located by the granted dir's name
-/// and never assumed to be `<granted dir>/.jyc`: a `/spawn <path>` child runs
-/// in the path it was given while its state stays under the agents root. A
-/// stale grant (the child was closed) and a directory later reused by another
-/// topic are both left out, so the count, the cap check and the prompt's
-/// subagent list cannot drift from reality.
+/// Read from the grants `topic` holds plus the lineage breadcrumb each child
+/// wrote into its own state dir: a grant counts as a subagent while the child it
+/// names still says `topic` spawned it.
+///
+/// A **spawn's** grant carries the child's name, and that is what this reads —
+/// the path cannot supply it, since a shared topic_path is the parent's own dir
+/// and its last component names the parent's directory rather than the child.
+/// For a `/grant` the user made there is no name to read, so the last path
+/// component is the fallback: that keeps `/grant` able to re-list an own-dir
+/// child after a restart dropped the grants (the documented recovery), and it is
+/// simply the wrong guess for a shared dir — where a re-grant lists nobody.
+///
+/// Like the grants themselves the list is process-lifetime: a restart drops it.
 pub fn subagents_of(topic: &str) -> Vec<(String, PathBuf)> {
     jyc_types::access_grants::grants_for(topic)
         .into_iter()
         .filter_map(|g| {
-            let name = g.path.file_name()?.to_string_lossy().into_owned();
-            (spawned_from(&name, &g.path).as_deref() == Some(topic)).then_some((name, g.path))
+            let child = g
+                .subagent
+                .or_else(|| g.path.file_name().map(|n| n.to_string_lossy().into_owned()))?;
+            (spawned_from(&child, &g.path).as_deref() == Some(topic)).then_some((child, g.path))
         })
         .collect()
 }
@@ -520,17 +526,17 @@ pub fn spawned_from(name: &str, topic_path: &Path) -> Option<String> {
 
 /// Drop the access `child`'s parent holds on it, called when the child closes.
 ///
-/// The lineage breadcrumb names the parent; grants are keyed by topic name and
-/// the parent granted exactly the child's topic_path, so its own close revokes
-/// it. Read from the child's **state dir** (`topic_path` is only the fallback),
-/// so a child spawned into a named path revokes too. A topic without a
-/// breadcrumb — i.e. not a subagent — must stay a no-op rather than an error,
-/// which is why a missing state dir and an unregistered name are both fine.
+/// The lineage breadcrumb names the parent; grants are keyed by topic name, so
+/// the parent's entry for this child — the one grant that names it — is what
+/// goes. By name rather than by path: a shared topic_path is the parent's own
+/// dir, and another child may be working there. A topic without a breadcrumb —
+/// i.e. not a subagent — must stay a no-op rather than an error, which is why a
+/// missing state dir and an unregistered name are both fine.
 pub fn forget_subagent(child: &str, child_dir: &Path) {
     let Some(parent) = spawned_from(child, child_dir) else {
         return;
     };
-    if jyc_types::access_grants::ungrant(&parent, child_dir) {
+    if jyc_types::access_grants::ungrant_subagent(&parent, child) {
         tracing::info!(
             parent = %parent,
             subagent = %child,
@@ -1400,8 +1406,11 @@ mod tests {
         jyc_types::access_grants::clear(parent);
     }
 
-    /// A stale grant (child closed) and a directory another topic owns are
-    /// neither counted nor listed.
+    /// A spawn's grant is what lists a child, by the name it carries — and a
+    /// `/grant`, which names nobody, still lists one whose *directory* is named
+    /// after it (the recovery path after a restart). A stale child (its state,
+    /// and with it the breadcrumb, gone) and a directory another topic spawned
+    /// are both left out.
     #[test]
     fn subagents_of_skips_stale_and_foreign_grants() {
         let workspace = tempdir().unwrap();
@@ -1411,21 +1420,38 @@ mod tests {
         let mine = workspace.path().join("mine");
         std::fs::create_dir_all(mine.join(".jyc")).unwrap();
         std::fs::write(mine.join(".jyc").join("spawned-from"), parent).unwrap();
+        // The same child, after a restart dropped the spawn's own grant and the
+        // user re-granted the directory it works in.
+        let regranted = workspace.path().join("regranted");
+        std::fs::create_dir_all(regranted.join(".jyc")).unwrap();
+        std::fs::write(regranted.join(".jyc").join("spawned-from"), parent).unwrap();
         let theirs = workspace.path().join("theirs");
         std::fs::create_dir_all(theirs.join(".jyc")).unwrap();
         std::fs::write(theirs.join(".jyc").join("spawned-from"), "someone-else").unwrap();
-        let gone = workspace.path().join("gone");
-        for p in [&mine, &theirs, &gone] {
-            jyc_types::access_grants::grant(parent, p.clone(), true);
-        }
+        let gone = workspace.path().join("gone"); // never had a state dir
+
+        jyc_types::access_grants::grant_subagent(parent, "mine", mine.clone());
+        jyc_types::access_grants::grant(parent, regranted.clone(), true);
+        jyc_types::access_grants::grant_subagent(parent, "theirs", theirs.clone());
+        jyc_types::access_grants::grant_subagent(parent, "gone", gone.clone());
 
         assert_eq!(
             subagents_of(parent),
-            vec![("mine".to_string(), mine.clone())]
+            vec![
+                ("mine".to_string(), mine.clone()),
+                ("regranted".to_string(), regranted),
+            ]
         );
 
         forget_subagent("mine", &mine);
-        assert!(subagents_of(parent).is_empty());
+        assert_eq!(
+            subagents_of(parent)
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            vec!["regranted"],
+            "revoking a child leaves a re-granted sibling listed"
+        );
         assert_eq!(format_subagent_names(&[]), "");
         jyc_types::access_grants::clear(parent);
     }

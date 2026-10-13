@@ -1238,7 +1238,14 @@ mode = "agent"
         std::fs::create_dir_all(topic_dir.join(".jyc")).unwrap();
         std::fs::write(topic_dir.join("notes.md"), "written into it").unwrap();
 
-        let tm = make_tm(&workspace);
+        // A workspace of its own, *not* the topic's parent: `purge` treats a
+        // pinned path that still looks like `<workspace>/<name>` as an
+        // unpinned topic's dir and leaves it to `close_topic` (which is what
+        // the sibling test above exercises). What is under test here is the
+        // shape rule, so the pin has to be a real one.
+        let ws = agents_dir.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let tm = make_tm(&ws);
         // A pipe topic: path and state registered, the in-dir `.jyc` the router
         // adopts when it activates the topic.
         jyc_types::state_dir::register("sh-plan-9", &topic_dir.join(".jyc"));

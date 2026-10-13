@@ -22,6 +22,15 @@ pub struct Grant {
     pub path: PathBuf,
     /// Whether write access is granted.
     pub write: bool,
+    /// The subagent this grant was made for, when a spawn made it.
+    ///
+    /// A granted path cannot name a child: a shared `topic_path` is the
+    /// parent's own dir, and one parent can have several children working in
+    /// it. So a spawn records the name here, and the reader it exists for
+    /// (`spawn_handler::subagents_of`) takes the child's identity from the
+    /// grant rather than from the last path component. `/grant` makes access
+    /// grants, not lineage ones, and names nobody.
+    pub subagent: Option<String>,
 }
 
 static REGISTRY: OnceLock<RwLock<HashMap<String, Vec<Grant>>>> = OnceLock::new();
@@ -36,7 +45,10 @@ fn registry() -> &'static RwLock<HashMap<String, Vec<Grant>>> {
 pub fn grant(topic: &str, path: PathBuf, write: bool) -> bool {
     let mut map = registry().write().unwrap();
     let grants = map.entry(topic.to_string()).or_default();
-    match grants.iter_mut().find(|g| g.path == path) {
+    match grants
+        .iter_mut()
+        .find(|g| g.path == path && g.subagent.is_none())
+    {
         Some(existing) => {
             if write && !existing.write {
                 existing.write = true;
@@ -46,13 +58,43 @@ pub fn grant(topic: &str, path: PathBuf, write: bool) -> bool {
             }
         }
         None => {
-            grants.push(Grant { path, write });
+            grants.push(Grant {
+                path,
+                write,
+                subagent: None,
+            });
             true
         }
     }
 }
 
-/// Revoke every grant for `path` on `topic` (read and write alike).
+/// Grant `path` to `parent` as the working dir of subagent `child`.
+///
+/// Same registry and same process-lifetime semantics as [`grant`]; the one
+/// difference is that the entry carries the child's **name**, which is what
+/// the subagent reader in `spawn_handler::subagents_of` lists, counts and
+/// closes by. The path cannot stand in for it: a shared `topic_path` is the
+/// parent's own dir, and two children may work there — they are two grants
+/// here, not one. Always write: the parent seeds the child's directory.
+pub fn grant_subagent(parent: &str, child: &str, path: PathBuf) -> bool {
+    let mut map = registry().write().unwrap();
+    let grants = map.entry(parent.to_string()).or_default();
+    if grants
+        .iter()
+        .any(|g| g.path == path && g.subagent.as_deref() == Some(child))
+    {
+        return false;
+    }
+    grants.push(Grant {
+        path,
+        write: true,
+        subagent: Some(child.to_string()),
+    });
+    true
+}
+
+/// Revoke every grant for `path` on `topic` (read and write alike, a
+/// subagent's included: `/ungrant <dir>` means "stop giving me this dir").
 /// Returns `true` when something was removed.
 pub fn ungrant(topic: &str, path: &std::path::Path) -> bool {
     let mut map = registry().write().unwrap();
@@ -64,6 +106,26 @@ pub fn ungrant(topic: &str, path: &std::path::Path) -> bool {
     let removed = grants.len() != before;
     if grants.is_empty() {
         map.remove(topic);
+    }
+    removed
+}
+
+/// Revoke the grant `parent` holds for subagent `child`, called when the
+/// child closes.
+///
+/// By name, not by path: the child is what is being forgotten, and the dir it
+/// worked in may be one its parent also holds a grant on (a shared
+/// `topic_path`), or one another child works in.
+pub fn ungrant_subagent(parent: &str, child: &str) -> bool {
+    let mut map = registry().write().unwrap();
+    let Some(grants) = map.get_mut(parent) else {
+        return false;
+    };
+    let before = grants.len();
+    grants.retain(|g| g.subagent.as_deref() != Some(child));
+    let removed = grants.len() != before;
+    if grants.is_empty() {
+        map.remove(parent);
     }
     removed
 }
@@ -99,7 +161,8 @@ mod tests {
             grants_for(topic),
             vec![Grant {
                 path: PathBuf::from("/a"),
-                write: true
+                write: true,
+                subagent: None
             }]
         );
         assert!(!grant(topic, PathBuf::from("/a"), true)); // already write
@@ -107,6 +170,47 @@ mod tests {
         assert!(!ungrant(topic, std::path::Path::new("/a")));
         assert!(grants_for(topic).is_empty());
         clear(topic);
+    }
+
+    /// Two children can work in one directory (a shared `topic_path` is the
+    /// parent's own dir), so the name — not the path — is what tells them
+    /// apart; a plain `/grant` on the same dir is a third, nameless entry.
+    #[test]
+    fn subagent_grants_are_named_and_independent_of_plain_grants() {
+        let parent = "grant-test-parent";
+        clear(parent);
+        let dir = PathBuf::from("/shared");
+
+        assert!(grant_subagent(parent, "child-a", dir.clone()));
+        assert!(grant_subagent(parent, "child-b", dir.clone()));
+        assert!(!grant_subagent(parent, "child-a", dir.clone())); // duplicate
+        assert_eq!(grants_for(parent).len(), 2, "one entry per child");
+        assert!(
+            grants_for(parent).iter().all(|g| g.write),
+            "a parent seeds its subagent's dir"
+        );
+
+        // The user's own grant on the same dir is its own entry, and revoking
+        // the child leaves it alone.
+        assert!(grant(parent, dir.clone(), false));
+        assert_eq!(grants_for(parent).len(), 3);
+        assert!(ungrant_subagent(parent, "child-a"));
+        assert!(!ungrant_subagent(parent, "child-a"));
+        assert_eq!(grants_for(parent).len(), 2);
+        assert_eq!(
+            grants_for(parent)
+                .iter()
+                .map(|g| g.subagent.clone())
+                .collect::<Vec<_>>(),
+            vec![Some("child-b".to_string()), None],
+            "child-b and the user's own grant survive"
+        );
+        assert!(
+            ungrant(parent, &dir),
+            "…and /ungrant takes the rest of the dir"
+        );
+        assert!(grants_for(parent).is_empty());
+        clear(parent);
     }
 
     #[test]

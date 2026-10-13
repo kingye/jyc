@@ -57,7 +57,7 @@ pub struct TopicConfig {
 
     /// When `true`, ignore the matched pattern/channel/global MCPs entirely
     /// and use only `mcps`. Default `false` (additive).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub mcps_replace: bool,
 
     /// Mode this topic starts in (`"plan"` or `"build"`).
@@ -133,6 +133,13 @@ impl TopicConfig {
             instructions: self.instructions.or(base.instructions),
         }
     }
+}
+
+/// `false` is the default of every bool here, so it stays out of a written
+/// config file ([`TopicConfig`] is serialized when a spawn expands a subagent
+/// type into a child's `.jyc/config.toml`).
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Agent model overrides for a single topic.

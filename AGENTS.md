@@ -61,7 +61,7 @@ and uses an in-process AI agent to generate replies.
 - CI（`.github/workflows/ci.yml`）自动执行：fmt、clippy -D warnings、llvm-cov（60% 阈值）
 - 改依赖时提交 `cargo check -p <crate>` 顺带刷新的 `Cargo.lock`
 - 按「文档约定」检查是否需更新相关文档
-- 非平凡改动（跨文件、改逻辑，尤其本地跑不了测试时）：push / 开 PR 前或同时派一次评审（`jyc_spawn_subagent(name="review-<what>", type="review", share_topic_path=true)`，范围给 `git diff <base>..HEAD`）；它异步运行、不阻塞 push，报告作为同一个 PR 的 follow-up commit
+- 非平凡改动（跨文件、改逻辑，尤其本地跑不了测试时）：push / 开 PR 前或同时派一次评审——`jyc_spawn_subagent(name="review-<what>", type="review", share_topic_path=true)`，再用 `jyc_send_to_topic(..., require_reply=true)` 派任务（任务模板见 `forked-review` 技能），范围给 `git diff <base>..HEAD`（`<base>` = `git merge-base origin/main HEAD`，含刚提交的改动）；它异步运行、不阻塞 push，报告作为同一个 PR 的 follow-up commit
 
 ### CI 等待规则
 - **禁止**阻塞等待 CI：不得轮询 `gh pr checks` / `gh run watch`，不得用 `sleep` 重试，不得因为「CI 还没跑完」而推迟提交或推迟回复

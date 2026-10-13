@@ -50,8 +50,8 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 /// keeps this topic's directory, a spawn gets another one — a fresh dir under
 /// the agents root, or any dir you name, including one that already holds files
 /// (a checkout made elsewhere). What comes along is the state, not the
-/// workspace: the same allow-list `/fork` seeds (task list, backlog, settings)
-/// marked `spawned-from`, so a spawn inherits neither jobs that would
+/// workspace: the same allow-list `/fork` seeds (backlog and settings, never a
+/// task list) marked `spawned-from`, so a spawn inherits neither jobs that would
 /// double-fire nor a token meter it did not run up. The conversation and the
 /// transcript are the one part that stays behind by default — a worker starting
 /// on a task of its own does not need the parent's train of thought — and
@@ -401,9 +401,10 @@ impl CommandHandler for SpawnCommandHandler {
 /// tool's trigger for [`SpawnCommandHandler::spawn_under`].
 ///
 /// The layout, the inheritance and the grant are `/spawn`'s: a sibling under
-/// the agents root carrying a copy of the parent's state (`pattern`, task list,
-/// `mode-override`, …) with its own `.jyc`, marked `spawned-from` and granted to
-/// the parent read+write. What is *not* `/spawn`'s is that the name is resolved
+/// the agents root carrying a copy of the parent's state (`pattern`,
+/// `mode-override`, … — its task list is not among them) with its own `.jyc`,
+/// marked `spawned-from` and granted to the parent read+write. What is *not*
+/// `/spawn`'s is that the name is resolved
 /// here rather than taken from arguments.
 ///
 /// `inherit_context` and `share_topic_path` are the tool's two decisions about
@@ -758,20 +759,34 @@ fn superseded_overrides(config: &TopicConfig) -> Vec<&'static str> {
         // The legacy file is mode-agnostic and still read ahead of the config,
         // so any model at all has to take it out; a per-mode file only holds a
         // value for the mode it names, and `[ai].model` covers both.
-        if ai.model.is_some() || ai.plan_model.is_some() || ai.build_model.is_some() {
+        let any_model = ai.model.is_some() || ai.plan_model.is_some() || ai.build_model.is_some();
+        if any_model {
             files.push("model-override");
         }
         if ai.model.is_some() || ai.plan_model.is_some() {
             files.push("plan-model-override");
         }
-        if ai.model.is_some() || ai.build_model.is_some() {
+        // Which per-mode file the model chain reads is decided by the *file*
+        // mode, not the topic's (`service/mod.rs` `file_override`), and a type
+        // that sets `mode` has just lost the `mode-override` that would have
+        // picked plan — so that child reads the build file whatever mode the
+        // type declares. A plan-only model has to take it out for the same
+        // reason a build one does: left in place it shadows the type's value.
+        if ai.model.is_some()
+            || ai.build_model.is_some()
+            || (ai.plan_model.is_some() && config.mode.is_some())
+        {
             files.push("build-model-override");
         }
     }
-    if config.skills.is_some() {
+    // A skill toggle cancels a config-level exclusion of the same name
+    // (`prompt.rs` keeps `on` entries out of the exclude list), so a type that
+    // only excludes skills needs the parent's toggles gone just as much; the
+    // same goes for a type that replaces the inherited MCP set outright.
+    if config.skills.is_some() || config.disabled_skills.is_some() {
         files.push(crate::session_state::SKILL_OVERRIDE_FILE);
     }
-    if config.mcps.is_some() {
+    if config.mcps.is_some() || config.mcps_replace {
         files.push(crate::session_state::MCP_OVERRIDE_FILE);
     }
     files
@@ -907,7 +922,10 @@ mod tests {
             ("pattern", "jyc"),
             ("agent-context.json", "{\"messages\":[]}"),
             ("agent-session.json", "{\"current_input_tokens\":900}"),
-            (session_state::TASKS_FILE, "{\"items\":[]}"),
+            (
+                session_state::TASKS_FILE,
+                "{\"items\":[{\"id\":1,\"text\":\"the parent's plan\",\"status\":\"pending\"}]}",
+            ),
             ("chat_history_2026-09-24.jsonl", "{}"),
             ("mode-override", "plan"),
             ("activity.jsonl", "{}"),
@@ -1250,7 +1268,9 @@ mod tests {
         let dest = resolved(&agents_dir.join("worker"));
         let state = resolve_state_dir("worker", &dest);
         // The role declares `mode` and `skills`, so those two files go; it says
-        // nothing about models or MCPs, so those choices stay the parent's.
+        // nothing about models or MCPs, so the files carrying those choices stay
+        // (which of them the chain reads for this child is the subject of the
+        // test below).
         for gone in ["mode-override", session_state::SKILL_OVERRIDE_FILE] {
             assert!(
                 !state.join(gone).exists(),
@@ -1303,14 +1323,30 @@ mod tests {
         // (the role's config, the files that must go, the files that must stay)
         let cases: &[(&str, &[&str], &[&str])] = &[
             (
-                // No `[ai]`: the parent's model is the role's model.
+                // No `[ai]`: every model file the parent had stays, and the
+                // chain reads the build one for this child (dropping
+                // `mode-override` is what puts its file mode on build).
                 "mode = \"plan\"\n",
                 &["mode-override"],
                 &[
                     "plan-model-override",
                     "build-model-override",
                     "model-override",
+                    "skill-override.json",
+                    "mcp-override.json",
                 ],
+            ),
+            (
+                // A plan model under a declared mode would be shadowed by the
+                // build file the chain reads, so that file goes too.
+                "mode = \"plan\"\n[ai]\nplan_model = \"provider/role\"\n",
+                &[
+                    "mode-override",
+                    "plan-model-override",
+                    "build-model-override",
+                    "model-override",
+                ],
+                &["skill-override.json", "mcp-override.json"],
             ),
             (
                 // `[ai].model` covers both modes, so all three files go.
@@ -1320,13 +1356,27 @@ mod tests {
                     "build-model-override",
                     "model-override",
                 ],
-                &["mode-override"],
+                &["mode-override", "skill-override.json"],
             ),
             (
-                // Per mode: a build model says nothing about plan.
+                // No `mode`: the parent's file mode stands, so a build model
+                // leaves the plan file that the chain reads for this child.
                 "[ai]\nbuild_model = \"provider/role\"\n",
                 &["build-model-override", "model-override"],
-                &["plan-model-override"],
+                &["plan-model-override", "mode-override"],
+            ),
+            (
+                // `disabled_skills` alone still needs the parent's toggles gone:
+                // an `on` entry cancels a config-level exclusion of that name.
+                "disabled_skills = [\"danger\"]\n",
+                &["skill-override.json"],
+                &[
+                    "mode-override",
+                    "plan-model-override",
+                    "build-model-override",
+                    "model-override",
+                    "mcp-override.json",
+                ],
             ),
         ];
 
@@ -1337,6 +1387,8 @@ mod tests {
                 "plan-model-override",
                 "build-model-override",
                 "model-override",
+                "skill-override.json",
+                "mcp-override.json",
             ] {
                 tokio::fs::write(parent_state.join(name), "provider/parent")
                     .await

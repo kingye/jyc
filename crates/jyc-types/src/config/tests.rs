@@ -1826,7 +1826,7 @@ small_model = "provider/config-small"
         std::fs::create_dir_all(tmp.path().join("subagents/empty")).unwrap();
 
         let config = load_config_from_str(
-            "[subagents.review]\nmode = \"build\"\n[subagents.analyst]\nmode = \"plan\"\n",
+            "[ai]\nenabled = true\n[subagents.review]\nmode = \"build\"\n[subagents.analyst]\nmode = \"plan\"\n",
         )
         .unwrap();
 

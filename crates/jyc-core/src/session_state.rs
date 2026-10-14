@@ -590,15 +590,21 @@ pub async fn resolve_model(
         .or(pattern_override)
         .or(config_override);
     match resolved {
-        Some(value) => match jyc_types::resolve_model_reference(&value, &config.ai) {
-            Ok(model) => Some(model),
-            Err(err) => {
-                // Loud, then no override — the stance the runtime already takes
-                // for a model id it cannot build a provider from.
-                tracing::error!(topic = %topic_name, "{err}");
-                None
+        Some(value) => {
+            // The two names mean the `[ai]` values in effect for this topic's
+            // channel — the same base `create_provider` resolves its fallback
+            // against, so the same text cannot mean two different ids.
+            let ai = jyc_types::derive_agent_config(config, channel);
+            match jyc_types::resolve_model_reference(&value, &ai) {
+                Ok(model) => Some(model),
+                Err(err) => {
+                    // Loud, then no override — the stance the runtime already
+                    // takes for a model id it cannot build a provider from.
+                    tracing::error!(topic = %topic_name, "{err}");
+                    None
+                }
             }
-        },
+        }
         None => None,
     }
 }
@@ -1144,6 +1150,22 @@ mode = "agent"
                 .as_deref(),
             Some("p/small"),
             "the topic's `[ai].model` asks for whatever the global small model is"
+        );
+
+        // The failure stance is part of the promise: a reference that cannot be
+        // resolved yields no override (logged at error level), never the literal
+        // text — and the fallback that fills `None` resolves too (see
+        // `create_provider`), so the text cannot reach a provider.
+        tokio::fs::write(
+            state_dir.join("config.toml"),
+            "[ai]\nmodel = \"${ai.nope}\"\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resolve_model(topic, tmp.path(), &config, "x", None, None, None).await,
+            None,
+            "an unresolvable reference is no override, not a literal model id"
         );
     }
 

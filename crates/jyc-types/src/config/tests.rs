@@ -1919,6 +1919,27 @@ small_model = "provider/config-small"
                 .contains("cannot point at another reference"),
             "following a reference to a reference would recurse, so it is refused"
         );
+
+        // The whole value must be the reference: a partial one is not a model
+        // id, and expanding it silently is how a typo becomes a provider error.
+        assert!(
+            resolve_model_reference("anthropic/${ai.model}", &ai)
+                .unwrap_err()
+                .contains("the whole value must be"),
+            "interpolation is refused, not partially expanded"
+        );
+
+        // The referent is trimmed on the way out, like the picked value is: a
+        // padded `[ai].model` must not work directly but fail by reference.
+        let padded = AiConfig {
+            model: Some("  p/main  ".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_model_reference("${ai.model}", &padded).unwrap(),
+            "p/main",
+            "the referent is trimmed, so referring to a padded value works"
+        );
     }
 
     #[test]

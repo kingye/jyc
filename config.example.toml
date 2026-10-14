@@ -323,7 +323,11 @@ mode = "agent"
 # Only those two names resolve. A reference that cannot be resolved (the value
 # is unset, the name is not one of the two, or the value it points at is itself
 # a reference) is reported at error level and treated as no override — never
-# passed on as literal text.
+# passed on to a provider as its own literal text.
+#
+# Write it where a role or an agent picks a model (`[agents.<name>].model`, a
+# subagent type's `[ai].model`); written in `[ai]` itself, the value it points at
+# has to be set, because there is nothing behind `[ai].model` to fall back to.
 
 system_prompt = "You are an AI assistant. Respond professionally and concisely."
 

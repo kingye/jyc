@@ -212,11 +212,13 @@ pub fn derive_agent_config(app: &AppConfig, channel_name: &str) -> AiConfig {
 
 /// Resolve a model value written as a reference to a global `[ai]` value.
 ///
-/// `[agents.<name>].model` and a subagent type's `[ai].model` may say
-/// `"${ai.small_model}"` instead of repeating an id: the role then runs on
-/// whatever the global small model is, and changing it in one place moves every
-/// role that asked for it. Only two names resolve — a general config-path
-/// language is not worth its own error surface:
+/// Any model value the chain picks may say `"${ai.small_model}"` instead of
+/// repeating an id — `[agents.<name>].model` and a subagent type's `[ai].model`
+/// are the two that prompted it, and a topic's own config, a pattern and an
+/// override file all work the same way. The role then runs on whatever the
+/// `[ai]` value in effect is, and changing it in one place moves every role that
+/// asked for it. Only two names resolve — a general config-path language is not
+/// worth its own error surface:
 ///
 /// - `${ai.model}` → `[ai].model`
 /// - `${ai.small_model}` → `[ai].small_model`
@@ -237,7 +239,7 @@ pub fn resolve_model_reference(value: &str, ai: &AiConfig) -> Result<String, Str
         "${ai.small_model}" => ("[ai].small_model", ai.small_model.as_deref()),
         other => {
             return Err(format!(
-                "unknown model reference `{other}`: only `${{ai.model}}` and `${{ai.small_model}}` resolve"
+                "unknown model reference `{other}`: the whole value must be `${{ai.model}}` or `${{ai.small_model}}`"
             ));
         }
     };
@@ -251,7 +253,7 @@ pub fn resolve_model_reference(value: &str, ai: &AiConfig) -> Result<String, Str
             "`{key}` is itself a reference (`{referent}`): a reference cannot point at another reference"
         ));
     }
-    Ok(referent.to_string())
+    Ok(referent.trim().to_string())
 }
 
 /// A user-defined slash command declared in `config.toml` as `[[commands]]`.

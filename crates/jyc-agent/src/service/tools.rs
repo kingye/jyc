@@ -438,13 +438,22 @@ impl JycAgentService {
         agent_cfg: &jyc_types::AiConfig,
         model_override: Option<&str>,
     ) -> Result<Box<dyn provider::Provider>> {
+        // Both the override and the fallback may be a reference to an `[ai]`
+        // value (`model = "${ai.small_model}"`). Resolving here — the choke point
+        // every caller passes through, the small/compression provider included —
+        // is what keeps the fallback honest: it is the one layer with nothing
+        // behind it, so its literal text would otherwise reach the provider as a
+        // model id. The two names resolve against the `[ai]` values in effect for
+        // this agent, the same base `resolve_model` uses.
         let model = model_override
             .or(agent_cfg.model.as_deref())
             .ok_or_else(|| {
                 anyhow::anyhow!("No model configured. Set [agent].model in config.toml")
             })?;
+        let model = jyc_types::resolve_model_reference(model, agent_cfg)
+            .map_err(|err| anyhow::anyhow!(err))?;
 
-        provider::create_provider(model, &agent_cfg.providers)
+        provider::create_provider(&model, &agent_cfg.providers)
     }
 
     /// Get event bus for a topic.

@@ -314,6 +314,16 @@ mode = "agent"
 # as a warning, the agent continues).
 # Resolution chain: pattern-level small_model > channel-level small_model > global [ai].small_model
 # small_model = "deepseek/deepseek-v4-flash"
+#
+# Either id can be referenced from wherever the model chain resolves — an
+# `[agents.<name>].model` or a subagent type's `[ai].model` — so a role can say
+# "run on the small model" without freezing today's id:
+#   model = "${ai.model}"        # whatever [ai].model is
+#   model = "${ai.small_model}"  # whatever [ai].small_model is
+# Only those two names resolve. A reference that cannot be resolved (the value
+# is unset, the name is not one of the two, or the value it points at is itself
+# a reference) is reported at error level and treated as no override — never
+# passed on as literal text.
 
 system_prompt = "You are an AI assistant. Respond professionally and concisely."
 

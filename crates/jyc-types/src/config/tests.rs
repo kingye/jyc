@@ -1869,6 +1869,59 @@ small_model = "provider/config-small"
     }
 
     #[test]
+    fn model_references_resolve_against_the_global_ai_section() {
+        let ai = AiConfig {
+            model: Some("p/main".to_string()),
+            small_model: Some("p/small".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_model_reference("p/literal", &ai).unwrap(),
+            "p/literal",
+            "a plain model id is returned unchanged"
+        );
+        assert_eq!(
+            resolve_model_reference("${ai.model}", &ai).unwrap(),
+            "p/main"
+        );
+        assert_eq!(
+            resolve_model_reference("${ai.small_model}", &ai).unwrap(),
+            "p/small"
+        );
+
+        // `expand_env_vars` only matches `\w+`, so the dotted form never reaches
+        // the environment pass — every miss here must be an error, not a literal
+        // model id that fails provider construction much later.
+        let no_small = AiConfig {
+            model: Some("p/main".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            resolve_model_reference("${ai.small_model}", &no_small)
+                .unwrap_err()
+                .contains("`[ai].small_model` is not set"),
+            "an unset referent is refused, not left as text"
+        );
+        assert!(
+            resolve_model_reference("${ai.build_model}", &ai)
+                .unwrap_err()
+                .contains("unknown model reference"),
+            "only the two names resolve"
+        );
+        let chained = AiConfig {
+            model: Some("${ai.small_model}".to_string()),
+            small_model: Some("p/small".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            resolve_model_reference("${ai.model}", &chained)
+                .unwrap_err()
+                .contains("cannot point at another reference"),
+            "following a reference to a reference would recurse, so it is refused"
+        );
+    }
+
+    #[test]
     fn leftover_pipe_section_is_ignored() {
         // The `[pipe]` section was removed in pipe split step 3 (channel
         // ownership is derived from adapter capabilities). Configs that

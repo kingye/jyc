@@ -1249,8 +1249,51 @@ mod tests {
         assert!(err.contains("config.toml"), "{err}");
     }
 
+    /// The watcher this repository ships — `subagents/ci-watch/config.toml` —
+    /// loads the same way. It is checked for the same reason as the reviewer
+    /// below, and for one more: the role starts on a model *reference*
+    /// (`${ai.small_model}`), which only means the small model as long as the
+    /// file keeps it a reference and the resolver keeps resolving it.
+    #[test]
+    fn the_repos_own_ci_watch_type_loads() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+
+        let watch = resolve_subagent_type("ci-watch", Some(&config), Some(&repo)).unwrap();
+
+        assert_eq!(watch.name, "ci-watch");
+        assert_eq!(watch.config.mode.as_deref(), Some("plan"));
+        assert_eq!(
+            watch.config.ai.as_ref().and_then(|ai| ai.model.as_deref()),
+            Some("${ai.small_model}"),
+            "the watcher runs on the small model"
+        );
+        // `bash` stays: `gh` and `sleep` are what watching is.
+        assert_eq!(
+            watch.config.disabled_tools.as_deref(),
+            Some(
+                ["write", "edit", "jyc_spawn_subagent"]
+                    .map(str::to_string)
+                    .as_slice()
+            )
+        );
+        assert_eq!(
+            watch.spawn.as_ref().and_then(|s| s.share_topic_path),
+            Some(true),
+            "the caller's directory is what identifies the run being watched"
+        );
+        assert!(
+            watch
+                .config
+                .instructions
+                .as_deref()
+                .is_some_and(|i| i.contains("Never poll without an end")),
+            "the role carries its own budget and reporting orders"
+        );
+    }
+
     /// The role this repository ships — `subagents/review/config.toml`, the type
-    /// the `forked-review` skill tells a spawn to name — loads through the same
+    /// the `dev-workflow` skill tells a spawn to name — loads through the same
     /// installed-type path a user's `~/.config/jyc/subagents/review/` does. It is
     /// checked here so the file cannot rot into a role nobody can spawn.
     #[test]
@@ -1277,7 +1320,7 @@ mod tests {
         );
         assert_eq!(
             review.config.disabled_skills.as_deref(),
-            Some(["forked-review".to_string()].as_slice()),
+            Some(["dev-workflow".to_string()].as_slice()),
             "a reviewer must not delegate the review onward"
         );
         // `bash` stays: there is no read-only shell, and a review of uncommitted
@@ -1579,7 +1622,7 @@ mod tests {
         std::fs::create_dir_all(&type_dir).unwrap();
         tokio::fs::write(
             type_dir.join("config.toml"),
-            "mode = \"plan\"\nskills = [\"pr-review\"]\ndisabled_skills = [\"forked-review\"]\n\
+            "mode = \"plan\"\nskills = [\"pr-review\"]\ndisabled_skills = [\"dev-workflow\"]\n\
              disabled_tools = [\"write\", \"bash\"]\ninstructions = \"read-only review\"\n",
         )
         .await
@@ -1646,7 +1689,7 @@ mod tests {
         );
         assert_eq!(
             cfg.disabled_skills.as_deref(),
-            Some(["forked-review".to_string()].as_slice())
+            Some(["dev-workflow".to_string()].as_slice())
         );
         assert_eq!(cfg.disabled_tools.as_ref().map(Vec::len), Some(2));
         assert_eq!(cfg.instructions.as_deref(), Some("read-only review"));

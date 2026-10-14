@@ -210,6 +210,52 @@ pub fn derive_agent_config(app: &AppConfig, channel_name: &str) -> AiConfig {
     agent
 }
 
+/// Resolve a model value written as a reference to a global `[ai]` value.
+///
+/// Any model value the chain picks may say `"${ai.small_model}"` instead of
+/// repeating an id — `[agents.<name>].model` and a subagent type's `[ai].model`
+/// are the two that prompted it, and a topic's own config, a pattern and an
+/// override file all work the same way. The role then runs on whatever the
+/// `[ai]` value in effect is, and changing it in one place moves every role that
+/// asked for it. Only two names resolve — a general config-path language is not
+/// worth its own error surface:
+///
+/// - `${ai.model}` → `[ai].model`
+/// - `${ai.small_model}` → `[ai].small_model`
+///
+/// A value with no reference is returned unchanged. A reference that cannot be
+/// resolved is an error rather than being left as a literal: `expand_env_vars`
+/// only matches `\w+`, so a dotted name never reaches the environment pass, and
+/// a model id left as the text `${ai.model}` would fail provider construction
+/// much later, where the cause is hard to see. A reference pointing at a value
+/// that is itself a reference is refused too, so resolution never recurses.
+pub fn resolve_model_reference(value: &str, ai: &AiConfig) -> Result<String, String> {
+    let value = value.trim();
+    if !value.contains("${") {
+        return Ok(value.to_string());
+    }
+    let (key, referent) = match value {
+        "${ai.model}" => ("[ai].model", ai.model.as_deref()),
+        "${ai.small_model}" => ("[ai].small_model", ai.small_model.as_deref()),
+        other => {
+            return Err(format!(
+                "unknown model reference `{other}`: the whole value must be `${{ai.model}}` or `${{ai.small_model}}`"
+            ));
+        }
+    };
+    let Some(referent) = referent.filter(|v| !v.trim().is_empty()) else {
+        return Err(format!(
+            "`{value}` is used as a model, but `{key}` is not set"
+        ));
+    };
+    if referent.contains("${") {
+        return Err(format!(
+            "`{key}` is itself a reference (`{referent}`): a reference cannot point at another reference"
+        ));
+    }
+    Ok(referent.trim().to_string())
+}
+
 /// A user-defined slash command declared in `config.toml` as `[[commands]]`.
 ///
 /// Two flavors are supported — only one per entry:

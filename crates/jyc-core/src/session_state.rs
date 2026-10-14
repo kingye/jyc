@@ -493,6 +493,12 @@ pub async fn write_max_input_tokens(topic_name: &str, topic_path: &Path, new_max
 /// `.jyc/config.toml` hand the `[agent]` table in instead of paying for a second
 /// read.
 ///
+/// Whatever layer the value comes from may be a reference to the global `[ai]`
+/// value it would otherwise repeat (`"${ai.small_model}"` — see
+/// [`jyc_types::resolve_model_reference`]); it is resolved last, here. A
+/// reference that cannot be resolved is reported at error level and treated as
+/// no override, rather than surviving as a model id that fails much later.
+///
 /// [`seed_start_model`]: crate::command::fork_handler
 pub async fn resolve_model(
     topic_name: &str,
@@ -575,10 +581,32 @@ pub async fn resolve_model(
     }
     .or(effective_agent.model);
 
-    file_override
+    // A model may be written as a reference to the global `[ai]` value it would
+    // otherwise repeat (`"${ai.small_model}"`), wherever in the chain it sits —
+    // so the value the chain picked is resolved last, in this one place both the
+    // runtime and the display route through.
+    let resolved = file_override
         .or(topic_cfg_override)
         .or(pattern_override)
-        .or(config_override)
+        .or(config_override);
+    match resolved {
+        Some(value) => {
+            // The two names mean the `[ai]` values in effect for this topic's
+            // channel — the same base `create_provider` resolves its fallback
+            // against, so the same text cannot mean two different ids.
+            let ai = jyc_types::derive_agent_config(config, channel);
+            match jyc_types::resolve_model_reference(&value, &ai) {
+                Ok(model) => Some(model),
+                Err(err) => {
+                    // Loud, then no override — the stance the runtime already
+                    // takes for a model id it cannot build a provider from.
+                    tracing::error!(topic = %topic_name, "{err}");
+                    None
+                }
+            }
+        }
+        None => None,
+    }
 }
 
 /// The model this topic runs right now: the effective mode, then
@@ -1093,6 +1121,53 @@ mode = "agent"
     }
 
     // ── resolve_model ─────────────────────────────────────────────────
+
+    /// A model may name the global value it would otherwise repeat, so changing
+    /// `[ai].small_model` in one place moves every agent and role that asked for
+    /// it. The reference is resolved at the end of the chain, whichever layer
+    /// wrote it.
+    #[tokio::test]
+    async fn resolve_model_resolves_a_reference_to_the_global_ai_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "resolve_model_resolves_a_reference_to_the_global_ai_value";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join("config.toml"),
+            "[ai]\nmodel = \"${ai.small_model}\"\n",
+        )
+        .await
+        .unwrap();
+
+        let mut config = AppConfig::default();
+        config.ai.model = Some("p/main".to_string());
+        config.ai.small_model = Some("p/small".to_string());
+
+        assert_eq!(
+            resolve_model(topic, tmp.path(), &config, "x", None, None, None)
+                .await
+                .as_deref(),
+            Some("p/small"),
+            "the topic's `[ai].model` asks for whatever the global small model is"
+        );
+
+        // The failure stance is part of the promise: a reference that cannot be
+        // resolved yields no override (logged at error level), never the literal
+        // text — and the fallback that fills `None` resolves too (see
+        // `create_provider`), so the text cannot reach a provider.
+        tokio::fs::write(
+            state_dir.join("config.toml"),
+            "[ai]\nmodel = \"${ai.nope}\"\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resolve_model(topic, tmp.path(), &config, "x", None, None, None).await,
+            None,
+            "an unresolvable reference is no override, not a literal model id"
+        );
+    }
 
     /// The chain is keyed by the mode the caller asks for, not by the topic's
     /// own mode and not by a stale file for the other one: a topic in plan mode

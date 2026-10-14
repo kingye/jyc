@@ -285,7 +285,7 @@ impl SpawnCommandHandler {
         // a name that was already registered (closed, then reopened) keeps that
         // registration, and every later read — the child's own runtime included
         // — goes through `resolve_state_dir`. `set_topic_path` created it.
-        let state_dir = jyc_types::state_dir::resolve_state_dir(&name, &state_dir);
+        let state_dir = jyc_types::state_dir::resolve_state_dir(&name, &topic_path);
         let seeded = seed_state(
             parent_state,
             &state_dir,
@@ -1900,7 +1900,12 @@ mod tests {
         let agents_dir = workspace.path().join("agents");
         let handler = SpawnCommandHandler::new(tm.clone());
 
-        let ctx = context("filed-parent", &dir, "websocket", &["filed-shell"]);
+        let ctx = context(
+            "t-close_keeps_a_spawn_dir_that_gained_files",
+            &dir,
+            "websocket",
+            &["filed-shell"],
+        );
         let result = handler
             .spawn_under(spawn_request(&ctx), &dir.join(".jyc"), &agents_dir)
             .await
@@ -1917,7 +1922,7 @@ mod tests {
         tokio::fs::remove_dir_all(&dest).await.unwrap();
 
         jyc_types::state_dir::unregister("filed-shell");
-        jyc_types::access_grants::clear("filed-parent");
+        jyc_types::access_grants::clear("t-close_keeps_a_spawn_dir_that_gained_files");
     }
 
     /// The reason `/spawn` exists: continue the conversation where the files
@@ -2021,7 +2026,12 @@ mod tests {
         let handler = SpawnCommandHandler::new(tm.clone());
         let expected = dir.parent().unwrap().join("test");
 
-        let ctx = context("relative-parent", &dir, "websocket", &["../test"]);
+        let ctx = context(
+            "t-spawn_resolves_a_relative_path_against_this_topic",
+            &dir,
+            "websocket",
+            &["../test"],
+        );
         let result = handler
             .spawn_under(
                 spawn_request(&ctx),
@@ -2050,13 +2060,13 @@ mod tests {
             "the lineage belongs to the state dir, never to the topic_path"
         );
         assert_eq!(
-            subagents_of("relative-parent"),
+            subagents_of("t-spawn_resolves_a_relative_path_against_this_topic"),
             vec![("test".to_string(), resolved(&expected))],
             "a relative-path spawn is a subagent of its parent"
         );
 
         jyc_types::state_dir::unregister("test");
-        jyc_types::access_grants::clear("relative-parent");
+        jyc_types::access_grants::clear("t-spawn_resolves_a_relative_path_against_this_topic");
     }
 
     /// Look-once, refuse-before-creating: none of these may leave a directory,

@@ -133,7 +133,7 @@ impl ForkCommandHandler {
         // a name that was already registered (closed, then reopened) keeps that
         // registration, and every later read goes through `resolve_state_dir`.
         // `set_topic_path` created it.
-        let state_dir = jyc_types::state_dir::resolve_state_dir(&name, &state_dir);
+        let state_dir = jyc_types::state_dir::resolve_state_dir(&name, &context.topic_path);
         let seeded = seed_state(
             parent_state,
             &state_dir,
@@ -747,6 +747,7 @@ mod tests {
                 .await
                 .is_some()
         );
+        jyc_types::state_dir::unregister("t-fork_without_a_name_picks_the_first_free_suffix-3");
     }
 
     /// Names become directory names and routing keys, so path syntax is

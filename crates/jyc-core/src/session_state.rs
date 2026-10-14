@@ -359,7 +359,13 @@ pub async fn clear_tasks_at(state_dir: &Path) {
 ///
 /// Mirrors the runtime chain in `jyc-agent::service::process()` so that
 /// non-runtime paths (dashboard topic list, `/model` command) agree with the
-/// mode the agent actually runs in. Config-derived mode is never persisted
+/// mode the agent actually runs in. The runtime states the same precedence once
+/// more, as the pure `resolve_turn_mode` — it also has to force scheduled-job
+/// turns to build, which callers here never see. Changing one means changing the
+/// other; they are small enough that moving them together would cost the runtime
+/// a fresh topic-config read per turn.
+///
+/// Config-derived mode is never persisted
 /// to `.jyc/mode-override`; that file remains reserved for explicit user
 /// overrides via `/mode`, which is why a subagent type's `mode = "plan"` is
 /// read as a config layer here instead.
@@ -434,7 +440,7 @@ pub async fn resolve_active_context_window(
     channel: &str,
     auto_reset_threshold: f64,
 ) -> Option<u64> {
-    let model_override = resolve_active_model(topic_name, topic_path, config, channel).await?;
+    let model_override = resolve_effective_model(topic_name, topic_path, config, channel).await?;
     let context_window = context_window_for_model(&model_override, config)?;
     Some((context_window as f64 * auto_reset_threshold) as u64)
 }
@@ -464,39 +470,50 @@ pub async fn write_max_input_tokens(topic_name: &str, topic_path: &Path, new_max
     }
 }
 
-/// Resolve the active model string (`<provider>/<model-id>`) for this topic.
-/// Mirrors the chain in `jyc-agent::service::process()`.
+/// The model a topic runs in `mode` — the single place this chain lives.
 ///
-/// Two consumers: the context-window resolver above, and `/spawn` + `/fork`,
-/// which hand a fresh child the model its parent is running ([`seed_start_model`]
-/// in `command::fork_handler`). The second one is why this is public: there is
-/// nothing to copy when the parent's model comes from a config or pattern layer
-/// rather than an override file, and the chain that decides it already exists
-/// here.
-pub async fn resolve_active_model(
+/// Every step is keyed by `mode` (the value [`resolve_effective_mode`]
+/// resolved): `.jyc/<mode>-model-override` > the legacy `.jyc/model-override`
+/// (migration) > the topic's `.jyc/config.toml` `[agent]` > the pattern the
+/// message matched > the channel-resolved global `[agent]`.
+///
+/// Consumers: the agent runtime (the model it builds the provider with), the
+/// display source ([`crate::topic_manager::TopicManager::topic_display_state`])
+/// and everything that renders it — dashboard, Feishu status card, `/info` —
+/// the context-window resolver below, and `/spawn` + `/fork`, which hand a
+/// fresh child the model its parent is running ([`seed_start_model`] in
+/// `command::fork_handler`).
+///
+/// `pattern_name` is the pattern the message matched; `None` reads the topic's
+/// `.jyc/pattern`. There is deliberately no first-pattern fallback: the runtime
+/// has no such layer. `topic_agent_cfg` lets a caller that already parsed
+/// `.jyc/config.toml` hand the `[agent]` table in instead of paying for a
+/// second read.
+///
+/// [`seed_start_model`]: crate::command::fork_handler
+pub async fn resolve_model(
     topic_name: &str,
     topic_path: &Path,
     config: &AppConfig,
     channel: &str,
+    mode: Option<&str>,
+    pattern_name: Option<&str>,
+    topic_agent_cfg: Option<&jyc_types::TopicAiConfig>,
 ) -> Option<String> {
-    let mode_override = read_mode_override(topic_name, topic_path).await;
-    let pattern_name = read_pattern(topic_name, topic_path).await;
+    let state_dir = resolve_state_dir(topic_name, topic_path);
+    let plan = matches!(mode, Some("plan"));
 
-    // 1. Mode-specific file override
+    // 1. Mode-specific file override, then the legacy fallback.
     let file_override = {
-        let mode_suffix = match mode_override.as_deref() {
-            Some("plan") => "plan",
-            _ => "build",
-        };
-        let mode_specific =
-            resolve_state_dir(topic_name, topic_path).join(format!("{mode_suffix}-model-override"));
-        let legacy = resolve_state_dir(topic_name, topic_path).join("model-override");
+        let mode_specific = state_dir.join(format!(
+            "{}-model-override",
+            if plan { "plan" } else { "build" }
+        ));
         let path = if mode_specific.exists() {
             Some(mode_specific)
-        } else if legacy.exists() {
-            Some(legacy)
         } else {
-            None
+            let legacy = state_dir.join("model-override");
+            legacy.exists().then_some(legacy)
         };
         match path {
             Some(p) => tokio::fs::read_to_string(&p)
@@ -508,43 +525,55 @@ pub async fn resolve_active_model(
         }
     };
 
-    // 2. Topic config (`.jyc/config.toml`) — read once, then check both
-    //    the mode-specific and the generic `model` field against the same
-    //    loaded value (avoids re-reading the file in the common no-config case).
-    let topic_cfg = jyc_types::load_topic_config(topic_name, topic_path).and_then(|c| c.ai);
-    let topic_cfg_override = topic_cfg
-        .as_ref()
-        .and_then(|a| match mode_override.as_deref() {
-            Some("plan") => a.plan_model.clone(),
-            _ => a.build_model.clone(),
+    // 2. Topic config (`.jyc/config.toml` `[agent]`), unless handed in.
+    let loaded;
+    let topic_agent_cfg = match topic_agent_cfg {
+        Some(cfg) => Some(cfg),
+        None => {
+            loaded = jyc_types::load_topic_config(topic_name, topic_path).and_then(|c| c.ai);
+            loaded.as_ref()
+        }
+    };
+    let topic_cfg_override = topic_agent_cfg
+        .and_then(|a| {
+            if plan {
+                a.plan_model.clone()
+            } else {
+                a.build_model.clone()
+            }
         })
-        .or_else(|| topic_cfg.as_ref().and_then(|a| a.model.clone()));
+        .or_else(|| topic_agent_cfg.and_then(|a| a.model.clone()));
 
-    // 3. Pattern (matched or first) — resolved from `config.channels[channel].patterns`
+    // 3. Pattern the message matched (or the topic's `.jyc/pattern`).
+    let pattern_name = match pattern_name {
+        Some(name) => Some(name.to_string()),
+        None => read_pattern(topic_name, topic_path).await,
+    };
     let pattern_override = {
-        let channel_cfg = config.channels.get(channel);
-        let patterns = channel_cfg.and_then(|c| c.patterns.as_ref());
+        let patterns = config
+            .channels
+            .get(channel)
+            .and_then(|c| c.patterns.as_ref());
         let pat = pattern_name
             .as_deref()
-            .and_then(|name| patterns.and_then(|p| p.iter().find(|p| p.name == name)))
-            .or_else(|| patterns.and_then(|p| p.first()));
-        pat.and_then(|p| match mode_override.as_deref() {
-            Some("plan") => p.plan_model.clone(),
-            _ => p.build_model.clone(),
+            .and_then(|name| patterns.and_then(|p| p.iter().find(|p| p.name == name)));
+        pat.and_then(|p| {
+            if plan {
+                p.plan_model.clone()
+            } else {
+                p.build_model.clone()
+            }
         })
         .or_else(|| pat.and_then(|p| p.model.clone()))
     };
 
-    // 4. Global [agent] (apply channel-level model override on top of global)
-    let mut effective_agent = config.ai.clone();
-    if let Some(ch) = config.channels.get(channel)
-        && ch.model.is_some()
-    {
-        effective_agent.model = ch.model.clone();
-    }
-    let config_override = match mode_override.as_deref() {
-        Some("plan") => effective_agent.plan_model.clone(),
-        _ => effective_agent.build_model.clone(),
+    // 4. Channel-resolved global `[agent]` — the same derivation the runtime
+    //    builds its provider config from.
+    let effective_agent = jyc_types::derive_agent_config(config, channel);
+    let config_override = if plan {
+        effective_agent.plan_model.clone()
+    } else {
+        effective_agent.build_model.clone()
     }
     .or(effective_agent.model);
 
@@ -552,6 +581,29 @@ pub async fn resolve_active_model(
         .or(topic_cfg_override)
         .or(pattern_override)
         .or(config_override)
+}
+
+/// The model this topic runs right now: the effective mode, then
+/// [`resolve_model`] for it. Used where a caller wants "the current model"
+/// rather than a particular mode's: the two spawn triggers and the
+/// context-window resolver.
+pub async fn resolve_effective_model(
+    topic_name: &str,
+    topic_path: &Path,
+    config: &AppConfig,
+    channel: &str,
+) -> Option<String> {
+    let mode = resolve_effective_mode(topic_name, topic_path, config, channel).await;
+    resolve_model(
+        topic_name,
+        topic_path,
+        config,
+        channel,
+        mode.as_deref(),
+        None,
+        None,
+    )
+    .await
 }
 
 /// Resolve the `context_window` for a model string (`<provider>/<model-id>`).
@@ -1073,6 +1125,158 @@ mode = "agent"
         let config = config_with_pattern_mode("p1", Some("plan"));
         let result = resolve_effective_mode(topic, tmp.path(), &config, "other").await;
         assert_eq!(result, None);
+    }
+
+    // ── resolve_model ─────────────────────────────────────────────────
+
+    /// The chain is keyed by the mode the caller asks for, not by the topic's
+    /// own mode and not by a stale file for the other one: a topic in plan mode
+    /// that carries a leftover `build-model-override` runs the plan side.
+    #[tokio::test]
+    async fn resolve_model_is_keyed_by_the_mode_it_is_asked_for() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "resolve_model_is_keyed_by_the_mode_it_is_asked_for";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join("build-model-override"),
+            "provider/build-file\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            state_dir.join("config.toml"),
+            "[ai]\nplan_model = \"provider/plan-config\"\n",
+        )
+        .await
+        .unwrap();
+
+        let config = AppConfig::default();
+        assert_eq!(
+            resolve_model(topic, tmp.path(), &config, "x", Some("plan"), None, None)
+                .await
+                .as_deref(),
+            Some("provider/plan-config"),
+            "plan mode never reads the build file"
+        );
+        assert_eq!(
+            resolve_model(topic, tmp.path(), &config, "x", Some("build"), None, None)
+                .await
+                .as_deref(),
+            Some("provider/build-file"),
+            "build mode reads it"
+        );
+        assert_eq!(
+            resolve_model(topic, tmp.path(), &config, "x", None, None, None)
+                .await
+                .as_deref(),
+            Some("provider/build-file"),
+            "no mode means build"
+        );
+
+        // The legacy file answers for either mode once its own file is gone.
+        tokio::fs::write(state_dir.join("model-override"), "provider/legacy\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            resolve_model(topic, tmp.path(), &config, "x", Some("plan"), None, None)
+                .await
+                .as_deref(),
+            Some("provider/legacy")
+        );
+    }
+
+    /// Every config layer is keyed by the requested mode too — which is how a
+    /// topic whose mode comes from its own config (a typed subagent) finds the
+    /// model that mode names.
+    #[tokio::test]
+    async fn resolve_model_asks_each_layer_for_the_requested_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "resolve_model_asks_each_layer_for_the_requested_mode";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join("config.toml"),
+            "[ai]\nplan_model = \"provider/plan-config\"\nbuild_model = \"provider/build-config\"\n",
+        )
+        .await
+        .unwrap();
+
+        let config = AppConfig::default();
+        for (mode, expected) in [
+            (Some("plan"), "provider/plan-config"),
+            (Some("build"), "provider/build-config"),
+            (None, "provider/build-config"),
+        ] {
+            assert_eq!(
+                resolve_model(topic, tmp.path(), &config, "x", mode, None, None)
+                    .await
+                    .as_deref(),
+                Some(expected),
+                "mode {mode:?}"
+            );
+        }
+    }
+
+    /// No first-pattern fallback: the runtime has no such layer, so a topic that
+    /// matched no pattern must not pick up the channel's first one. Naming the
+    /// pattern is what reaches it.
+    #[tokio::test]
+    async fn resolve_model_has_no_first_pattern_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "resolve_model_has_no_first_pattern_fallback";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        tokio::fs::create_dir_all(&tmp.path().join(".jyc"))
+            .await
+            .unwrap();
+
+        let config = jyc_types::load_config_from_str(
+            r#"
+[general]
+[channels.c]
+type = "email"
+[channels.c.inbound]
+host = "h"
+port = 993
+username = "u"
+password = "p"
+[channels.c.outbound]
+host = "h"
+port = 465
+username = "u"
+password = "p"
+[agent]
+enabled = true
+mode = "agent"
+[[channels.c.patterns]]
+name = "p1"
+model = "provider/first-pattern"
+"#,
+        )
+        .expect("config should parse");
+
+        assert_eq!(
+            resolve_model(topic, tmp.path(), &config, "c", Some("build"), None, None).await,
+            None,
+            "the channel's first pattern is not a layer"
+        );
+        assert_eq!(
+            resolve_model(
+                topic,
+                tmp.path(),
+                &config,
+                "c",
+                Some("build"),
+                Some("p1"),
+                None
+            )
+            .await
+            .as_deref(),
+            Some("provider/first-pattern"),
+            "naming the pattern reaches it"
+        );
     }
 
     // ── resolve_reset_compression ─────────────────────────────────────

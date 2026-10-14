@@ -7,7 +7,9 @@ use jyc_types::state_dir::resolve_state_dir;
 use jyc_types::{AppConfig, TopicConfig};
 use tracing::instrument;
 
-use super::fork_handler::{fail, invalid_name, next_free_name, seed_state, take_inherit_flag};
+use super::fork_handler::{
+    fail, invalid_name, next_free_name, seed_start_model, seed_state, take_inherit_flag,
+};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::topic_manager::TopicManager;
 use crate::topic_path::{resolve_topic_path, resolved};
@@ -50,8 +52,8 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 /// keeps this topic's directory, a spawn gets another one — a fresh dir under
 /// the agents root, or any dir you name, including one that already holds files
 /// (a checkout made elsewhere). What comes along is the state, not the
-/// workspace: the same allow-list `/fork` seeds (task list, backlog, settings)
-/// marked `spawned-from`, so a spawn inherits neither jobs that would
+/// workspace: the same allow-list `/fork` seeds (backlog and settings, never a
+/// task list) marked `spawned-from`, so a spawn inherits neither jobs that would
 /// double-fire nor a token meter it did not run up. The conversation and the
 /// transcript are the one part that stays behind by default — a worker starting
 /// on a task of its own does not need the parent's train of thought — and
@@ -103,6 +105,11 @@ struct SpawnRequest<'a> {
     /// trigger ([`resolve_subagent_type`]) — the request carries the answer, not
     /// the name, so this core never needs a config to read.
     subagent_type: Option<&'a SubagentType>,
+    /// The model the parent is running, for the child's own starting point —
+    /// resolved by whichever trigger holds a config ([`Self::execute`], or the
+    /// tool) and dropped again when the role names a model of its own. `None`
+    /// leaves the child on whatever its inherited state resolves to.
+    start_model: Option<String>,
 }
 
 impl SpawnCommandHandler {
@@ -274,6 +281,11 @@ impl SpawnCommandHandler {
         self.topic_manager
             .set_topic_path(&name, topic_path.clone())
             .await?;
+        // Seed into the dir the registry settled on, not the one computed above:
+        // a name that was already registered (closed, then reopened) keeps that
+        // registration, and every later read — the child's own runtime included
+        // — goes through `resolve_state_dir`. `set_topic_path` created it.
+        let state_dir = jyc_types::state_dir::resolve_state_dir(&name, &topic_path);
         let seeded = seed_state(
             parent_state,
             &state_dir,
@@ -296,6 +308,17 @@ impl SpawnCommandHandler {
                     state_dir.display()
                 )
             })?;
+        }
+
+        // The starting model, last: the parent's, unless the role names one of
+        // its own. By now the role's removals have run, so what is left in the
+        // child's state is exactly what a role with no `[ai]` inherits — and
+        // `model-override` is the slot that fills it (`seed_start_model`).
+        let role_has_model = req
+            .subagent_type
+            .is_some_and(|t| declares_a_model(&t.config));
+        if !role_has_model {
+            seed_start_model(&state_dir, req.start_model.as_deref()).await;
         }
 
         // The parent keeps its spawn in sight: this one grant — on the child's
@@ -385,6 +408,16 @@ impl CommandHandler for SpawnCommandHandler {
             Ok(resolved) => resolved,
             Err(refusal) => return Ok(fail(format!("/spawn: {refusal}"))),
         };
+        // The child starts on this topic's model, resolved the way the runtime
+        // resolves it and against the same live config the type was — the
+        // parent's own state says what it is running (see `seed_start_model`).
+        let start_model = crate::session_state::resolve_effective_model(
+            &context.topic_name,
+            &context.topic_path,
+            &context.config,
+            &context.channel,
+        )
+        .await;
         let req = SpawnRequest {
             parent_topic: &context.topic_name,
             parent_topic_path: &context.topic_path,
@@ -392,6 +425,7 @@ impl CommandHandler for SpawnCommandHandler {
             inherit,
             share_topic_path: false,
             subagent_type: subagent_type.as_ref(),
+            start_model,
         };
         self.spawn_under(req, &parent_state, &agents_dir).await
     }
@@ -401,9 +435,10 @@ impl CommandHandler for SpawnCommandHandler {
 /// tool's trigger for [`SpawnCommandHandler::spawn_under`].
 ///
 /// The layout, the inheritance and the grant are `/spawn`'s: a sibling under
-/// the agents root carrying a copy of the parent's state (`pattern`, task list,
-/// `mode-override`, …) with its own `.jyc`, marked `spawned-from` and granted to
-/// the parent read+write. What is *not* `/spawn`'s is that the name is resolved
+/// the agents root carrying a copy of the parent's state (`pattern`,
+/// `mode-override`, … — its task list is not among them) with its own `.jyc`,
+/// marked `spawned-from` and granted to the parent read+write. What is *not*
+/// `/spawn`'s is that the name is resolved
 /// here rather than taken from arguments.
 ///
 /// `inherit_context` and `share_topic_path` are the tool's two decisions about
@@ -422,7 +457,11 @@ impl CommandHandler for SpawnCommandHandler {
 /// its turns (an empty body stops before the model call).
 ///
 /// `subagent_type` is resolved by the caller ([`resolve_type_arg`]), which has
-/// the live config: this function only needs the answer.
+/// the live config: this function only needs the answer. `start_model` is the
+/// parent's own model, resolved the same way by the caller that holds a config
+/// ([`crate::session_state::resolve_effective_model`]) — the child starts on it
+/// unless the role names one.
+#[allow(clippy::too_many_arguments)]
 pub async fn spawn_subagent(
     tm: &Arc<TopicManager>,
     parent: &str,
@@ -431,6 +470,7 @@ pub async fn spawn_subagent(
     inherit_context: bool,
     share_topic_path: bool,
     subagent_type: Option<&SubagentType>,
+    start_model: Option<&str>,
 ) -> Result<String, String> {
     // Production path only, like `/spawn`: `resolve_agents_dir()` resolves
     // the real data home, so a test that reached here would create topics
@@ -449,6 +489,7 @@ pub async fn spawn_subagent(
         inherit_context,
         share_topic_path,
         subagent_type,
+        start_model,
         &agents_dir,
     )
     .await
@@ -467,6 +508,7 @@ pub async fn spawn_subagent_under(
     inherit_context: bool,
     share_topic_path: bool,
     subagent_type: Option<&SubagentType>,
+    start_model: Option<&str>,
     agents_dir: &Path,
 ) -> Result<String, String> {
     let parent_state = state_dir_of(parent, parent_dir);
@@ -493,6 +535,7 @@ pub async fn spawn_subagent_under(
         inherit: inherit_context,
         share_topic_path,
         subagent_type,
+        start_model: start_model.map(str::to_string),
     };
     let handler = SpawnCommandHandler::new(tm.clone());
     match handler.spawn_under(req, &parent_state, agents_dir).await {
@@ -742,28 +785,74 @@ fn take_type_flag(args: &[String]) -> Result<(Option<String>, Vec<String>), Stri
     Ok((found, rest))
 }
 
+/// Whether a role names a model of its own — `[ai]` with any of its three keys.
+///
+/// The same three keys answer two questions in [`apply_subagent_type`]: which
+/// override files the role supersedes ([`superseded_overrides`]), and whether
+/// the child still takes the parent's model ([`seed_start_model`]). A role that
+/// names one starts on it, not on the parent's.
+fn declares_a_model(config: &TopicConfig) -> bool {
+    config
+        .ai
+        .as_ref()
+        .is_some_and(|ai| ai.model.is_some() || ai.plan_model.is_some() || ai.build_model.is_some())
+}
+
+/// The runtime override files a resolved type supersedes.
+///
+/// Each one sits *above* a topic config in its resolution chain, so leaving it
+/// behind would silently outrank the type's own value. Only the keys the type
+/// sets itself are superseded: where it has no opinion the parent's runtime
+/// choice stands, which is what makes a role with no `[ai]` inherit the
+/// parent's model instead of falling back to the configured default.
+fn superseded_overrides(config: &TopicConfig) -> Vec<&'static str> {
+    let mut files = Vec::new();
+    if config.mode.is_some() {
+        files.push("mode-override");
+    }
+    if let Some(ai) = &config.ai {
+        // The legacy file is mode-agnostic and still read ahead of the config,
+        // so any model at all has to take it out; a per-mode file only holds a
+        // value for the mode it names, and the chain reads the one whose mode it
+        // is asked for — so `[ai].model` covers both, and a plan-only model only
+        // has to take the plan file out.
+        if declares_a_model(config) {
+            files.push("model-override");
+        }
+        if ai.model.is_some() || ai.plan_model.is_some() {
+            files.push("plan-model-override");
+        }
+        if ai.model.is_some() || ai.build_model.is_some() {
+            files.push("build-model-override");
+        }
+    }
+    // A skill toggle cancels a config-level exclusion of the same name
+    // (`prompt.rs` keeps `on` entries out of the exclude list), so a type that
+    // only excludes skills needs the parent's toggles gone just as much; the
+    // same goes for a type that replaces the inherited MCP set outright.
+    if config.skills.is_some() || config.disabled_skills.is_some() {
+        files.push(crate::session_state::SKILL_OVERRIDE_FILE);
+    }
+    if config.mcps.is_some() || config.mcps_replace {
+        files.push(crate::session_state::MCP_OVERRIDE_FILE);
+    }
+    files
+}
+
 /// Write a resolved `type` into the child's state dir.
 ///
 /// Two steps, in this order:
-/// 1. **The parent's runtime choices go.** `seed_state` copied the override
-///    files the parent happened to be running with — `mode-override`, the
-///    per-mode model overrides, the `/skill` and `/mcp` toggles — and every one
-///    of them sits *above* a topic config in its resolution chain. A role the
-///    parent's ad-hoc switches cannot override is the point of a type, so they
-///    are removed rather than layered under it.
+/// 1. **The parent's runtime choices the type answers for itself go.**
+///    `seed_state` copied the override files the parent happened to be running
+///    with, and [`superseded_overrides`] names the ones whose key the type sets
+///    itself. A key it leaves out keeps the parent's choice.
 /// 2. **The type's settings are written** to `.jyc/config.toml` — a config
 ///    layer, so the child's own `/mode`, `/model` and `/skill` still win over it
 ///    afterwards (the type is where the child *starts*, not a cage) — plus the
 ///    name in `.jyc/subagent-type`, which nothing reads yet (the dashboard is
 ///    where it is headed) and which carries no behavior of its own.
 fn apply_subagent_type(state_dir: &Path, subagent_type: &SubagentType) -> Result<()> {
-    for file in [
-        "mode-override",
-        "plan-model-override",
-        "build-model-override",
-        crate::session_state::SKILL_OVERRIDE_FILE,
-        crate::session_state::MCP_OVERRIDE_FILE,
-    ] {
+    for file in superseded_overrides(&subagent_type.config) {
         let path = state_dir.join(file);
         if path.exists() {
             std::fs::remove_file(&path)
@@ -864,10 +953,16 @@ mod tests {
 
     /// A parent topic: a dir with workspace content, and an in-dir `.jyc`
     /// holding both the inheritable state and the files a spawn must not take.
-    async fn parent_topic() -> (tempfile::TempDir, PathBuf) {
+    async fn parent_topic(topic: &str) -> (tempfile::TempDir, PathBuf) {
         let tmp = tempdir().unwrap();
-        let dir = tmp.path().join("src-topic");
+        let dir = tmp.path().join(topic);
         let state = dir.join(".jyc");
+        // The parent of a spawn is a live topic, so its state dir is
+        // registered — a test that resolves the parent's model through
+        // `resolve_state_dir` (which has no fallback by design, #825) needs
+        // what production always has. `topic` is the caller's: the registry is
+        // process-global and these tests run in parallel.
+        jyc_types::state_dir::register(topic, &state);
         tokio::fs::create_dir_all(state.join("jobs")).await.unwrap();
         tokio::fs::create_dir_all(dir.join("src")).await.unwrap();
         tokio::fs::write(dir.join("src/main.rs"), "fn main() {}")
@@ -880,7 +975,10 @@ mod tests {
             ("pattern", "jyc"),
             ("agent-context.json", "{\"messages\":[]}"),
             ("agent-session.json", "{\"current_input_tokens\":900}"),
-            (session_state::TASKS_FILE, "{\"items\":[]}"),
+            (
+                session_state::TASKS_FILE,
+                "{\"items\":[{\"id\":1,\"text\":\"the parent's plan\",\"status\":\"pending\"}]}",
+            ),
             ("chat_history_2026-09-24.jsonl", "{}"),
             ("mode-override", "plan"),
             ("activity.jsonl", "{}"),
@@ -917,6 +1015,7 @@ mod tests {
             inherit: false,
             share_topic_path: false,
             subagent_type: None,
+            start_model: None,
         }
     }
 
@@ -1157,14 +1256,15 @@ mod tests {
         assert!(err.contains("twice"), "{err}");
     }
 
-    /// A typed spawn hands the child the role instead of the parent's runtime
-    /// choices: the override files it just inherited go (each of them outranks a
-    /// topic config in its chain), the type's settings are written to
-    /// `.jyc/config.toml` where the child's own `/mode`, `/model` and `/skill`
+    /// A typed spawn hands the child the role, dropping only the parent runtime
+    /// choices the role answers for itself — each of those outranks a topic
+    /// config in its chain. The type's settings are written to
+    /// `.jyc/config.toml`, where the child's own `/mode`, `/model` and `/skill`
     /// can still win over them, and the name is recorded for the dashboard.
     #[tokio::test]
     async fn spawn_with_a_type_replaces_the_parents_runtime_choices() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) =
+            parent_topic("t-spawn_with_a_type_replaces_the_parents_runtime_choices").await;
         let parent_state = dir.join(".jyc");
         // The parent is running with /mode, /model, /skill and /mcp set — the
         // state `seed_state` copies and a role must not inherit.
@@ -1200,14 +1300,16 @@ mod tests {
         let subagent_type =
             resolve_subagent_type("review", Some(&config), Some(types_root.path())).unwrap();
 
-        let args = vec!["worker".to_string()];
+        let args =
+            vec!["worker-spawn_with_a_type_replaces_the_parents_runtime_choices".to_string()];
         let req = SpawnRequest {
-            parent_topic: "src-topic",
+            parent_topic: "t-spawn_with_a_type_replaces_the_parents_runtime_choices",
             parent_topic_path: &dir,
             args: &args,
             inherit: false,
             share_topic_path: false,
             subagent_type: Some(&subagent_type),
+            start_model: None,
         };
         let result = handler
             .spawn_under(req, &parent_state, &agents_dir)
@@ -1220,22 +1322,35 @@ mod tests {
             result.message
         );
 
-        let dest = resolved(&agents_dir.join("worker"));
-        let state = resolve_state_dir("worker", &dest);
-        for gone in [
-            "mode-override",
-            "plan-model-override",
-            session_state::SKILL_OVERRIDE_FILE,
-            session_state::MCP_OVERRIDE_FILE,
-        ] {
+        let dest = resolved(
+            &agents_dir.join("worker-spawn_with_a_type_replaces_the_parents_runtime_choices"),
+        );
+        let state = resolve_state_dir(
+            "worker-spawn_with_a_type_replaces_the_parents_runtime_choices",
+            &dest,
+        );
+        // The role declares `mode` and `skills`, so those two files go; it says
+        // nothing about models or MCPs, so the files carrying those choices stay
+        // (which of them the chain reads for this child is the subject of the
+        // test below).
+        for gone in ["mode-override", session_state::SKILL_OVERRIDE_FILE] {
             assert!(
                 !state.join(gone).exists(),
-                "{gone} was the parent's runtime choice, not the role's"
+                "{gone} is a key the role sets itself"
+            );
+        }
+        for kept in ["plan-model-override", session_state::MCP_OVERRIDE_FILE] {
+            assert!(
+                state.join(kept).exists(),
+                "{kept} is a choice the role leaves to the parent"
             );
         }
 
-        let cfg = jyc_types::load_topic_config("worker", &dest)
-            .expect("the child starts with a topic config");
+        let cfg = jyc_types::load_topic_config(
+            "worker-spawn_with_a_type_replaces_the_parents_runtime_choices",
+            &dest,
+        )
+        .expect("the child starts with a topic config");
         assert_eq!(cfg.mode.as_deref(), Some("plan"));
         assert_eq!(
             cfg.skills.as_deref(),
@@ -1256,23 +1371,351 @@ mod tests {
             "review",
             "the dashboard reads the role from here"
         );
-        // Everything a spawn hands over besides runtime choices still arrives.
-        for keep in [session_state::TASKS_FILE, "pattern"] {
-            assert!(state.join(keep).exists(), "{keep} must be inherited");
+        // Everything a spawn hands over besides runtime choices still arrives —
+        // except the parent's task list, which is the child's own to write.
+        assert!(state.join("pattern").exists(), "pattern must be inherited");
+        assert!(
+            !state.join(session_state::TASKS_FILE).exists(),
+            "a child plans its own work"
+        );
+    }
+
+    /// The other half of the rule: a key the role says nothing about keeps the
+    /// parent's runtime choice, and the mapping runs key by key rather than
+    /// all-or-nothing.
+    #[tokio::test]
+    async fn a_type_supersedes_only_the_overrides_it_declares() {
+        // (the role's config, the files that must go, the files that must stay)
+        let cases: &[(&str, &[&str], &[&str])] = &[
+            (
+                // No `[ai]`: every model file the parent had stays, and the
+                // chain reads the plan file for this child — its mode comes from
+                // the type's config (`mode-override`, the file layer, is gone).
+                "mode = \"plan\"\n",
+                &["mode-override"],
+                &[
+                    "plan-model-override",
+                    "build-model-override",
+                    "model-override",
+                    "skill-override.json",
+                    "mcp-override.json",
+                ],
+            ),
+            (
+                // A plan model: the plan file and the mode-agnostic one go, so
+                // nothing outranks the type's value in the mode it declares. The
+                // build file stays — it is not read in plan mode, and a later
+                // `/mode build` still inherits that side from the parent.
+                "mode = \"plan\"\n[ai]\nplan_model = \"provider/role\"\n",
+                &["mode-override", "plan-model-override", "model-override"],
+                &[
+                    "build-model-override",
+                    "skill-override.json",
+                    "mcp-override.json",
+                ],
+            ),
+            (
+                // `[ai].model` covers both modes, so all three files go.
+                "[ai]\nmodel = \"provider/role\"\n",
+                &[
+                    "plan-model-override",
+                    "build-model-override",
+                    "model-override",
+                ],
+                &["mode-override", "skill-override.json"],
+            ),
+            (
+                // No `mode`: the parent's `mode-override` stands, so this child
+                // is in plan mode too and a build model leaves the plan file the
+                // chain reads for it.
+                "[ai]\nbuild_model = \"provider/role\"\n",
+                &["build-model-override", "model-override"],
+                &["plan-model-override", "mode-override"],
+            ),
+            (
+                // `disabled_skills` alone still needs the parent's toggles gone:
+                // an `on` entry cancels a config-level exclusion of that name.
+                "disabled_skills = [\"danger\"]\n",
+                &["skill-override.json"],
+                &[
+                    "mode-override",
+                    "plan-model-override",
+                    "build-model-override",
+                    "model-override",
+                    "mcp-override.json",
+                ],
+            ),
+        ];
+
+        for (role, gone, kept) in cases {
+            let (_tmp, dir) =
+                parent_topic("t-a_type_supersedes_only_the_overrides_it_declares").await;
+            let parent_state = dir.join(".jyc");
+            for name in [
+                "plan-model-override",
+                "build-model-override",
+                "model-override",
+                "skill-override.json",
+                "mcp-override.json",
+            ] {
+                tokio::fs::write(parent_state.join(name), "provider/parent")
+                    .await
+                    .unwrap();
+            }
+
+            let workspace = tempdir().unwrap();
+            let tm = make_topic_manager(workspace.path());
+            let agents_dir = workspace.path().join("agents");
+            let handler = SpawnCommandHandler::new(tm.clone());
+
+            let types_root = tempdir().unwrap();
+            let type_dir = types_root.path().join("subagents/role");
+            std::fs::create_dir_all(&type_dir).unwrap();
+            tokio::fs::write(type_dir.join("config.toml"), role)
+                .await
+                .unwrap();
+            let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+            let subagent_type =
+                resolve_subagent_type("role", Some(&config), Some(types_root.path())).unwrap();
+
+            let args = vec!["worker-a_type_supersedes_only_the_overrides_it_declares".to_string()];
+            let req = SpawnRequest {
+                parent_topic: "t-a_type_supersedes_only_the_overrides_it_declares",
+                parent_topic_path: &dir,
+                args: &args,
+                inherit: false,
+                share_topic_path: false,
+                subagent_type: Some(&subagent_type),
+                start_model: None,
+            };
+            let result = handler
+                .spawn_under(req, &parent_state, &agents_dir)
+                .await
+                .unwrap();
+            assert!(result.success, "{}", result.message);
+
+            let dest = resolved(
+                &agents_dir.join("worker-a_type_supersedes_only_the_overrides_it_declares"),
+            );
+            let state = resolve_state_dir(
+                "worker-a_type_supersedes_only_the_overrides_it_declares",
+                &dest,
+            );
+            for name in *gone {
+                assert!(
+                    !state.join(name).exists(),
+                    "role {role:?} declares that key, so {name} must go"
+                );
+            }
+            for name in *kept {
+                assert!(
+                    state.join(name).exists(),
+                    "role {role:?} has no opinion on {name}, so it stays"
+                );
+            }
         }
+    }
+
+    /// A child begins on the model its parent is running, unless the role names
+    /// one of its own.
+    ///
+    /// Written to `model-override`, the mode-agnostic fallback: the chain reads it
+    /// whenever the mode-specific file for the child's own mode is missing, so
+    /// the child's mode naming cannot hide it — a mode-only role makes the child
+    /// a plan-mode topic (the type's `mode` lands in its config, and the type
+    /// expands by removing the `mode-override` that would have said plan). The
+    /// last case is the one that made this necessary — a review-shaped role has
+    /// no `[ai]`, and without the write it fell through to the configured
+    /// default.
+    #[tokio::test]
+    async fn a_child_starts_on_the_parents_model_unless_the_role_names_one() {
+        // (the role, the parent's model, what the child's state should hold)
+        let cases: &[(Option<&str>, Option<&str>, Option<&str>)] = &[
+            (None, Some("provider/parent"), Some("provider/parent")),
+            (
+                Some("mode = \"plan\"\n"),
+                Some("provider/parent"),
+                Some("provider/parent"),
+            ),
+            // A role with a model of its own starts on it.
+            (
+                Some("mode = \"plan\"\n[ai]\nplan_model = \"provider/role\"\n"),
+                Some("provider/parent"),
+                None,
+            ),
+            // Nothing resolved for the parent: nothing written.
+            (None, None, None),
+        ];
+
+        for (role, parent_model, expected) in cases {
+            let (_tmp, dir) =
+                parent_topic("t-a_child_starts_on_the_parents_model_unless_the_role_names_one")
+                    .await;
+            let parent_state = dir.join(".jyc");
+            let workspace = tempdir().unwrap();
+            let tm = make_topic_manager(workspace.path());
+            let agents_dir = workspace.path().join("agents");
+            let handler = SpawnCommandHandler::new(tm.clone());
+
+            let types_root = tempdir().unwrap();
+            let subagent_type = role.map(|body| {
+                let type_dir = types_root.path().join("subagents/role");
+                std::fs::create_dir_all(&type_dir).unwrap();
+                std::fs::write(type_dir.join("config.toml"), body).unwrap();
+                let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+                resolve_subagent_type("role", Some(&config), Some(types_root.path())).unwrap()
+            });
+
+            let args = vec!["worker-snapshot".to_string()];
+            let req = SpawnRequest {
+                parent_topic: "t-a_child_starts_on_the_parents_model_unless_the_role_names_one",
+                parent_topic_path: &dir,
+                args: &args,
+                inherit: false,
+                share_topic_path: false,
+                subagent_type: subagent_type.as_ref(),
+                start_model: parent_model.map(str::to_string),
+            };
+            let result = handler
+                .spawn_under(req, &parent_state, &agents_dir)
+                .await
+                .unwrap();
+            assert!(result.success, "{}", result.message);
+
+            let dest = resolved(&agents_dir.join("worker-snapshot"));
+            let state = resolve_state_dir("worker-snapshot", &dest);
+            let written = tokio::fs::read_to_string(state.join("model-override"))
+                .await
+                .ok()
+                .map(|s| s.trim().to_string());
+            assert_eq!(
+                written.as_deref(),
+                *expected,
+                "role {role:?} with parent model {parent_model:?}"
+            );
+            if let Some(expected) = expected {
+                // Not just the file: the chain the child then runs reads it,
+                // with no config of its own to fall back on.
+                assert_eq!(
+                    session_state::resolve_effective_model(
+                        "worker-snapshot",
+                        &dest,
+                        &AppConfig::default(),
+                        "x"
+                    )
+                    .await
+                    .as_deref(),
+                    Some(*expected),
+                    "the child's own chain must read the snapshot"
+                );
+            }
+        }
+    }
+
+    /// The parent ran `/model` while it was in build mode, so its state carries
+    /// a `build-model-override` its *plan* turn never reads — and the role
+    /// declares only `mode`. The child must start on the parent's current model,
+    /// not on that leftover file.
+    #[tokio::test]
+    async fn a_mode_only_role_does_not_inherit_the_parents_other_modes_model() {
+        let (_tmp, dir) =
+            parent_topic("t-a_mode_only_role_does_not_inherit_the_parents_other_modes_model").await;
+        let parent_state = dir.join(".jyc");
+        // The parent's current model comes from its topic config, so there is
+        // no file to copy; its earlier build-mode choice sits in the
+        // mode-specific file that could otherwise shadow the snapshot.
+        tokio::fs::write(
+            parent_state.join("config.toml"),
+            "[ai]\nplan_model = \"provider/plan\"\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            parent_state.join("build-model-override"),
+            "provider/stale-build\n",
+        )
+        .await
+        .unwrap();
+
+        let config = AppConfig::default();
+        // What `/spawn` resolves for the parent — its own mode's model, not the
+        // build-mode choice `/model` left behind a mode switch ago. The parent
+        // name is this test's own, so the registry lookup is deterministic.
+        let parent_model = session_state::resolve_effective_model(
+            "t-a_mode_only_role_does_not_inherit_the_parents_other_modes_model",
+            &dir,
+            &config,
+            "x",
+        )
+        .await;
+        assert_eq!(parent_model.as_deref(), Some("provider/plan"));
+
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_dir = workspace.path().join("agents");
+        let handler = SpawnCommandHandler::new(tm.clone());
+        let types_root = tempdir().unwrap();
+        let type_dir = types_root.path().join("subagents/role");
+        std::fs::create_dir_all(&type_dir).unwrap();
+        std::fs::write(type_dir.join("config.toml"), "mode = \"plan\"\n").unwrap();
+        let type_config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+        let subagent_type =
+            resolve_subagent_type("role", Some(&type_config), Some(types_root.path())).unwrap();
+
+        // A child name of its own: the state-dir registry is process-global, so
+        // a name another test spawns in parallel would resolve to *its* dir.
+        let args = vec!["mode-only-child".to_string()];
+        let req = SpawnRequest {
+            parent_topic: "t-a_mode_only_role_does_not_inherit_the_parents_other_modes_model",
+            parent_topic_path: &dir,
+            args: &args,
+            inherit: false,
+            share_topic_path: false,
+            subagent_type: Some(&subagent_type),
+            start_model: parent_model.clone(),
+        };
+        let result = handler
+            .spawn_under(req, &parent_state, &agents_dir)
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.message);
+
+        let dest = resolved(&agents_dir.join("mode-only-child"));
+        let child_state = resolve_state_dir("mode-only-child", &dest);
+        assert_eq!(
+            tokio::fs::read_to_string(child_state.join("build-model-override"))
+                .await
+                .unwrap()
+                .trim(),
+            "provider/stale-build",
+            "the seeded file is still there — the point is that the chain must not read it"
+        );
+        assert_eq!(
+            session_state::resolve_effective_model("mode-only-child", &dest, &config, "x")
+                .await
+                .as_deref(),
+            Some("provider/plan"),
+            "the child runs the parent's current model, not its other mode's"
+        );
     }
 
     /// No argument: a fresh dir under the agents root, the parent's *settings* in
     /// it, and none of the workspace content — a spawn hands over state, not files.
     #[tokio::test]
     async fn spawn_defaults_to_a_fresh_dir_under_the_agents_dir() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) =
+            parent_topic("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
         let handler = SpawnCommandHandler::new(tm.clone());
 
-        let ctx = context("src-topic", &dir, "websocket", &[]);
+        let ctx = context(
+            "t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir",
+            &dir,
+            "websocket",
+            &[],
+        );
         let result = handler
             .spawn_under(spawn_request(&ctx), &dir.join(".jyc"), &agents_dir)
             .await
@@ -1281,10 +1724,13 @@ mod tests {
 
         // The handler registers the canonical path, so the asserts compare
         // against it too.
-        let dest = resolved(&agents_dir.join("src-topic-2"));
+        let dest =
+            resolved(&agents_dir.join("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2"));
         assert!(dest.is_dir(), "the default destination is created for it");
         assert_eq!(
-            tm.topic_path("src-topic-2").await.unwrap(),
+            tm.topic_path("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2")
+                .await
+                .unwrap(),
             dest,
             "the spawn works in its own dir, not the parent's"
         );
@@ -1294,7 +1740,10 @@ mod tests {
         );
         assert!(dir.join("README.md").exists(), "the parent keeps its files");
 
-        let state = resolve_state_dir("src-topic-2", &dest);
+        let state = resolve_state_dir(
+            "t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2",
+            &dest,
+        );
         assert_eq!(
             state,
             dest.join(".jyc"),
@@ -1304,11 +1753,15 @@ mod tests {
             tokio::fs::read_to_string(state.join("spawned-from"))
                 .await
                 .unwrap(),
-            "src-topic"
+            "t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir"
         );
-        for keep in [session_state::TASKS_FILE, "pattern", "mode-override"] {
+        for keep in ["pattern", "mode-override"] {
             assert!(state.join(keep).exists(), "{keep} must be inherited");
         }
+        assert!(
+            !state.join(session_state::TASKS_FILE).exists(),
+            "a child plans its own work: the parent's list stays behind"
+        );
         // The default is a child with a head of its own: settings yes, the
         // parent's train of thought no. `--inherit` is the opt-out.
         for drop in [
@@ -1331,7 +1784,9 @@ mod tests {
         // A spawn is one of the parent's subagents: this grant is what the
         // parent's read+write boundary, the prompt's subagent list and the cap
         // check all read — the same for `/spawn` and for the tool.
-        let grants = jyc_types::access_grants::grants_for("src-topic");
+        let grants = jyc_types::access_grants::grants_for(
+            "t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir",
+        );
         assert_eq!(grants.len(), 1, "one spawn, one grant: {grants:?}");
         assert_eq!(grants[0].path, dest);
         assert!(
@@ -1339,24 +1794,29 @@ mod tests {
             "the parent seeds its spawn through this grant"
         );
         assert_eq!(
-            subagents_of("src-topic"),
-            vec![("src-topic-2".to_string(), dest.clone())]
+            subagents_of("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir"),
+            vec![(
+                "t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2".to_string(),
+                dest.clone()
+            )]
         );
 
         // Closing the spawn removes the emptied shell with its state — the
         // close-side half of the default shape — and hands the access back.
-        tm.close_topic("src-topic-2").await.unwrap();
+        tm.close_topic("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2")
+            .await
+            .unwrap();
         assert!(
             !dest.exists(),
             "an emptied spawn dir goes away with its state"
         );
         assert!(
-            subagents_of("src-topic").is_empty(),
+            subagents_of("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir").is_empty(),
             "closing the spawn revokes the parent's access"
         );
 
-        jyc_types::state_dir::unregister("src-topic-2");
-        jyc_types::access_grants::clear("src-topic");
+        jyc_types::state_dir::unregister("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2");
+        jyc_types::access_grants::clear("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir");
     }
 
     /// `--inherit` is the opt-out of that default, and it is a flag rather than
@@ -1364,7 +1824,7 @@ mod tests {
     /// conversation and transcript come along.
     #[tokio::test]
     async fn spawn_inherit_copies_the_conversation() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) = parent_topic("t-spawn_inherit_copies_the_conversation").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
@@ -1386,6 +1846,7 @@ mod tests {
             inherit,
             share_topic_path: false,
             subagent_type: None,
+            start_model: None,
         };
         let result = handler
             .spawn_under(req, &dir.join(".jyc"), &agents_dir)
@@ -1408,6 +1869,10 @@ mod tests {
             assert!(state.join(kept).exists(), "{kept} must be inherited");
         }
         assert!(
+            !state.join(session_state::TASKS_FILE).exists(),
+            "even `--inherit` leaves the parent's task list behind"
+        );
+        assert!(
             result.message.contains("conversation included"),
             "the receipt says what it took: {}",
             result.message
@@ -1421,13 +1886,18 @@ mod tests {
     /// deletes the state and keeps the dir with whatever is in it.
     #[tokio::test]
     async fn close_keeps_a_spawn_dir_that_gained_files() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) = parent_topic("t-close_keeps_a_spawn_dir_that_gained_files").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
         let handler = SpawnCommandHandler::new(tm.clone());
 
-        let ctx = context("filed-parent", &dir, "websocket", &["filed-shell"]);
+        let ctx = context(
+            "t-close_keeps_a_spawn_dir_that_gained_files",
+            &dir,
+            "websocket",
+            &["filed-shell"],
+        );
         let result = handler
             .spawn_under(spawn_request(&ctx), &dir.join(".jyc"), &agents_dir)
             .await
@@ -1444,14 +1914,15 @@ mod tests {
         tokio::fs::remove_dir_all(&dest).await.unwrap();
 
         jyc_types::state_dir::unregister("filed-shell");
-        jyc_types::access_grants::clear("filed-parent");
+        jyc_types::access_grants::clear("t-close_keeps_a_spawn_dir_that_gained_files");
     }
 
     /// The reason `/spawn` exists: continue the conversation where the files
     /// already are — a non-empty directory is a destination, not a refusal.
     #[tokio::test]
     async fn spawn_works_in_an_existing_dir_and_touches_nothing_there() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) =
+            parent_topic("t-spawn_works_in_an_existing_dir_and_touches_nothing_there").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let handler = SpawnCommandHandler::new(tm.clone());
@@ -1541,13 +2012,18 @@ mod tests {
     /// lands beside the parent — allowed, because nothing is written into it.
     #[tokio::test]
     async fn spawn_resolves_a_relative_path_against_this_topic() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) = parent_topic("t-spawn_resolves_a_relative_path_against_this_topic").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let handler = SpawnCommandHandler::new(tm.clone());
         let expected = dir.parent().unwrap().join("test");
 
-        let ctx = context("relative-parent", &dir, "websocket", &["../test"]);
+        let ctx = context(
+            "t-spawn_resolves_a_relative_path_against_this_topic",
+            &dir,
+            "websocket",
+            &["../test"],
+        );
         let result = handler
             .spawn_under(
                 spawn_request(&ctx),
@@ -1576,20 +2052,21 @@ mod tests {
             "the lineage belongs to the state dir, never to the topic_path"
         );
         assert_eq!(
-            subagents_of("relative-parent"),
+            subagents_of("t-spawn_resolves_a_relative_path_against_this_topic"),
             vec![("test".to_string(), resolved(&expected))],
             "a relative-path spawn is a subagent of its parent"
         );
 
         jyc_types::state_dir::unregister("test");
-        jyc_types::access_grants::clear("relative-parent");
+        jyc_types::access_grants::clear("t-spawn_resolves_a_relative_path_against_this_topic");
     }
 
     /// Look-once, refuse-before-creating: none of these may leave a directory,
     /// a topic, or a touched file behind.
     #[tokio::test]
     async fn spawn_refuses_destinations_and_names_it_must_not_take() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) =
+            parent_topic("t-spawn_refuses_destinations_and_names_it_must_not_take").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
@@ -1610,7 +2087,10 @@ mod tests {
         // Reaching the source dir takes an explicit path: `Path::file_name`
         // drops `.`, so `"./."` alone would name itself `src-topic` instead.
         for (args, expected) in [
-            (vec!["src-topic"], "already in"),
+            (
+                vec!["t-spawn_refuses_destinations_and_names_it_must_not_take"],
+                "already in",
+            ),
             (vec!["taken"], "already exists"),
             (vec![".hidden"], "must not start with '.'"),
             (
@@ -1630,7 +2110,12 @@ mod tests {
             ),
             (vec!["a", "b", "c"], "one name and one path at most"),
         ] {
-            let ctx = context("src-topic", &dir, "websocket", &args);
+            let ctx = context(
+                "t-spawn_refuses_destinations_and_names_it_must_not_take",
+                &dir,
+                "websocket",
+                &args,
+            );
             let result = handler
                 .spawn_under(spawn_request(&ctx), &dir.join(".jyc"), &agents_dir)
                 .await
@@ -1664,7 +2149,12 @@ mod tests {
         let handler = SpawnCommandHandler::new(tm.clone());
         let tmp = tempdir().unwrap();
 
-        let ctx = context("src-topic", tmp.path(), "email", &["whatever"]);
+        let ctx = context(
+            "t-spawn_refuses_a_non_websocket_channel",
+            tmp.path(),
+            "email",
+            &["whatever"],
+        );
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.message.contains("routing address"), "{result:?}");
@@ -1711,22 +2201,30 @@ mod tests {
             &tm,
             parent,
             &parent_dir,
-            Some("worker"),
+            Some("worker-subagent_spawn_inherits_state_and_grants_access"),
             true,
             false,
+            None,
             None,
             &agents_dir,
         )
         .await
         .unwrap();
-        assert_eq!(name, "worker");
+        assert_eq!(
+            name,
+            "worker-subagent_spawn_inherits_state_and_grants_access"
+        );
 
-        let dest = agents_dir.join("worker");
+        let dest = agents_dir.join("worker-subagent_spawn_inherits_state_and_grants_access");
         assert_eq!(
             std::fs::read_to_string(dest.join(".jyc").join("spawned-from")).unwrap(),
             parent
         );
-        assert!(tm.topic_path("worker").await.is_some());
+        assert!(
+            tm.topic_path("worker-subagent_spawn_inherits_state_and_grants_access")
+                .await
+                .is_some()
+        );
         // The parent's own `.jyc` (a pinned topic's, say) keeps its name, and
         // the child's state is the child's: its dir is its own, not the
         // parent's working tree (that is `/fork`).
@@ -1759,10 +2257,16 @@ mod tests {
         assert_eq!(grants.len(), 1);
         assert_eq!(grants[0].path, dest);
         assert!(grants[0].write, "the parent must be able to seed the dir");
-        assert_eq!(subagents_of(parent), vec![("worker".to_string(), dest)]);
+        assert_eq!(
+            subagents_of(parent),
+            vec![(
+                "worker-subagent_spawn_inherits_state_and_grants_access".to_string(),
+                dest
+            )]
+        );
 
         jyc_types::access_grants::clear(parent);
-        jyc_types::state_dir::unregister("worker");
+        jyc_types::state_dir::unregister("worker-subagent_spawn_inherits_state_and_grants_access");
     }
 
     /// `share_topic_path`: the tool triggers `/spawn`'s co-pinning instead of a
@@ -1777,7 +2281,7 @@ mod tests {
     /// `cargo test` runs this binary's tests in parallel — so a name another
     /// test already uses is a collision waiting to happen, not a detail.
     async fn shared_subagent_works_in_the_parents_dir() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) = parent_topic("t-shared_subagent_works_in_the_parents_dir").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
@@ -1790,6 +2294,7 @@ mod tests {
             Some("shared-review"),
             false,
             true,
+            None,
             None,
             &agents_dir,
         )
@@ -1853,7 +2358,7 @@ mod tests {
     /// may have taken.
     #[tokio::test]
     async fn closing_a_parent_closes_its_subagents() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) = parent_topic("t-closing_a_parent_closes_its_subagents").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
@@ -1867,6 +2372,7 @@ mod tests {
                 Some(name),
                 false,
                 share,
+                None,
                 None,
                 &agents_dir,
             )
@@ -1918,6 +2424,7 @@ mod tests {
             Some("../evil"),
             false,
             false,
+            None,
             None,
             &agents_dir,
         )

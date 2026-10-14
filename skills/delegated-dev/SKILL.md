@@ -36,13 +36,23 @@ The role decides where the child *starts*, not what it is stuck with.
 1. `jyc_spawn_subagent(name = "develop-<what>", type = "develop")` — pass nothing else. No
    `inherit_context`: the child's job is the plan, not your reasoning. No `share_topic_path`: it
    needs a directory of its own. The reply names that directory.
-2. Prepare it: `git worktree add <dir>/repo -b <branch>`, with `<branch>` named per `dev-workflow`
-   (`feat/issue-N-…`, `fix/issue-N-…`). **Inside** the child's directory, not as the directory
-   itself: the child's state dir is `<dir>/.jyc`, so a checkout at `<dir>` would put `.jyc` inside
-   the repository.
+2. Prepare it: `git worktree add <dir>/repo -b <branch>`. **Inside** the child's directory, not as
+   the directory itself: the child's state dir is `<dir>/.jyc`, so a checkout at `<dir>` would put
+   `.jyc` inside the repository. The branch is part of the plan, and it already exists when the
+   developer starts — the developer does not create it. Name it the way this repo names branches
+   (`feat/<description>`, `fix/<description>`, with the issue number when there is one, per
+   `AGENTS.md`).
 3. Send the plan as the task (`jyc_send_to_topic`, `require_reply = true`): the branch name, where
    the checkout is (`repo/`), what done means, and "make this a task list first". In the message,
-   not in a file inside the checkout — a plan file would show up in the diff.
+   not in a file inside the checkout — a plan file would show up in the diff. Two things the message
+   must not leave out:
+   - **a target dir outside the worktree** — `CARGO_TARGET_DIR=<the main checkout>/target`, or
+     `--target-dir` on every cargo call. A fresh worktree has no `target/` of its own, so the first
+     gate re-pays the whole dependency graph and keeps a copy of it: exactly the slow gate and the
+     filled disk this project's rules warn about, arriving as a surprise in the child's first turn;
+   - **the checkout path in every task you send a `review` or `ci-watch` child of the developer**.
+     Those children work in the developer's directory, one level above the checkout, so at their own
+     cwd `git status` answers "not a git repository" until the task tells them where to go.
 4. End your turn. The child delegates the review and the CI wait itself, and both of those children
    share *its* directory, so they read its tree — not yours. Nothing comes back until the one report
    does.
@@ -51,11 +61,19 @@ The role decides where the child *starts*, not what it is stuck with.
 
 ## Clean Up the Checkout
 
-`git worktree remove <dir>/repo` when you are done with the child. The child cannot do it: `/close`
-runs no command, and once the topic is closed you cannot send it one either. So cleanup is the
-caller's, every time — skip it and you leave a branch checked out of a directory nobody is working
-in, for `git worktree prune` to clear later. Closing your own topic closes the developer with it and
-still leaves the worktree behind.
+`git worktree remove <dir>/repo` when you are done with the developer — **yourself**, and **before**
+you close it: a closed topic cannot be sent a command, so nothing about this can happen afterwards.
+
+That order is also what gets `<dir>` itself put away. With the checkout out of it the topic dir is
+empty, and an emptied topic dir is removed with its state; close first and it survives holding only
+`repo/`, which costs you two things — a branch left checked out of a directory nobody is working in,
+and the name, since `<agents dir>/<name>` existing is what makes a later spawn of that name refuse
+("topic already exists"). `git worktree prune` is no rescue here: it clears entries whose directory
+is already *gone*, and this one is still on disk. If something is left anyway, `rm -rf <dir>` after
+`git worktree remove --force <dir>/repo`.
+
+Closing your own topic closes the developer with it, and still leaves the checkout behind — the same
+two steps, in the same order, apply.
 
 ## Not Only Git
 

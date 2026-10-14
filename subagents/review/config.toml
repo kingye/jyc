@@ -12,7 +12,7 @@
 # keys can also be written as `[subagents.review]` in `~/.config/jyc/config.toml`
 # — except `description` and `[spawn]`, which are this file's alone.)
 #
-# Shape: this file is a topic config (`.jyc/config.toml`) plus `mode`, a
+# Shape: this file is a topic config (the `.jyc/config.toml` shape, `mode` included) plus a
 # `description` and a `[spawn]` table, and the topic-shaped part is expanded into
 # the child's own `.jyc/config.toml` at spawn time. It decides where the child
 # *starts*, not what it is stuck with: the child's own `/mode`, `/model` and

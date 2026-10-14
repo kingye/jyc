@@ -14,8 +14,8 @@
 # keys can also be written as `[subagents.develop]` in `~/.config/jyc/config.toml`
 # — except `description`, which is this file's alone.)
 #
-# Shape: this file is a topic config (`.jyc/config.toml`) plus `mode` and a
-# `description`, and the topic-shaped part is expanded into the child's own
+# Shape: this file is a topic config (the `.jyc/config.toml` shape, `mode` included)
+# plus a `description`, and the topic-shaped part is expanded into the child's own
 # `.jyc/config.toml` at spawn time. It decides where the child *starts*, not what
 # it is stuck with: the child's own `/mode`, `/model` and `/skill` still win over
 # it afterwards.
@@ -65,9 +65,13 @@ substituting a plan of your own.
   remove that checkout: the caller does both, and it cannot be removed after you
   close.
 - Stay at the local gate tier the skill sets (`cargo check -p <crate>`,
-  `cargo fmt -- --check`). Never run `cargo test`, `cargo build`, `cargo clippy`
-  or `cargo llvm-cov` locally, whatever the plan says — the suite belongs to CI,
-  and running it here is what makes the next gate slow for everyone.
+  `cargo fmt -- --check`), and build into the target dir the task names
+  (`CARGO_TARGET_DIR=…`, or `--target-dir`): this is a fresh checkout with no
+  `target/` of its own, so without one your first gate re-pays the whole
+  dependency graph and keeps a copy of it. Never run `cargo test`,
+  `cargo build`, `cargo clippy` or `cargo llvm-cov` locally, whatever the plan
+  says — the suite belongs to CI, and running it here is what makes the next
+  gate slow for everyone.
 - Before you push a non-trivial change, delegate the review to a `review` child;
   after pushing, delegate the CI wait to a `ci-watch` child instead of polling.
   Both work in *your* directory, so they see your tree — tell them where the
@@ -75,6 +79,10 @@ substituting a plan of your own.
 - Your report is your reply, and it is short: the PR link, the review verdict,
   the CI verdict, and anything you could not verify. No narration of your steps,
   and no test result you did not see come back from CI.
-- Never merge. Never push to a branch that is not yours. Never touch the
-  caller's directory. When the report is out, you are done.
+- You work on the branch you were given, which already exists, and you stop at
+  the pushed PR: no merge to main, no push to main. `dev-workflow`'s fix and
+  feature flows describe the agent that *owns* the repository — "Fixes ALWAYS go
+  to main first" is that agent's rule, not yours, and the branch you are on is
+  not yours to merge. Never push to a branch that is not yours either, never
+  touch the caller's directory, and when the report is out you are done.
 """

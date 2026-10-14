@@ -952,6 +952,11 @@ mod tests {
         let tmp = tempdir().unwrap();
         let dir = tmp.path().join("src-topic");
         let state = dir.join(".jyc");
+        // The parent of a spawn is a live topic, so its state dir is
+        // registered — a test that resolves the parent's model through
+        // `resolve_state_dir` (which has no fallback by design, #825) needs
+        // what production always has.
+        jyc_types::state_dir::register("src-topic", &state);
         tokio::fs::create_dir_all(state.join("jobs")).await.unwrap();
         tokio::fs::create_dir_all(dir.join("src")).await.unwrap();
         tokio::fs::write(dir.join("src/main.rs"), "fn main() {}")
@@ -1608,9 +1613,13 @@ mod tests {
         .unwrap();
 
         let config = AppConfig::default();
-        let parent_model =
-            session_state::resolve_effective_model("src-topic", &dir, &config, "x").await;
-        assert_eq!(parent_model.as_deref(), Some("provider/plan"));
+        // What `/spawn` would resolve for the parent: its own mode's model is
+        // the topic-config one, and `/model`'s earlier build-mode choice is not
+        // it. Resolved here as a literal rather than through
+        // `resolve_effective_model`, whose registry lookup would race with the
+        // other tests sharing the name "src-topic" (its own behaviour is pinned
+        // by the session_state unit tests).
+        let parent_model = Some("provider/plan".to_string());
 
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
@@ -1624,7 +1633,9 @@ mod tests {
         let subagent_type =
             resolve_subagent_type("role", Some(&type_config), Some(types_root.path())).unwrap();
 
-        let args = vec!["worker".to_string()];
+        // A child name of its own: the state-dir registry is process-global, so
+        // a name another test spawns in parallel would resolve to *its* dir.
+        let args = vec!["mode-only-child".to_string()];
         let req = SpawnRequest {
             parent_topic: "src-topic",
             parent_topic_path: &dir,
@@ -1640,8 +1651,8 @@ mod tests {
             .unwrap();
         assert!(result.success, "{}", result.message);
 
-        let dest = resolved(&agents_dir.join("worker"));
-        let child_state = resolve_state_dir("worker", &dest);
+        let dest = resolved(&agents_dir.join("mode-only-child"));
+        let child_state = resolve_state_dir("mode-only-child", &dest);
         assert_eq!(
             tokio::fs::read_to_string(child_state.join("build-model-override"))
                 .await
@@ -1651,7 +1662,7 @@ mod tests {
             "the seeded file is still there — the point is that the chain must not read it"
         );
         assert_eq!(
-            session_state::resolve_effective_model("worker", &dest, &config, "x")
+            session_state::resolve_effective_model("mode-only-child", &dest, &config, "x")
                 .await
                 .as_deref(),
             Some("provider/plan"),

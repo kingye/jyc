@@ -446,6 +446,10 @@ mod tests {
         let tmp = tempdir().unwrap();
         let topic_dir = tmp.path().join("src-topic");
         let state = topic_dir.join(".jyc");
+        // The parent of a spawn or fork is a live topic, so its state dir is
+        // registered — the trigger resolves the parent's model through
+        // `resolve_state_dir`, which has no fallback by design (#825).
+        jyc_types::state_dir::register("src-topic", &state);
         tokio::fs::create_dir_all(state.join("jobs")).await.unwrap();
         let mut all = vec![
             ("pattern", "jyc"),

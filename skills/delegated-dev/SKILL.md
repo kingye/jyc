@@ -57,14 +57,21 @@ The role decides where the child *starts*, not what it is stuck with.
 4. End your turn. The child delegates the review and the CI wait itself, and both of those children
    share *its* directory, so they read its tree — not yours. Nothing comes back until the one report
    does.
-5. Report to the user: the PR link, the review verdict, the CI verdict. **Merging stays the user's
-   call** — the developer never merges.
+5. Report to the user: the PR link, the review verdict, the CI verdict, and what is left to decide.
+   **Done is the user's call, and so is the merge** — the report landing is not the end of the work: it
+   says the plan is built, not that the user accepts what was built. Keep the checkout and the child
+   until the user says which it is; the developer never merges.
 
 ## Clean Up the Checkout
 
-`git worktree remove <dir>/repo` when you are done with the developer — **yourself**, and **before**
-you close it. Once the child is gone there is nobody left to take the order: a message to that name
-starts a *different* topic, which would even adopt the leftover directory. The close itself takes
+`git worktree remove <dir>/repo` when the **user** is done with the branch — accepted (merged) or
+abandoned — **yourself**, and **before** you close it. The child's report is not that moment: it
+delivers the facts you put in front of the user, and only the user decides that the work is what they
+wanted. Waiting costs little — an idle child is a row in the topic list, an idle worktree a directory
+and a checked-out branch, both cheap and both reversible — where tearing down early cannot be taken
+back: the child's context is spent once, and a later "change this one thing" then has nobody to ask.
+Once the child is gone there is nobody left to take the order: a message to that name starts a
+*different* topic, which would even adopt the leftover directory. The close itself takes
 `/close --force` — plain `/close` only warns and removes nothing — so do this first either way.
 
 That order is also what gets `<dir>` itself put away. With the checkout out of it the topic dir is
@@ -94,4 +101,5 @@ only to say whose it is and who clears it up.
 - **Read the report, not the child's `.jyc`** — that is its own state, and closing it is what
   removes it.
 - If the child's plan no longer fits what you learned, send it the new decision as a message; do not
-  spawn a second developer on the same branch.
+  spawn a second developer on the same branch. That is the other reason the child stays alive until
+  the user is done with the branch: a request to change the same branch goes to the same child.

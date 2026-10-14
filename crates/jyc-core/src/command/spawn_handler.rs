@@ -1339,6 +1339,24 @@ mod tests {
             orders.contains("no evidence at all about what ran"),
             "a head named in the caller's message is not evidence about the run"
         );
+        // Two facts that call leaves open. Which workflow ran: the ref can carry
+        // several per commit and `--limit 1` takes whichever GitHub lists first.
+        // Which head is current: the newest run can belong to the older head
+        // while the newer one's run does not exist yet.
+        assert!(
+            orders.contains("--workflow ci.yml"),
+            "the watcher can pin the workflow where the ref carries several"
+        );
+        assert!(
+            orders.contains("is not that head, say so"),
+            "a run whose headSha is not the current head is reported as superseded"
+        );
+        // A failure log is fetched as a tail: the result cap bounds a finished
+        // turn, not the turn the log lands in.
+        assert!(
+            orders.contains("--log-failed | tail -c 400"),
+            "the log comes back tailed inside the call, not whole"
+        );
         // Small on purpose: a watcher keeps no tool-call notes and only a few
         // turns, so `gh` output cannot pile up in the context it polls with.
         let strategy = watch

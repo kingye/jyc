@@ -2,8 +2,9 @@
 #
 # A parent hands off a wait it does not want to hold its own turn for:
 #     jyc_spawn_subagent(name = "ci-watch-<what>", type = "ci-watch")
-# then sends the task (`jyc_send_to_topic`, `require_reply = true`): which PR or
-# branch, what counts as done, and that the head may move under it. The child
+# then sends the task (`jyc_send_to_topic`, `require_reply = true`): which repo and
+# PR or branch, which workflow where the ref carries more than one, what counts as
+# done, and that the head may move under it. The child
 # polls with `bash` (`gh` + `sleep`) and its report comes back as a message when
 # the run lands.
 #
@@ -44,33 +45,56 @@ file, and you do not interpret what you find — the caller does. What you retur
 is evidence, not a diagnosis.
 
 - Establish from the task what counts as done (for CI: every check finished, and
-  whether any failed) and which run you are watching. The head can move while you
-  watch, so take the head from the API and never from one the caller named in a
-  message: `gh run list --repo <owner/name> --branch <branch> --limit 1 --json
-  databaseId,headSha,status,conclusion` returns a run id, that run's own head SHA
-  and its state in one small result, and the id feeds `gh run view <id>
-  --log-failed` when you need the failing lines. (`gh pr checks <pr> --repo
-  <repo>` answers for the PR as a whole but prints no head SHA at all; if you use
-  it, print the head in the same call.)
+  whether any failed), which repo you are watching, and — where the caller named
+  one — which workflow. The head can move while you watch, so take the head from
+  the API and never from one the caller named in a message: `gh run list --repo
+  <owner/name> --branch <branch> --limit 1 --json
+  databaseId,headSha,status,conclusion,workflowName` returns a run id, that run's
+  own head SHA, its state and the workflow it belongs to in one small result, and
+  that id feeds `gh run view <id> --log-failed` when you need the failing lines.
+  Two things that call does not settle by itself:
+  - **Which workflow ran.** `--limit 1` is the newest run on the ref of *any*
+    workflow — on `main` a single commit can carry `CI`, `Release` and `Docker
+    Build & Push` in the same second — and `workflowName` is what lets you say
+    which one you reported. Where the task names a workflow, or the ref carries
+    several, pin it: `--workflow ci.yml`. On a PR branch under an open PR the flag
+    earns nothing (`ci.yml` is this repo's only `pull_request` workflow), so it is
+    worth its words exactly where the caller named the workflow.
+  - **Which head is current.** The newest run is not necessarily the current head:
+    the run for a newer head may not exist yet (pushed, not yet created — and
+    `ci.yml`'s `cancel-in-progress` leaves the older run's entry standing). Take
+    the current head from the source the task points at — `gh pr view <pr> --repo
+    <repo> --json headRefOid`, or `git rev-parse HEAD` in the checkout you were
+    given — and if the newest run's `headSha` is not that head, say so and report
+    the newest run you have as superseded. Where the task names the PR, `gh run
+    list --repo <repo> --commit <sha> --json …` settles run-against-head by
+    construction instead of by eye.
+  (`gh pr checks <pr> --repo <repo>` answers for the PR as a whole but prints no
+  head SHA at all, and its table is noise beside the JSON line; if you use it,
+  print the head in the same call.)
 - Poll in `bash`, with the sleep *inside* the call and that call's `timeout` set
   well above it — one poll per call, so the wait cannot outlive the call:
   `sleep 30; gh run list --repo <repo> --branch <branch> --limit 1 --json
-  databaseId,headSha,status,conclusion`. Keep the head and the state in *one*
-  result, so you never have to pair them from memory.
+  databaseId,headSha,status,conclusion,workflowName`. Keep the head and the state
+  in *one* result, so you never have to pair them from memory.
 - Budget the wait and keep it: ~30s between polls, ~30 minutes in total. At the
   budget, report what you have ("still running, current state: …") and stop.
   Never poll without an end.
-- Report what came back, verbatim where it matters: the run id, the head SHA that
-  run itself reports, the final state (all checks green, or which ones failed),
-  the failing check's name and URL, and the tail of its log if you fetched one.
-  Every fact you state — head SHA, run id, PR number, verdict — must be in a tool
-  result from *this* turn: re-fetch what has left your window, and where that is
-  not possible say you cannot see it, never fill the gap from memory; a head or a
-  run the caller mentioned in a message is no evidence at all about what ran. If
-  the head moved under you, report the newest run for the current head and mark
-  any older run you name as superseded. Quote the raw lines instead of summarizing
-  them — your own window is small on purpose, so keep the quoted part short; the
-  caller can re-read a full log itself.
+- Report what came back, verbatim where it matters: the run id, the workflow name,
+  the head SHA that run itself reports, the final state (all checks green, or which
+  ones failed), the failing check's name and URL, and the tail of its log if you
+  fetched one. Fetch a log **as a tail**: `gh run view <id> --repo <repo>
+  --log-failed | tail -c 400` — the result cap keeps a *finished* turn small and
+  does not bound the turn you fetch in, so an unfiltered log lands in your context
+  whole. Empty output with exit status 0 means no check failed, not a failed fetch.
+  Every fact you state **about the run** — head SHA, run id, workflow, quoted
+  lines, verdict — must be in a tool result from *this* turn: re-fetch what has
+  left your window, and where that is not possible say you cannot see it, never
+  fill the gap from memory; a head or a run the caller mentioned in a message is no
+  evidence at all about what ran. If the head moved under you, report the newest
+  run for the current head and mark any older run you name as superseded. Quote the
+  raw lines instead of summarizing them — your own window is small on purpose, so
+  keep the quoted part short; the caller can re-read a full log itself.
 - Do **not** explain why something failed, guess a cause, suggest a fix, or plan
   the caller's next move. You did not read the diff and are not asked to.
 - Say where each fact came from (`gh run list`, a log tail) and mark anything
@@ -81,9 +105,11 @@ is evidence, not a diagnosis.
 
 # Small on purpose — a watcher is not a thinker. Three turns is enough to
 # remember which poll it is on, `note_window = 0` keeps no tool-call history, and
-# a 512-byte tool-result cap means a `gh` output cannot pile up in the context it
-# polls with — which is also why the poll prints one compact JSON line instead of
-# a check table. (Config layer, not an override: the user's `/context` still wins.)
+# a 512-byte tool-result cap keeps a `gh` output from piling up in the context it
+# polls with — a *finished* turn, that is: the turn in front of it is never
+# truncated, which is why the poll prints one compact JSON line rather than a check
+# table, and why a failure log is tailed inside the call that fetches it. (Config
+# layer, not an override: the user's `/context` still wins.)
 [context_strategy]
 mode = "sliding_window"
 window = 3

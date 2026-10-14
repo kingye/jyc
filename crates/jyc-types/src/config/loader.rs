@@ -167,6 +167,7 @@ pub struct TopicAiConfig {
 /// always wins over these, so a stored default never locks a role out of a
 /// one-off choice.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpawnPolicy {
     /// Default for `inherit_context`: start the child with this topic's
     /// conversation and transcript (what `/fork` does).
@@ -184,6 +185,13 @@ pub struct SpawnPolicy {
 /// settings a spawn expands into the child's state ([`TopicConfig`]), plus the
 /// two things only a *role* has — a one-line [`description`](Self::description)
 /// for the agent choosing a type, and its `[spawn]` defaults.
+///
+/// The topic part is `#[serde(flatten)]`ed, so every key that worked before
+/// still parses unchanged. Two consequences of that flatten are deliberate: no
+/// `deny_unknown_fields` is possible here (serde cannot combine the two, so a
+/// mistyped *outer* key is ignored — the `[spawn]` table guards its own keys),
+/// and the way a flatten buffers values makes it worth keeping `TopicConfig`
+/// field types simple (a non-string, non-bool field is where that shows).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SubagentTypeFile {
     /// The role's settings, written into the child's `.jyc/config.toml`.
@@ -266,29 +274,6 @@ pub fn available_subagent_types(config: &AppConfig, config_dir: Option<&Path>) -
     }
     names.sort();
     names
-}
-
-/// One line per available type, for the `type` argument's own description:
-/// `name — description` when the type's file carries one, the bare name
-/// otherwise.
-///
-/// Read from the same two sources as [`available_subagent_types`], so the list
-/// a model chooses from cannot offer something a spawn would refuse.
-pub fn subagent_type_catalog(config: &AppConfig, config_dir: Option<&Path>) -> Vec<String> {
-    available_subagent_types(config, config_dir)
-        .into_iter()
-        .map(|name| {
-            let description = load_subagent_type(&name, config_dir)
-                .ok()
-                .flatten()
-                .and_then(|file| file.description)
-                .filter(|d| !d.trim().is_empty());
-            match description {
-                Some(d) => format!("{name} — {}", d.trim()),
-                None => name,
-            }
-        })
-        .collect()
 }
 
 /// Load topic-level overrides from the topic's resolved state dir

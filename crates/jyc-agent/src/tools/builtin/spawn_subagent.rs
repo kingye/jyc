@@ -76,7 +76,10 @@ impl Tool for SpawnSubagentTool {
     }
 
     fn input_schema(&self) -> Value {
-        let catalog = spawn_handler::type_catalog(&self.config.load());
+        let catalog = spawn_handler::type_catalog(
+            &self.config.load(),
+            jyc_utils::paths::config_dir().as_deref(),
+        );
         let type_line = if catalog.is_empty() {
             "No types are configured on this machine.".to_string()
         } else {

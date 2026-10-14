@@ -596,7 +596,8 @@ tool are one implementation (`spawn_handler::spawn_under`) with two triggers —
 the user typed the command, or the agent called the tool. Two things about the
 child's *starting point* are the caller's to decide, and both default to the
 more independent choice: `inherit_context` (or `/spawn --inherit`) copies the
-conversation and transcript as well, and `share_topic_path` (tool only) puts the
+conversation and transcript as well, and `share_topic_path` (no `/spawn` flag —
+the tool takes it, and a role may default it) puts the
 child in the parent's directory — `/fork`'s shape, which is what a reviewer of
 the work as it is needs. A **type** may state those two defaults for itself
 (`[spawn]` in its own file), and an argument passed at spawn time overrides them:

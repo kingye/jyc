@@ -1420,8 +1420,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #
 #   <config dir>/subagents/review/config.toml
 #
-#   description = "Reviews a change before you push or open a PR — reads the diff
-#   and the tree as they are, changes no file, reports findings with a severity."
+#   description = "Reviews a change before you push or open a PR: reads the diff and the tree as they are, changes no file, reports findings with a severity."
 #   [spawn]
 #   share_topic_path = true   # review the tree as it is, not a copy of it
 #   mode = "plan"

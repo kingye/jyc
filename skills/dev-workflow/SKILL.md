@@ -128,8 +128,11 @@ changes — several files, changed logic, or work you could not test locally.
 
 1. `git checkout -b fix/<description>` from main
 2. Fix the issue
-3. Validate at the tier the project owns (see "Local vs CI" above)
-4. Build clean: `{build_command}` (zero warnings)
+3. Validate at the tier the project owns (see "Local vs CI" above) — for a non-trivial change,
+   delegate the review first (see "Delegated Review" above)
+4. Build clean: `{build_command}` (zero warnings). In *this* repo that means `cargo check -p
+   <crate>` plus `cargo fmt -- --check` — AGENTS.md forbids the local suite (`cargo build` /
+   `cargo test` / `clippy`); CI owns it
 5. Commit with `fix:` prefix
 6. Summarize work done and ask for user approval before merging to main
 7. Merge to main: `git checkout main && git merge fix/<name> --no-ff`
@@ -141,7 +144,8 @@ changes — several files, changed logic, or work you could not test locally.
 1. `git checkout -b feat/<description>` from main
 2. Develop in small increments, commit frequently
 3. If main has new commits, rebase: `git rebase main`
-4. Validate before merge per "Local vs CI" above; keep `{build_command}` clean
+4. Validate before merge per "Local vs CI" above; keep `{build_command}` clean. A non-trivial
+   change gets a delegated review before it is pushed (see "Delegated Review" above)
 5. Summarize work done and ask for user approval before merging to main
 6. Merge to main: `git checkout main && git merge feat/<name> --no-ff`
 7. Push
@@ -157,7 +161,7 @@ LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
 echo "Last tag: $LAST_TAG"
 ```
 
-### Step 2: Review Changes Since Last Release
+### Step 2: Read the Changes Since Last Release
 
 ```bash
 git log ${LAST_TAG}..HEAD --oneline

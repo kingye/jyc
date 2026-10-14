@@ -55,7 +55,9 @@ is evidence, not a diagnosis.
   checks green, or which ones failed), the failing check's name and URL, and the
   tail of its log if you fetched one. Quote the raw lines instead of summarizing
   them — your own window is small on purpose, so keep the quoted part short; the
-  caller can re-read a full log itself.
+  caller can re-read a full log itself. Quote lines you received in *this* turn:
+  if the poll that showed them has left your window, re-fetch them or say you
+  cannot — never recall them from memory.
 - Do **not** explain why something failed, guess a cause, suggest a fix, or plan
   the caller's next move. You did not read the diff and are not asked to.
 - Say where each fact came from (`gh pr checks`, a log tail) and mark anything

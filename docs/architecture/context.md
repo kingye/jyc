@@ -418,10 +418,12 @@ auto-reset).
 **Resolution chain** (highest wins):
 
 1. Runtime override `.jyc/context-strategy.json` (written by `/context`)
-2. Matched pattern's `context_strategy` (or synthesized `[agents.<name>]`)
-3. First pattern fallback
-4. Global `[ai].context_strategy`
-5. Built-in default: `sliding_window` / `window = 10` / `note_window = 3` / `tool_result_cap = 2048`
+2. The topic's own `[context_strategy]` — a subagent type is expanded into the
+   child's `.jyc/config.toml` at spawn time, so this is how a role starts small
+3. Matched pattern's `context_strategy` (or synthesized `[agents.<name>]`)
+4. First pattern fallback
+5. Global `[ai].context_strategy`
+6. Built-in default: `sliding_window` / `window = 10` / `note_window = 3` / `tool_result_cap = 2048`
 
 **Runtime commands:**
 

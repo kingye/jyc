@@ -2282,8 +2282,11 @@ JYC uses the following subset of the agent service API:
    subagent type expanded into the child at spawn time, which is how a role
    starts with a small window) > matched pattern (or
    synthesized `[agents.<name>]` pattern) > first pattern fallback
-   > global `[ai].context_strategy` > default. Implemented in
-   `build_send_context` (`crates/jyc-agent/src/agent_loop/context.rs`):
+   > global `[ai].context_strategy` > default. The chain itself is
+   `jyc_core::session_state::resolve_context_strategy` (its callers consult the
+   runtime file first, and hand it the topic's own table);
+   `build_send_context` (`crates/jyc-agent/src/agent_loop/context.rs`) only
+   shapes what that returned:
    for `full` it returns `Cow::Borrowed(&raw_context)`; for
    `sliding_window` it returns `Cow::Owned` of `[windowed_prior,
    current_turn]`. Synthetic messages use the provider's

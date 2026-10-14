@@ -707,13 +707,15 @@ pub fn resolve_context_strategy(
     config: &AppConfig,
     channel: &str,
     matched_pattern: Option<&str>,
-    topic_name: &str,
-    topic_path: &Path,
+    topic_strategy: Option<&ContextStrategyConfig>,
 ) -> ContextStrategyConfig {
-    if let Some(from_topic) =
-        jyc_types::load_topic_config(topic_name, topic_path).and_then(|c| c.context_strategy)
-    {
-        return from_topic;
+    // Hand the topic's `[context_strategy]` in rather than reading the topic's
+    // config here: the callers already parse it (`resolve_model` takes its `[ai]`
+    // table the same way), a second per-turn read buys nothing, and this keeps
+    // the function clear of `load_topic_config`'s "registered topic or panic"
+    // contract — an unregistered name must not be a way to abort a turn.
+    if let Some(from_topic) = topic_strategy {
+        return from_topic.clone();
     }
 
     let channel_cfg = config.channels.get(channel);
@@ -1601,13 +1603,7 @@ mode = "agent"
             tool_result_cap: None,
         };
         let app = config_with_strategies(vec![("a", None), ("b", Some(slide.clone()))], None);
-        let resolved = resolve_context_strategy(
-            &app,
-            "c",
-            Some("b"),
-            "no-topic-config-b",
-            Path::new("/nonexistent"),
-        );
+        let resolved = resolve_context_strategy(&app, "c", Some("b"), None);
         assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
         assert_eq!(resolved.window, 4);
     }
@@ -1621,13 +1617,7 @@ mode = "agent"
             tool_result_cap: None,
         };
         let app = config_with_strategies(vec![("a", Some(slide.clone()))], None);
-        let resolved = resolve_context_strategy(
-            &app,
-            "c",
-            None,
-            "no-topic-config-none",
-            Path::new("/nonexistent"),
-        );
+        let resolved = resolve_context_strategy(&app, "c", None, None);
         assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
         assert_eq!(resolved.window, 6);
     }
@@ -1641,13 +1631,7 @@ mode = "agent"
             tool_result_cap: None,
         };
         let app = config_with_strategies(vec![], Some(slide.clone()));
-        let resolved = resolve_context_strategy(
-            &app,
-            "c",
-            Some("a"),
-            "no-topic-config-a",
-            Path::new("/nonexistent"),
-        );
+        let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
         assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
         assert_eq!(resolved.window, 8);
     }
@@ -1655,39 +1639,18 @@ mode = "agent"
     #[test]
     fn resolve_context_strategy_default_is_sliding_window_10_3_2048() {
         let app = config_with_strategies(vec![], None);
-        let resolved = resolve_context_strategy(
-            &app,
-            "c",
-            Some("a"),
-            "no-topic-config-a",
-            Path::new("/nonexistent"),
-        );
+        let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
         assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
         assert_eq!(resolved.window, 10);
         assert_eq!(resolved.note_window, Some(3));
         assert_eq!(resolved.tool_result_cap, Some(2048));
     }
 
-    /// The topic's own config is a layer above the pattern/channel layers and
-    /// below the runtime override file, which callers read first — the same
-    /// shape as `mode`. This is how a subagent type hands its child a small
-    /// window: the type's `[context_strategy]` is expanded into the child's
-    /// `.jyc/config.toml` at spawn time and read back here.
-    #[tokio::test]
-    async fn resolve_context_strategy_topic_config_wins_over_pattern() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "resolve_context_strategy_topic_config_wins_over_pattern";
-        let state_dir = tmp.path().join(".jyc");
-        jyc_types::state_dir::register(topic, &state_dir);
-        tokio::fs::create_dir_all(&state_dir).await.unwrap();
-        tokio::fs::write(
-            state_dir.join("config.toml"),
-            "[context_strategy]\nmode = \"sliding_window\"\nwindow = 3\n\
-             note_window = 0\ntool_result_cap = 512\n",
-        )
-        .await
-        .unwrap();
-
+    /// The topic's own strategy — what a subagent type hands its child — is a
+    /// layer above the pattern/channel layers and below the runtime override
+    /// file, which callers read first: the same shape as `mode`.
+    #[test]
+    fn resolve_context_strategy_topic_strategy_wins_over_pattern() {
         let pattern = ContextStrategyConfig {
             mode: ContextStrategy::SlidingWindow,
             window: 10,
@@ -1695,10 +1658,19 @@ mode = "agent"
             tool_result_cap: Some(2048),
         };
         let app = config_with_strategies(vec![("a", Some(pattern))], None);
+        let topic_strategy = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 3,
+            note_window: Some(0),
+            tool_result_cap: Some(512),
+        };
 
-        let resolved = resolve_context_strategy(&app, "c", Some("a"), topic, tmp.path());
+        let resolved = resolve_context_strategy(&app, "c", Some("a"), Some(&topic_strategy));
 
-        assert_eq!(resolved.window, 3, "the topic config wins over the pattern");
+        assert_eq!(
+            resolved.window, 3,
+            "the topic's strategy wins over the pattern"
+        );
         assert_eq!(resolved.note_window, Some(0));
         assert_eq!(resolved.tool_result_cap, Some(512));
     }
@@ -1789,13 +1761,7 @@ mode = "agent"
             tool_result_cap: Some(8192),
         };
         let app = config_with_strategies(vec![], Some(slide));
-        let resolved = resolve_context_strategy(
-            &app,
-            "c",
-            Some("a"),
-            "no-topic-config-a",
-            Path::new("/nonexistent"),
-        );
+        let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
         assert_eq!(resolved.tool_result_cap, Some(8192));
     }
 
@@ -1814,13 +1780,7 @@ mode = "agent"
             tool_result_cap: Some(8192),
         };
         let app = config_with_strategies(vec![("a", Some(pattern))], Some(global));
-        let resolved = resolve_context_strategy(
-            &app,
-            "c",
-            Some("a"),
-            "no-topic-config-a",
-            Path::new("/nonexistent"),
-        );
+        let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
         assert_eq!(resolved.window, 10, "pattern window wins");
         assert_eq!(resolved.tool_result_cap, Some(2048), "pattern cap wins");
     }

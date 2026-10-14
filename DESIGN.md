@@ -651,9 +651,10 @@ The child's **starting model** is filled in the same step, from the parent's own
 the trigger resolves it with `session_state::resolve_effective_model` (the
 effective mode, then `resolve_model` for it) and `seed_start_model` writes it to
 `.jyc/model-override` — the mode-agnostic fallback, read whenever the
-mode-specific file for the child's own mode is missing, so the child's mode
-naming cannot hide it — unless the type names a model of its own (the same three
-`[ai]` keys). `seed_state` alone cannot do this: it copies *files*, and a parent
+mode-specific file for the child's own mode is missing, so a leftover file for a
+*different* mode cannot hide it (the file for its own mode is the parent's choice
+for that mode, and wins) — unless the type names a model of its own (the same
+three `[ai]` keys). `seed_state` alone cannot do this: it copies *files*, and a parent
 whose model comes from a topic config, a pattern or the global config has none to
 copy, while the child resolving its own chain may land somewhere else — a typed
 child's mode comes from its config, so it looks up the topic-config layer rather
@@ -2095,7 +2096,9 @@ JYC uses the following subset of the agent service API:
 │
 │  1. Ensure agent service is running (auto-start, health check)
 │  2. ensure_topic_agent_setup(topic_path)
-│     → reads .jyc/model-override (if exists, takes priority over config)
+│     → resolves the topic's model for its mode (`.jyc/<mode>-model-override`,
+│       else `.jyc/model-override`, else the config layers — see
+│       "One model resolver"), takes priority over the configured default
 │     → writes agent config with model, MCP config, permissions
 │     → staleness check: skip write if unchanged
 │  3. Get or create session (.jyc/agent-session.json)
@@ -2739,12 +2742,21 @@ github_type = ["pull_request"]
 assignees = ["kingye"]
 ```
 
-**Resolution priority** (same for `model` and `small_model`):
+**Resolution priority**
 
-1. `.jyc/model-override` file (runtime `/model` command)
-2. Pattern-level `model` / `small_model`
-3. Channel-level `model` / `small_model`
-4. Global `[agent]` config
+`model` — one implementation, `session_state::resolve_model` (see **One model
+resolver**), every step keyed by the mode the topic is in:
+
+1. `.jyc/<mode>-model-override` file, then the legacy `.jyc/model-override`
+2. Topic-level `[agent]` `plan_model` / `build_model`, then `model`
+3. Pattern-level `plan_model` / `build_model`, then `model`
+4. Global `plan_model` / `build_model`, then the channel-over-global `model`
+
+`small_model` has no file layer; the runtime resolves it per turn:
+
+1. Topic-level `[agent] small_model`
+2. Pattern-level `small_model`
+3. Channel-resolved `[agent] small_model` (channel override, else global)
 
 **MCP scoping**: When `mcps` is present on a pattern, only those named servers are loaded for matching topics. When `mcps = []`, no MCP servers are loaded (fully restricted). When omitted, the global `[[mcps]]` list is used.
 

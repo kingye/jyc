@@ -5,7 +5,6 @@
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use jyc_types::state_dir::resolve_state_dir;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::{Mutex, mpsc};
@@ -235,45 +234,8 @@ impl AgentService for JycAgentService {
         // `resolve_turn_mode`.
         let scheduled = message.is_scheduled_job();
 
-        // 1b. Model resolution priority:
-        //     For plan/build mode:
-        //       a) .jyc/<mode>-model-override (mode-specific runtime override)
-        //       b) .jyc/model-override (legacy fallback, for migration)
-        //       c) .jyc/config.toml [agent] (topic-level, L3)
-        //       d) Pattern-level plan_model / build_model / model
-        //       e) Config-level plan_model / build_model / model
-        //     For default mode (no override):
-        //       a) Pattern-level model
-        //       b) Config-level model
-        //     (Skip file overrides in default mode to avoid stale data from
-        //      the old /model command which wrote model-override for all modes.)
-        let file_override = {
-            // File-override paths follow the FILE mode only (never pattern.mode
-            // or a topic-config mode).
-            let mode_suffix =
-                match resolve_turn_mode(mode_override.clone(), None, None, scheduled).as_deref() {
-                    Some("plan") => "plan",
-                    _ => "build", // default = build mode
-                };
-            let mode_specific_path = resolve_state_dir(topic_name, topic_path)
-                .join(format!("{mode_suffix}-model-override"));
-            let legacy_path = resolve_state_dir(topic_name, topic_path).join("model-override");
-            if mode_specific_path.exists() {
-                tokio::fs::read_to_string(&mode_specific_path)
-                    .await
-                    .ok()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            } else if legacy_path.exists() {
-                tokio::fs::read_to_string(&legacy_path)
-                    .await
-                    .ok()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            } else {
-                None
-            }
-        };
+        // 1b. The pattern the message matched — it carries the mode and the
+        //     model this turn runs with.
         let pattern = message
             .matched_pattern
             .as_deref()
@@ -285,36 +247,23 @@ impl AgentService for JycAgentService {
             pattern.and_then(|p| p.mode.clone()),
             scheduled,
         );
-        // Topic-level (L3) .jyc/config.toml — [agent] model overrides.
-        // Priority: file overrides > topic config > pattern > config.
-        // `topic_cfg` was loaded once at the top of `process` and shared with
-        // `build_tool_registry` (avoids a duplicate disk read per message).
+        // 1c. The model this turn runs. `jyc_core::session_state::resolve_model` is
+        //     the single place that chain lives: the display source
+        //     (`TopicManager::topic_display_state`) and the `/spawn` + `/fork`
+        //     triggers call the same function. `topic_cfg` was loaded once at the
+        //     top of `process` (shared with `build_tool_registry`), so it is
+        //     handed in rather than read a second time.
         let topic_agent_cfg = topic_cfg.as_ref().and_then(|c| c.ai.as_ref());
-        let topic_cfg_override = topic_agent_cfg
-            .as_ref()
-            .and_then(|a| match mode_override.as_deref() {
-                Some("plan") => a.plan_model.as_deref(),
-                _ => a.build_model.as_deref(), // default = build
-            })
-            .or_else(|| topic_agent_cfg.as_ref().and_then(|a| a.model.as_deref()));
-        // Pattern: try mode-specific field first, then generic model
-        let pattern_override = pattern
-            .and_then(|p| match mode_override.as_deref() {
-                Some("plan") => p.plan_model.as_deref(),
-                _ => p.build_model.as_deref(), // default = build
-            })
-            .or_else(|| pattern.and_then(|p| p.model.as_deref()));
-        // Config: try mode-specific field first, then generic model
-        let config_override = match mode_override.as_deref() {
-            Some("plan") => agent_cfg.plan_model.as_deref(),
-            _ => agent_cfg.build_model.as_deref(), // default = build
-        }
-        .or(agent_cfg.model.as_deref());
-        let model_override = file_override
-            .clone()
-            .or_else(|| topic_cfg_override.map(|s| s.to_string()))
-            .or_else(|| pattern_override.map(|s| s.to_string()))
-            .or_else(|| config_override.map(|s| s.to_string()));
+        let model_override = jyc_core::session_state::resolve_model(
+            topic_name,
+            topic_path,
+            &self.config.load(),
+            &self.channel_name,
+            mode_override.as_deref(),
+            message.matched_pattern.as_deref(),
+            topic_agent_cfg,
+        )
+        .await;
 
         // 2. Create provider
         let provider = self
@@ -714,30 +663,10 @@ impl AgentService for JycAgentService {
     }
 }
 
-/// Derive the effective [`jyc_types::AiConfig`] for a given channel from
-/// the full [`jyc_types::AppConfig`].
-///
-/// Applies the channel-level overrides (`channels.<name>.model`,
-/// `channels.<name>.small_model`) on top of the global `[agent]` settings.
-/// All other fields — providers, agent flags, vision, reset compression —
-/// pass through unchanged from `app.agent`.
-///
-/// Channel-level `[channels.<name>.agent]` overrides (a nested
-/// `AiConfig` per channel) are intentionally **not** applied here; the
-/// current top-level fields `model` and `small_model` are the only
-/// per-channel knobs `JycAgentService` reads.
-pub fn derive_agent_config(app: &jyc_types::AppConfig, channel_name: &str) -> jyc_types::AiConfig {
-    let mut agent = app.ai.clone();
-    if let Some(ch) = app.channels.get(channel_name) {
-        if ch.model.is_some() {
-            agent.model = ch.model.clone();
-        }
-        if ch.small_model.is_some() {
-            agent.small_model = ch.small_model.clone();
-        }
-    }
-    agent
-}
+/// Derive the effective [`jyc_types::AiConfig`] for a channel — re-exported
+/// from `jyc_types`, where it now lives because `jyc_core`'s model resolution
+/// needs the same derivation.
+pub use jyc_types::derive_agent_config;
 
 #[cfg(test)]
 mod mcp_load_tests;

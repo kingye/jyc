@@ -149,8 +149,9 @@ User sends message (any channel) → Pattern Match → Topic Queue → Worker (A
 │                                                                          │
 │  1. Ensure agent service is running (auto-start)                       │
 │  2. Setup per-topic agent config (model, MCP tools, permissions)       │
-│  3. Resolve effective model: .jyc/model-override > pattern > channel >   │
-│     global                                                               │
+│  3. Resolve the model for this turn's mode:                              │
+│     session_state::resolve_model (the one implementation — see the       │
+│     Merge & Lookup Rules section)                                        │
 │  4. Build system prompt:                                                 │
 │     - Directory boundary rules                                           │
 │     - AGENTS.md (topic-local + repo/AGENTS.md if exist)                 │
@@ -639,28 +640,25 @@ child's own `/mode`, `/model` and `/skill` still outrank, and of the runtime
 overrides `seed_state` copied, only the ones whose key the type sets itself are
 removed — each of those sits *above* a topic config in its chain, so a kept one
 would silently outrank the role, while a key the type has no opinion about keeps
-what the parent was running. Models are the one place the mapping is not
-key-for-key: which `<mode>-model-override` the runtime reads is decided by the
-**file** mode (`.jyc/mode-override`, never a topic-config mode —
-`service/mod.rs`'s `file_override`), and a type that declares `mode` is exactly
-what removes that file, so such a child reads `build-model-override` whatever
-mode the type declares. A declared model therefore takes the build file out too,
-not only one matching the key it declared. One consequence worth knowing: a
-declared model always beats an inherited one, so the other mode's file is left
-dormant and a later `/mode` switch inherits nothing from it.
+what the parent was running. The mapping is key-for-key with no exceptions: the
+chain reads `.jyc/<mode>-model-override` for the mode the caller asks for (a
+declared `mode` changes which file that is), so a declared `plan_model` takes out
+the plan file, a declared `build_model` the build one, `[ai].model` both, and
+nothing else. The other mode's file is left in place and dormant: a later
+`/mode` switch inherits the parent's choice on that side.
 
 The child's **starting model** is filled in the same step, from the parent's own:
-the trigger resolves it with the chain the runtime uses
-(`session_state::resolve_active_model`) and `seed_start_model` writes it to
+the trigger resolves it with `session_state::resolve_effective_model` (the
+effective mode, then `resolve_model` for it) and `seed_start_model` writes it to
 `.jyc/model-override` — the mode-agnostic fallback, read whenever the
-mode-specific file is missing, so neither the child's mode naming nor the
-file-mode rule above can hide it — unless the type names a model of its own
-(the same three `[ai]` keys). `seed_state` alone cannot do this: it copies
-*files*, and a parent whose model comes from a topic config, a pattern or the
-global config has none to copy, while the child resolving its own chain may land
-somewhere else — a typed child's mode comes from its config, so the file its
-chain reads is not the one its parent read. It is a starting point, not a pin:
-the child's own `/model` still wins over it.
+mode-specific file for the child's own mode is missing, so the child's mode
+naming cannot hide it — unless the type names a model of its own (the same three
+`[ai]` keys). `seed_state` alone cannot do this: it copies *files*, and a parent
+whose model comes from a topic config, a pattern or the global config has none to
+copy, while the child resolving its own chain may land somewhere else — a typed
+child's mode comes from its config, so it looks up the topic-config layer rather
+than the file its build-mode parent read. It is a starting point, not a pin: the
+child's own `/model` still wins over it.
 
 A **shared** subagent (`share_topic_path`) takes the parent's dir and nothing
 else of it: its own state stays in `<agents root>/<name>/.jyc`, which is what
@@ -1121,7 +1119,7 @@ Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) 
 |---|---|
 | `config.toml` (L1/L2) | Deep merge at `toml::Value` level (`merge_toml`): tables merge recursively, arrays/scalars replaced by L2. `${VAR}` expansion after merge. Applies to startup and hot-reload (`load_config_layered`). |
 | `config.toml` (L3) | `TopicConfig`: `[ai]` models (`model`, `plan_model`, `build_model`, `small_model`), `[[mcps]]` + `mcps_replace`, and the topic's own `mode`, `skills` (allow-list), `disabled_skills`, `disabled_tools`, `instructions`. Invalid files are ignored with a warning. |
-| Model precedence | `.jyc/<mode>-model-override` file > L3 `config.toml` > pattern > L2/L1 config |
+| Model precedence | `.jyc/<mode>-model-override` file (then the legacy `.jyc/model-override`) > L3 `config.toml` > pattern > L2/L1 config. One implementation for every consumer — see **One model resolver** below. |
 | Mode precedence | `.jyc/mode-override` (the user's `/mode`) > L3 `config.toml` > pattern > build. A configured mode is never written to `.jyc/mode-override`, which stays reserved for explicit user overrides. |
 | Skill filters | Allow-list: L3 `skills` **replaces** pattern/channel (it is the narrowest statement of intent); deny-list: L3 `disabled_skills` ∪ pattern ∪ channel. Runtime `/skill` layers on top of both (`on` re-adds, `off` removes). |
 | `disabled_tools` | Union of channel ∪ pattern ∪ L3 `config.toml` — subtractive at every layer. |
@@ -1131,6 +1129,26 @@ Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) 
 | Custom `topic_path` | Absolute/`~` paths used as-is (outside the data root); **relative paths resolve against the data root** (previously process cwd). L3 applies to any topic directory, including ad-hoc topics (`jyc open <path>`). |
 
 > **Merge limitation**: L2 can override any L1 value but cannot *remove* entries (e.g. a channel defined in L1 cannot be deleted by L2). If removal is needed, either omit the channel from L1 or add it with `enabled = false` in L2.
+
+**One model resolver.** `jyc_core::session_state::resolve_model(topic_name,
+topic_path, config, channel, mode, pattern_name, topic_agent_cfg)` is the only
+implementation of the model row above, and the `mode` it is asked for is the one
+`resolve_effective_mode` resolved for the topic (file > topic config > pattern >
+build). Its callers: the agent runtime, which builds the provider with the value
+it returns; the display source `TopicManager::topic_display_state`, so the
+dashboard topic list, the Feishu status card and `/info` render the model the
+agent actually runs; the context-window resolver; and the `/spawn` / `/fork` /
+spawn-tool triggers, which use `resolve_effective_model` (mode, then model) to
+hand a child its starting model.
+
+Before this the chain existed three times and had drifted: the display had no
+topic-config layer at all and put the channel's generic `model` above the global
+per-mode fields, and each consumer picked the `<mode>-model-override` file by its
+own notion of "mode" (the runtime by the file's mode, `/model` and the display by
+the effective one). That last difference was user-visible: in a topic whose mode
+comes from a config layer — a typed subagent — `/model X` wrote
+`plan-model-override` while the turn read `build-model-override`, so the command
+reported success, the pane showed X and the agent kept running the old model.
 
 **Self-containment invariant**: all generated state follows the *effective data root* — a custom `--data-dir` instance never touches the platform data dir, keeping parallel instances and tests isolated.
 

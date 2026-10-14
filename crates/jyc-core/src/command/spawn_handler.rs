@@ -406,7 +406,7 @@ impl CommandHandler for SpawnCommandHandler {
         // The child starts on this topic's model, resolved the way the runtime
         // resolves it and against the same live config the type was — the
         // parent's own state says what it is running (see `seed_start_model`).
-        let start_model = crate::session_state::resolve_active_model(
+        let start_model = crate::session_state::resolve_effective_model(
             &context.topic_name,
             &context.topic_path,
             &context.config,
@@ -454,7 +454,7 @@ impl CommandHandler for SpawnCommandHandler {
 /// `subagent_type` is resolved by the caller ([`resolve_type_arg`]), which has
 /// the live config: this function only needs the answer. `start_model` is the
 /// parent's own model, resolved the same way by the caller that holds a config
-/// ([`crate::session_state::resolve_active_model`]) — the child starts on it
+/// ([`crate::session_state::resolve_effective_model`]) — the child starts on it
 /// unless the role names one.
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_subagent(
@@ -808,29 +808,16 @@ fn superseded_overrides(config: &TopicConfig) -> Vec<&'static str> {
     if let Some(ai) = &config.ai {
         // The legacy file is mode-agnostic and still read ahead of the config,
         // so any model at all has to take it out; a per-mode file only holds a
-        // value for the mode it names, and `[ai].model` covers both.
+        // value for the mode it names, and the chain reads the one whose mode it
+        // is asked for — so `[ai].model` covers both, and a plan-only model only
+        // has to take the plan file out.
         if declares_a_model(config) {
             files.push("model-override");
         }
         if ai.model.is_some() || ai.plan_model.is_some() {
             files.push("plan-model-override");
         }
-        // Which per-mode file the model chain reads is decided by the *file*
-        // mode, not the topic's (`service/mod.rs` `file_override`), and a type
-        // that sets `mode` has just lost the `mode-override` that would have
-        // picked plan — so that child reads the build file whatever mode the
-        // type declares. A plan-only model has to take it out for the same
-        // reason a build one does: left in place it shadows the type's value.
-        //
-        // The trade, deliberate: a plan-only model under a declared `mode` also
-        // takes the *build* file out, so a later `/mode build` switch inherits
-        // nothing from the parent on that side. A declared key beats a
-        // hypothetical later inheritance, and keeping the file would shadow the
-        // role's own value the moment the child is in build mode.
-        if ai.model.is_some()
-            || ai.build_model.is_some()
-            || (ai.plan_model.is_some() && config.mode.is_some())
-        {
+        if ai.model.is_some() || ai.build_model.is_some() {
             files.push("build-model-override");
         }
     }
@@ -1381,8 +1368,8 @@ mod tests {
         let cases: &[(&str, &[&str], &[&str])] = &[
             (
                 // No `[ai]`: every model file the parent had stays, and the
-                // chain reads the build one for this child (dropping
-                // `mode-override` is what puts its file mode on build).
+                // chain reads the plan file for this child — its mode comes from
+                // the type's config (`mode-override`, the file layer, is gone).
                 "mode = \"plan\"\n",
                 &["mode-override"],
                 &[
@@ -1394,16 +1381,17 @@ mod tests {
                 ],
             ),
             (
-                // A plan model under a declared mode would be shadowed by the
-                // build file the chain reads, so that file goes too.
+                // A plan model: the plan file and the mode-agnostic one go, so
+                // nothing outranks the type's value in the mode it declares. The
+                // build file stays — it is not read in plan mode, and a later
+                // `/mode build` still inherits that side from the parent.
                 "mode = \"plan\"\n[ai]\nplan_model = \"provider/role\"\n",
+                &["mode-override", "plan-model-override", "model-override"],
                 &[
-                    "mode-override",
-                    "plan-model-override",
                     "build-model-override",
-                    "model-override",
+                    "skill-override.json",
+                    "mcp-override.json",
                 ],
-                &["skill-override.json", "mcp-override.json"],
             ),
             (
                 // `[ai].model` covers both modes, so all three files go.
@@ -1416,8 +1404,9 @@ mod tests {
                 &["mode-override", "skill-override.json"],
             ),
             (
-                // No `mode`: the parent's file mode stands, so a build model
-                // leaves the plan file that the chain reads for this child.
+                // No `mode`: the parent's `mode-override` stands, so this child
+                // is in plan mode too and a build model leaves the plan file the
+                // chain reads for it.
                 "[ai]\nbuild_model = \"provider/role\"\n",
                 &["build-model-override", "model-override"],
                 &["plan-model-override", "mode-override"],
@@ -1503,12 +1492,14 @@ mod tests {
     /// A child begins on the model its parent is running, unless the role names
     /// one of its own.
     ///
-    /// Written to `model-override`, the mode-agnostic fallback: the chain reads
-    /// it whenever the mode-specific file is missing, in either mode, so the
-    /// child's own mode naming cannot hide it (a typed child's file mode is
-    /// build even when its `mode` says plan). The last case is the one that made
-    /// this necessary — a review-shaped role has no `[ai]`, and without the
-    /// write it fell through to the configured default.
+    /// Written to `model-override`, the mode-agnostic fallback: the chain reads it
+    /// whenever the mode-specific file for the child's own mode is missing, so
+    /// the child's mode naming cannot hide it — a mode-only role makes the child
+    /// a plan-mode topic (the type's `mode` lands in its config, and the type
+    /// expands by removing the `mode-override` that would have said plan). The
+    /// last case is the one that made this necessary — a review-shaped role has
+    /// no `[ai]`, and without the write it fell through to the configured
+    /// default.
     #[tokio::test]
     async fn a_child_starts_on_the_parents_model_unless_the_role_names_one() {
         // (the role, the parent's model, what the child's state should hold)
@@ -1577,7 +1568,7 @@ mod tests {
                 // Not just the file: the chain the child then runs reads it,
                 // with no config of its own to fall back on.
                 assert_eq!(
-                    session_state::resolve_active_model(
+                    session_state::resolve_effective_model(
                         "worker",
                         &dest,
                         &AppConfig::default(),
@@ -1590,6 +1581,82 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The parent ran `/model` while it was in build mode, so its state carries
+    /// a `build-model-override` its *plan* turn never reads — and the role
+    /// declares only `mode`. The child must start on the parent's current model,
+    /// not on that leftover file.
+    #[tokio::test]
+    async fn a_mode_only_role_does_not_inherit_the_parents_other_modes_model() {
+        let (_tmp, dir) = parent_topic().await;
+        let parent_state = dir.join(".jyc");
+        // The parent's current model comes from its topic config, so there is
+        // no file to copy; its earlier build-mode choice sits in the
+        // mode-specific file that could otherwise shadow the snapshot.
+        tokio::fs::write(
+            parent_state.join("config.toml"),
+            "[ai]\nplan_model = \"provider/plan\"\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            parent_state.join("build-model-override"),
+            "provider/stale-build\n",
+        )
+        .await
+        .unwrap();
+
+        let config = AppConfig::default();
+        let parent_model =
+            session_state::resolve_effective_model("src-topic", &dir, &config, "x").await;
+        assert_eq!(parent_model.as_deref(), Some("provider/plan"));
+
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_dir = workspace.path().join("agents");
+        let handler = SpawnCommandHandler::new(tm.clone());
+        let types_root = tempdir().unwrap();
+        let type_dir = types_root.path().join("subagents/role");
+        std::fs::create_dir_all(&type_dir).unwrap();
+        std::fs::write(type_dir.join("config.toml"), "mode = \"plan\"\n").unwrap();
+        let type_config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+        let subagent_type =
+            resolve_subagent_type("role", Some(&type_config), Some(types_root.path())).unwrap();
+
+        let args = vec!["worker".to_string()];
+        let req = SpawnRequest {
+            parent_topic: "src-topic",
+            parent_topic_path: &dir,
+            args: &args,
+            inherit: false,
+            share_topic_path: false,
+            subagent_type: Some(&subagent_type),
+            start_model: parent_model.clone(),
+        };
+        let result = handler
+            .spawn_under(req, &parent_state, &agents_dir)
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.message);
+
+        let dest = resolved(&agents_dir.join("worker"));
+        let child_state = resolve_state_dir("worker", &dest);
+        assert_eq!(
+            tokio::fs::read_to_string(child_state.join("build-model-override"))
+                .await
+                .unwrap()
+                .trim(),
+            "provider/stale-build",
+            "the seeded file is still there — the point is that the chain must not read it"
+        );
+        assert_eq!(
+            session_state::resolve_effective_model("worker", &dest, &config, "x")
+                .await
+                .as_deref(),
+            Some("provider/plan"),
+            "the child runs the parent's current model, not its other mode's"
+        );
     }
 
     /// No argument: a fresh dir under the agents root, the parent's *settings* in

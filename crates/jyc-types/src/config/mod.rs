@@ -185,6 +185,31 @@ pub struct AppConfig {
     pub hooks: Vec<HookConfig>,
 }
 
+/// Apply the channel-level overrides on top of the global `[agent]` config.
+///
+/// The channel may override `model` and `small_model`; every other field falls
+/// through. Channel-level `[channels.<name>.agent]` overrides (a nested
+/// `AiConfig` per channel) are intentionally **not** applied — the top-level
+/// `model` and `small_model` are the only per-channel knobs the agent reads.
+///
+/// This is the single place the derivation lives: the agent runtime builds its
+/// provider from it, and `jyc_core::session_state::resolve_model` reads the same
+/// value when it resolves the model a topic runs — so the model the runtime uses
+/// and the model the display shows cannot come from two different derivations of
+/// the config.
+pub fn derive_agent_config(app: &AppConfig, channel_name: &str) -> AiConfig {
+    let mut agent = app.ai.clone();
+    if let Some(ch) = app.channels.get(channel_name) {
+        if ch.model.is_some() {
+            agent.model = ch.model.clone();
+        }
+        if ch.small_model.is_some() {
+            agent.small_model = ch.small_model.clone();
+        }
+    }
+    agent
+}
+
 /// A user-defined slash command declared in `config.toml` as `[[commands]]`.
 ///
 /// Two flavors are supported — only one per entry:

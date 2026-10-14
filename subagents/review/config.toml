@@ -15,10 +15,13 @@
 # where the child *starts*, not what it is stuck with: the child's own `/mode`,
 # `/model` and `/skill` still win over it afterwards.
 #
-# A key this file leaves out is inherited from the parent: with no `[ai]` here
-# the reviewer starts on the model the parent is running — the spawn resolves it
-# and writes it into the child's `.jyc/model-override`. Add `[ai] model = "…"`
-# to start it on a model of its own instead.
+# A key this file leaves out is inherited from the parent: with no `[ai]` here the
+# reviewer starts on the parent's model for its own mode — plan mode, so the
+# parent's `plan-model-override` if it set one — or, when the parent has no such
+# choice, on the model the parent is running (the spawn resolves it with the
+# function the runtime itself uses and writes it into the child's
+# `.jyc/model-override`). Add `[ai] model = "…"` to start it on a model of its
+# own instead.
 
 mode = "plan"
 

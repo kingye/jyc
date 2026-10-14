@@ -139,7 +139,7 @@ impl ForkCommandHandler {
         .await?;
         // The parent's model, resolved the way the runtime resolves it, as the
         // child's starting point (see `seed_start_model`).
-        let parent_model = crate::session_state::resolve_active_model(
+        let parent_model = crate::session_state::resolve_effective_model(
             &context.topic_name,
             &context.topic_path,
             &context.config,
@@ -286,20 +286,20 @@ pub(super) async fn seed_state(
 /// Give a freshly seeded child the model its parent is running.
 ///
 /// [`seed_state`] copies the parent's override *files*, which covers the case
-/// where the parent's model is one of them. It does not cover the case where it
-/// comes from a config or pattern layer — there is no file to copy, so the child
-/// falls through to whatever *its own* chain resolves to, and a child whose mode
-/// comes from a config (a typed subagent: the type's `mode = "plan"` lands in
-/// `.jyc/config.toml`, and the type expands by removing the `mode-override` that
-/// would have picked plan) reads a different file than its parent did. That is
-/// the gap this fills: the child starts on the model the parent runs.
+/// where the parent's model is one of them. It does not cover the case where the
+/// model comes from a config or pattern layer — there is no file to copy, so the
+/// child falls through to whatever *its own* chain resolves to, which is not the
+/// parent's model when the two run different modes (a typed subagent's
+/// `mode = "plan"` lands in `.jyc/config.toml`, so its plan-mode lookup is the
+/// topic-config layer rather than the file its build-mode parent read).
 ///
-/// Written to `model-override`, the mode-agnostic fallback: the runtime reads it
-/// whenever the mode-specific file is missing, in either mode, so nothing about
-/// the child's own mode naming can hide it. A mode-specific file the child did
-/// inherit still wins over it — that file is the parent's own explicit choice.
+/// Written to `model-override`, the mode-agnostic fallback: the chain reads it
+/// whenever the mode-specific file for the child's own mode is missing, so
+/// nothing about the child's mode naming can hide it. A mode-specific file the
+/// child did inherit still wins over it — that file is the parent's own explicit
+/// choice for that same mode.
 ///
-/// `model` is [`crate::session_state::resolve_active_model`]'s answer for the
+/// `model` is [`crate::session_state::resolve_effective_model`]'s answer for the
 /// *parent*; `None` (nothing to resolve, or a role that declares its own model)
 /// writes nothing, which is the behavior a child had before this existed.
 pub(super) async fn seed_start_model(state_dir: &Path, model: Option<&str>) -> bool {
@@ -573,11 +573,11 @@ mod tests {
         jyc_types::state_dir::unregister("sibling");
     }
 
-    /// A fork starts on the model its parent is running, even when that model
-    /// comes from a config layer rather than an override file — there is nothing
-    /// to copy in that case, which is the gap `seed_start_model` fills. A typed
-    /// child hits exactly this: its mode comes from the type's config, so the
-    /// file its chain reads is not the one its parent read.
+    /// A fork starts on the model its parent is running, even when that model comes
+    /// from a config layer rather than an override file — there is nothing to copy
+    /// in that case, which is the gap `seed_start_model` fills. The child's own
+    /// chain reads the file for *its* mode, which for a child whose mode comes
+    /// from a config (a typed spawn) is not the file its parent read.
     #[tokio::test]
     async fn fork_hands_the_child_the_model_its_parent_runs() {
         let (_ptmp, topic_dir) = parent_topic(&[]).await;
@@ -605,10 +605,17 @@ mod tests {
                 .trim(),
             "provider/parent"
         );
+        // The child's own chain reads it — resolved against a config with no
+        // model, so only the snapshot can answer.
         assert_eq!(
-            session_state::resolve_active_model("child", &topic_dir, &ctx.config, &ctx.channel)
-                .await
-                .as_deref(),
+            session_state::resolve_effective_model(
+                "child",
+                &topic_dir,
+                &jyc_types::AppConfig::default(),
+                "websocket"
+            )
+            .await
+            .as_deref(),
             Some("provider/parent"),
             "which is what the child's own chain then reads"
         );

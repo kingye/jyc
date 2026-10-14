@@ -49,8 +49,9 @@ impl Tool for SpawnSubagentTool {
 
     fn description(&self) -> &str {
         "Create a subagent topic — a sibling topic that inherits this topic's settings (mode, \
-         pattern, and the runtime overrides you do not pin with `type`), starts on the model you \
-         are running unless `type` names one, starts with an empty task list, and runs on its own \
+         pattern, and the runtime overrides you do not pin with `type`), starts on your model for \
+         the mode it is in — the one you set for that mode, else the model you are running — \
+         unless `type` names one, starts with an empty task list, and runs on its own \
          queue — and grant yourself read+write access to its \
          topic_path, the working directory it runs in. Its conversation starts empty: pass \
          inherit_context=true only when the child must continue this conversation. Pass \
@@ -143,7 +144,7 @@ impl Tool for SpawnSubagentTool {
         // The child starts on this topic's model, unless the role names one of
         // its own: resolved with the same live config the type was, so a
         // `--config` file and config reloads are honored here too.
-        let start_model = jyc_core::session_state::resolve_active_model(
+        let start_model = jyc_core::session_state::resolve_effective_model(
             &parent,
             ctx.working_dir,
             &self.config.load(),

@@ -47,7 +47,8 @@ The role decides where the child *starts*, not what it is stuck with.
    not in a file inside the checkout — a plan file would show up in the diff. Two things the message
    must not leave out:
    - **a target dir outside the worktree** — `CARGO_TARGET_DIR=<the main checkout>/target`, or
-     `--target-dir` on every cargo call. A fresh worktree has no `target/` of its own, so the first
+     `--target-dir` on every *building* cargo call (`cargo fmt` takes no such flag). A fresh
+     worktree has no `target/` of its own, so the first
      gate re-pays the whole dependency graph and keeps a copy of it: exactly the slow gate and the
      filled disk this project's rules warn about, arriving as a surprise in the child's first turn;
    - **the checkout path in every task you send a `review` or `ci-watch` child of the developer**.
@@ -62,7 +63,9 @@ The role decides where the child *starts*, not what it is stuck with.
 ## Clean Up the Checkout
 
 `git worktree remove <dir>/repo` when you are done with the developer — **yourself**, and **before**
-you close it: a closed topic cannot be sent a command, so nothing about this can happen afterwards.
+you close it. Once the child is gone there is nobody left to take the order: a message to that name
+starts a *different* topic, which would even adopt the leftover directory. The close itself takes
+`/close --force` — plain `/close` only warns and removes nothing — so do this first either way.
 
 That order is also what gets `<dir>` itself put away. With the checkout out of it the topic dir is
 empty, and an emptied topic dir is removed with its state; close first and it survives holding only

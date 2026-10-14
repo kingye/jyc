@@ -221,9 +221,9 @@ Do NOT stop after updating files — complete all steps through push.
   and its `git diff` base comes from the task message). Never create or remove a checkout
   yourself: the caller does both, and it cannot be undone after you close
 - A delegated developer stops at the pushed PR, on the branch it was given — which already exists,
-  so it has no branch to create. It does not merge to main and does not push main. The fix and
-  feature flows below describe the agent that *owns* the repository ("Fixes ALWAYS go to main
-  first" is that agent's rule): here the caller's user decides what lands on main
+  so it has no branch to create. It does not merge to main and does not push main: the fix and
+  feature flows above describe a developer working directly in the repository and merging with the
+  user's approval, while what lands on main from a delegated branch is the caller's user's call
 - Never force-push to main
 - NEVER run `git config user.name` or `git config user.email`
 

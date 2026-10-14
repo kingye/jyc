@@ -36,8 +36,9 @@ description = "Reviews a change before you push or open a PR — reads the diff 
 # because a copy of the tree would review yesterday's version — and without the
 # parent's conversation, which a task of its own does not need. An explicit
 # `share_topic_path`/`inherit_context` on the spawn still overrides these.
-[spawn]
-share_topic_path = true
+# (This table is last on purpose: TOML binds every key below a `[table]` header
+# to that table, so a `[spawn]` put in the middle would swallow the topic keys
+# after it — `mode`, `skills`, `disabled_tools` — and the role would load empty.)
 
 mode = "plan"
 
@@ -74,3 +75,7 @@ not with `write`, not with `edit`, not through `bash`.
   unverified.
 - Your report is your reply — nothing else reaches the caller who spawned you.
 """
+
+# The spawn defaults. Last, because a `[table]` header claims every key after it.
+[spawn]
+share_topic_path = true

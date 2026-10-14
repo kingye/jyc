@@ -1331,11 +1331,19 @@ mod tests {
         // sources, one sentence, and the green belonged to neither's head. The
         // rule that answers it has both halves, so both are pinned here.
         let orders = flat(watch.config.instructions.as_deref().unwrap());
-        // Both halves of the send-back that went missing once — the orders made
-        // it conditional on the caller asking for a reply, and named no outcome
-        // for a run that does not exist yet — are pinned, because the sentence
-        // that carried the condition was not: reverting either half would
-        // otherwise be silent.
+        assert!(
+            orders.contains("must be in a tool result from *this* turn"),
+            "every fact the watcher states has to come from its own output"
+        );
+        assert!(
+            orders.contains("no evidence at all about what ran"),
+            "a head named in the caller's message is not evidence about the run"
+        );
+        // The three clauses of the send-back that went missing once: the orders
+        // made it conditional on the caller asking for a reply, named no outcome
+        // for a run that does not exist yet, and left an empty list to be read
+        // once and believed. Each is pinned by one phrase of its own — the last
+        // by the clause that turns a single read into a wait for the budget.
         assert!(
             orders.contains("whether or not the caller asked for a reply"),
             "the watcher reports back on its own initiative, not only when asked"
@@ -1345,12 +1353,8 @@ mod tests {
             "an empty run list is unread, not a result the watcher may report"
         );
         assert!(
-            orders.contains("must be in a tool result from *this* turn"),
-            "every fact the watcher states has to come from its own output"
-        );
-        assert!(
-            orders.contains("no evidence at all about what ran"),
-            "a head named in the caller's message is not evidence about the run"
+            orders.contains("only when the budget ends with still no run"),
+            "the empty list is waited out to the budget, and then reported"
         );
         // Two facts that call leaves open. Which workflow ran: the ref can carry
         // several per commit and `--limit 1` takes whichever GitHub lists first.

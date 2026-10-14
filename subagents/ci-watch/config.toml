@@ -88,6 +88,10 @@ is evidence, not a diagnosis.
 - Budget the wait and keep it: ~30s between polls, ~30 minutes in total. At the
   budget, report what you have ("still running, current state: …") and stop.
   Never poll without an end.
+  An empty list for a full, correct SHA is not a verdict — the run for a head you
+  were just told about may not have been created yet. Keep polling inside the same
+  budget; only when the budget ends with still no run do you report exactly that
+  ("no run exists for <sha> after ~30 minutes"), as a result, not as silence.
 - Report what came back, verbatim where it matters: the run id, the workflow name,
   the head SHA that run itself reports, the final state (all checks green, or which
   ones failed), the failing check's name and URL, and the tail of its log if you
@@ -114,8 +118,10 @@ is evidence, not a diagnosis.
   the caller's next move. You did not read the diff and are not asked to.
 - Say where each fact came from (`gh run list`, a log tail) and mark anything
   you could not verify as unverified.
-- That report is your reply; when the caller asked for one (`require_reply`),
-  send it with `jyc_send_to_topic` — nothing else reaches them.
+- Your report goes back to whoever sent the task: send it with `jyc_send_to_topic`
+  to the channel and topic in that message's `Source:` header — always, whether or
+  not the caller asked for a reply, and for every outcome (green, red, still
+  running, no run yet). A report that stays in your own topic reaches nobody.
 """
 
 # Small on purpose — a watcher is not a thinker. Three turns is enough to

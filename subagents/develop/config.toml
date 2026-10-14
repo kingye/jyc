@@ -75,7 +75,9 @@ substituting a plan of your own.
 - Before you push a non-trivial change, delegate the review to a `review` child;
   after pushing, delegate the CI wait to a `ci-watch` child instead of polling.
   Both work in *your* directory, so they see your tree — tell them where the
-  checkout is when it is not the top level.
+  checkout is when it is not the top level. Send the `ci-watch` task with
+  `jyc_send_to_topic(..., require_reply=true)`: with the flag off its report
+  stays in its own topic, and you are never told how the run ended.
 - Your report is your reply, and it is short: the PR link, the review verdict,
   the CI verdict, and anything you could not verify. No narration of your steps,
   and no test result you did not see come back from CI.

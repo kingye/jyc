@@ -6,7 +6,7 @@
 # PR or branch, which workflow where the ref carries more than one, what counts as
 # done, and that the head may move under it. The child
 # polls with `bash` (`gh` + `sleep`) and its report comes back as a message when
-# the run lands.
+# the run lands, or at the budget's end when it never does.
 #
 # Install it into the config dir, once:
 #     cp -r subagents/ci-watch ~/.config/jyc/subagents/

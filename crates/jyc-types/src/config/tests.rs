@@ -1841,24 +1841,6 @@ small_model = "provider/config-small"
 
         let names = available_subagent_types(&config, Some(tmp.path()));
         assert_eq!(names, vec!["analyst", "builder", "review"]);
-
-        // The catalog is what a model chooses from: a described type carries its
-        // line, an undescribed one (or an inline `[subagents.<type>]`) is its
-        // name alone — same sources as the list above, so it cannot offer
-        // something a spawn would refuse.
-        std::fs::write(
-            tmp.path().join("subagents/review/config.toml"),
-            "description = \"reviews a diff\"\n",
-        )
-        .unwrap();
-        assert_eq!(
-            subagent_type_catalog(&config, Some(tmp.path())),
-            vec![
-                "analyst".to_string(),
-                "builder".to_string(),
-                "review — reviews a diff".to_string(),
-            ]
-        );
     }
 
     /// Serializing a topic config writes only what is set — a spawned child's

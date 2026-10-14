@@ -171,6 +171,19 @@ impl SpawnCommandHandler {
                 None => next_free_name(&self.topic_manager, req.parent_topic, agents_dir).await,
             },
         };
+        // A role that works in this topic's directory has no destination of its
+        // own to be handed: the path would be dropped (the child is *named* from
+        // it and then runs here), and a destination is the one argument that must
+        // never be silently ignored — so say so instead of quietly disagreeing
+        // with the caller about where the child works.
+        if req.share_topic_path && requested.is_some() {
+            let who = match req.subagent_type {
+                Some(t) => format!("'{}' works in this topic's directory", t.name),
+                None => "this spawn works in this topic's directory".to_string(),
+            };
+            return Ok(fail(format!("/spawn: {who}; give a name, not a path.")));
+        }
+
         // The child's topic_path: the named dir, or the path's last component,
         // or `<agents root>/<name>` — unless the child was asked to share this
         // topic's own dir, which is the same co-pinning `/fork` does with a
@@ -743,10 +756,25 @@ pub fn type_start_flags(
 /// The types a spawn accepts on this machine, one `name — description` line
 /// each, for the `type` argument's own description in the tool schema.
 ///
-/// The same resolution and the same config dir as [`resolve_type_arg`], so the
-/// list a model picks from and the names a spawn accepts stay one answer.
-pub fn type_catalog(config: &AppConfig) -> Vec<String> {
-    jyc_types::subagent_type_catalog(config, jyc_utils::paths::config_dir().as_deref())
+/// Resolved through [`resolve_subagent_type`] — the answer a spawn itself would
+/// get — so the list cannot offer what a spawn would refuse: a type whose name
+/// is malformed, or whose file does not parse, is shown as unusable instead of
+/// being listed bare. That also gives a role's own description exactly one
+/// reader, the place that puts it in front of the model.
+pub fn type_catalog(config: &AppConfig, config_dir: Option<&Path>) -> Vec<String> {
+    jyc_types::available_subagent_types(config, config_dir)
+        .into_iter()
+        .filter(|name| invalid_name(name).is_none())
+        .map(
+            |name| match resolve_subagent_type(&name, Some(config), config_dir) {
+                Ok(ty) => match ty.description.filter(|d| !d.trim().is_empty()) {
+                    Some(d) => format!("{name} — {}", d.trim()),
+                    None => name,
+                },
+                Err(refusal) => format!("{name} — (unusable: {refusal})"),
+            },
+        )
+        .collect()
 }
 
 /// The refusal for a type nobody defines, naming the ones that do exist.
@@ -1244,6 +1272,65 @@ mod tests {
                 .is_some_and(|i| i.contains("Change no file")),
             "the role carries its own standing orders"
         );
+        // The two keys only an installed type has. `description` reaches the
+        // model through the spawn tool's own `type` argument; `[spawn]` is what
+        // makes `jyc_spawn_subagent(type = "review")` alone borrow the caller's
+        // directory. Asserting both here also catches a mistyped `[spawn]` key
+        // (the table denies unknown fields, so it would refuse to load at all).
+        assert!(
+            review
+                .description
+                .as_deref()
+                .is_some_and(|d| d.contains("push")),
+            "the role says when to reach for it, not what tools it has"
+        );
+        assert_eq!(
+            type_start_flags(Some(&review), None, None),
+            (false, true),
+            "the shipped reviewer declares the share in its own file"
+        );
+    }
+
+    /// What a model chooses from: a role's own line, and a type a spawn would
+    /// refuse shown as unusable instead of offered bare — same resolution as the
+    /// spawn, so the menu cannot promise what the spawn declines.
+    #[tokio::test]
+    async fn the_type_catalog_lists_what_a_spawn_would_accept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = jyc_types::load_config_from_str(
+            "[ai]\nenabled = true\n[subagents.analyst]\nmode = \"plan\"\n",
+        )
+        .unwrap();
+        for (name, body) in [
+            ("review", "description = \"reviews a diff\"\n"),
+            // A `[spawn]` typo: the table denies unknown fields, so this file
+            // does not load — and a reviewer quietly running in a copy of the
+            // tree is exactly what must not happen silently.
+            ("broken", "[spawn]\nshare_topic_pth = true\n"),
+            // A directory name the spawn rejects, so it must not be offered.
+            (".hidden", "mode = \"plan\"\n"),
+        ] {
+            let dir = tmp.path().join("subagents").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("config.toml"), body).unwrap();
+        }
+
+        let lines = type_catalog(&config, Some(tmp.path()));
+        assert_eq!(
+            lines.len(),
+            3,
+            "the unnameable one is not offered: {lines:?}"
+        );
+        assert_eq!(
+            lines[0], "analyst",
+            "an inline type is listed by name alone"
+        );
+        assert!(
+            lines[1].starts_with("broken — (unusable: "),
+            "{:?}",
+            lines[1]
+        );
+        assert_eq!(lines[2], "review — reviews a diff");
     }
 
     /// A type is resolved against the config the caller holds — for `/spawn` the

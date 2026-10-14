@@ -225,6 +225,12 @@ pub(super) fn invalid_name(name: &str) -> Option<&'static str> {
     if name.starts_with('.') {
         return Some("the name must not start with '.'");
     }
+    // A leading `-` is never a name: it is a flag the caller mistyped
+    // (`--inherit=false` is not one, and would otherwise create a topic by that
+    // name), so it is refused rather than silently taken as one.
+    if name.starts_with('-') {
+        return Some("the name must not start with '-'");
+    }
     if name.contains('/') || name.contains('\\') {
         return Some("the name must not contain a path separator");
     }

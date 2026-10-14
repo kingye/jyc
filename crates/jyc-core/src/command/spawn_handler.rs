@@ -983,6 +983,14 @@ mod tests {
     use tempfile::tempdir;
     use tokio_util::sync::CancellationToken;
 
+    /// A role file's prose with its line wrapping collapsed, for asserting on a
+    /// phrase: the assertion is about the instruction, and a role file that
+    /// happens to break a sentence across two lines must not read as a missing
+    /// one. (It did: a wrapped sentence turns the test red for nothing.)
+    fn flat(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
     /// A `TopicManager` rooted in `workspace` — same builder the other command
     /// handlers' tests use, so every dir a spawn creates stays in the test's
     /// `TempDir`.
@@ -1307,7 +1315,7 @@ mod tests {
                 .config
                 .instructions
                 .as_deref()
-                .is_some_and(|i| i.contains("Never poll without an end")),
+                .is_some_and(|i| flat(i).contains("Never poll without an end")),
             "the role carries its own budget and reporting orders"
         );
         assert!(
@@ -1315,8 +1323,46 @@ mod tests {
                 .config
                 .instructions
                 .as_deref()
-                .is_some_and(|i| i.contains("do not interpret what you find")),
+                .is_some_and(|i| flat(i).contains("do not interpret what you find")),
             "the watcher reports; the caller interprets"
+        );
+        // The report is where it went wrong once: a head the caller had mentioned
+        // in a message, paired with a run id fetched in the same turn — two
+        // sources, one sentence, and the green belonged to neither's head. The
+        // rule that answers it has both halves, so both are pinned here.
+        let orders = flat(watch.config.instructions.as_deref().unwrap());
+        assert!(
+            orders.contains("must be in a tool result from *this* turn"),
+            "every fact the watcher states has to come from its own output"
+        );
+        assert!(
+            orders.contains("no evidence at all about what ran"),
+            "a head named in the caller's message is not evidence about the run"
+        );
+        // Two facts that call leaves open. Which workflow ran: the ref can carry
+        // several per commit and `--limit 1` takes whichever GitHub lists first.
+        // Which head is current: the newest run can belong to the older head
+        // while the newer one's run does not exist yet.
+        assert!(
+            orders.contains("--workflow ci.yml"),
+            "the watcher can pin the workflow where the ref carries several"
+        );
+        assert!(
+            orders.contains("is not that head, say so"),
+            "a run whose headSha is not the current head is reported as superseded"
+        );
+        // `--commit` matches the whole value: an abbreviated SHA is an empty
+        // list, not an error, so the full one is what the role asks for.
+        assert!(
+            orders.contains("abbreviated one matches nothing"),
+            "the run-against-head command is prescribed with the full SHA"
+        );
+        // A failure log is fetched through a filter inside the call: the result
+        // cap bounds a finished turn, not the turn the log lands in, and a plain
+        // byte tail of this repo's own failure misses the failing lines.
+        assert!(
+            orders.contains("--log-failed | grep -aE 'panicked|FAILED|error: ' | tail -n 5"),
+            "the log comes back filtered and tailed inside the call, not whole"
         );
         // Small on purpose: a watcher keeps no tool-call notes and only a few
         // turns, so `gh` output cannot pile up in the context it polls with.
@@ -1377,7 +1423,7 @@ mod tests {
                 .config
                 .instructions
                 .as_deref()
-                .is_some_and(|i| i.contains("Change no file")),
+                .is_some_and(|i| flat(i).contains("Change no file")),
             "the role carries its own standing orders"
         );
         // The two keys only an installed type has. `description` reaches the
@@ -1396,6 +1442,63 @@ mod tests {
             type_start_flags(Some(&review), None, None),
             (false, true),
             "the shipped reviewer declares the share in its own file"
+        );
+    }
+
+    /// The third role this repository ships — `subagents/develop/config.toml`,
+    /// the type the `delegated-dev` skill tells a parent to name — loads through
+    /// the same installed-type path. It is the one role that has to keep every
+    /// tool (it does the work *and* delegates its own review), so this checks the
+    /// absences as much as the values: a `disabled_tools` or a `[spawn]` table
+    /// creeping into the file would turn the developer into a role it cannot be.
+    #[test]
+    fn the_repos_own_develop_type_loads() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+
+        let develop = resolve_subagent_type("develop", Some(&config), Some(&repo)).unwrap();
+
+        assert_eq!(develop.name, "develop");
+        assert_eq!(
+            develop.config.mode.as_deref(),
+            Some("build"),
+            "the developer edits files; plan mode would refuse the work it was spawned for"
+        );
+        assert_eq!(
+            develop.config.skills.as_deref(),
+            Some(["dev-workflow".to_string()].as_slice()),
+            "the workflow guide — branch, gate tier, delegated review — is its whole allow-list"
+        );
+        // `write`, `edit`, `bash` and `jyc_spawn_subagent` are all needed here: no
+        // read-only or no-delegation rule survives contact with this role.
+        assert_eq!(
+            develop.config.disabled_tools.as_deref(),
+            None,
+            "the developer keeps the tools it needs to do the work and delegate its own review"
+        );
+        // And no `[spawn]` table, because the defaults are what this role wants:
+        // a directory of its own (the caller prepares it as a worktree — sharing
+        // the parent's tree is the one thing that would break the whole flow) and
+        // no inherited conversation.
+        assert_eq!(
+            type_start_flags(Some(&develop), None, None),
+            (false, false),
+            "the developer starts with a directory of its own and no inherited conversation"
+        );
+        assert!(
+            develop
+                .description
+                .as_deref()
+                .is_some_and(|d| d.contains("PR")),
+            "the role says when to reach for it, not what tools it has"
+        );
+        assert!(
+            develop
+                .config
+                .instructions
+                .as_deref()
+                .is_some_and(|i| flat(i).contains("never create or remove that checkout")),
+            "the role carries its own standing orders"
         );
     }
 

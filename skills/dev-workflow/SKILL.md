@@ -63,8 +63,14 @@ back as a message:
 
 1. `jyc_spawn_subagent(name="ci-watch-<pr>", type="ci-watch")` (`subagents/ci-watch/config.toml`;
    install once with `cp -r subagents/ci-watch <config dir>/subagents/`)
-2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` — which PR or branch, and
-   what counts as done
+2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` — which PR or branch, the repo
+   (**name it always**: a watcher that a `develop` child spawned works in that child's topic dir,
+   which holds the checkout without being one, and `gh` there answers "not a git repository"), which
+   workflow where the ref carries more than one, what counts as done, and that the head may move
+   under it: ask for the head SHA the run itself reports, so a green from an older head cannot come
+   back looking like the current one — and hand the head over as the **full 40-character** SHA
+   (`git rev-parse <short>` if `git rev-parse --short` is what you have), since an abbreviated one
+   makes `gh run list --commit` an empty list rather than an error
 3. End your turn; the report arrives as a new message in this topic.
 
 **What the compile tier proves — and what it does not.** `cargo check -p <crate> --tests` compiles
@@ -216,6 +222,15 @@ Do NOT stop after updating files — complete all steps through push.
 - Every commit on main must build with zero warnings
 - Before every merge to main the change must be validated at the project's tier:
   local gate always; the test suite by CI, or locally only when nothing else runs it
+- Work only in the directory you were given. For a delegated developer that is a checkout the
+  caller prepared (a `git worktree` in this repo, usually as `repo/` inside the topic directory,
+  and its `git diff` base comes from the task message). Never create or remove a checkout
+  yourself: the caller does both, and before it closes you — a message to a closed child starts a
+  different topic
+- A delegated developer stops at the pushed PR, on the branch it was given — which already exists,
+  so it has no branch to create. It does not merge to main and does not push main: the fix and
+  feature flows above describe a developer working directly in the repository and merging with the
+  user's approval, while what lands on main from a delegated branch is the caller's user's call
 - Never force-push to main
 - NEVER run `git config user.name` or `git config user.email`
 

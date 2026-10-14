@@ -1432,6 +1432,13 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # without diagnosing it. A parent hands it a wait it does not want to hold its
 # own turn for (see the `dev-workflow` skill).
 #
+# A third shipped role is the developer, `subagents/develop/config.toml`
+# (`cp -r subagents/develop <config dir>/subagents/`): build mode, `dev-workflow`
+# as its whole allow-list, and *no* `disabled_tools` — this is the role that has
+# to write files, run the gate and delegate its own `review` / `ci-watch`
+# children. Its directory is its own, and the caller is who prepares it (a
+# `git worktree` here) and removes it afterwards (see the `delegated-dev` skill).
+#
 # Example: a reviewer that can read but not change anything. This is the role
 # the jyc repo ships at `subagents/review/config.toml` (install it with
 # `cp -r subagents/review <config dir>/subagents/`; see the `dev-workflow`

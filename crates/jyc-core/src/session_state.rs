@@ -1150,6 +1150,20 @@ mode = "agent"
                 .as_deref(),
             Some("provider/legacy")
         );
+
+        // An existing-but-empty file still blocks the legacy one: the rule is
+        // existence, not content — the runtime always read it that way, and the
+        // old display's fall-through was the side that had to move.
+        tokio::fs::write(state_dir.join("plan-model-override"), "")
+            .await
+            .unwrap();
+        assert_eq!(
+            resolve_model(topic, tmp.path(), &config, "x", Some("plan"), None, None)
+                .await
+                .as_deref(),
+            Some("provider/plan-config"),
+            "an empty plan file is this mode's file; the legacy one is not consulted"
+        );
     }
 
     /// Every config layer is keyed by the requested mode too — which is how a

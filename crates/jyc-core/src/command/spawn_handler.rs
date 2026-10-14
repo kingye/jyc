@@ -1399,6 +1399,63 @@ mod tests {
         );
     }
 
+    /// The third role this repository ships — `subagents/develop/config.toml`,
+    /// the type the `delegated-dev` skill tells a parent to name — loads through
+    /// the same installed-type path. It is the one role that has to keep every
+    /// tool (it does the work *and* delegates its own review), so this checks the
+    /// absences as much as the values: a `disabled_tools` or a `[spawn]` table
+    /// creeping into the file would turn the developer into a role it cannot be.
+    #[test]
+    fn the_repos_own_develop_type_loads() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+
+        let develop = resolve_subagent_type("develop", Some(&config), Some(&repo)).unwrap();
+
+        assert_eq!(develop.name, "develop");
+        assert_eq!(
+            develop.config.mode.as_deref(),
+            Some("build"),
+            "the developer edits files; plan mode would refuse the work it was spawned for"
+        );
+        assert_eq!(
+            develop.config.skills.as_deref(),
+            Some(["dev-workflow".to_string()].as_slice()),
+            "the workflow guide — branch, gate tier, delegated review — is its whole allow-list"
+        );
+        // `write`, `edit`, `bash` and `jyc_spawn_subagent` are all needed here: no
+        // read-only or no-delegation rule survives contact with this role.
+        assert_eq!(
+            develop.config.disabled_tools.as_deref(),
+            None,
+            "the developer keeps the tools it needs to do the work and delegate its own review"
+        );
+        // And no `[spawn]` table, because the defaults are what this role wants:
+        // a directory of its own (the caller prepares it as a worktree — sharing
+        // the parent's tree is the one thing that would break the whole flow) and
+        // no inherited conversation.
+        assert_eq!(
+            type_start_flags(Some(&develop), None, None),
+            (false, false),
+            "the developer starts with a directory of its own and no inherited conversation"
+        );
+        assert!(
+            develop
+                .description
+                .as_deref()
+                .is_some_and(|d| d.contains("PR")),
+            "the role says when to reach for it, not what tools it has"
+        );
+        assert!(
+            develop
+                .config
+                .instructions
+                .as_deref()
+                .is_some_and(|i| i.contains("never create or remove that checkout")),
+            "the role carries its own standing orders"
+        );
+    }
+
     /// What a model chooses from: a role's own line, and a type a spawn would
     /// refuse shown as unusable instead of offered bare — same resolution as the
     /// spawn, so the menu cannot promise what the spawn declines.

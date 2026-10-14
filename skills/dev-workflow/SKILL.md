@@ -216,6 +216,10 @@ Do NOT stop after updating files — complete all steps through push.
 - Every commit on main must build with zero warnings
 - Before every merge to main the change must be validated at the project's tier:
   local gate always; the test suite by CI, or locally only when nothing else runs it
+- Work only in the directory you were given. For a delegated developer that is a checkout the
+  caller prepared (a `git worktree` in this repo, usually as `repo/` inside the topic directory,
+  and its `git diff` base comes from the task message). Never create or remove a checkout
+  yourself: the caller does both, and it cannot be undone after you close
 - Never force-push to main
 - NEVER run `git config user.name` or `git config user.email`
 

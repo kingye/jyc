@@ -31,16 +31,16 @@ use crate::topic_manager::TopicManager;
 ///   would make the fork run the parent's jobs too. Directories are skipped.
 /// - Anything else in the state dir belongs to the user, not to the framework.
 const SEED_FILES: &[&str] = &[
-    CONVERSATION_FILE,         // the running context: the conversation
-    session_state::TASKS_FILE, // the task list, so the fork continues it (#810)
-    "backlog.jsonl",           // the topic's own backlog
-    "pattern",                 // which agent pattern runs the topic
-    "mode-override",           // plan/build mode
-    "plan-model-override",     // per-mode model choice
+    CONVERSATION_FILE,     // the running context: the conversation
+    "backlog.jsonl",       // the topic's own backlog
+    "pattern",             // which agent pattern runs the topic
+    "mode-override",       // plan/build mode
+    "plan-model-override", // per-mode model choice
     "build-model-override",
+    "model-override", // the mode-agnostic fallback the chain reads next
     session_state::CONTEXT_STRATEGY_FILE, // `/context`
-    session_state::MCP_OVERRIDE_FILE,     // `/mcp`
-    session_state::SKILL_OVERRIDE_FILE,   // `/skill`
+    session_state::MCP_OVERRIDE_FILE, // `/mcp`
+    session_state::SKILL_OVERRIDE_FILE, // `/skill`
     "skills.json",
 ];
 
@@ -63,8 +63,9 @@ const CHAT_HISTORY_PREFIX: &str = "chat_history_";
 /// [`TopicManager::close_topic`] relies on: given a registered state dir it
 /// deletes the state and leaves the topic dir (usually a user-owned project
 /// checkout) alone. What makes it a *fork* rather than a new topic is where it
-/// starts: this topic's settings, task list — and, with `--inherit`, the
-/// conversation and transcript it is continuing.
+/// starts: this topic's settings — and, with `--inherit`, the conversation and
+/// transcript it is continuing. Its task list starts empty: a plan is the work
+/// of the topic that writes it, so a fork makes its own.
 ///
 /// Websocket topics only, like `/pin`: on every other channel the topic name
 /// *is* the routing address, so forking one would mean inventing an address.
@@ -129,6 +130,11 @@ impl ForkCommandHandler {
         self.topic_manager
             .set_topic_path(&name, context.topic_path.clone())
             .await?;
+        // Seed into the dir the registry settled on, not the one computed above:
+        // a name that was already registered (closed, then reopened) keeps that
+        // registration, and every later read goes through `resolve_state_dir`.
+        // `set_topic_path` created it.
+        let state_dir = jyc_types::state_dir::resolve_state_dir(&name, &context.topic_path);
         let seeded = seed_state(
             parent_state,
             &state_dir,
@@ -137,6 +143,16 @@ impl ForkCommandHandler {
             !inherit,
         )
         .await?;
+        // The parent's model, resolved the way the runtime resolves it, as the
+        // child's starting point (see `seed_start_model`).
+        let parent_model = crate::session_state::resolve_effective_model(
+            &context.topic_name,
+            &context.topic_path,
+            &context.config,
+            &context.channel,
+        )
+        .await;
+        seed_start_model(&state_dir, parent_model.as_deref()).await;
 
         tracing::info!(
             from = %context.topic_name,
@@ -231,13 +247,16 @@ pub(super) fn invalid_name(name: &str) -> Option<&'static str> {
 ///
 /// `fresh` skips the conversation ([`CONVERSATION_FILE`]) and the transcript
 /// ([`CHAT_HISTORY_PREFIX`]): the child gets every *setting* the parent
-/// configured — pattern, mode, Task List, model/context/MCP/skill overrides —
-/// and a head of its own. This is the default for every trigger (`/spawn`,
-/// `/fork`, the `jyc_spawn_subagent` tool): inheriting a long development
-/// conversation is expensive and anchors the child to a line of reasoning
-/// nobody asked it to continue, which is exactly wrong for the common case —
-/// a reviewer or a second worker starting on a task of its own. `--inherit` /
-/// `inherit_context` opts back into the copy.
+/// configured — pattern, mode, model/context/MCP/skill overrides — and a head
+/// of its own. This is the default for every trigger (`/spawn`, `/fork`, the
+/// `jyc_spawn_subagent` tool): inheriting a long development conversation is
+/// expensive and anchors the child to a line of reasoning nobody asked it to
+/// continue, which is exactly wrong for the common case — a reviewer or a
+/// second worker starting on a task of its own. `--inherit` / `inherit_context`
+/// opts back into the copy. The task list is never among them, `--inherit`
+/// included: a child plans its own work. #810 seeded it so a `/fork` could
+/// continue the parent's plan, but the same seed ran for `/spawn` and the
+/// spawn tool, where the parent's plan is somebody else's.
 pub(super) async fn seed_state(
     parent: &Path,
     child: &Path,
@@ -268,6 +287,34 @@ pub(super) async fn seed_state(
     }
     tokio::fs::write(child.join(marker), from).await?;
     Ok(copied)
+}
+
+/// Give a freshly seeded child the model its parent is running.
+///
+/// [`seed_state`] copies the parent's override *files*, which covers the case
+/// where the parent's model is one of them. It does not cover the case where the
+/// model comes from a config or pattern layer — there is no file to copy, so the
+/// child falls through to whatever *its own* chain resolves to, which is not the
+/// parent's model when the two run different modes (a typed subagent's
+/// `mode = "plan"` lands in `.jyc/config.toml`, so its plan-mode lookup is the
+/// topic-config layer rather than the file its build-mode parent read).
+///
+/// Written to `model-override`, the mode-agnostic fallback: the chain reads it
+/// whenever the mode-specific file for the child's own mode is missing, so
+/// nothing about the child's mode naming can hide it. A mode-specific file the
+/// child did inherit still wins over it — that file is the parent's own explicit
+/// choice for that same mode.
+///
+/// `model` is [`crate::session_state::resolve_effective_model`]'s answer for the
+/// *parent*; `None` (nothing to resolve, or a role that declares its own model)
+/// writes nothing, which is the behavior a child had before this existed.
+pub(super) async fn seed_start_model(state_dir: &Path, model: Option<&str>) -> bool {
+    let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) else {
+        return false;
+    };
+    tokio::fs::write(state_dir.join("model-override"), model)
+        .await
+        .is_ok()
 }
 
 /// Split the `--inherit` flag out of a command's arguments.
@@ -401,21 +448,33 @@ mod tests {
 
     /// A parent topic dir whose `.jyc` holds `files`, plus a `jobs/` dir and a
     /// pattern naming `jyc` as the agent.
-    async fn parent_topic(files: &[(&str, &str)]) -> (tempfile::TempDir, std::path::PathBuf) {
+    async fn parent_topic(
+        topic: &str,
+        files: &[(&str, &str)],
+    ) -> (tempfile::TempDir, std::path::PathBuf) {
         let tmp = tempdir().unwrap();
-        let topic_dir = tmp.path().join("src-topic");
+        let topic_dir = tmp.path().join(topic);
         let state = topic_dir.join(".jyc");
+        // The parent of a spawn or fork is a live topic, so its state dir is
+        // registered — the trigger resolves the parent's model through
+        // `resolve_state_dir`, which has no fallback by design (#825). `topic`
+        // is the caller's: the registry is process-global and these tests run
+        // in parallel.
+        jyc_types::state_dir::register(topic, &state);
         tokio::fs::create_dir_all(state.join("jobs")).await.unwrap();
         let mut all = vec![
             ("pattern", "jyc"),
             ("agent-context.json", "{\"messages\":[]}"),
             ("agent-session.json", "{\"current_input_tokens\":900}"),
-            (session_state::TASKS_FILE, "{\"items\":[]}"),
+            (
+                session_state::TASKS_FILE,
+                "{\"items\":[{\"id\":1,\"text\":\"the parent's plan\",\"status\":\"pending\"}]}",
+            ),
             ("chat_history_2026-09-23.jsonl", "{}"),
             ("chat_history_2026-09-24.jsonl", "{}"),
             ("activity.jsonl", "{}"),
             ("wire-payload.jsonl", "{}"),
-            ("topic-name", "src-topic"),
+            ("topic-name", topic),
             ("topic-path", "/somewhere"),
             ("topic-meta.json", "{}"),
             ("notes.md", "the user's own file"),
@@ -446,13 +505,19 @@ mod tests {
     /// asks for them.
     #[tokio::test]
     async fn fork_shares_the_parent_workspace_with_private_state() {
-        let (_ptmp, topic_dir) = parent_topic(&[]).await;
+        let (_ptmp, topic_dir) =
+            parent_topic("t-fork_shares_the_parent_workspace_with_private_state", &[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
 
         let handler = ForkCommandHandler::new(tm.clone());
-        let ctx = context("src-topic", &topic_dir, "websocket", &["sibling"]);
+        let ctx = context(
+            "t-fork_shares_the_parent_workspace_with_private_state",
+            &topic_dir,
+            "websocket",
+            &["sibling"],
+        );
         let result = handler
             .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
             .await
@@ -483,11 +548,13 @@ mod tests {
             tokio::fs::read_to_string(child.join("forked-from"))
                 .await
                 .unwrap(),
-            "src-topic"
+            "t-fork_shares_the_parent_workspace_with_private_state"
         );
-        for keep in [session_state::TASKS_FILE, "pattern"] {
-            assert!(child.join(keep).exists(), "{keep} must be inherited");
-        }
+        assert!(child.join("pattern").exists(), "pattern must be inherited");
+        assert!(
+            !child.join(session_state::TASKS_FILE).exists(),
+            "a fork plans its own work: the parent's task list stays behind"
+        );
         let mut days = 0;
         let mut entries = tokio::fs::read_dir(&child).await.unwrap();
         while let Some(entry) = entries.next_entry().await.unwrap() {
@@ -527,31 +594,103 @@ mod tests {
         jyc_types::state_dir::unregister("sibling");
     }
 
+    /// A fork starts on the model its parent is running, even when that model comes
+    /// from a config layer rather than an override file — there is nothing to copy
+    /// in that case, which is the gap `seed_start_model` fills. The child's own
+    /// chain reads the file for *its* mode, which for a child whose mode comes
+    /// from a config (a typed spawn) is not the file its parent read.
+    #[tokio::test]
+    async fn fork_hands_the_child_the_model_its_parent_runs() {
+        let (_ptmp, topic_dir) =
+            parent_topic("t-fork_hands_the_child_the_model_its_parent_runs", &[]).await;
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_dir = workspace.path().join("agents");
+        let handler = ForkCommandHandler::new(tm.clone());
+
+        let mut ctx = context(
+            "t-fork_hands_the_child_the_model_its_parent_runs",
+            &topic_dir,
+            "websocket",
+            &["child"],
+        );
+        ctx.config = Arc::new(
+            jyc_types::load_config_from_str("[ai]\nmodel = \"provider/parent\"\n").unwrap(),
+        );
+
+        let result = handler
+            .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.message);
+
+        let child = resolve_state_dir("child", &topic_dir);
+        assert_eq!(
+            tokio::fs::read_to_string(child.join("model-override"))
+                .await
+                .unwrap()
+                .trim(),
+            "provider/parent"
+        );
+        // The child's own chain reads it — resolved against a config with no
+        // model, so only the snapshot can answer.
+        assert_eq!(
+            session_state::resolve_effective_model(
+                "child",
+                &topic_dir,
+                &jyc_types::AppConfig::default(),
+                "websocket"
+            )
+            .await
+            .as_deref(),
+            Some("provider/parent"),
+            "which is what the child's own chain then reads"
+        );
+
+        // The registry is process-global and tests run in parallel.
+        jyc_types::state_dir::unregister("child");
+    }
+
     /// `--inherit` copies exactly what the default leaves behind — the
     /// conversation and the transcript. It is a flag rather than a name: this
     /// fork names no topic and still gets the automatic one.
     #[tokio::test]
     async fn fork_inherit_copies_the_conversation_and_transcript() {
-        let (_ptmp, topic_dir) = parent_topic(&[]).await;
+        let (_ptmp, topic_dir) =
+            parent_topic("t-fork_inherit_copies_the_conversation_and_transcript", &[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
 
         let handler = ForkCommandHandler::new(tm.clone());
-        let ctx = context("src-topic", &topic_dir, "websocket", &["--inherit"]);
+        let ctx = context(
+            "t-fork_inherit_copies_the_conversation_and_transcript",
+            &topic_dir,
+            "websocket",
+            &["--inherit"],
+        );
         let result = handler
             .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
             .await
             .unwrap();
 
         assert!(result.success, "{}", result.message);
-        assert!(result.message.contains("src-topic-2"), "{}", result.message);
+        assert!(
+            result
+                .message
+                .contains("t-fork_inherit_copies_the_conversation_and_transcript-2"),
+            "{}",
+            result.message
+        );
         assert!(
             result.message.contains("conversation included"),
             "{}",
             result.message
         );
-        let child = resolve_state_dir("src-topic-2", &topic_dir);
+        let child = resolve_state_dir(
+            "t-fork_inherit_copies_the_conversation_and_transcript-2",
+            &topic_dir,
+        );
         assert!(child.join("agent-context.json").exists());
         let mut days = 0;
         let mut entries = tokio::fs::read_dir(&child).await.unwrap();
@@ -566,45 +705,76 @@ mod tests {
         }
         assert_eq!(days, 2, "both days of the transcript come along");
 
-        jyc_types::state_dir::unregister("src-topic-2");
+        jyc_types::state_dir::unregister("t-fork_inherit_copies_the_conversation_and_transcript-2");
     }
 
     /// No argument means an automatic name, and it must step past siblings
     /// that already exist.
     #[tokio::test]
     async fn fork_without_a_name_picks_the_first_free_suffix() {
-        let (_ptmp, topic_dir) = parent_topic(&[]).await;
+        let (_ptmp, topic_dir) =
+            parent_topic("t-fork_without_a_name_picks_the_first_free_suffix", &[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
-        tokio::fs::create_dir_all(agents_dir.join("src-topic-2"))
-            .await
-            .unwrap();
+        tokio::fs::create_dir_all(
+            agents_dir.join("t-fork_without_a_name_picks_the_first_free_suffix-2"),
+        )
+        .await
+        .unwrap();
 
         let handler = ForkCommandHandler::new(tm.clone());
-        let ctx = context("src-topic", &topic_dir, "websocket", &[]);
+        let ctx = context(
+            "t-fork_without_a_name_picks_the_first_free_suffix",
+            &topic_dir,
+            "websocket",
+            &[],
+        );
         let result = handler
             .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
             .await
             .unwrap();
 
         assert!(result.success, "{}", result.message);
-        assert!(result.message.contains("src-topic-3"), "{}", result.message);
-        assert!(tm.topic_path("src-topic-3").await.is_some());
+        assert!(
+            result
+                .message
+                .contains("t-fork_without_a_name_picks_the_first_free_suffix-3"),
+            "{}",
+            result.message
+        );
+        assert!(
+            tm.topic_path("t-fork_without_a_name_picks_the_first_free_suffix-3")
+                .await
+                .is_some()
+        );
+        jyc_types::state_dir::unregister("t-fork_without_a_name_picks_the_first_free_suffix-3");
     }
 
     /// Names become directory names and routing keys, so path syntax is
     /// rejected before anything touches the disk.
     #[tokio::test]
     async fn fork_rejects_names_that_cannot_be_topic_names() {
-        let (_ptmp, topic_dir) = parent_topic(&[]).await;
+        let (_ptmp, topic_dir) =
+            parent_topic("t-fork_rejects_names_that_cannot_be_topic_names", &[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
         let handler = ForkCommandHandler::new(tm);
 
-        for bad in ["../escape", "a/b", ".hidden", "x;y", "src-topic"] {
-            let ctx = context("src-topic", &topic_dir, "websocket", &[bad]);
+        for bad in [
+            "../escape",
+            "a/b",
+            ".hidden",
+            "x;y",
+            "t-fork_rejects_names_that_cannot_be_topic_names",
+        ] {
+            let ctx = context(
+                "t-fork_rejects_names_that_cannot_be_topic_names",
+                &topic_dir,
+                "websocket",
+                &[bad],
+            );
             let result = handler
                 .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
                 .await
@@ -620,7 +790,7 @@ mod tests {
     /// A name that is already a topic cannot be forked over.
     #[tokio::test]
     async fn fork_refuses_an_existing_topic() {
-        let (_ptmp, topic_dir) = parent_topic(&[]).await;
+        let (_ptmp, topic_dir) = parent_topic("t-fork_refuses_an_existing_topic", &[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
@@ -629,7 +799,12 @@ mod tests {
         tm.set_topic_path("taken", taken).await.unwrap();
 
         let handler = ForkCommandHandler::new(tm);
-        let ctx = context("src-topic", &topic_dir, "websocket", &["taken"]);
+        let ctx = context(
+            "t-fork_refuses_an_existing_topic",
+            &topic_dir,
+            "websocket",
+            &["taken"],
+        );
         let result = handler
             .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
             .await
@@ -650,7 +825,12 @@ mod tests {
         // temp dir is enough here — no need to build a whole parent.
         let tmp = tempdir().unwrap();
 
-        let ctx = context("src-topic", tmp.path(), "email", &["whatever"]);
+        let ctx = context(
+            "t-fork_refuses_a_non_websocket_channel",
+            tmp.path(),
+            "email",
+            &["whatever"],
+        );
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.message.contains("routing address"), "{result:?}");
@@ -665,7 +845,8 @@ mod tests {
     /// parent the same state dir, and with it one transcript.
     #[tokio::test]
     async fn two_forks_of_one_parent_keep_their_own_state() {
-        let (_ptmp, topic_dir) = parent_topic(&[]).await;
+        let (_ptmp, topic_dir) =
+            parent_topic("t-two_forks_of_one_parent_keep_their_own_state", &[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
@@ -673,7 +854,12 @@ mod tests {
 
         let mut states = vec![];
         for n in ["fork-a", "fork-b"] {
-            let ctx = context("src-topic", &topic_dir, "websocket", &[n]);
+            let ctx = context(
+                "t-two_forks_of_one_parent_keep_their_own_state",
+                &topic_dir,
+                "websocket",
+                &[n],
+            );
             let result = handler
                 .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
                 .await
@@ -685,7 +871,7 @@ mod tests {
                     .await
                     .unwrap()
                     .trim(),
-                "src-topic",
+                "t-two_forks_of_one_parent_keep_their_own_state",
                 "{n} must record where it came from"
             );
             states.push(state);
@@ -709,12 +895,18 @@ mod tests {
     /// parent's own state — untouched.
     #[tokio::test]
     async fn closing_a_fork_leaves_the_shared_workspace_alone() {
-        let (_ptmp, topic_dir) = parent_topic(&[]).await;
+        let (_ptmp, topic_dir) =
+            parent_topic("t-closing_a_fork_leaves_the_shared_workspace_alone", &[]).await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
         let handler = ForkCommandHandler::new(tm.clone());
-        let ctx = context("src-topic", &topic_dir, "websocket", &["fork-close"]);
+        let ctx = context(
+            "t-closing_a_fork_leaves_the_shared_workspace_alone",
+            &topic_dir,
+            "websocket",
+            &["fork-close"],
+        );
         handler
             .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
             .await

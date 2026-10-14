@@ -194,69 +194,18 @@ impl TopicManager {
         .await
         .or_else(|| Some("build".to_string()));
 
-        // Read mode-specific override file first, fallback to legacy.
-        let file_override = {
-            async fn read_trimmed(path: &std::path::Path) -> Option<String> {
-                tokio::fs::read_to_string(path)
-                    .await
-                    .ok()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            }
-            let plan_path = resolve_state_dir(topic_name, topic_path).join("plan-model-override");
-            let build_path = resolve_state_dir(topic_name, topic_path).join("build-model-override");
-            let legacy_path = resolve_state_dir(topic_name, topic_path).join("model-override");
-
-            let mode_specific = match mode.as_deref() {
-                Some("plan") => read_trimmed(&plan_path).await,
-                _ => read_trimmed(&build_path).await, // None = build mode
-            };
-            if mode_specific.is_some() {
-                mode_specific
-            } else {
-                read_trimmed(&legacy_path).await
-            }
-        };
-
-        // Resolve effective model with priority:
-        // 1. .jyc/<mode>-model-override (mode-specific runtime override)
-        // 2. .jyc/model-override (legacy generic override)
-        // 3. Pattern-level plan_model / build_model (mode-specific)
-        // 4. Pattern-level model (generic)
-        // 5. Channel-level model (generic)
-        // 6. Global plan_model / build_model (mode-specific)
-        // 7. Global model (generic)
-
-        let model = if let Some(ref m) = file_override {
-            Some(m.clone())
-        } else if let Some(ref pattern_name) = pattern {
-            let cfg = self.config.load();
-            let channel_cfg = cfg.channels.get(&self.channel_name);
-            let pattern_override = channel_cfg
-                .and_then(|c| c.patterns.as_ref())
-                .and_then(|pats| pats.iter().find(|p| p.name == *pattern_name));
-            pattern_override
-                .and_then(|p| match mode.as_deref() {
-                    Some("plan") => p.plan_model.clone(),
-                    _ => p.build_model.clone(), // None = build mode
-                })
-                .or_else(|| pattern_override.and_then(|p| p.model.clone()))
-        } else {
-            None
-        }
-        .or_else(|| {
-            let cfg = self.config.load();
-            let channel_cfg = cfg.channels.get(&self.channel_name)?;
-            channel_cfg.model.clone()
-        })
-        .or_else(|| {
-            let cfg = self.config.load();
-            match mode.as_deref() {
-                Some("plan") => cfg.ai.plan_model.clone(),
-                _ => cfg.ai.build_model.clone(), // None = build mode
-            }
-        })
-        .or_else(|| self.config.load().ai.model.clone());
+        // The model is resolved by the one function the agent runtime also
+        // calls, so what the display renders is what the topic runs.
+        let model = crate::session_state::resolve_model(
+            topic_name,
+            topic_path,
+            &self.config.load(),
+            &self.channel_name,
+            mode.as_deref(),
+            pattern.as_deref(),
+            None,
+        )
+        .await;
 
         (pattern, token_state, mode, model)
     }

@@ -1783,17 +1783,26 @@ small_model = "provider/config-small"
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("config.toml"),
-            "mode = \"plan\"\nskills = [\"pr-review\"]\n",
+            "mode = \"plan\"\nskills = [\"pr-review\"]\ndescription = \"reviews a diff\"\n\
+             [spawn]\nshare_topic_path = true\n",
         )
         .unwrap();
 
         let cfg = load_subagent_type("review", Some(tmp.path()))
             .unwrap()
             .expect("installed type loads");
-        assert_eq!(cfg.mode.as_deref(), Some("plan"));
+        assert_eq!(cfg.topic.mode.as_deref(), Some("plan"));
         assert_eq!(
-            cfg.skills.as_deref(),
+            cfg.topic.skills.as_deref(),
             Some(["pr-review".to_string()].as_slice())
+        );
+        // The two keys only an installed type has: the topic-shaped part is
+        // flattened, so they sit beside it rather than inside it.
+        assert_eq!(cfg.description.as_deref(), Some("reviews a diff"));
+        assert_eq!(
+            cfg.spawn.and_then(|s| s.share_topic_path),
+            Some(true),
+            "[spawn] is read, and it is not part of the topic config"
         );
 
         assert!(
@@ -1832,6 +1841,24 @@ small_model = "provider/config-small"
 
         let names = available_subagent_types(&config, Some(tmp.path()));
         assert_eq!(names, vec!["analyst", "builder", "review"]);
+
+        // The catalog is what a model chooses from: a described type carries its
+        // line, an undescribed one (or an inline `[subagents.<type>]`) is its
+        // name alone — same sources as the list above, so it cannot offer
+        // something a spawn would refuse.
+        std::fs::write(
+            tmp.path().join("subagents/review/config.toml"),
+            "description = \"reviews a diff\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            subagent_type_catalog(&config, Some(tmp.path())),
+            vec![
+                "analyst".to_string(),
+                "builder".to_string(),
+                "review — reviews a diff".to_string(),
+            ]
+        );
     }
 
     /// Serializing a topic config writes only what is set — a spawned child's

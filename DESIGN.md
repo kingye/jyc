@@ -427,7 +427,7 @@ these names loosely, so they are fixed here.
 | **agent dir** | One agent's home: its default topic's files while unpinned, or just the `.jyc` when that topic is pinned | `<agents dir>/<agent>/` | — |
 | **default topic** | The one topic every agent has, named after the agent — a message sent to the agent lands on it | `topic_path` is the agent dir unless pinned; state dir `<agents dir>/<agent>/.jyc` | 1:1 topics in `TopicManager` |
 | **topic** (non-default) | A topic a pipe creates from its rule's template (`plan-42`, `review-7`, …) | `topic_path` `<agents dir>/<agent>/<topic>/`; state dir `<agents dir>/<agent>/<topic>/.jyc` | router dynamic topics |
-| **subagent type** | A named **role** a spawn hands its child: a topic config selected by name (`type = "review"`), defined by `[subagents.<type>]` in the config or by `<config dir>/subagents/<type>/config.toml`, and expanded into the child's own `.jyc/config.toml` at spawn time. Not a topic, not a channel, not a pattern: nothing routes to it, and nothing about it is inherited by anything else. Only the L1 config dir is scanned — unlike skills, a type is not layered. Resolution happens in the entry points, against the config the instance is *running* with (never a fresh read of the default path), and the repo ships one at `subagents/review/config.toml` | `[subagents.<type>]`; `<config dir>/subagents/<type>/config.toml` | `jyc_types::load_subagent_type`, `spawn_handler::{resolve_type_arg, resolve_subagent_type, SubagentType}` |
+| **subagent type** | A named **role** a spawn hands its child: a topic config selected by name (`type = "review"`), defined by `[subagents.<type>]` in the config or by `<config dir>/subagents/<type>/config.toml`, and expanded into the child's own `.jyc/config.toml` at spawn time. Not a topic, not a channel, not a pattern: nothing routes to it, and nothing about it is inherited by anything else. Only the L1 config dir is scanned — unlike skills, a type is not layered. Resolution happens in the entry points, against the config the instance is *running* with (never a fresh read of the default path), and an installed type may also carry a `description` (one line of "when to spawn me", listed in the spawn tool's `type` argument) and `[spawn]` (its defaults for the two start flags). The repo ships one at `subagents/review/config.toml` | `[subagents.<type>]`; `<config dir>/subagents/<type>/config.toml` | `jyc_types::load_subagent_type`, `spawn_handler::{resolve_type_arg, resolve_subagent_type, SubagentType}` |
 | **subagent** | An agent `/spawn` (or `jyc_spawn_subagent`) created: an agent with its own default topic, not a second kind of topic | `<agents dir>/<subagent>/`, its state dir as any default topic's — or the parent's dir when the tool was asked to share it | `spawn_handler` |
 | **topic_path** | A topic's **working directory**: where the agent runs, what `read`/`write`/`bash` see, and what a parent is granted when it spawns a subagent. **Any** directory — a pin, a checkout, a `/spawn <path>` child — not necessarily under the agents dir | `<agents dir>/<agent>/` or `<agents dir>/<agent>/<topic>/` by default | `TopicManager::topic_path(name)` |
 | **state dir** | A topic's `.jyc`: transcript, `agent-context.json`, `tasks`, `pattern`, `mode-override`, the lineage `spawned-from`, … — always under the agents dir, located by **topic name**, never inside a pinned `topic_path` | see the table below | `jyc_types::state_dir::resolve_state_dir(name, topic_dir)` |
@@ -598,7 +598,9 @@ child's *starting point* are the caller's to decide, and both default to the
 more independent choice: `inherit_context` (or `/spawn --inherit`) copies the
 conversation and transcript as well, and `share_topic_path` (tool only) puts the
 child in the parent's directory — `/fork`'s shape, which is what a reviewer of
-the work as it is needs:
+the work as it is needs. A **type** may state those two defaults for itself
+(`[spawn]` in its own file), and an argument passed at spawn time overrides them:
+the role knows how it has to run, and one command can still say otherwise.
 
 1. Resolve the name and topic_path (`/spawn` from its arguments — a name, a path,
    or both, told apart by shape — the tool from a single name under
@@ -646,6 +648,16 @@ declared `mode` changes which file that is), so a declared `plan_model` takes ou
 the plan file, a declared `build_model` the build one, `[ai].model` both, and
 nothing else. The other mode's file is left in place and dormant: a later
 `/mode` switch inherits the parent's choice on that side.
+
+An **installed** type (`<config dir>/subagents/<type>/config.toml`) carries two
+keys a topic config has no place for, and both exist for the agent that has to
+*choose* a role: `description`, one line of "when to spawn me" listed beside the
+name in `jyc_spawn_subagent`'s own `type` argument (so a parent that was never
+told about a role can still recognize the moment for it — the list, the refusal
+for a bad name and the spawn's own resolution all read the same two sources), and
+`[spawn]`, the role's defaults for the two start flags above. `[subagents.<type>]`
+in the config is a topic config and has neither: a type defined only there is
+listed by name alone.
 
 The child's **starting model** is filled in the same step, from the parent's own:
 the trigger resolves it with `session_state::resolve_effective_model` (the

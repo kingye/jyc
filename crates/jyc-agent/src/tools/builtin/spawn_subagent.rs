@@ -20,7 +20,11 @@
 //! (`[subagents.<type>]` in the config, or `<config dir>/subagents/<type>/
 //! config.toml`) whose settings the child starts with — its model, skills,
 //! disabled tools, mode and instructions, written into the child's own state at
-//! spawn time.
+//! spawn time. A role's own file may also state how it is spawned (`[spawn]`,
+//! defaults for the two flags) and describe itself in one line; both are listed
+//! in this tool's `type` argument, so an agent that was never told about a role
+//! can still recognize when to reach for it — and an explicit argument here
+//! still overrides the role's default.
 
 use anyhow::Result;
 use arc_swap::ArcSwap;
@@ -60,8 +64,10 @@ impl Tool for SpawnSubagentTool {
          start it as a configured role — the settings under that name (its model, skill \
          allow-list, disabled tools, mode, instructions) are written into the child's state, so \
          e.g. the `review` type starts a child in plan mode with only the review skills and \
-         without `write`/`edit`; `read` the subagents directory under the config dir to \
-         see which types exist. Put whatever it needs into that directory with `write`, then send \
+         without `write`/`edit`; the types you can pass are listed in this tool's `type` \
+         argument, and a role may bring its own defaults for the two flags above (the `review` \
+         role shares your directory without being asked). Put whatever it needs into that \
+         directory with `write`, then send \
          the task with `jyc_send_to_topic` (require_reply=true). To reconfigure it, send it a \
          command body (`/build`, `/plan`, `/model`, …), which runs without spending one of its \
          turns. When the subagent \
@@ -70,6 +76,12 @@ impl Tool for SpawnSubagentTool {
     }
 
     fn input_schema(&self) -> Value {
+        let catalog = spawn_handler::type_catalog(&self.config.load());
+        let type_line = if catalog.is_empty() {
+            "No types are configured on this machine.".to_string()
+        } else {
+            format!("Available types: {}.", catalog.join("; "))
+        };
         json!({
             "type": "object",
             "properties": {
@@ -80,21 +92,26 @@ impl Tool for SpawnSubagentTool {
                 "inherit_context": {
                     "type": "boolean",
                     "description": "Copy your conversation and transcript into the subagent. \
-                                    Default false: it starts with your settings but no history."
+                                    Default false: it starts with your settings but no history. \
+                                    A type may set its own default here; passing this overrides it."
                 },
                 "share_topic_path": {
                     "type": "boolean",
                     "description": "Let the subagent work in your own directory, for work that has \
                                     to see your files as they are (a review of uncommitted \
-                                    changes). Default false: it gets a directory of its own."
+                                    changes). Default false: it gets a directory of its own. \
+                                    A type may set its own default here; passing this overrides it."
                 },
                 "type": {
                     "type": "string",
-                    "description": "Optional subagent type: the child starts with that role's \
-                                    settings (model, skills, disabled tools, mode, \
-                                    instructions), taken from [subagents.<type>] in the config or \
-                                    <config dir>/subagents/<type>/config.toml. Default: no type — \
-                                    the child inherits this topic's settings."
+                    "description": format!(
+                        "Optional subagent type: the child starts with that role's \
+                         settings (model, skills, disabled tools, mode, instructions), taken \
+                         from [subagents.<type>] in the config or \
+                         <config dir>/subagents/<type>/config.toml — and, when that file says \
+                         so, its own defaults for the two flags above. Default: no type — the \
+                         child inherits this topic's settings. {type_line}"
+                    )
                 }
             }
         })
@@ -133,14 +150,15 @@ impl Tool for SpawnSubagentTool {
         };
 
         let name = input.get("name").and_then(|v| v.as_str());
-        let inherit_context = input
-            .get("inherit_context")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let share_topic_path = input
-            .get("share_topic_path")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        // `None` = the caller said nothing, which is what lets a type's own
+        // `[spawn]` defaults speak — and an explicit argument override them.
+        let inherit_context = input.get("inherit_context").and_then(|v| v.as_bool());
+        let share_topic_path = input.get("share_topic_path").and_then(|v| v.as_bool());
+        let (inherit_context, share_topic_path) = spawn_handler::type_start_flags(
+            subagent_type.as_ref(),
+            inherit_context,
+            share_topic_path,
+        );
         // The child starts on this topic's model, unless the role names one of
         // its own: resolved with the same live config the type was, so a
         // `--config` file and config reloads are honored here too.

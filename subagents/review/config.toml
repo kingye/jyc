@@ -1,19 +1,22 @@
 # The reviewer role this repository ships — the `review` subagent type.
 #
 # A parent delegates a read-only review with:
-#     jyc_spawn_subagent(name = "review-<what>", share_topic_path = true, type = "review")
+#     jyc_spawn_subagent(name = "review-<what>", type = "review")
 # and the child starts as this role: plan mode, the review skills and nothing
-# else, no `write`/`edit`, and no further delegation.
+# else, no `write`/`edit`, no further delegation, and working in the parent's
+# directory (`[spawn]` below) so it reads the tree as it is.
 #
 # Install it into the config dir, once:
 #     cp -r subagents/review ~/.config/jyc/subagents/
 # (`~/.config/jyc/subagents/<type>/config.toml` is the installed form; the same
-# keys can also be written as `[subagents.review]` in `~/.config/jyc/config.toml`.)
+# keys can also be written as `[subagents.review]` in `~/.config/jyc/config.toml`
+# — except `description` and `[spawn]`, which are this file's alone.)
 #
-# Shape: this file is a topic config (`.jyc/config.toml`) plus `mode`, and it is
-# expanded into the child's own `.jyc/config.toml` at spawn time. It decides
-# where the child *starts*, not what it is stuck with: the child's own `/mode`,
-# `/model` and `/skill` still win over it afterwards.
+# Shape: this file is a topic config (`.jyc/config.toml`) plus `mode`, a
+# `description` and a `[spawn]` table, and the topic-shaped part is expanded into
+# the child's own `.jyc/config.toml` at spawn time. It decides where the child
+# *starts*, not what it is stuck with: the child's own `/mode`, `/model` and
+# `/skill` still win over it afterwards.
 #
 # A key this file leaves out is inherited from the parent: with no `[ai]` here the
 # reviewer starts on the parent's model for its own mode — plan mode, so the
@@ -22,6 +25,19 @@
 # function the runtime itself uses and writes it into the child's
 # `.jyc/model-override`). Add `[ai] model = "…"` to start it on a model of its
 # own instead.
+
+# What the role is for, in the words of the agent choosing one. This is the line
+# `jyc_spawn_subagent`'s `type` argument lists beside the name, so a parent that
+# was never told about this role can still recognize the moment for it — which is
+# why it says *when*, not what tools it has.
+description = "Reviews a change before you push or open a PR — reads the diff and the tree as they are (uncommitted work included), changes no file, and reports findings with a severity each. Reach for it on any non-trivial change: several files, changed logic, or work you could not test locally."
+
+# How a spawn of this role should start the child: in the parent's directory,
+# because a copy of the tree would review yesterday's version — and without the
+# parent's conversation, which a task of its own does not need. An explicit
+# `share_topic_path`/`inherit_context` on the spawn still overrides these.
+[spawn]
+share_topic_path = true
 
 mode = "plan"
 

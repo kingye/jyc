@@ -96,7 +96,7 @@ undo/redo, and standard readline-style editing keys.
 | `↑` / `↓` or `j` / `k` | Move the message cursor (message-area focus — the view scrolls only once the cursor hits its top or bottom row); move the text cursor / recall history (input, when empty) |
 | `J` / `K` or `Shift+↑` / `Shift+↓` | With message-area focus: open a selection at the cursor and extend it by that many rows; every movement afterwards (with or without Shift) keeps growing it |
 | `gg` / `G` | Jump to top / bottom of the focused pane; in the message pane the cursor goes to the first / last row with the view, taking an open selection with it |
-| `[` / `]` | Message-area focus: jump the cursor (and view) to the previous / next user turn — one turn being your message plus the agent's replies up to the next one; `Shift+[` / `Shift+]` grows a selection, and a count repeats (`3]` jumps three turns) |
+| `[` / `]` | Message-area focus: jump the cursor (and view) to the previous / next user turn — one turn being your message plus the agent's replies up to the next one; `Shift+[` / `Shift+]` grows a selection, and a count repeats (`3]` jumps three turns). From an empty chat input a single `[` focuses the message area and lands on the previous turn — the bracket is not typed, and neither is the character typed next, since typing while the message pane is focused refocuses the input and consumes the key |
 | `Shift+Enter` / `Alt+Enter` | Insert a newline in the chat input |
 | `/` popup: `Tab` | Complete the highlighted row — writes it into the input followed by one space, which opens the next level (or closes the popup when nothing is left to complete) |
 | `/` popup: `Enter` | Sends the command at the first (command) level. Below it `Enter` behaves like `Tab`, so sending a command with arguments takes a second `Enter`; with nothing to select it sends what was typed |
@@ -122,13 +122,13 @@ undo/redo, and standard readline-style editing keys.
 | `Ctrl+Q` | Quit the dashboard |
 
 Note: with the input field focused, Up/Down recall sent-message history when
-the input is empty; to scroll the conversation, press `Tab` to
-focus the message area, then use `↑/↓`/`j/k`, `PgUp/PgDn`, or `gg/G`. Typing
-while the message area is focused refocuses the input automatically (the
-keypress is consumed). The input
-area grows with content from 1 up to 10 text lines. The input prompt shows an
-always-visible agent-mode letter chip before `❯ `: `B` (green) for build mode,
-`P` (yellow) for plan mode.
+the input is empty; to scroll the conversation, press `Tab` (or, from an empty
+input, `[`) to focus the message area, then use `↑/↓`/`j/k`, `PgUp/PgDn`, or
+`gg/G`. Typing while the message area is focused refocuses the input
+automatically (the keypress is consumed). The input area grows with content
+from 1 up to 10 text lines. The input prompt shows an always-visible
+agent-mode letter chip before `❯ `: `B` (green) for build mode, `P` (yellow)
+for plan mode.
 
 The cursor row and the selected rows share one highlight colour — the status line
 says how many rows are selected, so a second shade would only be noise. Only a

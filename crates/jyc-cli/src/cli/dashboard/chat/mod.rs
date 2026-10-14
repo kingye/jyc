@@ -987,11 +987,9 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         return;
     }
 
-    // "[" on an empty input hands the keyboard to the message area and
-    // lands on the previous user turn: `focus_message_area` resets the
-    // cursor past the end of the transcript, so the one jump the pane
-    // needs to show history (rather than the newest line) is up. The
-    // bracket is not inserted — it is a movement, not text.
+    // "[" on an empty input jumps to the previous user turn: `focus_message_area`
+    // resets the cursor past the end of the transcript, so one jump up is the
+    // newest turn. The bracket is not typed.
     let is_bracket =
         key.code == KeyCode::Char('[') && !key.modifiers.contains(KeyModifiers::CONTROL);
     if is_bracket && app.chat.focus == ChatFocus::ChatPane && app.chat.text().trim().is_empty() {

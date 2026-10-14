@@ -162,16 +162,6 @@ struct AgentSessionState {
     session_cost: f64,
 }
 
-/// Read the model override file if it exists.
-pub async fn read_model_override(topic_name: &str, topic_path: &Path) -> Option<String> {
-    let override_path = resolve_state_dir(topic_name, topic_path).join("model-override");
-    tokio::fs::read_to_string(override_path)
-        .await
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 /// Read the mode override file if it exists.
 pub async fn read_mode_override(topic_name: &str, topic_path: &Path) -> Option<String> {
     let override_path = resolve_state_dir(topic_name, topic_path).join("mode-override");
@@ -365,6 +355,14 @@ pub async fn clear_tasks_at(state_dir: &Path) {
 /// other; they are small enough that moving them together would cost the runtime
 /// a fresh topic-config read per turn.
 ///
+/// One difference that follows from where each side reads its pattern: this
+/// looks it up in the *live* config, while the runtime's pattern layer comes
+/// from `JycAgentService::patterns`, the channel's list as captured at
+/// construction. A hot reload that changes a pattern's `mode` therefore moves
+/// this answer and not the runtime's, until the service is rebuilt. (The model
+/// layer no longer has that split: `resolve_model` reads the live config for
+/// both.)
+///
 /// Config-derived mode is never persisted
 /// to `.jyc/mode-override`; that file remains reserved for explicit user
 /// overrides via `/mode`, which is why a subagent type's `mode = "plan"` is
@@ -484,11 +482,16 @@ pub async fn write_max_input_tokens(topic_name: &str, topic_path: &Path, new_max
 /// fresh child the model its parent is running ([`seed_start_model`] in
 /// `command::fork_handler`).
 ///
-/// `pattern_name` is the pattern the message matched; `None` reads the topic's
-/// `.jyc/pattern`. There is deliberately no first-pattern fallback: the runtime
-/// has no such layer. `topic_agent_cfg` lets a caller that already parsed
-/// `.jyc/config.toml` hand the `[agent]` table in instead of paying for a
-/// second read.
+/// `pattern_name` is the pattern that applies to this turn — the runtime passes
+/// what the message matched, so `None` there means no pattern layer at all
+/// (scheduled and injected turns have none, and the pre-unification runtime
+/// consulted no other source for them); callers that mean "the pattern this
+/// topic runs" read `.jyc/pattern` themselves — [`resolve_effective_model`] does
+/// it for the spawn triggers, the display passes its own `topic_pattern`. There
+/// is deliberately no fallback to the channel's first pattern: the runtime has no
+/// such layer. `topic_agent_cfg` lets a caller that already parsed
+/// `.jyc/config.toml` hand the `[agent]` table in instead of paying for a second
+/// read.
 ///
 /// [`seed_start_model`]: crate::command::fork_handler
 pub async fn resolve_model(
@@ -544,19 +547,14 @@ pub async fn resolve_model(
         })
         .or_else(|| topic_agent_cfg.and_then(|a| a.model.clone()));
 
-    // 3. Pattern the message matched (or the topic's `.jyc/pattern`).
-    let pattern_name = match pattern_name {
-        Some(name) => Some(name.to_string()),
-        None => read_pattern(topic_name, topic_path).await,
-    };
+    // 3. The pattern the caller says applies to this turn (`None`: none does).
     let pattern_override = {
         let patterns = config
             .channels
             .get(channel)
             .and_then(|c| c.patterns.as_ref());
-        let pat = pattern_name
-            .as_deref()
-            .and_then(|name| patterns.and_then(|p| p.iter().find(|p| p.name == name)));
+        let pat =
+            pattern_name.and_then(|name| patterns.and_then(|p| p.iter().find(|p| p.name == name)));
         pat.and_then(|p| {
             if plan {
                 p.plan_model.clone()
@@ -594,13 +592,17 @@ pub async fn resolve_effective_model(
     channel: &str,
 ) -> Option<String> {
     let mode = resolve_effective_mode(topic_name, topic_path, config, channel).await;
+    // These callers have no matched pattern in hand: they mean the one this
+    // topic runs, which `.jyc/pattern` records (the worker writes it on every
+    // processed message).
+    let pattern = read_pattern(topic_name, topic_path).await;
     resolve_model(
         topic_name,
         topic_path,
         config,
         channel,
         mode.as_deref(),
-        None,
+        pattern.as_deref(),
         None,
     )
     .await
@@ -943,43 +945,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(read_total_cache_hit_tokens(topic, tmp.path()).await, None);
-    }
-
-    #[tokio::test]
-    async fn read_model_override_existing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "read_model_override_existing";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let state_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&state_dir).await.unwrap();
-        tokio::fs::write(state_dir.join("model-override"), "anthropic/claude-3.5\n")
-            .await
-            .unwrap();
-        let result = read_model_override(topic, tmp.path()).await;
-        assert_eq!(result, Some("anthropic/claude-3.5".to_string()));
-    }
-
-    #[tokio::test]
-    async fn read_model_override_empty() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "read_model_override_empty";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let state_dir = tmp.path().join(".jyc");
-        tokio::fs::create_dir_all(&state_dir).await.unwrap();
-        tokio::fs::write(state_dir.join("model-override"), "  \n")
-            .await
-            .unwrap();
-        let result = read_model_override(topic, tmp.path()).await;
-        assert_eq!(result, None);
-    }
-
-    #[tokio::test]
-    async fn read_model_override_missing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let topic = "read_model_override_missing";
-        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
-        let result = read_model_override(topic, tmp.path()).await;
-        assert_eq!(result, None);
     }
 
     #[tokio::test]

@@ -117,7 +117,9 @@ Rules:
 - **One reviewer, one task.** Continue the same child with `jyc_send_to_topic` for follow-ups
   (it keeps its own context); a second reviewer on the same files buys nothing.
 - Read the report, not the child's state dir — its `.jyc` is its own. Closing your topic
-  closes the reviewer with it.
+  closes the reviewer with it; while you still have it, close the child yourself (send it
+  `/close`) once you want nothing more from it — a reviewer or a watcher that has reported is
+  done.
 
 For a change small enough to check yourself, skip this: the rules above are for non-trivial
 changes — several files, changed logic, or work you could not test locally.

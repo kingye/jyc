@@ -15,6 +15,12 @@
 # Shape: a topic config (`.jyc/config.toml`) plus `mode`, a `description` and a
 # `[spawn]` table. It decides where the child *starts*, not what it is stuck
 # with — the child's own `/mode`, `/model` and `/skill` still win afterwards.
+#
+# Mind the `${…}` below: every string in this file is expanded, and an unset name
+# becomes *empty text*, no error — a `${PR}` written into the instructions later
+# would silently vanish. `${ai.small_model}` is safe: the pattern only matches a
+# plain `WORD`, and a dotted name is a model reference, resolved at the end of
+# the model chain.
 
 # What the role is for, in the words of the agent choosing one: this is the line
 # `jyc_spawn_subagent`'s `type` argument lists beside the name, so it says *when*
@@ -23,10 +29,11 @@ description = "Waits out something slow that only finishes later — CI on a PR,
 
 mode = "plan"
 
-# Watching means running `gh` and `sleep`, and nothing else: no file editing, no
-# delegation of its own. `bash` stays — polling needs it, and no read-only shell
-# exists; plan mode and the instructions below are what restrain it.
-disabled_tools = ["write", "edit", "jyc_spawn_subagent"]
+# Watching means running `gh` and `sleep` and reporting back, and nothing else:
+# no file editing, nothing published to a link, no delegation of its own.
+# `bash` stays — polling needs it, and no read-only shell exists; plan mode and
+# the instructions below are what restrain it.
+disabled_tools = ["write", "edit", "jyc_publish_file", "jyc_spawn_subagent"]
 
 instructions = """
 ## Watching
@@ -75,8 +82,9 @@ tool_result_cap = 512
 model = "${ai.small_model}"
 
 # The spawn defaults. Last, because a `[table]` header claims every key after it:
-# a `[spawn]` put higher would swallow the topic keys below it and the role would
-# load empty. The caller's directory identifies what is being watched (the branch,
+# a `[spawn]` put higher swallows the topic keys below it — refused at load, not
+# dropped silently (`unknown key 'spawn.mode'`). The caller's directory identifies
+# what is being watched (the branch,
 # the repo), so the watcher works in it; an explicit spawn argument overrides this.
 [spawn]
 share_topic_path = true

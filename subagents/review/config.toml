@@ -37,8 +37,9 @@ description = "Reviews a change before you push or open a PR — reads the diff 
 # parent's conversation, which a task of its own does not need. An explicit
 # `share_topic_path`/`inherit_context` on the spawn still overrides these.
 # (This table is last on purpose: TOML binds every key below a `[table]` header
-# to that table, so a `[spawn]` put in the middle would swallow the topic keys
-# after it — `mode`, `skills`, `disabled_tools` — and the role would load empty.)
+# to that table, so a `[spawn]` put in the middle swallows the topic keys after
+# it — `mode`, `skills`, `disabled_tools` — and the role is refused at load
+# (`unknown key 'spawn.mode'`), which is loud rather than silent.)
 
 mode = "plan"
 

@@ -1257,7 +1257,10 @@ mod tests {
     #[test]
     fn the_repos_own_ci_watch_type_loads() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+        let config = jyc_types::load_config_from_str(
+            "[ai]\nenabled = true\nsmall_model = \"provider/small\"\n",
+        )
+        .unwrap();
 
         let watch = resolve_subagent_type("ci-watch", Some(&config), Some(&repo)).unwrap();
 
@@ -1268,11 +1271,20 @@ mod tests {
             Some("${ai.small_model}"),
             "the watcher runs on the small model"
         );
-        // `bash` stays: `gh` and `sleep` are what watching is.
+        // …which is only true while that stays a *reference*: a renamed key or a
+        // dropped name would leave the watcher on the configured model with this
+        // test still green.
+        assert_eq!(
+            jyc_types::resolve_model_reference("${ai.small_model}", &config.ai).unwrap(),
+            "provider/small",
+            "the model reference still resolves to the channel's small model"
+        );
+        // `bash` stays: `gh` and `sleep` are what watching is. Nothing published
+        // to a link either — the report is the only thing it sends back.
         assert_eq!(
             watch.config.disabled_tools.as_deref(),
             Some(
-                ["write", "edit", "jyc_spawn_subagent"]
+                ["write", "edit", "jyc_publish_file", "jyc_spawn_subagent"]
                     .map(str::to_string)
                     .as_slice()
             )
@@ -1281,6 +1293,14 @@ mod tests {
             watch.spawn.as_ref().and_then(|s| s.share_topic_path),
             Some(true),
             "the caller's directory is what identifies the run being watched"
+        );
+        assert!(
+            watch
+                .spawn
+                .as_ref()
+                .and_then(|s| s.inherit_context)
+                .is_none(),
+            "a task of its own does not need the caller's conversation"
         );
         assert!(
             watch

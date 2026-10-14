@@ -166,8 +166,12 @@ pub struct TopicAiConfig {
 /// is a topic config and has no place for it. An argument passed at spawn time
 /// always wins over these, so a stored default never locks a role out of a
 /// one-off choice.
+///
+/// No `deny_unknown_fields` here: serde refuses to combine it with the flatten
+/// on the struct that holds this table, and with it the *whole* file's keys were
+/// being offered to this struct. [`load_subagent_type`] checks the table's keys
+/// by hand instead, which is the part that matters.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SpawnPolicy {
     /// Default for `inherit_context`: start the child with this topic's
     /// conversation and transcript (what `/fork` does).
@@ -188,8 +192,9 @@ pub struct SpawnPolicy {
 ///
 /// The topic part is `#[serde(flatten)]`ed, so every key that worked before
 /// still parses unchanged. Two consequences of that flatten are deliberate: no
-/// `deny_unknown_fields` is possible here (serde cannot combine the two, so a
-/// mistyped *outer* key is ignored — the `[spawn]` table guards its own keys),
+/// `deny_unknown_fields` is possible anywhere in this struct (serde cannot
+/// combine the two, and a mistyped key inside `[spawn]` — the one table whose
+/// keys are its own — is refused by hand in [`load_subagent_type`] instead),
 /// and the way a flatten buffers values makes it worth keeping `TopicConfig`
 /// field types simple (a non-string, non-bool field is where that shows).
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -236,6 +241,23 @@ pub fn load_subagent_type(
     let path_label = path.display().to_string();
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read subagent type config: {path_label}"))?;
+    // `[spawn]` keys are this file's own, and serde cannot guard them from
+    // inside the flattened [`SubagentTypeFile`] (see [`SpawnPolicy`]), so they
+    // are checked here. It is worth the few lines: an ignored typo means a role
+    // silently starting the way its file says it must *not* — a reviewer that
+    // quietly works in a copy of the tree it was meant to read as it is.
+    let value: toml::Value = toml::from_str(&content)
+        .with_context(|| format!("invalid subagent type config: {path_label}"))?;
+    if let Some(spawn) = value.get("spawn").and_then(|v| v.as_table()) {
+        for key in spawn.keys() {
+            if !matches!(key.as_str(), "inherit_context" | "share_topic_path") {
+                bail!(
+                    "invalid subagent type config: {path_label}: unknown key `spawn.{key}` \
+                     (expected `inherit_context` or `share_topic_path`)"
+                );
+            }
+        }
+    }
     parse_and_deserialize::<SubagentTypeFile>(&content, &path_label)
         .map(Some)
         .with_context(|| format!("invalid subagent type config: {path_label}"))

@@ -58,8 +58,11 @@ is evidence, not a diagnosis.
     Build & Push` in the same second — and `workflowName` is what lets you say
     which one you reported. Where the task names a workflow, or the ref carries
     several, pin it: `--workflow ci.yml`. On a PR branch under an open PR the flag
-    earns nothing (`ci.yml` is this repo's only `pull_request` workflow), so it is
-    worth its words exactly where the caller named the workflow.
+    earns nothing — `ci.yml` is the only workflow that runs on a branch while its
+    PR is open — so it is worth its words exactly where the caller named one.
+    Where the ref carries several and the caller named none (a merge leaves the
+    retarget run on the same branch name), report `workflowName` and say which
+    workflow you watched.
   - **Which head is current.** The newest run is not necessarily the current head:
     the run for a newer head may not exist yet (pushed, not yet created — and
     `ci.yml`'s `cancel-in-progress` leaves the older run's entry standing). Take
@@ -83,10 +86,14 @@ is evidence, not a diagnosis.
 - Report what came back, verbatim where it matters: the run id, the workflow name,
   the head SHA that run itself reports, the final state (all checks green, or which
   ones failed), the failing check's name and URL, and the tail of its log if you
-  fetched one. Fetch a log **as a tail**: `gh run view <id> --repo <repo>
-  --log-failed | tail -c 400` — the result cap keeps a *finished* turn small and
-  does not bound the turn you fetch in, so an unfiltered log lands in your context
-  whole. Empty output with exit status 0 means no check failed, not a failed fetch.
+  fetched one. Fetch a log **through a filter, inside the call**: `gh run view <id> --repo
+  <repo> --log-failed | grep -aE 'panicked|FAILED|error: ' | tail -n 5` — 771
+  bytes on this repo's own llvm-cov failure, carrying the failed test, the panic
+  with its `file:line` and the `FAILED` summary, where the last 400 bytes of that
+  same log held only exit-code lines — or `| tail -c 2000` if that comes back
+  empty. The result cap keeps a *finished* turn small and does not bound the turn
+  you fetch in, so an unfiltered log lands in your context whole. Empty output,
+  with no error on stderr, means no check failed — not a failed fetch.
   Every fact you state **about the run** — head SHA, run id, workflow, quoted
   lines, verdict — must be in a tool result from *this* turn: re-fetch what has
   left your window, and where that is not possible say you cannot see it, never
@@ -108,7 +115,8 @@ is evidence, not a diagnosis.
 # a 512-byte tool-result cap keeps a `gh` output from piling up in the context it
 # polls with — a *finished* turn, that is: the turn in front of it is never
 # truncated, which is why the poll prints one compact JSON line rather than a check
-# table, and why a failure log is tailed inside the call that fetches it. (Config
+# table, and why a failure log is filtered and tailed inside the call that fetches
+# it. (Config
 # layer, not an override: the user's `/context` still wins.)
 [context_strategy]
 mode = "sliding_window"

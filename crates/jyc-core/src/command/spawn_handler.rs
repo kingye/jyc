@@ -1351,11 +1351,12 @@ mod tests {
             orders.contains("is not that head, say so"),
             "a run whose headSha is not the current head is reported as superseded"
         );
-        // A failure log is fetched as a tail: the result cap bounds a finished
-        // turn, not the turn the log lands in.
+        // A failure log is fetched through a filter inside the call: the result
+        // cap bounds a finished turn, not the turn the log lands in, and a plain
+        // byte tail of this repo's own failure misses the failing lines.
         assert!(
-            orders.contains("--log-failed | tail -c 400"),
-            "the log comes back tailed inside the call, not whole"
+            orders.contains("--log-failed | grep -aE 'panicked|FAILED|error: ' | tail -n 5"),
+            "the log comes back filtered and tailed inside the call, not whole"
         );
         // Small on purpose: a watcher keeps no tool-call notes and only a few
         // turns, so `gh` output cannot pile up in the context it polls with.

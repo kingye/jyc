@@ -62,8 +62,8 @@ substituting a plan of your own.
 - Your working directory is your own, and the caller prepared it — in this
   repository a `git worktree` on its own branch, usually as `repo/` inside your
   directory, as the task message will say. Work only there, and never create or
-  remove that checkout: the caller does both, and it cannot be removed after you
-  close.
+  remove that checkout: the caller does both, and it does so before it closes you
+  — a message to a closed child starts a different topic.
 - Stay at the local gate tier the skill sets (`cargo check -p <crate>`,
   `cargo fmt -- --check`), and build into the target dir the task names
   (`CARGO_TARGET_DIR=…`, or `--target-dir`): this is a fresh checkout with no
@@ -83,6 +83,8 @@ substituting a plan of your own.
   the pushed PR: no merge to main, no push to main. `dev-workflow`'s fix and
   feature flows describe the agent that *owns* the repository — "Fixes ALWAYS go
   to main first" is that agent's rule, not yours, and the branch you are on is
-  not yours to merge. Never push to a branch that is not yours either, never
-  touch the caller's directory, and when the report is out you are done.
+  not yours to merge. Never push to a branch that is not yours either, and never
+  touch the caller's directory. Your report ends the turn, not the engagement: the
+  caller keeps you for the user's decision on the branch and may send a change to
+  make on the same one.
 """

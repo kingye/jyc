@@ -223,7 +223,8 @@ Do NOT stop after updating files — complete all steps through push.
 - Work only in the directory you were given. For a delegated developer that is a checkout the
   caller prepared (a `git worktree` in this repo, usually as `repo/` inside the topic directory,
   and its `git diff` base comes from the task message). Never create or remove a checkout
-  yourself: the caller does both, and it cannot be undone after you close
+  yourself: the caller does both, and before it closes you — a message to a closed child starts a
+  different topic
 - A delegated developer stops at the pushed PR, on the branch it was given — which already exists,
   so it has no branch to create. It does not merge to main and does not push main: the fix and
   feature flows above describe a developer working directly in the repository and merging with the

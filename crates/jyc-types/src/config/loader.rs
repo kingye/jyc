@@ -159,12 +159,57 @@ pub struct TopicAiConfig {
     pub small_model: Option<String>,
 }
 
+/// How a spawn should start the child of a role: a type's own defaults for the
+/// two flags `jyc_spawn_subagent` takes, under a `[spawn]` table.
+///
+/// Only an installed type file carries one — `[subagents.<type>]` in the config
+/// is a topic config and has no place for it. An argument passed at spawn time
+/// always wins over these, so a stored default never locks a role out of a
+/// one-off choice.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct SpawnPolicy {
+    /// Default for `inherit_context`: start the child with this topic's
+    /// conversation and transcript (what `/fork` does).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherit_context: Option<bool>,
+
+    /// Default for `share_topic_path`: run the child in this topic's working
+    /// directory instead of one of its own (what a reviewer of uncommitted work
+    /// needs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_topic_path: Option<bool>,
+}
+
+/// `<config dir>/subagents/<type>/config.toml` as a whole: the topic-shaped
+/// settings a spawn expands into the child's state ([`TopicConfig`]), plus the
+/// two things only a *role* has — a one-line [`description`](Self::description)
+/// for the agent choosing a type, and its `[spawn]` defaults.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SubagentTypeFile {
+    /// The role's settings, written into the child's `.jyc/config.toml`.
+    #[serde(flatten)]
+    pub topic: TopicConfig,
+
+    /// What this role is for, in the terms an agent choosing one needs — phrase
+    /// it as *when* to spawn it, not as a capability list: this line is all a
+    /// parent that was never told about the role has to match against its
+    /// situation. Listed beside the type's name in the `type` argument of
+    /// `jyc_spawn_subagent`.
+    #[serde(default)]
+    pub description: Option<String>,
+
+    /// How a spawn should start this role's child.
+    #[serde(default)]
+    pub spawn: Option<SpawnPolicy>,
+}
+
 /// Load a subagent type from `<config dir>/subagents/<type>/config.toml`.
 ///
-/// The file is a topic config (see [`TopicConfig`]) standing outside any topic:
-/// a preset a spawn expands into the child's own `.jyc/config.toml`. It is the
-/// second half of the type lookup — `[subagents.<type>]` in the config file is
-/// the first, and [`TopicConfig::overlay`] combines them.
+/// The file is a topic config (see [`TopicConfig`], flattened into
+/// [`SubagentTypeFile`]) standing outside any topic: a preset a spawn expands
+/// into the child's own `.jyc/config.toml`. It is the second half of the type
+/// lookup — `[subagents.<type>]` in the config file is the first, and
+/// [`TopicConfig::overlay`] combines them.
 ///
 /// Unlike [`load_topic_config`] the errors are *not* swallowed: a type the user
 /// asked for by name must either load or say why, and a spawn that silently
@@ -172,7 +217,7 @@ pub struct TopicAiConfig {
 pub fn load_subagent_type(
     type_name: &str,
     config_dir: Option<&Path>,
-) -> Result<Option<TopicConfig>> {
+) -> Result<Option<SubagentTypeFile>> {
     let Some(dir) = config_dir else {
         return Ok(None);
     };
@@ -183,7 +228,7 @@ pub fn load_subagent_type(
     let path_label = path.display().to_string();
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read subagent type config: {path_label}"))?;
-    parse_and_deserialize::<TopicConfig>(&content, &path_label)
+    parse_and_deserialize::<SubagentTypeFile>(&content, &path_label)
         .map(Some)
         .with_context(|| format!("invalid subagent type config: {path_label}"))
 }
@@ -221,6 +266,29 @@ pub fn available_subagent_types(config: &AppConfig, config_dir: Option<&Path>) -
     }
     names.sort();
     names
+}
+
+/// One line per available type, for the `type` argument's own description:
+/// `name — description` when the type's file carries one, the bare name
+/// otherwise.
+///
+/// Read from the same two sources as [`available_subagent_types`], so the list
+/// a model chooses from cannot offer something a spawn would refuse.
+pub fn subagent_type_catalog(config: &AppConfig, config_dir: Option<&Path>) -> Vec<String> {
+    available_subagent_types(config, config_dir)
+        .into_iter()
+        .map(|name| {
+            let description = load_subagent_type(&name, config_dir)
+                .ok()
+                .flatten()
+                .and_then(|file| file.description)
+                .filter(|d| !d.trim().is_empty());
+            match description {
+                Some(d) => format!("{name} — {}", d.trim()),
+                None => name,
+            }
+        })
+        .collect()
 }
 
 /// Load topic-level overrides from the topic's resolved state dir

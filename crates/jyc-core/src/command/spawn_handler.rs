@@ -96,10 +96,9 @@ struct SpawnRequest<'a> {
     /// `seed_state`'s default. `/spawn --inherit`, or the tool's
     /// `inherit_context`.
     inherit: bool,
-    /// Work in the parent's own directory instead of a new one. Tool-only: no
-    /// argument asks for it, because a typed `/spawn` already has a path it
-    /// can name, and sharing is a decision about the *child's* role (a
-    /// reviewer reading uncommitted work).
+    /// Work in the parent's own directory instead of a new one. Tool-only as an
+    /// *argument*: a typed `/spawn` never asks for it, and a role asks for it
+    /// with its own `[spawn]` default (a reviewer of uncommitted work must).
     share_topic_path: bool,
     /// The role the child starts in, already resolved from its name by the
     /// trigger ([`resolve_subagent_type`]) — the request carries the answer, not
@@ -391,9 +390,10 @@ impl CommandHandler for SpawnCommandHandler {
         // developer's own agents tree. Tests call `spawn_under` with every root.
         let agents_dir = self.topic_manager.resolve_agents_dir();
         let parent_state = resolve_state_dir(&context.topic_name, &context.topic_path);
-        // `/spawn --inherit …`: the command's only share is the conversation,
-        // and it is the caller that reads it off the arguments — a typed
-        // `/spawn` never shares its topic_path, which is what `false` says.
+        // `/spawn --inherit …`: the command's only own share is the
+        // conversation, read off the arguments here — so a typed `/spawn` asks
+        // for neither flag of its own accord, and the role's `[spawn]` defaults
+        // fill what the command line left unsaid (below, once the type is read).
         let (inherit, args) = take_inherit_flag(&context.args);
         let (type_name, args) = match take_type_flag(&args) {
             Ok(parsed) => parsed,
@@ -418,12 +418,14 @@ impl CommandHandler for SpawnCommandHandler {
             &context.channel,
         )
         .await;
+        let (inherit, share_topic_path) =
+            type_start_flags(subagent_type.as_ref(), inherit.then_some(true), None);
         let req = SpawnRequest {
             parent_topic: &context.topic_name,
             parent_topic_path: &context.topic_path,
             args: &args,
             inherit,
-            share_topic_path: false,
+            share_topic_path,
             subagent_type: subagent_type.as_ref(),
             start_model,
         };
@@ -649,6 +651,12 @@ pub struct SubagentType {
     pub name: String,
     /// What to write into the child's own `.jyc/config.toml`.
     pub config: TopicConfig,
+    /// The role's own one-line "when to spawn me", from its installed file —
+    /// listed beside the name wherever a spawn lists the types it accepts.
+    pub description: Option<String>,
+    /// The role's own defaults for the two start flags, from its `[spawn]`
+    /// table. See [`type_start_flags`] for how an argument overrides them.
+    pub spawn: Option<jyc_types::SpawnPolicy>,
 }
 
 /// Resolve a `type` name into the settings a spawn hands its child.
@@ -679,12 +687,17 @@ pub fn resolve_subagent_type(
     let installed =
         jyc_types::load_subagent_type(name, config_dir).map_err(|e| format!("{e:#}"))?;
 
-    let settings = match (from_config, installed) {
+    let settings = match (from_config, installed.as_ref()) {
         (Some(from_config), None) => from_config,
-        (None, Some(installed)) => installed,
-        (Some(from_config), Some(installed)) => from_config.overlay(installed),
+        (None, Some(installed)) => installed.topic.clone(),
+        (Some(from_config), Some(installed)) => from_config.overlay(installed.topic.clone()),
         (None, None) => return Err(unknown_type_message(name, config, config_dir)),
     };
+    // Only the installed file has these two: `[subagents.<type>]` is a topic
+    // config, so a config-only type simply has no spawn defaults and no line to
+    // be listed by.
+    let description = installed.as_ref().and_then(|f| f.description.clone());
+    let spawn = installed.as_ref().and_then(|f| f.spawn.clone());
 
     // A typo in `mode` would otherwise read as "not plan", i.e. build — a
     // reviewer quietly starting able to write. Refuse instead, where the user
@@ -700,7 +713,40 @@ pub fn resolve_subagent_type(
     Ok(SubagentType {
         name: name.to_string(),
         config: settings,
+        description,
+        spawn,
     })
+}
+
+/// The two start flags a spawn actually runs with: an argument passed by the
+/// trigger (`Some(true)` — `/spawn --inherit`, the tool's `inherit_context`)
+/// wins over the type's own `[spawn]` default, which wins over the built-in
+/// `false`: an independent child in a directory of its own.
+///
+/// `None` is "the caller did not decide", which is what lets `--type=review`
+/// alone mean "borrow my directory, without my conversation" — the role states
+/// how it is spawned, and one command still can override it.
+pub fn type_start_flags(
+    subagent_type: Option<&SubagentType>,
+    inherit: Option<bool>,
+    share: Option<bool>,
+) -> (bool, bool) {
+    let policy = subagent_type
+        .and_then(|t| t.spawn.clone())
+        .unwrap_or_default();
+    (
+        inherit.or(policy.inherit_context).unwrap_or(false),
+        share.or(policy.share_topic_path).unwrap_or(false),
+    )
+}
+
+/// The types a spawn accepts on this machine, one `name — description` line
+/// each, for the `type` argument's own description in the tool schema.
+///
+/// The same resolution and the same config dir as [`resolve_type_arg`], so the
+/// list a model picks from and the names a spawn accepts stay one answer.
+pub fn type_catalog(config: &AppConfig) -> Vec<String> {
+    jyc_types::subagent_type_catalog(config, jyc_utils::paths::config_dir().as_deref())
 }
 
 /// The refusal for a type nobody defines, naming the ones that do exist.
@@ -1254,6 +1300,39 @@ mod tests {
         }
         let err = take_type_flag(&args(&["--type=a", "--type=b"])).unwrap_err();
         assert!(err.contains("twice"), "{err}");
+    }
+
+    /// A role's *installed* file can state how it is spawned (`[spawn]`) and
+    /// describe itself in one line; an argument passed at spawn time still wins,
+    /// in both directions, and a spawn with no type keeps the built-in default.
+    #[tokio::test]
+    async fn an_installed_type_carries_its_own_spawn_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("subagents/review");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.toml"),
+            "mode = \"plan\"\ndescription = \"reviews a diff\"\n[spawn]\nshare_topic_path = true\n\
+             inherit_context = false\n",
+        )
+        .unwrap();
+
+        let ty = resolve_subagent_type("review", None, Some(tmp.path())).unwrap();
+        assert_eq!(ty.description.as_deref(), Some("reviews a diff"));
+        assert_eq!(ty.config.mode.as_deref(), Some("plan"));
+        // Nothing passed: the role decides — in the parent's dir, no conversation.
+        assert_eq!(
+            type_start_flags(Some(&ty), None, None),
+            (false, true),
+            "the role's own [spawn] fills what the caller left unsaid"
+        );
+        // Said explicitly: the argument wins, including "off" over the role's "on".
+        assert_eq!(
+            type_start_flags(Some(&ty), Some(true), Some(false)),
+            (true, false)
+        );
+        // No type at all: the built-in default, unchanged by this feature.
+        assert_eq!(type_start_flags(None, None, None), (false, false));
     }
 
     /// A typed spawn hands the child the role, dropping only the parent runtime

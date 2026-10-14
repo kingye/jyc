@@ -688,9 +688,15 @@ pub async fn read_context_strategy_override(
 
 /// Resolve the `ContextStrategyConfig` for a topic from config alone.
 ///
-/// Priority: matched pattern > first pattern > global `[ai].context_strategy` >
+/// Priority: the topic's own config (`[context_strategy]`, whether the topic
+/// wrote it or a subagent type expanded into it) > matched pattern > first
+/// pattern > global `[ai].context_strategy` >
 /// `ContextStrategyConfig::default()` (sliding_window / window=10 /
 /// note_window=3 / tool_result_cap=2048).
+///
+/// The topic layer is a *config* layer, not an override: callers must consult
+/// the runtime `.jyc/context-strategy.json` (the user's `/context`) *before*
+/// this function, and what they find there wins — the same shape as `mode`.
 ///
 /// Pass `matched_pattern = Some(name)` when the caller has access to the
 /// pattern that created the topic (e.g. `process()` with
@@ -701,7 +707,17 @@ pub fn resolve_context_strategy(
     config: &AppConfig,
     channel: &str,
     matched_pattern: Option<&str>,
+    topic_strategy: Option<&ContextStrategyConfig>,
 ) -> ContextStrategyConfig {
+    // Hand the topic's `[context_strategy]` in rather than reading the topic's
+    // config here: the callers already parse it (`resolve_model` takes its `[ai]`
+    // table the same way), a second per-turn read buys nothing, and this keeps
+    // the function clear of `load_topic_config`'s "registered topic or panic"
+    // contract — an unregistered name must not be a way to abort a turn.
+    if let Some(from_topic) = topic_strategy {
+        return from_topic.clone();
+    }
+
     let channel_cfg = config.channels.get(channel);
     let patterns = channel_cfg.and_then(|c| c.patterns.as_ref());
 
@@ -1587,7 +1603,7 @@ mode = "agent"
             tool_result_cap: None,
         };
         let app = config_with_strategies(vec![("a", None), ("b", Some(slide.clone()))], None);
-        let resolved = resolve_context_strategy(&app, "c", Some("b"));
+        let resolved = resolve_context_strategy(&app, "c", Some("b"), None);
         assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
         assert_eq!(resolved.window, 4);
     }
@@ -1601,7 +1617,7 @@ mode = "agent"
             tool_result_cap: None,
         };
         let app = config_with_strategies(vec![("a", Some(slide.clone()))], None);
-        let resolved = resolve_context_strategy(&app, "c", None);
+        let resolved = resolve_context_strategy(&app, "c", None, None);
         assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
         assert_eq!(resolved.window, 6);
     }
@@ -1615,7 +1631,7 @@ mode = "agent"
             tool_result_cap: None,
         };
         let app = config_with_strategies(vec![], Some(slide.clone()));
-        let resolved = resolve_context_strategy(&app, "c", Some("a"));
+        let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
         assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
         assert_eq!(resolved.window, 8);
     }
@@ -1623,11 +1639,40 @@ mode = "agent"
     #[test]
     fn resolve_context_strategy_default_is_sliding_window_10_3_2048() {
         let app = config_with_strategies(vec![], None);
-        let resolved = resolve_context_strategy(&app, "c", Some("a"));
+        let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
         assert_eq!(resolved.mode, ContextStrategy::SlidingWindow);
         assert_eq!(resolved.window, 10);
         assert_eq!(resolved.note_window, Some(3));
         assert_eq!(resolved.tool_result_cap, Some(2048));
+    }
+
+    /// The topic's own strategy — what a subagent type hands its child — is a
+    /// layer above the pattern/channel layers and below the runtime override
+    /// file, which callers read first: the same shape as `mode`.
+    #[test]
+    fn resolve_context_strategy_topic_strategy_wins_over_pattern() {
+        let pattern = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 10,
+            note_window: None,
+            tool_result_cap: Some(2048),
+        };
+        let app = config_with_strategies(vec![("a", Some(pattern))], None);
+        let topic_strategy = ContextStrategyConfig {
+            mode: ContextStrategy::SlidingWindow,
+            window: 3,
+            note_window: Some(0),
+            tool_result_cap: Some(512),
+        };
+
+        let resolved = resolve_context_strategy(&app, "c", Some("a"), Some(&topic_strategy));
+
+        assert_eq!(
+            resolved.window, 3,
+            "the topic's strategy wins over the pattern"
+        );
+        assert_eq!(resolved.note_window, Some(0));
+        assert_eq!(resolved.tool_result_cap, Some(512));
     }
 
     #[tokio::test]
@@ -1716,7 +1761,7 @@ mode = "agent"
             tool_result_cap: Some(8192),
         };
         let app = config_with_strategies(vec![], Some(slide));
-        let resolved = resolve_context_strategy(&app, "c", Some("a"));
+        let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
         assert_eq!(resolved.tool_result_cap, Some(8192));
     }
 
@@ -1735,7 +1780,7 @@ mode = "agent"
             tool_result_cap: Some(8192),
         };
         let app = config_with_strategies(vec![("a", Some(pattern))], Some(global));
-        let resolved = resolve_context_strategy(&app, "c", Some("a"));
+        let resolved = resolve_context_strategy(&app, "c", Some("a"), None);
         assert_eq!(resolved.window, 10, "pattern window wins");
         assert_eq!(resolved.tool_result_cap, Some(2048), "pattern cap wins");
     }

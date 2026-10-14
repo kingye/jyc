@@ -1686,7 +1686,7 @@ mod shell_command_timeout_tests {
             r#"
 mode = "plan"
 skills = ["pr-review", "ponytail-review"]
-disabled_skills = ["forked-review"]
+disabled_skills = ["dev-workflow"]
 disabled_tools = ["write", "edit", "bash"]
 instructions = "read-only: report, do not edit"
 "#,
@@ -1701,7 +1701,7 @@ instructions = "read-only: report, do not edit"
         );
         assert_eq!(
             cfg.disabled_skills.as_deref(),
-            Some(["forked-review".to_string()].as_slice())
+            Some(["dev-workflow".to_string()].as_slice())
         );
         assert_eq!(cfg.disabled_tools.as_ref().map(Vec::len), Some(3));
         assert_eq!(
@@ -1732,7 +1732,7 @@ plan_model = "provider/installed-plan"
         let from_config = parse_toml_value(
             r#"
 mode = "plan"
-disabled_skills = ["forked-review"]
+disabled_skills = ["dev-workflow"]
 [ai]
 plan_model = "provider/config-plan"
 small_model = "provider/config-small"
@@ -1766,7 +1766,7 @@ small_model = "provider/config-small"
         );
         assert_eq!(
             merged.disabled_skills.as_deref(),
-            Some(["forked-review".to_string()].as_slice())
+            Some(["dev-workflow".to_string()].as_slice())
         );
         assert_eq!(
             merged.disabled_tools.as_deref(),

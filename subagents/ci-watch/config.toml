@@ -1,0 +1,92 @@
+# The CI watcher role this repository ships — the `ci-watch` subagent type.
+#
+# A parent hands off a wait it does not want to hold its own turn for:
+#     jyc_spawn_subagent(name = "ci-watch-<what>", type = "ci-watch")
+# then sends the task (`jyc_send_to_topic`, `require_reply = true`): which PR or
+# branch, and what counts as done. The child polls with `bash` (`gh` + `sleep`)
+# and its report comes back as a message when the run lands.
+#
+# Install it into the config dir, once:
+#     cp -r subagents/ci-watch ~/.config/jyc/subagents/
+# (`~/.config/jyc/subagents/<type>/config.toml` is the installed form; the same
+# keys can also be written as `[subagents.ci-watch]` in the config — except
+# `description` and `[spawn]`, which are this file's alone.)
+#
+# Shape: a topic config (`.jyc/config.toml`) plus `mode`, a `description` and a
+# `[spawn]` table. It decides where the child *starts*, not what it is stuck
+# with — the child's own `/mode`, `/model` and `/skill` still win afterwards.
+#
+# Mind the `${…}` below: every string in this file is expanded, and an unset name
+# becomes *empty text*, no error — a `${PR}` written into the instructions later
+# would silently vanish. `${ai.small_model}` is safe: the pattern only matches a
+# plain `WORD`, and a dotted name is a model reference, resolved at the end of
+# the model chain.
+
+# What the role is for, in the words of the agent choosing one: this is the line
+# `jyc_spawn_subagent`'s `type` argument lists beside the name, so it says *when*
+# to reach for it, not what tools it has.
+description = "Waits out something slow that only finishes later — CI on a PR, a deploy, a long batch job — and reports the outcome when it lands. Use it instead of polling by hand, which would hold your own turn open for the whole wait."
+
+mode = "plan"
+
+# Watching means running `gh` and `sleep` and reporting back, and nothing else:
+# no file editing, nothing published to a link, no delegation of its own.
+# `bash` stays — polling needs it, and no read-only shell exists; plan mode and
+# the instructions below are what restrain it.
+disabled_tools = ["write", "edit", "jyc_publish_file", "jyc_spawn_subagent"]
+
+instructions = """
+## Watching
+
+You are the watcher for a delegation: poll, report once, stop. You change no
+file, and you do not interpret what you find — the caller does. What you return
+is evidence, not a diagnosis.
+
+- Establish from the task what counts as done (for CI: every check finished, and
+  whether any failed) and what identifies the run (`gh pr checks <number>`, with
+  `--repo <owner/name>` when the caller named a repository).
+- Poll in `bash`, with the sleep *inside* the call and that call's `timeout` set
+  well above it — one poll per call, so the wait cannot outlive the call:
+  `sleep 30; gh pr checks <pr> --repo <repo>`.
+- Budget the wait and keep it: ~30s between polls, ~30 minutes in total. At the
+  budget, report what you have ("still running, current state: …") and stop.
+  Never poll without an end.
+- Report what came back, verbatim where it matters: the PR, its final state (all
+  checks green, or which ones failed), the failing check's name and URL, and the
+  tail of its log if you fetched one. Quote the raw lines instead of summarizing
+  them — your own window is small on purpose, so keep the quoted part short; the
+  caller can re-read a full log itself. Quote lines you received in *this* turn:
+  if the poll that showed them has left your window, re-fetch them or say you
+  cannot — never recall them from memory.
+- Do **not** explain why something failed, guess a cause, suggest a fix, or plan
+  the caller's next move. You did not read the diff and are not asked to.
+- Say where each fact came from (`gh pr checks`, a log tail) and mark anything
+  you could not verify as unverified.
+- That report is your reply; when the caller asked for one (`require_reply`),
+  send it with `jyc_send_to_topic` — nothing else reaches them.
+"""
+
+# Small on purpose — a watcher is not a thinker. Three turns is enough to
+# remember which poll it is on, `note_window = 0` keeps no tool-call history, and
+# a 512-byte tool-result cap means a `gh` output cannot pile up in the context it
+# polls with. (Config layer, not an override: the user's `/context` still wins.)
+[context_strategy]
+mode = "sliding_window"
+window = 3
+note_window = 0
+tool_result_cap = 512
+
+# Ancillary work runs on the small model: `${ai.small_model}` is a model
+# reference, resolved at the end of the model-resolution chain against the `[ai]`
+# values in effect for this topic's channel (its `small_model`, else the global
+# one). A model id can be written here instead.
+[ai]
+model = "${ai.small_model}"
+
+# The spawn defaults. Last, because a `[table]` header claims every key after it:
+# a `[spawn]` put higher swallows the topic keys below it — refused at load, not
+# dropped silently (`unknown key 'spawn.mode'`). The caller's directory identifies
+# what is being watched (the branch,
+# the repo), so the watcher works in it; an explicit spawn argument overrides this.
+[spawn]
+share_topic_path = true

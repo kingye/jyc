@@ -1154,7 +1154,7 @@ fn topic_config_skills_replace_the_pattern_list() {
     let topic_cfg = topic_with_config(
         topic,
         &tmp,
-        "skills = [\"pr-review\"]\ndisabled_skills = [\"forked-review\"]\n",
+        "skills = [\"pr-review\"]\ndisabled_skills = [\"dev-workflow\"]\n",
     );
 
     let patterns = vec![ChannelPattern {
@@ -1175,7 +1175,7 @@ fn topic_config_skills_replace_the_pattern_list() {
         Some(["pr-review".to_string()].as_slice()),
         "the topic's allow-list wins over the pattern's and the channel's"
     );
-    for name in ["delta", "beta", "forked-review"] {
+    for name in ["delta", "beta", "dev-workflow"] {
         assert!(
             exclude.contains(&name.to_string()),
             "'{name}' must stay excluded: {exclude:?}"

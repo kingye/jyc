@@ -983,6 +983,14 @@ mod tests {
     use tempfile::tempdir;
     use tokio_util::sync::CancellationToken;
 
+    /// A role file's prose with its line wrapping collapsed, for asserting on a
+    /// phrase: the assertion is about the instruction, and a role file that
+    /// happens to break a sentence across two lines must not read as a missing
+    /// one. (It did: a wrapped sentence turns the test red for nothing.)
+    fn flat(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
     /// A `TopicManager` rooted in `workspace` — same builder the other command
     /// handlers' tests use, so every dir a spawn creates stays in the test's
     /// `TempDir`.
@@ -1307,7 +1315,7 @@ mod tests {
                 .config
                 .instructions
                 .as_deref()
-                .is_some_and(|i| i.contains("Never poll without an end")),
+                .is_some_and(|i| flat(i).contains("Never poll without an end")),
             "the role carries its own budget and reporting orders"
         );
         assert!(
@@ -1315,7 +1323,7 @@ mod tests {
                 .config
                 .instructions
                 .as_deref()
-                .is_some_and(|i| i.contains("do not interpret what you find")),
+                .is_some_and(|i| flat(i).contains("do not interpret what you find")),
             "the watcher reports; the caller interprets"
         );
         // Small on purpose: a watcher keeps no tool-call notes and only a few
@@ -1377,7 +1385,7 @@ mod tests {
                 .config
                 .instructions
                 .as_deref()
-                .is_some_and(|i| i.contains("Change no file")),
+                .is_some_and(|i| flat(i).contains("Change no file")),
             "the role carries its own standing orders"
         );
         // The two keys only an installed type has. `description` reaches the
@@ -1446,15 +1454,12 @@ mod tests {
                 .is_some_and(|d| d.contains("PR")),
             "the role says when to reach for it, not what tools it has"
         );
-        // A fragment that the role file's line wrapping cannot split in half:
-        // the longer sentence this comes from did, once, and the assertion read
-        // as a missing instruction when it was there all along.
         assert!(
             develop
                 .config
                 .instructions
                 .as_deref()
-                .is_some_and(|i| i.contains("remove that checkout")),
+                .is_some_and(|i| flat(i).contains("never create or remove that checkout")),
             "the role carries its own standing orders"
         );
     }

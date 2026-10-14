@@ -439,6 +439,8 @@ impl AgentService for JycAgentService {
                         &self.config.load(),
                         &self.channel_name,
                         message.matched_pattern.as_deref(),
+                        topic_name,
+                        topic_path,
                     )
                 });
 

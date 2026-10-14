@@ -8,6 +8,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::channel::ContextStrategyConfig;
 use crate::config::{
     AppConfig, McpServerConfig, parse_and_deserialize, parse_and_deserialize_from_value,
     read_and_parse,
@@ -28,9 +29,10 @@ pub fn load_config(path: &Path) -> Result<AppConfig> {
 /// - `[mcps]`: MCP overrides (additive by default, opt-in full replace via
 ///   `mcps_replace`). Precedence: `.jyc/config.toml` > pattern > channel >
 ///   global. No `<mode>-model-override` higher layer exists for MCPs.
-/// - `mode`, `skills`, `disabled_skills`, `disabled_tools`, `instructions`:
-///   settings the topic sets for itself, above the pattern/channel layers and
-///   below the runtime override files. A **subagent type**
+/// - `mode`, `skills`, `disabled_skills`, `disabled_tools`, `instructions`,
+///   `context_strategy`: settings the topic sets for itself, above the
+///   pattern/channel layers and below the runtime override files. A **subagent
+///   type**
 ///   (`[subagents.<type>]`, or `<config dir>/subagents/<type>/config.toml`) is
 ///   written into a child's `.jyc/config.toml` at spawn time, which is how one
 ///   file declares a role's model, skills, tools and instructions at once.
@@ -97,6 +99,17 @@ pub struct TopicConfig {
     /// not per turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+
+    /// Context management strategy for this topic (window size, tool-result
+    /// cap, note window).
+    ///
+    /// The same layer as `mode`: a config layer, not an override — it beats the
+    /// pattern/channel/global `[ai].context_strategy` and loses to
+    /// `.jyc/context-strategy.json`, which is the user's `/context`. A subagent
+    /// type carries one this way, which is how a role starts with a small
+    /// window (see `subagents/ci-watch`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_strategy: Option<ContextStrategyConfig>,
 }
 
 impl TopicConfig {
@@ -131,6 +144,7 @@ impl TopicConfig {
             disabled_skills: self.disabled_skills.or(base.disabled_skills),
             disabled_tools: self.disabled_tools.or(base.disabled_tools),
             instructions: self.instructions.or(base.instructions),
+            context_strategy: self.context_strategy.or(base.context_strategy),
         }
     }
 }

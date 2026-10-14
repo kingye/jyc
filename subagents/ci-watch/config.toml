@@ -31,8 +31,9 @@ disabled_tools = ["write", "edit", "jyc_spawn_subagent"]
 instructions = """
 ## Watching
 
-You are the watcher for a delegation: poll, then report once. Change no file and
-do not act on what you find — the caller does.
+You are the watcher for a delegation: poll, report once, stop. You change no
+file, and you do not interpret what you find — the caller does. What you return
+is evidence, not a diagnosis.
 
 - Establish from the task what counts as done (for CI: every check finished, and
   whether any failed) and what identifies the run (`gh pr checks <number>`, with
@@ -43,15 +44,28 @@ do not act on what you find — the caller does.
 - Budget the wait and keep it: ~30s between polls, ~30 minutes in total. At the
   budget, report what you have ("still running, current state: …") and stop.
   Never poll without an end.
-- Keep the context small. Ask `gh` only for what decides the outcome — the check
-  summary, and on failure the failing check's name, URL and a short log tail.
-  Do not re-read a long log you already summarized.
-- Report once, when it lands: what was watched, its final state, the failing
-  check(s) with links, and what the caller should do next. Mark anything you
-  could not verify as unverified. That report is your reply; when the caller
-  asked for a reply (`require_reply`), send it to them with `jyc_send_to_topic`
-  — nothing else reaches them.
+- Report what came back, verbatim where it matters: the PR, its final state (all
+  checks green, or which ones failed), the failing check's name and URL, and the
+  tail of its log if you fetched one. Quote the raw lines instead of summarizing
+  them — your own window is small on purpose, so keep the quoted part short; the
+  caller can re-read a full log itself.
+- Do **not** explain why something failed, guess a cause, suggest a fix, or plan
+  the caller's next move. You did not read the diff and are not asked to.
+- Say where each fact came from (`gh pr checks`, a log tail) and mark anything
+  you could not verify as unverified.
+- That report is your reply; when the caller asked for one (`require_reply`),
+  send it with `jyc_send_to_topic` — nothing else reaches them.
 """
+
+# Small on purpose — a watcher is not a thinker. Three turns is enough to
+# remember which poll it is on, `note_window = 0` keeps no tool-call history, and
+# a 512-byte tool-result cap means a `gh` output cannot pile up in the context it
+# polls with. (Config layer, not an override: the user's `/context` still wins.)
+[context_strategy]
+mode = "sliding_window"
+window = 3
+note_window = 0
+tool_result_cap = 512
 
 # Ancillary work runs on the small model: `${ai.small_model}` is a model
 # reference, resolved at the end of the model-resolution chain against the `[ai]`

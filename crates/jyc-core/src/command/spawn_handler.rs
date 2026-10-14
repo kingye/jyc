@@ -1290,6 +1290,25 @@ mod tests {
                 .is_some_and(|i| i.contains("Never poll without an end")),
             "the role carries its own budget and reporting orders"
         );
+        assert!(
+            watch
+                .config
+                .instructions
+                .as_deref()
+                .is_some_and(|i| i.contains("do not interpret what you find")),
+            "the watcher reports; the caller interprets"
+        );
+        // Small on purpose: a watcher keeps no tool-call notes and only a few
+        // turns, so `gh` output cannot pile up in the context it polls with.
+        let strategy = watch
+            .config
+            .context_strategy
+            .as_ref()
+            .expect("the watcher carries its own context strategy");
+        assert_eq!(strategy.mode, jyc_types::ContextStrategy::SlidingWindow);
+        assert_eq!(strategy.window, 3);
+        assert_eq!(strategy.note_window, Some(0));
+        assert_eq!(strategy.tool_result_cap, Some(512));
     }
 
     /// The role this repository ships — `subagents/review/config.toml`, the type

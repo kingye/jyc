@@ -51,6 +51,8 @@ impl CommandHandler for ContextCommandHandler {
             &context.config,
             &context.channel,
             matched_pattern.as_deref(),
+            &context.topic_name,
+            &context.topic_path,
         );
 
         // No args → show current strategy (runtime override takes priority).

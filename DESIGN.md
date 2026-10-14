@@ -2277,7 +2277,10 @@ JYC uses the following subset of the agent service API:
      2. The current turn verbatim (`raw_context[prior_len..]`) so
         tool calls / results stay coherent mid-loop.
 
-   Resolution chain: runtime override file > matched pattern (or
+   Resolution chain: runtime override file > the topic's own config
+   (`[context_strategy]` in `<topic>/.jyc/config.toml` — including one a
+   subagent type expanded into the child at spawn time, which is how a role
+   starts with a small window) > matched pattern (or
    synthesized `[agents.<name>]` pattern) > first pattern fallback
    > global `[ai].context_strategy` > default. Implemented in
    `build_send_context` (`crates/jyc-agent/src/agent_loop/context.rs`):

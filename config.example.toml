@@ -7,7 +7,7 @@
 #   L2 (data dir): <data dir>/config.toml      (--data-dir, or platform data dir)
 #   L3 (topic):  <topic>/.jyc/config.toml  (topic overrides: [ai], [[mcps]], mode,
 #                                            skills, disabled_skills, disabled_tools,
-#                                            instructions)
+#                                            instructions, [context_strategy])
 # L2 is deep-merged over L1 (tables merge; arrays/scalars are replaced).
 
 [general]
@@ -1359,6 +1359,18 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #   [ai]
 #   model = "anthropic/claude-opus-4-7"
 #
+#   # Context management for this topic only. Same layer as `mode`: above the
+#   # pattern/channel/global `[ai].context_strategy`, below the runtime
+#   # `.jyc/context-strategy.json` that `/context` writes. A subagent type
+#   # carries one the same way — that is how a role starts with a small window
+#   # (see `subagents/ci-watch/config.toml`: window = 3, note_window = 0,
+#   # tool_result_cap = 512).
+#   # [context_strategy]
+#   # mode = "sliding_window"
+#   # window = 3
+#   # note_window = 0        # 0 = keep no tool-call history notes at all
+#   # tool_result_cap = 512  # 0 = no cap (full tool results), not "no results"
+#
 #   # Default: additive. Adds a topic-only MCP without dropping inherited ones.
 #   [[mcps]]
 #   name = "topic-local"
@@ -1412,6 +1424,13 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # child's own `/mode`, `/model` and `/skill` still win over it afterwards. The
 # parent's runtime overrides are dropped when a type is applied (they outrank a
 # topic config in every chain, so inheriting them would silently undo the role).
+#
+# A second shipped role is the CI watcher, `subagents/ci-watch/config.toml`
+# (`cp -r subagents/ci-watch <config dir>/subagents/`): plan mode, the small
+# model, no `write`/`edit`, a `[context_strategy]` small enough that a polled
+# `gh` output cannot pile up, and instructions to report the run's outcome
+# without diagnosing it. A parent hands it a wait it does not want to hold its
+# own turn for (see the `dev-workflow` skill).
 #
 # Example: a reviewer that can read but not change anything. This is the role
 # the jyc repo ships at `subagents/review/config.toml` (install it with

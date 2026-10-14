@@ -1326,6 +1326,19 @@ mod tests {
                 .is_some_and(|i| flat(i).contains("do not interpret what you find")),
             "the watcher reports; the caller interprets"
         );
+        // The report is where it went wrong once: a head the caller had mentioned
+        // in a message, paired with a run id fetched in the same turn — two
+        // sources, one sentence, and the green belonged to neither's head. The
+        // rule that answers it has both halves, so both are pinned here.
+        let orders = flat(watch.config.instructions.as_deref().unwrap());
+        assert!(
+            orders.contains("must be in a tool result from *this* turn"),
+            "every fact the watcher states has to come from its own output"
+        );
+        assert!(
+            orders.contains("no evidence at all about what ran"),
+            "a head named in the caller's message is not evidence about the run"
+        );
         // Small on purpose: a watcher keeps no tool-call notes and only a few
         // turns, so `gh` output cannot pile up in the context it polls with.
         let strategy = watch

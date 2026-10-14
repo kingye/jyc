@@ -63,8 +63,10 @@ back as a message:
 
 1. `jyc_spawn_subagent(name="ci-watch-<pr>", type="ci-watch")` (`subagents/ci-watch/config.toml`;
    install once with `cp -r subagents/ci-watch <config dir>/subagents/`)
-2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` — which PR or branch, and
-   what counts as done
+2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` — which PR or branch (and
+   the repo, unless the child's directory already points at it), what counts as done, and that
+   the head may move under it: ask for the head SHA the run itself reports, so a green from an
+   older head cannot come back looking like the current one
 3. End your turn; the report arrives as a new message in this topic.
 
 **What the compile tier proves — and what it does not.** `cargo check -p <crate> --tests` compiles

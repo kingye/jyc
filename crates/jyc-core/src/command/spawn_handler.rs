@@ -181,7 +181,10 @@ impl SpawnCommandHandler {
                 Some(t) => format!("'{}' works in this topic's directory", t.name),
                 None => "this spawn works in this topic's directory".to_string(),
             };
-            return Ok(fail(format!("/spawn: {who}; give a name, not a path.")));
+            return Ok(fail(format!(
+                "/spawn: {who}; give a name, not a path — or spawn it with \
+                 `jyc_spawn_subagent(share_topic_path = false)` to give it a directory of its own."
+            )));
         }
 
         // The child's topic_path: the named dir, or the path's last component,
@@ -761,17 +764,40 @@ pub fn type_start_flags(
 /// is malformed, or whose file does not parse, is shown as unusable instead of
 /// being listed bare. That also gives a role's own description exactly one
 /// reader, the place that puts it in front of the model.
-pub fn type_catalog(config: &AppConfig, config_dir: Option<&Path>) -> Vec<String> {
+/// The type names a spawn would accept on this machine, from either source:
+/// [`jyc_types::available_subagent_types`] minus the names [`invalid_name`]
+/// refuses. Both the menu the model reads and the list an unknown name is
+/// answered with go through here, so neither can offer a name a spawn declines.
+fn type_names(config: &AppConfig, config_dir: Option<&Path>) -> Vec<String> {
     jyc_types::available_subagent_types(config, config_dir)
         .into_iter()
         .filter(|name| invalid_name(name).is_none())
+        .collect()
+}
+
+pub fn type_catalog(config: &AppConfig, config_dir: Option<&Path>) -> Vec<String> {
+    type_names(config, config_dir)
+        .into_iter()
         .map(
             |name| match resolve_subagent_type(&name, Some(config), config_dir) {
                 Ok(ty) => match ty.description.filter(|d| !d.trim().is_empty()) {
                     Some(d) => format!("{name} — {}", d.trim()),
                     None => name,
                 },
-                Err(refusal) => format!("{name} — (unusable: {refusal})"),
+                // A refusal can be a multi-line TOML parse error, and this text
+                // ends up in the tool schema a model reads every turn: keep the
+                // first line, capped, so a broken file costs one line.
+                Err(refusal) => {
+                    let first: String = refusal
+                        .lines()
+                        .next()
+                        .unwrap_or("unusable")
+                        .trim()
+                        .chars()
+                        .take(120)
+                        .collect();
+                    format!("{name} — (unusable: {first})")
+                }
             },
         )
         .collect()
@@ -784,7 +810,7 @@ fn unknown_type_message(
     config_dir: Option<&Path>,
 ) -> String {
     let available = config
-        .map(|c| jyc_types::available_subagent_types(c, config_dir))
+        .map(|c| type_names(c, config_dir))
         .unwrap_or_default();
     let dir = config_dir
         .map(|d| d.join("subagents").display().to_string())
@@ -1330,6 +1356,17 @@ mod tests {
             "{:?}",
             lines[1]
         );
+        // The mechanism, not just the prefix: the load-time scan of `[spawn]` is
+        // what refuses this file, and its message names the key it refused.
+        assert!(
+            lines[1].contains("unknown key `spawn.share_topic_pth`"),
+            "{:?}",
+            lines[1]
+        );
+        assert!(
+            !lines[1].contains('\n'),
+            "a broken type costs one line in the schema, not a TOML dump"
+        );
         assert_eq!(lines[2], "review — reviews a diff");
     }
 
@@ -1420,6 +1457,91 @@ mod tests {
         );
         // No type at all: the built-in default, unchanged by this feature.
         assert_eq!(type_start_flags(None, None, None), (false, false));
+    }
+
+    /// The shipped reviewer's own default, end to end: a role that declares
+    /// `[spawn] share_topic_path = true` puts the child in the *caller's*
+    /// directory with no flag at the call site (a copy of the tree would review
+    /// yesterday's version) — and a path argument, which contradicts that,
+    /// refuses instead of being quietly dropped.
+    #[tokio::test]
+    async fn a_role_that_shares_the_parents_dir_spawns_into_it() {
+        let (_tmp, dir) = parent_topic("t-a_role_that_shares_the_parents_dir_spawns_into_it").await;
+        let parent_state = dir.join(".jyc");
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_dir = workspace.path().join("agents");
+        let handler = SpawnCommandHandler::new(tm.clone());
+
+        let types_root = tempdir().unwrap();
+        let type_dir = types_root.path().join("subagents/review");
+        std::fs::create_dir_all(&type_dir).unwrap();
+        std::fs::write(
+            type_dir.join("config.toml"),
+            "mode = \"plan\"\n[spawn]\nshare_topic_path = true\n",
+        )
+        .unwrap();
+        let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+        let subagent_type =
+            resolve_subagent_type("review", Some(&config), Some(types_root.path())).unwrap();
+
+        let parent = "t-a_role_that_shares_the_parents_dir_spawns_into_it";
+        let name = "worker-a_role_that_shares_the_parents_dir_spawns_into_it";
+        let (share, inherit) = type_start_flags(Some(&subagent_type), None, None);
+        let args = vec![name.to_string()];
+        let result = handler
+            .spawn_under(
+                SpawnRequest {
+                    parent_topic: parent,
+                    parent_topic_path: &dir,
+                    args: &args,
+                    inherit,
+                    share_topic_path: share,
+                    subagent_type: Some(&subagent_type),
+                    start_model: None,
+                },
+                &parent_state,
+                &agents_dir,
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.message);
+        assert!(
+            result.message.contains(&dir.display().to_string()),
+            "the child works in the parent's dir: {}",
+            result.message
+        );
+        jyc_types::access_grants::clear(parent);
+
+        // A path argument asks for a destination the role has already decided
+        // against: refusing says so, dropping it would silently disagree.
+        let args = vec!["scratch".to_string(), "/tmp/scratch".to_string()];
+        let refused = handler
+            .spawn_under(
+                SpawnRequest {
+                    parent_topic: parent,
+                    parent_topic_path: &dir,
+                    args: &args,
+                    inherit,
+                    share_topic_path: share,
+                    subagent_type: Some(&subagent_type),
+                    start_model: None,
+                },
+                &parent_state,
+                &agents_dir,
+            )
+            .await
+            .unwrap();
+        assert!(!refused.success);
+        assert!(
+            refused.message.contains("give a name, not a path"),
+            "{}",
+            refused.message
+        );
+        assert!(
+            !agents_dir.join("scratch").exists(),
+            "and nothing was created on the way to the refusal"
+        );
     }
 
     /// A typed spawn hands the child the role, dropping only the parent runtime
@@ -2259,6 +2381,11 @@ mod tests {
             ),
             (vec!["taken"], "already exists"),
             (vec![".hidden"], "must not start with '.'"),
+            // A mistyped flag is not a name, and neither is a path shorthand:
+            // the first would create a topic called `--inherit=false`, the
+            // second would run the child in `$HOME`.
+            (vec!["--inherit=false"], "must not start with '-'"),
+            (vec!["~"], "must not start with '~'"),
             (
                 vec!["spawn-x", dir.to_str().unwrap()],
                 "the directory you are in",

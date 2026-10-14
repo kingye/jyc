@@ -1351,6 +1351,12 @@ mod tests {
             orders.contains("is not that head, say so"),
             "a run whose headSha is not the current head is reported as superseded"
         );
+        // `--commit` matches the whole value: an abbreviated SHA is an empty
+        // list, not an error, so the full one is what the role asks for.
+        assert!(
+            orders.contains("abbreviated one matches nothing"),
+            "the run-against-head command is prescribed with the full SHA"
+        );
         // A failure log is fetched through a filter inside the call: the result
         // cap bounds a finished turn, not the turn the log lands in, and a plain
         // byte tail of this repo's own failure misses the failing lines.

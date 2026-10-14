@@ -71,7 +71,10 @@ is evidence, not a diagnosis.
     given — and if the newest run's `headSha` is not that head, say so and report
     the newest run you have as superseded. Where the task names the PR, `gh run
     list --repo <repo> --commit <sha> --json …` settles run-against-head by
-    construction instead of by eye.
+    construction instead of by eye — with the **full 40-character** SHA: an
+    abbreviated one matches nothing and comes back as an empty list, so resolve a
+    short SHA from the task first (`git rev-parse <short>` in the checkout, or
+    `--branch <branch> --limit 1` and read the `headSha` it reports).
   (`gh pr checks <pr> --repo <repo>` answers for the PR as a whole but prints no
   head SHA at all, and its table is noise beside the JSON line; if you use it,
   print the head in the same call.)

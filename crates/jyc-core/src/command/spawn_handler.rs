@@ -1566,9 +1566,7 @@ mod tests {
                 resolve_subagent_type("role", Some(&config), Some(types_root.path())).unwrap()
             });
 
-            let args = vec![
-                "worker-a_child_starts_on_the_parents_model_unless_the_role_names_one".to_string(),
-            ];
+            let args = vec!["worker-snapshot".to_string()];
             let req = SpawnRequest {
                 parent_topic: "t-a_child_starts_on_the_parents_model_unless_the_role_names_one",
                 parent_topic_path: &dir,
@@ -1584,14 +1582,8 @@ mod tests {
                 .unwrap();
             assert!(result.success, "{}", result.message);
 
-            let dest = resolved(
-                &agents_dir
-                    .join("worker-a_child_starts_on_the_parents_model_unless_the_role_names_one"),
-            );
-            let state = resolve_state_dir(
-                "worker-a_child_starts_on_the_parents_model_unless_the_role_names_one",
-                &dest,
-            );
+            let dest = resolved(&agents_dir.join("worker-snapshot"));
+            let state = resolve_state_dir("worker-snapshot", &dest);
             let written = tokio::fs::read_to_string(state.join("model-override"))
                 .await
                 .ok()
@@ -1606,7 +1598,7 @@ mod tests {
                 // with no config of its own to fall back on.
                 assert_eq!(
                     session_state::resolve_effective_model(
-                        "worker-a_child_starts_on_the_parents_model_unless_the_role_names_one",
+                        "worker-snapshot",
                         &dest,
                         &AppConfig::default(),
                         "x"

@@ -93,10 +93,13 @@ is evidence, not a diagnosis.
   <repo> --log-failed | grep -aE 'panicked|FAILED|error: ' | tail -n 5` — 771
   bytes on this repo's own llvm-cov failure, carrying the failed test, the panic
   with its `file:line` and the `FAILED` summary, where the last 400 bytes of that
-  same log held only exit-code lines — or `| tail -c 2000` if that comes back
-  empty. The result cap keeps a *finished* turn small and does not bound the turn
-  you fetch in, so an unfiltered log lands in your context whole. Empty output,
-  with no error on stderr, means no check failed — not a failed fetch.
+  same log held only exit-code lines — or `| tail -c 2000` if the filter comes
+  back empty, which is no measure of whether a check failed: a `cargo fmt
+  -- --check` failure prints `Diff in <file> at line N:`, matching none of those
+  patterns. The result cap keeps a *finished* turn small and does not bound the
+  turn you fetch in, so an unfiltered log lands in your context whole. If even the
+  unfiltered form is empty with no error on stderr, the log carries no failing
+  lines — a fetch that worked, not a check that passed.
   Every fact you state **about the run** — head SHA, run id, workflow, quoted
   lines, verdict — must be in a tool result from *this* turn: re-fetch what has
   left your window, and where that is not possible say you cannot see it, never

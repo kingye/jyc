@@ -68,7 +68,7 @@ back as a message:
    which holds the checkout without being one, and `gh` there answers "not a git repository"), which
    workflow where the ref carries more than one, what counts as done, and that the head may move
    under it: ask for the head SHA the run itself reports, so a green from an older head cannot come
-   back looking like the current one — and hand over that head as the **full 40-character** SHA
+   back looking like the current one — and hand the head over as the **full 40-character** SHA
    (`git rev-parse <short>` if `git rev-parse --short` is what you have), since an abbreviated one
    makes `gh run list --commit` an empty list rather than an error
 3. End your turn; the report arrives as a new message in this topic.

@@ -74,7 +74,9 @@ is evidence, not a diagnosis.
     construction instead of by eye — with the **full 40-character** SHA: an
     abbreviated one matches nothing and comes back as an empty list, so resolve a
     short SHA from the task first (`git rev-parse <short>` in the checkout, or
-    `--branch <branch> --limit 1` and read the `headSha` it reports).
+    `--branch <branch> --limit 1` and read the `headSha` it reports). An empty list
+    for a full, correct SHA means something else: no run exists for that head yet —
+    not a bad SHA.
   (`gh pr checks <pr> --repo <repo>` answers for the PR as a whole but prints no
   head SHA at all, and its table is noise beside the JSON line; if you use it,
   print the head in the same call.)
@@ -95,7 +97,7 @@ is evidence, not a diagnosis.
   with its `file:line` and the `FAILED` summary, where the last 400 bytes of that
   same log held only exit-code lines — or `| tail -c 2000` if the filter comes
   back empty, which is no measure of whether a check failed: a `cargo fmt
-  -- --check` failure prints `Diff in <file> at line N:`, matching none of those
+  -- --check` failure prints a `Diff in <file>:<line>:` line, matching none of those
   patterns. The result cap keeps a *finished* turn small and does not bound the
   turn you fetch in, so an unfiltered log lands in your context whole. If even the
   unfiltered form is empty with no error on stderr, the log carries no failing

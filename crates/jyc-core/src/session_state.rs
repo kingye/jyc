@@ -465,8 +465,15 @@ pub async fn write_max_input_tokens(topic_name: &str, topic_path: &Path, new_max
 }
 
 /// Resolve the active model string (`<provider>/<model-id>`) for this topic.
-/// Mirrors the chain in `jyc-agent::service::process()` (lines 1191-1263).
-async fn resolve_active_model(
+/// Mirrors the chain in `jyc-agent::service::process()`.
+///
+/// Two consumers: the context-window resolver above, and `/spawn` + `/fork`,
+/// which hand a fresh child the model its parent is running ([`seed_start_model`]
+/// in `command::fork_handler`). The second one is why this is public: there is
+/// nothing to copy when the parent's model comes from a config or pattern layer
+/// rather than an override file, and the chain that decides it already exists
+/// here.
+pub async fn resolve_active_model(
     topic_name: &str,
     topic_path: &Path,
     config: &AppConfig,

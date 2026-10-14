@@ -1262,6 +1262,7 @@ mode = "agent"
             false,
             true,
             None,
+            None,
             &agents_dir,
         )
         .await

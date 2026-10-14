@@ -3104,6 +3104,51 @@ fn section_jump_shift_extends_the_selection() {
     assert_eq!(rows, from - turns[2] + 1);
 }
 
+/// `[` on an empty input leaves the editor for the message pane and lands on
+/// the previous user turn — the same movement `[` makes there, reached without
+/// a Tab first. The fixture is drawn once so the boundaries are the ones the
+/// renderer records.
+#[test]
+fn bracket_on_empty_input_focuses_message_area_on_previous_turn() {
+    let mut app = section_app();
+    let turns = recorded_turns(&app);
+    // `section_app` leaves the message pane focused; the shortcut exists on
+    // the input side.
+    app.chat.focus = ChatFocus::ChatPane;
+    assert_eq!(
+        app.chat.text(),
+        "",
+        "the fixture starts from an empty input"
+    );
+
+    press(&mut app, '[');
+
+    assert_eq!(app.chat.focus, ChatFocus::MessageArea);
+    assert_eq!(app.chat.text(), "", "the bracket is a movement, not text");
+    assert_eq!(
+        app.chat.cursor_line, turns[2],
+        "the focus reset leaves the cursor past the end, so one jump up is the newest turn"
+    );
+}
+
+/// `[` is special only when the input is empty: with a draft in it the
+/// bracket is an ordinary character and the focus does not move.
+#[test]
+fn bracket_with_a_non_empty_input_is_typed() {
+    let mut app = chatting_app();
+    app.chat.focus = ChatFocus::ChatPane;
+    press(&mut app, 'x');
+
+    press(&mut app, '[');
+
+    assert_eq!(app.chat.text(), "x[", "the bracket is inserted as text");
+    assert_eq!(
+        app.chat.focus,
+        ChatFocus::ChatPane,
+        "focus stays on the input"
+    );
+}
+
 /// Send one key to the chat screen the way the event loop does.
 fn press_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
     handle_chat_keys(

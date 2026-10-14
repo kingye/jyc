@@ -987,6 +987,17 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         return;
     }
 
+    // "[" on an empty input jumps to the previous user turn: `focus_message_area`
+    // resets the cursor past the end of the transcript, so one jump up is the
+    // newest turn. The bracket is not typed.
+    let is_bracket =
+        key.code == KeyCode::Char('[') && !key.modifiers.contains(KeyModifiers::CONTROL);
+    if is_bracket && app.chat.focus == ChatFocus::ChatPane && app.chat.text().trim().is_empty() {
+        app.chat.focus_message_area();
+        section_cursor(app, -1, false);
+        return;
+    }
+
     // Pending questions own the keyboard while visible: the box is the answer
     // surface for a turn that already ended. Esc only closes it — the user can
     // still type an answer (or anything else) afterwards.

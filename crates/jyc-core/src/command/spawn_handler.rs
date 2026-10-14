@@ -1339,6 +1339,23 @@ mod tests {
             orders.contains("no evidence at all about what ran"),
             "a head named in the caller's message is not evidence about the run"
         );
+        // The three clauses of the send-back that went missing once: the orders
+        // made it conditional on the caller asking for a reply, named no outcome
+        // for a run that does not exist yet, and left an empty list to be read
+        // once and believed. Each is pinned by one phrase of its own — the last
+        // by the clause that turns a single read into a wait for the budget.
+        assert!(
+            orders.contains("whether or not the caller asked for a reply"),
+            "the watcher reports back on its own initiative, not only when asked"
+        );
+        assert!(
+            orders.contains("An empty list for a full, correct SHA is not a verdict"),
+            "an empty run list is unread, not a result the watcher may report"
+        );
+        assert!(
+            orders.contains("only when the budget ends with still no run"),
+            "the empty list is waited out to the budget, and then reported"
+        );
         // Two facts that call leaves open. Which workflow ran: the ref can carry
         // several per commit and `--limit 1` takes whichever GitHub lists first.
         // Which head is current: the newest run can belong to the older head

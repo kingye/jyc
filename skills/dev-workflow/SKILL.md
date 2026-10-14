@@ -216,7 +216,7 @@ Do NOT stop after updating files — complete all steps through push.
 
 ## Critical Rules
 
-- Fixes ALWAYS go to main first — never fix on a feature branch
+- Fixes get their own `fix/` branch off main — never smuggled into another feature's branch; a follow-up to an open PR goes on that PR's branch (AGENTS.md's PR rules)
 - Feature branches rebase on main regularly — don't let them diverge
 - Keep feature branches short (1-2 days) — break large features into smaller merges
 - Every commit on main must build with zero warnings

@@ -1487,7 +1487,7 @@ mod tests {
 
         let parent = "t-a_role_that_shares_the_parents_dir_spawns_into_it";
         let name = "worker-a_role_that_shares_the_parents_dir_spawns_into_it";
-        let (share, inherit) = type_start_flags(Some(&subagent_type), None, None);
+        let (inherit, share) = type_start_flags(Some(&subagent_type), None, None);
         let args = vec![name.to_string()];
         let result = handler
             .spawn_under(
@@ -2381,11 +2381,11 @@ mod tests {
             ),
             (vec!["taken"], "already exists"),
             (vec![".hidden"], "must not start with '.'"),
-            // A mistyped flag is not a name, and neither is a path shorthand:
-            // the first would create a topic called `--inherit=false`, the
-            // second would run the child in `$HOME`.
+            // A mistyped flag is not a name: left allowed it would create a topic
+            // called `--inherit=false`. (A bare `~` is *not* here: `/spawn` takes
+            // it as the destination it is, `$HOME`, and derives the name from it;
+            // it is refused where it is a name — the tool's `name`, `/fork`.)
             (vec!["--inherit=false"], "must not start with '-'"),
-            (vec!["~"], "must not start with '~'"),
             (
                 vec!["spawn-x", dir.to_str().unwrap()],
                 "the directory you are in",

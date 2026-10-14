@@ -17,7 +17,7 @@ gives all three in one call, the third through the `review` type.
 
 ### Steps
 
-1. `jyc_spawn_subagent(name="review-<what>", share_topic_path=true, type="review")`
+1. `jyc_spawn_subagent(name="review-<what>", type="review")`
    — the child works in your `topic_path`, so it reads exactly what you have,
    and it starts as the `review` role (see below). Do **not** pass
    `inherit_context`: a review that starts with your reasoning in it is not a

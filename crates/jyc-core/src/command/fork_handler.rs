@@ -225,6 +225,19 @@ pub(super) fn invalid_name(name: &str) -> Option<&'static str> {
     if name.starts_with('.') {
         return Some("the name must not start with '.'");
     }
+    // A leading `-` is never a name: it is a flag the caller mistyped
+    // (`--inherit=false` is not one, and would otherwise create a topic by that
+    // name), so it is refused rather than silently taken as one. Derived names
+    // are held to this too: a parent whose own name starts with `-` needs an
+    // explicit name for its child.
+    if name.starts_with('-') {
+        return Some("the name must not start with '-'");
+    }
+    // `~` is a destination shorthand, not a name: left allowed, the spawn tool
+    // would take `name = "~"` as a path and run the child in `$HOME`.
+    if name.starts_with('~') {
+        return Some("the name must not start with '~'");
+    }
     if name.contains('/') || name.contains('\\') {
         return Some("the name must not contain a path separator");
     }
@@ -767,6 +780,10 @@ mod tests {
             "a/b",
             ".hidden",
             "x;y",
+            // A mistyped flag, and a path shorthand: neither is a name, and the
+            // second would otherwise run the child in `$HOME`.
+            "--inherit=false",
+            "~",
             "t-fork_rejects_names_that_cannot_be_topic_names",
         ] {
             let ctx = context(

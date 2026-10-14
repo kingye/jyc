@@ -61,7 +61,7 @@ and uses an in-process AI agent to generate replies.
 - CI（`.github/workflows/ci.yml`）自动执行：fmt、clippy -D warnings、llvm-cov（60% 阈值）
 - 改依赖时提交 `cargo check -p <crate>` 顺带刷新的 `Cargo.lock`
 - 按「文档约定」检查是否需更新相关文档
-- 非平凡改动（跨文件、改逻辑，尤其本地跑不了测试时）：push / 开 PR 前或同时派一次评审——`jyc_spawn_subagent(name="review-<what>", type="review", share_topic_path=true)`，再用 `jyc_send_to_topic(..., require_reply=true)` 派任务（任务模板见 `forked-review` 技能），范围给 `git diff <base>..HEAD`（`<base>` = `git merge-base origin/main HEAD`，含刚提交的改动）；它异步运行、不阻塞 push，报告作为同一个 PR 的 follow-up commit
+- 非平凡改动（跨文件、改逻辑，尤其本地跑不了测试时）：push / 开 PR 前或同时派一次评审——`jyc_spawn_subagent(name="review-<what>", type="review")`，再用 `jyc_send_to_topic(..., require_reply=true)` 派任务（任务模板见 `forked-review` 技能），范围给 `git diff <base>..HEAD`（`<base>` = `git merge-base origin/main HEAD`，含刚提交的改动）；它异步运行、不阻塞 push，报告作为同一个 PR 的 follow-up commit
 
 ### CI 等待规则
 - **禁止**阻塞等待 CI：不得轮询 `gh pr checks` / `gh run watch`，不得用 `sleep` 重试，不得因为「CI 还没跑完」而推迟提交或推迟回复
@@ -103,8 +103,9 @@ and uses an in-process AI agent to generate replies.
 - 子 agent 的角色用 `type` 声明，不要用散文描述：`type` 指向一个 subagent type（`[subagents.<type>]` 或 `<config dir>/subagents/<type>/config.toml`），spawn 时把该角色的 model、技能白名单、`disabled_tools`、mode、instructions 写入子的 `.jyc/config.toml` → 评审这类"不能改文件、只看某几个技能"的角色因此是**结构性**约束（技能被限定、列出的工具被禁），不是靠提示词约束
 - `type` 由两个入口用**运行中**的 config 解析（`/spawn` 的 `CommandContext`、spawn 工具的共享 `ArcSwap`），不读盘：`--config` 指定的文件里定义的角色同样可见；type 目录只扫 L1 配置目录，不分层
 - `disabled_tools` 只作用于它列出的工具：`bash` 能绕开（本项目自带评审角色 `subagents/review/config.toml` 就保留 `bash` 以便 `git diff`），要留就靠 mode 与 instructions 兜底，别把"只读"说成结构性保证
-- 本项目自带评审角色 `subagents/review/config.toml`：用前 `cp -r subagents/review <config dir>/subagents/`；评审改动用 `type="review"` + `share_topic_path=true`（未提交的、刚提交的都算，范围给 `git diff <base>..HEAD`）；它异步运行，不占 turn、不阻塞 push
-- 仅当已有子 agent 都不合适时才用 `jyc_spawn_subagent` 新建；它与 `/spawn` 是同一实现：子 agent 继承本 topic 的**设置**（mode、pattern、各类 override——传 `type` 时只有该类型**未声明**的键继承：类型声明了 `mode`/`[ai]` 模型/`skills`/`mcps`，对应的 override 文件才被丢弃；起始模型另按父**在该模式下的**模型做快照（父没为这个模式设过，才用父当前正在跑的那个）——spawn/fork 时解析并写进子的 `model-override`，角色自己声明了模型则听角色的；任务列表从不继承，子 agent 从空列表开始、自己做 `task_create`），**对话与 transcript 默认不继承**——要延续同一思路才传 `inherit_context=true`（`/spawn --inherit`；带对话也不带任务列表）；它默认有自己的 `topic_path`，传 `share_topic_path=true` 才借用父的目录（评审改动专用，未提交的与刚提交的都算；其 state 仍在自己名下）
+- 本项目自带评审角色 `subagents/review/config.toml`：用前 `cp -r subagents/review <config dir>/subagents/`；评审改动用 `type="review"` 即可（该角色在自己的 `[spawn]` 里声明了 `share_topic_path = true`，所以它直接在你的目录里读未提交的改动；未提交的、刚提交的都算，范围给 `git diff <base>..HEAD`）；它异步运行，不占 turn、不阻塞 push
+- type 的**安装文件**（`<config dir>/subagents/<type>/config.toml`）除 topic 那些键外还认两个**只有角色才有**的键：`description`（一句话「什么时候该用我」，会被列进 spawn 工具 `type` 参数的描述里，供父 agent 自主选择）与 `[spawn]`（该角色的两个起始开关默认值：`inherit_context`、`share_topic_path`，显式传参优先——**注意入口不对称**：两个开关的双向覆盖只有 spawn 工具能做，`/spawn` 只有 `--inherit` 一个开关、且只能打开）。内联 `[subagents.<type>]` 是 topic config，放不下这两个键
+- 仅当已有子 agent 都不合适时才用 `jyc_spawn_subagent` 新建；它与 `/spawn` 是同一实现：子 agent 继承本 topic 的**设置**（mode、pattern、各类 override——传 `type` 时只有该类型**未声明**的键继承：类型声明了 `mode`/`[ai]` 模型/`skills`/`mcps`，对应的 override 文件才被丢弃；起始模型另按父**在该模式下的**模型做快照（父没为这个模式设过，才用父当前正在跑的那个）——spawn/fork 时解析并写进子的 `model-override`，角色自己声明了模型则听角色的；任务列表从不继承，子 agent 从空列表开始、自己做 `task_create`），**对话与 transcript 默认不继承**——要延续同一思路才传 `inherit_context=true`（`/spawn --inherit`；带对话也不带任务列表）；它默认有自己的 `topic_path`，传 `share_topic_path=true` 才借用父的目录（或由角色的 `[spawn]` 声明，评审改动专用，未提交的与刚提交的都算；其 state 仍在自己名下）
 - 子 agent 的输入由父用 `write` 放进它的 `topic_path`（父对该目录有读写权），再用 `jyc_send_to_topic` 派任务；给已存在的子 agent 追加任务同样用 `jyc_send_to_topic`
 - 改子 agent 的可配置项（模式、模型等）：把命令体（`/build`、`/plan`、`/model`）作为消息发给它；正文为空即不进模型，不消耗子 agent 的 turn
 - type 决定子的**起始**状态，不是枷锁：之后给子发的 `/plan`、`/model`、`/skill` 照旧优先于它；要改角色就按新 type 重 spawn（type 在 spawn 时展开，改 type 定义不影响已存在的子）

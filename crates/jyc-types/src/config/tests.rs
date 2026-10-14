@@ -1783,17 +1783,26 @@ small_model = "provider/config-small"
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("config.toml"),
-            "mode = \"plan\"\nskills = [\"pr-review\"]\n",
+            "mode = \"plan\"\nskills = [\"pr-review\"]\ndescription = \"reviews a diff\"\n\
+             [spawn]\nshare_topic_path = true\n",
         )
         .unwrap();
 
         let cfg = load_subagent_type("review", Some(tmp.path()))
             .unwrap()
             .expect("installed type loads");
-        assert_eq!(cfg.mode.as_deref(), Some("plan"));
+        assert_eq!(cfg.topic.mode.as_deref(), Some("plan"));
         assert_eq!(
-            cfg.skills.as_deref(),
+            cfg.topic.skills.as_deref(),
             Some(["pr-review".to_string()].as_slice())
+        );
+        // The two keys only an installed type has: the topic-shaped part is
+        // flattened, so they sit beside it rather than inside it.
+        assert_eq!(cfg.description.as_deref(), Some("reviews a diff"));
+        assert_eq!(
+            cfg.spawn.and_then(|s| s.share_topic_path),
+            Some(true),
+            "[spawn] is read, and it is not part of the topic config"
         );
 
         assert!(

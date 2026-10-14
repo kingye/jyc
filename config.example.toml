@@ -1383,7 +1383,13 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #      `{data dir}/subagents/` is not a source.
 #
 # The second form is a plain topic config (the L3 shape above, `mode` included),
-# so a type can be copied straight into a topic's `.jyc/config.toml` and back.
+# so a type can be copied straight into a topic's `.jyc/config.toml` and back —
+# plus two keys only an installed type has, both aimed at the agent *choosing* a
+# role: `description` (one line of "when to spawn me", listed beside the name in
+# the `jyc_spawn_subagent` tool's `type` argument) and `[spawn]` (the role's own
+# defaults for `inherit_context` / `share_topic_path`, overridden by an explicit
+# argument at spawn time). The inline `[subagents.<type>]` form below has no
+# place for either: it is a topic config.
 # A type name is a directory component: letters, digits, `-`, `_`, `.`, `:`,
 # spaces; no `/`, no leading `.`, no `..`.
 #
@@ -1414,6 +1420,9 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 #
 #   <config dir>/subagents/review/config.toml
 #
+#   description = "Reviews a change before you push or open a PR: reads the diff and the tree as they are, changes no file, reports findings with a severity."
+#   [spawn]
+#   share_topic_path = true   # review the tree as it is, not a copy of it
 #   mode = "plan"
 #   skills = ["pr-review", "ponytail-review", "coding-principles", "ponytail"]
 #   disabled_skills = ["forked-review"]

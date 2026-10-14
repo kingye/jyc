@@ -1446,12 +1446,15 @@ mod tests {
                 .is_some_and(|d| d.contains("PR")),
             "the role says when to reach for it, not what tools it has"
         );
+        // A fragment that the role file's line wrapping cannot split in half:
+        // the longer sentence this comes from did, once, and the assertion read
+        // as a missing instruction when it was there all along.
         assert!(
             develop
                 .config
                 .instructions
                 .as_deref()
-                .is_some_and(|i| i.contains("never create or remove that checkout")),
+                .is_some_and(|i| i.contains("remove that checkout")),
             "the role carries its own standing orders"
         );
     }

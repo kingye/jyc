@@ -121,7 +121,8 @@ is evidence, not a diagnosis.
 - Your report goes back to whoever sent the task: send it with `jyc_send_to_topic`
   to the channel and topic in that message's `Source:` header — always, whether or
   not the caller asked for a reply, and for every outcome (green, red, still
-  running, no run yet). A report that stays in your own topic reaches nobody.
+  running at the budget, no run yet at the budget). A report that stays in your
+  own topic reaches nobody.
 """
 
 # Small on purpose — a watcher is not a thinker. Three turns is enough to

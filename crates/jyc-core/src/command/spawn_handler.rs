@@ -1331,6 +1331,19 @@ mod tests {
         // sources, one sentence, and the green belonged to neither's head. The
         // rule that answers it has both halves, so both are pinned here.
         let orders = flat(watch.config.instructions.as_deref().unwrap());
+        // Both halves of the send-back that went missing once — the orders made
+        // it conditional on the caller asking for a reply, and named no outcome
+        // for a run that does not exist yet — are pinned, because the sentence
+        // that carried the condition was not: reverting either half would
+        // otherwise be silent.
+        assert!(
+            orders.contains("whether or not the caller asked for a reply"),
+            "the watcher reports back on its own initiative, not only when asked"
+        );
+        assert!(
+            orders.contains("An empty list for a full, correct SHA is not a verdict"),
+            "an empty run list is unread, not a result the watcher may report"
+        );
         assert!(
             orders.contains("must be in a tool result from *this* turn"),
             "every fact the watcher states has to come from its own output"

@@ -1,8 +1,10 @@
 ---
 name: dev-workflow
 description: |
-  Development workflow - branching, fix/feature flow, release process, version bump, commit conventions.
-  Use when: planning development work, creating branches, merging, preparing releases, bumping version, updating changelog.
+  Development workflow - branching, fix/feature flow, release process, version bump, commit conventions,
+  delegating a review of your changes before push, and handing a slow wait (CI on a PR, a deploy) to a `ci-watch` subagent.
+  Use when: planning development work, creating branches, merging, preparing releases, bumping version, updating changelog,
+  review my changes, second opinion, independent review, delegate a review, check my work before committing, wait for CI, monitor a PR's checks.
 ---
 
 ## Development Flow: Trunk-Based with Short-Lived Branches
@@ -55,6 +57,16 @@ When CI owns the suite, the local obligation is: tests written and committed, co
 pushed. CI is the one that executes them. Do not block a turn waiting for CI — hand over the
 PR link and stop; red CI is fixed in a later turn.
 
+When you *do* need the result (a merge that waits on green, a follow-up commit), do not poll
+for it — delegate the wait to a `ci-watch` child, which polls on the small model and reports
+back as a message:
+
+1. `jyc_spawn_subagent(name="ci-watch-<pr>", type="ci-watch")` (`subagents/ci-watch/config.toml`;
+   install once with `cp -r subagents/ci-watch <config dir>/subagents/`)
+2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` — which PR or branch, and
+   what counts as done
+3. End your turn; the report arrives as a new message in this topic.
+
 **What the compile tier proves — and what it does not.** `cargo check -p <crate> --tests` compiles
 the test targets; it never runs them. Green means "the tests compile", not "the tests pass". Never
 report or imply test results from a compile tier, in a step report, a commit message, or a PR body.
@@ -69,12 +81,58 @@ the gate ONCE per change set, never after every edit, and make the test-file edi
 a cache-and-parallelism symptom, never a reason to escalate to the suite or a local build —
 escalating is what caused it.
 
+## Delegated Review: Before Push or Merge
+
+An independent review needs three things: the tree as it is *now* (uncommitted changes, or the
+commits you just made), a context that has not already decided the answer, and a reviewer that
+cannot quietly fix what it finds. `jyc_spawn_subagent` gives all three in one call — the third
+through the `review` type.
+
+1. `jyc_spawn_subagent(name="review-<what>", type="review")` — the child works in your
+   `topic_path` (the role declares `share_topic_path` itself, so you pass nothing), so it reads
+   exactly what you have. Do **not** pass `inherit_context`: a review that starts with your
+   reasoning in it is not a second opinion.
+2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` with the task. Name the
+   question, where to start, and what the report looks like:
+
+   > Review this branch against its base (`git diff <base>..HEAD`, plus `git status` for
+   > anything still uncommitted). Read the surrounding code, not only the diff. Report
+   > findings as: severity, file:line, what is wrong, and what you would do instead.
+
+3. End your turn. The report arrives as a new message in this topic; a finding that holds
+   becomes a follow-up commit on the same PR.
+
+The role is `subagents/review/config.toml` (install once with
+`cp -r subagents/review <config dir>/subagents/`): plan mode, the review skills and nothing
+else, no `write`/`edit`, no delegation of its own, `bash` kept for `git status`/`git diff`/
+`git log`.
+
+Rules:
+
+- **The type is the boundary, not your wording.** Say what to review; the role takes care of
+  what it may do.
+- **Sharpen the task, not the permissions.** If the review needs something the role forbids
+  (running a test build, say), that is a different job with a different type — do not talk the
+  reviewer out of its role.
+- **One reviewer, one task.** Continue the same child with `jyc_send_to_topic` for follow-ups
+  (it keeps its own context); a second reviewer on the same files buys nothing.
+- Read the report, not the child's state dir — its `.jyc` is its own. Closing your topic
+  closes the reviewer with it; while you still have it, close the child yourself (send it
+  `/close`) once you want nothing more from it — a reviewer or a watcher that has reported is
+  done.
+
+For a change small enough to check yourself, skip this: the rules above are for non-trivial
+changes — several files, changed logic, or work you could not test locally.
+
 ## For Fixes
 
 1. `git checkout -b fix/<description>` from main
 2. Fix the issue
-3. Validate at the tier the project owns (see "Local vs CI" above)
-4. Build clean: `{build_command}` (zero warnings)
+3. Validate at the tier the project owns (see "Local vs CI" above) — for a non-trivial change,
+   delegate the review first (see "Delegated Review" above)
+4. Build clean: `{build_command}` (zero warnings). In *this* repo that means `cargo check -p
+   <crate>` plus `cargo fmt -- --check` — AGENTS.md forbids the local suite (`cargo build` /
+   `cargo test` / `clippy`); CI owns it
 5. Commit with `fix:` prefix
 6. Summarize work done and ask for user approval before merging to main
 7. Merge to main: `git checkout main && git merge fix/<name> --no-ff`
@@ -86,7 +144,8 @@ escalating is what caused it.
 1. `git checkout -b feat/<description>` from main
 2. Develop in small increments, commit frequently
 3. If main has new commits, rebase: `git rebase main`
-4. Validate before merge per "Local vs CI" above; keep `{build_command}` clean
+4. Validate before merge per "Local vs CI" above; keep `{build_command}` clean. A non-trivial
+   change gets a delegated review before it is pushed (see "Delegated Review" above)
 5. Summarize work done and ask for user approval before merging to main
 6. Merge to main: `git checkout main && git merge feat/<name> --no-ff`
 7. Push
@@ -102,7 +161,7 @@ LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
 echo "Last tag: $LAST_TAG"
 ```
 
-### Step 2: Review Changes Since Last Release
+### Step 2: Read the Changes Since Last Release
 
 ```bash
 git log ${LAST_TAG}..HEAD --oneline

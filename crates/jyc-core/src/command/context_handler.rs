@@ -47,10 +47,15 @@ impl CommandHandler for ContextCommandHandler {
 
         let matched_pattern =
             crate::session_state::read_pattern(&context.topic_name, &context.topic_path).await;
+        // The topic's own config is a layer of the chain (below the runtime
+        // override, above the pattern): parse it once here, the way the turn
+        // path hands its parsed table in.
+        let topic_cfg = jyc_types::load_topic_config(&context.topic_name, &context.topic_path);
         let configured = crate::session_state::resolve_context_strategy(
             &context.config,
             &context.channel,
             matched_pattern.as_deref(),
+            topic_cfg.as_ref().and_then(|c| c.context_strategy.as_ref()),
         );
 
         // No args → show current strategy (runtime override takes priority).

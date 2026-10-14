@@ -37,8 +37,9 @@ description = "Reviews a change before you push or open a PR — reads the diff 
 # parent's conversation, which a task of its own does not need. An explicit
 # `share_topic_path`/`inherit_context` on the spawn still overrides these.
 # (This table is last on purpose: TOML binds every key below a `[table]` header
-# to that table, so a `[spawn]` put in the middle would swallow the topic keys
-# after it — `mode`, `skills`, `disabled_tools` — and the role would load empty.)
+# to that table, so a `[spawn]` put in the middle swallows the topic keys after
+# it — `mode`, `skills`, `disabled_tools` — and the role is refused at load
+# (`unknown key 'spawn.mode'`), which is loud rather than silent.)
 
 mode = "plan"
 
@@ -46,8 +47,10 @@ mode = "plan"
 skills = ["pr-review", "ponytail-review", "coding-principles", "ponytail"]
 
 # Denied as well as absent from the allow-list — the reviewer must not hand the
-# review on to a reviewer of its own.
-disabled_skills = ["forked-review"]
+# review on to a reviewer of its own, and `dev-workflow` is where that procedure
+# now lives (it also hides the rest of the workflow guide, which this role has no
+# use for: in plan mode it cannot branch, commit or release).
+disabled_skills = ["dev-workflow"]
 
 # `bash` is deliberately left in place: a review of a branch needs `git status`,
 # `git diff <base>..HEAD` and `git log`, and no read-only shell exists. Plan mode

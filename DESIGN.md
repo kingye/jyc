@@ -645,11 +645,22 @@ key-for-key: which `<mode>-model-override` the runtime reads is decided by the
 `service/mod.rs`'s `file_override`), and a type that declares `mode` is exactly
 what removes that file, so such a child reads `build-model-override` whatever
 mode the type declares. A declared model therefore takes the build file out too,
-not only one matching the key it declared. Two consequences worth knowing: a
+not only one matching the key it declared. One consequence worth knowing: a
 declared model always beats an inherited one, so the other mode's file is left
-dormant and a later `/mode` switch inherits nothing from it; and a role that
-declares `mode` reads the build file only, so a parent whose model lived in the
-plan file alone still leaves that role on the configured default.
+dormant and a later `/mode` switch inherits nothing from it.
+
+The child's **starting model** is filled in the same step, from the parent's own:
+the trigger resolves it with the chain the runtime uses
+(`session_state::resolve_active_model`) and `seed_start_model` writes it to
+`.jyc/model-override` — the mode-agnostic fallback, read whenever the
+mode-specific file is missing, so neither the child's mode naming nor the
+file-mode rule above can hide it — unless the type names a model of its own
+(the same three `[ai]` keys). `seed_state` alone cannot do this: it copies
+*files*, and a parent whose model comes from a topic config, a pattern or the
+global config has none to copy, while the child resolving its own chain may land
+somewhere else — a typed child's mode comes from its config, so the file its
+chain reads is not the one its parent read. It is a starting point, not a pin:
+the child's own `/model` still wins over it.
 
 A **shared** subagent (`share_topic_path`) takes the parent's dir and nothing
 else of it: its own state stays in `<agents root>/<name>/.jyc`, which is what

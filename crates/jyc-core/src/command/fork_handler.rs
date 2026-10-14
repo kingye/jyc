@@ -137,6 +137,16 @@ impl ForkCommandHandler {
             !inherit,
         )
         .await?;
+        // The parent's model, resolved the way the runtime resolves it, as the
+        // child's starting point (see `seed_start_model`).
+        let parent_model = crate::session_state::resolve_active_model(
+            &context.topic_name,
+            &context.topic_path,
+            &context.config,
+            &context.channel,
+        )
+        .await;
+        seed_start_model(&state_dir, parent_model.as_deref()).await;
 
         tracing::info!(
             from = %context.topic_name,
@@ -271,6 +281,34 @@ pub(super) async fn seed_state(
     }
     tokio::fs::write(child.join(marker), from).await?;
     Ok(copied)
+}
+
+/// Give a freshly seeded child the model its parent is running.
+///
+/// [`seed_state`] copies the parent's override *files*, which covers the case
+/// where the parent's model is one of them. It does not cover the case where it
+/// comes from a config or pattern layer — there is no file to copy, so the child
+/// falls through to whatever *its own* chain resolves to, and a child whose mode
+/// comes from a config (a typed subagent: the type's `mode = "plan"` lands in
+/// `.jyc/config.toml`, and the type expands by removing the `mode-override` that
+/// would have picked plan) reads a different file than its parent did. That is
+/// the gap this fills: the child starts on the model the parent runs.
+///
+/// Written to `model-override`, the mode-agnostic fallback: the runtime reads it
+/// whenever the mode-specific file is missing, in either mode, so nothing about
+/// the child's own mode naming can hide it. A mode-specific file the child did
+/// inherit still wins over it — that file is the parent's own explicit choice.
+///
+/// `model` is [`crate::session_state::resolve_active_model`]'s answer for the
+/// *parent*; `None` (nothing to resolve, or a role that declares its own model)
+/// writes nothing, which is the behavior a child had before this existed.
+pub(super) async fn seed_start_model(state_dir: &Path, model: Option<&str>) -> bool {
+    let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) else {
+        return false;
+    };
+    tokio::fs::write(state_dir.join("model-override"), model)
+        .await
+        .is_ok()
 }
 
 /// Split the `--inherit` flag out of a command's arguments.
@@ -533,6 +571,50 @@ mod tests {
         // breadcrumb assert above are also exactly what the pre-fix placement —
         // a fresh nested dir — failed on.)
         jyc_types::state_dir::unregister("sibling");
+    }
+
+    /// A fork starts on the model its parent is running, even when that model
+    /// comes from a config layer rather than an override file — there is nothing
+    /// to copy in that case, which is the gap `seed_start_model` fills. A typed
+    /// child hits exactly this: its mode comes from the type's config, so the
+    /// file its chain reads is not the one its parent read.
+    #[tokio::test]
+    async fn fork_hands_the_child_the_model_its_parent_runs() {
+        let (_ptmp, topic_dir) = parent_topic(&[]).await;
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_dir = workspace.path().join("agents");
+        let handler = ForkCommandHandler::new(tm.clone());
+
+        let mut ctx = context("src-topic", &topic_dir, "websocket", &["child"]);
+        ctx.config = Arc::new(
+            jyc_types::load_config_from_str("[ai]\nmodel = \"provider/parent\"\n").unwrap(),
+        );
+
+        let result = handler
+            .fork_under(&ctx, &topic_dir.join(".jyc"), &agents_dir)
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.message);
+
+        let child = resolve_state_dir("child", &topic_dir);
+        assert_eq!(
+            tokio::fs::read_to_string(child.join("model-override"))
+                .await
+                .unwrap()
+                .trim(),
+            "provider/parent"
+        );
+        assert_eq!(
+            session_state::resolve_active_model("child", &topic_dir, &ctx.config, &ctx.channel)
+                .await
+                .as_deref(),
+            Some("provider/parent"),
+            "which is what the child's own chain then reads"
+        );
+
+        // The registry is process-global and tests run in parallel.
+        jyc_types::state_dir::unregister("child");
     }
 
     /// `--inherit` copies exactly what the default leaves behind — the

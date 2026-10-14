@@ -174,16 +174,11 @@ pub fn adopt_state_dir(
              state — it belongs to whoever pinned this dir first"
         );
     }
-    // Create the directory the caller asked for *before* the already-registered
-    // early return: callers write the child's state into that path (the spawn
-    // and fork triggers seed into it right after this call), and a name that a
-    // live topic already holds would otherwise hand them a directory that was
-    // never created — a write into it fails with ENOENT.
-    std::fs::create_dir_all(state_dir)?;
     if jyc_types::state_dir::registered_state(topic_name).is_some() {
         return Ok(());
     }
     jyc_types::state_dir::register(topic_name, state_dir);
+    std::fs::create_dir_all(state_dir)?;
     std::fs::write(
         state_dir.join("topic-path"),
         topic_dir.to_string_lossy().as_bytes(),

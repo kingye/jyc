@@ -281,6 +281,11 @@ impl SpawnCommandHandler {
         self.topic_manager
             .set_topic_path(&name, topic_path.clone())
             .await?;
+        // Seed into the dir the registry settled on, not the one computed above:
+        // a name that was already registered (closed, then reopened) keeps that
+        // registration, and every later read — the child's own runtime included
+        // — goes through `resolve_state_dir`. `set_topic_path` created it.
+        let state_dir = jyc_types::state_dir::resolve_state_dir(&name, &state_dir);
         let seeded = seed_state(
             parent_state,
             &state_dir,
@@ -948,15 +953,16 @@ mod tests {
 
     /// A parent topic: a dir with workspace content, and an in-dir `.jyc`
     /// holding both the inheritable state and the files a spawn must not take.
-    async fn parent_topic() -> (tempfile::TempDir, PathBuf) {
+    async fn parent_topic(topic: &str) -> (tempfile::TempDir, PathBuf) {
         let tmp = tempdir().unwrap();
-        let dir = tmp.path().join("src-topic");
+        let dir = tmp.path().join(topic);
         let state = dir.join(".jyc");
         // The parent of a spawn is a live topic, so its state dir is
         // registered — a test that resolves the parent's model through
         // `resolve_state_dir` (which has no fallback by design, #825) needs
-        // what production always has.
-        jyc_types::state_dir::register("src-topic", &state);
+        // what production always has. `topic` is the caller's: the registry is
+        // process-global and these tests run in parallel.
+        jyc_types::state_dir::register(topic, &state);
         tokio::fs::create_dir_all(state.join("jobs")).await.unwrap();
         tokio::fs::create_dir_all(dir.join("src")).await.unwrap();
         tokio::fs::write(dir.join("src/main.rs"), "fn main() {}")
@@ -1257,7 +1263,8 @@ mod tests {
     /// can still win over them, and the name is recorded for the dashboard.
     #[tokio::test]
     async fn spawn_with_a_type_replaces_the_parents_runtime_choices() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) =
+            parent_topic("t-spawn_with_a_type_replaces_the_parents_runtime_choices").await;
         let parent_state = dir.join(".jyc");
         // The parent is running with /mode, /model, /skill and /mcp set — the
         // state `seed_state` copies and a role must not inherit.
@@ -1293,9 +1300,10 @@ mod tests {
         let subagent_type =
             resolve_subagent_type("review", Some(&config), Some(types_root.path())).unwrap();
 
-        let args = vec!["worker".to_string()];
+        let args =
+            vec!["worker-spawn_with_a_type_replaces_the_parents_runtime_choices".to_string()];
         let req = SpawnRequest {
-            parent_topic: "src-topic",
+            parent_topic: "t-spawn_with_a_type_replaces_the_parents_runtime_choices",
             parent_topic_path: &dir,
             args: &args,
             inherit: false,
@@ -1314,8 +1322,13 @@ mod tests {
             result.message
         );
 
-        let dest = resolved(&agents_dir.join("worker"));
-        let state = resolve_state_dir("worker", &dest);
+        let dest = resolved(
+            &agents_dir.join("worker-spawn_with_a_type_replaces_the_parents_runtime_choices"),
+        );
+        let state = resolve_state_dir(
+            "worker-spawn_with_a_type_replaces_the_parents_runtime_choices",
+            &dest,
+        );
         // The role declares `mode` and `skills`, so those two files go; it says
         // nothing about models or MCPs, so the files carrying those choices stay
         // (which of them the chain reads for this child is the subject of the
@@ -1333,8 +1346,11 @@ mod tests {
             );
         }
 
-        let cfg = jyc_types::load_topic_config("worker", &dest)
-            .expect("the child starts with a topic config");
+        let cfg = jyc_types::load_topic_config(
+            "worker-spawn_with_a_type_replaces_the_parents_runtime_choices",
+            &dest,
+        )
+        .expect("the child starts with a topic config");
         assert_eq!(cfg.mode.as_deref(), Some("plan"));
         assert_eq!(
             cfg.skills.as_deref(),
@@ -1432,7 +1448,8 @@ mod tests {
         ];
 
         for (role, gone, kept) in cases {
-            let (_tmp, dir) = parent_topic().await;
+            let (_tmp, dir) =
+                parent_topic("t-a_type_supersedes_only_the_overrides_it_declares").await;
             let parent_state = dir.join(".jyc");
             for name in [
                 "plan-model-override",
@@ -1461,9 +1478,9 @@ mod tests {
             let subagent_type =
                 resolve_subagent_type("role", Some(&config), Some(types_root.path())).unwrap();
 
-            let args = vec!["worker".to_string()];
+            let args = vec!["worker-a_type_supersedes_only_the_overrides_it_declares".to_string()];
             let req = SpawnRequest {
-                parent_topic: "src-topic",
+                parent_topic: "t-a_type_supersedes_only_the_overrides_it_declares",
                 parent_topic_path: &dir,
                 args: &args,
                 inherit: false,
@@ -1477,8 +1494,13 @@ mod tests {
                 .unwrap();
             assert!(result.success, "{}", result.message);
 
-            let dest = resolved(&agents_dir.join("worker"));
-            let state = resolve_state_dir("worker", &dest);
+            let dest = resolved(
+                &agents_dir.join("worker-a_type_supersedes_only_the_overrides_it_declares"),
+            );
+            let state = resolve_state_dir(
+                "worker-a_type_supersedes_only_the_overrides_it_declares",
+                &dest,
+            );
             for name in *gone {
                 assert!(
                     !state.join(name).exists(),
@@ -1526,7 +1548,9 @@ mod tests {
         ];
 
         for (role, parent_model, expected) in cases {
-            let (_tmp, dir) = parent_topic().await;
+            let (_tmp, dir) =
+                parent_topic("t-a_child_starts_on_the_parents_model_unless_the_role_names_one")
+                    .await;
             let parent_state = dir.join(".jyc");
             let workspace = tempdir().unwrap();
             let tm = make_topic_manager(workspace.path());
@@ -1542,9 +1566,11 @@ mod tests {
                 resolve_subagent_type("role", Some(&config), Some(types_root.path())).unwrap()
             });
 
-            let args = vec!["worker".to_string()];
+            let args = vec![
+                "worker-a_child_starts_on_the_parents_model_unless_the_role_names_one".to_string(),
+            ];
             let req = SpawnRequest {
-                parent_topic: "src-topic",
+                parent_topic: "t-a_child_starts_on_the_parents_model_unless_the_role_names_one",
                 parent_topic_path: &dir,
                 args: &args,
                 inherit: false,
@@ -1558,8 +1584,14 @@ mod tests {
                 .unwrap();
             assert!(result.success, "{}", result.message);
 
-            let dest = resolved(&agents_dir.join("worker"));
-            let state = resolve_state_dir("worker", &dest);
+            let dest = resolved(
+                &agents_dir
+                    .join("worker-a_child_starts_on_the_parents_model_unless_the_role_names_one"),
+            );
+            let state = resolve_state_dir(
+                "worker-a_child_starts_on_the_parents_model_unless_the_role_names_one",
+                &dest,
+            );
             let written = tokio::fs::read_to_string(state.join("model-override"))
                 .await
                 .ok()
@@ -1574,7 +1606,7 @@ mod tests {
                 // with no config of its own to fall back on.
                 assert_eq!(
                     session_state::resolve_effective_model(
-                        "worker",
+                        "worker-a_child_starts_on_the_parents_model_unless_the_role_names_one",
                         &dest,
                         &AppConfig::default(),
                         "x"
@@ -1594,7 +1626,8 @@ mod tests {
     /// not on that leftover file.
     #[tokio::test]
     async fn a_mode_only_role_does_not_inherit_the_parents_other_modes_model() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) =
+            parent_topic("t-a_mode_only_role_does_not_inherit_the_parents_other_modes_model").await;
         let parent_state = dir.join(".jyc");
         // The parent's current model comes from its topic config, so there is
         // no file to copy; its earlier build-mode choice sits in the
@@ -1613,13 +1646,17 @@ mod tests {
         .unwrap();
 
         let config = AppConfig::default();
-        // What `/spawn` would resolve for the parent: its own mode's model is
-        // the topic-config one, and `/model`'s earlier build-mode choice is not
-        // it. Resolved here as a literal rather than through
-        // `resolve_effective_model`, whose registry lookup would race with the
-        // other tests sharing the name "src-topic" (its own behaviour is pinned
-        // by the session_state unit tests).
-        let parent_model = Some("provider/plan".to_string());
+        // What `/spawn` resolves for the parent — its own mode's model, not the
+        // build-mode choice `/model` left behind a mode switch ago. The parent
+        // name is this test's own, so the registry lookup is deterministic.
+        let parent_model = session_state::resolve_effective_model(
+            "t-a_mode_only_role_does_not_inherit_the_parents_other_modes_model",
+            &dir,
+            &config,
+            "x",
+        )
+        .await;
+        assert_eq!(parent_model.as_deref(), Some("provider/plan"));
 
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
@@ -1637,7 +1674,7 @@ mod tests {
         // a name another test spawns in parallel would resolve to *its* dir.
         let args = vec!["mode-only-child".to_string()];
         let req = SpawnRequest {
-            parent_topic: "src-topic",
+            parent_topic: "t-a_mode_only_role_does_not_inherit_the_parents_other_modes_model",
             parent_topic_path: &dir,
             args: &args,
             inherit: false,
@@ -1674,13 +1711,19 @@ mod tests {
     /// it, and none of the workspace content — a spawn hands over state, not files.
     #[tokio::test]
     async fn spawn_defaults_to_a_fresh_dir_under_the_agents_dir() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) =
+            parent_topic("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
         let handler = SpawnCommandHandler::new(tm.clone());
 
-        let ctx = context("src-topic", &dir, "websocket", &[]);
+        let ctx = context(
+            "t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir",
+            &dir,
+            "websocket",
+            &[],
+        );
         let result = handler
             .spawn_under(spawn_request(&ctx), &dir.join(".jyc"), &agents_dir)
             .await
@@ -1689,10 +1732,13 @@ mod tests {
 
         // The handler registers the canonical path, so the asserts compare
         // against it too.
-        let dest = resolved(&agents_dir.join("src-topic-2"));
+        let dest =
+            resolved(&agents_dir.join("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2"));
         assert!(dest.is_dir(), "the default destination is created for it");
         assert_eq!(
-            tm.topic_path("src-topic-2").await.unwrap(),
+            tm.topic_path("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2")
+                .await
+                .unwrap(),
             dest,
             "the spawn works in its own dir, not the parent's"
         );
@@ -1702,7 +1748,10 @@ mod tests {
         );
         assert!(dir.join("README.md").exists(), "the parent keeps its files");
 
-        let state = resolve_state_dir("src-topic-2", &dest);
+        let state = resolve_state_dir(
+            "t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2",
+            &dest,
+        );
         assert_eq!(
             state,
             dest.join(".jyc"),
@@ -1712,7 +1761,7 @@ mod tests {
             tokio::fs::read_to_string(state.join("spawned-from"))
                 .await
                 .unwrap(),
-            "src-topic"
+            "t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir"
         );
         for keep in ["pattern", "mode-override"] {
             assert!(state.join(keep).exists(), "{keep} must be inherited");
@@ -1743,7 +1792,9 @@ mod tests {
         // A spawn is one of the parent's subagents: this grant is what the
         // parent's read+write boundary, the prompt's subagent list and the cap
         // check all read — the same for `/spawn` and for the tool.
-        let grants = jyc_types::access_grants::grants_for("src-topic");
+        let grants = jyc_types::access_grants::grants_for(
+            "t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir",
+        );
         assert_eq!(grants.len(), 1, "one spawn, one grant: {grants:?}");
         assert_eq!(grants[0].path, dest);
         assert!(
@@ -1751,24 +1802,29 @@ mod tests {
             "the parent seeds its spawn through this grant"
         );
         assert_eq!(
-            subagents_of("src-topic"),
-            vec![("src-topic-2".to_string(), dest.clone())]
+            subagents_of("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir"),
+            vec![(
+                "t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2".to_string(),
+                dest.clone()
+            )]
         );
 
         // Closing the spawn removes the emptied shell with its state — the
         // close-side half of the default shape — and hands the access back.
-        tm.close_topic("src-topic-2").await.unwrap();
+        tm.close_topic("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2")
+            .await
+            .unwrap();
         assert!(
             !dest.exists(),
             "an emptied spawn dir goes away with its state"
         );
         assert!(
-            subagents_of("src-topic").is_empty(),
+            subagents_of("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir").is_empty(),
             "closing the spawn revokes the parent's access"
         );
 
-        jyc_types::state_dir::unregister("src-topic-2");
-        jyc_types::access_grants::clear("src-topic");
+        jyc_types::state_dir::unregister("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2");
+        jyc_types::access_grants::clear("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir");
     }
 
     /// `--inherit` is the opt-out of that default, and it is a flag rather than
@@ -1776,7 +1832,7 @@ mod tests {
     /// conversation and transcript come along.
     #[tokio::test]
     async fn spawn_inherit_copies_the_conversation() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) = parent_topic("t-spawn_inherit_copies_the_conversation").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
@@ -1838,7 +1894,7 @@ mod tests {
     /// deletes the state and keeps the dir with whatever is in it.
     #[tokio::test]
     async fn close_keeps_a_spawn_dir_that_gained_files() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) = parent_topic("t-close_keeps_a_spawn_dir_that_gained_files").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
@@ -1868,7 +1924,8 @@ mod tests {
     /// already are — a non-empty directory is a destination, not a refusal.
     #[tokio::test]
     async fn spawn_works_in_an_existing_dir_and_touches_nothing_there() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) =
+            parent_topic("t-spawn_works_in_an_existing_dir_and_touches_nothing_there").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let handler = SpawnCommandHandler::new(tm.clone());
@@ -1958,7 +2015,7 @@ mod tests {
     /// lands beside the parent — allowed, because nothing is written into it.
     #[tokio::test]
     async fn spawn_resolves_a_relative_path_against_this_topic() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) = parent_topic("t-spawn_resolves_a_relative_path_against_this_topic").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let handler = SpawnCommandHandler::new(tm.clone());
@@ -2006,7 +2063,8 @@ mod tests {
     /// a topic, or a touched file behind.
     #[tokio::test]
     async fn spawn_refuses_destinations_and_names_it_must_not_take() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) =
+            parent_topic("t-spawn_refuses_destinations_and_names_it_must_not_take").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
@@ -2027,7 +2085,10 @@ mod tests {
         // Reaching the source dir takes an explicit path: `Path::file_name`
         // drops `.`, so `"./."` alone would name itself `src-topic` instead.
         for (args, expected) in [
-            (vec!["src-topic"], "already in"),
+            (
+                vec!["t-spawn_refuses_destinations_and_names_it_must_not_take"],
+                "already in",
+            ),
             (vec!["taken"], "already exists"),
             (vec![".hidden"], "must not start with '.'"),
             (
@@ -2047,7 +2108,12 @@ mod tests {
             ),
             (vec!["a", "b", "c"], "one name and one path at most"),
         ] {
-            let ctx = context("src-topic", &dir, "websocket", &args);
+            let ctx = context(
+                "t-spawn_refuses_destinations_and_names_it_must_not_take",
+                &dir,
+                "websocket",
+                &args,
+            );
             let result = handler
                 .spawn_under(spawn_request(&ctx), &dir.join(".jyc"), &agents_dir)
                 .await
@@ -2081,7 +2147,12 @@ mod tests {
         let handler = SpawnCommandHandler::new(tm.clone());
         let tmp = tempdir().unwrap();
 
-        let ctx = context("src-topic", tmp.path(), "email", &["whatever"]);
+        let ctx = context(
+            "t-spawn_refuses_a_non_websocket_channel",
+            tmp.path(),
+            "email",
+            &["whatever"],
+        );
         let result = handler.execute(ctx).await.unwrap();
         assert!(!result.success);
         assert!(result.message.contains("routing address"), "{result:?}");
@@ -2128,7 +2199,7 @@ mod tests {
             &tm,
             parent,
             &parent_dir,
-            Some("worker"),
+            Some("worker-subagent_spawn_inherits_state_and_grants_access"),
             true,
             false,
             None,
@@ -2137,14 +2208,21 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(name, "worker");
+        assert_eq!(
+            name,
+            "worker-subagent_spawn_inherits_state_and_grants_access"
+        );
 
-        let dest = agents_dir.join("worker");
+        let dest = agents_dir.join("worker-subagent_spawn_inherits_state_and_grants_access");
         assert_eq!(
             std::fs::read_to_string(dest.join(".jyc").join("spawned-from")).unwrap(),
             parent
         );
-        assert!(tm.topic_path("worker").await.is_some());
+        assert!(
+            tm.topic_path("worker-subagent_spawn_inherits_state_and_grants_access")
+                .await
+                .is_some()
+        );
         // The parent's own `.jyc` (a pinned topic's, say) keeps its name, and
         // the child's state is the child's: its dir is its own, not the
         // parent's working tree (that is `/fork`).
@@ -2177,10 +2255,16 @@ mod tests {
         assert_eq!(grants.len(), 1);
         assert_eq!(grants[0].path, dest);
         assert!(grants[0].write, "the parent must be able to seed the dir");
-        assert_eq!(subagents_of(parent), vec![("worker".to_string(), dest)]);
+        assert_eq!(
+            subagents_of(parent),
+            vec![(
+                "worker-subagent_spawn_inherits_state_and_grants_access".to_string(),
+                dest
+            )]
+        );
 
         jyc_types::access_grants::clear(parent);
-        jyc_types::state_dir::unregister("worker");
+        jyc_types::state_dir::unregister("worker-subagent_spawn_inherits_state_and_grants_access");
     }
 
     /// `share_topic_path`: the tool triggers `/spawn`'s co-pinning instead of a
@@ -2195,7 +2279,7 @@ mod tests {
     /// `cargo test` runs this binary's tests in parallel — so a name another
     /// test already uses is a collision waiting to happen, not a detail.
     async fn shared_subagent_works_in_the_parents_dir() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) = parent_topic("t-shared_subagent_works_in_the_parents_dir").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
@@ -2272,7 +2356,7 @@ mod tests {
     /// may have taken.
     #[tokio::test]
     async fn closing_a_parent_closes_its_subagents() {
-        let (_tmp, dir) = parent_topic().await;
+        let (_tmp, dir) = parent_topic("t-closing_a_parent_closes_its_subagents").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");

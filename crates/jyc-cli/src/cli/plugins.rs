@@ -70,25 +70,24 @@ pub async fn install_plugins(source: &Path, target: &Path) -> Result<()> {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        match name.as_str() {
-            // One subdirectory per name, replaced cleanly — the semantics the
-            // `skills` and `agents` subcommands already have.
-            "skills" | "subagents" => {
-                install::install_entries(root_path, target, &name, None).await?;
-                installed += 1;
-            }
-            // Flat shell scripts: `install_entries` enumerates subdirectories
-            // only, so these are copied file by file instead. Existing files
-            // are overwritten; ones the source does not carry are kept.
-            "hooks" => {
-                let copied =
-                    jyc_core::template_utils::overwrite_template_files(&path, &target.join(&name))
-                        .await?;
-                tracing::info!("installed {name}/ ({copied} file(s))");
-                installed += 1;
-            }
-            _ => tracing::info!("skipping unknown plugin collection: {name}/"),
+        if !COLLECTIONS.contains(&name.as_str()) {
+            tracing::info!("skipping unknown plugin collection: {name}/");
+            continue;
         }
+        // Every collection but `hooks/` is one subdirectory per name, replaced
+        // cleanly — the semantics `jyc skills install` and `jyc agents install`
+        // already have. `hooks/` holds flat shell scripts instead, so it is
+        // copied file by file: `install_entries` enumerates subdirectories and
+        // would find none.
+        if name == "hooks" {
+            let copied =
+                jyc_core::template_utils::overwrite_template_files(&path, &target.join(&name))
+                    .await?;
+            tracing::info!("installed {name}/ ({copied} file(s))");
+        } else {
+            install::install_entries(root_path, target, &name, None).await?;
+        }
+        installed += 1;
     }
 
     if installed == 0 {

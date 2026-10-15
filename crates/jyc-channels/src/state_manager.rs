@@ -126,6 +126,16 @@ impl StateManager {
             .await
             .with_context(|| format!("failed to open {}", uids_file.display()))?;
         file.write_all(format!("{uid}\n").as_bytes()).await?;
+        // Hand the append over before this handle goes out of scope. tokio's
+        // `File::poll_write` buffers the bytes, spawns the blocking write and
+        // returns while that write is still in flight, so `write_all` resolving
+        // says nothing yet about the bytes being in the file — a reader that
+        // follows can outrun it, which is the window CI hit. `poll_flush` is what
+        // awaits the in-flight write, and a dropped handle is not a completion
+        // point (`fs::File` has no `Drop` that joins it). Not `sync_all`:
+        // flushing hands the bytes to the OS, syncing only tells the OS to
+        // commit them, and this path pays per message.
+        file.flush().await?;
 
         // Auto-compact when the set grows beyond a reasonable threshold.
         // This prevents unbounded memory growth over months of operation.
@@ -275,6 +285,40 @@ mod tests {
         assert!(sm2.is_processed(101));
         assert!(!sm2.is_processed(102));
         assert_eq!(sm2.processed_uid_count(), 2);
+    }
+
+    /// The append has to be in the file by the time `track_uid` returns.
+    ///
+    /// This is the invariant CI caught the hard way: the round-trip test above
+    /// reloaded `.processed-uids.txt` and `100` was there while `101` was not —
+    /// a reader that outran an append still in flight. Nothing here forces that
+    /// race: from inside an ordinary `#[tokio::test]` a missing flush cannot be
+    /// made to fail on demand (the append is handed to the blocking pool, and
+    /// occupying its single thread would let the unfixed code outrun the reload
+    /// every time — that pins tokio's scheduler, not our contract). What this
+    /// pins is the contract itself — no `save`, no reused instance: read the
+    /// file straight off the disk and both UIDs are there, whole.
+    #[tokio::test]
+    async fn test_track_uid_is_on_disk_when_it_returns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut sm = StateManager::for_channel(tmp.path(), "test-channel");
+        sm.initialize().await.unwrap();
+
+        sm.track_uid(100).await.unwrap();
+        sm.track_uid(101).await.unwrap();
+
+        let uids_file = sm.state_dir.join(".processed-uids.txt");
+        let content = std::fs::read_to_string(&uids_file).unwrap();
+        assert_eq!(
+            content, "100\n101\n",
+            "the append is whole and readable as soon as track_uid returns"
+        );
+
+        // And a fresh manager — the path the CI failure took — sees both.
+        let mut reloaded = StateManager::for_channel(tmp.path(), "test-channel");
+        reloaded.initialize().await.unwrap();
+        assert!(reloaded.is_processed(101));
+        assert_eq!(reloaded.processed_uid_count(), 2);
     }
 
     #[tokio::test]

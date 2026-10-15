@@ -2422,9 +2422,8 @@ mod tests {
 
         // The handler registers the canonical path, so the asserts compare
         // against it too.
-        let dest = resolved(&default_topic_dir(
-            &agents_dir.join("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2"),
-        ));
+        let home = agents_dir.join("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2");
+        let dest = resolved(&default_topic_dir(&home));
         assert!(dest.is_dir(), "the default destination is created for it");
         assert_eq!(
             tm.topic_path("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2")
@@ -2445,8 +2444,8 @@ mod tests {
         );
         assert_eq!(
             state,
-            dest.join(".jyc"),
-            "in the default shape the state lives inside the topic's own dir"
+            home.join(".jyc"),
+            "in the default shape the state is the home's `.jyc`, beside the working dir"
         );
         assert_eq!(
             tokio::fs::read_to_string(state.join("spawned-from"))

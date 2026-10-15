@@ -66,15 +66,19 @@ again in this turn, do not start a waiter that the next push will supersede.
 
 1. `jyc_spawn_subagent(name="ci-watch-<pr>", type="ci-watch")` (`subagents/ci-watch/config.toml`;
    install once with `cp -r subagents/ci-watch <config dir>/subagents/`)
-2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` — the repo (**name it always**:
-   a watcher that a `develop` child spawned works in that child's topic dir, which holds the checkout
-   without being one, and `gh` there answers "not a git repository") and the PR or branch. That is
-   all it needs: it checks that PR (`gh pr checks --watch`) and reports the table, pass or fail.
-   Which run, workflow or head that PR carries is yours to know, not the child's — and the report
-   names no head, so a green tied to one is a query you make yourself when it lands: the head now
-   (`gh pr view <pr> --repo <owner/name> --json headRefOid`), then the runs for that commit
-   (`gh run list --repo <owner/name> --commit <full 40-character sha>` — never abbreviated)
-3. End your turn; the report arrives as a new message in this topic.
+2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` — give it only two things:
+   the repo (**name it always**: a watcher that a `develop` child spawned works in that child's topic
+   dir, which holds the checkout without being one, and `gh` there answers "not a git repository")
+   and the PR or branch. The child does exactly one thing: `gh pr checks <pr> --repo <owner/name>
+   --watch --interval 30`, with the deadline inside the command (`timeout 1500 gh pr checks … |
+   tail -c 20000`, tool timeout 1560) so the pipe still prints the last table when its budget runs
+   out. It reads the table, not the exit code — pass/fail/skipping are the terminal states, and
+   "no checks reported" is not a pass. It never picks a run, a workflow, or a head, and never
+   verifies SHAs; which head the PR carries is yours to know, not the child's.
+3. End your turn; the report arrives as a new message in this topic. The child always reports back
+   with `jyc_send_to_topic` to the channel/topic in the task's `Source:` header — whether or not you
+   asked for a reply. On failure it names the failing check and appends the log tail from the run id
+   in that row's URL.
 
 The equivalent older way, when you would rather not hold a child open: `job_create` with a one-time
 `at` at the end of the budget, whose prompt says to check that PR's checks and report. It re-enters

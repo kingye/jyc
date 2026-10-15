@@ -1381,6 +1381,14 @@ mod tests {
             orders.contains("--log-failed | grep -aE 'panicked|FAILED|error: ' | tail -n 5"),
             "the log comes back filtered and tailed inside the call, not whole"
         );
+        // The failure this rule answers: a turn that *described* the next poll and
+        // issued no call — the turn ended, the watch with it, and the caller was
+        // left holding a promise. Nothing in the orders said stop, and nothing
+        // named the failure mode either, which is what the pinned phrase does.
+        assert!(
+            orders.contains("Never announce the poll instead of making it"),
+            "a turn carries the poll call or the report, never a promise to poll"
+        );
         // Small on purpose: a watcher keeps no tool-call notes and only a few
         // turns, so `gh` output cannot pile up in the context it polls with.
         let strategy = watch

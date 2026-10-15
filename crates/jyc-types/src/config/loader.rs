@@ -188,7 +188,7 @@ pub struct TopicAiConfig {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SpawnPolicy {
     /// Default for `inherit_context`: start the child with this topic's
-    /// conversation and transcript (what `/fork` does).
+    /// conversation and transcript (`/spawn -i/--inherit`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherit_context: Option<bool>,
 

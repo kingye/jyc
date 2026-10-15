@@ -226,8 +226,8 @@ impl TopicManager {
     /// Delete the directory a pinned topic works in — the extra step
     /// behind `/close --force --purge`.
     ///
-    /// [`Self::close_topic`] deliberately keeps that directory: for a `/fork`
-    /// or `/spawn` sibling it is *someone else's* — a shared checkout, or a
+    /// [`Self::close_topic`] deliberately keeps that directory: for a shared
+    /// child or a `/spawn` sibling it is *someone else's* — a checkout, or a
     /// directory the user chose on purpose. Purge is the explicit "and this one too".
     ///
     /// Refuses (deletes nothing) when the dir is not this topic's to remove:
@@ -356,7 +356,7 @@ impl TopicManager {
     /// working dir goes with it — contents and all. Hard safety rule: only a
     /// dir that is *exactly* `<agents dir>/<agent>/<topic>` (a pipe rule's own
     /// dir) is deleted, and the purge guards still have the last word: an
-    /// agent's own dir one level up, a dir shared with a `/fork`, a dir
+    /// agent's own dir one level up, a dir shared with a child, a dir
     /// nested with somebody else's, or a pin elsewhere is skipped with an
     /// info log.
     ///
@@ -479,9 +479,10 @@ impl TopicManager {
 ///
 /// A subagent spawned into `self_name`'s own dir is even less of a claim: it is
 /// closed with this topic (and its dir with it), so it does not make that dir
-/// somebody else's — whichever of the two orders it closes in. A `/fork` child
-/// is neither: an independent topic that co-pins its parent's dir on purpose and
-/// outlives it, so it keeps the guard's word.
+/// somebody else's — whichever of the two orders it closes in. A child that
+/// shares this topic's dir is not a claim either, and for the same reason: the
+/// cascade closes it first (`subagent_closure`), so by the time the directory is
+/// weighed it has no holder left.
 fn pin_still_held_by_another(name: &str, pin: &Path, self_name: &str) -> bool {
     !jyc_types::state_dir::is_closed(name)
         && crate::command::spawn_handler::spawned_from(name, pin).as_deref() != Some(self_name)
@@ -525,7 +526,7 @@ async fn path_is_under(path: &Path, root: &Path) -> bool {
 ///
 /// Two levels, leaf named after the topic: one level up is an agent's own dir
 /// (`<agents dir>/<agent>`, a state namespace), a different leaf is somebody
-/// else's topic (a `/fork` works in its parent's dir).
+/// else's topic (a shared child works in its parent's dir).
 fn is_dynamic_topic_dir(path: &Path, agents_dir: &Path, topic_name: &str) -> bool {
     let path = crate::topic_path::resolved(path);
     let agents_dir = crate::topic_path::resolved(agents_dir);
@@ -835,7 +836,7 @@ mode = "agent"
         jyc_types::state_dir::unregister("agent-own-1");
     }
 
-    /// A dir another topic also works in (a `/fork` shares its parent's dir)
+    /// A dir another topic also works in (a shared child works in its parent's)
     /// survives an upstream close of the parent, even in the dynamic shape.
     #[tokio::test]
     async fn auto_close_keeps_dir_shared_with_another_topic() {
@@ -1342,8 +1343,8 @@ mode = "agent"
         let parent_dir = workspace.join("probe-parent");
         std::fs::create_dir_all(parent_dir.join(".jyc")).unwrap();
         std::fs::write(parent_dir.join("code.rs"), "x").unwrap();
-        // The fork adopts the parent's in-dir state out of the parent dir —
-        // exactly what /fork does — so no `.jyc` remains there to detect by.
+        // The child adopts its own state out of the parent dir — exactly what a
+        // shared spawn does — so no `.jyc` remains there to detect by.
         let fork_state = tmp.path().join("agents/probe-fork/.jyc");
         std::fs::create_dir_all(&fork_state).unwrap();
         jyc_types::state_dir::register("probe-fork", &fork_state);

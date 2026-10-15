@@ -71,7 +71,7 @@ impl TopicManager {
         // A restart empties the map, but an adopted topic's state dir carries a
         // `topic-path` breadcrumb — the only surviving record of a dir that is
         // *not* `<workspace>/<name>`: a config pin, a dashboard pin, or a
-        // `/fork` co-pinned with its parent. Trust it before guessing from the
+        // child co-pinned with its parent. Trust it before guessing from the
         // layout, and cache it so the read happens once per process.
         else if let Some(recorded) = restored_path(topic_name).await {
             paths.insert(topic_name.to_string(), recorded.clone());

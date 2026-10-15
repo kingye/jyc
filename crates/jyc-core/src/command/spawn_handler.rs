@@ -464,8 +464,8 @@ impl CommandHandler for SpawnCommandHandler {
 /// the child's *starting point*, both off by default: the conversation and
 /// transcript stay with the parent (see `seed_state`), and the child gets a
 /// working dir of its own. `share_topic_path` makes it work in the parent's
-/// directory instead — the `/fork` shape, for a reviewer that has to read
-/// uncommitted work — and its own state still goes to
+/// directory instead — the `-s/--share` shape, for a reviewer that has to
+/// read uncommitted work — and its own state still goes to
 /// `<agents root>/<name>/.jyc`, so closing it never touches that directory.
 /// Returns the new topic's name.
 ///
@@ -936,9 +936,11 @@ struct SpawnArgs {
 /// slash whether an argument was meant as a name or as a directory.
 ///
 /// Every refusal here is worded for someone who typed something: an unknown
-/// flag, a value that is missing, a flag passed twice, a second positional, and
-/// `--type=` — a flag until the type became the positional, and worth its own
-/// sentence rather than "unknown flag".
+/// flag, a value that is missing or that would have swallowed the next flag, a
+/// flag that repeats (`-n a --name b`; the two booleans are idempotent and may
+/// be passed twice), a second positional, and `--type=` — a flag until the type
+/// became the positional, and worth its own sentence rather than
+/// "unknown flag".
 fn parse_args(args: &[String]) -> Result<SpawnArgs, String> {
     let mut out = SpawnArgs::default();
     let mut rest = args.iter();
@@ -988,6 +990,12 @@ fn parse_args(args: &[String]) -> Result<SpawnArgs, String> {
 
 /// The value of a value-carrying flag: the token after it, or the one it came in
 /// with (`--name=x`). A missing value is a refusal, never the next positional.
+///
+/// A token that opens with `-` is not a value either, even though the flag wants
+/// one: `/spawn -n -s` is someone reaching for `-s`, and answering "the name must
+/// not start with '-'" would hide the mistake (nothing that starts with `-` can
+/// be a topic name anyway — [`invalid_name`] refuses it). The flag is missing its
+/// value, and says so. `--name=-s` still works: spelling it inline is explicit.
 fn flag_value(
     flag: &str,
     inline: Option<&str>,
@@ -995,11 +1003,10 @@ fn flag_value(
 ) -> Result<String, String> {
     let value = match inline {
         Some(value) => value.trim(),
-        None => rest
-            .next()
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| flag_needs_a_value(flag))?,
+        None => match rest.next().map(|value| value.trim()) {
+            Some(next) if !next.starts_with('-') || next == "-" => next,
+            _ => return Err(flag_needs_a_value(flag)),
+        },
     };
     if value.is_empty() {
         return Err(flag_needs_a_value(flag));
@@ -2938,7 +2945,7 @@ mod tests {
         );
         // The parent's own `.jyc` (a pinned topic's, say) keeps its name, and
         // the child's state is the child's: its dir is its own, not the
-        // parent's working tree (that is `/fork`).
+        // parent's working tree (that is `-s/--share`).
         for keep in [
             "pattern",
             "agent-context.json",
@@ -2980,8 +2987,8 @@ mod tests {
         jyc_types::state_dir::unregister("worker-subagent_spawn_inherits_state_and_grants_access");
     }
 
-    /// `share_topic_path`: the tool triggers `/spawn`'s co-pinning instead of a
-    /// dir of its own — the `/fork` shape, and the only kind of subagent that
+    /// `share_topic_path`: the tool triggers `/spawn -s`'s co-pinning instead of
+    /// a dir of its own — the shared shape, the only kind of subagent that
     /// can review work that is not committed yet. The shared dir is the
     /// parent's throughout: the child's state stays its own under the agents
     /// root, and closing the child deletes that state and leaves the dir (and
@@ -3060,6 +3067,107 @@ mod tests {
         assert!(subagents_of(parent).is_empty());
 
         jyc_types::state_dir::unregister("shared-review");
+        jyc_types::access_grants::clear(parent);
+    }
+
+    /// Two children of one parent, both working in its directory, keep their own
+    /// state: sharing the workspace is not sharing the topic. The fork this
+    /// shape replaced had a test for exactly this, and the shared path is one
+    /// code path — so what it proved has to be proved here.
+    #[tokio::test]
+    async fn two_shared_children_of_one_parent_keep_their_own_state() {
+        let parent = "t-two_shared_children_of_one_parent_keep_their_own_state";
+        let (_tmp, dir) = parent_topic(parent).await;
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_dir = workspace.path().join("agents");
+        let shared = resolved(&dir);
+
+        let mut states = Vec::new();
+        for name in ["pair-first", "pair-second"] {
+            let spawned = spawn_subagent_under(
+                &tm,
+                parent,
+                &dir,
+                Some(name),
+                false,
+                true,
+                None,
+                None,
+                &agents_dir,
+            )
+            .await
+            .unwrap();
+            assert_eq!(spawned, name);
+            assert_eq!(tm.topic_path(name).await.unwrap(), shared);
+            let state = agents_dir.join(name).join(".jyc");
+            assert_eq!(
+                state_dir_of(name, &shared),
+                state,
+                "{name}: one state dir each, under the agents root"
+            );
+            assert_eq!(
+                std::fs::read_to_string(state.join("spawned-from")).unwrap(),
+                parent
+            );
+            assert!(state.join("pattern").exists(), "{name}: its own settings");
+            states.push(state);
+        }
+        assert_ne!(states[0], states[1]);
+
+        let mut listed = subagents_of(parent)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        listed.sort();
+        assert_eq!(
+            listed,
+            vec!["pair-first".to_string(), "pair-second".to_string()]
+        );
+
+        for name in ["pair-first", "pair-second"] {
+            jyc_types::state_dir::unregister(name);
+        }
+        jyc_types::access_grants::clear(parent);
+    }
+
+    /// A shared spawn with no name takes the first free `<this>-N` — and skips
+    /// the ones that are taken, which is the probe's other branch. The deleted
+    /// fork test was the only one that reached it (it pre-created `<parent>-2`
+    /// to see `-3`).
+    #[tokio::test]
+    async fn a_shared_spawn_with_no_name_skips_a_taken_suffix() {
+        let parent = "t-a_shared_spawn_with_no_name_skips_a_taken_suffix";
+        let (_tmp, dir) = parent_topic(parent).await;
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_dir = workspace.path().join("agents");
+        tokio::fs::create_dir_all(agents_dir.join(format!("{parent}-2")))
+            .await
+            .unwrap();
+
+        let name = spawn_subagent_under(
+            &tm,
+            parent,
+            &dir,
+            None,
+            false,
+            true,
+            None,
+            None,
+            &agents_dir,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(name, format!("{parent}-3"));
+        assert_eq!(tm.topic_path(&name).await.unwrap(), resolved(&dir));
+        assert_eq!(
+            state_dir_of(&name, &resolved(&dir)),
+            agents_dir.join(&name).join(".jyc")
+        );
+
+        jyc_types::state_dir::unregister(&name);
         jyc_types::access_grants::clear(parent);
     }
 

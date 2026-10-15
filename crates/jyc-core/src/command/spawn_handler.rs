@@ -1487,53 +1487,23 @@ mod tests {
                 .is_some_and(|i| flat(i).contains("do not interpret what you find")),
             "the watcher reports; the caller interprets"
         );
-        // The report is where it went wrong once: a head the caller had mentioned
-        // in a message, paired with a run id fetched in the same turn — two
-        // sources, one sentence, and the green belonged to neither's head. The
-        // rule that answers it has both halves, so both are pinned here.
+        // What a report may rest on did not change; what it *names* did. The
+        // orders this block used to pin — a head the run itself reports, a run id
+        // paired with it, a workflow pinned, the full 40-character SHA — went with
+        // the simplification: the role reports the check table of the PR the caller
+        // named, so no head or run id appears in what it sends back to be mispaired,
+        // and the caller owns knowing which run that PR has (see the role's header).
         let orders = flat(watch.config.instructions.as_deref().unwrap());
-        assert!(
-            orders.contains("must be in a tool result from *this* turn"),
-            "every fact the watcher states has to come from its own output"
-        );
-        assert!(
-            orders.contains("no evidence at all about what ran"),
-            "a head named in the caller's message is not evidence about the run"
-        );
-        // The three clauses of the send-back that went missing once: the orders
-        // made it conditional on the caller asking for a reply, named no outcome
-        // for a run that does not exist yet, and left an empty list to be read
-        // once and believed. Each is pinned by one phrase of its own — the last
-        // by the clause that turns a single read into a wait for the budget.
+        // It reports on its own initiative — not only when the caller asked — and
+        // the reading it waits on is a table, so an empty one is waited out rather
+        // than reported as a result.
         assert!(
             orders.contains("whether or not the caller asked for a reply"),
             "the watcher reports back on its own initiative, not only when asked"
         );
         assert!(
-            orders.contains("An empty list for a full, correct SHA is not a verdict"),
-            "an empty run list is unread, not a result the watcher may report"
-        );
-        assert!(
-            orders.contains("only when the budget ends with still no run"),
-            "the empty list is waited out to the budget, and then reported"
-        );
-        // Two facts that call leaves open. Which workflow ran: the ref can carry
-        // several per commit and `--limit 1` takes whichever GitHub lists first.
-        // Which head is current: the newest run can belong to the older head
-        // while the newer one's run does not exist yet.
-        assert!(
-            orders.contains("--workflow ci.yml"),
-            "the watcher can pin the workflow where the ref carries several"
-        );
-        assert!(
-            orders.contains("is not that head, say so"),
-            "a run whose headSha is not the current head is reported as superseded"
-        );
-        // `--commit` matches the whole value: an abbreviated SHA is an empty
-        // list, not an error, so the full one is what the role asks for.
-        assert!(
-            orders.contains("abbreviated one matches nothing"),
-            "the run-against-head command is prescribed with the full SHA"
+            orders.contains("no checks reported is not a pass"),
+            "an empty reading is waited out, not reported as a verdict"
         );
         // A failure log is fetched through a filter inside the call: the result
         // cap bounds a finished turn, not the turn the log lands in, and a plain

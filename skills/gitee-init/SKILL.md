@@ -33,9 +33,10 @@ current message lacks it, read the earliest message in the chat history.
 1. **Already initialized?** If `.git/` exists here, stop — the repo is ready.
 
 2. **Clone.** A delivered attachment lands in `.attachments/` inside this directory,
-   and `git clone <url> .` refuses a directory that is not empty. The framework's
-   own state is not in here (the topic's `.jyc` is a sibling of this directory), but
-   clone beside it and move the git directory in anyway:
+   and `git clone <url> .` refuses a directory that is not empty. A topic created
+   before the `.data` layout also keeps its `.jyc` state *in* this directory (a
+   newer one has it as a sibling), so clone beside it and move the git directory
+   in anyway:
 
    ```bash
    git clone "https://gitee.com/<owner>/<repo>.git" .init-clone
@@ -52,14 +53,14 @@ current message lacks it, read the earliest message in the chat history.
    never shows up as a repository change:
 
    ```bash
-   printf '.attachments/\n' >> .git/info/exclude
+   printf '.jyc/\n.attachments/\n' >> .git/info/exclude
    ```
 
 4. **Verify:**
 
    ```bash
    git log --oneline -1
-   git status --short    # must NOT list .attachments/
+   git status --short    # must NOT list .jyc/ or .attachments/
    ```
 
 ### After cloning
@@ -73,6 +74,6 @@ current message lacks it, read the earliest message in the chat history.
 
 - NEVER delete or re-clone an existing checkout. If a clone fails, troubleshoot it
   (network, token, repo visibility) — do not `rm -rf` and retry.
-- NEVER commit `.attachments/` or any other framework file.
+- NEVER commit `.jyc/`, `.attachments/`, or any other framework file.
 - If authentication is missing, say so in your reply. Never silently skip initialization
   and then act as if the code was unavailable.

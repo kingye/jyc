@@ -266,36 +266,39 @@ Send a proactive out-of-topic message to an arbitrary recipient.
 
 ### `jyc_send_to_topic`
 
-Send a message to a topic in another channel for agent processing. The target topic will be auto-created if it doesn't exist.
+Send a message to another agent for agent processing: its own topic by default, or one of its topics with `topic`.
 
 Unlike `jyc_send_message` (which bypasses agent processing for direct outbound delivery), `jyc_send_to_topic` injects the message into the target topic's queue so the target topic's agent picks it up and processes it.
 
+The command form is `/send <agent> [--topic|-t <topic>] [--reply] [--attach <file>] [--recipient <id>] <message>`; both call the same `command::send_handler::send_to_topic`.
+
 **Parameters:**
-- `channel` (string, required): Target channel name (e.g. `"jin283"`, `"feishu_bot"`)
-- `topic` (string, required): Target topic name (e.g. `"invoice-processing"`)
+- `agent` (string, required): Target agent name (e.g. `"invoice"`, `"mail-bot"`). Its own topic is created if it does not exist yet
+- `topic` (string, optional): One of that agent's topics (e.g. `"invoice-processing"`). Omit it to address the agent's own topic. A topic's name is its address — it is unique process-wide, so a named topic identifies its agent too
 - `message` (string, required): Message body to inject into the target topic
 - `attachments` (string[], optional): List of filenames within the current topic directory to attach
 - `recipient` (string, optional): Recipient address/ID. Sets the sender_address on the injected message for channel-appropriate reply routing
-- `require_reply` (boolean, optional, default false): When `true`, the target agent is instructed to send results back to the source channel/topic via `jyc_send_to_topic`
+- `require_reply` (boolean, optional, default false): When `true`, the target agent is instructed to send the results back to the source agent via `jyc_send_to_topic`
 
 **Behavior:**
-- Looks up the target channel's `TopicManager` from the shared cross-channel map
+- Resolves the addressee to the `TopicManager` that serves it — the one running the topic's queue, or the one that knows where an idle topic works (`TopicManagers::serving`); the channel is never named by the caller
+- A name no manager serves is created as a new agent's own topic in the `agents` channel; a *named* topic no manager serves is refused (re-creating it elsewhere would collide, since state dirs are keyed by topic name)
 - Builds an `InboundMessage` with source metadata (`source_channel`, `source_topic`, `require_reply`)
 - Enqueues the message into the target topic's queue
 - The target agent sees a `**Source:**` header in its incoming message prompt
 
 **`require_reply` flow:**
-- When `true`, the target agent's prompt includes: `⚠️ Reply requested - use jyc_send_to_topic to send results back`
-- The target agent should call `jyc_send_to_topic` back to the source channel/topic when done
+- When `true`, the target agent's prompt includes: `⚠️ Reply requested` and an instruction to call `jyc_send_to_topic` with `agent="<the source topic's name>"`
+- The target agent should call `jyc_send_to_topic` back to that agent when done
 
 **Constraints:**
-- Requires cross-channel topic managers (`ToolContext.topic_managers`)
+- Requires the running topic managers (`ToolContext.topic_managers`)
 - Attachments must be within the current topic's working directory
 
 **Example:**
 ```json
 {
-  "channel": "jin283",
+  "agent": "invoice",
   "topic": "invoice-processing",
   "message": "Please process the attached invoice.",
   "attachments": ["invoice.pdf"],
@@ -454,7 +457,7 @@ disabled_mcps = ["*"]  # Disables all external MCP servers
 | `read_image` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | URL mode requires http(s) |
 | `context_browse` | None (in-memory transcript only) | Read-only; never touches the filesystem |
 | `jyc_send_message` | Recipient format validation | Channel-specific format check |
-| `jyc_send_to_topic` | Attachment path validation | Must be within topic directory; target channel must exist |
+| `jyc_send_to_topic` | Attachment path validation | Must be within topic directory; a named topic must be served by some channel |
 
 `check_path_boundary()` itself only iterates `additional_read_roots`; write paths
 appear readable because `resolve_additional_read_roots()` merges `access.write`
@@ -541,7 +544,7 @@ build_tool_registry()
   ├─ Register read_image (when model supports images OR vision_client configured)
   ├─ Register jyc_publish_file (base URL from [inspect] base_url)
   ├─ Register MCP bridge tools: jyc_send_message
-  ├─ Register jyc_send_to_topic (when cross-channel topic_managers available)
+  ├─ Register jyc_send_to_topic (when the topic managers are available)
   ├─ Load external MCP tools (filtered by disabled_mcps)
   └─ Apply exclusions: remove tools matching disabled_tools
 ```

@@ -84,6 +84,10 @@ pub(crate) async fn process_message(
             "external_id": item.message.external_id,
             "references": item.message.references,
             "metadata": item.message.metadata,
+            // Which channel routed here. The only record of it that outlives
+            // the process, and what lets a topic idle since the last restart be
+            // addressed again (`send_handler::recorded_channel`).
+            "channel": item.message.channel,
         });
         if let Ok(json) = serde_json::to_string_pretty(&meta) {
             let _ =

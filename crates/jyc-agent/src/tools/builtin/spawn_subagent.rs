@@ -199,8 +199,7 @@ impl Tool for SpawnSubagentTool {
                 Ok(ToolOutput::success(format!(
                     "Spawned subagent '{child}' at {dir} — you hold read+write access there. Put \
                      its inputs in {where_to_write} with `write`, then send the task with \
-                     jyc_send_to_topic (channel \"{channel}\", topic \"{child}\", \
-                     require_reply=true)."
+                     jyc_send_to_topic (agent \"{child}\", require_reply=true)."
                 )))
             }
         }

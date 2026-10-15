@@ -113,7 +113,11 @@ pub struct TopicManager {
     // the managers, so a strong pointer here would be an Arc cycle. Set once,
     // by whoever builds the managers (the orchestrator); unset in tests that
     // only exercise one manager.
-    managers: std::sync::OnceLock<std::sync::Weak<TopicManagers>>,
+    //
+    // An `Arc` so that the cell is shared, not copied: a worker clone taken
+    // before the wiring still sees it afterwards, which keeps the resolution a
+    // command handler depends on from hinging on the order of the two.
+    managers: Arc<std::sync::OnceLock<std::sync::Weak<TopicManagers>>>,
 
     /// Test/override hook for the central billing ledger directory.
     /// When unset, `billing_dir()` falls back to
@@ -200,7 +204,7 @@ impl TopicManager {
             worker_handles: Mutex::new(Vec::new()),
             topic_paths: Arc::new(Mutex::new(HashMap::new())),
             topic_patterns: Arc::new(Mutex::new(HashMap::new())),
-            managers: std::sync::OnceLock::new(),
+            managers: Arc::new(std::sync::OnceLock::new()),
             billing_dir_override: std::sync::OnceLock::new(),
         }
     }

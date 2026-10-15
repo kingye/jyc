@@ -75,13 +75,13 @@ pub async fn send_to_topic(
     if req.message.trim().is_empty() {
         bail!("Message cannot be empty");
     }
-    let topic_name = match req.topic {
-        Some(topic) if !topic.trim().is_empty() => topic,
+    let (topic_name, named_topic) = match req.topic {
+        Some(topic) if !topic.trim().is_empty() => (topic, Some(topic)),
         Some(_) => bail!("Topic cannot be empty"),
-        None => req.agent,
+        None => (req.agent, None),
     };
 
-    let target_tm = resolve(managers, req.agent, req.topic, topic_name).await?;
+    let target_tm = resolve(managers, req.agent, named_topic).await?;
 
     let validated_attachments = validate_attachments(req.attachments, source.working_dir)?;
 
@@ -202,10 +202,14 @@ pub async fn send_to_topic(
         "Message sent to agent topic"
     );
 
-    let topic_info = req
-        .topic
-        .map(|topic| format!(" (topic '{topic}')"))
-        .unwrap_or_default();
+    // Name what actually happened. With `topic`, the address is the topic's own
+    // name (unique process-wide), so the agent beside it is a label rather than
+    // a claim about where the message went; without it, the message did land on
+    // the agent's own topic.
+    let sent_to = match req.topic {
+        Some(topic) => format!("topic '{topic}'"),
+        None => format!("agent '{}' (its own topic)", req.agent),
+    };
     let attachment_info = if validated_attachments.is_empty() {
         String::new()
     } else {
@@ -218,36 +222,63 @@ pub async fn send_to_topic(
     };
 
     Ok(format!(
-        "Message sent to agent '{}'{}{}{}. The target topic will process it.",
-        req.agent, topic_info, attachment_info, reply_info
+        "Message sent to {sent_to}{attachment_info}{reply_info}. The target topic will process it."
     ))
 }
 
 /// Find the manager that serves the addressee.
 ///
-/// An agent's own topic lives in the agents channel — `/spawn` and the
-/// dashboard put it there, and it is reachable whether or not it has been
-/// active this process. A named topic belongs to whichever manager already runs
-/// it: a topic exists because a channel routed to it, so a live queue is the
-/// answer, and one that has been idle since a restart is refused rather than
-/// re-created in the wrong channel under the same name.
+/// A topic's name *is* its identity, so the only question is which manager runs
+/// it — and it is answered by looking, never by trusting a caller-supplied
+/// channel:
+///
+/// 1. a manager running its queue ([`TopicManagers::serving`]);
+/// 2. otherwise the channel the topic's own state records, which is what keeps
+///    a topic idle since the last restart reachable instead of it having to
+///    wait for its next inbound message;
+/// 3. otherwise a name no topic anywhere owns: an agent's own topic is created
+///    in the agents channel, which is where `/spawn` and the dashboard keep
+///    agents, while a *named* topic is refused — re-creating it under the same
+///    name elsewhere would collide, since state dirs are keyed by topic name
+///    process-wide.
 async fn resolve(
     managers: &TopicManagers,
     agent: &str,
     topic: Option<&str>,
-    topic_name: &str,
 ) -> Result<Arc<TopicManager>> {
-    if topic.is_none() {
-        return managers.by_channel(AGENTS_CHANNEL).ok_or_else(|| {
-            anyhow!("The '{AGENTS_CHANNEL}' channel is not running, so agent '{agent}' has no topic to reach")
+    let topic_name = topic.unwrap_or(agent);
+    if let Some(tm) = managers.serving(topic_name).await {
+        return Ok(tm);
+    }
+    if let Some(channel) = recorded_channel(topic_name).await {
+        return managers.by_channel(&channel).ok_or_else(|| {
+            anyhow!("Topic '{topic_name}' belongs to channel '{channel}', which is not running")
         });
     }
-    managers.serving(topic_name).await.ok_or_else(|| {
+    if topic.is_some() {
+        bail!(
+            "No channel owns topic '{topic_name}': no topic by that name is running or registered \
+             in a state dir, or the directory it names is gone. A topic is created by the channel \
+             rule that routes to it."
+        );
+    }
+    managers.by_channel(AGENTS_CHANNEL).ok_or_else(|| {
         anyhow!(
-            "No running channel serves topic '{topic_name}'. A topic that has been idle since a \
-             restart starts being served again with its next inbound message."
+            "The '{AGENTS_CHANNEL}' channel is not running, so agent '{agent}' has no topic to reach"
         )
     })
+}
+
+/// The channel a topic's own state records it was routed by, written into
+/// `.jyc/topic-meta.json` on its first message. `None` for a topic that has
+/// never been routed to, and for state dirs written before the field existed.
+async fn recorded_channel(topic_name: &str) -> Option<String> {
+    let state_dir = jyc_types::state_dir::registered_state(topic_name)?;
+    let raw = tokio::fs::read_to_string(state_dir.join("topic-meta.json"))
+        .await
+        .ok()?;
+    let meta: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    meta.get("channel")?.as_str().map(str::to_string)
 }
 
 /// Check that each attachment exists inside `working_dir`, returning the
@@ -531,8 +562,8 @@ mod tests {
     #[tokio::test]
     async fn sends_to_the_manager_serving_a_named_topic() {
         let tmp = tempdir().unwrap();
-        let agents = make_tm(tmp.path(), AGENTS_CHANNEL);
-        let other = make_tm(tmp.path(), "mail-bot");
+        let agents = make_tm(&tmp.path().join("agents-ws"), AGENTS_CHANNEL);
+        let other = make_tm(&tmp.path().join("mail-bot-ws"), "mail-bot");
         let managers = TopicManagers::new();
         managers.set(vec![agents.clone(), other.clone()]);
 
@@ -588,7 +619,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(sent.contains("(topic 'invoice_processing')"), "{sent}");
+        assert!(sent.contains("topic 'invoice_processing'"), "{sent}");
         assert!(other.serves_topic("invoice_processing").await);
         assert!(
             !agents.serves_topic("invoice_processing").await,
@@ -596,10 +627,10 @@ mod tests {
         );
     }
 
-    /// A topic no channel is serving is refused, not re-created under the same
-    /// name in the wrong channel.
+    /// A name no topic anywhere owns, and a named topic at that: refused rather
+    /// than re-created under a name that would collide process-wide.
     #[tokio::test]
-    async fn refuses_a_named_topic_nobody_serves() {
+    async fn refuses_a_named_topic_nobody_owns() {
         let tmp = tempdir().unwrap();
         let managers = TopicManagers::new();
         managers.set(vec![make_tm(tmp.path(), AGENTS_CHANNEL)]);
@@ -607,14 +638,35 @@ mod tests {
         let err = send_to_topic(
             &managers,
             source(tmp.path()),
-            request("invoice", Some("invoice_processing"), "hi"),
+            request("invoice", Some("unserved-probe-topic"), "hi"),
         )
         .await
         .unwrap_err();
 
-        assert!(err.to_string().contains("invoice_processing"), "{err}");
+        assert!(err.to_string().contains("unserved-probe-topic"), "{err}");
         let agents = managers.by_channel(AGENTS_CHANNEL).unwrap();
-        assert!(!agents.serves_topic("invoice_processing").await);
+        assert!(!agents.serves_topic("unserved-probe-topic").await);
+    }
+
+    /// The wiring `/send` depends on: a manager handed the registry resolves
+    /// through it, and a worker clone taken *before* the wiring still does —
+    /// the back-pointer is one shared cell, not a copy.
+    #[tokio::test]
+    async fn the_registry_wiring_survives_a_worker_clone() {
+        let tmp = tempdir().unwrap();
+        let tm = make_tm(tmp.path(), AGENTS_CHANNEL);
+        let worker = tm.worker_clone();
+        assert!(tm.managers().is_none(), "unwired to start");
+
+        let managers = Arc::new(TopicManagers::new());
+        managers.set(vec![tm.clone()]);
+        tm.set_managers(&managers);
+
+        assert_eq!(tm.managers().unwrap().all().len(), 1);
+        assert!(
+            worker.managers().is_some(),
+            "a clone made before the wiring missed it"
+        );
     }
 
     #[tokio::test]

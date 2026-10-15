@@ -1240,7 +1240,7 @@ config.toml (disk)
 ### Components
 
 - **ChannelOrchestrator** — Manages channel task lifecycle. Holds per-channel `ChannelHandle` (cancel token, topic manager ref). On reload, computes diff between old and new config section names, cancels removed channels with a 5-second grace period for cleanup. New channels are detected and logged with a warning (the monitor must be restarted to spawn new channel tasks).
-- **InspectContext (ArcSwap)** — `topic_managers`, `channels`, and `workspace_dirs` are wrapped in `Arc<ArcSwap<Vec<...>>>`, allowing the orchestrator to atomically swap updated lists after reload. The dashboard reads the latest snapshot on each poll cycle.
+- **InspectContext (ArcSwap)** — `channels` and `workspace_dirs` are wrapped in `Arc<ArcSwap<Vec<...>>>`, allowing the orchestrator to atomically swap updated lists after reload; `topic_managers` is the process's `Arc<TopicManagers>` (see the `jyc_send_to_topic` section). The dashboard reads the latest snapshot on each poll cycle.
 - **MessageRouter** — Holds `Arc<ArcSwap<AppConfig>>` and the channel name. On each `route()` call, reads `config.load().channels[name].patterns` dynamically. No cached pattern snapshot — pattern changes take effect on the next message after reload.
 
 ## Core Types & Traits

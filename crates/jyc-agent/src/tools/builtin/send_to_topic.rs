@@ -38,11 +38,11 @@ impl Tool for SendToThreadTool {
             "properties": {
                 "agent": {
                     "type": "string",
-                    "description": "Target agent name, e.g. \"invoice\" or \"mail-bot\""
+                    "description": "The agent to reach, e.g. \"invoice\" or \"mail-bot\". Without 'topic' the message lands on the agent's own topic, which is created when it does not exist yet."
                 },
                 "topic": {
                     "type": "string",
-                    "description": "One of that agent's topics, when it has more than one, e.g. \"invoice_processing\". Omit it to address the agent's own topic."
+                    "description": "One of that agent's topics, when it has more than one, e.g. \"invoice_processing\". A topic's name is its address and is unique process-wide, so it identifies its agent too."
                 },
                 "message": {
                     "type": "string",

@@ -55,11 +55,17 @@ impl TopicManagers {
             .cloned()
     }
 
-    /// The manager that already serves `topic`, found by asking whose queue map
-    /// holds it. A topic exists because a channel routed to it (which enqueued)
-    /// or because `/spawn` made an agent, so a live queue is what "this topic
-    /// is mine" actually means. A topic that has been idle since a restart has
-    /// no queue anywhere and resolves to `None`.
+    /// The manager running `topic` right now, found by asking whose queue map
+    /// holds it — a topic exists because a channel routed to it (which
+    /// enqueued), so a live queue is what "this topic is mine" means, and it is
+    /// the only answer that is both exact and per-manager.
+    ///
+    /// An idle topic has no queue anywhere; which manager owns it is then told
+    /// by the topic's own state, which is a name-keyed read and so belongs to
+    /// the caller, not to this scan (see `send_handler::recorded_channel`).
+    ///
+    /// The state dir registry keys topics by name process-wide, so two managers
+    /// holding one name would be a collision; the first one wins.
     pub async fn serving(&self, topic: &str) -> Option<Arc<TopicManager>> {
         let managers = self.all();
         for tm in managers.iter() {

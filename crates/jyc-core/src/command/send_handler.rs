@@ -638,13 +638,17 @@ mod tests {
         let tmp = tempdir().unwrap();
         let managers = TopicManagers::new();
         managers.set(vec![make_tm(tmp.path(), AGENTS_CHANNEL)]);
+        // The topic works in a directory of its own, so `..` names a file that
+        // is really there and really outside it.
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
         let out = tmp.path().join("outside.pdf");
         std::fs::write(&out, b"x").unwrap();
 
         let attached = vec!["missing.pdf".to_string()];
         let err = send_to_topic(
             &managers,
-            source(tmp.path()),
+            source(&work),
             SendRequest {
                 attachments: &attached,
                 ..request("invoice", None, "hi")
@@ -657,7 +661,7 @@ mod tests {
         let escaping = vec!["../outside.pdf".to_string()];
         let err = send_to_topic(
             &managers,
-            source(tmp.path()),
+            source(&work),
             SendRequest {
                 attachments: &escaping,
                 ..request("invoice", None, "hi")

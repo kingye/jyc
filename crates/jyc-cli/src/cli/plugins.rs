@@ -12,7 +12,9 @@
 //! entries are flat shell scripts, not one directory per name. A collection
 //! the source does not carry is skipped, and a directory this command does
 //! not know (e.g. a `scripts/` that only makes sense in the repo) is named in
-//! a log line and left alone.
+//! a printed line and left alone. Unlike `skills/` and `subagents/`, `hooks/`
+//! is not picked up by a directory scan: a `[[hooks]]` entry in `config.toml`
+//! has to name the installed script.
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
@@ -22,6 +24,10 @@ use super::install;
 
 /// The collections a plugin archive may carry, as `<name>` under the root.
 const COLLECTIONS: &[&str] = &["skills", "subagents", "hooks"];
+
+/// The one collection whose entries are flat files rather than one directory
+/// per name, and which is therefore installed file by file.
+const FLAT_COLLECTION: &str = "hooks";
 
 /// Actions for the `plugins` subcommand.
 #[derive(Debug, Subcommand)]
@@ -65,25 +71,29 @@ pub async fn install_plugins(source: &Path, target: &Path) -> Result<()> {
         .await
         .with_context(|| format!("failed to read {}", root_path.display()))?;
     while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        if !path.is_dir() {
+        // `file_type` does not follow symlinks (unlike `Path::is_dir`), so a
+        // member that merely points at a directory is not installed.
+        if !entry.file_type().await?.is_dir() {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
         if !COLLECTIONS.contains(&name.as_str()) {
-            tracing::info!("skipping unknown plugin collection: {name}/");
+            // Command output, not logging: the same channel `install_entries`
+            // prints its "installed <name>" lines to.
+            println!("skipping unknown plugin collection: {name}/");
             continue;
         }
+        let path = entry.path();
         // Every collection but `hooks/` is one subdirectory per name, replaced
         // cleanly — the semantics `jyc skills install` and `jyc agents install`
         // already have. `hooks/` holds flat shell scripts instead, so it is
         // copied file by file: `install_entries` enumerates subdirectories and
         // would find none.
-        if name == "hooks" {
+        if name == FLAT_COLLECTION {
             let copied =
                 jyc_core::template_utils::overwrite_template_files(&path, &target.join(&name))
                     .await?;
-            tracing::info!("installed {name}/ ({copied} file(s))");
+            println!("installed {name}/ ({copied} file(s))");
         } else {
             install::install_entries(root_path, target, &name, None).await?;
         }
@@ -92,7 +102,8 @@ pub async fn install_plugins(source: &Path, target: &Path) -> Result<()> {
 
     if installed == 0 {
         bail!(
-            "no plugin collections (skills/, subagents/, hooks/) found in {}",
+            "no plugin collections ({}) found in {} — a bundle holds them at its root",
+            COLLECTIONS.join(", "),
             source.display()
         );
     }
@@ -140,15 +151,13 @@ fn open_root(source: &Path) -> Result<Root> {
 /// Refuse the two shapes that would lose data: a source that is the target
 /// (installing `~/.config/jyc` onto itself — an entry is removed before it is
 /// copied, so the source would disappear with it), and a target inside the
-/// source (the copy would walk into what it is writing).
+/// source (the copy would walk into what it is writing, duplicating the
+/// source into itself rather than deleting it).
 fn guard_source_and_target(source: &Path, target: &Path) -> Result<()> {
     let src = source
         .canonicalize()
         .with_context(|| format!("plugin source does not exist: {}", source.display()))?;
-    let dst = target
-        .canonicalize()
-        .or_else(|_| std::path::absolute(target))
-        .unwrap_or_else(|_| target.to_path_buf());
+    let dst = resolve_through_existing_ancestors(target);
 
     if src == dst {
         bail!(
@@ -164,6 +173,34 @@ fn guard_source_and_target(source: &Path, target: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// `target` resolved as far as it exists: canonicalize its deepest existing
+/// ancestor — which resolves symlinks and `..` — then re-append the part that
+/// does not exist yet. A bare `std::path::absolute` would leave a symlinked
+/// ancestor unresolved and let a target that really is inside the source pass
+/// the guard (the target is usually created by the install itself, so it
+/// cannot simply be canonicalized).
+fn resolve_through_existing_ancestors(target: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut current = target;
+    loop {
+        if let Ok(mut resolved) = current.canonicalize() {
+            for part in rest.iter().rev() {
+                resolved.push(part);
+            }
+            return resolved;
+        }
+        match (current.file_name(), current.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name);
+                current = parent;
+            }
+            _ => {
+                return std::path::absolute(target).unwrap_or_else(|_| target.to_path_buf());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -294,7 +331,10 @@ mod tests {
             err.to_string().contains("outside the plugin source"),
             "unexpected error: {err}"
         );
+        // The guard runs before anything is written, so the source is intact.
         assert!(!target.exists());
+        assert!(source.join("skills/demo/SKILL.md").is_file());
+        assert!(source.join("hooks/bell.sh").is_file());
     }
 
     #[tokio::test]
@@ -325,5 +365,78 @@ mod tests {
         assert!(target.join("skills/demo/SKILL.md").is_file());
         // An entry the bundle does not carry is left in place.
         assert!(target.join("skills/mine/SKILL.md").is_file());
+    }
+
+    #[tokio::test]
+    async fn overwrites_a_hook_file_and_keeps_the_others() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("bundle");
+        write_fixture(&source);
+        let target = tmp.path().join("config");
+        std::fs::create_dir_all(target.join("hooks")).unwrap();
+        std::fs::write(target.join("hooks/bell.sh"), "old").unwrap();
+        std::fs::write(target.join("hooks/mine.sh"), "mine").unwrap();
+
+        install_plugins(&source, &target).await.unwrap();
+
+        // The bundle's version of a hook replaces the installed one...
+        assert_eq!(
+            std::fs::read_to_string(target.join("hooks/bell.sh")).unwrap(),
+            "demo\n"
+        );
+        // ...while a hook the bundle does not carry is kept.
+        assert_eq!(
+            std::fs::read_to_string(target.join("hooks/mine.sh")).unwrap(),
+            "mine"
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_a_source_that_is_not_an_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("bundle.tar.gz");
+        std::fs::write(&source, "not a gzipped tar").unwrap();
+        let target = tmp.path().join("config");
+
+        let err = install_plugins(&source, &target).await.unwrap_err();
+        assert!(
+            err.to_string().contains("gzipped tar"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_a_source_that_does_not_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("missing");
+        let target = tmp.path().join("config");
+
+        let err = install_plugins(&source, &target).await.unwrap_err();
+        assert!(
+            err.to_string().contains("does not exist"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The target does not exist yet, but its *ancestor* resolves inside the
+    /// source through a symlink. Resolving only the target itself would miss
+    /// it, so the guard has to resolve the deepest ancestor that exists.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn refuses_a_target_inside_the_source_through_a_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("bundle");
+        write_fixture(&source);
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&source, &link).unwrap();
+        let target = link.join("installed");
+
+        let err = install_plugins(&source, &target).await.unwrap_err();
+        assert!(
+            err.to_string().contains("outside the plugin source"),
+            "unexpected error: {err}"
+        );
+        assert!(!target.exists());
+        assert!(source.join("skills/demo/SKILL.md").is_file());
     }
 }

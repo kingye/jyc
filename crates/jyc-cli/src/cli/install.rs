@@ -1,11 +1,15 @@
-//! Shared logic for the `agents` and `skills` subcommands.
+//! Shared logic for the `agents`, `skills` and `plugins` subcommands.
 //!
-//! Both commands install named directories from a *source* directory
+//! The first two install named directories from a *source* directory
 //! (e.g. the jyc repo checkout) into a *target* directory (a config
 //! dir or data dir layer):
 //!
 //! - `jyc agents` operates on `<source>/templates/` → `<target>/templates/`
 //! - `jyc skills` operates on `<source>/skills/` → `<target>/skills/`
+//!
+//! `jyc plugins` feeds both helpers from a plugin bundle instead: this one for
+//! `skills/` and `subagents/`, and `overwrite_template_files` for `hooks/`,
+//! whose entries are flat files rather than one directory per name.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};

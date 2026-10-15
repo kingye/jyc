@@ -375,7 +375,9 @@ The `dashboard` command requires the `[inspect]` section to be enabled in config
 and `jyc plugins install` writes them into the config dir (a plain directory
 laid out the same way works too). Every release publishes one as
 `jyc-plugins.tar.gz`, which is the shortest way to put those skills, subagent
-roles and hook scripts where a running instance reads them:
+roles and hook scripts in place: `skills/` and `subagents/` are picked up by a
+directory scan, while an installed `hooks/*.sh` runs only once a `[[hooks]]`
+entry in `config.toml` names it.
 
 ```bash
 curl -LO https://github.com/kingye/jyc/releases/latest/download/jyc-plugins.tar.gz

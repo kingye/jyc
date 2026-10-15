@@ -362,9 +362,25 @@ jyc skills list        # List available skills
 jyc skills install [name]   # Install skill(s) (omit name = all)
                        #   --source <DIR>   Source dir (default: CWD)
                        #   --target <DIR>   Target dir (default: platform config home)
+jyc plugins install <archive>   # Install a plugin bundle into the config dir
+                       #   <archive>        A .tar.gz (or a directory) holding
+                       #                    skills/ subagents/ hooks/ at its root
+                       #   --target <DIR>   Target dir (default: platform config home)
 ```
 
 The `dashboard` command requires the `[inspect]` section to be enabled in config.
+
+**Plugins**: a *plugin bundle* is a gzipped tar with `skills/`, `subagents/` and
+`hooks/` at its root — the three user-editable collections this repo ships —
+and `jyc plugins install` writes them into the config dir (a plain directory
+laid out the same way works too). Every release publishes one as
+`jyc-plugins.tar.gz`, which is the shortest way to put those skills, subagent
+roles and hook scripts where a running instance reads them:
+
+```bash
+curl -LO https://github.com/kingye/jyc/releases/latest/download/jyc-plugins.tar.gz
+jyc plugins install ./jyc-plugins.tar.gz
+```
 
 **How `jyc open` picks the topic** (relevant when several agents share one
 directory via `topic_path`): topic identity is the *name*, not the

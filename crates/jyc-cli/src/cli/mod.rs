@@ -6,6 +6,7 @@ pub mod dashboard;
 pub mod install;
 pub mod mcp;
 pub mod patterns;
+pub mod plugins;
 pub mod resolve;
 pub mod serve;
 pub mod skills;

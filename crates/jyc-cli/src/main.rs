@@ -87,6 +87,12 @@ enum Commands {
         action: cli::skills::SkillsAction,
     },
 
+    /// Install a plugin archive (.tar.gz) or a plugin directory into the config dir
+    Plugins {
+        #[command(subcommand)]
+        action: cli::plugins::PluginsAction,
+    },
+
     /// MCP server maintenance (e.g. one-time OAuth authorization)
     Mcp {
         #[command(subcommand)]
@@ -234,6 +240,7 @@ async fn main() -> Result<()> {
         }
         Commands::Agents { action } => cli::agents::run(action).await,
         Commands::Skills { action } => cli::skills::run(action).await,
+        Commands::Plugins { action } => cli::plugins::run(action).await,
         Commands::Mcp { action } => cli::mcp::run(action, &data_dir, cli.data_dir.is_some()).await,
         Commands::Stop(args) => cli::stop::run(args, &data_dir).await,
         Commands::Token(args) => cli::token::run(args, &data_dir),

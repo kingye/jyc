@@ -88,6 +88,17 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # The plugin archive: the user-editable collections this repo ships, in
+      # the layout `jyc plugins install` expects at an archive (or directory)
+      # root. Built here rather than in `build`, so the matrix does not produce
+      # it once per target. Both publishes below pick it up through
+      # `files: dist/*.tar.gz`, and sync-gitee-release.yml mirrors it as well.
+      - name: Checkout (for the plugin archive contents)
+        uses: actions/checkout@v4
+
+      - name: Package plugin archive
+        run: tar -czf dist/jyc-plugins.tar.gz skills subagents hooks
+
       # Version-tag push (e.g. `v0.3.14`): publish a stable release with the
       # tag name. The tag was pushed with the code, so it already exists;
       # action-gh-release creates the release for it (fails only if the

@@ -151,7 +151,7 @@ async fn resolve_topic_path(
     channel: &str,
     topic: &str,
 ) -> Result<PathBuf, ApiError> {
-    let tm = ctx.topic_managers.by_channel(&channel).ok_or_else(|| {
+    let tm = ctx.topic_managers.by_channel(channel).ok_or_else(|| {
         ApiError::not_found(format!("no topic manager found for channel '{channel}'"))
     })?;
     tm.topic_path(topic).await.ok_or_else(|| {

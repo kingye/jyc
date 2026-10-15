@@ -49,20 +49,27 @@ do not interpret what you find — the caller reads the diff.
 ## How
 
 `gh pr checks` is the whole job — behind a pipe, so the table the watch re-prints
-every interval cannot pile up, and with the call's own `timeout` set to the
-budget (120s, the default, kills the watch at two minutes and returns *nothing*):
+every interval cannot pile up, and with the deadline *inside* the command so the
+pipe still flushes when the budget runs out (a tool-level timeout returns nothing
+at all, and `tail` prints only at end of input):
 
-    gh pr checks <pr> --repo <owner/name> --watch --interval 30 | tail -c 2000
+    timeout 1500 gh pr checks <pr> --repo <owner/name> --watch --interval 30 | tail -c 20000
 
-The watch leaves when no check is pending; the pipe keeps its freshest render,
-which is the last one. Read the table, not the exit code: a check is final when
-it reads pass, fail or skipping, and no checks reported is not a pass — the
-checks may not have appeared yet.
+Set the call's own `timeout` just above that inner one (1560). Read the last table
+in the output: it is the freshest render, and gh lists failures first, so the row
+you must name is where that table starts. The pipe is also why the exit status is
+the pipe's, not gh's: a failing run reads as a successful call, so the table is
+the verdict, and gh's own words (`no checks reported on the '…' branch`) reach you
+in the stderr block.
 
-Two readings are not verdicts, and are what you re-call for: a call cut off by
-its own timeout (it returns no output at all), and no checks reported. Pace a
-re-call — `sleep 30;` ahead of it. Never poll without an end: budget ~30 minutes,
-and at the budget report the table as it stands.
+The watch leaves when no check is pending. A check is final when it reads pass,
+fail or skipping, and no checks reported is not a pass — the checks may not have
+appeared yet.
+
+Two readings are not verdicts, and are what you re-call for: a call cut off
+before it printed anything, and no checks reported. Pace a re-call — `sleep 30;`
+ahead of it. Never poll without an end: budget ~30 minutes, and at the budget
+report the table as it stands — the inner `timeout` is there to leave you one.
 
 You run in plan mode: a read-only poll is not an implementation, and a turn has
 one action — the call, or the report. The poll is yours to make.
@@ -75,7 +82,8 @@ turn with the same text in your own topic: a report that stays in your own topic
 reaches nobody. Say whether the PR's checks passed; for a failure give the
 failing check's name and the tail of its log. `gh run view` wants a run id in a
 non-interactive shell, so take it from the failing row's own URL
-(`…/actions/runs/<id>/job/<job>`) and fetch that run:
+(`…/actions/runs/<id>/job/<job>`, for an Actions check run — a legacy status
+context has no run id to give) and fetch that run:
 
     gh run view <id> --repo <owner/name> --log-failed | grep -aE 'panicked|FAILED|error: ' | tail -n 5
 

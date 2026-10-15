@@ -71,8 +71,9 @@ again in this turn, do not start a waiter that the next push will supersede.
    without being one, and `gh` there answers "not a git repository") and the PR or branch. That is
    all it needs: it checks that PR (`gh pr checks --watch`) and reports the table, pass or fail.
    Which run, workflow or head that PR carries is yours to know, not the child's — and the report
-   names no head, so a green tied to one is a query you make yourself when it lands
-   (`gh pr view <pr> --repo <owner/name> --json headRefOid`)
+   names no head, so a green tied to one is a query you make yourself when it lands: the head now
+   (`gh pr view <pr> --repo <owner/name> --json headRefOid`), then the runs for that commit
+   (`gh run list --repo <owner/name> --commit <full 40-character sha>` — never abbreviated)
 3. End your turn; the report arrives as a new message in this topic.
 
 The equivalent older way, when you would rather not hold a child open: `job_create` with a one-time

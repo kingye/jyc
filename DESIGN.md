@@ -419,6 +419,7 @@ these names loosely, so they are fixed here.
 | Term | What it is | Where it is | In code |
 |---|---|---|---|
 | **config dir** | The user-edited input root | `$XDG_CONFIG_HOME/jyc` or `~/.config/jyc`; Windows `%APPDATA%\jyc`. Holds `config.toml`, `skills/`, `templates/`, `subagents/`, `hooks`, `scripts/` | `jyc_utils::paths::config_dir()` |
+| **plugin bundle** | The installable, shareable form of the three user-editable collections: a gzipped tar (or plain directory) holding `skills/`, `subagents/` and `hooks/` at its root — the layout `jyc plugins install` reads. Built by the release workflow as `jyc-plugins.tar.gz` and published with every release, nightly included; installing it is a copy into the collections' places under the config dir, never a merge into `config.toml` (which no bundle carries) | the release asset `dist/jyc-plugins.tar.gz`; any directory laid out that way | `cli/plugins.rs` |
 | **data dir** | The generated-state root — the instance root | `$XDG_DATA_HOME/jyc` or `~/.local/share/jyc`; Windows `%LOCALAPPDATA%\jyc`. The default `--data-dir` | `jyc_utils::paths::data_dir()` |
 | **channel** | The origin/destination of messages (email, github, gitee, feishu, websocket, …). A channel has **no topic directory**: topics never live under a channel | `[channels.<name>]` in the config; binds a pipe (`agent` + `topic` template) or is a hub channel | — |
 | **channels dir** | The root of every channel's own runtime state | `<data dir>/channels` | `jyc_utils::paths::channels_dir()` |

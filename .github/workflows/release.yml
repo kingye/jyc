@@ -82,6 +82,23 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The checkout runs first, and `dist/` is only created after it: a
+      # checkout into a workspace that is not a git repository removes that
+      # workspace's contents, which would otherwise take the downloaded
+      # artifacts with it.
+      - name: Checkout (for the plugin archive contents)
+        uses: actions/checkout@v4
+
+      # The plugin archive: the user-editable collections this repo ships, in
+      # the layout `jyc plugins install` expects at an archive (or directory)
+      # root. Built here rather than in `build`, so the matrix does not produce
+      # it once per target. Both publishes below pick it up through
+      # `files: dist/*.tar.gz`, and sync-gitee-release.yml mirrors it as well.
+      - name: Package plugin archive
+        run: |
+          mkdir -p dist
+          tar -czf dist/jyc-plugins.tar.gz skills subagents hooks
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:

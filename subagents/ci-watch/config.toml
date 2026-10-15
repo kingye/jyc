@@ -108,7 +108,7 @@ report.
 # layer, not an override: the user's `/context` still wins.)
 [context_strategy]
 mode = "sliding_window"
-window = 3
+window = 0
 note_window = 0
 tool_result_cap = 512
 
@@ -126,3 +126,4 @@ model = "${ai.small_model}"
 # the repo), so the watcher works in it; an explicit spawn argument overrides this.
 [spawn]
 share_topic_path = true
+

@@ -339,6 +339,9 @@ impl TopicManager {
             // over the pattern-derived name (adopt re-stamps both the file
             // and the name-keyed registration).
             let pin_name = pattern.topic_name.as_deref().unwrap_or(&pattern.name);
+            // What the topic works in: the pin itself for a pinned pattern,
+            // and for an unpinned agents pattern the home's own resolution.
+            let mut work_dir = resolved.clone();
             let jyc_name = if pattern.topic_path.is_some() {
                 let agent_key = (self.channel_name == "agents").then_some(pattern.name.as_str());
                 let state = crate::topic_path::state_dir_for(
@@ -366,7 +369,16 @@ impl TopicManager {
                 // Unpinned agents-channel topic: its dir under the agents
                 // root is jyc-owned, so state lives in-dir — registered
                 // explicitly here (activation registration, no fallback).
+                // The pattern's dir is the topic's *home*; what it works in is
+                // resolved exactly like the router resolves it — the record in
+                // the state dir first, then the layout on disk.
                 jyc_types::state_dir::register_if_absent(pin_name, &resolved.join(".jyc"));
+                work_dir = crate::topic_path::topic_work_dir_at(&resolved, pin_name);
+                if let Err(e) =
+                    crate::topic_path::record_topic_work_dir(&resolved.join(".jyc"), &work_dir)
+                {
+                    tracing::debug!(error = %e, "Could not record a restored topic's working dir");
+                }
                 pin_name.to_string()
             };
             let state_dir = resolve_state_dir(&jyc_name, &resolved);
@@ -380,10 +392,10 @@ impl TopicManager {
                     let mut paths = self.topic_paths.lock().await;
                     paths.entry(name.clone()).or_insert_with(|| {
                         tracing::info!(
-                            path = %resolved.display(),
+                            path = %work_dir.display(),
                             "Restored custom topic_path from disk"
                         );
-                        resolved
+                        work_dir.clone()
                     });
                     drop(paths);
                     // Pre-create the event bus so the ActivityTracker can
@@ -459,9 +471,16 @@ impl TopicManager {
                         continue;
                     }
                     // Explicit activation registration: a discovered
-                    // sub-topic's state is its in-dir `.jyc` (#825).
+                    // sub-topic's state is its in-dir `.jyc` (#825). The
+                    // scanned dir is the topic's *home*, so what it works in
+                    // is resolved from there (record first, then the layout).
                     jyc_types::state_dir::register_if_absent(&name, &state_dir);
-                    self.register_custom_path(&name, path.clone()).await;
+                    let work_dir = crate::topic_path::topic_work_dir_at(&path, &name);
+                    if let Err(e) = crate::topic_path::record_topic_work_dir(&state_dir, &work_dir)
+                    {
+                        tracing::debug!(error = %e, "Could not record a restored topic's working dir");
+                    }
+                    self.register_custom_path(&name, work_dir).await;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // Empty `.jyc/` (template init not finished yet) — skip.

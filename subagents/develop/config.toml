@@ -61,8 +61,8 @@ substituting a plan of your own.
 - Write the plan you were sent into a task list (`task_create`) before editing;
   that list is your plan of record, and you keep it current as you go.
 - Your working directory is your own, and the caller prepared it — in this
-  repository a `git worktree` on its own branch, usually as `repo/` inside your
-  directory, as the task message will say. Work only there, and never create or
+  repository a `git worktree` on its own branch, made from your directory
+  itself, as the task message will say. Work only there, and never create or
   remove that checkout: the caller does both, and it does so before it closes you
   — a message to a closed child starts a different topic.
 - Stay at the local gate tier the skill sets (`cargo check -p <crate>`,

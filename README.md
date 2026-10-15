@@ -95,7 +95,7 @@ Three-level layering applies to `config.toml`, `skills/`, and `templates/`:
 
 - **L1 (global)** — `<config dir>/`: shared `config.toml`, `skills/`, `templates/`, `subagents/` (one directory per subagent type — this one is L1-only, see below)
 - **L2 (data dir / data root)** — `--data-dir` if given, else the data dir: its own `config.toml` (`--config`), `skills/`, `templates/`, and all generated state (`channels/<channel>/.imap/`, `channels/<channel>/.github/`, `agents/<agent>/<topic>/`)
-- **L3 (topic)** — `<topic_path>/.jyc/`: `config.toml` (model overrides plus the topic's own `mode`, skill allow/deny lists, `disabled_tools` and `instructions`), `skills/`, `templates/`, sessions, chat history
+- **L3 (topic)** — the topic's state dir (`<home>/.jyc`, a sibling of the `.data` it works in): `config.toml` (model overrides plus the topic's own `mode`, skill allow/deny lists, `disabled_tools` and `instructions`), `skills/`, `templates/`, sessions, chat history
 
 Merge/lookup rules:
 
@@ -585,7 +585,7 @@ The dashboard and chat **Topic Info** panes then show
 - **session** -- resets when the agent session resets (context auto-reset,
   `/reset`, or switching to a model with a smaller context window).
 - **today** -- durable UTC-day total, appended per call to
-  `<topic>/.jyc/bill-YYYY-MM-DD.jsonl` and never reset or truncated. Each
+  the state dir's `bill-YYYY-MM-DD.jsonl` and never reset or truncated. Each
   line records the token counts alongside the cost, so the ledger stays
   auditable and a corrected rate can be replayed over past usage.
 
@@ -657,12 +657,12 @@ This is useful for diagnosing reply delivery failures.
 
 **AI replies are not sent:**
 - Check JYC logs for AI provider/API errors
-- Check the MCP reply tool log (`.jyc/reply-tool.log` in the topic directory)
+- Check the MCP reply tool log (`reply-tool.log` in the topic's state dir)
 - Verify the `[agent]` section in `config.toml` has valid API credentials
 
 **Session/context issues:**
 - Send `/reset --force` in an email to clear the AI session for that topic
-- Or manually delete `.jyc/agent-session.json` in the topic directory
+- Or manually delete `agent-session.json` in the topic's state dir
 
 **Container-specific issues:**
 - See [docker/README.md](docker/README.md) troubleshooting section

@@ -8,7 +8,8 @@ use crate::topic_manager::TopicManager;
 use jyc_types::{ChannelMatcher, ChannelPattern, InboundMessage};
 
 /// Resolve which directory a topic's files (chat history, session state,
-/// repo checkout) live in, given the pattern it matched.
+/// repo checkout) live in, given the pattern it matched — its `topic_path`,
+/// the working directory its agent runs in.
 ///
 /// Two rules, in order:
 ///
@@ -16,11 +17,14 @@ use jyc_types::{ChannelMatcher, ChannelPattern, InboundMessage};
 ///    it pins only the self-named topic (agent `jyc` ↔ topic `jyc`).
 ///    Sibling topics stay out of it — a pinned path is usually a code
 ///    checkout, not a container for unrelated conversations.
-/// 2. On the synthesized `agents` channel every other topic nests under
-///    the agent's root: `<agents-workspace>/<agent>/<topic>`. Each topic
-///    then owns its directory instead of sharing the agent's, which is
-///    what keeps two pipe-routed topics (`plan-197`, `plan-198`) from
-///    writing into one chat history.
+/// 2. On the synthesized `agents` channel every other topic has a home
+///    under the agent's root — `<agents-workspace>/<agent>/<topic>`, or the
+///    agent root itself for the self-named topic — and works in
+///    `<home>/.data` ([`topic_work_dir`]). Each topic gets its own working
+///    directory instead of sharing the agent's, which is what keeps two
+///    pipe-routed topics (`plan-197`, `plan-198`) from writing into one
+///    chat history; their homes keep the state dirs apart for the same
+///    reason.
 ///
 /// `None` means "no override" — the caller falls back to
 /// `<workspace>/<topic>`.
@@ -39,7 +43,8 @@ fn topic_dir_for(
     {
         return Some(crate::topic_path::resolve_topic_path(tp, data_root));
     }
-    (channel_name == "agents").then(|| workspace_dir.join(&pattern.name).join(topic_name))
+    (channel_name == "agents")
+        .then(|| crate::topic_path::topic_work_dir(workspace_dir, &pattern.name, topic_name))
 }
 
 /// Routes inbound messages to the appropriate topic queue.
@@ -332,22 +337,23 @@ mod tests {
         let mut pinned = test_pattern("jyc", None);
         pinned.topic_path = Some("/projects/jyc".to_string());
 
-        // Pipe-routed topics nest under the agent root, one dir each.
+        // Pipe-routed topics live under the agent root, one home each, and
+        // work in that home's `.data`.
         assert_eq!(
             topic_dir_for(Some(&planner), "plan-197", "agents", data_root, agents_ws),
-            Some(PathBuf::from("/data/agents/planner/plan-197"))
+            Some(PathBuf::from("/data/agents/planner/plan-197/.data"))
         );
         assert_eq!(
             topic_dir_for(Some(&planner), "plan-198", "agents", data_root, agents_ws),
-            Some(PathBuf::from("/data/agents/planner/plan-198")),
+            Some(PathBuf::from("/data/agents/planner/plan-198/.data")),
             "two topics of one agent must not share a directory"
         );
 
-        // No pipe topic → topic name defaults to the agent name, which
-        // still gets its own directory under the agent root.
+        // No pipe topic → topic name defaults to the agent name, whose home
+        // is the agent root itself.
         assert_eq!(
             topic_dir_for(Some(&planner), "planner", "agents", data_root, agents_ws),
-            Some(PathBuf::from("/data/agents/planner/planner"))
+            Some(PathBuf::from("/data/agents/planner/.data"))
         );
 
         // A pinned topic_path holds the self-named topic only...
@@ -364,7 +370,7 @@ mod tests {
                 data_root,
                 agents_ws
             ),
-            Some(PathBuf::from("/data/agents/jyc/mail-invoice"))
+            Some(PathBuf::from("/data/agents/jyc/mail-invoice/.data"))
         );
 
         // Regular channels: only the self-named pin, otherwise no override

@@ -249,15 +249,21 @@ impl Tool for SendToThreadTool {
                             jyc_core::topic_path::resolve_topic_path(tp, target_tm.data_root())
                         })
                         // Mirror MessageRouter: an agent topic without a
-                        // pinned topic_path lives at
-                        // `<agents-workspace>/<agent>/<topic>`. Only the
-                        // self-named topic is resolvable here (that is what
-                        // `pattern_for_topic` matches); other agent topics
-                        // already carry a registered path from their first
-                        // routed message.
+                        // pinned topic_path has its home under the agent
+                        // root (`<agents-workspace>/<agent>/<topic>`, or the
+                        // agent root for the self-named topic) and works in
+                        // that home's `.data`. Only the self-named topic is
+                        // resolvable here (that is what `pattern_for_topic`
+                        // matches); other agent topics already carry a
+                        // registered path from their first routed message.
                         .or_else(|| {
-                            (channel == "agents")
-                                .then(|| target_tm.workspace_dir().join(&p.name).join(topic_name))
+                            (channel == "agents").then(|| {
+                                jyc_core::topic_path::topic_work_dir(
+                                    target_tm.workspace_dir(),
+                                    &p.name,
+                                    topic_name,
+                                )
+                            })
                         }),
                 )
             }

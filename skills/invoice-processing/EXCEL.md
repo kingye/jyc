@@ -147,7 +147,7 @@ Send a reply confirming the processing result.
 ```
 ❌ 发票处理失败
 
-来源: attachments/invoice.pdf
+来源: .attachments/invoice.pdf
 发件人: finance@corp.com
 文件已保存: invoice_2026-04/unknown_001.pdf
 已提取部分信息: 开票日期=2026-03-20, 销售方=XX公司, 价税合计=¥1,060.00

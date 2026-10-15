@@ -11,13 +11,22 @@ use jyc_types::InboundAttachmentConfig;
 use jyc_types::{InboundMessage, MessageAttachment};
 use jyc_utils::helpers::sanitize_for_filesystem;
 
+/// Name of the directory inbound attachments are saved into, inside the
+/// topic's working directory: `<topic_path>/.attachments/`.
+///
+/// Dot-prefixed like the other framework-owned directories (`.jyc` state,
+/// `.data` working dir, `.inbound` staging), so it can never be mistaken for
+/// the topic's own work: a project checked out as the working directory may
+/// well have an `attachments/` of its own.
+pub const ATTACHMENT_DIR_NAME: &str = ".attachments";
+
 /// Resolve the save directory for inbound attachments.
 ///
 /// Rules:
 /// - If `attachment_config.save_path` is set and absolute, return it as-is.
 /// - If `attachment_config.save_path` is set and relative, join under
 ///   `topic_path`.
-/// - If unset, return `topic_path/attachments/`.
+/// - If unset, return `topic_path/.attachments/`.
 ///
 /// Centralizes the attachment-path-resolution logic so callers (channel
 /// adapters that save attachments, agent code that needs to know which
@@ -36,7 +45,7 @@ pub fn resolve_attachment_save_dir(
                 topic_path.join(path_buf)
             }
         }
-        None => topic_path.join("attachments"),
+        None => topic_path.join(ATTACHMENT_DIR_NAME),
     }
 }
 
@@ -237,7 +246,7 @@ async fn adopt_staged_attachment(
 /// This is the shared implementation used by all channel adapters.
 /// The topic directory path is constructed from workspace_root, channel_name,
 /// and topic_name following the convention:
-///   `<workspace_root>/<channel_name>/workspace/<topic_name>/attachments/`
+///   `<workspace_root>/<channel_name>/workspace/<topic_name>/.attachments/`
 ///
 /// The save path can be overridden via `InboundAttachmentConfig.save_path`.
 pub async fn save_attachments_to_topic_directory(
@@ -479,7 +488,7 @@ mod tests {
             .join("test_channel")
             .join("workspace")
             .join("test_topic")
-            .join("attachments");
+            .join(ATTACHMENT_DIR_NAME);
         assert!(expected_dir.exists());
 
         // Verify saved_path was set
@@ -532,7 +541,7 @@ mod tests {
             .unwrap();
 
         let saved = message.attachments[0].saved_path.clone().unwrap();
-        assert!(saved.starts_with(topic_path.join("attachments")));
+        assert!(saved.starts_with(topic_path.join(ATTACHMENT_DIR_NAME)));
         assert!(saved.to_string_lossy().ends_with(".pdf"));
         assert_eq!(std::fs::read(&saved).unwrap(), b"pdf-bytes");
         // The size is re-stat'ed from the file the pipe uploaded.

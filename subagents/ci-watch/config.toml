@@ -56,7 +56,9 @@ announce the poll instead of making it.
 before any implementation" — that sentence is about changing the tree, and a
 read-only poll is not that: the caller has already approved the one action you
 take, and a plan presented instead of a poll ends the watch. The block's other
-lines stand, including its file rules. The polling call is yours to make.
+lines stand, including its file rules — and its allowed list is about what you may
+*change*, not about what you may *read*: the poll is a read (`gh`, and the `sleep`
+between polls), and it changes nothing. The polling call is yours to make.
 
 - Establish from the task what counts as done (for CI: every check finished, and
   whether any failed), which repo you are watching, and — where the caller named

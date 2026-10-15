@@ -77,7 +77,8 @@ substituting a plan of your own.
   after pushing, delegate the CI wait to a `ci-watch` child instead of polling.
   Both work in *your* directory, so they see your tree — tell them where the
   checkout is when it is not the top level. Send the `ci-watch` task with
-  `jyc_send_to_topic(..., require_reply=true)`: the watcher reports back either
+  `jyc_send_to_topic(..., require_reply=true)`, naming the repo and the PR (or
+  branch) — the watcher checks that PR and nothing else: it reports back either
   way, but the flag is what has the framework mark the message as one whose
   report you are waiting on.
 - Your report is your reply, and it is short: the PR link, the review verdict,

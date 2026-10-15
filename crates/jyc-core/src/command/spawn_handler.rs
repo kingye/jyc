@@ -1448,8 +1448,9 @@ mod tests {
             "provider/small",
             "the model reference still resolves to the channel's small model"
         );
-        // `bash` stays: `gh` and `sleep` are what watching is. Nothing published
-        // to a link either — the report is the only thing it sends back.
+        // `bash` stays: `gh` is what watching is — a timed call, and a filtered
+        // fetch of one failure's log. Nothing published to a link either — the
+        // report is the only thing it sends back.
         assert_eq!(
             watch.config.disabled_tools.as_deref(),
             Some(
@@ -1461,7 +1462,7 @@ mod tests {
         assert_eq!(
             watch.spawn.as_ref().and_then(|s| s.share_topic_path),
             Some(true),
-            "the caller's directory is what identifies the run being watched"
+            "the caller's directory holds the checkout the PR's checks belong to"
         );
         assert!(
             watch
@@ -1493,7 +1494,17 @@ mod tests {
         // the simplification: the role reports the check table of the PR the caller
         // named, so no head or run id appears in what it sends back to be mispaired,
         // and the caller owns knowing which run that PR has (see the role's header).
+        // The provenance half stays, and is pinned below with it: every fact still
+        // has to come from this turn's own output.
         let orders = flat(watch.config.instructions.as_deref().unwrap());
+        assert!(
+            orders.contains("must be in a tool result from *this* turn"),
+            "a fact remembered from an earlier poll is not evidence about what ran"
+        );
+        assert!(
+            orders.contains("no evidence at all about what ran"),
+            "a head named in the caller's message is not evidence about the run"
+        );
         // It reports on its own initiative — not only when the caller asked — and
         // the reading it waits on is a table, so an empty one is waited out rather
         // than reported as a result.

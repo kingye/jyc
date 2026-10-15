@@ -73,11 +73,15 @@ back as a message:
    makes `gh run list --commit` an empty list rather than an error
 3. End your turn; the report arrives as a new message in this topic.
 
-**A dead watch looks like a report.** A reply that *announces* a poll instead of
-reporting a result is not one — the watcher's turn ended with that text and nothing
-resumes it — so treat it as no report at all: check the run yourself once, or hand
-the wait off to a fresh watcher. The role file states the invariant from its own
-side: every turn carries the poll call or the report, never a promise to poll.
+**A dead watch looks like a report.** What you observe is that no report arrives:
+nothing in this topic by the end of the watcher's ~30-minute budget is not a
+report, so check the run yourself once, or send the *same* watcher another task —
+a new message opens a new turn in it (a second watcher on one PR is a duplicate the
+rules forbid; spawn a fresh one only if that child is gone). A reply that instead
+*announces* a poll is the same failure seen early, and it is visible only in the
+watcher's own topic — that turn ended, and nothing resumes it. The role file states
+the invariant from its own side: every turn carries the poll call or the report,
+never a promise to poll.
 
 **What the compile tier proves — and what it does not.** `cargo check -p <crate> --tests` compiles
 the test targets; it never runs them. Green means "the tests compile", not "the tests pass". Never

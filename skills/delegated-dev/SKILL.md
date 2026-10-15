@@ -56,7 +56,9 @@ The role decides where the child *starts*, not what it is stuck with.
      cwd `git status` answers "not a git repository" until the task tells them where to go.
 4. End your turn. The child delegates the review and the CI wait itself, and both of those children
    share *its* directory, so they read its tree — not yours. Nothing comes back until the one report
-   does.
+   does — so a report that never comes is the same as a dead one: if nothing has landed by the time
+   the work should be done (or a watcher's ~30-minute budget is out), ask the child, or check the PR
+   yourself once.
 5. Report to the user: the PR link, the review verdict, the CI verdict, and what is left to decide.
    **Done is the user's call, and so is the merge** — the report landing is not the end of the work: it
    says the plan is built, not that the user accepts what was built. Keep the checkout and the child

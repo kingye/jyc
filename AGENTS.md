@@ -64,7 +64,7 @@ and uses an in-process AI agent to generate replies.
 - 非平凡改动（跨文件、改逻辑，尤其本地跑不了测试时）：push / 开 PR 前或同时派一次评审——`jyc_spawn_subagent(name="review-<what>", type="review")`，再用 `jyc_send_to_topic(..., require_reply=true)` 派任务（任务模板见 `dev-workflow` 技能），范围给 `git diff <base>..HEAD`（`<base>` = `git merge-base origin/main HEAD`，含刚提交的改动）；它异步运行、不阻塞 push，报告作为同一个 PR 的 follow-up commit
 
 ### CI 等待规则
-- CI 结果**必须**回收：每次 push / 开 PR 都安排一次异步等待，把结果带回本 topic——**默认**派 `ci-watch` 子 agent（`jyc_send_to_topic(..., require_reply=true)`，能更早回报、早修；步骤见 `dev-workflow`），或用一次性 `at` job 到点唤醒本 topic（等价旧方式：一次唤醒、更省，代价是早失败要等预算结束才知道）
+- CI 结果**必须**回收：每次 push / 开 PR 都安排一次异步等待，把结果带回本 topic——**默认**派 `ci-watch` 子 agent（`jyc_spawn_subagent(name="ci-watch-<pr>", type="ci-watch")` 建出角色，再用 `jyc_send_to_topic(..., require_reply=true)` 派任务；只发消息不 spawn 会自建一个没有角色的普通 topic、名字还被占；步骤见 `dev-workflow`），或用一次性 `at` job 到点唤醒本 topic（等价旧方式：一次唤醒、更省，代价是早失败要等预算结束才知道）
 - 等待**只安排一次**，针对本轮结束时留下的那个 head：中途还会再 push 时，不为将被取代的 head 派等待者。同一 PR 出了新 head，优先复用同一个 watcher（再派一次任务＝它的一轮新 turn），它已回报过或确实没了才新派；`at` job 同理替换旧的、不叠加
 - **禁止**由自己等待：不得在轮内轮询 `gh pr checks` / `gh run watch`，不得用 `sleep` 重试，不得因为「CI 还没跑完」而推迟提交或推迟回复——安排完**立即结束本轮**并把链接交给用户；结果作为新消息回到本 topic，红 CI 在那一轮里修
 - 唯一例外：结论**已经出来**且马上要用它做决定（如合并前）——允许单查一次（`gh pr checks <branch>`），拿到输出立刻返回，不重复查询；结论还没出时回到第 1 条

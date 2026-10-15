@@ -62,30 +62,30 @@ is fixed in the turn its report arrives in.
 
 Hand the wait off — **default: a `ci-watch` child**, which polls on the small model and reports
 back as a message. Arrange one wait only, for the head you leave behind: if you are going to push
-again in this turn, do not spawn a watcher for the head that push supersedes.
+again in this turn, do not start a waiter that the next push will supersede.
 
 1. `jyc_spawn_subagent(name="ci-watch-<pr>", type="ci-watch")` (`subagents/ci-watch/config.toml`;
    install once with `cp -r subagents/ci-watch <config dir>/subagents/`)
-2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` — which PR or branch, the repo
-   (**name it always**: a watcher that a `develop` child spawned works in that child's topic dir,
-   which holds the checkout without being one, and `gh` there answers "not a git repository"), which
-   workflow where the ref carries more than one, what counts as done, and that the head may move
-   under it: ask for the head SHA the run itself reports, so a green from an older head cannot come
-   back looking like the current one — and hand the head over as the **full 40-character** SHA
-   (`git rev-parse <short>` if `git rev-parse --short` is what you have), since an abbreviated one
-   makes `gh run list --commit` an empty list rather than an error
+2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` — the repo (**name it always**:
+   a watcher that a `develop` child spawned works in that child's topic dir, which holds the checkout
+   without being one, and `gh` there answers "not a git repository") and the PR or branch. That is
+   all it needs: it checks that PR (`gh pr checks --watch`) and reports the table, pass or fail.
+   Which run, workflow or head that PR carries is yours to know, not the child's — and the report
+   names no head, so a green tied to one is a query you make yourself when it lands: the head now
+   (`gh pr view <pr> --repo <owner/name> --json headRefOid`), then the runs for that commit
+   (`gh run list --repo <owner/name> --commit <full 40-character sha>` — never abbreviated)
 3. End your turn; the report arrives as a new message in this topic.
 
 The equivalent older way, when you would rather not hold a child open: `job_create` with a one-time
-`at` at the end of the budget, whose prompt says to check the run for this head and report. It
-re-enters this topic as a new turn — one wake-up, cheaper, but an early failure is only known then.
-One waiter per head either way: if a job is already pending for this PR, replace it rather than
-adding a second, and when the head moves, continue the watcher you have (another task to it is a new
-turn in it) instead of spawning or scheduling a second one.
+`at` at the end of the budget, whose prompt says to check that PR's checks and report. It re-enters
+this topic as a new turn — one wake-up, cheaper, but an early failure is only known then. One waiter
+per PR either way: if a job is already pending for this PR, replace it rather than adding a second,
+and when you push again, continue the waiter you have (another task to a watcher is a new turn in it)
+instead of spawning or scheduling a second one.
 
 **A dead watch looks like nothing — until the budget is out.** Silence in this
 topic once the watcher's ~30-minute budget has run out is a dead watch, not a
-report: when you are next awake here, check the run yourself once, or send the
+report: when you are next awake here, check that PR's checks yourself once, or send the
 *same* watcher another task — a new message opens a new turn in it (a second
 watcher on one PR is a duplicate the rules forbid; spawn a fresh one only if that
 child is gone). A reply that instead *announces* a poll is the same failure seen early, and it

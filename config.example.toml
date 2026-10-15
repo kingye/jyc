@@ -1435,7 +1435,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # A second shipped role is the CI watcher, `subagents/ci-watch/config.toml`
 # (`cp -r subagents/ci-watch <config dir>/subagents/`): plan mode, the small
 # model, no `write`/`edit`, a `[context_strategy]` small enough that a polled
-# `gh` output cannot pile up, and instructions to report the run's outcome
+# `gh` output cannot pile up, and instructions to report the PR's checks
 # without diagnosing it. A parent hands it a wait it does not want to hold its
 # own turn for (see the `dev-workflow` skill).
 #

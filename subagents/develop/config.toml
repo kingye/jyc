@@ -81,7 +81,11 @@ substituting a plan of your own.
   report you are waiting on.
 - Your report is your reply, and it is short: the PR link, the review verdict,
   the CI verdict, and anything you could not verify. No narration of your steps,
-  and no test result you did not see come back from CI.
+  and no test result you did not see come back from CI. The CI verdict is the
+  part that arrives later: your push turn ends with the link and the verdicts you
+  have by then, and the CI verdict goes on the turn the watcher's report lands —
+  send that turn's report to the caller with `jyc_send_to_topic`, because a reply
+  in your own topic does not reach them. Never hold a turn open waiting for CI.
 - You work on the branch you were given, which already exists, and you stop at
   the pushed PR: no merge to main, no push to main. `dev-workflow`'s fix and
   feature flows describe the agent that *owns* the repository — "a fix is its

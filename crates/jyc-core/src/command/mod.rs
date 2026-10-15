@@ -7,7 +7,6 @@ pub mod close_handler;
 pub mod context_handler;
 pub mod custom_handler;
 pub mod exchange_handler;
-pub mod fork_handler;
 pub mod grant_handler;
 pub mod handler;
 pub mod help_handler;
@@ -19,6 +18,7 @@ pub mod pin_common;
 pub mod pin_handler;
 pub mod registry;
 pub mod reset_handler;
+pub mod spawn_common;
 pub mod spawn_handler;
 pub mod template_handler;
 pub mod thinking_handler;
@@ -36,7 +36,8 @@ pub use model_handler::list_available_models;
 /// This is a view of [`builtin::BUILTIN_COMMANDS`], which is also what
 /// registers the handlers, so a command cannot exist in one and be missing
 /// from the other. It used to be a hand-maintained list, and `/fork` shipped
-/// registered-but-hidden because of it (#814).
+/// registered-but-hidden because of it (#814) — the command is gone now, and
+/// the table that fixed it is what keeps `/spawn`'s own row honest.
 pub fn all_commands() -> Vec<CommandInfo> {
     builtin::builtin_infos()
 }

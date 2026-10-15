@@ -1394,7 +1394,7 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # --- Subagent Types ---
 #
 # A subagent type is a named role: a topic config a spawn hands to its child.
-# `jyc_spawn_subagent(type = "review")` (or `/spawn --type=review`) writes the
+# `jyc_spawn_subagent(type = "review")` (or `/spawn review`) writes the
 # type's settings into the child's own `.jyc/config.toml` at spawn time, so the
 # child starts with that model, skill allow-list, disabled tools, mode and
 # instructions instead of whatever the parent happened to be running with.

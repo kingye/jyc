@@ -261,11 +261,20 @@ impl InspectServer {
         let fallback_cfg = AppConfig::default();
         let cfg_ref = cfg.as_deref().unwrap_or(&fallback_cfg);
         let models = list_available_models(&cfg_ref.ai.providers);
+        let subagent_types = jyc_core::command::spawn_handler::type_catalog_pairs(
+            cfg_ref,
+            jyc_utils::paths::config_dir().as_deref(),
+        );
         let mut summaries: Vec<TopicSummary> = topics
             .into_iter()
             .map(|t| {
-                let commands =
-                    commands_for_topic(t.pattern.as_deref(), cfg_ref, &t.available_skills, &models);
+                let commands = commands_for_topic(
+                    t.pattern.as_deref(),
+                    cfg_ref,
+                    &t.available_skills,
+                    &models,
+                    &subagent_types,
+                );
                 // Lineage for the tree views: read before the struct literal
                 // moves `t.name`. A topic whose state dir can't be read (or
                 // has no breadcrumb) is a root. `spawned_from` looks the state
@@ -366,11 +375,20 @@ impl InspectServer {
         let fallback_cfg = AppConfig::default();
         let cfg_ref = cfg.as_deref().unwrap_or(&fallback_cfg);
         let models = list_available_models(&cfg_ref.ai.providers);
+        let subagent_types = jyc_core::command::spawn_handler::type_catalog_pairs(
+            cfg_ref,
+            jyc_utils::paths::config_dir().as_deref(),
+        );
         let topics: Vec<TopicInfo> = topics
             .into_iter()
             .map(|mut t| {
-                t.commands =
-                    commands_for_topic(t.pattern.as_deref(), cfg_ref, &t.available_skills, &models);
+                t.commands = commands_for_topic(
+                    t.pattern.as_deref(),
+                    cfg_ref,
+                    &t.available_skills,
+                    &models,
+                    &subagent_types,
+                );
                 t
             })
             .collect();
@@ -483,11 +501,17 @@ pub(crate) fn build_channels(
 /// feeds the `/skill on|off` argument values — deliberately the *available*
 /// names rather than the enabled snapshot in `TopicInfo::skills`, so a skill
 /// the user toggled off can still be completed back on.
+///
+/// `subagent_types` is `/spawn`'s first level, resolved by the caller with
+/// `spawn_handler::type_catalog_pairs` — once per payload rather than once per
+/// topic, since it reads the installed role files and the payload carries a
+/// command list for every topic.
 fn commands_for_topic(
     pattern: Option<&str>,
     cfg: &AppConfig,
     available: &[jyc_types::SkillMeta],
     models: &[ModelInfo],
+    subagent_types: &[(String, String)],
 ) -> Vec<CommandInfo> {
     let per_agent = pattern
         .map(|p| per_agent_commands(cfg, p))
@@ -497,6 +521,7 @@ fn commands_for_topic(
         config: cfg,
         skills: &skill_names,
         models,
+        subagent_types,
     };
     let mut commands = all_commands_with(&cfg.commands, &per_agent, available);
     for cmd in &mut commands {
@@ -522,7 +547,11 @@ mod command_args_tests {
             description: "Laziest solution that works".to_string(),
             source_path: std::path::PathBuf::from("/skills/ponytail"),
         }];
-        let commands = commands_for_topic(None, &cfg, &skills, &models);
+        let subagent_types = vec![(
+            "review".to_string(),
+            "Reviews a change before you push (shares your directory)".to_string(),
+        )];
+        let commands = commands_for_topic(None, &cfg, &skills, &models, &subagent_types);
 
         let find = |name: &str| commands.iter().find(|c| c.name == name).expect(name);
         assert_eq!(find("/model").args[0].value, "deepseek/deepseek-chat");
@@ -539,6 +568,20 @@ mod command_args_tests {
         assert!(
             find("/plan").args.is_empty(),
             "a free-text command carries none"
+        );
+        // `/spawn`'s level: the types of this instance first (the caller's
+        // lookup, not this function's), then the flags — and the type's own
+        // line arrives with the default its role declares.
+        let spawn = find("/spawn");
+        assert_eq!(spawn.args[0].value, "review");
+        assert!(spawn.args[0].description.contains("shares your directory"));
+        assert_eq!(
+            spawn.args[0]
+                .args
+                .iter()
+                .map(|a| a.value.as_str())
+                .collect::<Vec<_>>(),
+            ["--inherit", "--share", "--name", "--dir"]
         );
         // The skill itself arrives as a `/skill:<name>` row, described by its
         // frontmatter, and continues into the agent run.

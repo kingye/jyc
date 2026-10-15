@@ -70,8 +70,8 @@ impl CommandHandler for ResetCommandHandler {
         );
 
         if let Some(ref agent) = context.agent {
-            // Identity is the topic name, not the workspace dir — a forked
-            // topic shares its parent's dir, so the path would name the parent.
+            // Identity is the topic name, not the workspace dir — a shared child
+            // works in its parent's dir, so the path would name the parent.
             let topic_name = context.topic_name.as_str();
             agent
                 .reset_session(&context.topic_path, topic_name, &reset_config)

@@ -35,9 +35,9 @@ impl CloseCommandHandler {
 #[async_trait]
 impl CommandHandler for CloseCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        // The topic identity is the name, not the workspace dir: a forked
-        // topic shares its parent's dir, so deriving the name from the path
-        // would close/purge the parent instead of the fork.
+        // The topic identity is the name, not the workspace dir: a child that
+        // shares its parent's dir works there too, so deriving the name from the
+        // path would close/purge the parent instead of the child.
         let topic_name = context.topic_name.as_str();
 
         if topic_name.is_empty() {
@@ -90,8 +90,8 @@ impl CommandHandler for CloseCommandHandler {
             Ok(()) => {
                 tracing::info!(topic = %topic_name, "Topic closed successfully via /close command");
                 // `close_topic` deletes a dir that held nothing but its own
-                // state, and keeps one that belongs to somebody — a `/fork`
-                // sibling, a `/spawn` working in a directory somebody chose,
+                // state, and keeps one that belongs to somebody — a child that
+                // works in this dir, a `/spawn` in a directory somebody chose,
                 // or a spawn dir that has since gained files. Ask the disk
                 // rather than restating that branch here.
                 let kept = tokio::fs::try_exists(&context.topic_path)

@@ -26,7 +26,8 @@
 //! is no second list to remember, which is the whole point — `/fork` was
 //! registered and shipped working while silently missing from the popup
 //! (#814), because the registry and the display list lived in different files
-//! and nothing but a human kept them together.
+//! and nothing but a human kept them together. (`/fork` itself is gone —
+//! `/spawn -s` is what it did — but the reason this table exists outlived it.)
 //!
 //! [`builtin_registry`]: builtin_registry
 //! [`builtin_infos`]: builtin_infos
@@ -41,7 +42,6 @@ use super::cancel_handler::CancelCommandHandler;
 use super::close_handler::CloseCommandHandler;
 use super::context_handler::ContextCommandHandler;
 use super::exchange_handler::ExchangeCommandHandler;
-use super::fork_handler::ForkCommandHandler;
 use super::grant_handler::{GrantCommandHandler, UngrantCommandHandler};
 use super::help_handler::HelpCommandHandler;
 use super::info_handler::InfoCommandHandler;
@@ -179,10 +179,6 @@ builtin_commands! {
         desc: "Show shareable URLs for this topic's published files",
         make: |tm| Arc::new(ExchangeCommandHandler::new(tm))
     },
-    "/fork" => {
-        desc: "Branch a sibling topic off this one, keeping its context, history and settings",
-        make: |tm| Arc::new(ForkCommandHandler::new(tm))
-    },
     "/grant" => {
         desc: "Grant agent access to a path (read-only, until restart; -w write, -p persist)",
         make: |_| Arc::new(GrantCommandHandler)
@@ -220,7 +216,7 @@ builtin_commands! {
         make: |_| Arc::new(ToggleCommandHandler::skill())
     },
     "/spawn" => {
-        desc: "Continue this topic's conversation in a new or chosen directory",
+        desc: "Start a sibling topic — a new dir by default, this one with -s: [type] [-i] [-s] [-n name] [-d dir]",
         make: |tm| Arc::new(SpawnCommandHandler::new(tm))
     },
     "/template" => {
@@ -282,9 +278,9 @@ mod tests {
         assert_eq!(BUILTIN_COMMAND_NAMES.len(), BUILTIN_COMMANDS.len());
     }
 
-    /// `/fork` is the reason this file exists: it was registered but absent from
-    /// the list the popup reads (#814). Both come from one table now, so what is
-    /// worth asserting is that the table really does reach the popup rows.
+    /// A command that shipped registered-but-hidden (#814, `/fork`) is the
+    /// reason this file exists. Both come from one table now, so what is worth
+    /// asserting is that the table really does reach the popup rows.
     #[test]
     fn every_row_becomes_a_popup_entry() {
         let infos = builtin_infos();
@@ -297,6 +293,6 @@ mod tests {
             assert_eq!(info.description, spec.description);
             assert_eq!(info.continues_to_agent, spec.continues_to_agent);
         }
-        assert!(infos.iter().any(|i| i.name == "/fork"));
+        assert!(infos.iter().any(|i| i.name == "/spawn"));
     }
 }

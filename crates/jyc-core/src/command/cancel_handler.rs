@@ -23,8 +23,8 @@ impl CancelCommandHandler {
 #[async_trait]
 impl CommandHandler for CancelCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        // Identity is the topic name, not the workspace dir — a forked topic
-        // shares its parent's dir, so the path would name the parent.
+        // Identity is the topic name, not the workspace dir — a shared child
+        // works in its parent's dir, so the path would name the parent.
         let topic_name = context.topic_name.as_str();
 
         if topic_name.is_empty() {

@@ -259,7 +259,8 @@ impl Tool for SendToThreadTool {
                         .or_else(|| {
                             (channel == "agents").then(|| {
                                 jyc_core::topic_path::topic_work_dir(
-                                    &target_tm.workspace_dir().join(&p.name),
+                                    target_tm.workspace_dir(),
+                                    &p.name,
                                     topic_name,
                                 )
                             })

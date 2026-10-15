@@ -148,12 +148,15 @@ pub fn topic_home(topic_dir: &Path) -> &Path {
     }
 }
 
-/// The working directory of the topic named `topic_name` under `home`.
+/// The working directory of `agent`'s topic named `topic_name`, under the
+/// agents dir.
 ///
-/// A topic is created with one directory and keeps it — the choice is made
-/// once, so an existing topic never moves under an agent and no state is
-/// left behind. The two layouts that predate `.data` are recognised by the
-/// in-dir state they carry:
+/// The topic's **home** is the agent's own root for the self-named topic
+/// (agent `jyc` ↔ topic `jyc`) and one directory deeper for a pipe-routed one:
+/// `<agents dir>/<agent>/<topic>`. A topic is created with one working
+/// directory and keeps it — the choice is made once, so an existing topic
+/// never moves under an agent and no state is left behind. The two layouts
+/// that predate `.data` are recognised by the in-dir state they carry:
 ///
 /// - `<home>/.jyc` — the home itself was the working directory (a
 ///   pipe-routed topic, or an agent-keyed one);
@@ -161,13 +164,19 @@ pub fn topic_home(topic_dir: &Path) -> &Path {
 ///   deeper (`<agents dir>/<agent>/<agent>`).
 ///
 /// A topic with neither is fresh and gets [`default_topic_dir`].
-pub fn topic_work_dir(home: &Path, topic_name: &str) -> PathBuf {
+pub fn topic_work_dir(agents_dir: &Path, agent: &str, topic_name: &str) -> PathBuf {
+    let root = agents_dir.join(agent);
+    let home = if topic_name == agent {
+        root
+    } else {
+        root.join(topic_name)
+    };
     if home.join(".jyc").is_dir() {
-        home.to_path_buf()
+        home
     } else if home.join(topic_name).join(".jyc").is_dir() {
         home.join(topic_name)
     } else {
-        default_topic_dir(home)
+        default_topic_dir(&home)
     }
 }
 
@@ -894,11 +903,16 @@ mod tests {
     #[test]
     fn a_fresh_topic_works_in_dot_data() {
         let tmp = tempdir().unwrap();
-        let home = tmp.path().join("agents").join("a").join("t1");
+        let agents = tmp.path().join("agents");
         assert_eq!(
-            topic_work_dir(&home, "t1"),
-            home.join(TOPIC_DIR_NAME),
+            topic_work_dir(&agents, "a", "t1"),
+            agents.join("a").join("t1").join(TOPIC_DIR_NAME),
             "a topic with no directory yet gets the new default"
+        );
+        // The self-named topic is the agent's own root, not one level deeper.
+        assert_eq!(
+            topic_work_dir(&agents, "a", "a"),
+            agents.join("a").join(TOPIC_DIR_NAME)
         );
     }
 
@@ -910,7 +924,7 @@ mod tests {
         // Pre-`.data` pipe topic: the home itself was the working directory.
         let pipe = agents.join("a").join("weather");
         std::fs::create_dir_all(pipe.join(".jyc")).unwrap();
-        assert_eq!(topic_work_dir(&pipe, "weather"), pipe);
+        assert_eq!(topic_work_dir(&agents, "a", "weather"), pipe);
         assert!(
             !pipe.join(TOPIC_DIR_NAME).exists(),
             "an existing topic does not grow a .data"
@@ -919,10 +933,10 @@ mod tests {
         // Pre-`.data` self-named agents topic: one level deeper.
         let agent = agents.join("b");
         std::fs::create_dir_all(agent.join("b").join(".jyc")).unwrap();
-        assert_eq!(topic_work_dir(&agent, "b"), agent.join("b"));
+        assert_eq!(topic_work_dir(&agents, "b", "b"), agent.join("b"));
         // A fresh sibling topic of that same agent still gets the default.
         assert_eq!(
-            topic_work_dir(&agent, "plan-7"),
+            topic_work_dir(&agents, "b", "plan-7"),
             agent.join("plan-7").join(TOPIC_DIR_NAME)
         );
     }

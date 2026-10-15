@@ -16,10 +16,9 @@ use jyc_types::state_dir::resolve_state_dir;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
-use jyc_core::topic_manager::TopicManager;
+use jyc_core::topic_manager::{TopicManager, TopicManagers};
 use jyc_types::{InboundMessage, MessageContent, PatternMatch};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -66,7 +65,7 @@ struct TopicMeta {
 pub struct TopicProxyHandler {
     channel: String,
     topic: String,
-    topic_managers: Arc<ArcSwap<Vec<Arc<TopicManager>>>>,
+    topic_managers: Arc<TopicManagers>,
     inspect_broadcast: Arc<broadcast::Sender<String>>,
     /// Inspect-server shutdown signal. When the server begins graceful
     /// shutdown, this token is cancelled and each connection's select loop
@@ -80,7 +79,7 @@ impl TopicProxyHandler {
     pub fn new(
         channel: String,
         topic: String,
-        topic_managers: Arc<ArcSwap<Vec<Arc<TopicManager>>>>,
+        topic_managers: Arc<TopicManagers>,
         inspect_broadcast: Arc<broadcast::Sender<String>>,
         ws_shutdown: CancellationToken,
     ) -> Self {
@@ -96,10 +95,8 @@ impl TopicProxyHandler {
     /// Find the `TopicManager` for `channel`, returning a descriptive error
     /// if no such channel is registered.
     fn find_topic_manager(&self) -> anyhow::Result<Arc<TopicManager>> {
-        let tms = self.topic_managers.load();
-        tms.iter()
-            .find(|tm| tm.channel_name() == self.channel)
-            .cloned()
+        self.topic_managers
+            .by_channel(&self.channel)
             .ok_or_else(|| anyhow::anyhow!("no topic manager found for channel '{}'", self.channel))
     }
 

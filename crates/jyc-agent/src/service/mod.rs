@@ -13,13 +13,13 @@ use tracing;
 
 use jyc_core::agent::{AgentResult, AgentService};
 use jyc_core::topic_event_bus::TopicEventBusRef;
+use jyc_core::topic_manager::TopicManagers;
 use jyc_types::{ChannelPattern, InboundMessage, QueueItem};
 
 use crate::agent_loop::{self, AgentLoopConfig};
 use crate::provider;
 use crate::session;
 use crate::tools::OutboundsMap;
-use crate::tools::TopicManagersMap;
 use crate::tools::registry::ToolRegistry;
 use crate::vision::VisionClient;
 use std::sync::Arc;
@@ -73,7 +73,7 @@ pub struct JycAgentService {
     /// can inject messages into topics in other channels.
     /// Uses `std::sync::Mutex` for interior mutability (set after construction
     /// via `set_topic_managers()` on an `Arc<Self>`).
-    topic_managers: std::sync::Mutex<Option<TopicManagersMap>>,
+    topic_managers: std::sync::Mutex<Option<Arc<TopicManagers>>>,
     /// Current channel name for source context in cross-topic tools.
     channel_name: String,
     /// Cross-channel outbound adapters keyed by channel name.
@@ -134,7 +134,7 @@ impl JycAgentService {
     ///
     /// Called by the monitor during startup to inject the topic manager map
     /// into each agent service after all channels have been initialized.
-    pub fn set_topic_managers(&self, tm: TopicManagersMap) {
+    pub fn set_topic_managers(&self, tm: Arc<TopicManagers>) {
         *self.topic_managers.lock().expect("topic_managers poisoned") = Some(tm);
     }
 

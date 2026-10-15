@@ -146,7 +146,7 @@ impl Tool for SpawnSubagentTool {
                 "jyc_spawn_subagent is unavailable in this context: no channel topic managers.",
             ));
         };
-        let Some(tm) = managers.lock().await.get(&channel).cloned() else {
+        let Some(tm) = managers.by_channel(&channel) else {
             return Ok(ToolOutput::error(format!(
                 "no topic manager registered for channel '{channel}'."
             )));

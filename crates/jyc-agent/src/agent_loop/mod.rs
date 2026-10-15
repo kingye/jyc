@@ -14,13 +14,12 @@ use tracing;
 
 use jyc_core::topic_event::TopicEvent;
 use jyc_core::topic_event_bus::TopicEventBusRef;
+use jyc_core::topic_manager::TopicManagers;
 
 use jyc_types::channel::ContextStrategyConfig;
 
 use crate::provider::Provider;
-use crate::tools::{
-    OutboundsMap, ToolContext, ToolOutput, TopicManagersMap, registry::ToolRegistry,
-};
+use crate::tools::{OutboundsMap, ToolContext, ToolOutput, registry::ToolRegistry};
 use crate::types::{AgentLoopResult, ContentBlock, Message, Role};
 
 /// Default maximum number of tool-call iterations before giving up.
@@ -88,7 +87,7 @@ pub struct AgentLoopConfig<'a> {
     /// Cross-channel topic managers keyed by channel name.
     /// Passed through to `ToolContext` so the `jyc_send_to_topic` tool
     /// can inject messages into topics in other channels.
-    pub topic_managers: Option<TopicManagersMap>,
+    pub topic_managers: Option<Arc<TopicManagers>>,
     /// Current channel name, for tools that need source context
     /// (e.g. `jyc_send_to_topic` sets `source_channel` metadata from this).
     pub current_channel: Option<String>,

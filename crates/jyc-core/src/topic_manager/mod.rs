@@ -16,12 +16,14 @@ use jyc_types::{OutboundAdapter, QueueItem};
 mod events;
 mod git;
 mod lifecycle;
+mod managers;
 mod queue;
 mod template;
 mod topics;
 mod worker;
 
 pub use lifecycle::PurgeOutcome;
+pub use managers::TopicManagers;
 pub use topics::TopicDisplayState;
 
 /// Per-topic queue stats.
@@ -105,6 +107,13 @@ pub struct TopicManager {
     // per overview poll), so the read-parallelism of `RwLock` is not
     // worth the extra type complexity.
     pub(crate) topic_patterns: Arc<Mutex<HashMap<String, String>>>,
+
+    // The set of managers this one is part of, for resolving a topic name to
+    // the manager that serves it (see `managers.rs`). Weak: the registry holds
+    // the managers, so a strong pointer here would be an Arc cycle. Set once,
+    // by whoever builds the managers (the orchestrator); unset in tests that
+    // only exercise one manager.
+    managers: std::sync::OnceLock<std::sync::Weak<TopicManagers>>,
 
     /// Test/override hook for the central billing ledger directory.
     /// When unset, `billing_dir()` falls back to
@@ -191,6 +200,7 @@ impl TopicManager {
             worker_handles: Mutex::new(Vec::new()),
             topic_paths: Arc::new(Mutex::new(HashMap::new())),
             topic_patterns: Arc::new(Mutex::new(HashMap::new())),
+            managers: std::sync::OnceLock::new(),
             billing_dir_override: std::sync::OnceLock::new(),
         }
     }
@@ -214,6 +224,27 @@ impl TopicManager {
     /// Return the channel type (e.g., "email", "wecom_bot").
     pub fn channel_type(&self) -> &str {
         &self.channel_type
+    }
+
+    /// Point this manager at the set it belongs to, so it can resolve a topic
+    /// name to the manager that serves it. Called by whoever builds the
+    /// managers (`ChannelOrchestrator::update_shared_state`); later calls keep
+    /// the first wiring, so a reload does not re-point anything.
+    pub fn set_managers(&self, managers: &Arc<TopicManagers>) {
+        let _ = self.managers.set(Arc::downgrade(managers));
+    }
+
+    /// The set of managers this one is part of, when it has been wired up.
+    pub fn managers(&self) -> Option<Arc<TopicManagers>> {
+        self.managers.get().and_then(|weak| weak.upgrade())
+    }
+
+    /// Whether this manager currently runs `topic_name` — it holds a queue for
+    /// it. The queue is created by the first `enqueue` for a topic, so this
+    /// answers "is the topic being served here right now", which is what
+    /// `TopicManagers::serving` resolves an address against.
+    pub async fn serves_topic(&self, topic_name: &str) -> bool {
+        self.topic_queues.lock().await.contains_key(topic_name)
     }
 
     /// Return the data_dir (data root) for this channel.

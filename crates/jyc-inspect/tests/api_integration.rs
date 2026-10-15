@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use jyc_core::metrics::HealthStats;
+use jyc_core::topic_manager::TopicManagers;
 use jyc_inspect::server::{InspectContext, build_router};
 use jyc_types::ChannelInfo;
 use tokio::net::TcpListener;
@@ -17,7 +18,7 @@ use tokio::sync::Mutex;
 
 fn ctx_with_token(token: Option<&str>) -> Arc<InspectContext> {
     Arc::new(InspectContext {
-        topic_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+        topic_managers: Arc::new(TopicManagers::new()),
         channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
             name: "ch".into(),
             channel_type: "email".into(),
@@ -290,7 +291,7 @@ template = "jyc"
     let config = Arc::new(ArcSwap::from_pointee(raw));
 
     let ctx = Arc::new(InspectContext {
-        topic_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+        topic_managers: Arc::new(TopicManagers::new()),
         channels: Arc::new(ArcSwap::from_pointee(vec![])),
         health_stats: Arc::new(Mutex::new(HealthStats::default())),
         activity_map: Arc::new(Mutex::new(HashMap::new())),

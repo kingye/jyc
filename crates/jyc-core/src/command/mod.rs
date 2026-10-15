@@ -18,6 +18,7 @@ pub mod pin_common;
 pub mod pin_handler;
 pub mod registry;
 pub mod reset_handler;
+pub mod send_handler;
 pub mod spawn_common;
 pub mod spawn_handler;
 pub mod template_handler;

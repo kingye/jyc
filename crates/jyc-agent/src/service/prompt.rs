@@ -189,13 +189,13 @@ impl JycAgentService {
         }
 
         // Cross-Topic Communication section (when topic managers are available)
-        let tm_map_opt = self
+        let managers_opt = self
             .topic_managers
             .lock()
             .expect("topic_managers poisoned")
             .clone();
         let outbounds_configured = self.outbounds.lock().expect("outbounds poisoned").is_some();
-        if let Some(ref tm_map) = tm_map_opt {
+        if let Some(ref managers) = managers_opt {
             prompt.push_str(
                 "\n## Cross-Topic Communication\n\n\
                  You can send messages to topics in other channels using the `jyc_send_to_topic` tool.\n\
@@ -219,8 +219,8 @@ impl JycAgentService {
             }
 
             prompt.push_str("Available channels and their active topics:\n");
-            let map = tm_map.lock().await;
-            for (channel_name, tm) in map.iter() {
+            for tm in managers.all().iter() {
+                let channel_name = tm.channel_name();
                 let channel_type = tm.channel_type();
                 prompt.push_str(&format!(
                     "- Channel \"{}\" ({})\n",

@@ -2524,15 +2524,27 @@ In-process tool (jyc-agent/src/tools/mcp_bridge.rs):
 - Must NOT be used to spam users (limit to alerts and notifications)
 - Recipient format is channel-specific; the tool validates format before attempting delivery
 
-### Built-in Tool: `jyc_send_to_topic`
+### Built-in Tool: `jyc_send_to_topic` and `/send`
 
-Injects a message into another channel's topic queue for agent processing. Unlike `jyc_send_message` which bypasses agent processing (direct outbound delivery), `jyc_send_to_topic` enqueues an `InboundMessage` into the target topic's `TopicManager`, so the target topic's agent picks it up and processes it.
+Injects a message into another agent's topic queue for agent processing. Unlike `jyc_send_message` which bypasses agent processing (direct outbound delivery), `jyc_send_to_topic` enqueues an `InboundMessage` into the target topic's `TopicManager`, so the target topic's agent picks it up and processes it.
+
+**Addressing is by agent, not by channel.** A topic is identified by its name — the identity the state dir registry keys on — and the manager that serves it is resolved rather than named:
+
+- `agent` (required): the addressee. Without `topic`, the message lands on the agent's own topic (the one named after it, `<agents dir>/<agent>/`), which is created when it does not exist yet.
+- `topic` (optional): one of that agent's topics (e.g. `invoice_processing`), whose home is `<agents dir>/<agent>/<topic>/`.
+
+The command form is `/send <agent> [--topic|-t <topic>] [--reply] [--attach <file>] [--recipient <id>] <message>`. Both triggers parse their own input and call the same `jyc_core::command::send_handler::send_to_topic` — one implementation with two entries, exactly as `/spawn` and `jyc_spawn_subagent`.
+
+Resolution happens in `TopicManagers::serving`, and follows what serves the topic rather than what config says:
+
+- A named topic belongs to the manager whose queue map already holds it. A topic exists because a channel routed to it (which enqueued), so a live queue is what "this topic is mine" means. A topic idle since a restart has no queue anywhere: it is refused, not re-created under the same name in another channel, and starts being served again with its next inbound message.
+- An agent's own topic belongs to the **agents channel**, whether or not it has been active this process — that is where `/spawn` and the dashboard put agents.
 
 ```
 Topic A (feishu_bot / "greenfield 下单")
   │
   │  jyc_send_to_topic(
-  │    channel="jin283",
+  │    agent="invoice",
   │    topic="invoice-processing",
   │    message="Please process this invoice...",
   │    attachments=["invoice.pdf"],
@@ -2540,7 +2552,7 @@ Topic A (feishu_bot / "greenfield 下单")
   │  )
   │
   ▼
-Topic B (jiny283 / "invoice-processing")
+Topic "invoice-processing" (of agent "invoice")
   │
   │  InboundMessage enqueued with metadata:
   │    source_channel: "feishu_bot"
@@ -2553,8 +2565,7 @@ Topic B (jiny283 / "invoice-processing")
   │
   │  Agent processes task, then calls:
   │    jyc_send_to_topic(
-  │      channel="feishu_bot",
-  │      topic="greenfield 下单",
+  │      agent="feishu-bot",
   │      message="Done: invoice processed..."
   │    )
   │
@@ -2566,7 +2577,7 @@ Topic A receives results
 
 **Source metadata**: The tool sets `source_channel`, `source_topic`, and `require_reply` in the `InboundMessage.metadata` HashMap. The `build_user_prompt_text()` function reads these fields and renders a `**Source:**` header in the target agent's prompt.
 
-**ToolContext injection**: `ToolContext` carries `topic_managers: Option<TopicManagersMap>` (cross-channel topic managers keyed by channel name) and `current_channel` / `current_topic` (source context). These are injected by `JycAgentService` when building the tool registry.
+**`TopicManagers`**: the process's running managers, in one place. `ChannelOrchestrator` owns the single instance — it is the only thing that creates managers — and publishes the current set on every channel change; each manager holds a `Weak` back-pointer to it (a strong one would be an `Arc` cycle), so a command handler, built with only its own manager, resolves an addressee through `manager.managers()`. `ToolContext` and `InspectContext` carry the same `Arc<TopicManagers>`, and the tool carries `current_channel` / `current_topic` for the source metadata. Before this, the same information existed twice: a channel-keyed `HashMap` derived in the CLI for the agent layer, and ad-hoc `channel_name()` scans in the inspect server.
 
 ### Historical Message Quoting (Topic Trail)
 

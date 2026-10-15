@@ -1539,15 +1539,25 @@ mod tests {
             orders.contains("nothing resumes one that has ended"),
             "the rule rests on a turn ending, and nothing resuming it"
         );
-        // Small on purpose: a watcher keeps no tool-call notes and only a few
-        // turns, so `gh` output cannot pile up in the context it polls with.
+        // Small on purpose: a watcher is not a thinker, and it is handed one
+        // errand at a time. `window = 0` keeps no prior turn at all, so a
+        // second message is answered from the role text instead of being
+        // continued from the report the previous one ended with — which is
+        // what a non-zero window invited: the watcher's own last report sat in
+        // the context as the most recent thing it had "said", and the model
+        // restated it (a run id and a duration that matched no run) instead of
+        // polling. `note_window = 0` keeps no tool-call history for the same
+        // reason. The turn being run is never truncated, so the poll and the
+        // report inside one errand still see each other; the 512-byte cap
+        // bounds a `gh` output inside the call, where it can be filtered and
+        // tailed.
         let strategy = watch
             .config
             .context_strategy
             .as_ref()
             .expect("the watcher carries its own context strategy");
         assert_eq!(strategy.mode, jyc_types::ContextStrategy::SlidingWindow);
-        assert_eq!(strategy.window, 3);
+        assert_eq!(strategy.window, 0);
         assert_eq!(strategy.note_window, Some(0));
         assert_eq!(strategy.tool_result_cap, Some(512));
     }

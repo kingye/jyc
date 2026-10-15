@@ -164,7 +164,7 @@ pub fn adopt_state_dir(
         // In-dir state is no longer migrated (all deployments moved long ago),
         // so an in-dir `.jyc` here is either a pre-adoption leftover that this
         // topic's adopted state displaced, or *another* topic's live state — a
-        // co-pinned dir, which is what `/fork` creates. Both deserve a log;
+        // co-pinned dir, which is what a shared spawn creates. Both deserve a log;
         // only the first deserves a "delete it manually", which previously sent
         // people hunting through the topic that owns the directory.
         tracing::warn!(

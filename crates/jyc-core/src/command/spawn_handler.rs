@@ -2782,10 +2782,12 @@ mod tests {
             ),
             (vec!["-n", "taken"], "already exists"),
             (vec!["-n", ".hidden"], "must not start with '.'"),
-            // A name that is not a name: refused by the same rule the
-            // mistyped `--inherit=false` used to hit, now that a flag is read as
-            // a flag and never reaches the spawn.
-            (vec!["-n", "-oops"], "must not start with '-'"),
+            // A name that is not a name, reached through the one spelling that
+            // can carry a value opening with `-`: `invalid_name` still refuses
+            // it. `-n -oops` never gets this far any more — that is a missing
+            // value, which `parse_args` refuses (see the row for it in
+            // `parse_args_reads_the_type_and_the_flags`).
+            (vec!["--name=-oops"], "must not start with '-'"),
             (
                 vec!["-n", "spawn-x", "-d", dir.to_str().unwrap()],
                 "the directory you are in",

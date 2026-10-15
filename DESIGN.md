@@ -2820,33 +2820,27 @@ resolver**), every step keyed by the mode the topic is in:
 ### Runtime Data
 
 ```
-<root-dir>/
-├── config.toml                          # Master config (TOML)
-├── channels/<channel-name>/             # Email adapter state (e.g., "jiny283")
-│   └── .imap/
-│       ├── .state.json                  # IMAP monitor state
-│       └── .processed-uids.txt         # One UID per line, append-only
-├── <channel-name>/                      # Per-channel directory (e.g., "jiny283")
-│   └── workspace/                       # Topic workspaces (hardcoded: <data dir>/<channel_name>/workspace/)
-│       ├── <topic-dir-1>/              # in-process agent cwd for this topic
-│       │   ├── chat_history_2026-03-19.jsonl   # Daily chat log (messages + replies)
-│       │   ├── chat_history_2026-03-20.jsonl   # Next day's chat log
-│       │   ├── attachments/                 # Saved inbound attachments (if configured)
-│       │   │   └── report.pdf
-│       │   ├── .jyc/
-│       │   │   ├── agent-session.json         # AI session state
-│       │   │   ├── reply-context.json   # Reply routing context (disk-based)
-│       │   │   ├── reply-tool.log       # MCP tool log
-│       │   │   ├── reply-sent.flag      # Signal file (transient)
-│       │   │   ├── model-override       # /model command override
-│       │   │   └── mode-override        # /plan command override
-│       │   ├── .agent/               # in-process agent internal
-│       │   ├── agent config            # Per-topic in-process agent config
-│       │   └── system.md                # Optional topic-specific prompt
-│       └── <topic-dir-2>/
-│           └── ...
-└── <channel-2>/
-    └── ...
+<config dir>/                               # ~/.config/jyc — user-edited (L1)
+├── config.toml                             # Master config (TOML)
+├── skills/                                 # Global skills
+└── templates/                              # Topic templates
+
+<data dir>/                                 # ~/.local/share/jyc — generated state (L2)
+├── channels/<channel-name>/                # That channel's own runtime state
+│   └── .imap/                              # IMAP adapter cursor
+│       ├── .state.json                     # Monitor state
+│       └── .processed-uids.txt             # One UID per line, append-only
+└── agents/<agent>/<topic>/                 # Topic home (agents dir)
+    ├── .jyc/                               # State dir — never inside the working dir
+    │   ├── agent-session.json              # AI session state
+    │   ├── agent-context.json              # Reply routing context (disk-based)
+    │   ├── chat_history_2026-03-19.jsonl   # Daily chat log (messages + replies)
+    │   ├── model-override                  # /model command override
+    │   └── mode-override                   # /plan command override
+    ├── .data/                              # Default working directory (topic_path)
+    │   └── .attachments/                   # Saved inbound attachments (if configured)
+    │       └── report.pdf
+    └── .inbound/                           # Inbound staging (framework)
 ```
 
 ## Topic Template

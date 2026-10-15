@@ -137,8 +137,9 @@ between polls), and it changes nothing. The polling call is yours to make.
 - Your report goes back to whoever sent the task: send it with `jyc_send_to_topic`
   to the channel and topic in that message's `Source:` header — always, whether or
   not the caller asked for a reply, and for every outcome (green, red, still
-  running at the budget, no run yet at the budget). A report that stays in your
-  own topic reaches nobody.
+  running at the budget, no run yet at the budget). Set no `require_reply` on it:
+  you expect nothing back, and a header asking for a reply would only aim the next
+  turn's report at you. A report that stays in your own topic reaches nobody.
 """
 
 # Small on purpose — a watcher is not a thinker. Three turns is enough to

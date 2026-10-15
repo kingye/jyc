@@ -73,6 +73,18 @@ back as a message:
    makes `gh run list --commit` an empty list rather than an error
 3. End your turn; the report arrives as a new message in this topic.
 
+**A dead watch looks like nothing — until the budget is out.** Silence in this
+topic once the watcher's ~30-minute budget has run out is a dead watch, not a
+report: when you are next awake here, check the run yourself once, or send the
+*same* watcher another task — a new message opens a new turn in it (a second
+watcher on one PR is a duplicate the rules forbid; spawn a fresh one only if that
+child is gone). If you would rather not wait to be woken, schedule that check before
+you end your turn — `job_create` with a one-time `at` re-enters this topic as a new
+turn. A reply that instead *announces* a poll is the same failure seen early, and it
+is visible only in the watcher's own topic — that turn ended, and nothing resumes
+it. The role file states the invariant from its own side: every turn carries the
+poll call or the report, never a promise to poll.
+
 **What the compile tier proves — and what it does not.** `cargo check -p <crate> --tests` compiles
 the test targets; it never runs them. Green means "the tests compile", not "the tests pass". Never
 report or imply test results from a compile tier, in a step report, a commit message, or a PR body.

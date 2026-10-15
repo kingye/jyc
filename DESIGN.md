@@ -427,9 +427,9 @@ these names loosely, so they are fixed here.
 | **agent dir** | One agent's home: its default topic's files while unpinned, or just the `.jyc` when that topic is pinned | `<agents dir>/<agent>/` | — |
 | **default topic** | The one topic every agent has, named after the agent — a message sent to the agent lands on it | `topic_path` is the agent dir unless pinned; state dir `<agents dir>/<agent>/.jyc` | 1:1 topics in `TopicManager` |
 | **topic** (non-default) | A topic a pipe creates from its rule's template (`plan-42`, `review-7`, …) | `topic_path` `<agents dir>/<agent>/<topic>/`; state dir `<agents dir>/<agent>/<topic>/.jyc` | router dynamic topics |
-| **subagent type** | A named **role** a spawn hands its child: a topic config selected by name (`type = "review"`), defined by `[subagents.<type>]` in the config or by `<config dir>/subagents/<type>/config.toml`, and expanded into the child's own `.jyc/config.toml` at spawn time. Not a topic, not a channel, not a pattern: nothing routes to it, and nothing about it is inherited by anything else. Only the L1 config dir is scanned — unlike skills, a type is not layered. Resolution happens in the entry points, against the config the instance is *running* with (never a fresh read of the default path), and an installed type may also carry a `description` (one line of "when to spawn me", listed in the spawn tool's `type` argument) and `[spawn]` (its defaults for the two start flags). The repo ships three at `subagents/review/`, `subagents/ci-watch/` and `subagents/develop/` (`cp -r subagents/<type> <config dir>/subagents/`) | `[subagents.<type>]`; `<config dir>/subagents/<type>/config.toml` | `jyc_types::load_subagent_type`, `spawn_handler::{resolve_type_arg, resolve_subagent_type, SubagentType}` |
-| **subagent** | An agent `/spawn` (or `jyc_spawn_subagent`) created: an agent with its own default topic, not a second kind of topic | `<agents dir>/<subagent>/`, its state dir as any default topic's — or the parent's dir when the tool was asked to share it | `spawn_handler` |
-| **topic_path** | A topic's **working directory**: where the agent runs, what `read`/`write`/`bash` see, and what a parent is granted when it spawns a subagent. **Any** directory — a pin, a checkout, a `/spawn <path>` child — not necessarily under the agents dir | `<agents dir>/<agent>/` or `<agents dir>/<agent>/<topic>/` by default | `TopicManager::topic_path(name)` |
+| **subagent type** | A named **role** a spawn hands its child: a topic config selected by name (`type = "review"`), defined by `[subagents.<type>]` in the config or by `<config dir>/subagents/<type>/config.toml`, and expanded into the child's own `.jyc/config.toml` at spawn time. Not a topic, not a channel, not a pattern: nothing routes to it, and nothing about it is inherited by anything else. Only the L1 config dir is scanned — unlike skills, a type is not layered. Resolution happens in the entry points, against the config the instance is *running* with (never a fresh read of the default path), and an installed type may also carry a `description` (one line of "when to spawn me", listed in the spawn tool's `type` argument and as `/spawn`'s popup row for the type, with its declared start defaults appended) and `[spawn]` (its defaults for the two start flags). The repo ships three at `subagents/review/`, `subagents/ci-watch/` and `subagents/develop/` (`cp -r subagents/<type> <config dir>/subagents/`) | `[subagents.<type>]`; `<config dir>/subagents/<type>/config.toml` | `jyc_types::load_subagent_type`, `spawn_handler::{resolve_type_arg, resolve_subagent_type, SubagentType}` |
+| **subagent** | An agent `/spawn` (or `jyc_spawn_subagent`) created: an agent with its own default topic, not a second kind of topic | `<agents dir>/<subagent>/`, its state dir as any default topic's — or the parent's dir when the spawn was asked to share it (`/spawn -s/--share`, the tool's `share_topic_path`, or a role's own `[spawn]` default) | `spawn_handler` |
+| **topic_path** | A topic's **working directory**: where the agent runs, what `read`/`write`/`bash` see, and what a parent is granted when it spawns a subagent. **Any** directory — a pin, a checkout, a `/spawn -d <dir>` child — not necessarily under the agents dir | `<agents dir>/<agent>/` or `<agents dir>/<agent>/<topic>/` by default | `TopicManager::topic_path(name)` |
 | **state dir** | A topic's `.jyc`: transcript, `agent-context.json`, `tasks`, `pattern`, `mode-override`, the lineage `spawned-from`, … — always under the agents dir, located by **topic name**, never inside a pinned `topic_path` | see the table below | `jyc_types::state_dir::resolve_state_dir(name, topic_dir)` |
 | **inbound dir** | Where the hub stages inbound attachment bytes between their upload and the message announcing them, deliberately outside every topic and channel dir | `<data dir>/.inbound` | `topic_path::inbound_dir()` |
 | **L1 / L2 / L3** | Override layers only, not ownership | L1 = config dir; L2 = data dir; L3 = one topic (`topic_path` + state dir) | — |
@@ -472,14 +472,13 @@ keeps its own state dir.
 | Agent's default topic, pinned (`topic_path`) | the pinned dir (e.g. a repo) | `<agents dir>/<agent>/.jyc` |
 | Ad-hoc pinned topic (`jyc open -p`, non-agents pin) | the pinned dir | `<agents dir>/_<path-escaped>/.jyc` |
 | Pipe topic (dynamic) | `<agents dir>/<agent>/<topic>/` | `<topic_path>/.jyc`, registered at activation |
-| Forked topic (`/fork`) | the **parent's** topic dir (shared workspace) | `<agents dir>/<name>/.jyc` |
-| Spawned topic (`/spawn`) | a fresh `<agents dir>/<name>/`, or any dir the path names outside the source topic's own dir (a non-empty checkout included — its files are not touched; nesting is refused) | `<agents dir>/<name>/.jyc` — located by name, never `<topic_path>/.jyc` |
-| Subagent (`jyc_spawn_subagent`) | the same shape a fresh-name `/spawn` gets — `<agents dir>/<name>/` with the parent's state seeded into it — or, with `share_topic_path`, the **parent's** dir (the `/fork` shape: that is what lets a reviewer read the work as it is) | `<agents dir>/<name>/.jyc` — located by name, never in the shared dir |
+| Spawned topic (`/spawn`) | a fresh `<agents dir>/<name>/`, or any dir `-d/--dir` names outside the source topic's own dir (a non-empty checkout included — its files are not touched; nesting is refused) — or, with `-s/--share`, the **parent's** own dir | `<agents dir>/<name>/.jyc` — located by name, never `<topic_path>/.jyc` |
+| Subagent (`jyc_spawn_subagent`) | the same shape a fresh-name `/spawn` gets — `<agents dir>/<name>/` with the parent's state seeded into it — or, with `share_topic_path`, the **parent's** dir (the `-s/--share` shape: that is what lets a reviewer read the work as it is) | `<agents dir>/<name>/.jyc` — located by name, never in the shared dir |
 | Legacy channel workspace topic | `<data dir>/<channel>/workspace/<topic>/` | `<topic_path>/.jyc` — no live writer; it is dormant pre-pipe data, and its migration is a separate change |
 
 Registrations happen at four points: startup restore (config pins adopt,
 workspace/agent topics register in-dir), runtime pins (`set_topic_path`,
-dashboard `open -p`), fork/spawn, and **activation** — every enqueue path
+dashboard `open -p`), spawn, and **activation** — every enqueue path
 (router, scheduled jobs, `jyc_send_to_topic`, dashboard proxy) registers a
 jyc-owned workspace dir's in-dir `.jyc` before any state access. A user-owned
 dir (a pin) without a registration is a bug: state access fails loudly rather
@@ -487,15 +486,16 @@ than writing into the user's directory.
 
 Multiple agent rows may pin the same topic dir (e.g. one repo shared by
 `jyc` and `jyc_git_planner`); they still get one state dir per topic name. A
-`/fork` is that mechanism used deliberately: the child continues the parent's
+`/spawn -s/--share` — or the tool's `share_topic_path`, or a role that declares
+it — is that mechanism used deliberately: the child works on the parent's
 files, so it co-pins the parent's dir while keeping its own state — its own
 transcript as well, now that inheriting the conversation is opt-in
-(`--inherit`; see the subagent section for why). It is
+(`-i/--inherit`; see the subagent section for why). It is
 therefore *not* subject to the "the dir is the topic" note below — its state was
 registered by name before the dir was pinned (`adopt_state_dir` →
 `set_topic_path`, and the latter keeps an existing registration). The name still
-occupies a top-level entry under `agents/`, which is why `/fork` refuses a name
-that is already a topic.
+occupies a top-level entry under `agents/`, which is why a shared spawn refuses
+a name that is already a topic.
 
 A `/spawn` is the same mechanism pointed at a dir of its own, and it moves no
 files: the parent's *settings* are what comes along (`--inherit` adds the
@@ -509,7 +509,7 @@ happens to sit inside the topic's own dir — so `close_topic` removes the empti
 dir with its state; a dir that has since gained files is kept, like a pin's. Purge is
 the explicit "and this one too", refusing whenever the dir is not the topic's own
 to remove: one another topic also uses (a workspace topic counts, not just a
-runtime pin — a fork shares its parent's dir), contains another topic's dir, is
+runtime pin — a shared child works in its parent's dir), contains another topic's dir, is
 one of jyc's own roots, or holds another topic's state directly under one of
 those roots — which is why a spawn's default dir under `agents/` is never purged.
 
@@ -561,7 +561,7 @@ those roots — which is why a spawn's default dir under `agents/` is never purg
   the one that is itself a pipe topic dir. Otherwise only that exact shape,
   and the purge guards still apply — an agent's own dir one level up
   (`<agents dir>/<agent>`, a state namespace), a dir another topic works in
-  (a `/fork` shares its parent's), a dir nesting somebody else's, a symlink
+  (a `/spawn -s` child works in its parent's), a dir nesting somebody else's, a symlink
   out of the tree, and a pin anywhere else are all left in place. `/close`
   keeps the empty-only rule above, and a topic reopened upstream (issue
   closed, then reopened) starts with an empty dir.
@@ -573,8 +573,7 @@ those roots — which is why a spawn's default dir under `agents/` is never purg
   `other_topic_dirs` ignores a pin whose topic is marked closed (which the
   cascade itself did) and one held by a subagent of the topic being purged
   (which is the one path that purges first: `/close --force --purge`). A
-  `/fork` child's co-pin — an independent topic that outlives its parent — still
-  refuses.
+  shared child's co-pin never gets that far: the cascade closes it first.
   Ad-hoc pins (no config key) derive their state name from the dir, so two
   runtime topics opening one dir intentionally share — and closing either
   destroys — that single state: "the dir is the topic". Closing also
@@ -595,23 +594,26 @@ topic's settings and runs on its own queue. `/spawn` and the `jyc_spawn_subagent
 tool are one implementation (`spawn_handler::spawn_under`) with two triggers —
 the user typed the command, or the agent called the tool. Two things about the
 child's *starting point* are the caller's to decide, and both default to the
-more independent choice: `inherit_context` (or `/spawn --inherit`) copies the
-conversation and transcript as well, and `share_topic_path` (no `/spawn` flag —
-the tool takes it, and a role may default it) puts the
-child in the parent's directory — `/fork`'s shape, which is what a reviewer of
-the work as it is needs. A **type** may state those two defaults for itself
+more independent choice: `inherit_context` (or `/spawn -i/--inherit`) copies the
+conversation and transcript as well, and `share_topic_path` (or `/spawn
+-s/--share`; a role may also default it) puts the
+child in the parent's directory — the shape a reviewer of the work as it is
+needs. A **type** may state those two defaults for itself
 (`[spawn]` in its own file), and an argument passed at spawn time overrides them:
-the role knows how it has to run, and one command can still say otherwise.
+the role knows how it has to run. The tool's argument can say otherwise in
+either direction, an explicit `false` included; `/spawn`'s `-i` and `-s` can
+only turn the defaults on, never off (see `AGENTS.md` on that asymmetry).
 
-1. Resolve the name and topic_path (`/spawn` from its arguments — a name, a path,
-   or both, told apart by shape — the tool from a single name under
+1. Resolve the name and topic_path (`/spawn` from its flags — the type is its one
+   positional, `-n/--name` and `-d/--dir` the name and the directory, and the
+   rest fall to the role's `[spawn]` defaults — the tool from a single name under
    `agents dir`, or from the parent's own dir when it was asked to share), then
    create that dir and adopt its state dir: always
    `<agents root>/<name>/.jyc`, even when the child was pointed at a named path
-   (the same order as `/fork`: `adopt_state_dir` first, so `set_topic_path`
+   (one order for every trigger: `adopt_state_dir` first, so `set_topic_path`
    keeps the in-dir state instead of deriving `_<path>` state under
    `agents_dir(data_dir)`).
-2. Seed the parent's state with `seed_state(…, "spawned-from")` — the `/fork`
+2. Seed the parent's state with `seed_state(…, "spawned-from")` — the seed
    allow-list minus the conversation-shaped entries (pattern, backlog,
    `mode-override`, model/context/MCP/skill overrides; the task list is never
    inherited, so a child plans its own work), never `jobs/`
@@ -688,7 +690,7 @@ boundary, and the two forms are one feature rather than two. That holds whicheve
 form the command took, because both readers (`subagents_of`, `forget_subagent`)
 locate the lineage by resolving the child's **state dir** from the granted dir's
 name (`spawn_handler::state_dir_of`) rather than assuming `<granted dir>/.jyc` —
-a `/spawn ../test` child runs beside its parent while its state stays under the
+a `/spawn -d ../test` child runs beside its parent while its state stays under the
 agents root. The same lookup is what `/close` uses to revoke, so a path-form
 spawn gives the parent's access back when it closes.
 
@@ -1151,7 +1153,7 @@ implementation of the model row above, and the `mode` it is asked for is the one
 build). Its callers: the agent runtime, which builds the provider with the value
 it returns; the display source `TopicManager::topic_display_state`, so the
 dashboard topic list, the Feishu status card and `/info` render the model the
-agent actually runs; the context-window resolver; and the `/spawn` / `/fork` /
+agent actually runs; the context-window resolver; and the `/spawn` and
 spawn-tool triggers, which use `resolve_effective_model` (mode, then model) to
 hand a child its starting model.
 

@@ -7,17 +7,18 @@
 //! commands itself. `/model` is just one row of this table, not a special
 //! case in the client.
 //!
-//! Values come from two places: the command's own contract (the literals
-//! each handler `match`es on) and per-topic state the caller already has
-//! (models, skills, MCP names). A command whose arguments are free text
+//! Values come from three places: the command's own contract (the literals
+//! each handler `match`es on), per-topic state the caller already has
+//! (models, skills, MCP names), and the instance's own subagent types
+//! (`/spawn`'s first level). A command whose arguments are free text
 //! (`/grant <path>`, `/backlog push <text>`) gets an empty vec — the popup
 //! then closes and the input field sends what was typed.
 //!
 //! Deliberately absent: `/exchange` (published names need a directory scan
-//! per topic per poll) and `/ungrant` (grants live in the agent runtime, not
-//! in the inspect payload). Both stay free text; add them when the popup
-//! gets a lazy per-topic command fetch (see the `TODO(perf)` in the overview
-//! builder).
+//! per topic per poll, where `/spawn`'s types are resolved once for the whole
+//! payload) and `/ungrant` (grants live in the agent runtime, not in the
+//! inspect payload). Both stay free text; add them when the popup gets a lazy
+//! per-topic command fetch (see the `TODO(perf)` in the overview builder).
 
 use std::collections::HashSet;
 
@@ -33,6 +34,11 @@ pub struct ArgCtx<'a> {
     pub skills: &'a [String],
     /// Models the configured providers expose.
     pub models: &'a [ModelInfo],
+    /// The subagent types a spawn would accept, as `(name, description)`, with
+    /// the start defaults each role declares appended to its line — read from
+    /// the installed role files by the caller, once for the whole payload (see
+    /// `spawn_handler::type_catalog_pairs`).
+    pub subagent_types: &'a [(String, String)],
 }
 
 /// A leaf value with no further levels.
@@ -92,6 +98,7 @@ pub fn command_args(command: &str, ctx: &ArgCtx) -> Vec<CommandArg> {
             val("rm", "Remove an item by index"),
             val("set", "Replace an item"),
         ],
+        "/spawn" => spawn_args(ctx),
         "/skill" => toggle_args(names(ctx.skills.iter().map(String::as_str))),
         "/mcp" => toggle_args(names(mcp_names(ctx.config).iter().map(String::as_str))),
         "/template" => vec![val(
@@ -112,6 +119,40 @@ pub fn command_args(command: &str, ctx: &ArgCtx) -> Vec<CommandArg> {
         }
         _ => vec![],
     }
+}
+
+/// `/spawn`'s next levels: the types a spawn accepts, and then the four flags.
+///
+/// The type is the only positional, so it is what the popup offers first — and
+/// each type carries the whole flag set again, because `/spawn review -n worker`
+/// is as ordinary as `/spawn -n worker`. A line that names a start default
+/// (`shares your directory`) is a role that declares one: on the command line
+/// the *absence* of `--share` is what lets that default stand.
+fn spawn_args(ctx: &ArgCtx) -> Vec<CommandArg> {
+    let mut args: Vec<CommandArg> = ctx
+        .subagent_types
+        .iter()
+        .map(|(name, description)| val_with(name, description, spawn_flags()))
+        .collect();
+    args.extend(spawn_flags());
+    args
+}
+
+/// `/spawn`'s flags, long spelling each — the one the popup inserts — with the
+/// short one named in the description.
+fn spawn_flags() -> Vec<CommandArg> {
+    vec![
+        val(
+            "--inherit",
+            "Copy the conversation and the transcript too (-i)",
+        ),
+        val("--share", "Work in this topic's own directory (-s)"),
+        val("--name", "Name the new topic; defaults to <this>-2 (-n)"),
+        val(
+            "--dir",
+            "Where the child works; defaults to <agents dir>/<name> (-d)",
+        ),
+    ]
 }
 
 /// `<cmd> on|off|reset <name>` — `reset` clears everything at once, so only
@@ -178,6 +219,16 @@ mod tests {
             config,
             skills,
             models,
+            subagent_types: &[],
+        }
+    }
+
+    fn ctx_with_types<'a>(config: &'a AppConfig, types: &'a [(String, String)]) -> ArgCtx<'a> {
+        ArgCtx {
+            config,
+            skills: &[],
+            models: &[],
+            subagent_types: types,
         }
     }
 
@@ -253,6 +304,69 @@ mod tests {
                 "{cmd}'s arguments"
             );
         }
+    }
+
+    /// `/spawn` offers the types it accepts and then its flags, and every type
+    /// opens the same flag level — the type comes first because it is the only
+    /// positional, not because the flags are unavailable beside it.
+    #[test]
+    fn spawn_lists_types_then_flags_with_a_flag_level_under_every_type() {
+        let cfg = AppConfig::default();
+        let types = vec![
+            (
+                "review".to_string(),
+                "Reviews a change before you push (shares your directory)".to_string(),
+            ),
+            (
+                "analyst".to_string(),
+                "Reads a repo and reports".to_string(),
+            ),
+        ];
+        let args = command_args("/spawn", &ctx_with_types(&cfg, &types));
+
+        assert_eq!(
+            args.iter().map(|a| a.value.as_str()).collect::<Vec<_>>(),
+            [
+                "review",
+                "analyst",
+                "--inherit",
+                "--share",
+                "--name",
+                "--dir"
+            ],
+            "types first, then the flags"
+        );
+        assert_eq!(
+            find(&args, "review").unwrap().description,
+            "Reviews a change before you push (shares your directory)",
+            "a role's declared default rides in its own line"
+        );
+        assert_eq!(
+            find(&args, "review")
+                .unwrap()
+                .args
+                .iter()
+                .map(|a| a.value.as_str())
+                .collect::<Vec<_>>(),
+            ["--inherit", "--share", "--name", "--dir"]
+        );
+        assert!(find(&args, "analyst").unwrap().args.len() == 4);
+        assert!(
+            find(&args, "--share").unwrap().args.is_empty(),
+            "a flag is a leaf"
+        );
+    }
+
+    /// No types on this machine is not a row-less level: the flags are still
+    /// there, so `/spawn --name x` stays completable.
+    #[test]
+    fn spawn_offers_its_flags_with_no_types_installed() {
+        let cfg = AppConfig::default();
+        let args = command_args("/spawn", &ctx(&cfg, &[], &[]));
+        assert_eq!(
+            args.iter().map(|a| a.value.as_str()).collect::<Vec<_>>(),
+            ["--inherit", "--share", "--name", "--dir"]
+        );
     }
 
     #[test]

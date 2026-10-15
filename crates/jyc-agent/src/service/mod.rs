@@ -249,7 +249,7 @@ impl AgentService for JycAgentService {
         );
         // 1c. The model this turn runs. `jyc_core::session_state::resolve_model` is
         //     the single place that chain lives: the display source
-        //     (`TopicManager::topic_display_state`) and the `/spawn` + `/fork`
+        //     (`TopicManager::topic_display_state`) and the `/spawn` and spawn-tool
         //     triggers call the same function. `topic_cfg` was loaded once at the
         //     top of `process` (shared with `build_tool_registry`), so it is
         //     handed in rather than read a second time.

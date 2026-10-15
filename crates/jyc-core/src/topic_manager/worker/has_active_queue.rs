@@ -897,7 +897,7 @@ async fn test_topic_path_falls_back_to_default() {
 }
 
 /// The breadcrumb is the only surviving record of a topic dir that is not
-/// `<workspace>/<name>` — a `/fork` co-pinned with its parent, or any ad-hoc
+/// `<workspace>/<name>` — a child co-pinned with its parent, or any ad-hoc
 /// pin — so it must win over the workspace guess once the map is empty.
 #[tokio::test]
 async fn test_topic_path_restores_breadcrumb_after_restart() {

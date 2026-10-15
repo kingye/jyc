@@ -7,15 +7,14 @@ use jyc_types::state_dir::resolve_state_dir;
 use jyc_types::{AppConfig, TopicConfig};
 use tracing::instrument;
 
-use super::fork_handler::{
-    fail, invalid_name, next_free_name, seed_start_model, seed_state, take_inherit_flag,
-};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::spawn_common::{fail, invalid_name, next_free_name, seed_start_model, seed_state};
 use crate::topic_manager::TopicManager;
 use crate::topic_path::{resolve_topic_path, resolved};
 
 /// How to call it, repeated in every refusal so a typo self-corrects.
-const USAGE: &str = "/spawn [--inherit] [--type=<name>] [name] [path]";
+const USAGE: &str =
+    "/spawn [type] [-i|--inherit] [-s|--share] [-n|--name <name>] [-d|--dir <path>]";
 
 /// Collapse `.` and `..` components lexically — `canonicalize` without
 /// touching the filesystem, for destinations that do not exist yet.
@@ -46,18 +45,28 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 }
 
 /// `/spawn` — start a sibling topic that carries this topic's settings into a
-/// directory of its own.
+/// directory of its own, or into this one.
 ///
-/// The difference from `/fork` is only *where the new topic works*: a fork
-/// keeps this topic's directory, a spawn gets another one — a fresh dir under
-/// the agents root, or any dir you name, including one that already holds files
-/// (a checkout made elsewhere). What comes along is the state, not the
-/// workspace: the same allow-list `/fork` seeds (backlog and settings, never a
-/// task list) marked `spawned-from`, so a spawn inherits neither jobs that would
-/// double-fire nor a token meter it did not run up. The conversation and the
-/// transcript are the one part that stays behind by default — a worker starting
-/// on a task of its own does not need the parent's train of thought — and
-/// `--inherit` copies them too (see `seed_state`).
+/// The line is [`USAGE`]: one positional, the role the child starts in, then the
+/// four flags — `-i/--inherit` for the conversation, `-s/--share` to work in
+/// *this* topic's directory, `-n/--name` for the topic name and `-d/--dir` for
+/// the directory. A name and a directory are flags rather than positionals
+/// because the one positional a spawn takes is the type: `-n`/`-d` say which is
+/// which, where the old shape guessed it from a slash.
+///
+/// What comes along is the state, not the workspace: an allow-list (backlog and
+/// settings, never a task list) marked `spawned-from`, so a child inherits
+/// neither jobs that would double-fire nor a token meter it did not run up. The
+/// conversation and the transcript are the one part that stays behind by
+/// default — a worker starting on a task of its own does not need the parent's
+/// train of thought — and `-i/--inherit` copies them too (see `seed_state`).
+///
+/// `-s/--share` is the whole of what `/fork` used to be, and the only way a
+/// delegated review can read uncommitted work: the child runs in this topic's
+/// directory, co-pinning it the way a checkout two agents work in is co-pinned.
+/// A role can ask for it on its own, with `[spawn] share_topic_path = true`; the
+/// command only ever *adds* the flag (see [`type_start_flags`] for the
+/// three-way precedence).
 ///
 /// Because a spawn copies nothing **into** the destination, it neither merges
 /// with existing data nor needs the guards that would refuse it: a destination
@@ -68,21 +77,23 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 /// `<agents-root>/<name>/.jyc` with its registration — and leaves whatever the
 /// destination holds exactly as it found it.
 ///
-/// Websocket topics only, like `/fork`: on every other channel the topic name
-/// *is* the routing address, so spawning one would mean inventing an address.
+/// Websocket topics only: on every other channel the topic name *is* the
+/// routing address, so spawning one would mean inventing an address.
 pub struct SpawnCommandHandler {
     topic_manager: Arc<TopicManager>,
 }
 
 /// What a spawn works from: the parent's identity, the parent's topic_path
-/// (relative destinations resolve against it), the arguments, and the two
-/// things the trigger decides rather than the arguments.
+/// (relative destinations resolve against it), the name and directory the
+/// caller asked for, and the two things the trigger decides rather than the
+/// arguments.
 ///
-/// `/spawn` fills it from its [`CommandContext`]; [`spawn_subagent_under`] —
-/// the `jyc_spawn_subagent` tool's entry — fills the same fields from its
-/// own context and passes a single name. That is what lets both triggers run
-/// [`SpawnCommandHandler::spawn_under`] instead of one implementation apiece:
-/// the only difference between them is who decided to spawn.
+/// `/spawn` fills it from its [`CommandContext`] through [`parse_args`];
+/// [`spawn_subagent_under`] — the `jyc_spawn_subagent` tool's entry — fills
+/// the same fields from its own context and passes a single name. That is
+/// what lets both triggers run [`SpawnCommandHandler::spawn_under`] instead
+/// of one implementation apiece: the only difference between them is who
+/// decided to spawn.
 ///
 /// Terminology (`DESIGN.md` → Terminology): a topic's **topic_path** is the
 /// working directory it runs in — possibly outside the agents root, possibly a
@@ -91,14 +102,21 @@ pub struct SpawnCommandHandler {
 struct SpawnRequest<'a> {
     parent_topic: &'a str,
     parent_topic_path: &'a Path,
-    args: &'a [String],
+    /// The topic name the caller asked for, if it asked for one. A flag rather
+    /// than a positional, since the one positional a spawn takes is the type —
+    /// nothing has to guess whether an argument is a name or a path any more.
+    name: Option<String>,
+    /// The directory the child should work in, if the caller named one; a
+    /// relative path resolves against `parent_topic_path`. Never set together
+    /// with `share_topic_path`, which means this topic's own directory.
+    dir: Option<String>,
     /// Copy the conversation and the transcript as well — the opposite of
-    /// `seed_state`'s default. `/spawn --inherit`, or the tool's
+    /// `seed_state`'s default. `/spawn -i/--inherit`, or the tool's
     /// `inherit_context`.
     inherit: bool,
-    /// Work in the parent's own directory instead of a new one. Tool-only as an
-    /// *argument*: a typed `/spawn` never asks for it, and a role asks for it
-    /// with its own `[spawn]` default (a reviewer of uncommitted work must).
+    /// Work in the parent's own directory instead of a new one — `/spawn
+    /// -s/--share`, the tool's `share_topic_path`, or a role's own `[spawn]`
+    /// default (a reviewer of uncommitted work must declare it).
     share_topic_path: bool,
     /// The role the child starts in, already resolved from its name by the
     /// trigger ([`resolve_subagent_type`]) — the request carries the answer, not
@@ -130,27 +148,6 @@ impl SpawnCommandHandler {
         parent_state: &Path,
         agents_dir: &Path,
     ) -> Result<CommandResult> {
-        // One name and one path, told apart by shape rather than position, so
-        // `/spawn scratch`, `/spawn ../test` and `/spawn scratch/some-dir` all
-        // read naturally. `--inherit` is neither: both callers take it out of
-        // the arguments before building the request (`take_inherit_flag`), so
-        // what arrives here is only ever a name or a path.
-        let mut name = None;
-        let mut path = None;
-        for arg in req.args.iter().map(|a| a.trim()).filter(|a| !a.is_empty()) {
-            let slot = if looks_like_path(arg) {
-                &mut path
-            } else {
-                &mut name
-            };
-            if slot.is_some() {
-                return Ok(fail(format!(
-                    "/spawn: one name and one path at most. Usage: {USAGE}"
-                )));
-            }
-            *slot = Some(arg.to_string());
-        }
-
         if !parent_state.is_dir() {
             return Ok(fail(format!(
                 "/spawn: this topic's state dir {} is gone — there is nothing to hand over.",
@@ -158,41 +155,41 @@ impl SpawnCommandHandler {
             )));
         }
 
-        // Name and destination are one decision: a path with no name takes the
-        // path's last component, and a name with no path lands under the agents
-        // root. No arguments at all means `<this>-2` there too.
-        let requested = path
-            .as_deref()
-            .map(|p| resolve_topic_path(p, req.parent_topic_path));
-        let name = match name {
-            Some(name) => name,
-            None => match requested.as_ref().and_then(|p| p.file_name()) {
-                Some(file) => file.to_string_lossy().into_owned(),
-                None => next_free_name(&self.topic_manager, req.parent_topic, agents_dir).await,
-            },
-        };
-        // A role that works in this topic's directory has no destination of its
-        // own to be handed: the path would be dropped (the child is *named* from
-        // it and then runs here), and a destination is the one argument that must
-        // never be silently ignored — so say so instead of quietly disagreeing
-        // with the caller about where the child works.
-        if req.share_topic_path && requested.is_some() {
+        // A child that works in this topic's directory has no destination of its
+        // own to be handed, and a directory is the one argument that must never
+        // be silently ignored — so say so instead of quietly disagreeing with the
+        // caller about where the child works. Asked before the name is derived
+        // from it, so nothing below has to wonder which one was meant.
+        if req.share_topic_path && req.dir.is_some() {
             let who = match req.subagent_type {
                 Some(t) => format!("'{}' works in this topic's directory", t.name),
                 None => "this spawn works in this topic's directory".to_string(),
             };
             return Ok(fail(format!(
-                "/spawn: {who}; give a name, not a path — or spawn it with \
-                 `jyc_spawn_subagent(share_topic_path = false)` to give it a directory of its own."
+                "/spawn: {who} — name it with -n/--name, not a directory (-d/--dir)."
             )));
         }
 
-        // The child's topic_path: the named dir, or the path's last component,
-        // or `<agents root>/<name>` — unless the child was asked to share this
-        // topic's own dir, which is the same co-pinning `/fork` does with a
-        // different starting state. Where its *state* goes is a different
-        // question, answered from the name further down: always the child's own
-        // `<agents root>/<name>/.jyc`, shared dir or not.
+        // Name and destination are one decision: a directory with no name takes
+        // the directory's last component, and a name with no directory lands
+        // under the agents root. Neither means `<this>-2` there too.
+        let requested = req
+            .dir
+            .as_deref()
+            .map(|d| resolve_topic_path(d, req.parent_topic_path));
+        let name = match req.name.as_deref() {
+            Some(name) => name.to_string(),
+            None => match requested.as_ref().and_then(|p| p.file_name()) {
+                Some(file) => file.to_string_lossy().into_owned(),
+                None => next_free_name(&self.topic_manager, req.parent_topic, agents_dir).await,
+            },
+        };
+
+        // The child's topic_path: `-d`'s directory, `<agents root>/<name>`, or
+        // — when the child was asked to share this topic's own dir — that dir,
+        // the co-pinning a second agent in one checkout gets. Where its *state*
+        // goes is a different question, answered from the name further down:
+        // always the child's own `<agents root>/<name>/.jyc`, shared dir or not.
         let topic_path = if req.share_topic_path {
             req.parent_topic_path.to_path_buf()
         } else {
@@ -209,8 +206,8 @@ impl SpawnCommandHandler {
                 "/spawn: '{name}' is the topic you are already in."
             )));
         }
-        // Same two checks as `/fork`: a taken name would either route to
-        // another topic or adopt over another topic's state dir.
+        // A taken name would either route to another topic or adopt over
+        // another topic's state dir.
         if self.topic_manager.topic_path(&name).await.is_some() || agents_dir.join(&name).exists() {
             return Ok(fail(format!(
                 "/spawn: topic '{name}' already exists. Give it another name."
@@ -241,7 +238,7 @@ impl SpawnCommandHandler {
         // dir?", and a shared topic_path is *this* topic's own dir by
         // construction — the one case they exist to keep a spawn out of, and
         // the one of its kind that is not refused for being somebody else's too
-        // (a repo two agents co-pin is what `/fork` already does). So all three
+        // (a repo two agents co-pin is what `-s/--share` asks for). So all three
         // step aside on purpose, the "topic dir of '<owner>'" one included:
         // taking the parent's own dir cannot take anybody else's.
         if !req.share_topic_path {
@@ -286,8 +283,8 @@ impl SpawnCommandHandler {
         let topic_path = resolved(&topic_path);
 
         // Register the spawn's own state under its name, then pin the dir —
-        // `/fork`'s order, so `set_topic_path` reuses this registration instead
-        // of deriving one of its own. Two different things, never conflated:
+        // that order, so `set_topic_path` reuses this registration instead of
+        // deriving one of its own. Two different things, never conflated:
         // the state dir is always `<agents root>/<name>/.jyc` — inside
         // `topic_path` in the default shape, beside the parent's own state when
         // the dir is shared — and never the parent's.
@@ -383,13 +380,6 @@ impl SpawnCommandHandler {
     }
 }
 
-/// Whether a bare argument is a path rather than a topic name: an explicit `~`,
-/// or a separator. Everything else is a name — and every name still has to
-/// survive `invalid_name`, so a path-looking name cannot slip through.
-fn looks_like_path(arg: &str) -> bool {
-    arg.starts_with('~') || arg.contains('/') || arg.contains('\\')
-}
-
 #[async_trait]
 impl CommandHandler for SpawnCommandHandler {
     #[instrument(skip(self, context), fields(topic = %context.topic_name))]
@@ -406,12 +396,10 @@ impl CommandHandler for SpawnCommandHandler {
         // developer's own agents tree. Tests call `spawn_under` with every root.
         let agents_dir = self.topic_manager.resolve_agents_dir();
         let parent_state = resolve_state_dir(&context.topic_name, &context.topic_path);
-        // `/spawn --inherit …`: the command's only own share is the
-        // conversation, read off the arguments here — so a typed `/spawn` asks
-        // for neither flag of its own accord, and the role's `[spawn]` defaults
-        // fill what the command line left unsaid (below, once the type is read).
-        let (inherit, args) = take_inherit_flag(&context.args);
-        let (type_name, args) = match take_type_flag(&args) {
+        // The command line, read once: the role the child starts in and the
+        // four flags. A flag never reaches `spawn_under`, so nothing downstream
+        // can mistake `-n`'s value for a name it read off a shape.
+        let parsed = match parse_args(&context.args) {
             Ok(parsed) => parsed,
             Err(refusal) => return Ok(fail(format!("/spawn: {refusal}. Usage: {USAGE}"))),
         };
@@ -419,10 +407,16 @@ impl CommandHandler for SpawnCommandHandler {
         // an unknown or malformed type refuses here, not halfway through a
         // spawn. The config is the one this inbound message was routed with —
         // not a fresh read of the default config path, which would miss the
-        // `--config <FILE>` the daemon was started with.
-        let subagent_type = match resolve_type_arg(type_name.as_deref(), &context.config) {
+        // `--config <FILE>` the daemon was started with. A positional that is
+        // not a type lands here too, which is where a mistyped `/spawn <name>`
+        // is told that a name is a flag now.
+        let subagent_type = match resolve_type_arg(parsed.type_name.as_deref(), &context.config) {
             Ok(resolved) => resolved,
-            Err(refusal) => return Ok(fail(format!("/spawn: {refusal}"))),
+            Err(refusal) => {
+                return Ok(fail(format!(
+                    "/spawn: {refusal} — a topic name goes in -n/--name, a directory in -d/--dir"
+                )));
+            }
         };
         // The child starts on this topic's model, resolved the way the runtime
         // resolves it and against the same live config the type was — the
@@ -434,12 +428,19 @@ impl CommandHandler for SpawnCommandHandler {
             &context.channel,
         )
         .await;
-        let (inherit, share_topic_path) =
-            type_start_flags(subagent_type.as_ref(), inherit.then_some(true), None);
+        // What the command line left unsaid falls to the role's own `[spawn]`
+        // defaults, and to `false` after that ([`type_start_flags`]): a bare
+        // `/spawn` gets a directory and a conversation of its own.
+        let (inherit, share_topic_path) = type_start_flags(
+            subagent_type.as_ref(),
+            parsed.inherit.then_some(true),
+            parsed.share.then_some(true),
+        );
         let req = SpawnRequest {
             parent_topic: &context.topic_name,
             parent_topic_path: &context.topic_path,
-            args: &args,
+            name: parsed.name,
+            dir: parsed.dir,
             inherit,
             share_topic_path,
             subagent_type: subagent_type.as_ref(),
@@ -463,8 +464,8 @@ impl CommandHandler for SpawnCommandHandler {
 /// the child's *starting point*, both off by default: the conversation and
 /// transcript stay with the parent (see `seed_state`), and the child gets a
 /// working dir of its own. `share_topic_path` makes it work in the parent's
-/// directory instead — the `/fork` shape, for a reviewer that has to read
-/// uncommitted work — and its own state still goes to
+/// directory instead — the `-s/--share` shape, for a reviewer that has to
+/// read uncommitted work — and its own state still goes to
 /// `<agents root>/<name>/.jyc`, so closing it never touches that directory.
 /// Returns the new topic's name.
 ///
@@ -532,9 +533,9 @@ pub async fn spawn_subagent_under(
     let parent_state = state_dir_of(parent, parent_dir);
 
     // Resolved here because the caller reports the name back, and validated
-    // because `spawn_under` tells a name from a path by shape: a `../evil` that
-    // reached it unchecked would be resolved as a path, off the agents root and
-    // outside everything this module assumes about a subagent's directory.
+    // because the name becomes a directory under the agents root as well as a
+    // routing key: an unchecked `../evil` would put the child's own state
+    // outside everything this module assumes about a subagent.
     let name = match name {
         Some(n) => {
             if let Some(why) = invalid_name(n) {
@@ -545,11 +546,14 @@ pub async fn spawn_subagent_under(
         None => next_free_name(tm, parent, agents_dir).await,
     };
 
-    let args = vec![name.clone()];
     let req = SpawnRequest {
         parent_topic: parent,
         parent_topic_path: parent_dir,
-        args: &args,
+        name: Some(name.clone()),
+        // The tool names a topic, never a directory: a caller that wants the
+        // child somewhere specific says so with `share_topic_path` (this
+        // topic's dir) or lets it get a fresh one under the agents root.
+        dir: None,
         inherit: inherit_context,
         share_topic_path,
         subagent_type,
@@ -756,14 +760,6 @@ pub fn type_start_flags(
     )
 }
 
-/// The types a spawn accepts on this machine, one `name — description` line
-/// each, for the `type` argument's own description in the tool schema.
-///
-/// Resolved through [`resolve_subagent_type`] — the answer a spawn itself would
-/// get — so the list cannot offer what a spawn would refuse: a type whose name
-/// is malformed, or whose file does not parse, is shown as unusable instead of
-/// being listed bare. That also gives a role's own description exactly one
-/// reader, the place that puts it in front of the model.
 /// The type names a spawn would accept on this machine, from either source:
 /// [`jyc_types::available_subagent_types`] minus the names [`invalid_name`]
 /// refuses. Both the menu the model reads and the list an unknown name is
@@ -775,31 +771,86 @@ fn type_names(config: &AppConfig, config_dir: Option<&Path>) -> Vec<String> {
         .collect()
 }
 
-pub fn type_catalog(config: &AppConfig, config_dir: Option<&Path>) -> Vec<String> {
+/// The types a spawn accepts on this machine, `(name, description)` each.
+///
+/// Resolved through [`resolve_subagent_type`] — the answer a spawn itself would
+/// get — so no menu can offer what a spawn would refuse: a type whose name is
+/// malformed, or whose file does not parse, is shown as unusable instead of
+/// being listed bare. Every reader of a role's own line goes through here, so
+/// the tool schema the model reads and the TUI popup cannot describe one type
+/// two ways.
+pub fn type_catalog_pairs(config: &AppConfig, config_dir: Option<&Path>) -> Vec<(String, String)> {
     type_names(config, config_dir)
         .into_iter()
         .map(
             |name| match resolve_subagent_type(&name, Some(config), config_dir) {
-                Ok(ty) => match ty.description.filter(|d| !d.trim().is_empty()) {
-                    Some(d) => format!("{name} — {}", d.trim()),
-                    None => name,
-                },
+                Ok(ty) => (name, describe_type(&ty)),
                 // A refusal can be a multi-line TOML parse error, and this text
-                // ends up in the tool schema a model reads every turn: keep the
-                // first line, capped, so a broken file costs one line.
-                Err(refusal) => {
-                    let first: String = refusal
-                        .lines()
-                        .next()
-                        .unwrap_or("unusable")
-                        .trim()
-                        .chars()
-                        .take(120)
-                        .collect();
-                    format!("{name} — (unusable: {first})")
-                }
+                // ends up in a schema a model reads every turn and in a popup row
+                // a user reads: keep the first line, capped, so a broken file
+                // costs one line.
+                Err(refusal) => (
+                    name,
+                    format!(
+                        "(unusable: {})",
+                        refusal
+                            .lines()
+                            .next()
+                            .unwrap_or("unusable")
+                            .trim()
+                            .chars()
+                            .take(120)
+                            .collect::<String>()
+                    ),
+                ),
             },
         )
+        .collect()
+}
+
+/// A role's line: its own one-liner, plus the start defaults it declares.
+///
+/// The defaults belong in the line because they are invisible otherwise. On the
+/// command line the *absence* of `-s/--share` is exactly what lets a role's own
+/// `share_topic_path = true` stand, so a caller who cannot see the default reads
+/// the child it gets as an accident; a tool caller who cannot see it has no way
+/// to know that `type = "review"` already borrows the parent's directory.
+fn describe_type(ty: &SubagentType) -> String {
+    let description = ty
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let mut declared = Vec::new();
+    if let Some(policy) = &ty.spawn {
+        if policy.share_topic_path == Some(true) {
+            declared.push("shares your directory");
+        }
+        if policy.inherit_context == Some(true) {
+            declared.push("inherits the conversation");
+        }
+    }
+    match (description.is_empty(), declared.is_empty()) {
+        (_, true) => description,
+        (true, false) => format!("({})", declared.join(", ")),
+        (false, false) => format!("{description} ({})", declared.join(", ")),
+    }
+}
+
+/// The types a spawn accepts, one `name — description` line each: what the
+/// `jyc_spawn_subagent` tool's own `type` argument is described with.
+pub fn type_catalog(config: &AppConfig, config_dir: Option<&Path>) -> Vec<String> {
+    type_catalog_pairs(config, config_dir)
+        .into_iter()
+        .map(|(name, description)| {
+            if description.is_empty() {
+                name
+            } else {
+                format!("{name} — {description}")
+            }
+        })
         .collect()
 }
 
@@ -855,34 +906,136 @@ pub fn resolve_type_arg(
     }
 }
 
-/// Peel `--type=<name>` off `/spawn`'s arguments.
+/// What `/spawn`'s command line says, once it has been read.
 ///
-/// Shaped like `take_inherit_flag`, and for the same reason: `--type=x` is not a
-/// topic name, so it has to leave the argument list before [`spawn_under`] tells
-/// names from paths. `--type` with no value is a refusal rather than a topic
-/// that happens to start with dashes.
-fn take_type_flag(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
-    let mut found: Option<String> = None;
-    let mut rest = Vec::new();
-    for arg in args {
-        let trimmed = arg.trim();
-        match trimmed.strip_prefix("--type=") {
-            Some(value) if value.trim().is_empty() => {
-                return Err("--type needs a name (--type=review)".to_string());
+/// The `Option`s are the three-way shape [`type_start_flags`] takes: "not said"
+/// is a real answer, and a role's own `[spawn]` defaults fill what the command
+/// line left out.
+#[derive(Debug, Default)]
+struct SpawnArgs {
+    /// The one positional: the role the child starts in. `None` is a child that
+    /// inherits this topic's settings and answers to no role.
+    type_name: Option<String>,
+    /// `-n/--name` — the topic name.
+    name: Option<String>,
+    /// `-d/--dir` — the directory the child works in.
+    dir: Option<String>,
+    /// `-i/--inherit` — copy the conversation and the transcript along.
+    inherit: bool,
+    /// `-s/--share` — work in *this* topic's directory. There is no negative
+    /// form: a role that declares `share_topic_path = true` shares it whether or
+    /// not the flag is passed, so the flag can only ever add.
+    share: bool,
+}
+
+/// Read `/spawn`'s arguments: one positional, four flags, either spelling each.
+///
+/// Reading the line as a whole is the point. A flag's value is not a positional
+/// (`/spawn review -n scratch`), so the arguments have to be walked before
+/// anything can be told apart — and once they are, nothing has to guess from a
+/// slash whether an argument was meant as a name or as a directory.
+///
+/// Every refusal here is worded for someone who typed something: an unknown
+/// flag, a value that is missing or that would have swallowed the next flag, a
+/// flag that repeats (`-n a --name b`; the two booleans are idempotent and may
+/// be passed twice), a second positional, and `--type=` — a flag until the type
+/// became the positional, and worth its own sentence rather than
+/// "unknown flag".
+fn parse_args(args: &[String]) -> Result<SpawnArgs, String> {
+    let mut out = SpawnArgs::default();
+    let mut rest = args.iter();
+    while let Some(raw) = rest.next() {
+        let arg = raw.trim();
+        if arg.is_empty() {
+            continue;
+        }
+        // A value may ride along in the same token (`--name=scratch`, `-n=x`);
+        // that is the one place a flag and its value are one word.
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with('-') => (flag, Some(value)),
+            _ => (arg, None),
+        };
+        match flag {
+            "-i" | "--inherit" => out.inherit = on_off(flag, inline)?,
+            "-s" | "--share" => out.share = on_off(flag, inline)?,
+            "-n" | "--name" => {
+                let value = flag_value(flag, inline, &mut rest)?;
+                set_once(&mut out.name, value, flag)?;
             }
-            Some(value) => {
-                if found.is_some() {
-                    return Err("--type given twice".to_string());
+            "-d" | "--dir" => {
+                let value = flag_value(flag, inline, &mut rest)?;
+                set_once(&mut out.dir, value, flag)?;
+            }
+            // The type is the first argument now: the old spelling gets a
+            // sentence rather than "unknown flag", because that is what a
+            // remembered `/spawn --type=review` deserves.
+            "--type" => {
+                return Err(
+                    "the type is the first argument now, not a flag: /spawn review".to_string(),
+                );
+            }
+            flag if flag.starts_with('-') => return Err(format!("unknown flag '{flag}'")),
+            _ => {
+                if out.type_name.replace(arg.to_string()).is_some() {
+                    return Err(format!(
+                        "'{arg}' is a second type — a spawn takes one. A topic name goes in \
+                         -n/--name, a directory in -d/--dir"
+                    ));
                 }
-                found = Some(value.trim().to_string());
             }
-            None if trimmed == "--type" => {
-                return Err("--type needs a name (--type=review)".to_string());
-            }
-            None => rest.push(arg.clone()),
         }
     }
-    Ok((found, rest))
+    Ok(out)
+}
+
+/// The value of a value-carrying flag: the token after it, or the one it came in
+/// with (`--name=x`). A missing value is a refusal, never the next positional.
+///
+/// A token that opens with `-` is not a value either, even though the flag wants
+/// one: `/spawn -n -s` is someone reaching for `-s`, and answering "the name must
+/// not start with '-'" would hide the mistake (nothing that starts with `-` can
+/// be a topic name anyway — [`invalid_name`] refuses it). The flag is missing its
+/// value, and says so. `--name=-s` still works: spelling it inline is explicit.
+fn flag_value(
+    flag: &str,
+    inline: Option<&str>,
+    rest: &mut std::slice::Iter<'_, String>,
+) -> Result<String, String> {
+    let value = match inline {
+        Some(value) => value.trim(),
+        None => match rest.next().map(|value| value.trim()) {
+            Some(next) if !next.starts_with('-') || next == "-" => next,
+            _ => return Err(flag_needs_a_value(flag)),
+        },
+    };
+    if value.is_empty() {
+        return Err(flag_needs_a_value(flag));
+    }
+    Ok(value.to_string())
+}
+
+/// `-n needs a value (-n <value>)`.
+fn flag_needs_a_value(flag: &str) -> String {
+    format!("{flag} needs a value ({flag} <value>)")
+}
+
+/// A flag that carries no value. `--inherit=false` is refused rather than read
+/// as "on": the only way to ask for that default is not to pass the flag.
+fn on_off(flag: &str, inline: Option<&str>) -> Result<bool, String> {
+    match inline {
+        Some(_) => Err(format!("{flag} takes no value")),
+        None => Ok(true),
+    }
+}
+
+/// Fill a slot a flag owns, refusing a second one: `-n a -n b` is a mistake, not
+/// a last-one-wins.
+fn set_once(slot: &mut Option<String>, value: String, flag: &str) -> Result<(), String> {
+    if slot.is_some() {
+        return Err(format!("{flag} given twice"));
+    }
+    *slot = Some(value);
+    Ok(())
 }
 
 /// Whether a role names a model of its own — `[ai]` with any of its three keys.
@@ -1110,18 +1263,24 @@ mod tests {
         }
     }
 
-    /// The `/spawn` side of a call: the fields `spawn_under` reads, off the
-    /// context the production path would have built. `execute` takes the
-    /// `--inherit` flag out of the arguments before this point, so the test
-    /// that exercises it builds its [`SpawnRequest`] by hand the same way:
-    /// `args` here is only ever a name and a path.
+    /// The `/spawn` side of a call: exactly what `execute` builds from a
+    /// context, [`parse_args`] and all — so a test that types `-n x` exercises
+    /// the syntax a user types, refusals included. A case whose *arguments* are
+    /// the thing being refused calls [`parse_args`] itself.
     fn spawn_request(ctx: &CommandContext) -> SpawnRequest<'_> {
+        let parsed = parse_args(&ctx.args).expect("the test's own arguments parse");
+        let (inherit, share_topic_path) = type_start_flags(
+            None,
+            parsed.inherit.then_some(true),
+            parsed.share.then_some(true),
+        );
         SpawnRequest {
             parent_topic: &ctx.topic_name,
             parent_topic_path: &ctx.topic_path,
-            args: &ctx.args,
-            inherit: false,
-            share_topic_path: false,
+            name: parsed.name,
+            dir: parsed.dir,
+            inherit,
+            share_topic_path,
             subagent_type: None,
             start_model: None,
         }
@@ -1621,27 +1780,57 @@ mod tests {
         assert!(resolve_type_arg(None, &config).unwrap().is_none());
     }
 
-    /// `--type=<name>` leaves the argument list before names and paths are told
-    /// apart, and a malformed flag is a refusal rather than a topic named
-    /// `--type`.
+    /// The command line, read as a whole: the one positional is the type, a
+    /// flag's value travels with it (`-n x`, `--name=x`), and everything that
+    /// cannot be read says why.
     #[test]
-    fn take_type_flag_parses_and_refuses() {
+    fn parse_args_reads_the_type_and_the_flags() {
         let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
 
-        let (name, rest) = take_type_flag(&args(&["--type=review", "worker"])).unwrap();
-        assert_eq!(name.as_deref(), Some("review"));
-        assert_eq!(rest, args(&["worker"]));
+        let parsed = parse_args(&args(&["review", "-n", "worker", "--dir=../out"])).unwrap();
+        assert_eq!(parsed.type_name.as_deref(), Some("review"));
+        assert_eq!(parsed.name.as_deref(), Some("worker"));
+        assert_eq!(parsed.dir.as_deref(), Some("../out"));
+        assert!(!parsed.inherit && !parsed.share);
 
-        let (name, rest) = take_type_flag(&args(&["worker", "../out"])).unwrap();
-        assert_eq!(name, None, "no flag: nothing to peel");
-        assert_eq!(rest, args(&["worker", "../out"]));
+        // Either spelling of every flag, and both booleans at once.
+        let parsed = parse_args(&args(&["-i", "-s", "--name=scratch"])).unwrap();
+        assert!(parsed.inherit && parsed.share);
+        assert_eq!(parsed.name.as_deref(), Some("scratch"));
+        assert_eq!(parsed.type_name, None, "flags alone leave no type");
+        let parsed = parse_args(&args(&["-n", "a", "-d", "b"])).unwrap();
+        assert_eq!(
+            (parsed.name.as_deref(), parsed.dir.as_deref()),
+            (Some("a"), Some("b"))
+        );
 
-        for broken in [args(&["--type"]), args(&["--type="]), args(&["--type=  "])] {
-            let err = take_type_flag(&broken).unwrap_err();
-            assert!(err.contains("--type needs a name"), "{broken:?}: {err}");
+        // The two flags the type used to be spelled with, and the leftovers
+        // every parser has to answer for.
+        // The inline spelling is the one place a value may look like a flag.
+        let parsed = parse_args(&args(&["--name=-s"])).unwrap();
+        assert_eq!(parsed.name.as_deref(), Some("-s"));
+
+        for (broken, expected) in [
+            (args(&["-n"]), "-n needs a value"),
+            // A value-carrying flag does not eat the next flag: the value is
+            // missing, and that is what the caller is told.
+            (args(&["-n", "-s"]), "-n needs a value"),
+            (args(&["-d", "--share"]), "-d needs a value"),
+            (args(&["--dir="]), "--dir needs a value"),
+            (args(&["--name", ""]), "--name needs a value"),
+            (args(&["-n", "a", "--name", "b"]), "--name given twice"),
+            (args(&["-x"]), "unknown flag '-x'"),
+            (args(&["--inherit=false"]), "--inherit takes no value"),
+            (args(&["--type=review"]), "the type is the first argument"),
+            (
+                args(&["--type", "review"]),
+                "the type is the first argument",
+            ),
+            (args(&["a", "b"]), "a second type"),
+        ] {
+            let err = parse_args(&broken).unwrap_err();
+            assert!(err.contains(expected), "{broken:?}: {err}");
         }
-        let err = take_type_flag(&args(&["--type=a", "--type=b"])).unwrap_err();
-        assert!(err.contains("twice"), "{err}");
     }
 
     /// A role's *installed* file can state how it is spawned (`[spawn]`) and
@@ -1706,13 +1895,13 @@ mod tests {
         let parent = "t-a_role_that_shares_the_parents_dir_spawns_into_it";
         let name = "worker-a_role_that_shares_the_parents_dir_spawns_into_it";
         let (inherit, share) = type_start_flags(Some(&subagent_type), None, None);
-        let args = vec![name.to_string()];
         let result = handler
             .spawn_under(
                 SpawnRequest {
                     parent_topic: parent,
                     parent_topic_path: &dir,
-                    args: &args,
+                    name: Some(name.to_string()),
+                    dir: None,
                     inherit,
                     share_topic_path: share,
                     subagent_type: Some(&subagent_type),
@@ -1731,15 +1920,15 @@ mod tests {
         );
         jyc_types::access_grants::clear(parent);
 
-        // A path argument asks for a destination the role has already decided
+        // A directory asks for a destination the role has already decided
         // against: refusing says so, dropping it would silently disagree.
-        let args = vec!["scratch".to_string(), "/tmp/scratch".to_string()];
         let refused = handler
             .spawn_under(
                 SpawnRequest {
                     parent_topic: parent,
                     parent_topic_path: &dir,
-                    args: &args,
+                    name: Some("scratch".to_string()),
+                    dir: Some("/tmp/scratch".to_string()),
                     inherit,
                     share_topic_path: share,
                     subagent_type: Some(&subagent_type),
@@ -1752,7 +1941,9 @@ mod tests {
             .unwrap();
         assert!(!refused.success);
         assert!(
-            refused.message.contains("give a name, not a path"),
+            refused
+                .message
+                .contains("name it with -n/--name, not a directory"),
             "{}",
             refused.message
         );
@@ -1806,12 +1997,11 @@ mod tests {
         let subagent_type =
             resolve_subagent_type("review", Some(&config), Some(types_root.path())).unwrap();
 
-        let args =
-            vec!["worker-spawn_with_a_type_replaces_the_parents_runtime_choices".to_string()];
         let req = SpawnRequest {
             parent_topic: "t-spawn_with_a_type_replaces_the_parents_runtime_choices",
             parent_topic_path: &dir,
-            args: &args,
+            name: Some("worker-spawn_with_a_type_replaces_the_parents_runtime_choices".to_string()),
+            dir: None,
             inherit: false,
             share_topic_path: false,
             subagent_type: Some(&subagent_type),
@@ -1984,11 +2174,11 @@ mod tests {
             let subagent_type =
                 resolve_subagent_type("role", Some(&config), Some(types_root.path())).unwrap();
 
-            let args = vec!["worker-a_type_supersedes_only_the_overrides_it_declares".to_string()];
             let req = SpawnRequest {
                 parent_topic: "t-a_type_supersedes_only_the_overrides_it_declares",
                 parent_topic_path: &dir,
-                args: &args,
+                name: Some("worker-a_type_supersedes_only_the_overrides_it_declares".to_string()),
+                dir: None,
                 inherit: false,
                 share_topic_path: false,
                 subagent_type: Some(&subagent_type),
@@ -2072,11 +2262,11 @@ mod tests {
                 resolve_subagent_type("role", Some(&config), Some(types_root.path())).unwrap()
             });
 
-            let args = vec!["worker-snapshot".to_string()];
             let req = SpawnRequest {
                 parent_topic: "t-a_child_starts_on_the_parents_model_unless_the_role_names_one",
                 parent_topic_path: &dir,
-                args: &args,
+                name: Some("worker-snapshot".to_string()),
+                dir: None,
                 inherit: false,
                 share_topic_path: false,
                 subagent_type: subagent_type.as_ref(),
@@ -2170,11 +2360,11 @@ mod tests {
 
         // A child name of its own: the state-dir registry is process-global, so
         // a name another test spawns in parallel would resolve to *its* dir.
-        let args = vec!["mode-only-child".to_string()];
         let req = SpawnRequest {
             parent_topic: "t-a_mode_only_role_does_not_inherit_the_parents_other_modes_model",
             parent_topic_path: &dir,
-            args: &args,
+            name: Some("mode-only-child".to_string()),
+            dir: None,
             inherit: false,
             share_topic_path: false,
             subagent_type: Some(&subagent_type),
@@ -2340,20 +2530,10 @@ mod tests {
             "inherit-parent",
             &dir,
             "websocket",
-            &["--inherit", "with-context"],
+            &["--inherit", "-n", "with-context"],
         );
-        // What `execute` does before it builds the request: the flag comes off
-        // the arguments, so it can never be mistaken for a name.
-        let (inherit, args) = take_inherit_flag(&ctx.args);
-        let req = SpawnRequest {
-            parent_topic: &ctx.topic_name,
-            parent_topic_path: &ctx.topic_path,
-            args: &args,
-            inherit,
-            share_topic_path: false,
-            subagent_type: None,
-            start_model: None,
-        };
+        let req = spawn_request(&ctx);
+        assert!(req.inherit, "the flag is what the request carries");
         let result = handler
             .spawn_under(req, &dir.join(".jyc"), &agents_dir)
             .await
@@ -2402,7 +2582,7 @@ mod tests {
             "t-close_keeps_a_spawn_dir_that_gained_files",
             &dir,
             "websocket",
-            &["filed-shell"],
+            &["-n", "filed-shell"],
         );
         let result = handler
             .spawn_under(spawn_request(&ctx), &dir.join(".jyc"), &agents_dir)
@@ -2446,7 +2626,7 @@ mod tests {
             "checkout-parent",
             &dir,
             "websocket",
-            &[checkout.to_str().unwrap()],
+            &["-d", checkout.to_str().unwrap()],
         );
         let result = handler
             .spawn_under(
@@ -2528,7 +2708,7 @@ mod tests {
             "t-spawn_resolves_a_relative_path_against_this_topic",
             &dir,
             "websocket",
-            &["../test"],
+            &["-d", "../test"],
         );
         let result = handler
             .spawn_under(
@@ -2590,36 +2770,50 @@ mod tests {
             .await
             .unwrap();
 
-        // Reaching the source dir takes an explicit path: `Path::file_name`
+        // Reaching the source dir takes an explicit directory: `Path::file_name`
         // drops `.`, so `"./."` alone would name itself `src-topic` instead.
         for (args, expected) in [
             (
-                vec!["t-spawn_refuses_destinations_and_names_it_must_not_take"],
+                vec![
+                    "-n",
+                    "t-spawn_refuses_destinations_and_names_it_must_not_take",
+                ],
                 "already in",
             ),
-            (vec!["taken"], "already exists"),
-            (vec![".hidden"], "must not start with '.'"),
-            // A mistyped flag is not a name: left allowed it would create a topic
-            // called `--inherit=false`. (A bare `~` is *not* here: `/spawn` takes
-            // it as the destination it is, `$HOME`, and derives the name from it;
-            // it is refused where it is a name — the tool's `name`, `/fork`.)
-            (vec!["--inherit=false"], "must not start with '-'"),
+            (vec!["-n", "taken"], "already exists"),
+            (vec!["-n", ".hidden"], "must not start with '.'"),
+            // A name that is not a name, reached through the one spelling that
+            // can carry a value opening with `-`: `invalid_name` still refuses
+            // it. `-n -oops` never gets this far any more — that is a missing
+            // value, which `parse_args` refuses (see the row for it in
+            // `parse_args_reads_the_type_and_the_flags`).
+            (vec!["--name=-oops"], "must not start with '-'"),
             (
-                vec!["spawn-x", dir.to_str().unwrap()],
+                vec!["-n", "spawn-x", "-d", dir.to_str().unwrap()],
                 "the directory you are in",
             ),
-            (vec!["./sub"], "inside the current topic"),
-            (vec!["nested", "./deep"], "inside the current topic"),
+            (vec!["-d", "./sub"], "inside the current topic"),
             (
-                vec!["nested", dir.join("deep").to_str().unwrap()],
+                vec!["-n", "nested", "-d", "./deep"],
                 "inside the current topic",
             ),
-            (vec!["spawn-x", a_file.to_str().unwrap()], "not a directory"),
             (
-                vec!["spawn-x", other.to_str().unwrap()],
+                vec!["-n", "nested", "-d", dir.join("deep").to_str().unwrap()],
+                "inside the current topic",
+            ),
+            (
+                vec!["-n", "spawn-x", "-d", a_file.to_str().unwrap()],
+                "not a directory",
+            ),
+            (
+                vec!["-n", "spawn-x", "-d", other.to_str().unwrap()],
                 "topic dir of 'other'",
             ),
-            (vec!["a", "b", "c"], "one name and one path at most"),
+            // A child that shares this dir has nowhere else to be sent.
+            (
+                vec!["-s", "-n", "spawn-x", "-d", "./elsewhere"],
+                "name it with -n/--name, not a directory",
+            ),
         ] {
             let ctx = context(
                 "t-spawn_refuses_destinations_and_names_it_must_not_take",
@@ -2652,7 +2846,40 @@ mod tests {
         jyc_types::state_dir::unregister("other");
     }
 
-    /// `/spawn` is gated to websocket topics like `/fork`.
+    /// The one positional is the type, so a `/spawn <name>` from before the
+    /// flags lands here — refused with a sentence that says where a name goes
+    /// now, and with the types that *are* available. It is the one execute-level
+    /// refusal that runs on the websocket path (the parent's state is the
+    /// registered one, and nothing is created before the type is resolved).
+    #[tokio::test]
+    async fn a_positional_that_is_not_a_type_says_where_a_name_goes() {
+        let parent = "t-a_positional_that_is_not_a_type_says_where_a_name_goes";
+        let (_tmp, dir) = parent_topic(parent).await;
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let handler = SpawnCommandHandler::new(tm.clone());
+
+        let result = handler
+            .execute(context(parent, &dir, "websocket", &["scratch"]))
+            .await
+            .unwrap();
+        assert!(!result.success, "{result:?}");
+        assert!(
+            result.message.contains("unknown subagent type 'scratch'"),
+            "{}",
+            result.message
+        );
+        assert!(
+            result.message.contains("-n/--name"),
+            "the refusal must say where a name goes now: {}",
+            result.message
+        );
+        assert!(tm.topic_path("scratch").await.is_none());
+
+        jyc_types::state_dir::unregister(parent);
+    }
+
+    /// `/spawn` is gated to websocket topics: elsewhere the name is an address.
     #[tokio::test]
     async fn spawn_refuses_a_non_websocket_channel() {
         let workspace = tempdir().unwrap();
@@ -2670,16 +2897,6 @@ mod tests {
         assert!(!result.success);
         assert!(result.message.contains("routing address"), "{result:?}");
         assert!(tm.topic_path("whatever").await.is_none());
-    }
-
-    #[test]
-    fn path_shaped_arguments_are_paths_and_the_rest_are_names() {
-        assert!(looks_like_path("~/tmp/x"));
-        assert!(looks_like_path("/tmp/x"));
-        assert!(looks_like_path("sub/dir"));
-        assert!(looks_like_path("../test"));
-        assert!(!looks_like_path("scratch"));
-        assert!(!looks_like_path("plan-197"));
     }
 
     /// The tool's entry runs `/spawn`'s implementation: the same inheritance
@@ -2738,7 +2955,7 @@ mod tests {
         );
         // The parent's own `.jyc` (a pinned topic's, say) keeps its name, and
         // the child's state is the child's: its dir is its own, not the
-        // parent's working tree (that is `/fork`).
+        // parent's working tree (that is `-s/--share`).
         for keep in [
             "pattern",
             "agent-context.json",
@@ -2780,8 +2997,8 @@ mod tests {
         jyc_types::state_dir::unregister("worker-subagent_spawn_inherits_state_and_grants_access");
     }
 
-    /// `share_topic_path`: the tool triggers `/spawn`'s co-pinning instead of a
-    /// dir of its own — the `/fork` shape, and the only kind of subagent that
+    /// `share_topic_path`: the tool triggers `/spawn -s`'s co-pinning instead of
+    /// a dir of its own — the shared shape, the only kind of subagent that
     /// can review work that is not committed yet. The shared dir is the
     /// parent's throughout: the child's state stays its own under the agents
     /// root, and closing the child deletes that state and leaves the dir (and
@@ -2860,6 +3077,112 @@ mod tests {
         assert!(subagents_of(parent).is_empty());
 
         jyc_types::state_dir::unregister("shared-review");
+        jyc_types::access_grants::clear(parent);
+    }
+
+    /// Two children of one parent, both working in its directory, keep their own
+    /// state: sharing the workspace is not sharing the topic. The fork this
+    /// shape replaced had a test for exactly this, and the shared path is one
+    /// code path — so what it proved has to be proved here.
+    #[tokio::test]
+    async fn two_shared_children_of_one_parent_keep_their_own_state() {
+        let parent = "t-two_shared_children_of_one_parent_keep_their_own_state";
+        let (_tmp, dir) = parent_topic(parent).await;
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_dir = workspace.path().join("agents");
+        let shared = resolved(&dir);
+
+        // Each name is this test's own, per the convention at the top of the
+        // module: a name derived from the test that uses it cannot collide with
+        // another test's, and these tests run in parallel.
+        let names = [format!("{parent}-first"), format!("{parent}-second")];
+
+        let mut states = Vec::new();
+        for name in &names {
+            let spawned = spawn_subagent_under(
+                &tm,
+                parent,
+                &dir,
+                Some(name),
+                false,
+                true,
+                None,
+                None,
+                &agents_dir,
+            )
+            .await
+            .unwrap();
+            let name = name.as_str();
+            assert_eq!(spawned, name);
+            assert_eq!(tm.topic_path(name).await.unwrap(), shared);
+            let state = agents_dir.join(name).join(".jyc");
+            assert_eq!(
+                state_dir_of(name, &shared),
+                state,
+                "{name}: one state dir each, under the agents root"
+            );
+            assert_eq!(
+                std::fs::read_to_string(state.join("spawned-from")).unwrap(),
+                parent
+            );
+            assert!(state.join("pattern").exists(), "{name}: its own settings");
+            states.push(state);
+        }
+        assert_ne!(states[0], states[1]);
+
+        let mut listed = subagents_of(parent)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        listed.sort();
+        let mut expected = names.to_vec();
+        expected.sort();
+        assert_eq!(listed, expected);
+
+        for name in &names {
+            jyc_types::state_dir::unregister(name);
+        }
+        jyc_types::access_grants::clear(parent);
+    }
+
+    /// A shared spawn with no name takes the first free `<this>-N` — and skips
+    /// the ones that are taken, which is the probe's other branch. The deleted
+    /// fork test was the only one that reached it (it pre-created `<parent>-2`
+    /// to see `-3`).
+    #[tokio::test]
+    async fn a_shared_spawn_with_no_name_skips_a_taken_suffix() {
+        let parent = "t-a_shared_spawn_with_no_name_skips_a_taken_suffix";
+        let (_tmp, dir) = parent_topic(parent).await;
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_dir = workspace.path().join("agents");
+        tokio::fs::create_dir_all(agents_dir.join(format!("{parent}-2")))
+            .await
+            .unwrap();
+
+        let name = spawn_subagent_under(
+            &tm,
+            parent,
+            &dir,
+            None,
+            false,
+            true,
+            None,
+            None,
+            &agents_dir,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(name, format!("{parent}-3"));
+        assert_eq!(tm.topic_path(&name).await.unwrap(), resolved(&dir));
+        assert_eq!(
+            state_dir_of(&name, &resolved(&dir)),
+            agents_dir.join(&name).join(".jyc")
+        );
+
+        jyc_types::state_dir::unregister(&name);
         jyc_types::access_grants::clear(parent);
     }
 

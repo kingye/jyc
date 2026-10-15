@@ -10,7 +10,7 @@ use tracing::instrument;
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use super::spawn_common::{fail, invalid_name, next_free_name, seed_start_model, seed_state};
 use crate::topic_manager::TopicManager;
-use crate::topic_path::{resolve_topic_path, resolved};
+use crate::topic_path::{default_topic_dir, resolve_topic_path, resolved};
 
 /// How to call it, repeated in every refusal so a typo self-corrects.
 const USAGE: &str =
@@ -185,17 +185,18 @@ impl SpawnCommandHandler {
             },
         };
 
-        // The child's topic_path: `-d`'s directory, `<agents root>/<name>`, or
-        // — when the child was asked to share this topic's own dir — that dir,
-        // the co-pinning a second agent in one checkout gets. Where its *state*
-        // goes is a different question, answered from the name further down:
-        // always the child's own `<agents root>/<name>/.jyc`, shared dir or not.
+        // The child's topic_path: `-d`'s directory, its own
+        // `<agents root>/<name>/.data`, or — when the child was asked to share
+        // this topic's own dir — that dir, the co-pinning a second agent in one
+        // checkout gets. Where its *state* goes is a different question,
+        // answered from the name further down: always the child's own
+        // `<agents root>/<name>/.jyc`, shared dir or not.
         let topic_path = if req.share_topic_path {
             req.parent_topic_path.to_path_buf()
         } else {
             requested
                 .map(|p| normalize_lexically(&p))
-                .unwrap_or_else(|| agents_dir.join(&name))
+                .unwrap_or_else(|| default_topic_dir(&agents_dir.join(&name)))
         };
 
         if let Some(reason) = invalid_name(&name) {
@@ -582,7 +583,8 @@ pub async fn spawn_subagent_under(
 /// triggers and both readers below, so no caller has to guess whether the state
 /// of a `/spawn <path>` child sits inside the path it was given.
 fn state_dir_of(name: &str, topic_path: &Path) -> PathBuf {
-    jyc_types::state_dir::registered_state(name).unwrap_or_else(|| topic_path.join(".jyc"))
+    jyc_types::state_dir::registered_state(name)
+        .unwrap_or_else(|| crate::topic_path::topic_home(topic_path).join(".jyc"))
 }
 
 /// The subagent directories `topic` currently holds, as `(name, topic_path)`.

@@ -296,11 +296,11 @@ Process all PDF sources first. Only proceed to Image Phase if ALL PDF sources fa
 **IMPORTANT: ALWAYS check the attachments directory first.**
 
 Attachments from the email are automatically saved by the system to the
-`attachments/` subdirectory in the topic workspace.
+`.attachments/` subdirectory in the topic workspace.
 
 ```bash
 # List PDF attachments (>50KB to skip QR code images)
-ls -la attachments/*.pdf 2>/dev/null
+ls -la .attachments/*.pdf 2>/dev/null
 ```
 
 For each PDF attachment found (>50KB):
@@ -427,7 +427,7 @@ Check attachments directory for image files.
 
 ```bash
 # List image attachments (>50KB to skip QR codes)
-ls -la attachments/*.jpg attachments/*.jpeg attachments/*.png 2>/dev/null
+ls -la .attachments/*.jpg .attachments/*.jpeg .attachments/*.png 2>/dev/null
 ```
 
 **SKIP small images (< 50KB)** — these are QR codes, NOT invoices.
@@ -561,7 +561,7 @@ If a mandatory field cannot be found, return: field_name: NOT_FOUND"
 ## Attachment Cleanup After Successful Processing
 
 After an invoice is successfully validated and written to Excel (Step 5 completes),
-clean up the attachment files from `attachments/` that belong to this email.
+clean up the attachment files from `.attachments/` that belong to this email.
 
 This prevents re-processing the same attachments on subsequent messages and keeps
 the workspace tidy.
@@ -569,8 +569,8 @@ the workspace tidy.
 ```bash
 # Remove processed attachment files
 # Only remove files that were part of this email's processing
-rm -f "attachments/<processed_pdf_filename>"
-rm -f "attachments/<processed_image_filename>"
+rm -f ".attachments/<processed_pdf_filename>"
+rm -f ".attachments/<processed_image_filename>"
 ```
 
 **Rules:**

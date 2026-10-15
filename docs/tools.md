@@ -501,9 +501,9 @@ HTTP link served by the inspect server.
   (source disappears); when `false`, it is copied
 
 **Behavior:**
-- The file is placed in `<topic>/.jyc/exchange/<name>`
+- The file is placed in the topic's **state dir**: `<state dir>/exchange/<name>`
 - On first publish a per-topic access token (256-bit hex) is generated and
-  stored in `<topic>/.jyc/exchange-token` (owner-only permissions); subsequent
+  stored in `<state dir>/exchange-token` (owner-only permissions); subsequent
   publishes reuse it
 - Returns a shareable URL:
   `{base}/exchange/{channel}/{topic}/{name}?token={token}` where `base` comes
@@ -515,8 +515,9 @@ HTTP link served by the inspect server.
   and subpath allowed)
 - Files are served by the inspect server at `GET /exchange/...`; the bearer
   middleware does not apply — the per-topic `?token=` is the access control
-- `/reset` and `/new` delete `.jyc/exchange/` and `.jyc/exchange-token`, killing all
-  previously shared links (a fresh token is generated on the next publish)
+- `/reset` and `/new` delete the state dir's `exchange/` and `exchange-token`,
+  killing all previously shared links (a fresh token is generated on the next
+  publish)
 - The `/exchange` command re-prints the URLs of everything already published in
   the topic (`/exchange <name>` for a single file), so links can be recovered
   without publishing again

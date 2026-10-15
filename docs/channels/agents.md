@@ -148,24 +148,31 @@ exactly one synthetic channel named `agents` for the whole agent set.
 
 ## Workspace layout
 
-Each agent owns a subtree; its topics are siblings inside it, one
-directory per topic name:
+Each agent owns a subtree; its topics are siblings inside it, one **home**
+per topic name — and the agent root is its own 1:1 topic's home:
 
 ```
 <data dir>/agents/
-├── jyc_git_planner/          # agent root (a container, not a topic)
-│   ├── plan-197/             # pipe-routed topic
-│   │   ├── .jyc/
-│   │   ├── chat_history_<date>.jsonl
-│   │   └── attachments/
+├── jyc_git_planner/          # agent root — the home of its 1:1 topic
+│   ├── .jyc/                 # that topic's state dir (transcript, session, tasks)
+│   ├── .data/                # its working directory (`topic_path`)
+│   ├── plan-197/             # pipe-routed topic: a home of its own
+│   │   ├── .jyc/             # state dir
+│   │   └── .data/            # working directory
+│   │       └── .attachments/ # delivered files, when a message carries any
 │   ├── plan-198/             # sibling topic, fully isolated
 │   │   └── ...
-│   └── jyc_git_planner/      # the agent's 1:1 topic (name == agent)
-│       └── ...
 ├── group_chat/
 │   ├── 英国旅行2026/
 │   └── ...
 ```
+
+Inside a home, `.jyc` is the topic's state dir and `.data` is the working
+directory its agent runs in (`topic_path`). Every framework-owned directory is
+dot-prefixed, so a name a user's project owns — `attachments/`, a checkout's
+own files — always stays free. A topic keeps the directory it was created with:
+one that predates the `.data` split keeps its older layout, with its state dir
+beside it as ever.
 
 Each topic is isolated: its own chat history, session state, and (for
 GitHub topics) its own repository checkout. Topics of one agent share

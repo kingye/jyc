@@ -2422,8 +2422,9 @@ mod tests {
 
         // The handler registers the canonical path, so the asserts compare
         // against it too.
-        let dest =
-            resolved(&agents_dir.join("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2"));
+        let dest = resolved(&default_topic_dir(
+            &agents_dir.join("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2"),
+        ));
         assert!(dest.is_dir(), "the default destination is created for it");
         assert_eq!(
             tm.topic_path("t-spawn_defaults_to_a_fresh_dir_under_the_agents_dir-2")
@@ -2542,7 +2543,7 @@ mod tests {
             .unwrap();
         assert!(result.success, "{}", result.message);
 
-        let dest = resolved(&agents_dir.join("with-context"));
+        let dest = resolved(&default_topic_dir(&agents_dir.join("with-context")));
         assert_eq!(
             tm.topic_path("with-context").await.unwrap(),
             dest,
@@ -2591,15 +2592,18 @@ mod tests {
             .await
             .unwrap();
         assert!(result.success, "{}", result.message);
-        let dest = resolved(&agents_dir.join("filed-shell"));
+        // The child's home, and the working directory it runs in: a file the
+        // user puts *there* is what a close must not take.
+        let home = agents_dir.join("filed-shell");
+        let dest = resolved(&default_topic_dir(&home));
         tokio::fs::write(dest.join("user-note.txt"), "keep me")
             .await
             .unwrap();
 
         tm.close_topic("filed-shell").await.unwrap();
         assert!(dest.join("user-note.txt").exists(), "the user's file stays");
-        assert!(!dest.join(".jyc").exists(), "the state is deleted");
-        tokio::fs::remove_dir_all(&dest).await.unwrap();
+        assert!(!home.join(".jyc").exists(), "the state is deleted");
+        tokio::fs::remove_dir_all(&home).await.unwrap();
 
         jyc_types::state_dir::unregister("filed-shell");
         jyc_types::access_grants::clear("t-close_keeps_a_spawn_dir_that_gained_files");
@@ -2945,9 +2949,13 @@ mod tests {
             "worker-subagent_spawn_inherits_state_and_grants_access"
         );
 
-        let dest = agents_dir.join("worker-subagent_spawn_inherits_state_and_grants_access");
+        // The dir the spawn created for the child, and the working directory it
+        // runs in — `<home>/.data`, which is what the grant and the child's
+        // `topic_path` name.
+        let home = agents_dir.join("worker-subagent_spawn_inherits_state_and_grants_access");
+        let dest = default_topic_dir(&home);
         assert_eq!(
-            std::fs::read_to_string(dest.join(".jyc").join("spawned-from")).unwrap(),
+            std::fs::read_to_string(home.join(".jyc").join("spawned-from")).unwrap(),
             parent
         );
         assert!(
@@ -2965,23 +2973,31 @@ mod tests {
             "mode-override",
         ] {
             assert!(
-                dest.join(".jyc").join(keep).exists(),
+                home.join(".jyc").join(keep).exists(),
                 "{keep} must be inherited, exactly as `/spawn` does it"
             );
         }
         for drop in ["agent-session.json", "activity.jsonl"] {
             assert!(
-                !dest.join(".jyc").join(drop).exists(),
+                !home.join(".jyc").join(drop).exists(),
                 "{drop} must stay with the parent"
             );
         }
         // Only the state: a spawn hands over the conversation, never workspace
-        // files (the parent dir holds no files here, so `.jyc` is all there is).
-        let entries: Vec<_> = std::fs::read_dir(&dest)
+        // files — so the child's home holds nothing but its state and the empty
+        // working dir a spawn creates for it.
+        let mut entries: Vec<_> = std::fs::read_dir(&home)
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
-        assert_eq!(entries, vec![std::ffi::OsString::from(".jyc")]);
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec![
+                std::ffi::OsString::from(".data"),
+                std::ffi::OsString::from(".jyc")
+            ]
+        );
 
         let grants = jyc_types::access_grants::grants_for(parent);
         assert_eq!(grants.len(), 1);

@@ -44,7 +44,7 @@ fn topic_dir_for(
         return Some(crate::topic_path::resolve_topic_path(tp, data_root));
     }
     (channel_name == "agents")
-        .then(|| crate::topic_path::topic_work_dir(&workspace_dir.join(&pattern.name), topic_name))
+        .then(|| crate::topic_path::topic_work_dir(workspace_dir, &pattern.name, topic_name))
 }
 
 /// Routes inbound messages to the appropriate topic queue.

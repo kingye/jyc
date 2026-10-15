@@ -54,12 +54,15 @@ they are only slower and they cost the machine.
 | suite | `{test_command}` / `{lint_command}` / coverage | only when nothing else runs them (no CI, or CI doesn't cover this) |
 
 When CI owns the suite, the local obligation is: tests written and committed, compile clean,
-pushed. CI is the one that executes them. Do not block a turn waiting for CI — hand over the
-PR link and stop; red CI is fixed in a later turn.
+pushed. CI is the one that executes them — and its result always has to come back, so every push
+that starts a run also arranges the wait (below). What is forbidden is *you* holding your turn
+open for it: no polling `gh pr checks` / `gh run watch`, no `sleep` retries, and no putting the
+push or the reply off because a run is still going. Hand the link over and end the turn; red CI
+is fixed in the turn its report arrives in.
 
-When you *do* need the result (a merge that waits on green, a follow-up commit), do not poll
-for it — delegate the wait to a `ci-watch` child, which polls on the small model and reports
-back as a message:
+Hand the wait off — **default: a `ci-watch` child**, which polls on the small model and reports
+back as a message. Arrange one wait only, for the head you leave behind: if you are going to push
+again in this turn, do not spawn a watcher for the head that push supersedes.
 
 1. `jyc_spawn_subagent(name="ci-watch-<pr>", type="ci-watch")` (`subagents/ci-watch/config.toml`;
    install once with `cp -r subagents/ci-watch <config dir>/subagents/`)
@@ -73,14 +76,19 @@ back as a message:
    makes `gh run list --commit` an empty list rather than an error
 3. End your turn; the report arrives as a new message in this topic.
 
+The equivalent older way, when you would rather not hold a child open: `job_create` with a one-time
+`at` at the end of the budget, whose prompt says to check the run for this head and report. It
+re-enters this topic as a new turn — one wake-up, cheaper, but an early failure is only known then.
+One waiter per head either way: if a job is already pending for this PR, replace it rather than
+adding a second, and when the head moves, continue the watcher you have (another task to it is a new
+turn in it) instead of spawning or scheduling a second one.
+
 **A dead watch looks like nothing — until the budget is out.** Silence in this
 topic once the watcher's ~30-minute budget has run out is a dead watch, not a
 report: when you are next awake here, check the run yourself once, or send the
 *same* watcher another task — a new message opens a new turn in it (a second
 watcher on one PR is a duplicate the rules forbid; spawn a fresh one only if that
-child is gone). If you would rather not wait to be woken, schedule that check before
-you end your turn — `job_create` with a one-time `at` re-enters this topic as a new
-turn. A reply that instead *announces* a poll is the same failure seen early, and it
+child is gone). A reply that instead *announces* a poll is the same failure seen early, and it
 is visible only in the watcher's own topic — that turn ended, and nothing resumes
 it. The role file states the invariant from its own side: every turn carries the
 poll call or the report, never a promise to poll.

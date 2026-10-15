@@ -604,6 +604,9 @@ allowed_extensions = [
 max_file_size = "25mb"
 max_per_message = 10
 # save_path = "./downloads"  # Optional: custom path for downloaded attachments
+# Unset, they are saved into the topic's working directory, under
+# `.attachments/`. An absolute save_path is used as given; a relative one
+# resolves under the working directory.
 
 # Outbound attachment configuration (sending attachments with replies)
 [attachments.outbound]
@@ -1226,9 +1229,12 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 # the agent name. WebSocket mechanism (broadcast, dashboard chat pane,
 # /ws/agents/<topic> URL) stays the same.
 #
-# Default workspace root: <data dir>/agents/<agent_name>/
-# (Linux/macOS: ~/.local/share/jyc/agents/<agent_name>/
-#  Windows:     %LOCALAPPDATA%\jyc\agents\<agent_name>\
+# Default working directory: <data dir>/agents/<agent_name>/.data/
+# (Linux/macOS: ~/.local/share/jyc/agents/<agent_name>/.data/
+#  Windows:     %LOCALAPPDATA%\jyc\agents\<agent_name>\.data\
+# `<agent_name>/` is that topic's home: `.data` is the directory the agent
+# works in, `.jyc` beside it holds its state. A topic that predates this layout
+# keeps the directory it was created with.
 # Override with topic_path. A pinned topic's runtime state (.jyc) is NOT
 # left in the pinned dir: it is adopted to <data dir>/agents/<name>/
 # automatically on first start (existing .jyc is moved out of the repo).
@@ -1328,8 +1334,9 @@ bind = "127.0.0.1:9876"  # Default; localhost only for security
 
 # --- Per-Topic MCP Overrides (L3) ---
 #
-# Place a `<topic_path>/.jyc/config.toml` (for adopted/pinned topics the
-# state dir: `<data dir>/agents/<name>/.jyc/config.toml`) to add or
+# Place a `config.toml` in the topic's state dir — `<home>/.jyc/config.toml`,
+# e.g. `<data dir>/agents/<name>/.jyc/config.toml` for an agent-keyed topic or
+# `<data dir>/agents/<agent>/<topic>/.jyc/config.toml` for a pipe topic — to add or
 # replace MCPs for a
 # specific topic (e.g. one GitHub PR, one WeCom conversation). Layered on
 # top of the pattern → channel → global chain. The same `[ai] model`

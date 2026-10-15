@@ -21,6 +21,11 @@ and uses an in-process AI agent to generate replies.
 - 禁止使用的旧名：`workdir`/`--workdir`、`data_home`、`config_home`、`jyc_dir`、`state_root`、`agents_root`、`agents_workspace_root`、`staging_dir`
 - 数据目录参数固定为 `--data-dir`（无短选项）
 - topic 的工作目录一律称 `topic_path`；`.jyc` 一律称 state dir，且恒在 agents dir 下
+- topic 的 **home** 是它在 agents dir 下的归属目录（pipe topic 为 `<agents dir>/<agent>/<topic>/`，agent-keyed 的 1:1 与 `/spawn` 为 `<agents dir>/<name>/`）：home 下 `.jyc` 是 state dir、`.data` 是默认工作目录（即 `topic_path`），两者**并列**——state 永不落在工作目录内
+- 工作目录一经选定即不迁移：老 topic 保持它创建时的目录（state 也跟着不动），只有全新 topic 才得到 `<home>/.data`
+- 框架自有目录一律点开头（`.jyc`、`.data`、`.attachments`、`.inbound`）；工作目录里非点开头的内容属于用户/agent
+- 入站附件落地目录写作 `topic_path/.attachments/`（`ATTACHMENT_DIR_NAME`），`save_path` 显式配置时以配置为准
+- 不把 topic 的工作目录称作 "data dir"：`<data dir>` 是实例根目录（`--data-dir`），topic 的默认工作目录写作 `<home>/.data`
 - topic 永不落在 channel 下；`<data dir>/channels/<channel>/` 是该 channel 的运行状态（游标），不是 topic
 
 ## Git Rules

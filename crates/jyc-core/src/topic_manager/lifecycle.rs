@@ -193,6 +193,30 @@ impl TopicManager {
                     ),
                 }
             } else {
+                // A topic that works in `<home>/.data` owns that directory: an
+                // emptied one goes with its state, while a dir still holding
+                // files is user property and stays — the same rule the in-dir
+                // shape above follows. Any other dir (a pin, a dir a child
+                // shares) is somebody else's and is only ever pruned of *our*
+                // emptied shells.
+                if state.parent() == Some(crate::topic_path::topic_home(&topic_path)) {
+                    match tokio::fs::remove_dir(&topic_path).await {
+                        Ok(()) => tracing::info!(
+                            topic = %topic_name,
+                            dir = %topic_path.display(),
+                            "Emptied topic working dir removed with its state"
+                        ),
+                        Err(e)
+                            if e.kind() == std::io::ErrorKind::DirectoryNotEmpty
+                                || e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => tracing::warn!(
+                            topic = %topic_name,
+                            dir = %topic_path.display(),
+                            error = %e,
+                            "Topic state dir deleted but its emptied working dir could not be removed"
+                        ),
+                    }
+                }
                 prune_empty_parents(
                     &state,
                     &[agents_dir, &crate::topic_path::agents_dir(&self.data_dir)],
@@ -202,7 +226,7 @@ impl TopicManager {
                     topic = %topic_name,
                     state = %state.display(),
                     topic_dir = %topic_path.display(),
-                    "Topic state dir deleted; pinned topic dir preserved"
+                    "Topic state dir deleted; topic dir preserved"
                 );
             }
             self.cleanup_topic_state(topic_name).await;
@@ -290,10 +314,16 @@ impl TopicManager {
         let Some(topic_path) = self.topic_path(topic_name).await else {
             return Ok(PurgeOutcome::Nothing);
         };
-        if topic_path == self.storage.workspace().join(topic_name) || !topic_path.exists() {
+        if topic_path == self.storage.workspace().join(topic_name) {
             return Ok(PurgeOutcome::Nothing);
         }
-        let path = crate::topic_path::resolved(&topic_path);
+        // A topic's own dir is its *home*: a topic that works in
+        // `<home>/.data` has the home created for it, so purging the home is
+        // what takes the working directory with it.
+        let path = crate::topic_path::resolved(crate::topic_path::topic_home(&topic_path));
+        if !path.exists() {
+            return Ok(PurgeOutcome::Nothing);
+        }
 
         let mut shared = Vec::new();
         let mut nested = Vec::new();
@@ -355,10 +385,10 @@ impl TopicManager {
     /// Unlike `/close`, an upstream close means the topic is done, so the
     /// working dir goes with it — contents and all. Hard safety rule: only a
     /// dir that is *exactly* `<agents dir>/<agent>/<topic>` (a pipe rule's own
-    /// dir) is deleted, and the purge guards still have the last word: an
-    /// agent's own dir one level up, a dir shared with a child, a dir
-    /// nested with somebody else's, or a pin elsewhere is skipped with an
-    /// info log.
+    /// dir, working in its home or in that home's `.data`) is deleted, and the
+    /// purge guards still have the last word: an agent's own dir one level up,
+    /// a dir shared with a child, a dir nested with somebody else's, or a pin
+    /// elsewhere is skipped with an info log.
     ///
     /// Returns `true` when the topic was actually closed.
     pub async fn auto_close_topic(&self, topic_name: &str) -> Result<bool> {
@@ -520,18 +550,20 @@ async fn path_is_under(path: &Path, root: &Path) -> bool {
     path != root && path.starts_with(&root)
 }
 
-/// Is `path` exactly `<agents dir>/<agent>/<topic>` — the working dir a pipe
-/// rule creates for one topic, and the only shape an upstream close deletes
-/// with its contents?
+/// Is `path` exactly `<agents dir>/<agent>/<topic>` — the dir a pipe rule
+/// creates for one topic, and the only shape an upstream close deletes with
+/// its contents?
 ///
 /// Two levels, leaf named after the topic: one level up is an agent's own dir
 /// (`<agents dir>/<agent>`, a state namespace), a different leaf is somebody
-/// else's topic (a shared child works in its parent's dir).
+/// else's topic (a shared child works in its parent's dir). A topic that
+/// works in its home's `.data` counts as the home it was created with.
 fn is_dynamic_topic_dir(path: &Path, agents_dir: &Path, topic_name: &str) -> bool {
     let path = crate::topic_path::resolved(path);
     let agents_dir = crate::topic_path::resolved(agents_dir);
-    path.file_name() == Some(std::ffi::OsStr::new(topic_name))
-        && path.parent().and_then(Path::parent) == Some(agents_dir.as_path())
+    let home = crate::topic_path::topic_home(&path);
+    home.file_name() == Some(std::ffi::OsStr::new(topic_name))
+        && home.parent().and_then(Path::parent) == Some(agents_dir.as_path())
 }
 
 /// What [`TopicManager::purge_topic_dir`] did, or refused to do.

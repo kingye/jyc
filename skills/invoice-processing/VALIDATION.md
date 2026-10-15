@@ -169,12 +169,12 @@ PYEOF
 
 **Incomplete data (missing mandatory fields):**
 ```json
-{"timestamp":"2026-04-15T15:00:00","error_type":"incomplete_data","source":"attachments/invoice.pdf","sender":"finance@corp.com","subject":"报销发票","file_saved_as":"invoice_2026-04/unknown_001.pdf","fields_extracted":{"发票号码":"INV-2026-0042","开票日期":"2026-03-20","销售方名称":"XX公司","价税合计":"1060.00"},"fields_missing":["销售方税号","校验码"],"sources_tried":[{"type":"pdf_attachment","file":"attachments/invoice.pdf","result":"missing_tax_id_and_verification_code"}],"error_detail":"PDF text extraction succeeded but 销售方税号 and 校验码 not found in extracted text"}
+{"timestamp":"2026-04-15T15:00:00","error_type":"incomplete_data","source":".attachments/invoice.pdf","sender":"finance@corp.com","subject":"报销发票","file_saved_as":"invoice_2026-04/unknown_001.pdf","fields_extracted":{"发票号码":"INV-2026-0042","开票日期":"2026-03-20","销售方名称":"XX公司","价税合计":"1060.00"},"fields_missing":["销售方税号","校验码"],"sources_tried":[{"type":"pdf_attachment","file":".attachments/invoice.pdf","result":"missing_tax_id_and_verification_code"}],"error_detail":"PDF text extraction succeeded but 销售方税号 and 校验码 not found in extracted text"}
 ```
 
 **All sources failed (both phases exhausted):**
 ```json
-{"timestamp":"2026-04-15T16:00:00","error_type":"all_sources_failed","source":"(multiple sources)","sender":"supplier@example.com","subject":"4月发票","file_saved_as":"invoice_2026-04/unknown_002.pdf","fields_extracted":{"开票日期":"2026-04-01","价税合计":"500.00"},"fields_missing":["销售方税号","校验码"],"sources_tried":[{"type":"pdf_attachment","file":"attachments/doc.pdf","result":"missing_verification_code"},{"type":"pdf_url","url":"https://example.com/inv.pdf","result":"download_failed"},{"type":"image_attachment","file":"attachments/scan.jpg","result":"missing_tax_id"}],"error_detail":"All PDF and image sources tried, 销售方税号 and/or 校验码 missing from every source"}
+{"timestamp":"2026-04-15T16:00:00","error_type":"all_sources_failed","source":"(multiple sources)","sender":"supplier@example.com","subject":"4月发票","file_saved_as":"invoice_2026-04/unknown_002.pdf","fields_extracted":{"开票日期":"2026-04-01","价税合计":"500.00"},"fields_missing":["销售方税号","校验码"],"sources_tried":[{"type":"pdf_attachment","file":".attachments/doc.pdf","result":"missing_verification_code"},{"type":"pdf_url","url":"https://example.com/inv.pdf","result":"download_failed"},{"type":"image_attachment","file":".attachments/scan.jpg","result":"missing_tax_id"}],"error_detail":"All PDF and image sources tried, 销售方税号 and/or 校验码 missing from every source"}
 ```
 
 ### Saving Files on Failure
@@ -226,7 +226,7 @@ When the user asks to see failed invoices, errors, or problems (e.g., "show erro
    文件: 未保存
 
 2. ❌ 数据不完整
-   来源: attachments/invoice.pdf
+   来源: .attachments/invoice.pdf
    发件人: finance@corp.com
    邮件主题: 报销发票
    错误: 缺失必填字段 — 销售方税号, 校验码

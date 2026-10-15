@@ -478,9 +478,9 @@ pub async fn write_max_input_tokens(topic_name: &str, topic_path: &Path, new_max
 /// Consumers: the agent runtime (the model it builds the provider with), the
 /// display source ([`crate::topic_manager::TopicManager::topic_display_state`])
 /// and everything that renders it — dashboard, Feishu status card, `/info` —
-/// the context-window resolver below, and `/spawn` + `/fork`, which hand a
-/// fresh child the model its parent is running ([`seed_start_model`] in
-/// `command::fork_handler`).
+/// the context-window resolver below, and `/spawn`, which hands a fresh child
+/// the model its parent is running ([`seed_start_model`] in
+/// `command::spawn_common`).
 ///
 /// `pattern_name` is the pattern that applies to this turn — the runtime passes
 /// what the message matched, so `None` there means no pattern layer at all
@@ -499,7 +499,7 @@ pub async fn write_max_input_tokens(topic_name: &str, topic_path: &Path, new_max
 /// reference that cannot be resolved is reported at error level and treated as
 /// no override, rather than surviving as a model id that fails much later.
 ///
-/// [`seed_start_model`]: crate::command::fork_handler
+/// [`seed_start_model`]: crate::command::spawn_common
 pub async fn resolve_model(
     topic_name: &str,
     topic_path: &Path,

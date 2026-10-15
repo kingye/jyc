@@ -6,7 +6,8 @@
 # <dir>/repo -b <branch>` — the caller's job, see the `delegated-dev` skill) and
 # sends the plan as the task (`jyc_send_to_topic`, `require_reply = true`). The
 # child branches, commits, runs the local gate, delegates the review and the CI
-# wait, and comes back with one report.
+# wait, and comes back with the link and the verdicts it has by then — the
+# delegated verdicts (the review's, the CI's) follow as later messages.
 #
 # Install it into the config dir, once:
 #     cp -r subagents/develop ~/.config/jyc/subagents/
@@ -81,11 +82,12 @@ substituting a plan of your own.
   report you are waiting on.
 - Your report is your reply, and it is short: the PR link, the review verdict,
   the CI verdict, and anything you could not verify. No narration of your steps,
-  and no test result you did not see come back from CI. The CI verdict is the
-  part that arrives later: your push turn ends with the link and the verdicts you
-  have by then, and the CI verdict goes on the turn the watcher's report lands —
-  send that turn's report to the caller with `jyc_send_to_topic`, because a reply
-  in your own topic does not reach them. Never hold a turn open waiting for CI.
+  and no test result you did not see come back from CI. The verdicts that arrive
+  later are the delegated ones, the review's and the CI's: your push turn ends
+  with the link and the verdicts you have by then, and each goes on the turn its
+  report lands — send that turn's report to the caller with `jyc_send_to_topic`,
+  because a reply in your own topic does not reach them. Never hold a turn open
+  waiting for a child's report.
 - You work on the branch you were given, which already exists, and you stop at
   the pushed PR: no merge to main, no push to main. `dev-workflow`'s fix and
   feature flows describe the agent that *owns* the repository — "a fix is its

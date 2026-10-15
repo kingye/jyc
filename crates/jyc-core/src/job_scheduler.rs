@@ -1,7 +1,8 @@
 //! Background JobScheduler — fires due jobs by injecting InboundMessage
 //! into the originating topic via TopicManager.
 //!
-//! Jobs are stored per-topic in `<topic>/.jyc/jobs/<id>.json`. The scheduler
+//! Jobs are stored per-topic in the topic's state dir (`.jyc/jobs/<id>.json`).
+//! The scheduler
 //! scans all channel workspace directories for topic directories that contain
 //! a `.jyc/jobs/` subdirectory, discovers due jobs, fires them, and updates
 //! their state.

@@ -1,6 +1,7 @@
 //! File-based store for scheduled jobs.
 //!
-//! Each job is stored as `<topic_path>/.jyc/jobs/<id>.json`. The store
+//! Each job is stored in its topic's state dir, `<state dir>/jobs/<id>.json`.
+//! The store
 //! provides CRUD operations and is used by both the `JobScheduler` and
 //! the agent job management tools. Each topic has its own isolated store.
 

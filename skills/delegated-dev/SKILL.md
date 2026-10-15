@@ -36,14 +36,17 @@ The role decides where the child *starts*, not what it is stuck with.
 1. `jyc_spawn_subagent(name = "develop-<what>", type = "develop")` — pass nothing else. No
    `inherit_context`: the child's job is the plan, not your reasoning. No `share_topic_path`: it
    needs a directory of its own. The reply names that directory.
-2. Prepare it: `git worktree add <dir>/repo -b <branch>`. **Inside** the child's directory, not as
-   the directory itself: the child's state dir is `<dir>/.jyc`, so a checkout at `<dir>` would put
-   `.jyc` inside the repository. The branch is part of the plan, and it already exists when the
-   developer starts — the developer does not create it. Name it the way this repo names branches
-   (`feat/<description>`, `fix/<description>`, with the issue number when there is one, per
-   `AGENTS.md`).
+2. Prepare it: `git worktree add <dir> -b <branch>` — the child's directory itself is the
+   checkout. The child's state is not in there (its `.jyc` is a sibling, next to the `.data` it
+   works in), so nothing of the framework ends up in the repository. `git worktree add` needs the
+   directory to be empty, so do this **before** writing anything into it, and afterwards keep it
+   that way: a file dropped in here is an untracked file in the child's repository (the plan goes
+   in the task message, not into a file). The branch is part of the plan, and it already exists
+   when the developer starts — the developer does not create it. Name it the way this repo names
+   branches (`feat/<description>`, `fix/<description>`, with the issue number when there is one,
+   per `AGENTS.md`).
 3. Send the plan as the task (`jyc_send_to_topic`, `require_reply = true`): the branch name, where
-   the checkout is (`repo/`), what done means, and "make this a task list first". In the message,
+   the checkout is (the directory itself), what done means, and "make this a task list first". In the message,
    not in a file inside the checkout — a plan file would show up in the diff. Two things the message
    must not leave out:
    - **a target dir outside the worktree** — `CARGO_TARGET_DIR=<the main checkout>/target`, or
@@ -52,8 +55,9 @@ The role decides where the child *starts*, not what it is stuck with.
      gate re-pays the whole dependency graph and keeps a copy of it: exactly the slow gate and the
      filled disk this project's rules warn about, arriving as a surprise in the child's first turn;
    - **the checkout path in every task you send a `review` or `ci-watch` child of the developer**.
-     Those children work in the developer's directory, one level above the checkout, so at their own
-     cwd `git status` answers "not a git repository" until the task tells them where to go.
+     Those children share the developer's directory, so the checkout *is* their cwd when the task
+     names it — and a `gh` call in a directory nobody named is where "not a git repository" comes
+     from.
 4. End your turn. The child delegates the review and the CI wait itself, and both of those children
    share *its* directory, so they read its tree — not yours. Nothing comes back until the one report
    does — so when you are next awake here and no report has landed long past the time that work should
@@ -79,13 +83,13 @@ Once the child is gone there is nobody left to take the order: a message to that
 *different* topic, which would even adopt the leftover directory. The close itself takes
 `/close --force` — plain `/close` only warns and removes nothing — so do this first either way.
 
-That order is also what gets `<dir>` itself put away. With the checkout out of it the topic dir is
-empty, and an emptied topic dir is removed with its state; close first and it survives holding only
-`repo/`, which costs you two things — a branch left checked out of a directory nobody is working in,
+That order is also what gets `<dir>` itself put away. With the checkout out of it the directory is
+empty, and an emptied working dir is removed with its state; close first and it survives holding the
+checkout, which costs you two things — a branch left checked out of a directory nobody is working in,
 and the name, since `<agents dir>/<name>` existing is what makes a later spawn of that name refuse
 ("topic already exists"). `git worktree prune` is no rescue here: it clears entries whose directory
 is already *gone*, and this one is still on disk. If something is left anyway, `rm -rf <dir>` after
-`git worktree remove --force <dir>/repo`.
+`git worktree remove --force <dir>`.
 
 Closing your own topic closes the developer with it, and still leaves the checkout behind — the same
 two steps, in the same order, apply.

@@ -32,9 +32,11 @@ current message lacks it, read the earliest message in the chat history.
 
 1. **Already initialized?** If `.git/` exists here, stop — the repo is ready.
 
-2. **Clone.** The topic directory is not empty (framework state lives in `.jyc/` and
-   `attachments/`), so `gh repo clone <owner>/<repo> .` refuses. Clone beside it and move
-   the git directory in:
+2. **Clone.** A delivered attachment lands in `.attachments/` inside this directory,
+   and `gh repo clone <owner>/<repo> .` refuses a directory that is not empty. A
+   topic created before the `.data` layout also keeps its `.jyc` state *in* this
+   directory (a newer one has it as a sibling), so clone beside it and move the
+   git directory in anyway:
 
    ```bash
    gh repo clone <owner>/<repo> .init-clone
@@ -47,14 +49,14 @@ current message lacks it, read the earliest message in the chat history.
    never shows up as a repository change:
 
    ```bash
-   printf '.jyc/\nattachments/\n' >> .git/info/exclude
+   printf '.jyc/\n.attachments/\n' >> .git/info/exclude
    ```
 
 4. **Verify:**
 
    ```bash
    git log --oneline -1
-   git status --short    # must NOT list .jyc/ or attachments/
+   git status --short    # must NOT list .jyc/ or .attachments/
    ```
 
 ### After cloning
@@ -68,6 +70,6 @@ current message lacks it, read the earliest message in the chat history.
 
 - NEVER delete or re-clone an existing checkout. If a clone fails, troubleshoot it
   (`gh auth status`, network, `GH_HOST`) — do not `rm -rf` and retry.
-- NEVER commit `.jyc/`, `attachments/`, or any other framework file.
+- NEVER commit `.jyc/`, `.attachments/`, or any other framework file.
 - If authentication is missing, say so in your reply. Never silently skip initialization
   and then act as if the code was unavailable.

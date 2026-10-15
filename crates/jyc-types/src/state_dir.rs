@@ -13,8 +13,9 @@
 //! - Ad-hoc/pinned dirs without a config key → `<agents dir>/<derived>/.jyc`
 //!   where `derived` encodes the absolute path (see [`derive_state_name`]).
 //! - Jyc-owned workspace topics (email/dynamic topics whose dir lives under
-//!   the data home) keep `<topic_dir>/.jyc` — but as an explicit
-//!   registration made at activation, never as an implicit fallback.
+//!   the data home) keep `<home>/.jyc` — the home of their `topic_path`,
+//!   which is `<home>/.data` on the current layout. Registered explicitly at
+//!   activation, never as an implicit fallback.
 //!
 //! The registry is process-global, keyed by **topic name** — the identity
 //! that actually distinguishes topics — because several agents may pin the

@@ -148,22 +148,51 @@ pub fn topic_home(topic_dir: &Path) -> &Path {
     }
 }
 
+/// The working directory of a topic whose home is `home`.
+///
+/// The choice is made once and then read back, never guessed twice: a topic
+/// records the directory it works in as `topic-path` inside its state dir
+/// (the same breadcrumb a pinned topic has always carried), and that record
+/// wins here. Only a topic with no record falls back to what the filesystem
+/// says:
+///
+/// - `<home>/.data` — the new layout, chosen but not yet recorded;
+/// - `<home>/.jyc` — the home itself was the working directory;
+/// - `<home>/<topic_name>/.jyc` — a self-named agents topic nested one level
+///   deeper (`<agents dir>/<agent>/<agent>`), as it used to be.
+///
+/// A topic with none of those is fresh and gets [`default_topic_dir`]. Note
+/// that `<home>/.jyc` alone no longer means the old layout: it is where the
+/// *new* layout keeps the state dir, which is why `.data` is probed first and
+/// why the record is what an existing topic is really read from.
+pub fn topic_work_dir_at(home: &Path, topic_name: &str) -> PathBuf {
+    let recorded = std::fs::read_to_string(home.join(".jyc").join("topic-path"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
+    if let Some(dir) = recorded {
+        return dir;
+    }
+    let default = default_topic_dir(home);
+    if default.is_dir() {
+        default
+    } else if home.join(".jyc").is_dir() {
+        home.to_path_buf()
+    } else if home.join(topic_name).join(".jyc").is_dir() {
+        home.join(topic_name)
+    } else {
+        default
+    }
+}
+
 /// The working directory of `agent`'s topic named `topic_name`, under the
 /// agents dir.
 ///
 /// The topic's **home** is the agent's own root for the self-named topic
 /// (agent `jyc` ↔ topic `jyc`) and one directory deeper for a pipe-routed one:
-/// `<agents dir>/<agent>/<topic>`. A topic is created with one working
-/// directory and keeps it — the choice is made once, so an existing topic
-/// never moves under an agent and no state is left behind. The two layouts
-/// that predate `.data` are recognised by the in-dir state they carry:
-///
-/// - `<home>/.jyc` — the home itself was the working directory (a
-///   pipe-routed topic, or an agent-keyed one);
-/// - `<home>/<topic_name>/.jyc` — a self-named agents topic nested one level
-///   deeper (`<agents dir>/<agent>/<agent>`).
-///
-/// A topic with neither is fresh and gets [`default_topic_dir`].
+/// `<agents dir>/<agent>/<topic>`. What directory inside that home the topic
+/// works in is [`topic_work_dir_at`]'s answer.
 pub fn topic_work_dir(agents_dir: &Path, agent: &str, topic_name: &str) -> PathBuf {
     let root = agents_dir.join(agent);
     let home = if topic_name == agent {
@@ -171,13 +200,22 @@ pub fn topic_work_dir(agents_dir: &Path, agent: &str, topic_name: &str) -> PathB
     } else {
         root.join(topic_name)
     };
-    if home.join(".jyc").is_dir() {
-        home
-    } else if home.join(topic_name).join(".jyc").is_dir() {
-        home.join(topic_name)
-    } else {
-        default_topic_dir(&home)
+    topic_work_dir_at(&home, topic_name)
+}
+
+/// Record the directory a topic works in, so its choice survives a restart.
+///
+/// Written once, next to the topic's state: every later resolution reads it
+/// back instead of inferring the layout from the filesystem. Refuses to
+/// overwrite an existing record — the choice is made once (`/close --force
+/// --purge` and re-spawn being the deliberate way to remake a topic).
+pub fn record_topic_work_dir(state_dir: &Path, topic_dir: &Path) -> std::io::Result<()> {
+    let file = state_dir.join("topic-path");
+    if file.exists() {
+        return Ok(());
     }
+    std::fs::create_dir_all(state_dir)?;
+    std::fs::write(file, format!("{}\n", topic_dir.display()))
 }
 
 /// Resolve the canonical state dir for a pinned/ad-hoc topic dir.
@@ -206,9 +244,28 @@ pub fn state_dir_for(agents_dir: &Path, topic_dir: &Path, agent_key: Option<&str
 /// and never moved (#825). A dir outside the workspace without a
 /// registration is a lost adoption: left unregistered so `state_dir` fails
 /// loudly instead of silently writing state into a user-owned dir (#825).
+///
+/// Known corner: stripping the `.data` leaf is lexical, so two topics whose
+/// dirs differ only by that leaf (`<home>` and `<home>/.data`, which needs a
+/// `-d <home>/.data` spawn inside another topic's home) would claim one
+/// `<home>/.jyc`. The registry is keyed by topic name and has no reverse
+/// lookup to catch it, so a close of one would take the other's state. Left
+/// as-is deliberately: the trigger is contrived, and a guard would mean a new
+/// jyc-types API (`registered_state` has no "who else holds this dir").
 pub fn activate_workspace_state(topic_name: &str, topic_dir: &Path, workspace: &Path) {
     if topic_dir.starts_with(workspace) {
-        jyc_types::state_dir::register_if_absent(topic_name, &topic_home(topic_dir).join(".jyc"));
+        let state_dir = topic_home(topic_dir).join(".jyc");
+        jyc_types::state_dir::register_if_absent(topic_name, &state_dir);
+        // Record which directory this topic works in, so a restart reads the
+        // choice back instead of inferring it from the filesystem (see
+        // `topic_work_dir_at`).
+        if let Err(e) = record_topic_work_dir(&state_dir, topic_dir) {
+            tracing::debug!(
+                topic = %topic_name,
+                error = %e,
+                "Could not record the topic's working directory"
+            );
+        }
     }
 }
 
@@ -962,5 +1019,61 @@ mod tests {
         let outside = tmp.path().join("user-repo");
         activate_workspace_state("layout-pin", &outside, &workspace);
         assert_eq!(registered("layout-pin"), None);
+    }
+
+    /// The new layout keeps the state dir at `<home>/.jyc` — the very thing
+    /// that used to mean "the home is the working directory". A topic that
+    /// works in `.data` must not move back to its home because its state is
+    /// there, or every topic would shift on the next fresh resolution.
+    #[test]
+    fn state_beside_dot_data_does_not_move_the_topic_to_its_home() {
+        let tmp = tempdir().unwrap();
+        let agents = tmp.path().join("agents");
+        let home = agents.join("a").join("plan-7");
+        std::fs::create_dir_all(home.join(".jyc")).unwrap();
+        std::fs::create_dir_all(home.join(TOPIC_DIR_NAME)).unwrap();
+        assert_eq!(
+            topic_work_dir(&agents, "a", "plan-7"),
+            home.join(TOPIC_DIR_NAME),
+            "the state dir is not a layout marker once `.data` is in use"
+        );
+    }
+
+    /// A recorded working directory is the answer, whatever the shapes on disk
+    /// would suggest — that is what keeps an existing topic where it was.
+    #[test]
+    fn a_recorded_working_dir_wins_over_the_layout() {
+        let tmp = tempdir().unwrap();
+        let agents = tmp.path().join("agents");
+        let home = agents.join("a").join("weather");
+        std::fs::create_dir_all(home.join(".jyc")).unwrap();
+        std::fs::create_dir_all(home.join(TOPIC_DIR_NAME)).unwrap();
+        record_topic_work_dir(&home.join(".jyc"), &home).unwrap();
+        assert_eq!(
+            topic_work_dir(&agents, "a", "weather"),
+            home,
+            "the record is read before the layout"
+        );
+        // Written once: a later call does not move the topic.
+        record_topic_work_dir(&home.join(".jyc"), &home.join(TOPIC_DIR_NAME)).unwrap();
+        assert_eq!(topic_work_dir(&agents, "a", "weather"), home);
+    }
+
+    /// The restart scenario end to end: activation records the working dir it
+    /// was given, so resolving it again (a fresh process, no in-memory pin)
+    /// answers the same directory even though the state dir now exists.
+    #[test]
+    fn activation_records_the_working_dir_it_was_given() {
+        let tmp = tempdir().unwrap();
+        let agents = tmp.path().join("agents");
+        let home = agents.join("a").join("record-me");
+        std::fs::create_dir_all(&home).unwrap();
+        let work = default_topic_dir(&home);
+        activate_workspace_state("record-me", &work, &agents);
+        assert_eq!(
+            topic_work_dir(&agents, "a", "record-me"),
+            work,
+            "recorded, so a restart resolves the same directory"
+        );
     }
 }

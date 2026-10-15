@@ -317,10 +317,16 @@ impl TopicManager {
         if topic_path == self.storage.workspace().join(topic_name) {
             return Ok(PurgeOutcome::Nothing);
         }
-        // A topic's own dir is its *home*: a topic that works in
-        // `<home>/.data` has the home created for it, so purging the home is
-        // what takes the working directory with it.
-        let path = crate::topic_path::resolved(crate::topic_path::topic_home(&topic_path));
+        // A topic's own dir is its *home*, and a topic that works in
+        // `<home>/.data` has the home created for it — so purging the home is
+        // what takes that working directory with it. Only when the home really
+        // is this topic's: the state dir beside it is the one registered for
+        // this topic. Otherwise `<dir>/.data` is a dir the topic was *given*
+        // (`-d`, a pin), whose neighbour is somebody else's and stays.
+        let home = crate::topic_path::topic_home(&topic_path);
+        let state = jyc_types::state_dir::resolve_state_dir(topic_name, &topic_path);
+        let own_home = state.parent() == Some(home);
+        let path = crate::topic_path::resolved(if own_home { home } else { &topic_path });
         if !path.exists() {
             return Ok(PurgeOutcome::Nothing);
         }

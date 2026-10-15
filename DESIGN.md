@@ -425,7 +425,7 @@ these names loosely, so they are fixed here.
 | **channel dir** | One channel's runtime state — its IMAP / GitHub / Gitee cursors. Not a topic root, and never scanned as one | `<data dir>/channels/<channel>/` (`.imap/`, `.github/`, `.gitee/`) | `jyc_utils::paths::channels_dir(data_dir).join(<channel>)` |
 | **agents dir** | The root of every agent, topic and state dir | `<data dir>/agents` (`~/.local/share/jyc/agents`) | `topic_path::resolve_agents_dir()`, `topic_path::agents_dir()`, `TopicManager::resolve_agents_dir()` |
 | **agent dir** | One agent's home: the directory its default topic's state dir and default working dir live in | `<agents dir>/<agent>/` (`.jyc` + `.data`) | — |
-| **home** | The directory a topic belongs to under the agents dir. It holds that topic's state dir and its default working dir, and it is chosen **once** — at the topic's first activation. A topic created before the `.data` split keeps the directory it was created with (`topic_work_dir`) | `<agents dir>/<agent>/<topic>/` for a pipe topic, `<agents dir>/<name>/` for an agent-keyed one (1:1 topic, `/spawn`); `.jyc` and `.data` are siblings inside it | `topic_path::{default_topic_dir, topic_home, topic_work_dir}` |
+| **home** | The directory a topic belongs to under the agents dir. It holds that topic's state dir and its default working dir, and it is chosen **once** — at the topic's first activation. A topic created before the `.data` split keeps the directory it was created with (`topic_work_dir`) | `<agents dir>/<agent>/<topic>/` for a pipe topic, `<agents dir>/<name>/` for an agent-keyed one (1:1 topic, `/spawn`); `.jyc` and `.data` are siblings inside it | `topic_path::{default_topic_dir, topic_home, topic_work_dir, topic_work_dir_at, record_topic_work_dir}` |
 | **default topic** | The one topic every agent has, named after the agent — a message sent to the agent lands on it | home `<agents dir>/<agent>/`: `topic_path` is its `.data` unless pinned; state dir its `.jyc` | 1:1 topics in `TopicManager` |
 | **topic** (non-default) | A topic a pipe creates from its rule's template (`plan-42`, `review-7`, …) | home `<agents dir>/<agent>/<topic>/`: `topic_path` is its `.data`, state dir its `.jyc` | router dynamic topics |
 | **subagent type** | A named **role** a spawn hands its child: a topic config selected by name (`type = "review"`), defined by `[subagents.<type>]` in the config or by `<config dir>/subagents/<type>/config.toml`, and expanded into the child's own `.jyc/config.toml` at spawn time. Not a topic, not a channel, not a pattern: nothing routes to it, and nothing about it is inherited by anything else. Only the L1 config dir is scanned — unlike skills, a type is not layered. Resolution happens in the entry points, against the config the instance is *running* with (never a fresh read of the default path), and an installed type may also carry a `description` (one line of "when to spawn me", listed in the spawn tool's `type` argument and as `/spawn`'s popup row for the type, with its declared start defaults appended) and `[spawn]` (its defaults for the two start flags). The repo ships three at `subagents/review/`, `subagents/ci-watch/` and `subagents/develop/` (`cp -r subagents/<type> <config dir>/subagents/`) | `[subagents.<type>]`; `<config dir>/subagents/<type>/config.toml` | `jyc_types::load_subagent_type`, `spawn_handler::{resolve_type_arg, resolve_subagent_type, SubagentType}` |
@@ -502,11 +502,15 @@ staging, `.attachments` delivered files):
   are siblings, so no working directory contains framework state at all and
   the "never commit `.jyc`" hazard has nothing left to guard.
 
-The directory is chosen **once**, at the topic's first activation
-(`topic_path::topic_work_dir`): a topic that already exists in an older
-layout — its state in the home itself, or nested at `<home>/<topic>/.jyc` —
-keeps the directory it was created with, with its state dir untouched. Only a
-fresh topic gets `<home>/.data`. A mixed instance is therefore expected after
+The directory is chosen **once**, at the topic's first activation, and then
+**recorded**: `<home>/.jyc/topic-path` holds it and
+`topic_path::topic_work_dir_at` reads that record before the filesystem. The
+record is what keeps the choice stable — `<home>/.jyc` is where the *new*
+layout keeps the state dir, so its presence can no longer be read as "the home
+is the working directory". A topic with no record — anything created before
+this change — keeps the directory it was created with: its state in the home
+itself, or nested at `<home>/<topic>/.jyc`, with the state dir untouched. Only
+a fresh topic gets `<home>/.data`. A mixed instance is therefore expected after
 this change, and no existing topic moves under an agent because of it.
 
 Multiple agent rows may pin the same topic dir (e.g. one repo shared by
@@ -1155,7 +1159,7 @@ Resolved via the `dirs` crate (`jyc-utils/src/paths.rs`). On Unix (Linux/macOS) 
 
 - **L1 (global)**: `<config dir>/` — `config.toml`, `skills/`, `templates/`, `subagents/<type>/config.toml` (subagent types; see Terminology — L1 only, types are not layered)
 - **L2 (data dir / data root)**: `--data-dir` if given, else the data dir — `config.toml` (via `--config`), `skills/`, `templates/`, plus all generated state
-- **L3 (topic)**: `<topic_path>/.jyc/` — `config.toml` (the topic's own overrides, see the table below), `skills/`, `templates/`, sessions, chat history, task list (`.jyc/tasks.json`)
+- **L3 (topic)**: the topic's state dir — `<home>/.jyc/` (see Terminology: `topic_path` is the working dir, `.data` beside it) — `config.toml` (the topic's own overrides, see the table below), `skills/`, `templates/`, sessions, chat history, task list (`tasks.json`)
 
 ### Merge & Lookup Rules
 

@@ -296,7 +296,9 @@ Process all PDF sources first. Only proceed to Image Phase if ALL PDF sources fa
 **IMPORTANT: ALWAYS check the attachments directory first.**
 
 Attachments from the email are automatically saved by the system to the
-`.attachments/` subdirectory in the topic workspace.
+`.attachments/` subdirectory in the topic workspace. A topic older than that
+layout keeps the ones it already received in the previous `attachments/`
+directory — check that one too before concluding an email brought none.
 
 ```bash
 # List PDF attachments (>50KB to skip QR code images)

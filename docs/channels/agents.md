@@ -13,13 +13,16 @@ historical websocket channel; only the **config surface** moves.
   empty; routing is by topic (URL segment or WS payload `topic`).
 - **Multiple topics** under each agent — each WS message's `topic`
   selects a sub-topic; every topic gets **its own directory**.
-- **Default topic directory**: `<data dir>/agents/<agent_name>/<topic_name>/`
-  - Linux/macOS: `~/.local/share/jyc/agents/<agent_name>/<topic_name>/`
-  - Windows: `%LOCALAPPDATA%\jyc\agents\<agent_name>\<topic_name>\`
+- **Default topic directory**: `<data dir>/agents/<agent_name>/<topic_name>/.data/`
+  - Linux/macOS: `~/.local/share/jyc/agents/<agent_name>/<topic_name>/.data/`
+  - Windows: `%LOCALAPPDATA%\jyc\agents\<agent_name>\<topic_name>\.data\`
   - Every topic of an agent is a sibling under that agent's root, so
     `plan-197` and `plan-198` never share a directory.
-  - For the 1:1 case (topic name == agent name) this is
-    `<data dir>/agents/<agent_name>/<agent_name>/`.
+  - That directory is the topic's **home**: the topic's `.jyc` state sits
+    beside the working directory at `<home>/.jyc`, never inside it.
+  - For the 1:1 case (topic name == agent name) the home is the agent's own
+    root, `<data dir>/agents/<agent_name>/`, so the topic works in
+    `<data dir>/agents/<agent_name>/.data/`.
   - `topic_path` (relative paths resolve against the jyc data dir;
     absolute paths used as-is; `~` expands) **pins the agent's 1:1
     topic** — the topic whose name equals the agent name — to that
@@ -185,9 +188,9 @@ topic templates (`plan-`, `review-`, `dev-`) to keep them distinct.
 
 An agent with an explicit `topic_path` places only its 1:1 topic there
 (e.g. agent `jyc` with `topic_path = "~/projects/jyc"` → topic `jyc`
-lives in the checkout). Its pipe-routed topics still land under
-`<data dir>/agents/jyc/<topic>/`, so dynamic topics never litter the
-pinned directory.
+works in the checkout). Its pipe-routed topics still get their home under
+`<data dir>/agents/jyc/<topic>/` (working in `<topic>/.data/`), so dynamic
+topics never litter the pinned directory.
 
 ## Cross-channel piping (feishu / pipe)
 

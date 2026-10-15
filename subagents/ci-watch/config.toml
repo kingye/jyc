@@ -31,7 +31,8 @@ description = "Waits for a pull request's CI to finish and reports the outcome w
 
 mode = "plan"
 
-# Watching means running `gh pr checks` and reporting back, and nothing else:
+# Watching means running `gh` — `pr checks` to watch, `run view` for one
+# failure's log — and reporting back, and nothing else:
 # no file editing, nothing published to a link, no delegation of its own.
 # `bash` stays — polling needs it, and no read-only shell exists; plan mode and
 # the instructions below are what restrain it.
@@ -47,20 +48,24 @@ do not interpret what you find — the caller reads the diff.
 
 ## How
 
-`gh pr checks` is the whole job, with `--watch` so one call carries the wait, and
-the call's own `timeout` raised above it (the default, 120s, would kill the watch
-at two minutes):
+`gh pr checks` is the whole job — behind a pipe, so the table the watch re-prints
+every interval cannot pile up, and with the call's own `timeout` set to the
+budget (120s, the default, kills the watch at two minutes and returns *nothing*):
 
-    gh pr checks <pr> --repo <owner/name> --watch
+    gh pr checks <pr> --repo <owner/name> --watch --interval 30 | tail -c 2000
 
-If it comes back with checks still pending, call it the same way again. Read the
-table, not the exit code: a check is final when it reads pass, fail or skipping,
-and no checks reported is not a pass — they may not have appeared yet. Never
-poll without an end: budget ~30 minutes, and at the budget report the table as
-it stands.
+The watch leaves when no check is pending; the pipe keeps its freshest render,
+which is the last one. Read the table, not the exit code: a check is final when
+it reads pass, fail or skipping, and no checks reported is not a pass — the
+checks may not have appeared yet.
 
-You run in plan mode: a read-only poll (`gh`) is not an implementation, and a
-turn has one action — the call, or the report.
+Two readings are not verdicts, and are what you re-call for: a call cut off by
+its own timeout (it returns no output at all), and no checks reported. Pace a
+re-call — `sleep 30;` ahead of it. Never poll without an end: budget ~30 minutes,
+and at the budget report the table as it stands.
+
+You run in plan mode: a read-only poll is not an implementation, and a turn has
+one action — the call, or the report. The poll is yours to make.
 
 ## Reporting
 
@@ -68,15 +73,22 @@ Send the result with `jyc_send_to_topic` to the channel and topic in the task's
 `Source:` header — whether or not the caller asked for a reply — then end your
 turn with the same text in your own topic: a report that stays in your own topic
 reaches nobody. Say whether the PR's checks passed; for a failure give the
-failing check's name and the tail of its log, fetched filtered inside the call:
+failing check's name and the tail of its log. `gh run view` wants a run id in a
+non-interactive shell, so take it from the failing row's own URL
+(`…/actions/runs/<id>/job/<job>`) and fetch that run:
 
-    gh run view --log-failed | grep -aE 'panicked|FAILED|error: ' | tail -n 5
+    gh run view <id> --repo <owner/name> --log-failed | grep -aE 'panicked|FAILED|error: ' | tail -n 5
+
+Every fact you state must be in a tool result from *this* turn: something you
+remember from an earlier poll, or the caller mentioned in a message, is no
+evidence at all about what ran.
 
 A turn ends when you stop calling tools, and nothing resumes one that has ended:
 its last text *is* your reply. Never announce the poll instead of making it — a
 turn that says "polling now" and issues no call has ended, and the caller is left
 holding a promise where a report belongs. Every turn carries the call, or the
 report.
+
 """
 
 # Small on purpose — a watcher is not a thinker. Three turns covers the one

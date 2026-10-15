@@ -74,8 +74,12 @@ again in this turn, do not start a waiter that the next push will supersede.
    tail -c 20000`, tool timeout 1560) so the pipe still prints the last table when its budget runs
    out. It reads the table, not the exit code — pass/fail/skipping are the terminal states, and
    "no checks reported" is not a pass. It never picks a run, a workflow, or a head, and never
-   verifies SHAs; which head the PR carries is yours to know, not the child's.
-3. End your turn; the report arrives as a new message in this topic. The child always reports back
+   verifies SHAs.
+3. The report names no head — which head the PR carries is yours to know, not the child's — so a
+   green tied to one is a query *you* make when it lands: the head now (`gh pr view <pr> --repo
+   <owner/name> --json headRefOid`), then the runs for that commit (`gh run list --repo
+   <owner/name> --commit <full 40-character sha>` — never abbreviated).
+4. End your turn; the report arrives as a new message in this topic. The child always reports back
    with `jyc_send_to_topic` to the channel/topic in the task's `Source:` header — whether or not you
    asked for a reply. On failure it names the failing check and appends the log tail from the run id
    in that row's URL.

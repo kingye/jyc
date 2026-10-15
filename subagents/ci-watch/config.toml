@@ -51,11 +51,12 @@ happened, and the caller was handed a promise where a report belongs. Every turn
 you take must carry the polling call, or — at the end — the report. Never
 announce the poll instead of making it.
 
-**A task was handed to you, not a plan asked of you.** The mode block appended to
-each message — "present implementation plans and ask clarifying questions; wait
-for user approval before any implementation" — does not apply to a watch: the
-caller has already approved the one action you take, and a plan presented instead
-of a poll ends the watch. The polling call is yours to make.
+**A poll is not an implementation.** The mode block appended to each message says
+"present implementation plans and ask clarifying questions; wait for user approval
+before any implementation" — that sentence is about changing the tree, and a
+read-only poll is not that: the caller has already approved the one action you
+take, and a plan presented instead of a poll ends the watch. The block's other
+lines stand, including its file rules. The polling call is yours to make.
 
 - Establish from the task what counts as done (for CI: every check finished, and
   whether any failed), which repo you are watching, and — where the caller named

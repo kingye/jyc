@@ -1806,8 +1806,16 @@ mod tests {
 
         // The two flags the type used to be spelled with, and the leftovers
         // every parser has to answer for.
+        // The inline spelling is the one place a value may look like a flag.
+        let parsed = parse_args(&args(&["--name=-s"])).unwrap();
+        assert_eq!(parsed.name.as_deref(), Some("-s"));
+
         for (broken, expected) in [
             (args(&["-n"]), "-n needs a value"),
+            // A value-carrying flag does not eat the next flag: the value is
+            // missing, and that is what the caller is told.
+            (args(&["-n", "-s"]), "-n needs a value"),
+            (args(&["-d", "--share"]), "-d needs a value"),
             (args(&["--dir="]), "--dir needs a value"),
             (args(&["--name", ""]), "--name needs a value"),
             (args(&["-n", "a", "--name", "b"]), "--name given twice"),
@@ -3083,8 +3091,13 @@ mod tests {
         let agents_dir = workspace.path().join("agents");
         let shared = resolved(&dir);
 
+        // Each name is this test's own, per the convention at the top of the
+        // module: a name derived from the test that uses it cannot collide with
+        // another test's, and these tests run in parallel.
+        let names = [format!("{parent}-first"), format!("{parent}-second")];
+
         let mut states = Vec::new();
-        for name in ["pair-first", "pair-second"] {
+        for name in &names {
             let spawned = spawn_subagent_under(
                 &tm,
                 parent,
@@ -3098,6 +3111,7 @@ mod tests {
             )
             .await
             .unwrap();
+            let name = name.as_str();
             assert_eq!(spawned, name);
             assert_eq!(tm.topic_path(name).await.unwrap(), shared);
             let state = agents_dir.join(name).join(".jyc");
@@ -3120,12 +3134,11 @@ mod tests {
             .map(|(name, _)| name)
             .collect::<Vec<_>>();
         listed.sort();
-        assert_eq!(
-            listed,
-            vec!["pair-first".to_string(), "pair-second".to_string()]
-        );
+        let mut expected = names.to_vec();
+        expected.sort();
+        assert_eq!(listed, expected);
 
-        for name in ["pair-first", "pair-second"] {
+        for name in &names {
             jyc_types::state_dir::unregister(name);
         }
         jyc_types::access_grants::clear(parent);

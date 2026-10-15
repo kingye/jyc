@@ -59,7 +59,9 @@ The role decides where the child *starts*, not what it is stuck with.
    does — so when you are next awake here and no report has landed long past the time that work should
    have taken (a watcher's ~30-minute budget is the clock for the watch itself, one level down in the
    child's own topic), treat it as a dead watch: ask the child, or check the PR yourself once.
-5. Report to the user: the PR link, the review verdict, the CI verdict, and what is left to decide.
+5. Report to the user: the PR link, the review verdict, the CI verdict, and what is left to decide. The
+   child's report arrives when it pushes — the CI verdict is not in it yet and comes as its later
+   message once the watcher has reported; pass that on when it lands instead of holding your turn for it.
    **Done is the user's call, and so is the merge** — the report landing is not the end of the work: it
    says the plan is built, not that the user accepts what was built. Keep the checkout and the child
    until the user says which it is; the developer never merges.

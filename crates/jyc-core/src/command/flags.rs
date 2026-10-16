@@ -9,6 +9,10 @@
 //! Only the spellings live here. What a flag means, whether it carries a value,
 //! what a repeat of it means, and how a refusal is worded stay with the command:
 //! those rules differ per command, and the sentences are its user interface.
+//!
+//! A set is read by the popup and the parser alike where a command has both.
+//! `/grant` completes nothing, so its set is its parser's alone — its hints are
+//! written down for the day it gets a popup level, not rendered anywhere yet.
 
 use jyc_types::CommandArg;
 
@@ -169,12 +173,13 @@ pub enum CloseFlag {
     Purge,
 }
 
+/// The guard `/close`, `/new` and `/reset` all read — written once, so the three
+/// cannot drift apart.
+const FORCE: FlagSpec = flag("force", Some('f'), "Skip the confirmation guard");
+
 /// `/close`'s flags.
 pub const CLOSE_FLAGS: &[(CloseFlag, FlagSpec)] = &[
-    (
-        CloseFlag::Force,
-        flag("force", Some('f'), "Skip the confirmation guard"),
-    ),
+    (CloseFlag::Force, FORCE),
     (
         CloseFlag::Purge,
         flag(
@@ -193,10 +198,7 @@ pub enum ConfirmFlag {
 }
 
 /// `/new`'s and `/reset`'s flags.
-pub const CONFIRM_FLAGS: &[(ConfirmFlag, FlagSpec)] = &[(
-    ConfirmFlag::Force,
-    flag("force", Some('f'), "Skip the confirmation guard"),
-)];
+pub const CONFIRM_FLAGS: &[(ConfirmFlag, FlagSpec)] = &[(ConfirmFlag::Force, FORCE)];
 
 /// What `/grant` accepts.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -277,23 +279,5 @@ mod tests {
             "Ask the target to send its result back"
         );
         assert!(rows.iter().all(|r| r.args.is_empty()), "a flag is a leaf");
-    }
-
-    /// The guard is one flag declared for two commands: `/close -f` and
-    /// `/new -f` have to mean the same spelling, or the popup lies about one.
-    #[test]
-    fn the_guard_is_spelled_the_same_wherever_it_is_declared() {
-        let close = CLOSE_FLAGS
-            .iter()
-            .find(|(flag, _)| *flag == CloseFlag::Force)
-            .expect("declared for /close");
-        let confirm = CONFIRM_FLAGS
-            .iter()
-            .find(|(flag, _)| *flag == ConfirmFlag::Force)
-            .expect("declared for /new");
-        assert_eq!(
-            (close.1.long, close.1.short, close.1.hint),
-            (confirm.1.long, confirm.1.short, confirm.1.hint),
-        );
     }
 }

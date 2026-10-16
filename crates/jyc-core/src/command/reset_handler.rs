@@ -110,6 +110,15 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
+    /// `-f` is the same guard `--force` is, off the declaration `/close` and
+    /// `/new` read.
+    #[test]
+    fn is_forced_reads_the_short_guard_spelling() {
+        assert!(ResetCommandHandler::is_forced(&["-f".to_string()]));
+        assert!(ResetCommandHandler::is_forced(&["--force".to_string()]));
+        assert!(!ResetCommandHandler::is_forced(&[]));
+    }
+
     /// Records the topic names it is asked to reset.
     #[derive(Default)]
     struct RecordingAgent {

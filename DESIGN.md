@@ -586,14 +586,17 @@ those roots — which is why a spawn's default dir under `agents/` is never purg
 - **Close.** `/close --force` on an adopted topic deletes the state dir
   registered for that topic *name* **and the home it lived in**, contents and
   all: the `<home>` a topic works in (its `.data` and whatever was written
-  there), the `<agents dir>/<topic>/` shell a pin left behind, the dir a
-  `/spawn` was created in. Two dirs are never taken: one **outside the agents
+  there), the `<agents dir>/<topic>/` shell a pin left behind, the default dir
+  a `/spawn` gets (not one a `-d` or a pin handed it). Two dirs are never
+  taken: one **outside the agents
   tree** — a checkout a `-d` or a pin points at is the user's, and only its
   state goes — and one **another topic works in or lives inside** (a
   `/spawn -s` child, a fork, the topics of the pipe that owns the dir; the last
   of these is read off the disk, because the pin map only knows the topics that
-  are live). Nothing *above* the home goes either: `<agents dir>/<agent>/` is
-  the pipe's own dir, not the closing topic's. The registration itself is kept
+  are live). Nothing *above* the home goes either: a pipe's own dir
+  (`<agents dir>/<pipe>/`) stays when one of its topics closes — it is the home
+  only of the pipe topic named after it, which takes it with it; the boundary
+  is the home, not the pipe. The registration itself is kept
   so a reopened topic reuses the same state location (never the topic dir). A
   sibling topic co-pinning the same dir keeps its own state. Unregistered
   topics keep the legacy whole-dir deletion.

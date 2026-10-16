@@ -64,17 +64,19 @@ impl TopicManager {
     /// The topic's **home** goes with its state — the directory the
     /// registration hangs off: the home itself when the topic works in
     /// `<home>/.data`, the `<agents dir>/<topic>/` shell a pin left behind, the
-    /// dir a `/spawn` was created in. Contents and all: the working directory,
-    /// the `.attachments` in it, whatever else was written there. Two dirs are
-    /// never taken:
+    /// default dir a `/spawn` gets (not one a `-d` or a pin handed it).
+    /// Contents and all: the working directory, the `.attachments` in it,
+    /// whatever else was written there. Two dirs are never taken:
     ///
     /// - one **outside the agents tree** — a checkout a `-d` or a pin points
     ///   at is the user's, and only its state is deleted;
     /// - one **another topic works in or lives inside** (a `-s` child, a fork,
     ///   the topics of the pipe that owns it).
     ///
-    /// Nothing *above* the home goes either: `<agents dir>/<agent>/` is the
-    /// pipe's own dir, not the closing topic's.
+    /// Nothing *above* the home goes either: a pipe's own dir
+    /// (`<agents dir>/<pipe>/`) stays when one of its topics closes. It is the
+    /// home only of the pipe topic named after it (`<pipe>` closing `<pipe>`),
+    /// and that one takes it with it — the boundary is the home, not the pipe.
     ///
     /// The registration itself stays: a reopened topic reuses the same state dir
     /// name instead of ever falling back to `<topic_dir>/.jyc` (#825).
@@ -170,6 +172,10 @@ impl TopicManager {
         // lookup is by *name*, so topics co-pinning the same dir never
         // destroy each other's state.
         if let Some(state) = jyc_types::state_dir::registered_state(topic_name) {
+            // Resolved before the state goes: the dirs a close weighs a home
+            // against are read off the workspace, and this topic's own
+            // namespace is one of them (see `dir_holder`).
+            let own_namespace = state.parent().map(crate::topic_path::resolved);
             if state.exists() {
                 tokio::fs::remove_dir_all(&state)
                     .await
@@ -199,7 +205,10 @@ impl TopicManager {
                 None => false,
             };
             if let Some(home) = home {
-                if let Some(holder) = self.dir_holder(topic_name, home).await {
+                if let Some(holder) = self
+                    .dir_holder(topic_name, home, own_namespace.as_deref())
+                    .await
+                {
                     tracing::info!(
                         topic = %topic_name,
                         dir = %home.display(),
@@ -207,12 +216,16 @@ impl TopicManager {
                         "Topic home kept: another topic works in it or lives inside it"
                     );
                 } else if known {
-                    remove_topic_dir(topic_name, home).await?;
-                    tracing::info!(
-                        topic = %topic_name,
-                        dir = %home.display(),
-                        "Topic home deleted with its state"
-                    );
+                    // `--purge` runs before a close and takes this same dir for
+                    // a topic that works in its home, so it may be gone already.
+                    if home.exists() {
+                        remove_topic_dir(topic_name, home).await?;
+                        tracing::info!(
+                            topic = %topic_name,
+                            dir = %home.display(),
+                            "Topic home deleted with its state"
+                        );
+                    }
                 } else {
                     // A home this call cannot place under a root takes no
                     // contents: an emptied working dir goes with its state, the
@@ -300,18 +313,33 @@ impl TopicManager {
 
     /// Name the topic that would go down with `dir` — one that works in it, or
     /// one whose own dir lives inside it. A close takes a dir only when nobody
-    /// answers: the first two guards are [`Self::purge_topic_dir_under`]'s, and
-    /// the last one reads the disk, because the pin map only knows the topics
-    /// that are live. A self-named pipe topic shares its dir with its pipe's
-    /// other topics, and the `.jyc` of `<home>/<topic>` is what marks those.
-    async fn dir_holder(&self, self_name: &str, dir: &Path) -> Option<String> {
+    /// answers: two guards are [`Self::purge_topic_dir_under`]'s, two read the
+    /// disk, because the pin map only knows the topics that are live.
+    ///
+    /// `own_namespace` is the (resolved) dir this topic's state was registered
+    /// in, and the dir being weighed *is* it: the dirs listed for "somebody
+    /// works here" are the workspace's children, and on the agents channel the
+    /// workspace **is** the agents dir — so a topic whose namespace is a derived
+    /// name (`_home_me_repo` for `/home/me/repo`: every ad-hoc and dashboard
+    /// topic) would otherwise be listed as its own holder.
+    async fn dir_holder(
+        &self,
+        self_name: &str,
+        dir: &Path,
+        own_namespace: Option<&Path>,
+    ) -> Option<String> {
         let dir = crate::topic_path::resolved(dir);
         for (name, other) in self.other_topic_dirs(self_name).await {
             let other = crate::topic_path::resolved(&other);
+            if Some(other.as_path()) == own_namespace {
+                continue; // this topic's own state namespace, not a holder
+            }
             if other == dir || path_is_under(&other, &dir).await {
                 return Some(name);
             }
         }
+        // One level only: a topic dir jyc makes sits directly in a home, and
+        // anything deeper is not something a close should guess about.
         let mut entries = tokio::fs::read_dir(&dir).await.ok()?;
         while let Ok(Some(entry)) = entries.next_entry().await {
             let is_dir = entry
@@ -319,7 +347,23 @@ impl TopicManager {
                 .await
                 .map(|kind| kind.is_dir())
                 .unwrap_or(false);
-            if is_dir && entry.path().join(".jyc").is_dir() {
+            if !is_dir {
+                continue;
+            }
+            // A `.jyc` with a breadcrumb names the topic that lives there; one
+            // that is this topic's own, or a closed topic's leftover, is not
+            // somebody to wait for.
+            let nested_state = entry.path().join(".jyc");
+            let nested_name = tokio::fs::read_to_string(nested_state.join("topic-name"))
+                .await
+                .map(|name| name.trim().to_string())
+                .unwrap_or_default();
+            if nested_name == self_name
+                || (!nested_name.is_empty() && jyc_types::state_dir::is_closed(&nested_name))
+            {
+                continue;
+            }
+            if nested_state.is_dir() {
                 return Some(entry.file_name().to_string_lossy().into_owned());
             }
         }
@@ -753,9 +797,8 @@ mode = "agent"
         assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
     }
 
-    /// The reported case: a pipe topic dir holding work files, with its state
-    /// inside it. An upstream close takes the whole dir — `/close` alone would
-    /// only have removed the state and kept the dir.
+    /// An upstream close takes a pipe topic's dir with its contents, the way
+    /// every close source does now.
     #[tokio::test]
     async fn auto_close_deletes_nonempty_dynamic_topic_dir() {
         let tmp = tempdir().unwrap();
@@ -924,7 +967,7 @@ mode = "agent"
         assert!(!state.exists(), "relocated state dir must be deleted");
         assert!(
             !namespace.exists(),
-            "emptied agents/<topic> shell must be pruned"
+            "the state namespace goes with its state, contents and all"
         );
         assert!(agents_dir.exists(), "the agents root itself must survive");
         assert_eq!(
@@ -1072,6 +1115,101 @@ mode = "agent"
         assert!(!state.exists(), "the closed topic's own state still goes");
         jyc_types::state_dir::unregister("probe-pipe-1");
         jyc_types::state_dir::unregister("info");
+    }
+
+    /// A derived state namespace is this topic's own dir, not somebody else's:
+    /// on the agents channel the workspace *is* the agents dir, so the dirs the
+    /// guard lists as "somebody works here" are the namespaces themselves — a
+    /// topic opened on `/home/me/repo` keeps its state in `_home_me_repo` there,
+    /// and the close still has to take that namespace.
+    #[tokio::test]
+    async fn close_deletes_a_derived_state_namespace() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        let namespace = agents_dir.join("_home_me_repo");
+        let state = namespace.join(".jyc");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join("topic-name"), "adhoc-1").unwrap();
+        std::fs::write(namespace.join("notes.txt"), "mine").unwrap();
+        jyc_types::state_dir::register("adhoc-1", &state);
+
+        // The workspace is the agents dir, exactly as the agents channel sets it.
+        let tm = make_tm(&agents_dir);
+        tm.set_topic_path("adhoc-1", tmp.path().join("repo"))
+            .await
+            .unwrap();
+
+        tm.close_topic_under("adhoc-1", &agents_dir).await.unwrap();
+
+        assert!(
+            !namespace.exists(),
+            "its own namespace is not another topic's dir"
+        );
+        jyc_types::state_dir::unregister("adhoc-1");
+    }
+
+    /// A leftover `.jyc` of a *closed* topic inside the home is nobody to wait
+    /// for: the home still goes with its contents.
+    #[tokio::test]
+    async fn close_takes_a_home_whose_nested_state_is_a_leftover() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        let home = agents_dir.join("probe-leftover");
+        let state = home.join(".jyc");
+        let stale = home.join("old-topic").join(".jyc");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("topic-name"), "probe-leftover-old").unwrap();
+        jyc_types::state_dir::mark_closed("probe-leftover-old");
+        jyc_types::state_dir::register("probe-leftover", &state);
+
+        let tm = make_tm(&agents_dir);
+        tm.set_topic_path("probe-leftover", home.clone())
+            .await
+            .unwrap();
+
+        tm.close_topic_under("probe-leftover", &agents_dir)
+            .await
+            .unwrap();
+
+        assert!(
+            !home.exists(),
+            "a closed topic's leftover state is not a holder"
+        );
+        jyc_types::state_dir::unregister("probe-leftover");
+    }
+
+    /// `/close --force --purge` purges first and closes second, so for a topic
+    /// that works in its home the close finds the dir already gone — it has to
+    /// close anyway, not fail on a dir that is not there.
+    #[tokio::test]
+    async fn close_after_purge_still_closes() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        let topic_dir = agents_dir.join("agent-x").join("pr-purged");
+        let state = topic_dir.join(".jyc");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(topic_dir.join("work.rs"), "fn wip() {}").unwrap();
+        jyc_types::state_dir::register("pr-purged", &state);
+
+        let tm = make_tm(&agents_dir);
+        tm.set_topic_path("pr-purged", topic_dir.clone())
+            .await
+            .unwrap();
+
+        let outcome = tm
+            .purge_topic_dir_under("pr-purged", &agents_dir, tmp.path())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, PurgeOutcome::Deleted), "{outcome:?}");
+        assert!(!topic_dir.exists(), "the purge took the whole home");
+
+        tm.close_topic_under("pr-purged", &agents_dir)
+            .await
+            .unwrap();
+
+        assert!(!topic_dir.exists(), "the close is a no-op on a gone home");
+        jyc_types::state_dir::unregister("pr-purged");
     }
 
     /// Two topics pinning the same dir: closing one deletes only its own

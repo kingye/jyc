@@ -366,6 +366,9 @@ impl TopicManager {
             // that is this topic's own, or a closed topic's leftover, is not
             // somebody to wait for.
             let nested_state = entry.path().join(".jyc");
+            if !nested_state.is_dir() {
+                continue;
+            }
             let nested_name = tokio::fs::read_to_string(nested_state.join("topic-name"))
                 .await
                 .map(|name| name.trim().to_string())
@@ -375,9 +378,7 @@ impl TopicManager {
             {
                 continue;
             }
-            if nested_state.is_dir() {
-                return Some(entry.file_name().to_string_lossy().into_owned());
-            }
+            return Some(entry.file_name().to_string_lossy().into_owned());
         }
         None
     }
@@ -1158,6 +1159,44 @@ mode = "agent"
             "its own namespace is not another topic's dir"
         );
         jyc_types::state_dir::unregister("adhoc-1");
+    }
+
+    /// A *pin* on the very dir being weighed is a real claim, even when that dir
+    /// is this topic's own state namespace: another topic works there on
+    /// purpose, so the home (and what is in it) stays.
+    #[tokio::test]
+    async fn close_keeps_a_home_another_topic_is_pinned_to() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        let home = agents_dir.join("probe-pin-on-namespace");
+        let state = home.join(".jyc");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(home.join("work.rs"), "fn wip() {}").unwrap();
+        jyc_types::state_dir::register("probe-pin-on-namespace", &state);
+
+        let sibling_state = agents_dir.join("probe-pin-sibling").join(".jyc");
+        std::fs::create_dir_all(&sibling_state).unwrap();
+        jyc_types::state_dir::register("probe-pin-sibling", &sibling_state);
+
+        let tm = make_tm(&agents_dir);
+        tm.set_topic_path("probe-pin-on-namespace", home.clone())
+            .await
+            .unwrap();
+        tm.set_topic_path("probe-pin-sibling", home.clone())
+            .await
+            .unwrap();
+
+        tm.close_topic_under("probe-pin-on-namespace", &agents_dir)
+            .await
+            .unwrap();
+
+        assert!(
+            home.join("work.rs").exists(),
+            "a pin on the same dir keeps the home, its files included"
+        );
+        assert!(!state.exists(), "its own state still goes");
+        jyc_types::state_dir::unregister("probe-pin-on-namespace");
+        jyc_types::state_dir::unregister("probe-pin-sibling");
     }
 
     /// A leftover `.jyc` of a *closed* topic inside the home is nobody to wait

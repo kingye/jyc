@@ -487,6 +487,12 @@ a working directory is `<home>/.data`'s parent. A user-owned dir (a pin)
 without a registration is a bug: state access fails loudly rather than writing
 into the user's directory.
 
+A spawn's access grant for its parent is rebuilt at that same adoption, from the
+child's `spawned-from` breadcrumb: the grant is process-lifetime, the breadcrumb
+is not, so a restarted parent would otherwise stop finding its subagents
+(`/close` would offer none) and lose its reach into their dirs. A `/grant` gets
+no such rebuild — `-p` is what persists one.
+
 ### Working directory: the home's `.data`
 
 A topic's default working directory is its **home's** `.data` — a sibling of

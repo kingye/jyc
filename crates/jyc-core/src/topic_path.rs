@@ -286,6 +286,12 @@ pub fn activate_workspace_state(topic_name: &str, topic_dir: &Path, workspace: &
 /// restart even in processes without config access (subprocesses), where
 /// several agents may share one `topic_dir`: registrations depend on the
 /// name, never on the dir.
+///
+/// It also restores the **access grant** a spawn recorded for this topic's
+/// parent: the `spawned-from` breadcrumb is on disk, the grant is not, and a
+/// parent finds (and reaches) its subagents through those grants — so a restart
+/// would otherwise leave a relaunched parent unable to list or close what it
+/// spawned. [`crate::command::spawn_handler::subagents_of`] reads the result.
 pub fn adopt_state_dir(
     topic_name: &str,
     topic_dir: &Path,
@@ -305,6 +311,18 @@ pub fn adopt_state_dir(
             "Legacy in-topic .jyc found; it is not migrated and not this topic's \
              state — it belongs to whoever pinned this dir first"
         );
+    }
+    // A spawn writes two things: this topic's `spawned-from` breadcrumb and an
+    // access grant for its parent. The breadcrumb is on disk and outlives the
+    // process; the grant is in memory and does not — so rebuild it here, in the
+    // one place every adoption passes through, whether this is a fresh start or
+    // a re-open. `grant_subagent` is idempotent, and `forget_subagent` takes the
+    // entry away again when the child is closed.
+    if let Ok(parent) = std::fs::read_to_string(state_dir.join("spawned-from")) {
+        let parent = parent.trim();
+        if !parent.is_empty() {
+            jyc_types::access_grants::grant_subagent(parent, topic_name, topic_dir.to_path_buf());
+        }
     }
     if jyc_types::state_dir::registered_state(topic_name).is_some() {
         return Ok(());
@@ -426,6 +444,38 @@ mod tests {
     }
 
     // === state dir adoption ===
+
+    /// A spawn's grant for its parent lives only in memory, while its
+    /// `spawned-from` breadcrumb is on disk — so adoption has to rebuild the
+    /// grant, or a restarted parent neither lists nor reaches the topics it
+    /// spawned (and `/close` offers it no names).
+    #[test]
+    fn adoption_restores_a_spawn_grant() {
+        let tmp = tempdir().unwrap();
+        let home = tmp.path().join("agents").join("restore-grant-child");
+        let (child_dir, state) = (home.join(".data"), home.join(".jyc"));
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join("spawned-from"), "restore-grant-parent").unwrap();
+
+        adopt_state_dir("restore-grant-child", &child_dir, &state).unwrap();
+
+        let granted = jyc_types::access_grants::grants_for("restore-grant-parent");
+        assert!(
+            granted.iter().any(|g| {
+                g.subagent.as_deref() == Some("restore-grant-child")
+                    && g.path == child_dir
+                    && g.write
+            }),
+            "the breadcrumb names the parent, so adoption rebuilds its grant: {granted:?}"
+        );
+        // Idempotent: a second adoption is still one grant.
+        assert!(!jyc_types::access_grants::grant_subagent(
+            "restore-grant-parent",
+            "restore-grant-child",
+            child_dir.clone()
+        ));
+        jyc_types::access_grants::ungrant_subagent("restore-grant-parent", "restore-grant-child");
+    }
 
     #[test]
     fn state_dir_for_agent_key_vs_derived() {

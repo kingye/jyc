@@ -601,7 +601,12 @@ fn state_dir_of(name: &str, topic_path: &Path) -> PathBuf {
 /// child after a restart dropped the grants (the documented recovery), and it is
 /// simply the wrong guess for a shared dir — where a re-grant lists nobody.
 ///
-/// Like the grants themselves the list is process-lifetime: a restart drops it.
+/// A **spawn's** grant outlives the process: `topic_path::adopt_state_dir`
+/// rebuilds it from the child's `spawned-from` breadcrumb when the dir is
+/// adopted, so a restart does not drop this list. A `/grant` is not rebuilt —
+/// it stays process-lifetime until `/grant -p` writes it into the topic's
+/// config, which is why the last-component fallback above is what re-lists an
+/// own-dir child after a restart.
 pub fn subagents_of(topic: &str) -> Vec<(String, PathBuf)> {
     jyc_types::access_grants::grants_for(topic)
         .into_iter()

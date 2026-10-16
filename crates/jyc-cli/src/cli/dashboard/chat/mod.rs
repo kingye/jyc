@@ -14,7 +14,7 @@ pub(super) mod clipboard;
 mod render;
 mod table_wrap;
 
-use render::{RenderFingerprint, render_chat_conversation, truncate_to_width};
+use render::{RenderFingerprint, render_chat_conversation, tail_to_width, truncate_to_width};
 
 /// Inactive color for the input area (header line and bottom rule) when the
 /// chat pane loses focus.
@@ -44,6 +44,12 @@ pub(super) struct PendingQuestion {
     /// so a question that cannot be answered does not cost the whole batch — `d`
     /// toggles it, and the option list is replaced by the skipped state.
     pub skipped: bool,
+    /// The user's own answer, typed on the list's `✎` row instead of picking an
+    /// option. `Some` once one is settled, and it then answers for this question
+    /// on its own line (`Q1: their words`) — a pick and a typed answer replace
+    /// each other. An empty draft the user accepted is reported as `(skipped)`,
+    /// the same as `d`. Nothing here leaves before the batch is settled.
+    pub typed: Option<String>,
     /// Currently highlighted option - the cursor `Space` marks under.
     pub selected: usize,
     /// Marked option indices, in multi mode; single mode answers with the
@@ -258,6 +264,11 @@ pub(super) struct ChatState {
     pub(super) questions: Vec<PendingQuestion>,
     /// Which of [`Self::questions`] is on screen.
     pub(super) question_index: usize,
+    /// Whether the current question is taking a typed answer: the keys go to
+    /// its draft instead of the list, so `j`/`k`, the digits and `d` cannot fire
+    /// on letters the user means as text. Cleared by Enter, Esc, stepping to
+    /// another question and closing the box.
+    pub(super) question_typing: bool,
     /// Current position in history browsing (None = not browsing).
     pub(super) history_pos: Option<usize>,
     /// Authorization token to attach to WebSocket upgrade requests.
@@ -1002,6 +1013,20 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
     // surface for a turn that already ended. Esc only closes it — the user can
     // still type an answer (or anything else) afterwards.
     if app.chat.active_question() {
+        // A draft is being typed on the current question's `✎` row: the keys
+        // belong to it, so the list's shortcuts (`j`/`k`, the digits, `d`) cannot
+        // fire on letters the user means as text. Enter keeps the answer, Esc
+        // goes back to the options.
+        if app.chat.question_typing {
+            match key.code {
+                KeyCode::Enter => app.chat.accept_typed_answer(),
+                KeyCode::Esc => app.chat.cancel_typed_answer(),
+                KeyCode::Backspace => app.chat.pop_typed_char(),
+                KeyCode::Char(c) => app.chat.push_typed_char(c),
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => app.chat.select_question_prev(),
             KeyCode::Down | KeyCode::Char('j') => app.chat.select_question_next(),
@@ -1980,9 +2005,15 @@ fn toggle_marked(marked: &mut Vec<usize>, idx: usize) {
 }
 
 /// The line under an `ask_user` question box. A function, not a constant: a
-/// batch changes what `Enter` does, and the layout has to measure the very text
-/// the renderer draws — see [`question_chrome_rows`].
-fn question_hint(total: usize) -> String {
+/// batch changes what `Enter` does, typing an answer changes it again, and the
+/// layout has to measure the very text the renderer draws — see
+/// [`question_chrome_rows`].
+fn question_hint(total: usize, typing: bool) -> String {
+    if typing {
+        // Shorter than the list's line, and measured like it: the same call
+        // decides the box's height and draws it.
+        return "Enter keeps this answer - Esc back to the options".to_string();
+    }
     let enter = if total > 1 {
         "Enter next, last one sends"
     } else {
@@ -2024,9 +2055,10 @@ fn question_context_budget(
     total: usize,
     width: u16,
     body_height: u16,
+    typing: bool,
 ) -> usize {
     let fixed = count_wrapped_lines(question, width)
-        + count_wrapped_lines(&question_hint(total), width)
+        + count_wrapped_lines(&question_hint(total, typing), width)
         + 4 // the three blank separators, plus the spare row that keeps the
             // ceiling from squeezing an option out of the window
         + options
@@ -2071,8 +2103,9 @@ fn question_chrome_rows(
     total: usize,
     width: u16,
     body_height: u16,
+    typing: bool,
 ) -> usize {
-    let budget = question_context_budget(question, options, total, width, body_height);
+    let budget = question_context_budget(question, options, total, width, body_height, typing);
     // +1 for the blank row that separates the context from the question.
     let context_rows = context
         .filter(|text| !text.trim().is_empty())
@@ -2081,7 +2114,7 @@ fn question_chrome_rows(
         });
     context_rows
         + count_wrapped_lines(question, width)
-        + count_wrapped_lines(&question_hint(total), width)
+        + count_wrapped_lines(&question_hint(total, typing), width)
         + 3
 }
 
@@ -2117,26 +2150,30 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App, body
     frame.render_widget(block, area);
 
     // The options get whatever rows the chrome leaves, windowed so the cursor is
-    // among them: `select_question_next` clamps only to `options.len()`, so
-    // without a window a list deeper than the box parks the `→` below the clip —
-    // selectable, invisible. `question_chrome_rows` says which rows those are.
+    // among them: `select_question_next` reaches the `✎` row past the last
+    // option, so without a window a list deeper than the box parks the `→` below
+    // the clip — selectable, invisible. `question_chrome_rows` says which rows
+    // those are.
+    let rows = q.options.len() + 1;
     let budget = question_context_budget(
         &q.question,
-        q.options.len(),
+        rows,
         total,
         inner.width,
         body_height,
+        app.chat.question_typing,
     );
     let chrome = question_chrome_rows(
         &q.question,
         q.context.as_deref(),
-        q.options.len(),
+        rows,
         total,
         inner.width,
         body_height,
+        app.chat.question_typing,
     );
     let room = (inner.height as usize).saturating_sub(chrome).max(1);
-    let off = window_offset(q.options.len(), q.selected, room);
+    let off = window_offset(rows, q.selected, room);
 
     let mut lines: Vec<Line> = Vec::new();
     if let Some(context) = q.context.as_deref().filter(|text| !text.trim().is_empty()) {
@@ -2191,10 +2228,43 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App, body
                 lines.push(Line::from(Span::raw(format!("  {label}"))));
             }
         }
+        // The list's last row is the user's own answer: a decision point
+        // sometimes needs words none of the options hold. It is a row like the
+        // options - one line, inside the same window - so the cursor reaches it
+        // and the box's height counts it the same way.
+        let typed_row = q.options.len();
+        if typed_row >= off && typed_row - off < room {
+            // `✎ ` and the `→ `/`  ` gutter take two columns each; one more pays
+            // for the cursor block while the draft is open.
+            let cursor = usize::from(app.chat.question_typing);
+            let label = match q.typed.as_deref() {
+                Some(text) => format!(
+                    "\u{270e} {}",
+                    tail_to_width(text, (inner.width as usize).saturating_sub(4 + cursor))
+                ),
+                None => truncate_to_width(
+                    "\u{270e} type your own answer",
+                    inner.width.saturating_sub(2) as usize,
+                ),
+            };
+            let label = if app.chat.question_typing {
+                format!("{label}\u{258c}")
+            } else {
+                label
+            };
+            if typed_row == q.selected {
+                lines.push(Line::from(Span::styled(
+                    format!("→ {label}"),
+                    Style::default().add_modifier(Modifier::DIM),
+                )));
+            } else {
+                lines.push(Line::from(Span::raw(format!("  {label}"))));
+            }
+        }
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        question_hint(total),
+        question_hint(total, app.chat.question_typing),
         Style::default().fg(Color::DarkGray),
     )));
 
@@ -2520,6 +2590,7 @@ impl ChatState {
             input_history: vec![],
             questions: vec![],
             question_index: 0,
+            question_typing: false,
             history_pos: None,
             token: None,
         }
@@ -2997,14 +3068,19 @@ impl ChatState {
     fn input_area_rows(&self, width: u16, body_height: u16) -> u16 {
         let body = if self.active_question() {
             let q = self.current_question().expect("active question");
+            // `+ 1` twice: the list ends with the `✎` row, which the chrome
+            // counts (it is one more row the context has to yield to) and the
+            // body's own rows have to make room for as well.
             (question_chrome_rows(
                 &q.question,
                 q.context.as_deref(),
-                q.options.len(),
+                q.options.len() + 1,
                 self.questions.len(),
                 width.saturating_sub(2),
                 body_height,
+                self.question_typing,
             ) + q.options.len()
+                + 1
                 + 3)
             .clamp(6, question_box_max_rows(body_height)) as u16
         } else {
@@ -3157,6 +3233,9 @@ impl ChatState {
         if total < 2 {
             return;
         }
+        // The draft belongs to the question being left; each keeps its own, so
+        // a typed answer survives stepping away and back.
+        self.question_typing = false;
         let current = self.question_index as isize;
         self.question_index = (current + delta).rem_euclid(total) as usize;
     }
@@ -3170,10 +3249,11 @@ impl ChatState {
         }
     }
 
-    /// Move the question selection down (clamped at the last option).
+    /// Move the question selection down (clamped at the last row, which is the
+    /// `✎` one — Enter there starts a typed answer).
     fn select_question_next(&mut self) {
         if let Some(q) = self.current_question_mut()
-            && q.selected + 1 < q.options.len()
+            && q.selected < q.options.len()
         {
             q.selected += 1;
         }
@@ -3218,8 +3298,20 @@ impl ChatState {
 
     /// Enter: settle the current question and step to the next one; on the
     /// last question, send every answer at once. Nothing leaves before that,
-    /// which is what keeps `←/→` able to revisit an answer.
+    /// which is what keeps `←/→` able to revisit an answer. On the list's `✎`
+    /// row Enter starts a typed answer instead - that row has no option to
+    /// settle.
     fn confirm_question(&mut self) {
+        if self.on_typed_row() {
+            self.begin_typed_answer();
+            return;
+        }
+        self.advance_or_submit();
+    }
+
+    /// Move on to the next question, or send the batch when this was the last
+    /// one. The step an option takes on Enter, and a typed answer too.
+    fn advance_or_submit(&mut self) {
         if self.question_index + 1 < self.questions.len() {
             self.question_index += 1;
             return;
@@ -3227,17 +3319,88 @@ impl ChatState {
         self.submit_questions();
     }
 
+    /// Whether the cursor is on the list's `✎` row: past the last option and
+    /// not in the `d` state, which replaces the list. Enter there starts a
+    /// typed answer instead of settling the question.
+    fn on_typed_row(&self) -> bool {
+        self.current_question()
+            .is_some_and(|q| !q.skipped && q.selected == q.options.len())
+    }
+
+    /// Enter on the `✎` row: type this question's answer. Coming back to a
+    /// question that has one already reopens it for editing rather than
+    /// starting empty.
+    fn begin_typed_answer(&mut self) {
+        let Some(q) = self.current_question_mut() else {
+            return;
+        };
+        if q.typed.is_none() {
+            q.typed = Some(String::new());
+        }
+        self.question_typing = true;
+    }
+
+    /// Enter in the draft: keep it as this question's answer and move on - the
+    /// same step/send an option gets. An empty draft stays as `Some("")`, which
+    /// submits as `(skipped)`.
+    fn accept_typed_answer(&mut self) {
+        self.question_typing = false;
+        self.advance_or_submit();
+    }
+
+    /// Esc in the draft: back to the list with nothing typed yet. An empty
+    /// draft is dropped, so Esc cannot leave an empty answer behind that
+    /// quietly overrides the options.
+    fn cancel_typed_answer(&mut self) {
+        self.question_typing = false;
+        if let Some(q) = self.current_question_mut()
+            && q.typed.as_deref() == Some("")
+        {
+            q.typed = None;
+        }
+    }
+
+    /// A character typed into the draft. The row is one line, like every other
+    /// row of the box, so the answer is one line too.
+    fn push_typed_char(&mut self, c: char) {
+        if let Some(q) = self.current_question_mut()
+            && let Some(text) = q.typed.as_mut()
+        {
+            text.push(c);
+        }
+    }
+
+    /// Backspace in the draft.
+    fn pop_typed_char(&mut self) {
+        if let Some(q) = self.current_question_mut()
+            && let Some(text) = q.typed.as_mut()
+        {
+            text.pop();
+        }
+    }
+
     /// Send the whole batch as one ordinary chat message, oldest question
     /// first, and close the box. One line per question, keyed by the number the
     /// question was rendered with and carrying both the option number and its
     /// text, so the model can read the answer without any protocol of its own:
-    /// `Q1: 2) 面条`. A skipped question (`d`, or a multi with nothing marked -
-    /// the user backed out of that one) says so on its own line.
+    /// `Q1: 2) 面条`. A typed answer says so by carrying no option number at all -
+    /// `Q2: their own words` - which is how the model tells it from a pick. A
+    /// skipped question (`d`, or a multi with nothing marked - the user backed
+    /// out of that one) says so on its own line.
     fn submit_questions(&mut self) {
         let questions = std::mem::take(&mut self.questions);
         self.question_index = 0;
+        self.question_typing = false;
         let mut lines = Vec::with_capacity(questions.len());
         for (number, q) in questions.iter().enumerate() {
+            // `d` wins over a draft the user later backed out of: it is the
+            // more recent and more explicit "no answer".
+            if !q.skipped
+                && let Some(text) = q.typed.as_deref().filter(|text| !text.trim().is_empty())
+            {
+                lines.push(format!("Q{}: {text}", number + 1));
+                continue;
+            }
             let picks: Vec<(usize, String)> = if q.skipped {
                 Vec::new()
             } else if !q.multi {
@@ -3272,6 +3435,7 @@ impl ChatState {
     fn close_questions(&mut self) {
         self.questions.clear();
         self.question_index = 0;
+        self.question_typing = false;
     }
 
     /// `d` / `Backspace`: skip this question without costing the rest of the set.
@@ -3330,6 +3494,7 @@ impl ChatState {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
             skipped: false,
+            typed: None,
             selected: 0,
             marked: Vec::new(),
         });

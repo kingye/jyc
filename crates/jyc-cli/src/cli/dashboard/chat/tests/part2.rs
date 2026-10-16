@@ -1090,6 +1090,21 @@ fn truncate_to_width_counts_cjk_as_two_columns() {
     assert_eq!(out, "你…");
 }
 
+/// The mirror image for a typed answer: its end is what is being written, so a
+/// long one loses its head instead of its tail.
+#[test]
+fn tail_to_width_keeps_the_end() {
+    assert_eq!(tail_to_width("hi", 5), "hi");
+    assert_eq!(tail_to_width("hello world", 6), "…world");
+    assert_eq!(tail_to_width("abc", 1), "…");
+    assert_eq!(tail_to_width("abc", 0), "");
+    // Same width accounting as the head-first cut: a wide char that does not
+    // fit beside the ellipsis is dropped, not covered up.
+    let out = tail_to_width("世界你好", 5);
+    assert_eq!(out, "…你好");
+    assert_eq!(out.width(), 5);
+}
+
 #[test]
 fn softbreaks_become_hardbreaks_outside_fences() {
     assert_eq!(
@@ -1369,6 +1384,84 @@ fn skipping_one_question_keeps_the_other_answer() {
     chat.confirm_question(); // flush
 
     assert_eq!(sent_text(&mut rx), "Q1: (skipped)\nQ2: 2) d");
+}
+
+/// The list ends with the user's own answer: an option set can only offer what
+/// the model thought of, and a decision point sometimes needs words none of the
+/// options hold. Enter on that row types one, and it answers for its question on
+/// its own line - no option number, so the model can tell it from a pick.
+#[test]
+fn a_typed_answer_answers_for_its_question() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
+
+    chat.select_question_next(); // -> b
+    chat.select_question_next(); // -> the ✎ row, the list's last one
+    chat.select_question_next(); // clamped there: it is the end
+    assert_eq!(
+        chat.current_question().expect("q1").selected,
+        2,
+        "the cursor must reach the ✎ row and stop"
+    );
+    chat.confirm_question(); // start typing
+    for c in "it's fine".chars() {
+        chat.push_typed_char(c);
+    }
+    chat.confirm_question(); // keep it and send the batch
+
+    assert_eq!(sent_text(&mut rx), "Q1: it's fine");
+}
+
+/// Esc in the draft leaves the question unanswered as typed, so the options stay
+/// in charge and no empty answer rides out with the batch.
+#[test]
+fn escaping_the_draft_leaves_the_options_in_charge() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
+
+    chat.select_question_next();
+    chat.select_question_next();
+    chat.confirm_question();
+    chat.push_typed_char('x');
+    chat.cancel_typed_answer();
+    assert!(!chat.question_typing, "Esc must close the draft");
+    chat.confirm_question(); // the highlighted option settles it
+
+    assert_eq!(sent_text(&mut rx), "Q1: 1) a");
+}
+
+/// A typed answer belongs to its question: stepping to the next one and back
+/// finds it again, ready to be edited rather than retyped.
+#[test]
+fn a_typed_answer_waits_for_its_own_question() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
+    chat.handle_question_event(&question_payload("jyc", "q2", &["c", "d"]));
+
+    chat.select_question_next();
+    chat.select_question_next();
+    chat.confirm_question();
+    for c in "mine".chars() {
+        chat.push_typed_char(c);
+    }
+    chat.confirm_question(); // q1 answered, on to q2
+    assert!(
+        !chat.question_typing,
+        "the draft belongs to the question left behind"
+    );
+    chat.step_question(-1); // back to q1
+
+    let q1 = chat.current_question().expect("q1 again");
+    assert_eq!(q1.typed.as_deref(), Some("mine"));
+    assert_eq!(q1.selected, 2, "the cursor comes back to the ✎ row");
+    chat.confirm_question(); // reopen the draft, not a second answer
+    for c in " now".chars() {
+        chat.push_typed_char(c);
+    }
+    chat.confirm_question(); // q1 again, on to q2
+    chat.confirm_question(); // q2's first option
+
+    assert_eq!(sent_text(&mut rx), "Q1: mine now\nQ2: 1) c");
 }
 
 /// Going back is free precisely because the answer is still buffered: the

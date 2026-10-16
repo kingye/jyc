@@ -184,7 +184,13 @@ fn close_args(ctx: &ArgCtx) -> Vec<CommandArg> {
         })
         .collect();
     if !ctx.subagents.is_empty() {
-        args.push(val("all", "Close every direct subagent"));
+        // `all` stands in for the names above it, so it opens the same flag
+        // level they do: `/close all --force` is what the row completes to.
+        args.push(val_with(
+            "all",
+            "Close every direct subagent",
+            close_flags(),
+        ));
     }
     // A bare `/close` closes this topic, and the popup needs a row for exactly
     // that: a space completes to `/close  `, which carries no argument.
@@ -412,6 +418,16 @@ mod tests {
             find(&args, "ci-watch-917").unwrap().args.len(),
             2,
             "a subagent opens the same flag level"
+        );
+        assert_eq!(
+            find(&args, "all")
+                .unwrap()
+                .args
+                .iter()
+                .map(|a| a.value.as_str())
+                .collect::<Vec<_>>(),
+            ["--force", "--purge"],
+            "`all` names the same subagents, so it takes the same flags"
         );
         assert!(
             find(&args, " ").unwrap().args.is_empty(),

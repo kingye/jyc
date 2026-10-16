@@ -16,7 +16,7 @@ use jyc_core::command::list_available_models;
 use jyc_core::command::spawn_handler::spawned_from;
 use jyc_core::command::{ArgCtx, all_commands_with, command_args, per_agent_commands};
 use jyc_core::metrics::SharedHealthStats;
-use jyc_core::topic_manager::TopicManager;
+use jyc_core::topic_manager::TopicManagers;
 use jyc_types::AppConfig;
 use jyc_types::*;
 
@@ -97,7 +97,7 @@ pub type ReloadCallback =
 /// Shared state accessible by the inspect server.
 pub struct InspectContext {
     /// Per-channel topic managers (dynamic — updated on reload)
-    pub topic_managers: Arc<ArcSwap<Vec<Arc<TopicManager>>>>,
+    pub topic_managers: Arc<TopicManagers>,
     /// Channel info (name, type) (dynamic — updated on reload)
     pub channels: Arc<ArcSwap<Vec<ChannelInfo>>>,
     /// Shared health stats from MetricsCollector
@@ -423,7 +423,7 @@ pub(crate) async fn collect_topic_snapshot(
     let mut max_concurrent = 0;
     let mut per_channel_workers: HashMap<String, (usize, usize)> = HashMap::new();
 
-    let tms = context.topic_managers.load();
+    let tms = context.topic_managers.all();
     for tm in tms.iter() {
         let tm_topics = tm.list_topics().await;
         total_topics += tm_topics.len();
@@ -775,7 +775,7 @@ mod exchange_route_auth_tests {
 
     fn ctx_with_token(token: Option<&str>) -> Arc<InspectContext> {
         Arc::new(InspectContext {
-            topic_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            topic_managers: Arc::new(TopicManagers::new()),
             channels: Arc::new(ArcSwap::from_pointee(vec![])),
             health_stats: Arc::new(Mutex::new(HealthStats::default())),
             activity_map: Arc::new(Mutex::new(HashMap::new())),

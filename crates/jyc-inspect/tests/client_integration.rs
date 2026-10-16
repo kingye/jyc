@@ -8,6 +8,7 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use jyc_core::metrics::HealthStats;
+use jyc_core::topic_manager::TopicManagers;
 use jyc_inspect::client::InspectClient;
 use jyc_inspect::server::{DynWebsocketHandler, InspectContext, WebsocketHandler, build_router};
 use jyc_types::{ActivityEntry, ChannelInfo, InspectState};
@@ -18,7 +19,7 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 
 fn ctx() -> Arc<InspectContext> {
     Arc::new(InspectContext {
-        topic_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+        topic_managers: Arc::new(TopicManagers::new()),
         channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
             name: "demo".into(),
             channel_type: "email".into(),
@@ -142,7 +143,7 @@ async fn ws_topic_route_propagates_scoped_topic() {
     handlers.insert("test_channel".to_string(), handler);
 
     let context = Arc::new(InspectContext {
-        topic_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+        topic_managers: Arc::new(TopicManagers::new()),
         channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
             name: "test_channel".into(),
             channel_type: "websocket".into(),

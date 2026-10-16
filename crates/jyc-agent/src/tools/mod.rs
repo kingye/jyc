@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::types::{ImageSource, ToolDefinition};
-use jyc_core::topic_manager::TopicManager;
+use jyc_core::topic_manager::TopicManagers;
 use jyc_types::InboundMessage;
 use jyc_types::channel::OutboundAdapter;
 use jyc_types::config::HookEvent;
@@ -136,9 +136,6 @@ pub async fn deliver_reply(
     })
 }
 
-/// Shared topic managers map keyed by channel name.
-pub type TopicManagersMap = Arc<tokio::sync::Mutex<HashMap<String, Arc<TopicManager>>>>;
-
 /// Shared outbound adapters map keyed by channel name.
 /// Used by `jyc_send_message` to support the `channel` parameter for
 /// cross-channel proactive messaging.
@@ -189,7 +186,7 @@ pub struct ToolContext<'a> {
     /// Used by `jyc_send_to_topic` tool to inject messages into topics
     /// in other channels. `None` when running in contexts without
     /// cross-channel communication (e.g. unit tests).
-    pub topic_managers: Option<TopicManagersMap>,
+    pub topic_managers: Option<Arc<TopicManagers>>,
     /// Current channel name, for tools that need source context (e.g.
     /// `jyc_send_to_topic` sets `source_channel` metadata from this).
     pub current_channel: Option<String>,

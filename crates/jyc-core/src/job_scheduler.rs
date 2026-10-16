@@ -8,15 +8,13 @@
 //! their state.
 
 use crate::job_store::JobStore;
-use crate::topic_manager::TopicManager;
+use crate::topic_manager::TopicManagers;
 use anyhow::Result;
 use chrono::Utc;
 use jyc_types::state_dir::resolve_state_dir;
 use jyc_types::{InboundMessage, MessageContent, PatternMatch};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 /// A due job discovered during a scan cycle, scoped to its topic.
@@ -34,9 +32,9 @@ struct DueJob {
 /// discovers due jobs, fires them via TopicManager::enqueue, and persists
 /// the updated state.
 pub struct JobScheduler {
-    /// Topic managers indexed by channel name.
-    /// The scheduler looks up the correct TM when firing a job.
-    topic_managers: Arc<Mutex<HashMap<String, Arc<TopicManager>>>>,
+    /// The running topic managers. The scheduler looks up the manager for a
+    /// job's channel when firing it.
+    topic_managers: Arc<TopicManagers>,
 
     /// Workspace directories to scan for topics (one per channel).
     workspace_dirs: Vec<PathBuf>,
@@ -54,7 +52,7 @@ pub struct JobScheduler {
 impl JobScheduler {
     /// Create a new JobScheduler.
     pub fn new(
-        topic_managers: Arc<Mutex<HashMap<String, Arc<TopicManager>>>>,
+        topic_managers: Arc<TopicManagers>,
         workspace_dirs: Vec<PathBuf>,
         scan_interval_secs: u64,
         max_jobs_per_topic: usize,
@@ -240,8 +238,8 @@ impl JobScheduler {
 
         // Also scan custom topic paths from pattern `topic_path` overrides.
         // These are not under any workspace_dir so the standard scan misses them.
-        let tms = self.topic_managers.lock().await;
-        for tm in tms.values() {
+        let tms = self.topic_managers.all();
+        for tm in tms.iter() {
             let custom_paths = tm.custom_topic_paths().await;
             for (topic_name, topic_path) in &custom_paths {
                 let jobs_dir = resolve_state_dir(topic_name, topic_path).join("jobs");
@@ -287,10 +285,12 @@ impl JobScheduler {
 
     /// Fire a single job by injecting an InboundMessage into the originating topic.
     async fn fire_job(&self, job: &jyc_types::JobConfig) -> Result<()> {
-        let tms = self.topic_managers.lock().await;
-        let tm = tms.get(&job.channel_name).ok_or_else(|| {
-            anyhow::anyhow!("topic manager not found for channel '{}'", job.channel_name)
-        })?;
+        let tm = self
+            .topic_managers
+            .by_channel(&job.channel_name)
+            .ok_or_else(|| {
+                anyhow::anyhow!("topic manager not found for channel '{}'", job.channel_name)
+            })?;
 
         let message = InboundMessage {
             id: uuid::Uuid::new_v4().to_string(),
@@ -427,7 +427,7 @@ mod tests {
     use tempfile::tempdir;
 
     async fn create_test_scheduler(workspace_dirs: Vec<PathBuf>, enabled: bool) -> JobScheduler {
-        let tms = Arc::new(Mutex::new(HashMap::new()));
+        let tms = Arc::new(TopicManagers::new());
         JobScheduler::new(tms, workspace_dirs, 60, 10, enabled)
     }
 
@@ -592,7 +592,7 @@ mod tests {
         make_topic_with_jobs(&workspace, "dedupe-topic", vec![due_job]).await;
 
         let scheduler = JobScheduler::new(
-            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(TopicManagers::new()),
             vec![workspace.clone(), workspace],
             60,
             10,

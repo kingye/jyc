@@ -82,6 +82,7 @@ mod tests {
         routing::get,
     };
     use jyc_core::metrics::HealthStats;
+    use jyc_core::topic_manager::TopicManagers;
     use jyc_types::ChannelInfo;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -91,7 +92,7 @@ mod tests {
 
     fn ctx_with_token(token: Option<&str>) -> Arc<InspectContext> {
         Arc::new(InspectContext {
-            topic_managers: Arc::new(ArcSwap::from_pointee(vec![])),
+            topic_managers: Arc::new(TopicManagers::new()),
             channels: Arc::new(ArcSwap::from_pointee(vec![ChannelInfo {
                 name: "ch".into(),
                 channel_type: "email".into(),

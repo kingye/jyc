@@ -66,7 +66,7 @@ again in this turn, do not start a waiter that the next push will supersede.
 
 1. `jyc_spawn_subagent(name="ci-watch-<pr>", type="ci-watch")` (`subagents/ci-watch/config.toml`;
    install once with `cp -r subagents/ci-watch <config dir>/subagents/`)
-2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` — give it only two things:
+2. `jyc_send_to_topic(agent=<child>, require_reply=true)` — give it only two things:
    the repo (**name it always**: a watcher that a `develop` child spawned works in that child's topic
    dir, which holds the checkout without being one, and `gh` there answers "not a git repository")
    and the PR or branch. The child does exactly one thing: `gh pr checks <pr> --repo <owner/name>
@@ -80,7 +80,7 @@ again in this turn, do not start a waiter that the next push will supersede.
    <owner/name> --json headRefOid`), then the runs for that commit (`gh run list --repo
    <owner/name> --commit <full 40-character sha>` — never abbreviated).
 4. End your turn; the report arrives as a new message in this topic. The child always reports back
-   with `jyc_send_to_topic` to the channel/topic in the task's `Source:` header — whether or not you
+   with `jyc_send_to_topic` to the agent named in the task's `Source:` header — whether or not you
    asked for a reply. On failure it names the failing check and appends the log tail from the run id
    in that row's URL.
 
@@ -126,7 +126,7 @@ through the `review` type.
    `topic_path` (the role declares `share_topic_path` itself, so you pass nothing), so it reads
    exactly what you have. Do **not** pass `inherit_context`: a review that starts with your
    reasoning in it is not a second opinion.
-2. `jyc_send_to_topic(channel=…, topic=<child>, require_reply=true)` with the task. Name the
+2. `jyc_send_to_topic(agent=<child>, require_reply=true)` with the task. Name the
    question, where to start, and what the report looks like:
 
    > Review this branch against its base (`git diff <base>..HEAD`, plus `git status` for

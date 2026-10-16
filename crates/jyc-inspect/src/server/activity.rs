@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use jyc_core::activity_log_store::ActivityLogStore;
 use jyc_core::topic_event::TopicEvent;
-use jyc_core::topic_manager::TopicManager;
+use jyc_core::topic_manager::TopicManagers;
 use jyc_types::*;
 
 use super::{MAX_ACTIVITY_ENTRIES, MAX_RECENT_MESSAGES, SharedActivityMap, seed_next_id_from_disk};
@@ -170,7 +170,7 @@ impl ActivityTracker {
     /// Fans out events to the inspect-broadcast bus for dashboard WS clients.
     /// On startup, loads historical activity from disk.
     pub fn start(
-        topic_managers: Arc<ArcSwap<Vec<Arc<TopicManager>>>>,
+        topic_managers: Arc<TopicManagers>,
         activity_map: SharedActivityMap,
         _workspace_dirs: Arc<ArcSwap<Vec<PathBuf>>>,
         inspect_broadcast: Arc<tokio::sync::broadcast::Sender<String>>,
@@ -182,7 +182,7 @@ impl ActivityTracker {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
 
             // Load historical activity from disk for all existing topics
-            let tms = topic_managers.load();
+            let tms = topic_managers.all();
             for tm in tms.iter() {
                 let channel = tm.channel_name().to_string();
                 let topics = tm.list_topics().await;
@@ -214,7 +214,7 @@ impl ActivityTracker {
                 tokio::select! {
                     _ = interval.tick() => {
                         // Discover new topics and subscribe to their event buses
-                        let tms = topic_managers.load();
+                        let tms = topic_managers.all();
                         for tm in tms.iter() {
                             let channel = tm.channel_name().to_string();
                             let topics = tm.list_topics().await;

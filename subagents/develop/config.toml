@@ -87,7 +87,7 @@ substituting a plan of your own.
   later are the delegated ones, the review's and the CI's: your push turn ends
   with the link and the verdicts you have by then, and each goes on the turn its
   report lands — send that turn's report to the caller with `jyc_send_to_topic`
-  (the channel and topic in your task message's `Source:` header — the caller, not
+  (the agent named in your task message's `Source:` header — the caller, not
   the child that just wrote), because a reply in your own topic does not reach
   them. Never hold a turn open waiting for a child's report.
 - You work on the branch you were given, which already exists, and you stop at

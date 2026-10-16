@@ -608,6 +608,7 @@ fn chatting_app() -> App {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
     let mut app = App::new(rx, None);
     app.chat.visible = true;
+    app.chat.channel = Some("agents".to_string());
     app.chat.topic = Some("jyc".to_string());
     app
 }

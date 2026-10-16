@@ -252,10 +252,11 @@ impl App {
     /// mixed-version deployment.
     fn refresh_chat_commands(&mut self) {
         let chat_name = self.chat.topic.as_deref();
-        let topic = chat_name.and_then(|name| {
+        let chat_channel = self.chat.channel.as_deref();
+        let topic = chat_name.zip(chat_channel).and_then(|(name, channel)| {
             self.state
                 .as_ref()
-                .and_then(|s| s.topics.iter().find(|t| t.name == name))
+                .and_then(|s| jyc_types::find_topic(&s.topics, channel, name))
         });
         let topic_commands = topic
             .map(|t| t.commands.clone())
@@ -659,8 +660,10 @@ pub async fn run(
                         // flicker between the local flag and server state).
                         if app.chat.awaiting_response
                             && let Some(ref chat_name) = app.chat.topic
+                            && let Some(ref chat_channel) = app.chat.channel
                         {
-                            let ct = overview.topics.iter().find(|t| t.name == *chat_name);
+                            let ct =
+                                jyc_types::find_topic(&overview.topics, chat_channel, chat_name);
                             if let Some(ct) = ct
                                 && ct.status != TopicStatus::Processing
                             {
@@ -1072,11 +1075,7 @@ async fn resolve_websocket_channel(
 async fn wait_for_topic(client: &InspectClient, topic: &str, channel: &str) -> Result<()> {
     for _ in 0..50 {
         let overview = client.get_overview().await?;
-        if overview
-            .topics
-            .iter()
-            .any(|t| t.name == topic && t.channel == channel)
-        {
+        if jyc_types::has_topic(&overview.topics, channel, topic) {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

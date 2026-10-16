@@ -298,6 +298,13 @@ async fn resolve(
 /// is a legitimate name and must stay addressable, so the stricter
 /// `spawn_common::invalid_name` rule is applied where a name is *created*, not
 /// where one is addressed.
+///
+/// Those four shapes are also the containment argument: joined as a path
+/// component, an empty name, `.` or `..` resolves against the agents dir's
+/// parent, and a separator makes the join absolute. A Windows prefix-only name
+/// (`C:`, `c:foo`) would clear the base as well, but no channel can produce one
+/// — `sanitize_for_filesystem` replaces `:` — and it cannot be a real directory
+/// there, so the alphabet is left alone rather than widened for a non-case.
 fn invalid_address_name(name: &str) -> Option<&'static str> {
     if name.is_empty() || name == "." || name == ".." {
         return Some("the name is not a usable path component");
@@ -845,10 +852,17 @@ mod tests {
         managers.set(vec![make_tm(tmp.path(), AGENTS_CHANNEL)]);
 
         for bad in ["../escape", "sub/dir", "win\\dir", ".", ".."] {
-            let err = send_to_topic(&managers, source(tmp.path()), request(bad, None, "hi"))
-                .await
-                .unwrap_err();
-            assert!(err.to_string().contains("Invalid address"), "{bad}: {err}");
+            // The name reaches the guard as an agent and as the topic slot; a
+            // `--topic sub/dir` is the likelier carrier of the two.
+            for req in [
+                request(bad, None, "hi"),
+                request("invoice", Some(bad), "hi"),
+            ] {
+                let err = send_to_topic(&managers, source(tmp.path()), req)
+                    .await
+                    .unwrap_err();
+                assert!(err.to_string().contains("Invalid address"), "{bad}: {err}");
+            }
         }
     }
 

@@ -3508,6 +3508,12 @@ impl ChatState {
         if self.topic.as_deref() != Some(topic) {
             return;
         }
+        // The box owns the keyboard from the moment it appears: a command popup
+        // or a leader session left over from before the frame landed would take
+        // its Enter (the popup's fires the highlighted slash command instead of
+        // keeping the answer) and its Esc.
+        self.command_popup = None;
+        self.leader = None;
         let options: Vec<String> = parsed
             .get("options")
             .and_then(|v| v.as_array())

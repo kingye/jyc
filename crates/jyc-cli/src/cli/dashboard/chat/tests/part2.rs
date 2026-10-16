@@ -1497,6 +1497,26 @@ fn space_on_the_typed_row_opens_the_draft_in_multi() {
     assert_eq!(sent_text(&mut rx), "Q1: both");
 }
 
+/// A popup or a leader session left over from before the question frame landed
+/// is closed with it. Either one would otherwise take the box's Enter - the
+/// popup's fires the highlighted slash command instead of keeping the answer -
+/// and its Esc, so the question could not be answered at all.
+#[test]
+fn a_question_frame_closes_the_popup_and_the_leader() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.command_popup = Some(CommandPopupState::new());
+    chat.leader = Some(leader::Leader::new(local_commands::CommandScope::Chat));
+
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
+
+    assert!(chat.command_popup.is_none(), "the box owns the keyboard");
+    assert!(chat.leader.is_none(), "and so does the leader session");
+
+    // Which is what Enter then proves: it answers rather than firing a command.
+    chat.confirm_question();
+    assert_eq!(sent_text(&mut rx), "Q1: 1) a");
+}
+
 /// Going back is free precisely because the answer is still buffered: the
 /// earlier question keeps its marks.
 #[test]

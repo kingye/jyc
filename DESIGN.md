@@ -452,9 +452,10 @@ Readings this table exists to rule out:
    `topic_path::resolve_agents_dir()` (topic dirs; prefers the platform data
    home) and `topic_path::agents_dir(data_dir)` = `<data dir>/agents` (adopted
    state dirs; deliberately data-dir-based so multi-instance and test setups stay
-   isolated). Where both are in play (cluster close and purge, which prune up to
-   either root) the data-dir-based one is spelled out at the call site as
-   `agents_dir(&self.data_dir)`. With an explicit `--data-dir` the two differ.
+   isolated). Where both are in play (cluster close and purge, both of which
+   weigh a dir against either root) the data-dir-based one is spelled out at
+   the call site as `agents_dir(&self.data_dir)`. With an explicit
+   `--data-dir` the two differ.
 
 ## Topic State Directory (.jyc)
 
@@ -583,28 +584,24 @@ those roots — which is why a spawn's default dir under `agents/` is never purg
   receive the topic name via `JYC_TOPIC_NAME` at spawn); config pins
   additionally adopt from config — identical mappings, idempotent.
 - **Close.** `/close --force` on an adopted topic deletes the state dir
-  registered for that topic *name* and prunes the emptied state namespace —
-  the `agents/<topic>/` shell around the state, plus empty nested parents
-  such as `agents/<agent>/`, up to but never including jyc's own roots; a
-  shell that still holds anything is kept. A topic that works in its home's
-  `.data` owns that directory too: an emptied one goes with its state, one
-  holding files stays. The registration itself is kept
-  so a reopened topic reuses the same state location (never the topic dir),
-  and the pinned topic dir (e.g. a repo) is kept. A sibling topic co-pinning
-  the same dir keeps its own state. Unregistered topics keep the legacy
-  whole-dir deletion, with the same empty-parent pruning.
-  An **upstream close event** (issue/PR closed, chat disbanded) means the
-  topic is done, so it goes one step further: a pipe topic's own dir
-  (`<agents dir>/<agent>/<topic>`) is deleted together with its contents,
-  empty or not. A pin *at* that shape goes with it — the shape is the
-  criterion, not pinning, so the one pinned dir an upstream close can take is
-  the one that is itself a pipe topic dir. Otherwise only that exact shape,
-  and the purge guards still apply — an agent's own dir one level up
-  (`<agents dir>/<agent>`, a state namespace), a dir another topic works in
-  (a `/spawn -s` child works in its parent's), a dir nesting somebody else's, a symlink
-  out of the tree, and a pin anywhere else are all left in place. `/close`
-  keeps the empty-only rule above, and a topic reopened upstream (issue
-  closed, then reopened) starts with an empty dir.
+  registered for that topic *name* **and the home it lived in**, contents and
+  all: the `<home>` a topic works in (its `.data` and whatever was written
+  there), the `<agents dir>/<topic>/` shell a pin left behind, the dir a
+  `/spawn` was created in. Two dirs are never taken: one **outside the agents
+  tree** — a checkout a `-d` or a pin points at is the user's, and only its
+  state goes — and one **another topic works in or lives inside** (a
+  `/spawn -s` child, a fork, the topics of the pipe that owns the dir; the last
+  of these is read off the disk, because the pin map only knows the topics that
+  are live). Nothing *above* the home goes either: `<agents dir>/<agent>/` is
+  the pipe's own dir, not the closing topic's. The registration itself is kept
+  so a reopened topic reuses the same state location (never the topic dir). A
+  sibling topic co-pinning the same dir keeps its own state. Unregistered
+  topics keep the legacy whole-dir deletion.
+  An **upstream close event** (issue/PR closed, chat disbanded) goes the same
+  way — the home/pipe boundary is drawn in one teardown, shared by every close
+  source — and puts one rule in front of it: a topic whose working dir is not
+  under the agents tree is skipped whole, not even closed. A topic reopened
+  upstream (issue closed, then reopened) starts with an empty dir.
   Closing also closes the topic's **subagents**, before anything of its own is
   touched: they exist to serve its work, the grant is what makes them findable
   at all, and a shared one (below) would otherwise point into a directory this
@@ -718,11 +715,10 @@ child's own `/model` still wins over it.
 
 A **shared** subagent (`share_topic_path`) takes the parent's dir and nothing
 else of it: its own state stays in `<agents root>/<name>/.jyc`, which is what
-keeps `close_topic` — and `auto_close_topic`'s dir removal — from ever touching
-that directory when the child closes. The child's pin is a borrowed one: it is
-closed with the parent (below), and the purge guards above read a pin's lineage,
-not just its presence, so a shared child neither blocks its parent's dir from
-going nor claims it as somebody else's.
+keeps the close from ever touching that directory when the child closes. The
+child's pin is a borrowed one: it is closed with the parent (below), and the
+guards above read a pin's lineage, not just its presence, so a shared child
+neither blocks its parent's dir from going nor claims it as somebody else's.
 
 Because the grant comes from the same place `/spawn` writes it, a hand-typed
 spawn is a subagent too: it shows up in the list, in the parent's read+write

@@ -57,16 +57,30 @@ impl TopicManager {
 
     /// Close and delete a topic's directory.
     ///
-    /// This is channel-agnostic — all topics use the same cleanup logic.
-    /// The emptied state namespace goes with it: the `agents/<topic>/` shell
-    /// a deleted state dir leaves behind, plus empty nested parents such as
-    /// `agents/<agent>/` — pruned up to (never including) jyc's own roots.
-    /// A shell that still holds anything is kept. The registration itself
-    /// stays: a reopened topic reuses the same state dir name instead of
-    /// ever falling back to `<topic_dir>/.jyc` (#825). Unregistered topics
-    /// keep the legacy behavior: the whole directory (with its in-dir
-    /// `.jyc`) is removed, empty parents pruned the same way. In-memory
-    /// state is cleaned up in both cases.
+    /// This is channel-agnostic, and so is *what* it deletes: `/close`,
+    /// `/close <name>`, `/close all`, a close cascade and an upstream close
+    /// event off a channel all end a topic the same way.
+    ///
+    /// The topic's **home** goes with its state — the directory the
+    /// registration hangs off: the home itself when the topic works in
+    /// `<home>/.data`, the `<agents dir>/<topic>/` shell a pin left behind, the
+    /// dir a `/spawn` was created in. Contents and all: the working directory,
+    /// the `.attachments` in it, whatever else was written there. Two dirs are
+    /// never taken:
+    ///
+    /// - one **outside the agents tree** — a checkout a `-d` or a pin points
+    ///   at is the user's, and only its state is deleted;
+    /// - one **another topic works in or lives inside** (a `-s` child, a fork,
+    ///   the topics of the pipe that owns it).
+    ///
+    /// Nothing *above* the home goes either: `<agents dir>/<agent>/` is the
+    /// pipe's own dir, not the closing topic's.
+    ///
+    /// The registration itself stays: a reopened topic reuses the same state dir
+    /// name instead of ever falling back to `<topic_dir>/.jyc` (#825).
+    /// Unregistered topics keep the legacy behavior: the whole directory (with
+    /// its in-dir `.jyc`) is removed. In-memory state is cleaned up in both
+    /// cases.
     ///
     /// The topic's subagents close with it
     /// ([`Self::subagent_closure`]).
@@ -157,76 +171,47 @@ impl TopicManager {
                     .await
                     .context(format!("Failed to remove topic state dir: {:?}", state))?;
             }
-            // A registration normally points outside the topic dir — a pin, a
-            // fork, a `/spawn` with an explicit path — and only the emptied
-            // `agents/<topic>/` shell around the state goes. The one shape
-            // where the state sits *inside* the topic dir is `/spawn` with no
-            // path: that dir was created for the topic and is not necessarily
-            // under one of our roots, so an emptied one is removed on its own
-            // (also when it *is* under the roots — this branch, not the pruner
-            // below, owns the in-dir shape; don't "unify" them).
-            if path_is_under(&state, &topic_path).await {
-                match tokio::fs::remove_dir(&topic_path).await {
-                    Ok(()) => tracing::info!(
+            // The dir the state was registered in is the topic's *home* — the
+            // one jyc created for it, whether it works in the home itself, in
+            // `<home>/.data`, or in a directory it was handed (a pin, a `-d`:
+            // then the home is the state namespace beside the state). It goes
+            // with the state, contents and all, for every close source alike.
+            //
+            // Two dirs are not ours to take: one outside the agents tree — the
+            // user's checkout, where only the state goes — and one another
+            // topic works in or lives inside (a `-s` child, a fork, the topics
+            // of the pipe that owns this dir); the guards mirror
+            // `purge_topic_dir_under`'s.
+            let home = state.parent();
+            let inside = match home {
+                Some(home) => {
+                    path_is_under(home, agents_dir).await
+                        || path_is_under(home, &crate::topic_path::agents_dir(&self.data_dir)).await
+                }
+                None => false,
+            };
+            if let Some(home) = home.filter(|_| inside) {
+                match self.dir_holder(topic_name, home).await {
+                    Some(holder) => tracing::info!(
                         topic = %topic_name,
-                        dir = %topic_path.display(),
-                        "Emptied topic dir removed with its state"
+                        dir = %home.display(),
+                        holder = %holder,
+                        "Topic home kept: another topic works in it or lives inside it"
                     ),
-                    // Not empty (files moved in) or already gone: nothing more
-                    // to remove, and whatever remains is user property.
-                    Err(e)
-                        if e.kind() == std::io::ErrorKind::DirectoryNotEmpty
-                            || e.kind() == std::io::ErrorKind::NotFound =>
-                    {
+                    None => {
+                        remove_topic_dir(topic_name, home).await?;
                         tracing::info!(
                             topic = %topic_name,
-                            state = %state.display(),
-                            topic_dir = %topic_path.display(),
-                            "Topic state dir deleted; topic dir preserved"
+                            dir = %home.display(),
+                            "Topic home deleted with its state"
                         );
                     }
-                    Err(e) => tracing::warn!(
-                        topic = %topic_name,
-                        dir = %topic_path.display(),
-                        error = %e,
-                        "Topic state dir deleted but the emptied topic dir could not be removed"
-                    ),
                 }
             } else {
-                // A topic that works in `<home>/.data` owns that directory: an
-                // emptied one goes with its state, while a dir still holding
-                // files is user property and stays — the same rule the in-dir
-                // shape above follows. Any other dir (a pin, a dir a child
-                // shares) is somebody else's and is only ever pruned of *our*
-                // emptied shells.
-                if state.parent() == Some(crate::topic_path::topic_home(&topic_path)) {
-                    match tokio::fs::remove_dir(&topic_path).await {
-                        Ok(()) => tracing::info!(
-                            topic = %topic_name,
-                            dir = %topic_path.display(),
-                            "Emptied topic working dir removed with its state"
-                        ),
-                        Err(e)
-                            if e.kind() == std::io::ErrorKind::DirectoryNotEmpty
-                                || e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => tracing::warn!(
-                            topic = %topic_name,
-                            dir = %topic_path.display(),
-                            error = %e,
-                            "Topic state dir deleted but its emptied working dir could not be removed"
-                        ),
-                    }
-                }
-                prune_empty_parents(
-                    &state,
-                    &[agents_dir, &crate::topic_path::agents_dir(&self.data_dir)],
-                )
-                .await;
                 tracing::info!(
                     topic = %topic_name,
                     state = %state.display(),
-                    topic_dir = %topic_path.display(),
-                    "Topic state dir deleted; topic dir preserved"
+                    "Topic state dir deleted; its directory is outside the agents tree and is kept"
                 );
             }
             self.cleanup_topic_state(topic_name).await;
@@ -235,11 +220,6 @@ impl TopicManager {
 
         if topic_path.exists() {
             remove_topic_dir(topic_name, &topic_path).await?;
-            prune_empty_parents(
-                &topic_path,
-                &[agents_dir, &crate::topic_path::agents_dir(&self.data_dir)],
-            )
-            .await;
             tracing::info!(topic = %topic_name, "Topic directory deleted");
         }
 
@@ -295,6 +275,34 @@ impl TopicManager {
             }
         }
         dirs
+    }
+
+    /// Name the topic that would go down with `dir` — one that works in it, or
+    /// one whose own dir lives inside it. A close takes a dir only when nobody
+    /// answers: the first two guards are [`Self::purge_topic_dir_under`]'s, and
+    /// the last one reads the disk, because the pin map only knows the topics
+    /// that are live. A self-named pipe topic shares its dir with its pipe's
+    /// other topics, and the `.jyc` of `<home>/<topic>` is what marks those.
+    async fn dir_holder(&self, self_name: &str, dir: &Path) -> Option<String> {
+        let dir = crate::topic_path::resolved(dir);
+        for (name, other) in self.other_topic_dirs(self_name).await {
+            let other = crate::topic_path::resolved(&other);
+            if other == dir || path_is_under(&other, &dir).await {
+                return Some(name);
+            }
+        }
+        let mut entries = tokio::fs::read_dir(&dir).await.ok()?;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let is_dir = entry
+                .file_type()
+                .await
+                .map(|kind| kind.is_dir())
+                .unwrap_or(false);
+            if is_dir && entry.path().join(".jyc").is_dir() {
+                return Some(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        None
     }
 
     /// Testable core of [`Self::purge_topic_dir`] with the resolved agents root
@@ -388,13 +396,13 @@ impl TopicManager {
     /// Close a topic in response to an upstream close event (issue/PR
     /// closed, chat disbanded, ...).
     ///
-    /// Unlike `/close`, an upstream close means the topic is done, so the
-    /// working dir goes with it — contents and all. Hard safety rule: only a
-    /// dir that is *exactly* `<agents dir>/<agent>/<topic>` (a pipe rule's own
-    /// dir, working in its home or in that home's `.data`) is deleted, and the
-    /// purge guards still have the last word: an agent's own dir one level up,
-    /// a dir shared with a child, a dir nested with somebody else's, or a pin
-    /// elsewhere is skipped with an info log.
+    /// What gets deleted is [`Self::close_topic`]'s answer: a close off a
+    /// channel takes the topic's home, contents and all, exactly as `/close`
+    /// does — the two are one teardown, and the home/pipe boundary is drawn in
+    /// one place. All this adds is the rule in front of it: an upstream close
+    /// never touches a topic whose working directory is not under the agents
+    /// tree (a checkout somebody pinned), which is skipped whole — not even
+    /// closed — with an info log.
     ///
     /// Returns `true` when the topic was actually closed.
     pub async fn auto_close_topic(&self, topic_name: &str) -> Result<bool> {
@@ -417,23 +425,6 @@ impl TopicManager {
             return Ok(false);
         }
         self.close_topic(topic_name).await?;
-
-        // `close_topic` above only removes a topic dir it emptied, which
-        // leaves a pipe topic's own dir behind as soon as anything was
-        // written into it. An upstream close owns it outright, so take it —
-        // guarded, and only in the one shape jyc creates for a topic.
-        if !is_dynamic_topic_dir(&topic_path, agents_dir, topic_name) {
-            tracing::info!(
-                topic = %topic_name,
-                dir = %topic_path.display(),
-                "Auto-close kept the topic dir: not a <agents dir>/<agent>/<topic> dir"
-            );
-        } else if let PurgeOutcome::Refused(reason) = self
-            .purge_topic_dir_under(topic_name, agents_dir, &self.data_dir)
-            .await?
-        {
-            tracing::info!(topic = %topic_name, reason = %reason, "Auto-close kept the topic dir");
-        }
         Ok(true)
     }
 
@@ -524,27 +515,6 @@ fn pin_still_held_by_another(name: &str, pin: &Path, self_name: &str) -> bool {
         && crate::command::spawn_handler::spawned_from(name, pin).as_deref() != Some(self_name)
 }
 
-/// Remove the emptied parent dirs a deleted state/topic dir leaves behind —
-/// the `agents/<topic>/` shells and empty nested parents like `agents/<agent>/`
-/// — up to but never including jyc's own roots (the resolved agents dir and
-/// the agents dir under the instance's data dir).
-/// Stops at the first dir that still holds anything; a non-empty shell is
-/// kept, like any pinned topic's dir. `dir` itself is expected to be already
-/// deleted by the caller.
-async fn prune_empty_parents(dir: &Path, roots: &[&Path]) {
-    let mut parent = dir.parent();
-    while let Some(p) = parent {
-        if roots.contains(&p) || !roots.iter().any(|r| p.starts_with(r)) {
-            break;
-        }
-        if tokio::fs::remove_dir(p).await.is_err() {
-            break; // gone already, not empty, or not removable — the rest stays
-        }
-        tracing::info!(dir = %p.display(), "Emptied state namespace dir removed");
-        parent = p.parent();
-    }
-}
-
 /// Canonicalized containment check: `path` must be strictly under `root`.
 ///
 /// Canonicalization resolves symlinks and `..`, so a topic dir symlinked
@@ -554,22 +524,6 @@ async fn path_is_under(path: &Path, root: &Path) -> bool {
     let path = crate::topic_path::resolved(path);
     let root = crate::topic_path::resolved(root);
     path != root && path.starts_with(&root)
-}
-
-/// Is `path` exactly `<agents dir>/<agent>/<topic>` — the dir a pipe rule
-/// creates for one topic, and the only shape an upstream close deletes with
-/// its contents?
-///
-/// Two levels, leaf named after the topic: one level up is an agent's own dir
-/// (`<agents dir>/<agent>`, a state namespace), a different leaf is somebody
-/// else's topic (a shared child works in its parent's dir). A topic that
-/// works in its home's `.data` counts as the home it was created with.
-fn is_dynamic_topic_dir(path: &Path, agents_dir: &Path, topic_name: &str) -> bool {
-    let path = crate::topic_path::resolved(path);
-    let agents_dir = crate::topic_path::resolved(agents_dir);
-    let home = crate::topic_path::topic_home(&path);
-    home.file_name() == Some(std::ffi::OsStr::new(topic_name))
-        && home.parent().and_then(Path::parent) == Some(agents_dir.as_path())
 }
 
 /// What [`TopicManager::purge_topic_dir`] did, or refused to do.
@@ -775,42 +729,6 @@ mode = "agent"
         assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
     }
 
-    /// The shape rule behind the upstream-close deletion: exactly
-    /// `<agents dir>/<agent>/<topic>`, leaf named after the topic.
-    #[tokio::test]
-    async fn is_dynamic_topic_dir_matches_only_the_agent_topic_shape() {
-        let tmp = tempdir().unwrap();
-        let agents_dir = tmp.path().join("agents");
-        std::fs::create_dir_all(agents_dir.join("agent-x").join("pr-7")).unwrap();
-        std::fs::create_dir_all(agents_dir.join("agent-x")).unwrap();
-
-        assert!(is_dynamic_topic_dir(
-            &agents_dir.join("agent-x").join("pr-7"),
-            &agents_dir,
-            "pr-7"
-        ));
-        assert!(
-            !is_dynamic_topic_dir(&agents_dir.join("pr-7"), &agents_dir, "pr-7"),
-            "one level (an agent's own dir / state namespace) is not a topic dir"
-        );
-        assert!(
-            !is_dynamic_topic_dir(
-                &agents_dir.join("a").join("b").join("pr-7"),
-                &agents_dir,
-                "pr-7"
-            ),
-            "deeper nesting is not the shape jyc creates"
-        );
-        assert!(
-            !is_dynamic_topic_dir(
-                &agents_dir.join("agent-x").join("pr-8"),
-                &agents_dir,
-                "pr-7"
-            ),
-            "a different leaf is somebody else's topic (a fork shares its parent's dir)"
-        );
-    }
-
     /// The reported case: a pipe topic dir holding work files, with its state
     /// inside it. An upstream close takes the whole dir — `/close` alone would
     /// only have removed the state and kept the dir.
@@ -843,10 +761,12 @@ mode = "agent"
         jyc_types::state_dir::unregister("pr-dyn-1");
     }
 
-    /// One level up is an agent's own dir, not a topic: upstream close removes
-    /// the state and leaves the dir and its files alone.
+    /// A topic working in its own home one level under the agents root — the
+    /// `<agents dir>/<name>` a `/spawn` or a self-named pipe topic gets — is a
+    /// topic like any other: its home goes, contents and all. The agents root
+    /// above it does not.
     #[tokio::test]
-    async fn auto_close_keeps_agent_own_dir() {
+    async fn auto_close_deletes_an_agents_own_dir_with_its_home() {
         let tmp = tempdir().unwrap();
         let agents_dir = tmp.path().join("agents");
         let agent_dir = agents_dir.join("agent-own-1");
@@ -867,10 +787,10 @@ mode = "agent"
 
         assert!(closed);
         assert!(
-            agent_dir.join("notes.md").exists(),
-            "agent dir must survive"
+            !agent_dir.exists(),
+            "the topic's home goes with its state, notes.md included"
         );
-        assert!(!state.exists(), "its state dir still goes");
+        assert!(agents_dir.exists(), "the agents root itself survives");
         jyc_types::state_dir::unregister("agent-own-1");
     }
 
@@ -907,33 +827,37 @@ mode = "agent"
         jyc_types::state_dir::unregister("pr-share-1");
     }
 
-    /// `/close` keeps its old contract: a dynamic topic dir that gained files
-    /// is left in place, only the state dir goes.
+    /// The reported case, and what `/close` now does for every close source: a
+    /// pipe topic's own dir — `<agents dir>/<pipe>/<topic>` with its `.data`
+    /// and the files in it — goes with the topic's state, while the pipe's dir
+    /// one level up stays. Nothing above a home is ever taken.
     #[tokio::test]
-    async fn manual_close_keeps_nonempty_dynamic_dir() {
+    async fn manual_close_takes_the_home_and_keeps_the_pipe_dir() {
         let tmp = tempdir().unwrap();
         let agents_dir = tmp.path().join("agents");
-        let topic_dir = agents_dir.join("agent-x").join("pr-manual-1");
+        let pipe_dir = agents_dir.join("mail-bot");
+        let topic_dir = pipe_dir.join("pr-129");
         let state = topic_dir.join(".jyc");
+        let work = topic_dir.join(".data");
         std::fs::create_dir_all(&state).unwrap();
-        std::fs::write(topic_dir.join("work.rs"), "fn wip() {}").unwrap();
-        jyc_types::state_dir::register("pr-manual-1", &state);
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("work.rs"), "fn wip() {}").unwrap();
+        jyc_types::state_dir::register("pr-129", &state);
 
         let tm = make_tm(&agents_dir);
-        tm.set_topic_path("pr-manual-1", topic_dir.clone())
-            .await
-            .unwrap();
+        tm.set_topic_path("pr-129", work.clone()).await.unwrap();
 
-        tm.close_topic_under("pr-manual-1", &agents_dir)
-            .await
-            .unwrap();
+        tm.close_topic_under("pr-129", &agents_dir).await.unwrap();
 
         assert!(
-            topic_dir.join("work.rs").exists(),
-            "/close must keep a dir that holds files"
+            !topic_dir.exists(),
+            "the topic's home goes, its working directory and files with it"
         );
-        assert!(!state.exists(), "the state dir goes either way");
-        jyc_types::state_dir::unregister("pr-manual-1");
+        assert!(
+            pipe_dir.exists(),
+            "the pipe's own dir is not the topic's to delete"
+        );
+        jyc_types::state_dir::unregister("pr-129");
     }
 
     /// Pinned topic with a registered state dir: close deletes the state
@@ -990,22 +914,26 @@ mode = "agent"
         );
     }
 
-    /// A state namespace shell that still holds non-`.jyc` files survives
-    /// the close — pruning only removes emptied dirs.
+    /// The home a pinned topic's state lives in goes with that state — the
+    /// namespace is the topic's own dir, its stray files included. The dir the
+    /// topic was *given* is the user's and stays.
     #[tokio::test]
-    async fn close_keeps_non_empty_state_namespace() {
+    async fn close_deletes_the_state_namespace_with_its_state() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("ws");
         std::fs::create_dir_all(&workspace).unwrap();
         let tm = make_tm(&workspace);
 
+        let repo = tmp.path().join("probe-prune-repo");
         let namespace = tmp.path().join("agents/probe-prune-full");
         let state = namespace.join(".jyc");
         let agents_dir = tmp.path().join("agents");
         std::fs::create_dir_all(&state).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("main.rs"), "fn main() {}").unwrap();
         std::fs::write(namespace.join("notes.txt"), "keep me").unwrap();
         jyc_types::state_dir::register("probe-prune-full", &state);
-        tm.set_topic_path("probe-prune-full", tmp.path().join("repo"))
+        tm.set_topic_path("probe-prune-full", repo.clone())
             .await
             .unwrap();
 
@@ -1013,22 +941,22 @@ mode = "agent"
             .await
             .unwrap();
 
-        assert!(!state.exists(), "state dir must be deleted");
         assert!(
-            namespace.join("notes.txt").exists(),
-            "non-empty namespace shell must survive"
+            !namespace.exists(),
+            "the topic's own namespace goes, contents and all"
         );
         assert!(
-            namespace.exists() && agents_dir.exists(),
-            "the shell and the agents root itself must survive"
+            repo.join("main.rs").exists(),
+            "the dir the topic worked in is the user's"
         );
+        assert!(agents_dir.exists(), "the agents root itself must survive");
     }
 
-    /// Unregistered topic under the agents root (pipe-routed dynamic
-    /// topic): close deletes the whole dir *and* the emptied parent agent
-    /// dir, stopping at the agents root itself.
+    /// Unregistered topic under the agents root (a legacy layout, state
+    /// in-dir): the topic's dir goes, the parent dir does not — that one
+    /// belongs to the agent or pipe that owns it.
     #[tokio::test]
-    async fn close_prunes_empty_legacy_topic_parents() {
+    async fn close_keeps_the_parent_dir_of_a_legacy_topic() {
         let tmp = tempdir().unwrap();
         let agents_dir = tmp.path().join("agents");
         let workspace = agents_dir.join("probe-agent-x");
@@ -1045,10 +973,81 @@ mode = "agent"
 
         assert!(!topic_dir.exists());
         assert!(
-            !workspace.exists(),
-            "emptied agents/<agent> parent must be pruned"
+            workspace.exists(),
+            "the parent dir is not the closed topic's to take"
         );
         assert!(agents_dir.exists(), "the agents root itself must survive");
+    }
+
+    /// A working directory outside the agents tree is the user's: the close
+    /// takes the state namespace jyc made for the topic, and leaves whatever
+    /// lives in that directory alone.
+    #[tokio::test]
+    async fn close_keeps_a_working_dir_outside_the_agents_tree() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        let outside = tmp.path().join("projects").join("jyc");
+        let namespace = agents_dir.join("probe-outside-1");
+        let state = namespace.join(".jyc");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("mine.rs"), "fn mine() {}").unwrap();
+        jyc_types::state_dir::register("probe-outside-1", &state);
+
+        let tm = make_tm(&agents_dir);
+        tm.set_topic_path("probe-outside-1", outside.clone())
+            .await
+            .unwrap();
+
+        tm.close_topic_under("probe-outside-1", &agents_dir)
+            .await
+            .unwrap();
+
+        assert!(
+            outside.join("mine.rs").exists(),
+            "a dir outside the agents tree is never deleted"
+        );
+        assert!(
+            !namespace.exists(),
+            "the state namespace jyc made for the topic still goes"
+        );
+        jyc_types::state_dir::unregister("probe-outside-1");
+    }
+
+    /// A topic whose own dir lives inside the home being closed keeps that
+    /// home: a self-named topic closing must not take the pipe's other topics
+    /// with it. The sibling here is deliberately *not* pinned, so only the
+    /// disk can tell the home is shared.
+    #[tokio::test]
+    async fn close_keeps_a_home_another_topic_lives_in() {
+        let tmp = tempdir().unwrap();
+        let agents_dir = tmp.path().join("agents");
+        let home = agents_dir.join("probe-pipe-1");
+        let state = home.join(".jyc");
+        let nested = home.join("info");
+        let nested_state = nested.join(".jyc");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::create_dir_all(&nested_state).unwrap();
+        std::fs::write(home.join("notes.md"), "# notes").unwrap();
+        jyc_types::state_dir::register("probe-pipe-1", &state);
+        jyc_types::state_dir::register("info", &nested_state);
+
+        let tm = make_tm(&agents_dir);
+        tm.set_topic_path("probe-pipe-1", home.clone())
+            .await
+            .unwrap();
+
+        tm.close_topic_under("probe-pipe-1", &agents_dir)
+            .await
+            .unwrap();
+
+        assert!(
+            nested_state.exists(),
+            "a dir another topic lives in must survive its parent's close"
+        );
+        assert!(!state.exists(), "the closed topic's own state still goes");
+        jyc_types::state_dir::unregister("probe-pipe-1");
+        jyc_types::state_dir::unregister("info");
     }
 
     /// Two topics pinning the same dir: closing one deletes only its own

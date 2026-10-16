@@ -3581,7 +3581,7 @@ INFO worker{channel=jiny283, topic=weather}: Worker finished
 | `/plan`        | Switch to plan mode (read-only by convention — the prompt; a system boundary needs `disabled_tools`)         | `/plan`                                            |
 | `/build`       | Switch to build mode (full execution, default)                | `/build`                                           |
 | `/reset`       | Clear the current in-process agent session (start fresh context)      | `/reset`                                           |
-| `/close`       | Close the current topic (deletes topic directory and state; requires `--force`) | `/close --force`                                   |
+| `/close`       | Close the current topic, or one of its own direct subagents (`/close [subagent\|all]`): for a subagent the command is sent to that topic, which closes itself — `--force` required, `--purge` deletes the directory too | `/close --force`                                   |
 | `/template`    | Re-apply the pattern's topic template files                  | `/template`                                        |
 
 ### Command Handler Trait

@@ -1,8 +1,11 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::send_handler::{SendRequest, SendSource, send_to_topic};
+use super::spawn_handler::{format_subagent_names, subagents_of};
 use crate::topic_manager::{PurgeOutcome, TopicManager};
 
 /// /close command — close a topic, and with `--purge` delete its directory too.
@@ -30,6 +33,169 @@ impl CloseCommandHandler {
     fn is_purged(args: &[String]) -> bool {
         args.iter().any(|a| a == "--purge")
     }
+
+    /// The word in the args that names what to close, if any.
+    ///
+    /// `all` is a keyword: a subagent that happens to be called `all` is closed
+    /// as part of the batch rather than by name. Flags are not names, and
+    /// neither is the empty token a bare `/close ` carries.
+    fn target(args: &[String]) -> Option<&str> {
+        args.iter()
+            .map(String::as_str)
+            .find(|a| !a.starts_with('-') && !a.trim().is_empty())
+    }
+
+    /// Send `body` to a subagent, so that topic's own queue runs it.
+    ///
+    /// The child closes itself — this handler never touches its directory, and
+    /// the guard the child has in front of its own `/close` still applies.
+    async fn send_close_command(
+        &self,
+        context: &CommandContext,
+        name: &str,
+        body: &str,
+    ) -> Result<String> {
+        let managers = self
+            .topic_manager
+            .managers()
+            .ok_or_else(|| anyhow::anyhow!("The agents channel is unreachable from here"))?;
+        send_to_topic(
+            &managers,
+            SendSource {
+                channel: None,
+                topic: Some(&context.topic_name),
+                working_dir: &context.topic_path,
+            },
+            SendRequest {
+                agent: name,
+                topic: None,
+                message: body,
+                attachments: &[],
+                recipient: None,
+                require_reply: false,
+            },
+        )
+        .await
+    }
+
+    /// The subagent names `target` selects, or the refusal that says why none.
+    ///
+    /// Split out from the send path so the rule — `all`, or exactly one of this
+    /// topic's subagents — is testable without a manager behind it.
+    fn subagent_targets(
+        target: &str,
+        children: &[(String, PathBuf)],
+    ) -> Result<Vec<String>, String> {
+        match target {
+            "all" => Ok(children.iter().map(|(name, _)| name.clone()).collect()),
+            name if children.iter().any(|(child, _)| child == name) => Ok(vec![name.to_string()]),
+            name => Err(format!(
+                "'{name}' is not a subagent of this topic, so `/close` leaves it alone. \
+                 Subagents: {}",
+                format_subagent_names(children)
+            )),
+        }
+    }
+
+    /// Close the subagent `target` names, or every one of them for `all`.
+    ///
+    /// The subagents are this topic's own — the list the spawn prompt shows,
+    /// which is what `subagents_of` returns — because `/close` is a parent's
+    /// lever over its children and nothing else.
+    async fn close_subagents(
+        &self,
+        context: &CommandContext,
+        target: &str,
+    ) -> Result<CommandResult> {
+        let children = subagents_of(&context.topic_name);
+        let names = match Self::subagent_targets(target, &children) {
+            Ok(names) => names,
+            Err(message) => {
+                return Ok(CommandResult {
+                    success: false,
+                    message,
+                    error: Some(format!("Not a subagent: {target}")),
+                    append_body: None,
+                });
+            }
+        };
+
+        if names.is_empty() {
+            return Ok(CommandResult {
+                success: true,
+                message: format!(
+                    "Nothing to close: this topic has no subagents (`/close {target}`)."
+                ),
+                error: None,
+                append_body: None,
+            });
+        }
+
+        // The same guard closing this topic has: the batch is not fired by a
+        // typo, and the warning names what will go.
+        if !Self::is_forced(&context.args) {
+            let what = if names.len() == 1 {
+                format!("subagent '{}'", names[0])
+            } else {
+                format!("{} subagents: {}", names.len(), names.join(", "))
+            };
+            return Ok(CommandResult {
+                success: true,
+                message: format!(
+                    "⚠️  /close will close {what} — a subagent of topic '{}', not this topic \
+                     itself. Each one closes itself and takes everything under it (chat \
+                     history, AI session, attachments). This cannot be undone.\n\
+                     \n\
+                     To proceed, send: /close {target} --force",
+                    context.topic_name
+                ),
+                error: None,
+                append_body: None,
+            });
+        }
+
+        let body = if Self::is_purged(&context.args) {
+            "/close --force --purge"
+        } else {
+            "/close --force"
+        };
+        let mut sent: Vec<String> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        for name in &names {
+            match self.send_close_command(context, name, body).await {
+                Ok(_) => sent.push(name.clone()),
+                Err(e) => failed.push(format!("{name}: {e}")),
+            }
+        }
+
+        let mut message = if sent.len() == 1 {
+            format!(
+                "Sent '{body}' to subagent '{}' — it closes itself on its own queue.",
+                sent[0]
+            )
+        } else {
+            format!(
+                "Sent '{body}' to {} subagents: {}.",
+                sent.len(),
+                sent.join(", ")
+            )
+        };
+        if !failed.is_empty() {
+            message.push_str(&format!(" Failed: {}.", failed.join("; ")));
+        }
+        tracing::info!(
+            target = %target,
+            sent = sent.len(),
+            failed = failed.len(),
+            "Subagent close dispatched"
+        );
+        Ok(CommandResult {
+            success: failed.is_empty(),
+            message,
+            error: (!failed.is_empty()).then(|| format!("{} send(s) failed", failed.len())),
+            append_body: None,
+        })
+    }
 }
 
 #[async_trait]
@@ -47,6 +213,12 @@ impl CommandHandler for CloseCommandHandler {
                 error: Some("Topic name is empty".into()),
                 append_body: None,
             });
+        }
+
+        // A word in the args names a subagent to close: that topic runs the
+        // `/close --force` itself, so nothing here touches a child's directory.
+        if let Some(target) = Self::target(&context.args) {
+            return self.close_subagents(&context, target).await;
         }
 
         // Require --force to prevent accidental topic deletion. Plain
@@ -168,5 +340,40 @@ mod tests {
         assert!(CloseCommandHandler::is_purged(&args(&["--purge"])));
         assert!(!CloseCommandHandler::is_purged(&args(&["--force"])));
         assert!(!CloseCommandHandler::is_purged(&args(&[])));
+    }
+
+    #[test]
+    fn target_reads_the_first_bare_word() {
+        assert_eq!(CloseCommandHandler::target(&args(&["joe"])), Some("joe"));
+        assert_eq!(
+            CloseCommandHandler::target(&args(&["--force", "joe", "--purge"])),
+            Some("joe")
+        );
+        // What the popup's self row completes to: `/close ` with an extra
+        // space carries no argument, so it still closes this topic.
+        assert_eq!(CloseCommandHandler::target(&args(&["", " "])), None);
+        assert_eq!(CloseCommandHandler::target(&args(&["--force"])), None);
+        assert_eq!(CloseCommandHandler::target(&args(&[])), None);
+    }
+
+    /// `all` is a keyword even when a subagent carries that name — and only
+    /// this topic's own subagents can be named at all.
+    #[test]
+    fn all_is_a_keyword_and_other_names_must_be_subagents() {
+        let children = vec![
+            ("joe".to_string(), PathBuf::from("/tmp/joe")),
+            ("all".to_string(), PathBuf::from("/tmp/all")),
+        ];
+        assert_eq!(
+            CloseCommandHandler::subagent_targets("all", &children).unwrap(),
+            vec!["joe".to_string(), "all".to_string()]
+        );
+        assert_eq!(
+            CloseCommandHandler::subagent_targets("joe", &children).unwrap(),
+            vec!["joe".to_string()]
+        );
+        let refusal = CloseCommandHandler::subagent_targets("nope", &children).unwrap_err();
+        assert!(refusal.contains("is not a subagent"), "{refusal}");
+        assert!(refusal.contains("joe, all"), "{refusal}");
     }
 }

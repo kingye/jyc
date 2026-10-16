@@ -2566,18 +2566,18 @@ mod tests {
         jyc_types::access_grants::clear("inherit-parent");
     }
 
-    /// A spawn's dir that gained files is user property by then: `/close`
-    /// deletes the state and keeps the dir with whatever is in it.
+    /// A spawn's dir that gained files goes with its state like any other home:
+    /// it sits under the agents root, so the close takes it contents and all.
     #[tokio::test]
-    async fn close_keeps_a_spawn_dir_that_gained_files() {
-        let (_tmp, dir) = parent_topic("t-close_keeps_a_spawn_dir_that_gained_files").await;
+    async fn close_takes_a_spawn_dir_that_gained_files() {
+        let (_tmp, dir) = parent_topic("t-close_takes_a_spawn_dir_that_gained_files").await;
         let workspace = tempdir().unwrap();
         let tm = make_topic_manager(workspace.path());
         let agents_dir = workspace.path().join("agents");
         let handler = SpawnCommandHandler::new(tm.clone());
 
         let ctx = context(
-            "t-close_keeps_a_spawn_dir_that_gained_files",
+            "t-close_takes_a_spawn_dir_that_gained_files",
             &dir,
             "websocket",
             &["-n", "filed-shell"],
@@ -2587,21 +2587,23 @@ mod tests {
             .await
             .unwrap();
         assert!(result.success, "{}", result.message);
-        // The child's home, and the working directory it runs in: a file the
-        // user puts *there* is what a close must not take.
+        // The child's home, and the working directory it runs in: a file put
+        // *there* goes with the home, like every other file in a closed topic.
         let home = agents_dir.join("filed-shell");
         let dest = resolved(&default_topic_dir(&home));
         tokio::fs::write(dest.join("user-note.txt"), "keep me")
             .await
             .unwrap();
 
-        tm.close_topic("filed-shell").await.unwrap();
-        assert!(dest.join("user-note.txt").exists(), "the user's file stays");
-        assert!(!home.join(".jyc").exists(), "the state is deleted");
-        tokio::fs::remove_dir_all(&home).await.unwrap();
+        tm.close_topic_under("filed-shell", &agents_dir)
+            .await
+            .unwrap();
+        assert!(!home.exists(), "the home goes, its contents with it");
+        assert!(!dest.exists(), "the working directory inside it too");
+        tokio::fs::remove_dir_all(&home).await.ok();
 
         jyc_types::state_dir::unregister("filed-shell");
-        jyc_types::access_grants::clear("t-close_keeps_a_spawn_dir_that_gained_files");
+        jyc_types::access_grants::clear("t-close_takes_a_spawn_dir_that_gained_files");
     }
 
     /// The reason `/spawn` exists: continue the conversation where the files

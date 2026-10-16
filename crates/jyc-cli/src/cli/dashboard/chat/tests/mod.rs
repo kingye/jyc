@@ -1671,6 +1671,8 @@ fn app_with_topic_summary() -> App {
             total_input_tokens: None,
             total_cache_hit_tokens: None,
             total_cache_creation_tokens: None,
+            avg_call_ms: None,
+            call_count: None,
             max_tokens: Some(10_000),
             output_tokens: None,
             last_active_at: None,

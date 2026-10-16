@@ -5,11 +5,12 @@ use std::sync::Arc;
 use jyc_types::{ChangeKind, TopicInfo, format_amount};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use crate::duration::{DurationStyle, format_duration_ms};
 use crate::topic_manager::TopicManager;
 
 /// /info command — show this topic's info, mirroring the dashboard chat
 /// screen's Topic Info pane (name, channel, pattern, model, mode, branch,
-/// token usage, cost, changed files).
+/// token usage, call latency, cost, changed files).
 ///
 /// Data comes from `TopicManager::list_topics` — the same snapshot the
 /// dashboard renders — so channel users see exactly what the TUI shows.
@@ -108,6 +109,16 @@ fn format_topic_info(t: &TopicInfo) -> String {
             "Cost: {} session · {} today",
             format_amount(cost.session, &cost.currency),
             format_amount(cost.today, &cost.currency)
+        ));
+    }
+    // The session's average wall-clock time per LLM call. Same fields,
+    // same words and the same shared duration formatter as the dashboard
+    // panes' row — the sentence itself is spelled out in both places, as
+    // the cost row already was.
+    if let (Some(avg), Some(calls)) = (t.avg_call_ms, t.call_count) {
+        lines.push(format!(
+            "Latency: {}/call (avg of {calls})",
+            format_duration_ms(avg, DurationStyle::Millis),
         ));
     }
     // Agent task list, through the same renderer the tools return, so the ids
@@ -214,6 +225,8 @@ mod tests {
                 today: 1.23,
                 currency: "USD".into(),
             }),
+            avg_call_ms: Some(820),
+            call_count: Some(37),
             commands: vec![],
         }
     }
@@ -236,6 +249,7 @@ Cache hits: 987654
 Cache create: 111
 Reasoning: 4096
 Cost: $0.4200 session · $1.2300 today
+Latency: 820ms/call (avg of 37)
 Tasks (1/3):
   [✓] 1. inspect list_topics
   [~] 2. wire the pane
@@ -261,6 +275,8 @@ Files (2):
         t.total_reasoning_tokens = None;
         t.changed_files = None;
         t.cost = None;
+        t.avg_call_ms = None;
+        t.call_count = None;
         t.pattern = None;
         t.tasks = TaskList::default();
         let text = format_topic_info(&t);

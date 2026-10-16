@@ -1598,6 +1598,10 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         status_line.push(Span::raw(token_render::STATUS_SEP));
         token_render::push_cost_span(&mut status_line, selected);
     }
+    if selected.avg_call_ms.is_some() {
+        status_line.push(Span::raw(token_render::STATUS_SEP));
+        token_render::push_latency_span(&mut status_line, selected);
+    }
     info_lines.push(Line::from(status_line));
 
     info_lines.push(Line::from(vec![
@@ -2189,6 +2193,8 @@ mod tests {
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,
                     total_cache_creation_tokens: None,
+                    avg_call_ms: None,
+                    call_count: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,
@@ -2238,6 +2244,8 @@ mod tests {
                     total_input_tokens: None,
                     total_cache_hit_tokens: None,
                     total_cache_creation_tokens: None,
+                    avg_call_ms: None,
+                    call_count: None,
                     max_tokens: None,
                     output_tokens: None,
                     last_active_at: None,

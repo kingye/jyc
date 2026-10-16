@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::token_render::{
     input_token_pct, push_cache_creation_span, push_cache_hit_span, push_cache_utilization_span,
-    push_cost_span, push_output_span, push_tokens_span, push_total_input_span,
+    push_cost_span, push_latency_span, push_output_span, push_tokens_span, push_total_input_span,
 };
 use super::*;
 use jyc_core::duration::{DurationStyle, format_duration_ms, format_duration_secs};
@@ -1854,6 +1854,13 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
         push_cost_span(&mut cost_spans, t);
         if !cost_spans.is_empty() {
             out.push(Line::from(cost_spans));
+        }
+        // Latency row — the session's average wall-clock time of one API
+        // call. Omitted until a call has been measured.
+        let mut latency_spans = Vec::with_capacity(2);
+        push_latency_span(&mut latency_spans, t);
+        if !latency_spans.is_empty() {
+            out.push(Line::from(latency_spans));
         }
         // Separated section: the agent's task list (`.jyc/tasks.json`),
         // placed between the cost row and the files section. Same

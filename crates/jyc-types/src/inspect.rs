@@ -98,6 +98,18 @@ pub struct TopicSummary {
     /// field) deserialize as `None`.
     #[serde(default)]
     pub total_cache_creation_tokens: Option<u64>,
+    /// Average wall-clock time of one LLM call in this session, in
+    /// milliseconds — how long one API call takes, as the session's own
+    /// calls measured it. `None` when no call has been measured yet
+    /// (fresh session, or a session file written before the field
+    /// existed), and in that case neither pane renders the row.
+    #[serde(default)]
+    pub avg_call_ms: Option<u64>,
+    /// Number of LLM calls `avg_call_ms` averages over. `None` alongside
+    /// it; shown next to the average so a figure drawn from a single
+    /// call is not read as a settled one.
+    #[serde(default)]
+    pub call_count: Option<u64>,
     /// Last activity timestamp (RFC 3339), if known
     #[serde(default)]
     pub last_active_at: Option<String>,
@@ -319,6 +331,15 @@ pub struct TopicInfo {
     /// when zero or reported by no provider.
     #[serde(default)]
     pub total_reasoning_tokens: Option<u64>,
+    /// Average wall-clock time of one LLM call in this session, in
+    /// milliseconds. See `TopicSummary::avg_call_ms` for the full
+    /// description.
+    #[serde(default)]
+    pub avg_call_ms: Option<u64>,
+    /// Number of LLM calls the average covers. See
+    /// `TopicSummary::call_count` for the full description.
+    #[serde(default)]
+    pub call_count: Option<u64>,
     /// Recent activity events (newest first, max ~20)
     #[serde(default)]
     pub activity: Vec<ActivityEntry>,
@@ -620,6 +641,8 @@ mod tests {
                 total_input_tokens: Some(45000),
                 total_cache_hit_tokens: None,
                 total_cache_creation_tokens: None,
+                avg_call_ms: None,
+                call_count: None,
                 total_reasoning_tokens: None,
                 activity: vec![],
                 last_active_at: None,
@@ -801,6 +824,8 @@ mod tests {
             total_input_tokens: Some(10000),
             total_cache_hit_tokens: Some(8000),
             total_cache_creation_tokens: None,
+            avg_call_ms: None,
+            call_count: None,
             last_active_at: Some("2026-01-01T00:00:00Z".to_string()),
             skills: vec![],
             topic_path: None,

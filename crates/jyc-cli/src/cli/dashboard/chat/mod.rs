@@ -3393,8 +3393,10 @@ impl ChatState {
         self.advance_or_submit();
     }
 
-    /// Esc in the draft: back to the list with nothing typed yet. An empty
-    /// draft is dropped, so Esc cannot leave an empty answer behind that
+    /// Esc in the draft: hand the keys back to the list. The cursor stays on the
+    /// `✎` row (so Enter reopens what was typed) and the draft is kept - coming
+    /// back to a question should not mean retyping it. Only an empty draft is
+    /// dropped, which is what keeps Esc from leaving a blank answer behind that
     /// quietly overrides the options.
     fn cancel_typed_answer(&mut self) {
         self.question_typing = false;

@@ -1140,6 +1140,7 @@ fn question_box_scrolls_to_keep_the_cursor_visible() {
         options: (0..20).map(|i| format!("opt{i:02}")).collect(),
         multi: false,
         skipped: false,
+        typed: None,
         selected: 19,
         marked: Vec::new(),
     }];
@@ -1184,6 +1185,7 @@ fn question_box_numbers_the_batch_in_its_title() {
             options: vec!["Added".to_string()],
             multi: false,
             skipped: false,
+            typed: None,
             selected: 0,
             marked: Vec::new(),
         },
@@ -1194,6 +1196,7 @@ fn question_box_numbers_the_batch_in_its_title() {
             options: vec!["feat/x".to_string()],
             multi: false,
             skipped: false,
+            typed: None,
             selected: 0,
             marked: Vec::new(),
         },
@@ -1231,6 +1234,7 @@ fn a_batch_hint_says_enter_only_moves_to_the_next() {
             options: vec!["Added".to_string()],
             multi: false,
             skipped: false,
+            typed: None,
             selected: 0,
             marked: Vec::new(),
         },
@@ -1241,6 +1245,7 @@ fn a_batch_hint_says_enter_only_moves_to_the_next() {
             options: vec!["feat/x".to_string()],
             multi: false,
             skipped: false,
+            typed: None,
             selected: 0,
             marked: Vec::new(),
         },
@@ -1284,6 +1289,7 @@ fn question_box_shows_marks_for_multi_select() {
         options: vec!["alpha".to_string(), "beta".to_string()],
         multi: true,
         skipped: false,
+        typed: None,
         selected: 0,
         marked: vec![1],
     }];
@@ -1317,6 +1323,7 @@ fn question_box_shows_the_context_above_the_question() {
         options: vec!["alpha".to_string(), "beta".to_string()],
         multi: false,
         skipped: false,
+        typed: None,
         selected: 0,
         marked: Vec::new(),
     }];
@@ -1346,6 +1353,7 @@ fn app_with_question(context: Option<String>) -> App {
         options: vec!["alpha".to_string(), "beta".to_string()],
         multi: false,
         skipped: false,
+        typed: None,
         selected: 0,
         marked: Vec::new(),
     }];
@@ -1384,12 +1392,12 @@ fn long_question_context_fills_ten_rows_on_a_tall_terminal() {
     // A 60-row terminal affords the whole cap, and the layout counts the same
     // rows the box draws.
     assert_eq!(
-        question_context_budget("Which one?", 2, 1, 78, 53),
+        question_context_budget("Which one?", 3, 1, 78, 53, false),
         QUESTION_CONTEXT_ROWS
     );
     assert_eq!(
-        question_chrome_rows("Which one?", Some(&long), 2, 1, 78, 53),
-        question_chrome_rows("Which one?", None, 2, 1, 78, 53) + QUESTION_CONTEXT_ROWS + 1,
+        question_chrome_rows("Which one?", Some(&long), 3, 1, 78, 53, false),
+        question_chrome_rows("Which one?", None, 3, 1, 78, 53, false) + QUESTION_CONTEXT_ROWS + 1,
         "the layout must measure exactly what the box draws"
     );
 }
@@ -1418,8 +1426,10 @@ fn a_short_terminal_shrinks_the_context_not_the_options() {
     );
     // An 18-row screen hands the chat pane 18 rows of body, and that is what
     // the box measured — the same number `input_area_rows` is handed below.
+    // `3` is the list's two options plus the `✎` row closing it: the box draws
+    // that row too, so it is part of what the budget is measured against.
     assert_eq!(
-        question_context_budget("Which one?", 2, 1, 78, 18),
+        question_context_budget("Which one?", 3, 1, 78, 18, false),
         drawn,
         "the budget is what the box draws"
     );
@@ -1445,6 +1455,7 @@ fn question_box_marks_the_selected_option_with_an_arrow() {
         options: vec!["alpha".to_string(), "beta".to_string()],
         multi: false,
         skipped: false,
+        typed: None,
         selected: 1,
         marked: Vec::new(),
     }];
@@ -1482,6 +1493,63 @@ fn question_box_marks_the_selected_option_with_an_arrow() {
         col_of(&buffer, selected, "2."),
         col_of(&buffer, above, "1."),
         "option numbers share a column"
+    );
+}
+
+/// The option list ends with the `✎` row - the answer may be words none of the
+/// options hold. It is a normal row (the cursor reaches it, and it is drawn on
+/// one line like the rest), and while the draft is open it carries what has been
+/// typed plus a hint that speaks about keeping it rather than picking.
+#[test]
+fn question_box_offers_a_typed_answer_row() {
+    let mut app = chatting_app();
+    app.chat.info_visible = false;
+    app.chat.questions = vec![PendingQuestion {
+        topic: "jyc".to_string(),
+        context: None,
+        question: "Pick one?".to_string(),
+        options: vec!["alpha".to_string(), "beta".to_string()],
+        multi: false,
+        skipped: false,
+        typed: None,
+        selected: 2,
+        marked: Vec::new(),
+    }];
+    let buffer = draw_80x24(&mut app);
+
+    let pane: String = (0..buffer.area.height)
+        .map(|y| row_text(&buffer, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let row = (0..buffer.area.height)
+        .map(|y| row_text(&buffer, y))
+        .find(|r| r.contains("type your own answer"))
+        .expect("the ✎ row must be drawn, not clipped");
+    assert!(
+        row.contains("→ ✎ type your own answer"),
+        "the cursor must reach the typed-answer row: {row:?}"
+    );
+    assert!(
+        pane.contains("Esc closes"),
+        "the hint must still fit under the row:\n{pane}"
+    );
+
+    // Typing: the row holds the draft (from its end - that is where the words
+    // are being added) and the hint stops promising a pick.
+    app.chat.question_typing = true;
+    app.chat.questions[0].typed = Some("my own".to_string());
+    let buffer = draw_80x24(&mut app);
+    let pane: String = (0..buffer.area.height)
+        .map(|y| row_text(&buffer, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        pane.contains("✎ my own"),
+        "the draft must be shown:\n{pane}"
+    );
+    assert!(
+        pane.contains("Enter keeps this answer"),
+        "the hint must speak to the draft, not to a pick:\n{pane}"
     );
 }
 
@@ -1525,6 +1593,7 @@ fn input_area_rows_reserves_the_bottom_rule() {
         options: vec!["alpha".to_string(), "beta".to_string()],
         multi: false,
         skipped: false,
+        typed: None,
         selected: 0,
         marked: Vec::new(),
     }];
@@ -1532,14 +1601,54 @@ fn input_area_rows_reserves_the_bottom_rule() {
     let body = (question_chrome_rows(
         &q.question,
         q.context.as_deref(),
-        q.options.len(),
+        q.options.len() + 1,
         app.chat.questions.len(),
         78,
         body_height,
+        app.chat.question_typing,
     ) + q.options.len()
+        + 1
         + 3)
     .clamp(6, question_box_max_rows(body_height)) as u16;
     assert_eq!(app.chat.input_area_rows(80, body_height), body + 1);
+
+    // The draft's hint is a shorter line than the list's, and the box is sized
+    // from whichever one is showing: at 60 columns the list's hint wraps onto
+    // two rows while the draft's stays on one, so the box comes out a row
+    // shorter. A mismatch here would be a row drawn over or clipped.
+    let question = q.question.clone();
+    let context = q.context.clone();
+    let options = q.options.len();
+    let total = app.chat.questions.len();
+    app.chat.question_typing = true;
+    let typing_chrome = question_chrome_rows(
+        &question,
+        context.as_deref(),
+        options + 1,
+        total,
+        58,
+        body_height,
+        true,
+    );
+    let list_chrome = question_chrome_rows(
+        &question,
+        context.as_deref(),
+        options + 1,
+        total,
+        58,
+        body_height,
+        false,
+    );
+    assert_eq!(
+        list_chrome - typing_chrome,
+        1,
+        "the draft's hint must be measured as itself, not as the list's"
+    );
+    assert_eq!(
+        app.chat.input_area_rows(60, body_height),
+        (typing_chrome + options + 1 + 3 + 1) as u16,
+        "the box's own height follows the hint that is showing"
+    );
 }
 
 /// A polled topic summary so the status line has real content: `plan ·
@@ -3128,6 +3237,46 @@ fn bracket_on_empty_input_focuses_message_area_on_previous_turn() {
     assert_eq!(
         app.chat.cursor_line, turns[2],
         "the focus reset leaves the cursor past the end, so one jump up is the newest turn"
+    );
+}
+
+/// A pending question box owns the keyboard, so the TUI's own shortcuts stay
+/// out of it: `/` must not open the command popup (the popup's next Enter would
+/// answer the question with a slash command) and `[` must not move the focus to
+/// the transcript. Both are guarded on the box being up, draft or not.
+#[test]
+fn question_box_keeps_the_slash_and_bracket_shortcuts_out() {
+    let mut app = chatting_app();
+    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.questions = vec![PendingQuestion {
+        topic: "jyc".to_string(),
+        context: None,
+        question: "Pick one?".to_string(),
+        options: vec!["alpha".to_string(), "beta".to_string()],
+        multi: false,
+        skipped: false,
+        typed: None,
+        selected: 0,
+        marked: Vec::new(),
+    }];
+    assert!(app.chat.active_question(), "the box must be on screen");
+
+    press(&mut app, '/');
+    assert!(
+        app.chat.command_popup.is_none(),
+        "the box owns the keyboard: no command popup over it"
+    );
+    assert_eq!(
+        app.chat.text(),
+        "",
+        "and the slash does not reach the editor"
+    );
+
+    press(&mut app, '[');
+    assert_eq!(
+        app.chat.focus,
+        ChatFocus::ChatPane,
+        "the box owns the keyboard: the bracket does not leave the input"
     );
 }
 

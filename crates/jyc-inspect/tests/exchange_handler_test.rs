@@ -1,7 +1,9 @@
-//! End-to-end `/exchange` tests that need a real `TopicManager`.
+//! End-to-end `/exchange` tests.
 //!
-//! The unit tests in `jyc-core` cover formatting; these cover topic-name
-//! resolution, which is the part that can silently emit a 403 link.
+//! The unit tests in `jyc-core` cover formatting; these cover the URL's topic
+//! name — taken from the command context, never from the directory basename,
+//! which for a topic sharing a directory names its parent. That is the part
+//! that can silently emit a 403 link.
 
 use arc_swap::ArcSwap;
 use std::path::{Path, PathBuf};
@@ -101,10 +103,12 @@ async fn seed_published(topic_name: &str, topic_dir: &Path, name: &str, token: &
 
 /// The regression this test exists for: a topic whose directory basename
 /// differs from its topic name (shared-repo layout — topic `issue-197`
-/// lives in `.../repos/jin-197`). The URL must carry the registered topic
-/// name, otherwise the link 403s.
+/// lives in `.../repos/jin-197`). The URL must carry the topic's own name,
+/// the one the command context holds, otherwise the link 403s. The
+/// registered path is only how the state dir (and its published files) is
+/// found.
 #[tokio::test]
-async fn url_uses_registered_topic_name_not_directory_basename() {
+async fn url_uses_context_topic_name_not_directory_basename() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
@@ -116,7 +120,7 @@ async fn url_uses_registered_topic_name_not_directory_basename() {
         .unwrap();
     seed_published("issue-197", &topic_dir, "report.pdf", "tok123").await;
 
-    let result = ExchangeCommandHandler::new(tm)
+    let result = ExchangeCommandHandler
         .execute(test_context("issue-197", &topic_dir, &[]))
         .await
         .unwrap();
@@ -139,23 +143,23 @@ async fn url_uses_registered_topic_name_not_directory_basename() {
 async fn lists_all_published_files_sorted() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
-    let topic_dir = workspace.join("weather");
+    let topic_dir = workspace.join("wt-sorted");
     std::fs::create_dir_all(&topic_dir).unwrap();
 
-    let tm = make_topic_manager(&tmp, &workspace);
+    let _tm = make_topic_manager(&tmp, &workspace);
     jyc_types::state_dir::register("wt-sorted", &topic_dir.join(".jyc"));
     seed_published("wt-sorted", &topic_dir, "b.txt", "tok123").await;
     jyc_types::state_dir::register("wt-sorted", &topic_dir.join(".jyc"));
     seed_published("wt-sorted", &topic_dir, "a.txt", "tok123").await;
 
-    let result = ExchangeCommandHandler::new(tm)
+    let result = ExchangeCommandHandler
         .execute(test_context("wt-sorted", &topic_dir, &[]))
         .await
         .unwrap();
 
     assert_eq!(
         result.message,
-        "/exchange: 2 published files.\n- a.txt\n  https://jyc.example.com/exchange/test/weather/a.txt?token=tok123\n- b.txt\n  https://jyc.example.com/exchange/test/weather/b.txt?token=tok123"
+        "/exchange: 2 published files.\n- a.txt\n  https://jyc.example.com/exchange/test/wt-sorted/a.txt?token=tok123\n- b.txt\n  https://jyc.example.com/exchange/test/wt-sorted/b.txt?token=tok123"
     );
 }
 
@@ -163,23 +167,23 @@ async fn lists_all_published_files_sorted() {
 async fn argument_narrows_output_to_one_file() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().join("workspace");
-    let topic_dir = workspace.join("weather");
+    let topic_dir = workspace.join("wt-narrow");
     std::fs::create_dir_all(&topic_dir).unwrap();
 
-    let tm = make_topic_manager(&tmp, &workspace);
+    let _tm = make_topic_manager(&tmp, &workspace);
     jyc_types::state_dir::register("wt-narrow", &topic_dir.join(".jyc"));
     seed_published("wt-narrow", &topic_dir, "a.txt", "tok123").await;
     jyc_types::state_dir::register("wt-narrow", &topic_dir.join(".jyc"));
     seed_published("wt-narrow", &topic_dir, "report.pdf", "tok123").await;
 
-    let result = ExchangeCommandHandler::new(tm)
+    let result = ExchangeCommandHandler
         .execute(test_context("wt-narrow", &topic_dir, &["report.pdf"]))
         .await
         .unwrap();
 
     assert_eq!(
         result.message,
-        "- report.pdf\n  https://jyc.example.com/exchange/test/weather/report.pdf?token=tok123"
+        "- report.pdf\n  https://jyc.example.com/exchange/test/wt-narrow/report.pdf?token=tok123"
     );
 }
 
@@ -190,11 +194,11 @@ async fn unknown_filename_reports_what_is_published() {
     let topic_dir = workspace.join("weather");
     std::fs::create_dir_all(&topic_dir).unwrap();
 
-    let tm = make_topic_manager(&tmp, &workspace);
+    let _tm = make_topic_manager(&tmp, &workspace);
     jyc_types::state_dir::register("wt-unknown", &topic_dir.join(".jyc"));
     seed_published("wt-unknown", &topic_dir, "a.txt", "tok123").await;
 
-    let result = ExchangeCommandHandler::new(tm)
+    let result = ExchangeCommandHandler
         .execute(test_context("wt-unknown", &topic_dir, &["missing.pdf"]))
         .await
         .unwrap();
@@ -212,10 +216,10 @@ async fn no_token_reports_nothing_published_and_creates_no_token() {
     let topic_dir = workspace.join("weather");
     std::fs::create_dir_all(topic_dir.join(".jyc")).unwrap();
 
-    let tm = make_topic_manager(&tmp, &workspace);
+    let _tm = make_topic_manager(&tmp, &workspace);
     jyc_types::state_dir::register("wt-no-token", &topic_dir.join(".jyc"));
 
-    let result = ExchangeCommandHandler::new(tm)
+    let result = ExchangeCommandHandler
         .execute(test_context("wt-no-token", &topic_dir, &[]))
         .await
         .unwrap();

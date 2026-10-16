@@ -606,7 +606,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
             .as_ref()
             .and_then(|s| {
                 let chat_name = app.chat.topic.as_deref()?;
-                s.topics.iter().find(|t| t.name == chat_name)
+                jyc_types::find_topic(&s.topics, chat_name, app.chat.channel.as_deref())
             })
             .is_some_and(|ct| ct.status == TopicStatus::Processing),
     };

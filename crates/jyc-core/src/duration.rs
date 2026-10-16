@@ -16,6 +16,11 @@ pub enum DurationStyle {
     Precise,
     /// Coarse chips — whole minutes only: `38m`, `2h05m`.
     Coarse,
+    /// Measured per-call latencies — milliseconds below a second, seconds
+    /// with two decimals above it: `820ms`, `1.24s`. The unit follows the
+    /// magnitude so a fast call is exact and a slow one stays short, and a
+    /// sub-second call never collapses into `0s`.
+    Millis,
 }
 
 /// Format a duration given in milliseconds per `style`.
@@ -32,6 +37,8 @@ pub fn format_duration_ms(ms: u64, style: DurationStyle) -> String {
         DurationStyle::Precise => format!("{}h{:02}m", s / 3600, (s % 3600) / 60),
         DurationStyle::Coarse if s < 3600 => format!("{}m", s / 60),
         DurationStyle::Coarse => format!("{}h{:02}m", s / 3600, (s % 3600) / 60),
+        DurationStyle::Millis if ms < 1000 => format!("{ms}ms"),
+        DurationStyle::Millis => format!("{:.2}s", ms as f64 / 1000.0),
     }
 }
 
@@ -83,5 +90,17 @@ mod tests {
         assert_eq!(f(3599), "59m");
         assert_eq!(f(3600), "1h00m");
         assert_eq!(f(7500), "2h05m");
+    }
+
+    /// The per-call latency style: exact milliseconds below a second,
+    /// seconds above it — a sub-second call must never read as `0s`.
+    #[test]
+    fn millis_style() {
+        let f = |ms| format_duration_ms(ms, DurationStyle::Millis);
+        assert_eq!(f(0), "0ms");
+        assert_eq!(f(820), "820ms");
+        assert_eq!(f(999), "999ms");
+        assert_eq!(f(1000), "1.00s");
+        assert_eq!(f(4230), "4.23s");
     }
 }

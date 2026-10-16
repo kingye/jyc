@@ -22,7 +22,6 @@ use async_trait::async_trait;
 use jyc_types::{InboundMessage, MessageAttachment, MessageContent, PatternMatch};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
-use super::spawn_common::invalid_name;
 use crate::topic_manager::{TopicManager, TopicManagers};
 use crate::topic_path::{topic_home, topic_work_dir};
 
@@ -83,10 +82,15 @@ pub async fn send_to_topic(
         None => (req.agent, None),
     };
     // The names are also path components — they name the topic's home under the
-    // agents dir, and resolution probes that home — so they are held to the
-    // same rule `/spawn` applies to a topic name.
+    // agents dir, and resolution probes that home — so path syntax is refused
+    // before either is joined into a path. Only path syntax: a topic name comes
+    // from the channel layer, whose alphabet is much wider than `/spawn`'s
+    // (`sanitize_for_filesystem` only replaces separators and a few more), and a
+    // sender address or a subject line is exactly the topic a reply must reach.
+    // `/spawn` is where a name is created, and is held to the stricter rule
+    // there.
     for name in [Some(req.agent), named_topic].into_iter().flatten() {
-        if let Some(reason) = invalid_name(name) {
+        if let Some(reason) = invalid_address_name(name) {
             bail!("Invalid address '{name}': {reason}");
         }
     }
@@ -285,6 +289,25 @@ async fn resolve(
     })
 }
 
+/// Refuse a name that is path syntax: the topic's home is built by joining
+/// these names into the agents dir, and a resolution that probed outside it
+/// would read a record the caller never meant to reach.
+///
+/// Path syntax only. A topic the channel layer named — a sender address
+/// (`john.doe@example.com`, the default `pipe` topic), a subject line, emoji —
+/// is a legitimate name and must stay addressable, so the stricter
+/// `spawn_common::invalid_name` rule is applied where a name is *created*, not
+/// where one is addressed.
+fn invalid_address_name(name: &str) -> Option<&'static str> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Some("the name is not a usable path component");
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Some("the name must not contain a path separator");
+    }
+    None
+}
+
 /// The channel a topic's own state records it was routed by, written into
 /// `.jyc/topic-meta.json` on its first message.
 ///
@@ -292,9 +315,11 @@ async fn resolve(
 /// for the topics it was populated with at startup, and it only walks one level
 /// under the agents dir — a sub-topic's home is two (`<agents dir>/<agent>/
 /// <topic>`), and startup only registers the ones it sees. So the home is also
-/// probed directly from the two names — both validated as names by the caller,
-/// so neither can point the read outside the agents dir — which covers a
-/// sub-topic idle since the last restart.
+/// probed directly from the two names — the caller refuses path syntax in them
+/// before they are joined, so the home computed here stays under the agents dir
+/// (a `topic-path` record can still point elsewhere once a topic owns one, but
+/// then the registry answers first) — which covers a sub-topic idle since the
+/// last restart.
 ///
 /// `None` for a topic that has never been routed to. Note the recorded name is
 /// a *hub process* manager name: a topic created through the deprecated pipe
@@ -811,20 +836,49 @@ mod tests {
         assert!(!agents.serves_topic(topic).await);
     }
 
-    /// The names are path components under the agents dir, and resolution
-    /// probes that path, so one that is a path is refused rather than followed.
+    /// Names are path components under the agents dir, and resolution probes that
+    /// path, so path syntax is refused rather than followed.
     #[tokio::test]
-    async fn refuses_a_name_that_is_not_a_name() {
+    async fn refuses_a_name_that_is_path_syntax() {
         let tmp = tempdir().unwrap();
         let managers = TopicManagers::new();
         managers.set(vec![make_tm(tmp.path(), AGENTS_CHANNEL)]);
 
-        for bad in ["../escape", "sub/dir", "-x"] {
+        for bad in ["../escape", "sub/dir", "win\\dir", ".", ".."] {
             let err = send_to_topic(&managers, source(tmp.path()), request(bad, None, "hi"))
                 .await
                 .unwrap_err();
             assert!(err.to_string().contains("Invalid address"), "{bad}: {err}");
         }
+    }
+
+    /// Topic names are made by the channel layer, not by `/spawn`: a sender
+    /// address is a normal name, and the topic behind one has to stay
+    /// addressable — the reply path for its agent depends on it.
+    #[tokio::test]
+    async fn sends_to_a_topic_named_like_a_sender_address() {
+        let tmp = tempdir().unwrap();
+        let agents = make_tm(&tmp.path().join("agents-ws"), AGENTS_CHANNEL);
+        let mail_bot = make_tm(&tmp.path().join("mail-bot-ws"), "mail-bot");
+        let managers = TopicManagers::new();
+        managers.set(vec![agents.clone(), mail_bot.clone()]);
+
+        let topic = "john.doe@example.com";
+        let state_dir = tmp.path().join("state").join("sender-address");
+        write_topic_meta(&state_dir, "mail-bot");
+        let _cleanup = register_state(topic, &state_dir);
+
+        let sent = send_to_topic(
+            &managers,
+            source(tmp.path()),
+            request("invoice", Some(topic), "hi"),
+        )
+        .await
+        .unwrap();
+
+        assert!(sent.contains(topic), "{sent}");
+        assert!(mail_bot.serves_topic(topic).await);
+        assert!(!agents.serves_topic(topic).await);
     }
 
     /// The record names a channel this process does not run: refuse, rather

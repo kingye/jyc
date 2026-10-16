@@ -39,6 +39,13 @@ pub struct ArgCtx<'a> {
     /// the installed role files by the caller, once for the whole payload (see
     /// `spawn_handler::type_catalog_pairs`).
     pub subagent_types: &'a [(String, String)],
+    /// The agents `/send` can address: the active topics of the agents channel
+    /// — the same list the prompt shows as "active topics". Read by the caller
+    /// once for the whole payload, since it is the same for every topic.
+    pub agents: &'a [String],
+    /// This topic's own direct subagents — the only names `/close` accepts.
+    /// Read per topic by the caller (`spawn_handler::subagents_of`).
+    pub subagents: &'a [String],
 }
 
 /// A leaf value with no further levels.
@@ -105,12 +112,11 @@ pub fn command_args(command: &str, ctx: &ArgCtx) -> Vec<CommandArg> {
             "update",
             "Re-apply the template, overwriting local edits",
         )],
-        // The only arguments these guards accept, in any position. Without
-        // them the popup would close on `/close ` even though they exist.
-        "/close" => vec![
-            val("--force", "Skip the confirmation guard"),
-            val("--purge", "Delete the topic dir too, not just its state"),
-        ],
+        // `/send` addresses any agent (it does not check the name), so it
+        // offers every agent; `/close` accepts only this topic's own
+        // subagents, so it offers the narrower list.
+        "/send" => send_args(ctx),
+        "/close" => close_args(ctx),
         "/new" | "/reset" => vec![val("--force", "Skip the confirmation guard")],
         "/bill" => {
             let mut args = recent_months();
@@ -136,6 +142,63 @@ fn spawn_args(ctx: &ArgCtx) -> Vec<CommandArg> {
         .collect();
     args.extend(spawn_flags());
     args
+}
+
+/// `/send`'s next levels: every agent, then the flags that precede the message.
+///
+/// Each agent carries the flag set again — `/send invoice --reply <message>` is
+/// as ordinary as `/send --reply invoice <message>` — and the flags come first
+/// because that is where `parse` stops reading them.
+fn send_args(ctx: &ArgCtx) -> Vec<CommandArg> {
+    let mut args: Vec<CommandArg> = ctx
+        .agents
+        .iter()
+        .map(|name| val_with(name, "Send to this agent", send_flags()))
+        .collect();
+    args.extend(send_flags());
+    args
+}
+
+/// The flags `/send` takes before the message.
+fn send_flags() -> Vec<CommandArg> {
+    vec![
+        val("--topic", "One of that agent's topics (-t)"),
+        val("--reply", "Ask the target to send its result back"),
+        val("--attach", "Attach a file from this topic's directory (-a)"),
+        val("--recipient", "Override the recipient address (-r)"),
+    ]
+}
+
+/// `/close`'s next levels: this topic's own subagents — the only names it
+/// accepts — then `all`, then the way to close this topic itself.
+fn close_args(ctx: &ArgCtx) -> Vec<CommandArg> {
+    let mut args: Vec<CommandArg> = ctx
+        .subagents
+        .iter()
+        .map(|name| {
+            val_with(
+                name,
+                "Close this subagent (it closes itself on its own queue)",
+                close_flags(),
+            )
+        })
+        .collect();
+    if !ctx.subagents.is_empty() {
+        args.push(val("all", "Close every direct subagent"));
+    }
+    // A bare `/close` closes this topic, and the popup needs a row for exactly
+    // that: a space completes to `/close  `, which carries no argument.
+    args.push(val(" ", "Close this topic (self)"));
+    args.extend(close_flags());
+    args
+}
+
+/// What `/close` accepts after a name: the confirmation guard, and the dir.
+fn close_flags() -> Vec<CommandArg> {
+    vec![
+        val("--force", "Skip the confirmation guard"),
+        val("--purge", "Delete the topic dir too, not just its state"),
+    ]
 }
 
 /// `/spawn`'s flags, long spelling each — the one the popup inserts — with the
@@ -220,6 +283,8 @@ mod tests {
             skills,
             models,
             subagent_types: &[],
+            agents: &[],
+            subagents: &[],
         }
     }
 
@@ -229,6 +294,24 @@ mod tests {
             skills: &[],
             models: &[],
             subagent_types: types,
+            agents: &[],
+            subagents: &[],
+        }
+    }
+
+    /// A context carrying the two name lists `/send` and `/close` are built from.
+    fn ctx_with_names<'a>(
+        config: &'a AppConfig,
+        agents: &'a [String],
+        subagents: &'a [String],
+    ) -> ArgCtx<'a> {
+        ArgCtx {
+            config,
+            skills: &[],
+            models: &[],
+            subagent_types: &[],
+            agents,
+            subagents,
         }
     }
 
@@ -291,7 +374,7 @@ mod tests {
         let cfg = AppConfig::default();
         let empty = ctx(&cfg, &[], &[]);
         for (cmd, expected) in [
-            ("/close", vec!["--force", "--purge"]),
+            ("/close", vec![" ", "--force", "--purge"]),
             ("/new", vec!["--force"]),
             ("/reset", vec!["--force"]),
         ] {
@@ -304,6 +387,71 @@ mod tests {
                 "{cmd}'s arguments"
             );
         }
+    }
+
+    /// `/close` offers this topic's own subagents — the only names it accepts —
+    /// then `all`, then the bare form that closes the topic itself.
+    #[test]
+    fn close_lists_subagents_all_then_the_self_row() {
+        let cfg = AppConfig::default();
+        let subagents = vec!["ci-watch-917".to_string(), "review-send".to_string()];
+        let args = command_args("/close", &ctx_with_names(&cfg, &[], &subagents));
+
+        assert_eq!(
+            args.iter().map(|a| a.value.as_str()).collect::<Vec<_>>(),
+            [
+                "ci-watch-917",
+                "review-send",
+                "all",
+                " ",
+                "--force",
+                "--purge"
+            ]
+        );
+        assert_eq!(
+            find(&args, "ci-watch-917").unwrap().args.len(),
+            2,
+            "a subagent opens the same flag level"
+        );
+        assert!(
+            find(&args, " ").unwrap().args.is_empty(),
+            "the self row is a space: it completes to `/close  `"
+        );
+    }
+
+    /// With no subagents there is nothing to name and no `all` to offer, but
+    /// the self row stays.
+    #[test]
+    fn close_without_subagents_still_offers_the_self_row() {
+        let cfg = AppConfig::default();
+        let args = command_args("/close", &ctx(&cfg, &[], &[]));
+        assert_eq!(
+            args.iter().map(|a| a.value.as_str()).collect::<Vec<_>>(),
+            [" ", "--force", "--purge"]
+        );
+    }
+
+    /// `/send` offers every agent — a name it never checks — and then the flags
+    /// that have to come before the message.
+    #[test]
+    fn send_lists_agents_then_flags_with_a_flag_level_under_every_agent() {
+        let cfg = AppConfig::default();
+        let agents = vec!["invoice".to_string(), "mail-bot".to_string()];
+        let args = command_args("/send", &ctx_with_names(&cfg, &agents, &[]));
+
+        assert_eq!(
+            args.iter().map(|a| a.value.as_str()).collect::<Vec<_>>(),
+            [
+                "invoice",
+                "mail-bot",
+                "--topic",
+                "--reply",
+                "--attach",
+                "--recipient"
+            ],
+            "agents first, then the flags that precede the message"
+        );
+        assert_eq!(find(&args, "invoice").unwrap().args.len(), 4);
     }
 
     /// `/spawn` offers the types it accepts and then its flags, and every type

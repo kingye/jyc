@@ -441,6 +441,30 @@ mod tests {
         )
     }
 
+    /// `/close`'s self row is a space: completing it writes `/close  `, which
+    /// carries no argument, so the popup closes and Enter sends a bare
+    /// `/close` — the topic closes itself.
+    #[test]
+    fn close_space_row_completes_to_a_bare_close() {
+        let commands = vec![cmd_args(
+            "/close",
+            &[("joe", &["--force", "--purge"]), ("all", &[]), (" ", &[])],
+        )];
+
+        let level = resolve_level("/close ", &commands).unwrap();
+        assert_eq!(keys(&level.items), ["joe", "all", " "]);
+        assert_eq!(completion_for(&level, 2).as_deref(), Some("/close  "));
+        assert!(
+            resolve_level("/close  ", &commands).is_none(),
+            "a bare `/close ` is not a level of its own — the popup closes"
+        );
+        // A name still opens its flag level.
+        assert_eq!(
+            keys(&resolve_level("/close joe ", &commands).unwrap().items),
+            ["--force", "--purge"]
+        );
+    }
+
     fn keys(items: &[PopupItem]) -> Vec<&str> {
         items.iter().map(|i| i.text.as_str()).collect()
     }

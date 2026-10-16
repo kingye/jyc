@@ -441,10 +441,12 @@ struct SendArgs {
 
 /// Usage line, shared by every refusal so the syntax is stated once.
 const USAGE: &str = "Usage: /send <agent> [--topic|-t <topic>] [--reply] \
-                     [--attach <file>] [--recipient <id>] <message>";
+                     [--attach <file>] [--recipient <id>] [--] <message>";
 
-/// Parse `/send` arguments: the first bare word is the agent, the rest is the
-/// message, and the flags may sit anywhere among them.
+/// Parse `/send` arguments: the first bare word is the agent, the flags follow
+/// it, and from the first message word on everything — dashes included — is
+/// message text. `--` ends the flags explicitly, for a message that starts
+/// with one.
 fn parse(args: &[String]) -> Result<SendArgs, String> {
     let mut agent: Option<String> = None;
     let mut topic = None;
@@ -452,14 +454,22 @@ fn parse(args: &[String]) -> Result<SendArgs, String> {
     let mut recipient = None;
     let mut require_reply = false;
     let mut message_words: Vec<String> = Vec::new();
+    let mut in_message = false;
 
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
+        // `/send joe /close --force` has to hand joe that message verbatim, so
+        // once the message has started nothing is read as a flag.
+        if in_message {
+            message_words.push(arg.clone());
+            continue;
+        }
         match arg.as_str() {
             "--topic" | "-t" => topic = Some(flag_value(&mut rest, arg)?),
             "--attach" | "-a" => attachments.push(flag_value(&mut rest, arg)?),
             "--recipient" | "-r" => recipient = Some(flag_value(&mut rest, arg)?),
             "--reply" => require_reply = true,
+            "--" => in_message = true,
             // A lone `-` is a message word; anything else starting with a dash
             // is a flag, and an unknown one is a typo worth refusing rather
             // than sending as text.
@@ -467,12 +477,15 @@ fn parse(args: &[String]) -> Result<SendArgs, String> {
                 return Err(format!("Unknown option '{other}'. {USAGE}"));
             }
             other if agent.is_none() => agent = Some(other.to_string()),
-            other => message_words.push(other.to_string()),
+            other => {
+                in_message = true;
+                message_words.push(other.to_string());
+            }
         }
     }
 
     let agent = agent.ok_or_else(|| format!("Missing agent. {USAGE}"))?;
-    let message = message_words.join(" ");
+    let message = unquote(message_words.join(" "));
     if message.trim().is_empty() {
         return Err(format!("Missing message. {USAGE}"));
     }
@@ -484,6 +497,21 @@ fn parse(args: &[String]) -> Result<SendArgs, String> {
         recipient,
         require_reply,
     })
+}
+
+/// Drop one pair of matching quotes around the whole message, so
+/// `/send joe "/close --force"` arrives as `/close --force` — the same thing
+/// the unquoted form now sends. Only a pair around the entire message counts;
+/// inner quotes are left alone.
+fn unquote(message: String) -> String {
+    let bytes = message.as_bytes();
+    if bytes.len() >= 2 {
+        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return message[1..message.len() - 1].to_string();
+        }
+    }
+    message
 }
 
 /// The value flag `flag` was given, or a refusal naming it.
@@ -533,14 +561,10 @@ impl CommandHandler for SendCommandHandler {
     }
 }
 
-/// A refusal: nothing was sent, and why.
+/// A refusal: nothing was sent, and why (see [`CommandResult::refusal`] for why
+/// the text goes in both fields).
 fn refusal(message: String) -> CommandResult {
-    CommandResult {
-        success: false,
-        message: message.clone(),
-        error: Some(message),
-        append_body: None,
-    }
+    CommandResult::refusal(message)
 }
 
 #[cfg(test)]
@@ -567,15 +591,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_takes_flags_anywhere() {
+    fn parse_reads_flags_before_the_message() {
         let parsed = parse(&args(&[
             "--reply",
             "invoice",
             "-t",
             "probe-served-topic",
-            "hello",
             "-a",
             "report.pdf",
+            "hello",
         ]))
         .unwrap();
         assert_eq!(parsed.agent, "invoice");
@@ -583,6 +607,41 @@ mod tests {
         assert_eq!(parsed.attachments, vec!["report.pdf".to_string()]);
         assert_eq!(parsed.message, "hello");
         assert!(parsed.require_reply);
+    }
+
+    #[test]
+    fn parse_keeps_dashes_after_the_first_message_word() {
+        let parsed = parse(&args(&["ci-watch-917", "/close", "--force"])).unwrap();
+        assert_eq!(parsed.agent, "ci-watch-917");
+        assert_eq!(parsed.message, "/close --force");
+    }
+
+    #[test]
+    fn parse_takes_double_dash_as_the_start_of_the_message() {
+        let parsed = parse(&args(&["invoice", "--", "--force", "hi"])).unwrap();
+        assert_eq!(parsed.message, "--force hi");
+        assert!(
+            parse(&args(&["invoice", "--"]))
+                .unwrap_err()
+                .contains("Missing message")
+        );
+    }
+
+    #[test]
+    fn parse_drops_surrounding_quotes_from_the_message() {
+        // One token, and the two tokens a real command line hands over.
+        for words in [
+            vec!["invoice", "\"/close --force\""],
+            vec!["invoice", "\"/close", "--force\""],
+        ] {
+            let parsed = parse(&args(&words)).unwrap();
+            assert_eq!(parsed.message, "/close --force", "{words:?}");
+        }
+        let parsed = parse(&args(&["invoice", "'/close --force'"])).unwrap();
+        assert_eq!(parsed.message, "/close --force");
+        // An unpaired quote is not a pair, so it stays part of the message.
+        let parsed = parse(&args(&["invoice", "\"hello"])).unwrap();
+        assert_eq!(parsed.message, "\"hello");
     }
 
     #[test]

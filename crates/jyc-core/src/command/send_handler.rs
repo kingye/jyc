@@ -22,8 +22,9 @@ use async_trait::async_trait;
 use jyc_types::{InboundMessage, MessageAttachment, MessageContent, PatternMatch};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::spawn_common::invalid_name;
 use crate::topic_manager::{TopicManager, TopicManagers};
-use crate::topic_path::topic_work_dir;
+use crate::topic_path::{topic_home, topic_work_dir};
 
 /// The channel that holds agents' own topics: `/spawn` and the dashboard put
 /// every agent there, and a message addressed to an agent lands on the topic
@@ -81,6 +82,14 @@ pub async fn send_to_topic(
         Some(_) => bail!("Topic cannot be empty"),
         None => (req.agent, None),
     };
+    // The names are also path components — they name the topic's home under the
+    // agents dir, and resolution probes that home — so they are held to the
+    // same rule `/spawn` applies to a topic name.
+    for name in [Some(req.agent), named_topic].into_iter().flatten() {
+        if let Some(reason) = invalid_name(name) {
+            bail!("Invalid address '{name}': {reason}");
+        }
+    }
 
     let target_tm = resolve(managers, req.agent, named_topic).await?;
 
@@ -283,8 +292,9 @@ async fn resolve(
 /// for the topics it was populated with at startup, and it only walks one level
 /// under the agents dir — a sub-topic's home is two (`<agents dir>/<agent>/
 /// <topic>`), and startup only registers the ones it sees. So the home is also
-/// probed directly from the two names, which covers a sub-topic idle since the
-/// last restart.
+/// probed directly from the two names — both validated as names by the caller,
+/// so neither can point the read outside the agents dir — which covers a
+/// sub-topic idle since the last restart.
 ///
 /// `None` for a topic that has never been routed to. Note the recorded name is
 /// a *hub process* manager name: a topic created through the deprecated pipe
@@ -299,7 +309,12 @@ async fn recorded_channel(
         Some(state_dir) => state_dir,
         None => {
             let agents = managers.by_channel(AGENTS_CHANNEL)?;
-            topic_work_dir(agents.workspace_dir(), agent, topic_name).join(".jyc")
+            // `topic_work_dir` answers with the directory the topic *works* in
+            // (`<home>/.data` under the current layout), so the state dir is
+            // its home's — `topic_home` maps it back, and treats the older
+            // layouts (where the working dir was the home) as their own.
+            let work_dir = topic_work_dir(agents.workspace_dir(), agent, topic_name);
+            topic_home(&work_dir).join(".jyc")
         }
     };
     let meta_path = state_dir.join("topic-meta.json");
@@ -753,12 +768,63 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(sent.contains("channel 'mail-bot'"), "{sent}");
-        assert!(mail_bot.serves_topic(topic).await);
+        assert!(sent.contains("topic 'probe-recorded-topic'"), "{sent}");
+        assert!(mail_bot.serves_topic("probe-recorded-topic").await);
         assert!(
             !agents.serves_topic(topic).await,
             "the agents channel must not be handed a topic that belongs elsewhere"
         );
+    }
+
+    /// The probe that follows the registry. A sub-topic's home is two
+    /// directories down, which the startup scan never walks, so its state is
+    /// never registered — resolution has to reach it from the names alone. Note
+    /// the topic works in `<home>/.data`, so its state dir is one level up from
+    /// what `topic_work_dir` answers with.
+    #[tokio::test]
+    async fn sends_to_a_sub_topic_whose_state_is_not_registered() {
+        let tmp = tempdir().unwrap();
+        let agents_ws = tmp.path().join("agents-ws");
+        let agents = make_tm(&agents_ws, AGENTS_CHANNEL);
+        let mail_bot = make_tm(&tmp.path().join("mail-bot-ws"), "mail-bot");
+        let managers = TopicManagers::new();
+        managers.set(vec![agents.clone(), mail_bot.clone()]);
+
+        let agent = "probe-sub-agent";
+        let topic = "probe-sub-topic";
+        let home = agents_ws.join(agent).join(topic);
+        std::fs::create_dir_all(home.join(".data")).unwrap();
+        write_topic_meta(&home.join(".jyc"), "mail-bot");
+        let _cleanup = RegisteredState(topic.to_string());
+        assert!(jyc_types::state_dir::registered_state(topic).is_none());
+
+        let sent = send_to_topic(
+            &managers,
+            source(tmp.path()),
+            request(agent, Some(topic), "hi"),
+        )
+        .await
+        .unwrap();
+
+        assert!(sent.contains("topic 'probe-sub-topic'"), "{sent}");
+        assert!(mail_bot.serves_topic("probe-sub-topic").await);
+        assert!(!agents.serves_topic(topic).await);
+    }
+
+    /// The names are path components under the agents dir, and resolution
+    /// probes that path, so one that is a path is refused rather than followed.
+    #[tokio::test]
+    async fn refuses_a_name_that_is_not_a_name() {
+        let tmp = tempdir().unwrap();
+        let managers = TopicManagers::new();
+        managers.set(vec![make_tm(tmp.path(), AGENTS_CHANNEL)]);
+
+        for bad in ["../escape", "sub/dir", "-x"] {
+            let err = send_to_topic(&managers, source(tmp.path()), request(bad, None, "hi"))
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("Invalid address"), "{bad}: {err}");
+        }
     }
 
     /// The record names a channel this process does not run: refuse, rather

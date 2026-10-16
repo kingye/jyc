@@ -107,7 +107,12 @@ pub(crate) async fn process_message(
     // would need after the following restart is still absent, forever. Only
     // added when missing: the first routing owns the name, so a later message
     // on a topic two channels route never rewrites it.
-    if !topic_is_new && item.message.channel_uid != "dashboard" {
+    //
+    // Dashboard traffic is included, unlike the first write above: its
+    // `channel_uid` is a synthetic marker and is skipped there, but the channel
+    // in the message is the topic's real one (the proxy is per
+    // `/ws/<channel>/<topic>`), and it is only `channel` that is added here.
+    if !topic_is_new {
         match tokio::fs::read_to_string(&topic_meta_path).await {
             Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
                 Ok(mut meta) if meta.is_object() && meta.get("channel").is_none() => {

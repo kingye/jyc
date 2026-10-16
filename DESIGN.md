@@ -463,6 +463,10 @@ Each topic keeps its runtime state (agent session, chat history,
 jobs, exchange files, L3 topic config) in a `.jyc` directory resolved
 through `jyc_types::state_dir::resolve_state_dir(topic_name, topic_dir)` — a process-global
 registry keyed by **topic name** (the identity that distinguishes topics).
+Find a topic among a listed set through `jyc_types::find_topic` /
+`topic_index` / `has_topic` — by name, narrowed by channel when the caller
+knows one — and never by `topic_path`, which a child sharing its parent's
+directory also carries.
 **Every topic's state must be registered before any state access: an
 unregistered lookup panics instead of falling back to `<topic_dir>/.jyc`.**
 That fallback once silently created state inside pinned user repos (#825).

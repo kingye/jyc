@@ -116,7 +116,7 @@ async fn url_uses_registered_topic_name_not_directory_basename() {
         .unwrap();
     seed_published("issue-197", &topic_dir, "report.pdf", "tok123").await;
 
-    let result = ExchangeCommandHandler::new(tm)
+    let result = ExchangeCommandHandler
         .execute(test_context("issue-197", &topic_dir, &[]))
         .await
         .unwrap();
@@ -142,13 +142,13 @@ async fn lists_all_published_files_sorted() {
     let topic_dir = workspace.join("weather");
     std::fs::create_dir_all(&topic_dir).unwrap();
 
-    let tm = make_topic_manager(&tmp, &workspace);
+    let _tm = make_topic_manager(&tmp, &workspace);
     jyc_types::state_dir::register("wt-sorted", &topic_dir.join(".jyc"));
     seed_published("wt-sorted", &topic_dir, "b.txt", "tok123").await;
     jyc_types::state_dir::register("wt-sorted", &topic_dir.join(".jyc"));
     seed_published("wt-sorted", &topic_dir, "a.txt", "tok123").await;
 
-    let result = ExchangeCommandHandler::new(tm)
+    let result = ExchangeCommandHandler
         .execute(test_context("wt-sorted", &topic_dir, &[]))
         .await
         .unwrap();
@@ -166,13 +166,13 @@ async fn argument_narrows_output_to_one_file() {
     let topic_dir = workspace.join("weather");
     std::fs::create_dir_all(&topic_dir).unwrap();
 
-    let tm = make_topic_manager(&tmp, &workspace);
+    let _tm = make_topic_manager(&tmp, &workspace);
     jyc_types::state_dir::register("wt-narrow", &topic_dir.join(".jyc"));
     seed_published("wt-narrow", &topic_dir, "a.txt", "tok123").await;
     jyc_types::state_dir::register("wt-narrow", &topic_dir.join(".jyc"));
     seed_published("wt-narrow", &topic_dir, "report.pdf", "tok123").await;
 
-    let result = ExchangeCommandHandler::new(tm)
+    let result = ExchangeCommandHandler
         .execute(test_context("wt-narrow", &topic_dir, &["report.pdf"]))
         .await
         .unwrap();
@@ -190,11 +190,11 @@ async fn unknown_filename_reports_what_is_published() {
     let topic_dir = workspace.join("weather");
     std::fs::create_dir_all(&topic_dir).unwrap();
 
-    let tm = make_topic_manager(&tmp, &workspace);
+    let _tm = make_topic_manager(&tmp, &workspace);
     jyc_types::state_dir::register("wt-unknown", &topic_dir.join(".jyc"));
     seed_published("wt-unknown", &topic_dir, "a.txt", "tok123").await;
 
-    let result = ExchangeCommandHandler::new(tm)
+    let result = ExchangeCommandHandler
         .execute(test_context("wt-unknown", &topic_dir, &["missing.pdf"]))
         .await
         .unwrap();
@@ -212,10 +212,10 @@ async fn no_token_reports_nothing_published_and_creates_no_token() {
     let topic_dir = workspace.join("weather");
     std::fs::create_dir_all(topic_dir.join(".jyc")).unwrap();
 
-    let tm = make_topic_manager(&tmp, &workspace);
+    let _tm = make_topic_manager(&tmp, &workspace);
     jyc_types::state_dir::register("wt-no-token", &topic_dir.join(".jyc"));
 
-    let result = ExchangeCommandHandler::new(tm)
+    let result = ExchangeCommandHandler
         .execute(test_context("wt-no-token", &topic_dir, &[]))
         .await
         .unwrap();

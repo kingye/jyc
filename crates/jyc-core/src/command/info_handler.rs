@@ -14,10 +14,10 @@ use crate::topic_manager::TopicManager;
 ///
 /// Data comes from `TopicManager::list_topics` — the same snapshot the
 /// dashboard renders — so channel users see exactly what the TUI shows, and
-/// the topic is picked by `(channel, name)` through the shared
-/// `jyc_types::find_topic`: several topics can share one `topic_path`.
-/// Works on every channel: the result is delivered as a normal command
-/// reply.
+/// the topic is picked by name, narrowed by the channel it arrived on, through
+/// the shared `jyc_types::find_topic`: several topics can share one
+/// `topic_path`. Works on every channel: the result is delivered as a normal
+/// command reply.
 pub struct InfoCommandHandler {
     topic_manager: Arc<TopicManager>,
 }

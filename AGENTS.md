@@ -27,7 +27,7 @@ and uses an in-process AI agent to generate replies.
 - 入站附件落地目录写作 `topic_path/.attachments/`（`ATTACHMENT_DIR_NAME`），`save_path` 显式配置时以配置为准
 - 不把 topic 的工作目录称作 "data dir"：`<data dir>` 是实例根目录（`--data-dir`），topic 的默认工作目录写作 `<home>/.data`
 - topic 永不落在 channel 下；`<data dir>/channels/<channel>/` 是该 channel 的运行状态（游标），不是 topic
-- 查找 topic 一律经 `jyc_types::find_topic`/`topic_index`/`has_topic`（身份 = topic name，全进程唯一；`TopicInfo` 与 `TopicSummary` 都实现 `TopicRef`；调用方知道 channel 时一并传入做校验，ad-hoc 打开 chat 时 channel 为空、只按名字匹配）；禁止按 `topic_path` 查找 topic——同一路径可被多个 topic 共享（`share_topic_path` 的子 agent 与父同 path），path 不是身份
+- 查找 topic 一律经 `jyc_types::find_topic`/`topic_index`/`has_topic`（身份 = topic name，全进程唯一；`TopicInfo` 与 `TopicSummary` 都实现 `TopicRef`；调用方知道 channel 时一并传入做校验，channel 缺省时只按名字匹配）；禁止按 `topic_path` 查找 topic——同一路径可被多个 topic 共享（`share_topic_path` 的子 agent 与父同 path），path 不是身份
 
 ## Git Rules
 - NEVER run `git config user.name` or `git config user.email` (local or global)

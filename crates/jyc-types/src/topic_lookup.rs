@@ -2,8 +2,9 @@
 //!
 //! A topic is addressed by its **name**, which is unique process-wide. The
 //! channel narrows the match when the caller knows it (the wire address is
-//! `(channel, topic)`, and a caller that opened a chat without one — the
-//! ad-hoc CLI launch passes `None` — still finds its topic by name alone).
+//! `(channel, topic)`, and a binding can carry no channel at all — the state
+//! `ChatState::open` builds when it is handed `None` — in which case the name
+//! alone still finds that topic).
 //!
 //! The `topic_path` is NOT an identity: a subagent that shares its parent's
 //! directory (`share_topic_path`) carries the same path as its parent, and so
@@ -128,8 +129,8 @@ mod tests {
     }
 
     /// A known channel is checked; an unknown one is not required — a chat
-    /// opened by the ad-hoc CLI launch carries no channel and must still find
-    /// its topic.
+    /// can hold a topic without a channel (`ChatState::open` accepts `None`)
+    /// and must still find its own topic.
     #[test]
     fn a_known_channel_narrows_but_is_not_required() {
         let rows = shared_dir_rows();

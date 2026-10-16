@@ -1671,10 +1671,10 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
 ///
 /// The screen decides: on the chat screen it is the topic the chat is bound
 /// to, looked up through the shared [`jyc_types::find_topic`] by name (the
-/// channel narrows it when the chat knows one — an ad-hoc launch binds a
-/// topic without a channel); on the dashboard it is the row under the
-/// cursor. A *closed* chat keeps its binding — `close()` clears `visible`,
-/// not `topic` — so it must not answer for a screen it is not on.
+/// channel narrows it when the chat knows one — `open()` accepts `None`);
+/// otherwise it is the row under the dashboard cursor. Without the gate a
+/// visible chat whose topic has not appeared in the poll yet fell back to that
+/// row and showed another topic's model, mode and branch.
 fn selected_topic_summary(app: &App) -> Option<&jyc_types::TopicSummary> {
     let state = app.state.as_ref()?;
     if app.chat.visible {

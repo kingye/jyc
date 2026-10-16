@@ -2,8 +2,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 
-use super::flags::{self, CONFIRM_FLAGS, ConfirmFlag};
+use super::flags::{CONFIRM_FLAGS, ConfirmFlag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::spec::{self, ArgError, Parsed};
 
 /// /reset command — reset agent session for this topic.
 ///
@@ -15,19 +16,25 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 pub struct ResetCommandHandler;
 
 impl ResetCommandHandler {
-    /// Returns `true` if the args carry the explicit guard flag (`-f`/`--force`).
-    fn is_forced(args: &[String]) -> bool {
-        flags::has(CONFIRM_FLAGS, args, ConfirmFlag::Force)
+    /// Read this command's line through the shape `/reset`'s row declares: no
+    /// arguments, and the guard flag the row names.
+    fn parse(args: &[String]) -> Result<Parsed<ConfirmFlag>, ArgError> {
+        spec::parse_command("/reset", CONFIRM_FLAGS, args)
     }
 }
 
 #[async_trait]
 impl CommandHandler for ResetCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
+        let parsed = match Self::parse(&context.args) {
+            Ok(parsed) => parsed,
+            Err(error) => return Ok(CommandResult::refusal(error.to_string())),
+        };
+
         // Require --force before touching anything — including the
         // exchange token rotation below, so a plain /reset cannot kill
         // previously published links by accident.
-        if !Self::is_forced(&context.args) {
+        if !parsed.has(ConfirmFlag::Force) {
             return Ok(CommandResult {
                 success: true,
                 message: "⚠️  /reset will clear this topic's agent session (chat history is \
@@ -114,9 +121,25 @@ mod tests {
     /// `/new` read.
     #[test]
     fn is_forced_reads_the_short_guard_spelling() {
-        assert!(ResetCommandHandler::is_forced(&["-f".to_string()]));
-        assert!(ResetCommandHandler::is_forced(&["--force".to_string()]));
-        assert!(!ResetCommandHandler::is_forced(&[]));
+        let forced = |items: &[&str]| {
+            ResetCommandHandler::parse(&items.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                .unwrap()
+                .has(ConfirmFlag::Force)
+        };
+        assert!(forced(&["-f"]));
+        assert!(forced(&["--force"]));
+        assert!(!forced(&[]));
+    }
+
+    /// A word where `/reset` takes none is refused rather than ignored.
+    #[test]
+    fn a_stray_argument_is_refused() {
+        assert!(
+            ResetCommandHandler::parse(&["joe".to_string()])
+                .unwrap_err()
+                .to_string()
+                .starts_with("too many arguments")
+        );
     }
 
     /// Records the topic names it is asked to reset.

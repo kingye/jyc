@@ -13,8 +13,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
-use super::flags::{self, GRANT_FLAGS, GrantFlag};
+use super::flags::{GRANT_FLAGS, GrantFlag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::spec;
 
 /// `/grant` — add a runtime (optionally persisted) access grant.
 pub struct GrantCommandHandler;
@@ -43,30 +44,17 @@ struct GrantArgs {
 }
 
 /// Parse `/grant` args: one optional path plus `-w`/`--write` and
-/// `-p`/`--persist` flags (combinable, any order).
+/// `-p`/`--persist` (combinable, any order).
+///
+/// The shape and the refusals are the shared ones: `/grant`'s row declares the
+/// single positional, and an unknown flag now says which flags exist instead of
+/// leaving that list to be typed here.
 fn parse_grant_args(args: &[String]) -> Result<GrantArgs> {
-    let mut path = None;
-    let mut write = false;
-    let mut persist = false;
-    for arg in args {
-        match flags::find(GRANT_FLAGS, arg) {
-            Some(GrantFlag::Write) => write = true,
-            Some(GrantFlag::Persist) => persist = true,
-            None if arg.starts_with('-') => {
-                anyhow::bail!("/grant: unknown flag '{arg}' (known: -w/--write, -p/--persist)")
-            }
-            None => {
-                if path.is_some() {
-                    anyhow::bail!("/grant: unexpected extra argument '{arg}'");
-                }
-                path = Some(arg.to_string());
-            }
-        }
-    }
+    let parsed = spec::parse_command("/grant", GRANT_FLAGS, args)?;
     Ok(GrantArgs {
-        path,
-        write,
-        persist,
+        path: parsed.positionals.first().cloned(),
+        write: parsed.has(GrantFlag::Write),
+        persist: parsed.has(GrantFlag::Persist),
     })
 }
 
@@ -167,8 +155,9 @@ fn list_grants(context: &CommandContext) -> String {
             .is_none_or(|(r, w)| r.is_empty() && w.is_empty())
     {
         return format!(
-            "No access grants for topic `{}`. Usage: /grant <path> [-w|--write] [-p|--persist]",
-            context.topic_name
+            "No access grants for topic `{}`. Usage: {}",
+            context.topic_name,
+            super::builtin::usage_of("/grant")
         );
     }
     let mut out = format!("Access grants for topic `{}`:\n", context.topic_name);
@@ -249,8 +238,15 @@ impl CommandHandler for GrantCommandHandler {
 #[async_trait]
 impl CommandHandler for UngrantCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let Some(raw_path) = context.args.first() else {
-            return Ok(failure("usage: /ungrant <path>".to_string()));
+        let parsed = match spec::parse_plain("/ungrant", &context.args) {
+            Ok(parsed) => parsed,
+            Err(error) => return Ok(failure(error.to_string())),
+        };
+        let Some(raw_path) = parsed.positionals.first() else {
+            return Ok(failure(format!(
+                "usage: {}",
+                super::builtin::usage_of("/ungrant")
+            )));
         };
         let path = normalize_path(raw_path, &context.topic_path);
         let message = if jyc_types::access_grants::ungrant(&context.topic_name, &path) {

@@ -194,21 +194,21 @@ pub fn parse<F: Copy + PartialEq>(
         // place a flag and its value are one word. Only a flag that takes a value
         // can: `--force=yes` is a flag being handed what it cannot carry, and
         // saying so beats "unknown flag".
-        if let Some((head, value)) = arg.split_once('=') {
-            if let Some((flag, spec)) = flags::find_spec(flags, head) {
-                if spec.value.is_none() {
-                    return Err(ArgError::TakesValue {
-                        spelling: head.to_string(),
-                    });
-                }
-                if value.is_empty() {
-                    return Err(ArgError::NeedsValue {
-                        spelling: head.to_string(),
-                    });
-                }
-                record(&mut parsed, flag, spec, head, Some(value.to_string()))?;
-                continue;
+        if let Some((head, value)) = arg.split_once('=')
+            && let Some((flag, spec)) = flags::find_spec(flags, head)
+        {
+            if spec.value.is_none() {
+                return Err(ArgError::TakesValue {
+                    spelling: head.to_string(),
+                });
             }
+            if value.is_empty() {
+                return Err(ArgError::NeedsValue {
+                    spelling: head.to_string(),
+                });
+            }
+            record(&mut parsed, flag, spec, head, Some(value.to_string()))?;
+            continue;
         }
 
         if arg == "--" && keeps_text {

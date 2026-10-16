@@ -169,7 +169,7 @@ builtin_commands! {
         make: |tm| Arc::new(CancelCommandHandler::new(tm))
     },
     "/close" => {
-        desc: "Close this topic (requires --force; --purge deletes its directory too)",
+        desc: "Close this topic, or one of its subagents (it closes itself): /close [subagent|all] [--force] [--purge]",
         make: |tm| Arc::new(CloseCommandHandler::new(tm))
     },
     "/context" => {
@@ -213,7 +213,7 @@ builtin_commands! {
         make: |_| Arc::new(ResetCommandHandler)
     },
     "/send" => {
-        desc: "Send a message to another agent, or to one of its topics: /send <agent> [--topic <topic>] <message>",
+        desc: "Send a message to any agent, or to one of its topics: /send <agent> [flags] <message> (flags precede the message)",
         make: |tm| Arc::new(SendCommandHandler::new(tm))
     },
     "/skill" => {

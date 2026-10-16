@@ -265,6 +265,7 @@ impl InspectServer {
             cfg_ref,
             jyc_utils::paths::config_dir().as_deref(),
         );
+        let agents = agents_of(&topics);
         let mut summaries: Vec<TopicSummary> = topics
             .into_iter()
             .map(|t| {
@@ -274,6 +275,8 @@ impl InspectServer {
                     &t.available_skills,
                     &models,
                     &subagent_types,
+                    &t.name,
+                    &agents,
                 );
                 // Lineage for the tree views: read before the struct literal
                 // moves `t.name`. A topic whose state dir can't be read (or
@@ -370,7 +373,9 @@ impl InspectServer {
         // memoize here keyed by (`cfg_ptr`, pattern) and clear on
         // `AppConfig` reload, or drop the per-topic `commands` from the
         // overview and expose `GET /api/commands?pattern=X` for the TUI
-        // to fetch lazily.
+        // to fetch lazily. `/close`'s per-topic subagent list widens it: every
+        // topic's list reads its children's `spawned-from` breadcrumbs from
+        // disk on that same poll.
         let cfg = context.config.as_ref().map(|c| c.load_full());
         let fallback_cfg = AppConfig::default();
         let cfg_ref = cfg.as_deref().unwrap_or(&fallback_cfg);
@@ -379,6 +384,7 @@ impl InspectServer {
             cfg_ref,
             jyc_utils::paths::config_dir().as_deref(),
         );
+        let agents = agents_of(&topics);
         let topics: Vec<TopicInfo> = topics
             .into_iter()
             .map(|mut t| {
@@ -388,6 +394,8 @@ impl InspectServer {
                     &t.available_skills,
                     &models,
                     &subagent_types,
+                    &t.name,
+                    &agents,
                 );
                 t
             })
@@ -482,6 +490,21 @@ pub(crate) fn build_channels(
     channels
 }
 
+/// The agents `/send` can address, by name: the active topics of the agents
+/// channel, read off a snapshot the caller already holds — the payload builder
+/// lists every manager's topics in one pass, and `TopicInfo.channel` is the
+/// manager's own channel name, so this is the same list `list_topics` would
+/// give without walking the workspace again.
+///
+/// Both payload builders go through this so the two lists cannot drift.
+fn agents_of(topics: &[TopicInfo]) -> Vec<String> {
+    topics
+        .iter()
+        .filter(|t| t.channel == jyc_core::command::send_handler::AGENTS_CHANNEL)
+        .map(|t| t.name.clone())
+        .collect()
+}
+
 /// Build the dashboard-visible command list for one topic. Composed
 /// of built-ins + globals + `[[agents.<pattern>.commands]]` for the
 /// topic's pattern; per-agent wins on collision, matching
@@ -506,22 +529,33 @@ pub(crate) fn build_channels(
 /// `spawn_handler::type_catalog_pairs` — once per payload rather than once per
 /// topic, since it reads the installed role files and the payload carries a
 /// command list for every topic.
+///
+/// `agents` is `/send`'s first level (the same for every topic), and `name` is
+/// the topic this list belongs to — `/close`'s subagent list is read from it.
 fn commands_for_topic(
     pattern: Option<&str>,
     cfg: &AppConfig,
     available: &[jyc_types::SkillMeta],
     models: &[ModelInfo],
     subagent_types: &[(String, String)],
+    name: &str,
+    agents: &[String],
 ) -> Vec<CommandInfo> {
     let per_agent = pattern
         .map(|p| per_agent_commands(cfg, p))
         .unwrap_or_default();
     let skill_names: Vec<String> = available.iter().map(|s| s.name.clone()).collect();
+    let subagents: Vec<String> = jyc_core::command::spawn_handler::subagents_of(name)
+        .into_iter()
+        .map(|(child, _)| child)
+        .collect();
     let arg_ctx = ArgCtx {
         config: cfg,
         skills: &skill_names,
         models,
         subagent_types,
+        agents,
+        subagents: &subagents,
     };
     let mut commands = all_commands_with(&cfg.commands, &per_agent, available);
     for cmd in &mut commands {
@@ -551,7 +585,15 @@ mod command_args_tests {
             "review".to_string(),
             "Reviews a change before you push (shares your directory)".to_string(),
         )];
-        let commands = commands_for_topic(None, &cfg, &skills, &models, &subagent_types);
+        let commands = commands_for_topic(
+            None,
+            &cfg,
+            &skills,
+            &models,
+            &subagent_types,
+            "command-args-test",
+            &[],
+        );
 
         let find = |name: &str| commands.iter().find(|c| c.name == name).expect(name);
         assert_eq!(find("/model").args[0].value, "deepseek/deepseek-chat");

@@ -136,6 +136,22 @@ pub struct CommandResult {
     pub append_body: Option<String>,
 }
 
+impl CommandResult {
+    /// A refusal: nothing was done, and why.
+    ///
+    /// Both fields carry the text — [`CommandOutput::results_summary`] replies
+    /// with `Error: {error}` for a failed result and drops `message`, so a
+    /// reason kept only in `message` would never reach the user.
+    pub fn refusal(message: String) -> Self {
+        Self {
+            success: false,
+            message: message.clone(),
+            error: Some(message),
+            append_body: None,
+        }
+    }
+}
+
 /// Output of unified command processing (parse + execute + strip).
 #[derive(Debug)]
 pub struct CommandOutput {

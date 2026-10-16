@@ -38,7 +38,7 @@ impl Tool for SendToThreadTool {
             "properties": {
                 "agent": {
                     "type": "string",
-                    "description": "The agent to reach, e.g. \"invoice\" or \"mail-bot\". Without 'topic' the message lands on the agent's own topic, which is created when it does not exist yet."
+                    "description": "The agent to reach, e.g. \"invoice\" or \"mail-bot\". The name is matched against topic names first: a name an existing topic holds goes there, and only a name no topic owns becomes this agent's own topic, created when it does not exist yet."
                 },
                 "topic": {
                     "type": "string",

@@ -23,6 +23,7 @@ use jyc_types::{InboundMessage, MessageAttachment, MessageContent, PatternMatch}
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::topic_manager::{TopicManager, TopicManagers};
+use crate::topic_path::topic_work_dir;
 
 /// The channel that holds agents' own topics: `/spawn` and the dashboard put
 /// every agent there, and a message addressed to an agent lands on the topic
@@ -43,10 +44,10 @@ pub struct SendSource<'a> {
 
 /// What to send, once the addressee is named.
 pub struct SendRequest<'a> {
-    /// The agent to send to.
+    /// The agent to send to: the default topic name, and the agent a new topic
+    /// is created for.
     pub agent: &'a str,
-    /// One of that agent's topics, when it has more than one. Omitted means the
-    /// agent's own topic (the one named after it).
+    /// One of that agent's topics, when it has more than one.
     pub topic: Option<&'a str>,
     /// Message body.
     pub message: &'a str,
@@ -202,13 +203,19 @@ pub async fn send_to_topic(
         "Message sent to agent topic"
     );
 
-    // Name what actually happened. With `topic`, the address is the topic's own
-    // name (unique process-wide), so the agent beside it is a label rather than
-    // a claim about where the message went; without it, the message did land on
-    // the agent's own topic.
-    let sent_to = match req.topic {
-        Some(topic) => format!("topic '{topic}'"),
-        None => format!("agent '{}' (its own topic)", req.agent),
+    // Name what actually happened. Without `topic`, the name was matched
+    // against topic names first, so it landed on the agent's own topic only
+    // when it resolved to the agents channel; name the channel otherwise,
+    // rather than claiming an ownership the code never checked.
+    let sent_to = if let Some(topic) = req.topic {
+        format!("topic '{topic}'")
+    } else if target_tm.channel_name() == AGENTS_CHANNEL {
+        format!("agent '{}' (its own topic)", req.agent)
+    } else {
+        format!(
+            "topic '{topic_name}' of channel '{}'",
+            target_tm.channel_name()
+        )
     };
     let attachment_info = if validated_attachments.is_empty() {
         String::new()
@@ -250,7 +257,7 @@ async fn resolve(
     if let Some(tm) = managers.serving(topic_name).await {
         return Ok(tm);
     }
-    if let Some(channel) = recorded_channel(topic_name).await {
+    if let Some(channel) = recorded_channel(managers, agent, topic_name).await {
         return managers.by_channel(&channel).ok_or_else(|| {
             anyhow!("Topic '{topic_name}' belongs to channel '{channel}', which is not running")
         });
@@ -270,15 +277,55 @@ async fn resolve(
 }
 
 /// The channel a topic's own state records it was routed by, written into
-/// `.jyc/topic-meta.json` on its first message. `None` for a topic that has
-/// never been routed to, and for state dirs written before the field existed.
-async fn recorded_channel(topic_name: &str) -> Option<String> {
-    let state_dir = jyc_types::state_dir::registered_state(topic_name)?;
-    let raw = tokio::fs::read_to_string(state_dir.join("topic-meta.json"))
-        .await
-        .ok()?;
-    let meta: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    meta.get("channel")?.as_str().map(str::to_string)
+/// `.jyc/topic-meta.json` on its first message.
+///
+/// Which directory to look in is asked in two steps. The state registry answers
+/// for the topics it was populated with at startup, and it only walks one level
+/// under the agents dir — a sub-topic's home is two (`<agents dir>/<agent>/
+/// <topic>`), and startup only registers the ones it sees. So the home is also
+/// probed directly from the two names, which covers a sub-topic idle since the
+/// last restart.
+///
+/// `None` for a topic that has never been routed to. Note the recorded name is
+/// a *hub process* manager name: a topic created through the deprecated pipe
+/// form records a channel this process does not run, and resolution refuses
+/// rather than guessing.
+async fn recorded_channel(
+    managers: &TopicManagers,
+    agent: &str,
+    topic_name: &str,
+) -> Option<String> {
+    let state_dir = match jyc_types::state_dir::registered_state(topic_name) {
+        Some(state_dir) => state_dir,
+        None => {
+            let agents = managers.by_channel(AGENTS_CHANNEL)?;
+            topic_work_dir(agents.workspace_dir(), agent, topic_name).join(".jyc")
+        }
+    };
+    let meta_path = state_dir.join("topic-meta.json");
+    let raw = match tokio::fs::read_to_string(&meta_path).await {
+        Ok(raw) => raw,
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                path = %meta_path.display(),
+                topic = %topic_name,
+                "No topic-meta.json to read a routing channel from"
+            );
+            return None;
+        }
+    };
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(meta) => meta.get("channel")?.as_str().map(str::to_string),
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                topic = %topic_name,
+                "topic-meta.json is not readable JSON; treating the routing channel as unknown"
+            );
+            None
+        }
+    }
 }
 
 /// Check that each attachment exists inside `working_dir`, returning the
@@ -478,14 +525,14 @@ mod tests {
             "--reply",
             "invoice",
             "-t",
-            "invoice_processing",
+            "probe-served-topic",
             "hello",
             "-a",
             "report.pdf",
         ]))
         .unwrap();
         assert_eq!(parsed.agent, "invoice");
-        assert_eq!(parsed.topic.as_deref(), Some("invoice_processing"));
+        assert_eq!(parsed.topic.as_deref(), Some("probe-served-topic"));
         assert_eq!(parsed.attachments, vec!["report.pdf".to_string()]);
         assert_eq!(parsed.message, "hello");
         assert!(parsed.require_reply);
@@ -536,6 +583,35 @@ mod tests {
         }
     }
 
+    /// Registers a topic's state dir for the duration of a test.
+    ///
+    /// The registry is process-global, so a name registered here would leak
+    /// into whichever test runs next — tests in this file therefore use names
+    /// no other test can pick, and this guard removes the entry on the way out
+    /// (including on panic).
+    struct RegisteredState(String);
+
+    impl Drop for RegisteredState {
+        fn drop(&mut self) {
+            jyc_types::state_dir::unregister(&self.0);
+        }
+    }
+
+    fn register_state(topic: &str, state_dir: &Path) -> RegisteredState {
+        jyc_types::state_dir::register(topic, state_dir);
+        RegisteredState(topic.to_string())
+    }
+
+    /// Writes the routing record a topic's first message leaves behind.
+    fn write_topic_meta(state_dir: &Path, channel: &str) {
+        std::fs::create_dir_all(state_dir).unwrap();
+        std::fs::write(
+            state_dir.join("topic-meta.json"),
+            serde_json::json!({ "channel": channel, "channel_uid": "seed" }).to_string(),
+        )
+        .unwrap();
+    }
+
     /// An agent's own topic is served by the agents channel, whether or not it
     /// has been active before.
     #[tokio::test]
@@ -547,14 +623,14 @@ mod tests {
         let sent = send_to_topic(
             &managers,
             source(tmp.path()),
-            request("invoice", None, "hello"),
+            request("probe-agent-default", None, "hello"),
         )
         .await
         .unwrap();
 
-        assert!(sent.contains("agent 'invoice'"), "{sent}");
+        assert!(sent.contains("agent 'probe-agent-default'"), "{sent}");
         let agents = managers.by_channel(AGENTS_CHANNEL).unwrap();
-        assert!(agents.serves_topic("invoice").await);
+        assert!(agents.serves_topic("probe-agent-default").await);
     }
 
     /// A named topic goes to whichever manager already serves it — the agent
@@ -566,6 +642,7 @@ mod tests {
         let other = make_tm(&tmp.path().join("mail-bot-ws"), "mail-bot");
         let managers = TopicManagers::new();
         managers.set(vec![agents.clone(), other.clone()]);
+        let _cleanup = RegisteredState("probe-served-topic".to_string());
 
         // A routed message is what makes a topic exist: give `other` one.
         other
@@ -577,7 +654,7 @@ mod tests {
                     sender: "user".to_string(),
                     sender_address: "user@example.com".to_string(),
                     recipients: vec![],
-                    topic: "invoice_processing".to_string(),
+                    topic: "probe-served-topic".to_string(),
                     content: jyc_types::MessageContent {
                         text: Some("seed".to_string()),
                         html: None,
@@ -591,7 +668,7 @@ mod tests {
                     metadata: HashMap::new(),
                     matched_pattern: None,
                 },
-                "invoice_processing".to_string(),
+                "probe-served-topic".to_string(),
                 PatternMatch {
                     pattern_name: "invoice".to_string(),
                     channel: "mail-bot".to_string(),
@@ -604,7 +681,7 @@ mod tests {
             .await;
         assert_eq!(
             managers
-                .serving("invoice_processing")
+                .serving("probe-served-topic")
                 .await
                 .unwrap()
                 .channel_name(),
@@ -614,15 +691,15 @@ mod tests {
         let sent = send_to_topic(
             &managers,
             source(tmp.path()),
-            request("invoice", Some("invoice_processing"), "here is the PDF"),
+            request("invoice", Some("probe-served-topic"), "here is the PDF"),
         )
         .await
         .unwrap();
 
-        assert!(sent.contains("topic 'invoice_processing'"), "{sent}");
-        assert!(other.serves_topic("invoice_processing").await);
+        assert!(sent.contains("topic 'probe-served-topic'"), "{sent}");
+        assert!(other.serves_topic("probe-served-topic").await);
         assert!(
-            !agents.serves_topic("invoice_processing").await,
+            !agents.serves_topic("probe-served-topic").await,
             "the agents channel must not be handed a topic that belongs elsewhere"
         );
     }
@@ -646,6 +723,68 @@ mod tests {
         assert!(err.to_string().contains("unserved-probe-topic"), "{err}");
         let agents = managers.by_channel(AGENTS_CHANNEL).unwrap();
         assert!(!agents.serves_topic("unserved-probe-topic").await);
+    }
+
+    /// A topic idle since the last restart is still addressable: its own state
+    /// records which channel routed to it, so the message goes to that channel
+    /// without the topic having to be running a queue first.
+    #[tokio::test]
+    async fn sends_to_the_channel_a_topic_state_records() {
+        let tmp = tempdir().unwrap();
+        let agents = make_tm(&tmp.path().join("agents-ws"), AGENTS_CHANNEL);
+        let mail_bot = make_tm(&tmp.path().join("mail-bot-ws"), "mail-bot");
+        let managers = TopicManagers::new();
+        managers.set(vec![agents.clone(), mail_bot.clone()]);
+
+        let topic = "probe-recorded-topic";
+        let state_dir = tmp.path().join("state").join(topic);
+        write_topic_meta(&state_dir, "mail-bot");
+        let _cleanup = register_state(topic, &state_dir);
+        assert!(
+            managers.serving(topic).await.is_none(),
+            "nothing is running this topic's queue"
+        );
+
+        let sent = send_to_topic(
+            &managers,
+            source(tmp.path()),
+            request("invoice", Some(topic), "hi"),
+        )
+        .await
+        .unwrap();
+
+        assert!(sent.contains("channel 'mail-bot'"), "{sent}");
+        assert!(mail_bot.serves_topic(topic).await);
+        assert!(
+            !agents.serves_topic(topic).await,
+            "the agents channel must not be handed a topic that belongs elsewhere"
+        );
+    }
+
+    /// The record names a channel this process does not run: refuse, rather
+    /// than quietly landing the message somewhere else.
+    #[tokio::test]
+    async fn refuses_when_the_recorded_channel_is_not_running() {
+        let tmp = tempdir().unwrap();
+        let agents = make_tm(tmp.path(), AGENTS_CHANNEL);
+        let managers = TopicManagers::new();
+        managers.set(vec![agents.clone()]);
+
+        let topic = "probe-absent-channel-topic";
+        let state_dir = tmp.path().join("state").join(topic);
+        write_topic_meta(&state_dir, "feishu-not-running");
+        let _cleanup = register_state(topic, &state_dir);
+
+        let err = send_to_topic(
+            &managers,
+            source(tmp.path()),
+            request("invoice", Some(topic), "hi"),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("feishu-not-running"), "{err}");
+        assert!(!agents.serves_topic(topic).await);
     }
 
     /// The wiring `/send` depends on: a manager handed the registry resolves

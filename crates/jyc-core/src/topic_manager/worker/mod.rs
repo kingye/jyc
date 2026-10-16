@@ -101,6 +101,38 @@ pub(crate) async fn process_message(
         }
     }
 
+    // Backfill `channel` into a record written before the key existed. Without
+    // this, such a topic is addressable again only while it is running its
+    // queue — the next message makes it live for that process, but the key it
+    // would need after the following restart is still absent, forever. Only
+    // added when missing: the first routing owns the name, so a later message
+    // on a topic two channels route never rewrites it.
+    if !topic_is_new && item.message.channel_uid != "dashboard" {
+        match tokio::fs::read_to_string(&topic_meta_path).await {
+            Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(mut meta) if meta.is_object() && meta.get("channel").is_none() => {
+                    meta["channel"] = serde_json::json!(item.message.channel);
+                    if let Ok(json) = serde_json::to_string_pretty(&meta)
+                        && let Err(e) = tokio::fs::write(&topic_meta_path, json).await
+                    {
+                        tracing::warn!(error = %e, "Failed to backfill topic-meta.json");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!(
+                    error = %e,
+                    topic = %topic_name,
+                    "topic-meta.json is not readable JSON; not backfilling `channel`"
+                ),
+            },
+            Err(e) => tracing::debug!(
+                error = %e,
+                topic = %topic_name,
+                "Could not read topic-meta.json; not backfilling `channel`"
+            ),
+        }
+    }
+
     // ── 1.5. SAVE ATTACHMENTS ─────────────────────────────────────────
     // Save attachments AFTER topic name resolution (not before).
     // This ensures attachments go to the correct topic directory when

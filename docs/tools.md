@@ -273,16 +273,16 @@ Unlike `jyc_send_message` (which bypasses agent processing for direct outbound d
 The command form is `/send <agent> [--topic|-t <topic>] [--reply] [--attach <file>] [--recipient <id>] <message>`; both call the same `command::send_handler::send_to_topic`.
 
 **Parameters:**
-- `agent` (string, required): Target agent name (e.g. `"invoice"`, `"mail-bot"`). Its own topic is created if it does not exist yet
-- `topic` (string, optional): One of that agent's topics (e.g. `"invoice-processing"`). Omit it to address the agent's own topic. A topic's name is its address — it is unique process-wide, so a named topic identifies its agent too
+- `agent` (string, required): Target agent name (e.g. `"invoice"`, `"mail-bot"`). The name is matched against topic names first; only a name no topic owns becomes this agent's own topic, created if it does not exist yet
+- `topic` (string, optional): One of that agent's topics (e.g. `"invoice-processing"`), for when it has more than one. A topic's name is its address — it is unique process-wide, so a named topic identifies its agent too
 - `message` (string, required): Message body to inject into the target topic
 - `attachments` (string[], optional): List of filenames within the current topic directory to attach
 - `recipient` (string, optional): Recipient address/ID. Sets the sender_address on the injected message for channel-appropriate reply routing
 - `require_reply` (boolean, optional, default false): When `true`, the target agent is instructed to send the results back to the source agent via `jyc_send_to_topic`
 
 **Behavior:**
-- Resolves the addressee to the `TopicManager` that serves it — the one running the topic's queue, or the one that knows where an idle topic works (`TopicManagers::serving`); the channel is never named by the caller
-- A name no manager serves is created as a new agent's own topic in the `agents` channel; a *named* topic no manager serves is refused (re-creating it elsewhere would collide, since state dirs are keyed by topic name)
+- Resolves the addressee to the `TopicManager` that serves it — the one running the topic's queue or able to locate its directory, otherwise the channel the topic's own state records (`.jyc/topic-meta.json`), which is what reaches a topic idle since the last restart; the channel is never named by the caller
+- A name no channel owns is created as a new agent's own topic in the `agents` channel; a *named* topic nobody owns is refused (re-creating it elsewhere would collide, since state dirs are keyed by topic name), as is a recorded channel that is not running
 - Builds an `InboundMessage` with source metadata (`source_channel`, `source_topic`, `require_reply`)
 - Enqueues the message into the target topic's queue
 - The target agent sees a `**Source:**` header in its incoming message prompt
@@ -457,7 +457,7 @@ disabled_mcps = ["*"]  # Disables all external MCP servers
 | `read_image` | `check_path_boundary()` working_dir + temp dir + read_roots + write_roots | URL mode requires http(s) |
 | `context_browse` | None (in-memory transcript only) | Read-only; never touches the filesystem |
 | `jyc_send_message` | Recipient format validation | Channel-specific format check |
-| `jyc_send_to_topic` | Attachment path validation | Must be within topic directory; a named topic must be served by some channel |
+| `jyc_send_to_topic` | Attachment path validation | Must be within topic directory; a named topic must be owned by a channel that is running, can locate it, or is recorded in its state |
 
 `check_path_boundary()` itself only iterates `additional_read_roots`; write paths
 appear readable because `resolve_additional_read_roots()` merges `access.write`

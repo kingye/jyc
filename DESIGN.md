@@ -2530,15 +2530,18 @@ Injects a message into another agent's topic queue for agent processing. Unlike 
 
 **Addressing is by agent, not by channel.** A topic is identified by its name — the identity the state dir registry keys on — and the manager that serves it is resolved rather than named:
 
-- `agent` (required): the addressee. Without `topic`, the message lands on the agent's own topic (the one named after it, `<agents dir>/<agent>/`), which is created when it does not exist yet.
+- `agent` (required): the addressee.
 - `topic` (optional): one of that agent's topics (e.g. `invoice_processing`), whose home is `<agents dir>/<agent>/<topic>/`.
+
+The name is matched against topic names first, because that is the address: a name some topic already owns belongs to that topic, and only a name no topic owns becomes the agent's own topic — the one named after it, `<agents dir>/<agent>/`, created when it does not exist yet. An agent whose name another channel's topic already holds is therefore reached through that topic, not by a second topic of the same name.
 
 The command form is `/send <agent> [--topic|-t <topic>] [--reply] [--attach <file>] [--recipient <id>] <message>`. Both triggers parse their own input and call the same `jyc_core::command::send_handler::send_to_topic` — one implementation with two entries, exactly as `/spawn` and `jyc_spawn_subagent`.
 
-Resolution happens in `TopicManagers::serving`, and follows what serves the topic rather than what config says:
+Which manager serves the name is then answered by looking, in three steps:
 
-- A named topic belongs to the manager whose queue map already holds it. A topic exists because a channel routed to it (which enqueued), so a live queue is what "this topic is mine" means. A topic idle since a restart has no queue anywhere: it is refused, not re-created under the same name in another channel, and starts being served again with its next inbound message.
-- An agent's own topic belongs to the **agents channel**, whether or not it has been active this process — that is where `/spawn` and the dashboard put agents.
+- **Running it** — a manager whose queue map holds the topic. A topic exists because a channel routed to it (which enqueued), so a live queue is the first answer.
+- **Its own state** — `channel` in the topic's `.jyc/topic-meta.json`, written on the message that first routed to it and backfilled on a later one when the record predates the key. This is what keeps a topic idle since the last restart addressable instead of making it wait for its next inbound message. The state dir comes from the state registry, or — a sub-topic's home being two directories down, past what the startup scan walks — from probing `<agents dir>/<agent>/<topic>/.jyc`. A recorded channel this process does not run is refused rather than guessed at.
+- **Nobody owns it** — an agent's own topic is created in the **agents channel**, which is where `/spawn` and the dashboard keep agents; a *named* topic is refused, since re-creating it under the same name elsewhere would collide with state dirs keyed by topic name process-wide.
 
 ```
 Topic A (feishu_bot / "greenfield 下单")
@@ -2565,7 +2568,7 @@ Topic "invoice-processing" (of agent "invoice")
   │
   │  Agent processes task, then calls:
   │    jyc_send_to_topic(
-  │      agent="feishu-bot",
+  │      agent="greenfield 下单",   # the source topic's name is the address
   │      message="Done: invoice processed..."
   │    )
   │
@@ -2573,7 +2576,7 @@ Topic "invoice-processing" (of agent "invoice")
 Topic A receives results
 ```
 
-**`require_reply` flag** (default: `false`): When `true`, the target agent's incoming message prompt includes a "⚠️ Reply requested" indicator, instructing it to send results back to the source channel/topic via `jyc_send_to_topic` when done.
+**`require_reply` flag** (default: `false`): When `true`, the target agent's incoming message prompt includes a "⚠️ Reply requested" indicator, instructing it to send results back via `jyc_send_to_topic` when done — addressed at the source topic's own name, which is what resolution matches.
 
 **Source metadata**: The tool sets `source_channel`, `source_topic`, and `require_reply` in the `InboundMessage.metadata` HashMap. The `build_user_prompt_text()` function reads these fields and renders a `**Source:**` header in the target agent's prompt.
 

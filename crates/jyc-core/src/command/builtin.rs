@@ -294,7 +294,7 @@ builtin_commands! {
     "/exchange" => {
         desc: "Show shareable URLs for this topic's published files",
         shape: Shape::Args { labels: &["file"] },
-        make: |tm| Arc::new(ExchangeCommandHandler::new(tm))
+        make: |_| Arc::new(ExchangeCommandHandler)
     },
     "/grant" => {
         desc: "Grant agent access to a path (read-only, until restart)",

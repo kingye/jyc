@@ -13,9 +13,11 @@ use crate::topic_manager::TopicManager;
 /// token usage, call latency, cost, changed files).
 ///
 /// Data comes from `TopicManager::list_topics` — the same snapshot the
-/// dashboard renders — so channel users see exactly what the TUI shows.
-/// Works on every channel: the result is delivered as a normal command
-/// reply.
+/// dashboard renders — so channel users see exactly what the TUI shows, and
+/// the topic is picked by name, narrowed by the channel it arrived on, through
+/// the shared `jyc_types::find_topic`: several topics can share one
+/// `topic_path`. Works on every channel: the result is delivered as a normal
+/// command reply.
 pub struct InfoCommandHandler {
     topic_manager: Arc<TopicManager>,
 }
@@ -29,37 +31,34 @@ impl InfoCommandHandler {
 #[async_trait]
 impl CommandHandler for InfoCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        // Match on (channel, topic_path) rather than the directory basename:
-        // a pattern with a `topic_path` override can put the topic in a
-        // directory whose name differs from the topic name.
-        let topic = self
-            .topic_manager
-            .list_topics()
-            .await
-            .into_iter()
-            .find(|t| {
-                t.channel == context.channel
-                    && t.topic_path.as_deref() == Some(context.topic_path.as_path())
-            });
-
-        match topic {
+        let topics = self.topic_manager.list_topics().await;
+        match topic_for(&topics, &context) {
             Some(t) => Ok(CommandResult {
                 success: true,
-                message: format_topic_info(&t),
+                message: format_topic_info(t),
                 ..Default::default()
             }),
             None => Ok(CommandResult {
                 success: false,
                 message: "/info: topic not found".into(),
                 error: Some(format!(
-                    "No topic with path {} registered on channel {}",
-                    context.topic_path.display(),
-                    context.channel
+                    "No topic named '{}' registered on channel {}",
+                    context.topic_name, context.channel
                 )),
                 ..Default::default()
             }),
         }
     }
+}
+
+/// The topic this command is about: `context.topic_name` through the shared
+/// lookup, narrowed by the channel this command arrived on.
+///
+/// Never by `topic_path`: children that share their parent's directory
+/// (`share_topic_path`, e.g. `ci-watch-*`) carry the same path as the parent,
+/// and selecting by path reported whichever of them came first in the list.
+fn topic_for<'a>(topics: &'a [TopicInfo], context: &CommandContext) -> Option<&'a TopicInfo> {
+    jyc_types::find_topic(topics, &context.topic_name, Some(&context.channel))
 }
 
 /// Render the pane's rows as plain text, one per line, with the same
@@ -229,6 +228,43 @@ mod tests {
             call_count: Some(37),
             commands: vec![],
         }
+    }
+
+    /// The reported bug: a parent and two children that shared its directory
+    /// (`share_topic_path`) all carried `/home/jiny/projects/jyc`, and `/info`
+    /// asked in `jyc` answered with `ci-watch-925` — the first topic whose
+    /// path matched, in list order.
+    #[test]
+    fn selects_by_name_when_topics_share_a_path() {
+        let shared = PathBuf::from("/home/jiny/projects/jyc");
+        let agent_topic = |name: &str| {
+            let mut t = full_info();
+            t.name = name.to_string();
+            t.channel = "agents".to_string();
+            t.topic_path = Some(shared.clone());
+            t
+        };
+        let topics = vec![
+            agent_topic("ci-watch-925"),
+            agent_topic("jyc"),
+            agent_topic("review-prompt-names"),
+        ];
+        let context = |name: &str| CommandContext {
+            channel: "agents".to_string(),
+            topic_name: name.to_string(),
+            topic_path: shared.clone(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            topic_for(&topics, &context("jyc")).map(|t| t.name.as_str()),
+            Some("jyc")
+        );
+        assert_eq!(
+            topic_for(&topics, &context("ci-watch-925")).map(|t| t.name.as_str()),
+            Some("ci-watch-925")
+        );
+        assert!(topic_for(&topics, &context("nobody")).is_none());
     }
 
     #[test]

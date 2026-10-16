@@ -2,11 +2,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 use std::path::Path;
-use std::sync::Arc;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use super::spec;
-use crate::topic_manager::TopicManager;
 
 /// /exchange command — show shareable URLs for this topic's published files.
 ///
@@ -17,40 +15,7 @@ use crate::topic_manager::TopicManager;
 /// Output is a markdown bullet list with raw URLs so URLs stay
 /// copy-pasteable. Reads the existing exchange token but never creates one:
 /// listing must not grant access to a topic that has published nothing.
-pub struct ExchangeCommandHandler {
-    topic_manager: Arc<TopicManager>,
-}
-
-impl ExchangeCommandHandler {
-    pub fn new(topic_manager: Arc<TopicManager>) -> Self {
-        Self { topic_manager }
-    }
-
-    /// Topic name as the `/exchange/...` route expects it.
-    ///
-    /// The directory basename is NOT always the topic name — a pattern with
-    /// a `topic_path` override or a shared repo layout puts topic
-    /// `issue-197` in `.../repos/jin-197`. `topic_paths` holds the
-    /// authoritative name→path map; fall back to the basename when the
-    /// topic has no override registered.
-    async fn topic_name(&self, topic_path: &Path) -> String {
-        let registered = self
-            .topic_manager
-            .custom_topic_paths()
-            .await
-            .into_iter()
-            .find(|(_, path)| path == topic_path)
-            .map(|(name, _)| name);
-
-        registered.unwrap_or_else(|| {
-            topic_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
-                .to_string()
-        })
-    }
-}
+pub struct ExchangeCommandHandler;
 
 #[async_trait]
 impl CommandHandler for ExchangeCommandHandler {
@@ -98,9 +63,12 @@ impl CommandHandler for ExchangeCommandHandler {
             .unwrap_or_default()
             .effective_base_url();
         let channel = &context.channel;
-        let topic = self.topic_name(&context.topic_path).await;
+        // The topic's own name is the identity: deriving it from the path
+        // named the parent for a child that shares its directory, and then
+        // the link pointed at the parent's state dir.
+        let topic = &context.topic_name;
 
-        Ok(ok(format_lines(&names, &base, channel, &topic, &token)))
+        Ok(ok(format_lines(&names, &base, channel, topic, &token)))
     }
 }
 

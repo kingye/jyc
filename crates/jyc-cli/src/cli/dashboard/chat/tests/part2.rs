@@ -2181,6 +2181,46 @@ fn info_pane_end_reaches_the_last_wrapped_row() {
     );
 }
 
+/// The chat screen's pane answers for the chat's own topic. When that topic has
+/// not appeared in the poll yet, it says so rather than falling back to the row
+/// the dashboard last had under the cursor — that row's model, mode and branch
+/// belong to another topic (`render_activity_log` refuses the same fallback).
+#[test]
+fn info_pane_does_not_fall_back_to_the_cursor_row() {
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
+    let mut app = App::new(rx, None);
+    app.chat.visible = true;
+    app.chat.info_visible = true;
+    app.chat.topic = Some("not-polled-yet".to_string());
+    app.state = Some(jyc_types::InspectOverview {
+        topics: vec![explorer_topic("other")],
+        ..Default::default()
+    });
+    app.table_state.select(Some(0));
+
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 14)).expect("terminal");
+    terminal
+        .draw(|f| render_topic_info_pane(f, f.area(), &mut app))
+        .expect("draw");
+
+    let rendered: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(
+        rendered.contains("Select a topic"),
+        "a chat whose topic is not in the poll must show no topic, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("other"),
+        "the pane must not fall back to the cursor row's topic, got:\n{rendered}"
+    );
+}
+
 /// Without the toggle the entry collapses to a short summary, and the summary
 /// has to stay one row — wrapping is for what does not fit, not for everything.
 #[test]

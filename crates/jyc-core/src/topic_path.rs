@@ -349,6 +349,13 @@ pub(crate) fn resolved(path: &Path) -> PathBuf {
 /// dashboard or `/pin` re-opens the dir. Config-pin processes additionally
 /// adopt from config; re-registering an identical mapping is idempotent.
 /// Returns the number of registrations restored.
+///
+/// It also rebuilds the access grant of every topic a spawn recorded
+/// (`spawned-from`), on the dir the spawn granted on — the `topic-path`
+/// breadcrumb right beside it. Those grants live in memory and are gone by the
+/// time this runs, so without the rebuild a relaunched parent stops finding its
+/// subagents (`/close`'s value help, its prompt list) and loses its reach into
+/// their dirs.
 pub fn restore_state_registry(agents_dir: &Path) -> usize {
     let Ok(entries) = std::fs::read_dir(agents_dir) else {
         return 0;
@@ -380,6 +387,23 @@ pub fn restore_state_registry(agents_dir: &Path) -> usize {
             );
         }
         jyc_types::state_dir::register(&name, &state);
+        // A spawn's access grant for the parent lives only in memory, so it is
+        // gone by now; the breadcrumb the spawn wrote next to this one is not.
+        // Rebuild the grant from `spawned-from`, on the same dir the spawn
+        // granted on (`topic-path`): a relaunched parent then lists — and
+        // reaches — the topics it spawned again. `grant_subagent` ignores a
+        // duplicate and `forget_subagent` removes the entry when a child closes.
+        //
+        // It follows the registration above, edges included: an entry without a
+        // `topic-path` is skipped here exactly as it always was, and a work dir
+        // that has since vanished keeps its grant — as its registration is kept
+        // for history — so a dir that is only away (a mount) stays reachable.
+        if let Ok(parent) = std::fs::read_to_string(state.join("spawned-from")) {
+            let parent = parent.trim();
+            if !parent.is_empty() {
+                jyc_types::access_grants::grant_subagent(parent, &name, topic_path.clone());
+            }
+        }
         restored += 1;
     }
     if restored > 0 {
@@ -426,6 +450,51 @@ mod tests {
     }
 
     // === state dir adoption ===
+
+    /// A spawn's grant for its parent lives only in memory, so on the restart it
+    /// has to come back from the breadcrumb the spawn left on disk — otherwise
+    /// the parent neither lists nor reaches the topics it spawned (and `/close`
+    /// offers it no names).
+    #[test]
+    fn restore_state_registry_rebuilds_spawn_grants() {
+        let tmp = tempdir().unwrap();
+        let agents = tmp.path().join("agents");
+        let home = agents.join("restore-grant-child");
+        let (child_dir, state) = (home.join(".data"), home.join(".jyc"));
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::create_dir_all(&child_dir).unwrap();
+        std::fs::write(
+            state.join("topic-path"),
+            child_dir.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        std::fs::write(state.join("spawned-from"), "restore-grant-parent").unwrap();
+
+        restore_state_registry(&agents);
+
+        let granted = jyc_types::access_grants::grants_for("restore-grant-parent");
+        assert!(
+            granted.iter().any(|g| {
+                g.subagent.as_deref() == Some("restore-grant-child")
+                    && g.path == child_dir
+                    && g.write
+            }),
+            "the breadcrumb names the parent, so the startup restore rebuilds its grant: {granted:?}"
+        );
+        // And that is what the readers act on: the parent's subagent list.
+        assert_eq!(
+            crate::command::spawn_handler::subagents_of("restore-grant-parent"),
+            vec![("restore-grant-child".to_string(), child_dir.clone())],
+            "the rebuilt grant is what puts the child back in its parent's list"
+        );
+        // Idempotent: a second startup pass is still one grant.
+        restore_state_registry(&agents);
+        assert_eq!(
+            jyc_types::access_grants::grants_for("restore-grant-parent").len(),
+            1
+        );
+        jyc_types::access_grants::ungrant_subagent("restore-grant-parent", "restore-grant-child");
+    }
 
     #[test]
     fn state_dir_for_agent_key_vs_derived() {

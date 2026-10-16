@@ -8,6 +8,11 @@
 //! process restart ("temporary"). Persisting across restarts is a separate
 //! concern handled by `/grant -p`, which also writes the path into the
 //! topic's `[agents.<name>] access` config section.
+//!
+//! One kind is rebuilt instead of persisted: the grant a spawn records for a
+//! child's parent, whose durable half is the child's `spawned-from` breadcrumb.
+//! `topic_path::restore_state_registry` rebuilds it at serve startup, so a
+//! relaunched parent still finds — and can still reach — the topics it spawned.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

@@ -31,7 +31,7 @@ jobs:
             target: aarch64-apple-darwin
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -71,7 +71,7 @@ jobs:
           tar -C target/${{ matrix.target }}/release -czf dist/jyc-${{ matrix.target }}.tar.gz jyc jyc-pipe
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jyc-${{ matrix.target }}
           path: dist/jyc-${{ matrix.target }}.tar.gz
@@ -87,7 +87,7 @@ jobs:
       # workspace's contents, which would otherwise take the downloaded
       # artifacts with it.
       - name: Checkout (for the plugin archive contents)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # The plugin archive: the user-editable collections this repo ships, in
       # the layout `jyc plugins install` expects at an archive (or directory)
@@ -100,7 +100,7 @@ jobs:
           tar -czf dist/jyc-plugins.tar.gz skills subagents hooks
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -111,7 +111,7 @@ jobs:
       # RELEASE already exists — tags are immutable and never re-published).
       - name: Publish stable release (version tag)
         if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
@@ -137,7 +137,7 @@ jobs:
 
       - name: Publish nightly release
         if: github.ref_type == 'branch'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: nightly
           name: Nightly Build (${{ github.sha }})

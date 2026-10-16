@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 
+use super::flags::{self, CONFIRM_FLAGS, ConfirmFlag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
 /// /new command — reset session, clear chat history, and clear
@@ -49,9 +50,9 @@ async fn delete_glob_files(pattern: &std::path::Path) -> u64 {
 pub struct NewCommandHandler;
 
 impl NewCommandHandler {
-    /// Returns `true` if the args contain the explicit `--force` flag.
+    /// Returns `true` if the args carry the explicit guard flag (`-f`/`--force`).
     fn is_forced(args: &[String]) -> bool {
-        args.iter().any(|a| a == "--force")
+        flags::has(CONFIRM_FLAGS, args, ConfirmFlag::Force)
     }
 }
 
@@ -217,6 +218,14 @@ mode = "agent"
         )
         .await
         .unwrap();
+    }
+
+    /// `-f` is the same guard `--force` is, off the declaration `/close` reads.
+    #[test]
+    fn is_forced_reads_the_short_guard_spelling() {
+        assert!(NewCommandHandler::is_forced(&["-f".to_string()]));
+        assert!(NewCommandHandler::is_forced(&["--force".to_string()]));
+        assert!(!NewCommandHandler::is_forced(&[]));
     }
 
     #[tokio::test]

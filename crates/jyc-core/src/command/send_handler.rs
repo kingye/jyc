@@ -21,6 +21,7 @@ use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use jyc_types::{InboundMessage, MessageAttachment, MessageContent, PatternMatch};
 
+use super::flags::{self, SEND_FLAGS, SendFlag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use crate::topic_manager::{TopicManager, TopicManagers};
 use crate::topic_path::{topic_home, topic_work_dir};
@@ -464,22 +465,22 @@ fn parse(args: &[String]) -> Result<SendArgs, String> {
             message_words.push(arg.clone());
             continue;
         }
-        match arg.as_str() {
-            "--topic" | "-t" => topic = Some(flag_value(&mut rest, arg)?),
-            "--attach" | "-a" => attachments.push(flag_value(&mut rest, arg)?),
-            "--recipient" | "-r" => recipient = Some(flag_value(&mut rest, arg)?),
-            "--reply" => require_reply = true,
-            "--" => in_message = true,
+        match flags::find(SEND_FLAGS, arg) {
+            Some(SendFlag::Topic) => topic = Some(flag_value(&mut rest, arg)?),
+            Some(SendFlag::Attach) => attachments.push(flag_value(&mut rest, arg)?),
+            Some(SendFlag::Recipient) => recipient = Some(flag_value(&mut rest, arg)?),
+            Some(SendFlag::Reply) => require_reply = true,
+            None if arg == "--" => in_message = true,
             // A lone `-` is a message word; anything else starting with a dash
             // is a flag, and an unknown one is a typo worth refusing rather
             // than sending as text.
-            other if other.len() > 1 && other.starts_with('-') => {
-                return Err(format!("Unknown option '{other}'. {USAGE}"));
+            None if arg.len() > 1 && arg.starts_with('-') => {
+                return Err(format!("Unknown option '{arg}'. {USAGE}"));
             }
-            other if agent.is_none() => agent = Some(other.to_string()),
-            other => {
+            None if agent.is_none() => agent = Some(arg.to_string()),
+            None => {
                 in_message = true;
-                message_words.push(other.to_string());
+                message_words.push(arg.to_string());
             }
         }
     }

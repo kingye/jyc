@@ -7,6 +7,7 @@ use jyc_types::state_dir::resolve_state_dir;
 use jyc_types::{AppConfig, TopicConfig};
 use tracing::instrument;
 
+use super::flags::{self, SPAWN_FLAGS, SpawnFlag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use super::spawn_common::{fail, invalid_name, next_free_name, seed_start_model, seed_state};
 use crate::topic_manager::TopicManager;
@@ -962,27 +963,27 @@ fn parse_args(args: &[String]) -> Result<SpawnArgs, String> {
             Some((flag, value)) if flag.starts_with('-') => (flag, Some(value)),
             _ => (arg, None),
         };
-        match flag {
-            "-i" | "--inherit" => out.inherit = on_off(flag, inline)?,
-            "-s" | "--share" => out.share = on_off(flag, inline)?,
-            "-n" | "--name" => {
+        match flags::find(SPAWN_FLAGS, flag) {
+            Some(SpawnFlag::Inherit) => out.inherit = on_off(flag, inline)?,
+            Some(SpawnFlag::Share) => out.share = on_off(flag, inline)?,
+            Some(SpawnFlag::Name) => {
                 let value = flag_value(flag, inline, &mut rest)?;
                 set_once(&mut out.name, value, flag)?;
             }
-            "-d" | "--dir" => {
+            Some(SpawnFlag::Dir) => {
                 let value = flag_value(flag, inline, &mut rest)?;
                 set_once(&mut out.dir, value, flag)?;
             }
             // The type is the first argument now: the old spelling gets a
             // sentence rather than "unknown flag", because that is what a
             // remembered `/spawn --type=review` deserves.
-            "--type" => {
+            None if flag == "--type" => {
                 return Err(
                     "the type is the first argument now, not a flag: /spawn review".to_string(),
                 );
             }
-            flag if flag.starts_with('-') => return Err(format!("unknown flag '{flag}'")),
-            _ => {
+            None if flag.starts_with('-') => return Err(format!("unknown flag '{flag}'")),
+            None => {
                 if out.type_name.replace(arg.to_string()).is_some() {
                     return Err(format!(
                         "'{arg}' is a second type — a spawn takes one. A topic name goes in \

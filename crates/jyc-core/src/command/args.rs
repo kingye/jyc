@@ -14,6 +14,10 @@
 //! (`/grant <path>`, `/backlog push <text>`) gets an empty vec — the popup
 //! then closes and the input field sends what was typed.
 //!
+//! A flag is not one of these values: its row is built from [`super::flags`],
+//! the same declaration the handler reads the command line through, so the
+//! popup cannot offer a spelling the parser does not accept.
+//!
 //! Deliberately absent: `/exchange` (published names need a directory scan
 //! per topic per poll, where `/spawn`'s types are resolved once for the whole
 //! payload) and `/ungrant` (grants live in the agent runtime, not in the
@@ -24,6 +28,8 @@ use std::collections::HashSet;
 
 use chrono::{Datelike, Utc};
 use jyc_types::{AppConfig, CommandArg, McpServerConfig, ModelInfo};
+
+use super::flags;
 
 /// Per-topic state the dynamic values are read from.
 pub struct ArgCtx<'a> {
@@ -117,7 +123,7 @@ pub fn command_args(command: &str, ctx: &ArgCtx) -> Vec<CommandArg> {
         // subagents, so it offers the narrower list.
         "/send" => send_args(ctx),
         "/close" => close_args(ctx),
-        "/new" | "/reset" => vec![val("--force", "Skip the confirmation guard")],
+        "/new" | "/reset" => flags::rows(flags::CONFIRM_FLAGS),
         "/bill" => {
             let mut args = recent_months();
             args.push(val("all", "Every day with recorded usage"));
@@ -138,9 +144,9 @@ fn spawn_args(ctx: &ArgCtx) -> Vec<CommandArg> {
     let mut args: Vec<CommandArg> = ctx
         .subagent_types
         .iter()
-        .map(|(name, description)| val_with(name, description, spawn_flags()))
+        .map(|(name, description)| val_with(name, description, flags::rows(flags::SPAWN_FLAGS)))
         .collect();
-    args.extend(spawn_flags());
+    args.extend(flags::rows(flags::SPAWN_FLAGS));
     args
 }
 
@@ -153,20 +159,10 @@ fn send_args(ctx: &ArgCtx) -> Vec<CommandArg> {
     let mut args: Vec<CommandArg> = ctx
         .agents
         .iter()
-        .map(|name| val_with(name, "Send to this agent", send_flags()))
+        .map(|name| val_with(name, "Send to this agent", flags::rows(flags::SEND_FLAGS)))
         .collect();
-    args.extend(send_flags());
+    args.extend(flags::rows(flags::SEND_FLAGS));
     args
-}
-
-/// The flags `/send` takes before the message.
-fn send_flags() -> Vec<CommandArg> {
-    vec![
-        val("--topic", "One of that agent's topics (-t)"),
-        val("--reply", "Ask the target to send its result back"),
-        val("--attach", "Attach a file from this topic's directory (-a)"),
-        val("--recipient", "Override the recipient address (-r)"),
-    ]
 }
 
 /// `/close`'s next levels: this topic's own subagents — the only names it
@@ -179,7 +175,7 @@ fn close_args(ctx: &ArgCtx) -> Vec<CommandArg> {
             val_with(
                 name,
                 "Close this subagent (it closes itself on its own queue)",
-                close_flags(),
+                flags::rows(flags::CLOSE_FLAGS),
             )
         })
         .collect();
@@ -189,39 +185,14 @@ fn close_args(ctx: &ArgCtx) -> Vec<CommandArg> {
         args.push(val_with(
             "all",
             "Close every direct subagent",
-            close_flags(),
+            flags::rows(flags::CLOSE_FLAGS),
         ));
     }
     // A bare `/close` closes this topic, and the popup needs a row for exactly
     // that: a space completes to `/close  `, which carries no argument.
     args.push(val(" ", "Close this topic (self)"));
-    args.extend(close_flags());
+    args.extend(flags::rows(flags::CLOSE_FLAGS));
     args
-}
-
-/// What `/close` accepts after a name: the confirmation guard, and the dir.
-fn close_flags() -> Vec<CommandArg> {
-    vec![
-        val("--force", "Skip the confirmation guard"),
-        val("--purge", "Delete the topic dir too, not just its state"),
-    ]
-}
-
-/// `/spawn`'s flags, long spelling each — the one the popup inserts — with the
-/// short one named in the description.
-fn spawn_flags() -> Vec<CommandArg> {
-    vec![
-        val(
-            "--inherit",
-            "Copy the conversation and the transcript too (-i)",
-        ),
-        val("--share", "Work in this topic's own directory (-s)"),
-        val("--name", "Name the new topic; defaults to <this>-2 (-n)"),
-        val(
-            "--dir",
-            "Where the child works; defaults to <agents dir>/<name> (-d)",
-        ),
-    ]
 }
 
 /// `<cmd> on|off|reset <name>` — `reset` clears everything at once, so only
@@ -393,6 +364,23 @@ mod tests {
                 "{cmd}'s arguments"
             );
         }
+    }
+
+    /// A flag's short spelling rides in its own popup line, straight off the
+    /// declaration the handler reads it through — `/close -f` is offered even
+    /// though the popup inserts the long one.
+    #[test]
+    fn a_flag_row_names_its_short_spelling() {
+        let cfg = AppConfig::default();
+        let args = command_args("/close", &ctx(&cfg, &[], &[]));
+        assert_eq!(
+            find(&args, "--force").unwrap().description,
+            "Skip the confirmation guard (-f)"
+        );
+        assert_eq!(
+            find(&args, "--purge").unwrap().description,
+            "Delete the topic dir too, not just its state (-p)"
+        );
     }
 
     /// `/close` offers this topic's own subagents — the only names it accepts —

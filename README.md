@@ -195,13 +195,13 @@ body line.
 | `/model reset` | Reset to default model |
 | `/plan` | Switch to plan mode (read-only) |
 | `/build` | Switch to build mode (default) |
-| `/reset` | Clear AI session (requires `--force`) |
+| `/reset` | Clear AI session (requires `-f`/`--force`) |
 | `/send <agent> [--topic\|-t <topic>] [--reply] [--attach <file>] [--recipient <id>] <message>` | Send a message to another agent — its own topic by default, or one of its topics with `-t` — for that topic's agent to process. Same implementation as `jyc_send_to_topic`, and the addressee is resolved through the running topic managers, so no channel is named; `--reply` marks the message as expecting results back |
 | `/exchange` | Show shareable URLs for this topic's published files |
 | `/exchange <file>` | Show the URL of one published file |
-| `/close` | Close this topic: state deleted, emptied `~/.local/share/jyc/agents/<topic>/` shell pruned; the directory goes too, unless the topic is pinned (`--force`) |
-| `/close <subagent>` | Close one of this topic's **own** subagents, or every one of them with `/close all`: the command is sent to that topic, so it closes itself the same way and its directory rules stay its own. Only a topic's direct subagents can be named, the same `--force` guard applies (`/close joe` warns, `/close joe --force` sends), and `all` is a keyword — a subagent actually called `all` goes in the batch |
-| `/close --force --purge` | Also delete the topic directory — refused when the dir is shared with another topic (pinned or not), is another topic's parent, is one of jyc's own (`~/.local/share/jyc/agents`), or holds another topic's state |
+| `/close` | Close this topic: state deleted, emptied `~/.local/share/jyc/agents/<topic>/` shell pruned; the directory goes too, unless the topic is pinned (`-f`/`--force`) |
+| `/close <subagent>` | Close one of this topic's **own** subagents, or every one of them with `/close all`: the command is sent to that topic, so it closes itself the same way and its directory rules stay its own. Only a topic's direct subagents can be named, the same `-f`/`--force` guard applies (`/close joe` warns, `/close joe -f` sends), and `all` is a keyword — a subagent actually called `all` goes in the batch |
+| `/close --force --purge` (short: `-f -p`) | Also delete the topic directory — refused when the dir is shared with another topic (pinned or not), is another topic's parent, is one of jyc's own (`~/.local/share/jyc/agents`), or holds another topic's state |
 | `/template` | Apply template files to topic (skip existing) |
 | `/template update` | Re-apply template, overwrite existing files |
 | `/context` | Show the context management strategy (`full` / `sliding_window`) |

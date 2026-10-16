@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use super::flags::{self, CLOSE_FLAGS, CloseFlag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use super::send_handler::{SendRequest, SendSource, send_to_topic};
 use super::spawn_handler::{format_subagent_names, subagents_of};
@@ -18,20 +19,21 @@ impl CloseCommandHandler {
         Self { topic_manager }
     }
 
-    /// Returns `true` if the args contain the explicit `--force` flag.
+    /// Returns `true` if the args carry the explicit guard flag (`-f`/`--force`).
     ///
     /// Plain `/close` (no args) returns `false` so the handler can emit a
     /// warning instead of deleting (mirrors `/new`).
     fn is_forced(args: &[String]) -> bool {
-        args.iter().any(|a| a == "--force")
+        flags::has(CLOSE_FLAGS, args, CloseFlag::Force)
     }
 
-    /// Returns `true` if the args ask for the topic directory to go as well.
+    /// Returns `true` if the args ask for the topic directory to go as well
+    /// (`-p`/`--purge`).
     ///
     /// Only meaningful together with `--force`: `/close` alone never deletes
     /// anything, whatever else it is given.
     fn is_purged(args: &[String]) -> bool {
-        args.iter().any(|a| a == "--purge")
+        flags::has(CLOSE_FLAGS, args, CloseFlag::Purge)
     }
 
     /// The word in the args that names what to close, if any.
@@ -322,6 +324,17 @@ mod tests {
     #[test]
     fn is_forced_accepts_force_flag() {
         assert!(CloseCommandHandler::is_forced(&args(&["--force"])));
+    }
+
+    /// The guard and the purge flag answer to their short spellings too: both
+    /// are read off the declaration the popup offers them from.
+    #[test]
+    fn is_forced_and_is_purged_read_the_short_spellings() {
+        assert!(CloseCommandHandler::is_forced(&args(&["-f"])));
+        assert!(CloseCommandHandler::is_forced(&args(&["joe", "-f"])));
+        assert!(CloseCommandHandler::is_purged(&args(&["-f", "-p"])));
+        assert!(!CloseCommandHandler::is_forced(&args(&["-p"])));
+        assert!(!CloseCommandHandler::is_purged(&args(&["-f"])));
     }
 
     #[test]

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
-use super::spec;
+use super::spec::{self, Shape};
 use crate::session_state::{
     MCP_OVERRIDE_FILE, SKILL_OVERRIDE_FILE, clear_toggle_override, read_toggle_override,
     write_toggle_override,
@@ -27,6 +27,10 @@ pub struct ToggleCommandHandler {
     /// successful write; the toggle itself is always persisted (an unknown
     /// name is a harmless no-op that may materialize later).
     known: fn(&CommandContext, &str) -> bool,
+    /// The shape the line is read against — taken from this command's row, which
+    /// is the same declaration its popup level and usage line come from, so the
+    /// two cannot describe different lines.
+    shape: Shape,
 }
 
 impl ToggleCommandHandler {
@@ -37,6 +41,7 @@ impl ToggleCommandHandler {
             noun: "skill",
             file: SKILL_OVERRIDE_FILE,
             known: skill_known,
+            shape: super::builtin::shape_of("/skill"),
         }
     }
 
@@ -47,6 +52,7 @@ impl ToggleCommandHandler {
             noun: "MCP server",
             file: MCP_OVERRIDE_FILE,
             known: mcp_known,
+            shape: super::builtin::shape_of("/mcp"),
         }
     }
 }
@@ -59,7 +65,7 @@ impl CommandHandler for ToggleCommandHandler {
         // The line this command declares, rather than a second copy of it.
         let usage = format!("Usage: {}", super::builtin::usage_of(self.name));
 
-        let parsed = match spec::parse_plain(self.name, &context.args) {
+        let parsed = match spec::parse_with(self.shape, &context.args) {
             Ok(parsed) => parsed,
             Err(error) => return Ok(CommandResult::refusal(error.to_string())),
         };
@@ -223,6 +229,19 @@ mod tests {
             noun: "thing",
             file,
             known: allow_all,
+            // The line `/skill` and `/mcp` declare, as the test's own command
+            // would: a subcommand, then the name it acts on.
+            shape: test_shape(),
+        }
+    }
+
+    /// The shape this handler serves under `.skill()`/`.mcp()`, written out for
+    /// the test double whose name has no row.
+    const fn test_shape() -> Shape {
+        Shape::Subcommand {
+            values: &["on", "off", "reset"],
+            labels: &["name"],
+            rest: None,
         }
     }
 
@@ -287,6 +306,7 @@ mod tests {
             noun: "thing",
             file: MCP_OVERRIDE_FILE,
             known: |_, _| false,
+            shape: test_shape(),
         };
         let r = run(&h, &["on", "x"], &context).await;
         assert!(r.success);

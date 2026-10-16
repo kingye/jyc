@@ -257,7 +257,13 @@ pub fn parse_command<F: Copy + PartialEq>(
 /// but it still reads its line through the same shape, which is what refuses a
 /// dash-word nobody declared.
 pub fn parse_plain(name: &str, args: &[String]) -> Result<Parsed<()>, ArgError> {
-    parse_command::<()>(name, &[], args)
+    parse_with(super::builtin::shape_of(name), args)
+}
+
+/// Read a command line through a shape the caller already holds, for a handler
+/// that reads one declaration for the commands it serves.
+pub fn parse_with(shape: Shape, args: &[String]) -> Result<Parsed<()>, ArgError> {
+    parse::<()>(shape, &[], args)
 }
 
 /// The usage line for a command: its name, what its shape accepts, and its

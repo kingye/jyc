@@ -3728,6 +3728,13 @@ table, not a special case in `jyc-cli`.
   popup's position is derived from the input field on every key.
 - **Empty `args` means free text.** `/grant <path>` and `/backlog push <text>`
   complete nothing; the popup closes and the field sends what was typed.
+- **A flag is declared once.** Its spellings and the line the popup offers it
+  with come from one table (`jyc_core::command::flags`), which both the popup's
+  flag level and the handler's own parser read — so the popup cannot offer a
+  spelling a handler does not accept, and a short spelling is not prose in a
+  description. Everything else about a flag (whether it carries a value, what a
+  repeat means, how a refusal is worded) stays with the command, where those
+  rules differ.
 - **Trade-off**: the values are computed per topic on every ~500 ms overview
   poll and serialized per topic, so a long model list is repeated for every
   topic (`topics × models`). Leaf entries omit their empty `description`/`args`

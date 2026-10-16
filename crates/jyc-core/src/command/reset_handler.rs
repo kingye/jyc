@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 
+use super::flags::{self, CONFIRM_FLAGS, ConfirmFlag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
 /// /reset command — reset agent session for this topic.
@@ -14,9 +15,9 @@ use super::handler::{CommandContext, CommandHandler, CommandResult};
 pub struct ResetCommandHandler;
 
 impl ResetCommandHandler {
-    /// Returns `true` if the args contain the explicit `--force` flag.
+    /// Returns `true` if the args carry the explicit guard flag (`-f`/`--force`).
     fn is_forced(args: &[String]) -> bool {
-        args.iter().any(|a| a == "--force")
+        flags::has(CONFIRM_FLAGS, args, ConfirmFlag::Force)
     }
 }
 

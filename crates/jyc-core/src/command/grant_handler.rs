@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
+use super::flags::{self, GRANT_FLAGS, GrantFlag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
 /// `/grant` — add a runtime (optionally persisted) access grant.
@@ -48,17 +49,17 @@ fn parse_grant_args(args: &[String]) -> Result<GrantArgs> {
     let mut write = false;
     let mut persist = false;
     for arg in args {
-        match arg.as_str() {
-            "-w" | "--write" => write = true,
-            "-p" | "--persist" => persist = true,
-            s if s.starts_with('-') => {
-                anyhow::bail!("/grant: unknown flag '{s}' (known: -w/--write, -p/--persist)")
+        match flags::find(GRANT_FLAGS, arg) {
+            Some(GrantFlag::Write) => write = true,
+            Some(GrantFlag::Persist) => persist = true,
+            None if arg.starts_with('-') => {
+                anyhow::bail!("/grant: unknown flag '{arg}' (known: -w/--write, -p/--persist)")
             }
-            s => {
+            None => {
                 if path.is_some() {
-                    anyhow::bail!("/grant: unexpected extra argument '{s}'");
+                    anyhow::bail!("/grant: unexpected extra argument '{arg}'");
                 }
-                path = Some(s.to_string());
+                path = Some(arg.to_string());
             }
         }
     }

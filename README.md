@@ -196,6 +196,7 @@ body line.
 | `/plan` | Switch to plan mode (read-only) |
 | `/build` | Switch to build mode (default) |
 | `/reset` | Clear AI session (requires `--force`) |
+| `/send <agent> [--topic\|-t <topic>] [--reply] [--attach <file>] [--recipient <id>] <message>` | Send a message to another agent — its own topic by default, or one of its topics with `-t` — for that topic's agent to process. Same implementation as `jyc_send_to_topic`, and the addressee is resolved through the running topic managers, so no channel is named; `--reply` marks the message as expecting results back |
 | `/exchange` | Show shareable URLs for this topic's published files |
 | `/exchange <file>` | Show the URL of one published file |
 | `/close` | Close topic: state deleted, emptied `~/.local/share/jyc/agents/<topic>/` shell pruned; the directory goes too, unless the topic is pinned (`--force`) |

@@ -189,16 +189,17 @@ impl JycAgentService {
         }
 
         // Cross-Topic Communication section (when topic managers are available)
-        let tm_map_opt = self
+        let managers_opt = self
             .topic_managers
             .lock()
             .expect("topic_managers poisoned")
             .clone();
         let outbounds_configured = self.outbounds.lock().expect("outbounds poisoned").is_some();
-        if let Some(ref tm_map) = tm_map_opt {
+        if let Some(ref managers) = managers_opt {
             prompt.push_str(
                 "\n## Cross-Topic Communication\n\n\
-                 You can send messages to topics in other channels using the `jyc_send_to_topic` tool.\n\
+                 You can send messages to another agent — its own topic by default, or one of its \
+                 topics with `topic` — using the `jyc_send_to_topic` tool.\n\
                  Set `require_reply=true` when you need the target agent to send results back to you.\n\n\
                  When you receive a message with a **Source:** header, it came from another topic. \
                  Process the content normally — your final message displays the results in the \
@@ -219,8 +220,8 @@ impl JycAgentService {
             }
 
             prompt.push_str("Available channels and their active topics:\n");
-            let map = tm_map.lock().await;
-            for (channel_name, tm) in map.iter() {
+            for tm in managers.all().iter() {
+                let channel_name = tm.channel_name();
                 let channel_type = tm.channel_type();
                 prompt.push_str(&format!(
                     "- Channel \"{}\" ({})\n",
@@ -278,13 +279,14 @@ impl JycAgentService {
                     "**Source:** channel \"{}\", topic \"{}\" \
                      (⚠️ Reply requested)\n\n\
                      ⚠️ ACTION REQUIRED — DO THIS FIRST:\n\
-                     1. Call `jyc_send_to_topic` with channel=\"{}\", topic=\"{}\" \
-                     to send your results back to the source topic.\n\
+                     1. Call `jyc_send_to_topic` with agent=\"{}\" \
+                     to send your results back to the source topic (its topic name \
+                     is its address; add `topic` only if that name is not the agent's own).\n\
                      2. Then finish your turn with a final message displaying \
                      the results in this topic.\n\
                      CRITICAL: Do NOT miss step 1. The source topic is waiting for \
                      your reply.\n",
-                    src_ch, src_th, src_ch, src_th
+                    src_ch, src_th, src_th
                 ));
             } else {
                 prompt.push_str(&format!(

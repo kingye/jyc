@@ -229,7 +229,7 @@ async fn test_channel_orchestrator_reload() {
     );
 
     // Initially empty
-    let tms = orchestrator.topic_managers().load();
+    let tms = orchestrator.topic_managers().all();
     assert!(tms.is_empty());
 
     // Update config: remove the channel
@@ -243,7 +243,7 @@ async fn test_channel_orchestrator_reload() {
     orchestrator.reload().await.unwrap();
 
     // Still empty (no channels registered, so nothing to remove)
-    let tms = orchestrator.topic_managers().load();
+    let tms = orchestrator.topic_managers().all();
     assert!(tms.is_empty());
 }
 
@@ -304,7 +304,7 @@ async fn test_channel_orchestrator_register_and_remove() {
         .await;
 
     // Verify the channel is registered
-    let tms = orchestrator.topic_managers().load();
+    let tms = orchestrator.topic_managers().all();
     assert_eq!(tms.len(), 1);
     assert_eq!(tms[0].channel_name(), "test_channel");
 
@@ -323,7 +323,7 @@ async fn test_channel_orchestrator_register_and_remove() {
     orchestrator.reload().await.unwrap();
 
     // Verify the channel is removed from shared state
-    let tms = orchestrator.topic_managers().load();
+    let tms = orchestrator.topic_managers().all();
     assert!(tms.is_empty());
 
     let infos = orchestrator.channel_infos().load();

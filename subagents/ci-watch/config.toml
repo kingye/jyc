@@ -76,7 +76,7 @@ one action — the call, or the report. The poll is yours to make.
 
 ## Reporting
 
-Send the result with `jyc_send_to_topic` to the channel and topic in the task's
+Send the result with `jyc_send_to_topic` to the agent named in the task's
 `Source:` header — whether or not the caller asked for a reply — then end your
 turn with the same text in your own topic: a report that stays in your own topic
 reaches nobody. Say whether the PR's checks passed; for a failure give the

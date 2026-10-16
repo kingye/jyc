@@ -151,15 +151,9 @@ async fn resolve_topic_path(
     channel: &str,
     topic: &str,
 ) -> Result<PathBuf, ApiError> {
-    let tm = ctx
-        .topic_managers
-        .load()
-        .iter()
-        .find(|tm| tm.channel_name() == channel)
-        .cloned()
-        .ok_or_else(|| {
-            ApiError::not_found(format!("no topic manager found for channel '{channel}'"))
-        })?;
+    let tm = ctx.topic_managers.by_channel(channel).ok_or_else(|| {
+        ApiError::not_found(format!("no topic manager found for channel '{channel}'"))
+    })?;
     tm.topic_path(topic).await.ok_or_else(|| {
         ApiError::not_found(format!("topic '{topic}' not found in channel '{channel}'"))
     })
@@ -454,15 +448,9 @@ pub async fn get_patterns(
     State(ctx): State<Arc<InspectContext>>,
     Path(channel): Path<String>,
 ) -> Result<Json<PatternsBody>, ApiError> {
-    let tm = ctx
-        .topic_managers
-        .load()
-        .iter()
-        .find(|tm| tm.channel_name() == channel)
-        .cloned()
-        .ok_or_else(|| {
-            ApiError::not_found(format!("no topic manager found for channel '{channel}'"))
-        })?;
+    let tm = ctx.topic_managers.by_channel(&channel).ok_or_else(|| {
+        ApiError::not_found(format!("no topic manager found for channel '{channel}'"))
+    })?;
     Ok(Json(PatternsBody {
         patterns: tm.pattern_names().await,
     }))
@@ -480,10 +468,7 @@ pub async fn post_topic(
     let path = PathBuf::from(&body.path);
     let tm = ctx
         .topic_managers
-        .load()
-        .iter()
-        .find(|tm| tm.channel_name() == body.channel)
-        .cloned()
+        .by_channel(&body.channel)
         .ok_or_else(|| {
             ApiError::not_found(format!(
                 "no topic manager found for channel '{}'",

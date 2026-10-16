@@ -147,8 +147,8 @@ impl Tool for JobCreateTool {
         // workspace is the agents root itself, so path-walking walked past
         // the channel level and stamped the OS username as the channel.
         // The scheduler delivers fired messages via
-        // `topic_managers[job.channel_name]`, so a wrong name makes the job
-        // undeliverable.
+        // `TopicManagers::by_channel(job.channel_name)`, so a wrong name makes
+        // the job undeliverable.
         let Some(channel_name) = ctx.current_channel.clone() else {
             return Ok(ToolOutput::error(
                 "job scheduling requires a channel context".to_string(),
@@ -323,8 +323,8 @@ mod tests {
     /// derive it from the directory layout: the agents-root channel's
     /// workspace is the agents root itself, so path-walking walked past the
     /// channel level and stamped the OS username — and the scheduler delivers
-    /// fired messages via `topic_managers[job.channel_name]`, so a wrong name
-    /// makes the job undeliverable.
+    /// fired messages via `TopicManagers::by_channel(job.channel_name)`, so a
+    /// wrong name makes the job undeliverable.
     #[tokio::test]
     async fn test_job_create_stamps_channel_from_context() {
         let tmp = tempfile::tempdir().unwrap();

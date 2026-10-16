@@ -412,16 +412,10 @@ pub async fn run(
         }
     }
 
-    // 5.5. Wire cross-channel topic managers and outbound adapters into agent services
+    // 5.5. Wire the topic managers and outbound adapters into agent services
     {
-        let tms = orchestrator.topic_managers().load();
-        let tm_map: HashMap<String, Arc<TopicManager>> = tms
-            .iter()
-            .map(|tm| (tm.channel_name().to_string(), tm.clone()))
-            .collect();
-        let tm_map = Arc::new(tokio::sync::Mutex::new(tm_map));
         for svc in &all_agent_services {
-            svc.set_topic_managers(tm_map.clone());
+            svc.set_topic_managers(orchestrator.topic_managers());
         }
         tracing::info!(
             "Wired topic managers into {} agent service(s)",
@@ -446,7 +440,7 @@ pub async fn run(
             let workspace_dirs = orchestrator.workspace_dirs().load();
             let workspace_dirs: Vec<std::path::PathBuf> = workspace_dirs.iter().cloned().collect();
             let scheduler = JobScheduler::new(
-                tm_map,
+                orchestrator.topic_managers(),
                 workspace_dirs,
                 scheduler_config.scan_interval_secs,
                 scheduler_config.max_jobs_per_topic,
@@ -513,7 +507,7 @@ pub async fn run(
         // Restore custom topic_path mappings from disk so topics with
         // non-default paths survive process restarts.
         {
-            let tms = orchestrator.topic_managers().load();
+            let tms = orchestrator.topic_managers().all();
             for tm in tms.iter() {
                 tm.restore_custom_topic_paths().await;
             }

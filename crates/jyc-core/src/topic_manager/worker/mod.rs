@@ -84,6 +84,10 @@ pub(crate) async fn process_message(
             "external_id": item.message.external_id,
             "references": item.message.references,
             "metadata": item.message.metadata,
+            // Which channel routed here. The only record of it that outlives
+            // the process, and what lets a topic idle since the last restart be
+            // addressed again (`send_handler::recorded_channel`).
+            "channel": item.message.channel,
         });
         if let Ok(json) = serde_json::to_string_pretty(&meta) {
             let _ =
@@ -94,6 +98,43 @@ pub(crate) async fn process_message(
             } else {
                 tracing::debug!(topic = %topic_name, "Wrote topic-meta.json");
             }
+        }
+    }
+
+    // Backfill `channel` into a record written before the key existed. Without
+    // this, such a topic is addressable again only while it is running its
+    // queue — the next message makes it live for that process, but the key it
+    // would need after the following restart is still absent, forever. Only
+    // added when missing: the first routing owns the name, so a later message
+    // on a topic two channels route never rewrites it.
+    //
+    // Dashboard traffic is included, unlike the first write above: its
+    // `channel_uid` is a synthetic marker and is skipped there, but the channel
+    // in the message is the topic's real one (the proxy is per
+    // `/ws/<channel>/<topic>`), and it is only `channel` that is added here.
+    if !topic_is_new {
+        match tokio::fs::read_to_string(&topic_meta_path).await {
+            Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(mut meta) if meta.is_object() && meta.get("channel").is_none() => {
+                    meta["channel"] = serde_json::json!(item.message.channel);
+                    if let Ok(json) = serde_json::to_string_pretty(&meta)
+                        && let Err(e) = tokio::fs::write(&topic_meta_path, json).await
+                    {
+                        tracing::warn!(error = %e, "Failed to backfill topic-meta.json");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!(
+                    error = %e,
+                    topic = %topic_name,
+                    "topic-meta.json is not readable JSON; not backfilling `channel`"
+                ),
+            },
+            Err(e) => tracing::debug!(
+                error = %e,
+                topic = %topic_name,
+                "Could not read topic-meta.json; not backfilling `channel`"
+            ),
         }
     }
 

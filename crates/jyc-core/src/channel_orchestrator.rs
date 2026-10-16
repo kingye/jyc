@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use jyc_types::AppConfig;
 use jyc_types::ChannelInfo;
 
-use crate::topic_manager::TopicManager;
+use crate::topic_manager::{TopicManager, TopicManagers};
 
 /// Handle for a running channel, used by the orchestrator to manage lifecycle.
 pub struct ChannelHandle {
@@ -31,7 +31,7 @@ pub struct ChannelHandle {
 pub struct ChannelOrchestrator {
     channels: Mutex<HashMap<String, ChannelHandle>>,
     config: Arc<ArcSwap<AppConfig>>,
-    topic_managers: Arc<ArcSwap<Vec<Arc<TopicManager>>>>,
+    topic_managers: Arc<TopicManagers>,
     channel_infos: Arc<ArcSwap<Vec<ChannelInfo>>>,
     workspace_dirs: Arc<ArcSwap<Vec<std::path::PathBuf>>>,
 }
@@ -41,14 +41,16 @@ impl ChannelOrchestrator {
         Self {
             channels: Mutex::new(HashMap::new()),
             config,
-            topic_managers: Arc::new(ArcSwap::from_pointee(Vec::new())),
+            topic_managers: Arc::new(TopicManagers::new()),
             channel_infos: Arc::new(ArcSwap::from_pointee(Vec::new())),
             workspace_dirs: Arc::new(ArcSwap::from_pointee(Vec::new())),
         }
     }
 
-    /// Shared view of topic managers for InspectContext.
-    pub fn topic_managers(&self) -> Arc<ArcSwap<Vec<Arc<TopicManager>>>> {
+    /// The managers this orchestrator runs, in one place — the same instance
+    /// every reader gets (inspect server, agent services, the managers
+    /// themselves).
+    pub fn topic_managers(&self) -> Arc<TopicManagers> {
         self.topic_managers.clone()
     }
 
@@ -119,12 +121,19 @@ impl ChannelOrchestrator {
             channels.values().map(|h| h.workspace_dir.clone()).collect();
         drop(channels);
 
-        self.topic_managers.store(Arc::new(tms));
+        self.topic_managers.set(tms);
         self.channel_infos.store(Arc::new(infos));
         self.workspace_dirs.store(Arc::new(dirs));
 
+        // Point every manager at the set it belongs to, so a command handler
+        // (which holds only its own manager) can resolve a topic name to the
+        // manager serving it.
+        for tm in self.topic_managers.all().iter() {
+            tm.set_managers(&self.topic_managers);
+        }
+
         tracing::info!(
-            channel_count = self.topic_managers.load().len(),
+            channel_count = self.topic_managers.all().len(),
             "Updated shared state after reload"
         );
     }
@@ -159,7 +168,7 @@ api_key_env = "TEST_KEY"
         let orch = ChannelOrchestrator::new(config.clone(), tmpdir.path());
 
         // Initially empty
-        let tms = orch.topic_managers.load();
+        let tms = orch.topic_managers().all();
         assert!(tms.is_empty());
     }
 
@@ -172,7 +181,7 @@ api_key_env = "TEST_KEY"
         // update_shared_state with empty channels should produce empty vecs
         orch.update_shared_state().await;
 
-        let tms = orch.topic_managers.load();
+        let tms = orch.topic_managers().all();
         assert!(tms.is_empty());
 
         let infos = orch.channel_infos.load();
@@ -188,7 +197,7 @@ api_key_env = "TEST_KEY"
         // Reload with no changes should succeed
         orch.reload().await.unwrap();
 
-        let tms = orch.topic_managers.load();
+        let tms = orch.topic_managers().all();
         assert!(tms.is_empty());
     }
 }

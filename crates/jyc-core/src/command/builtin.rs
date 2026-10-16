@@ -51,6 +51,7 @@ use super::new_handler::NewCommandHandler;
 use super::pin_handler::PinCommandHandler;
 use super::registry::CommandRegistry;
 use super::reset_handler::ResetCommandHandler;
+use super::send_handler::SendCommandHandler;
 use super::spawn_handler::SpawnCommandHandler;
 use super::template_handler::TemplateCommandHandler;
 use super::thinking_handler::ThinkingCommandHandler;
@@ -210,6 +211,10 @@ builtin_commands! {
     "/reset" => {
         desc: "Reset session, keep chat history (requires --force)",
         make: |_| Arc::new(ResetCommandHandler)
+    },
+    "/send" => {
+        desc: "Send a message to another agent, or to one of its topics: /send <agent> [--topic <topic>] <message>",
+        make: |tm| Arc::new(SendCommandHandler::new(tm))
     },
     "/skill" => {
         desc: "Toggle a skill for this topic: /skill on|off|reset <name>",

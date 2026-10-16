@@ -176,7 +176,7 @@ impl CloseCommandHandler {
         // queue, and the child's own reply lands in its own topic — so this side
         // can only report the dispatch.
         let mut message = if sent.is_empty() {
-            format!("Failed to dispatch '{body}' to any subagent.")
+            format!("Could not dispatch '{body}' to any subagent.")
         } else if sent.len() == 1 {
             format!(
                 "Dispatched '{body}' to subagent '{}' — it closes itself on its own queue.",

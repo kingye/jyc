@@ -3754,9 +3754,11 @@ table, not a special case in `jyc-cli`.
   poll and serialized per topic, so a long model list is repeated for every
   topic (`topics × models`). Leaf entries omit their empty `description`/`args`
   on the wire to keep that cheap — but `usage` is not empty for any row, so it
-  rides the poll as one more string per command per topic (it is skipped when
-  empty, which only helps an older server: a payload without it leaves the
-  description as it is). The real fix is the lazy per-topic
+  rides the poll as one more string per command per topic: the field is always
+  sent (`#[serde(default)]`, with no `skip_serializing_if`, unlike the `args`
+  beside it). What an empty one does is leave `CommandInfo::summary` with the
+  description alone — which is what a server older than the field sends, and why
+  an older client still renders. The real fix is the lazy per-topic
   command fetch in the `TODO(perf)` in the inspect overview builder — which
   also removes the per-poll recompute.
   `/exchange` (a directory scan) and `/ungrant` (agent runtime state) are

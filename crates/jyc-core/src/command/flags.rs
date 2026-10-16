@@ -2,11 +2,10 @@
 //! popup offers it with.
 //!
 //! Both sides of a flag read the same table. [`rows`] builds the popup's flag
-//! level, and a handler resolves what it was handed through [`find_spec`] — the
-//! declaration itself, so nothing has to keep a second copy of what a flag takes
-//! — so a flag
-//! cannot be spelled one way in the popup and another way in a handler, and a
-//! new spelling reaches both.
+//! level, and a handler resolves what it was handed through [`find_spec`],
+//! which hands back the declaration itself — so nothing keeps a second copy of
+//! what a flag takes. A flag therefore cannot be spelled one way in the popup
+//! and another way in a handler, and a new spelling reaches both.
 //!
 //! Only the spellings live here. What a flag means, whether it carries a value,
 //! what a repeat of it means, and how a refusal is worded stay with the command:

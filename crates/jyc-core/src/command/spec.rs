@@ -312,8 +312,11 @@ pub fn usage(name: &str, shape: Shape, specs: &[&FlagSpec]) -> String {
         } => {
             parts.push(format!("<{}>", values.join("|")));
             parts.extend(labels.iter().map(|label| format!("[{label}]")));
+            // No `[--]` here even where `rest` exists (`/backlog`, `/context`):
+            // neither reads its line through this module, so the marker would
+            // advertise a separator they treat as an ordinary word. The line
+            // cannot say one thing where the parser does another.
             if let Some(rest) = rest {
-                parts.push("[--]".to_string());
                 parts.push(format!("[{rest}]"));
             }
         }
@@ -514,6 +517,14 @@ mod tests {
                 .to_string(),
             "unknown flag -x"
         );
+        // A real row reaches the same arm: `/thinking` declares no flag, so its
+        // refusal names the words it does take rather than nothing at all.
+        assert_eq!(
+            parse_plain("/thinking", &args(&["-x"]))
+                .unwrap_err()
+                .to_string(),
+            "unknown flag -x (expected: show|hide)"
+        );
     }
 
     /// `/spawn`'s declarations: `-n` takes a value, and asking for it twice is
@@ -612,14 +623,11 @@ mod tests {
         );
         assert_eq!(usage_of("/build"), "/build");
         assert_eq!(usage_of("/skill"), "/skill <on|off|reset> [name]");
+        // No `[--]`: `/backlog` does not read its line through the shape, so it
+        // has no separator to advertise.
         assert_eq!(
             usage_of("/backlog"),
-            "/backlog <push|list|ls|get|pop|rm|set> [--] [text]"
-        );
-        // A shape is read the same way whatever holds it.
-        assert_eq!(
-            usage("/close", CLOSE_ARGS, &flags::specs_of(CLOSE_FLAGS)),
-            "/close [subagent|all] [--force] [--purge]"
+            "/backlog <push|list|ls|get|pop|rm|set> [text]"
         );
     }
 }

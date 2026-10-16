@@ -286,12 +286,6 @@ pub fn activate_workspace_state(topic_name: &str, topic_dir: &Path, workspace: &
 /// restart even in processes without config access (subprocesses), where
 /// several agents may share one `topic_dir`: registrations depend on the
 /// name, never on the dir.
-///
-/// It also restores the **access grant** a spawn recorded for this topic's
-/// parent: the `spawned-from` breadcrumb is on disk, the grant is not, and a
-/// parent finds (and reaches) its subagents through those grants — so a restart
-/// would otherwise leave a relaunched parent unable to list or close what it
-/// spawned. [`crate::command::spawn_handler::subagents_of`] reads the result.
 pub fn adopt_state_dir(
     topic_name: &str,
     topic_dir: &Path,
@@ -311,18 +305,6 @@ pub fn adopt_state_dir(
             "Legacy in-topic .jyc found; it is not migrated and not this topic's \
              state — it belongs to whoever pinned this dir first"
         );
-    }
-    // A spawn writes two things: this topic's `spawned-from` breadcrumb and an
-    // access grant for its parent. The breadcrumb is on disk and outlives the
-    // process; the grant is in memory and does not — so rebuild it here, in the
-    // one place every adoption passes through, whether this is a fresh start or
-    // a re-open. `grant_subagent` is idempotent, and `forget_subagent` takes the
-    // entry away again when the child is closed.
-    if let Ok(parent) = std::fs::read_to_string(state_dir.join("spawned-from")) {
-        let parent = parent.trim();
-        if !parent.is_empty() {
-            jyc_types::access_grants::grant_subagent(parent, topic_name, topic_dir.to_path_buf());
-        }
     }
     if jyc_types::state_dir::registered_state(topic_name).is_some() {
         return Ok(());
@@ -367,6 +349,13 @@ pub(crate) fn resolved(path: &Path) -> PathBuf {
 /// dashboard or `/pin` re-opens the dir. Config-pin processes additionally
 /// adopt from config; re-registering an identical mapping is idempotent.
 /// Returns the number of registrations restored.
+///
+/// It also rebuilds the access grant of every topic a spawn recorded
+/// (`spawned-from`), on the dir the spawn granted on — the `topic-path`
+/// breadcrumb right beside it. Those grants live in memory and are gone by the
+/// time this runs, so without the rebuild a relaunched parent stops finding its
+/// subagents (`/close`'s value help, its prompt list) and loses its reach into
+/// their dirs.
 pub fn restore_state_registry(agents_dir: &Path) -> usize {
     let Ok(entries) = std::fs::read_dir(agents_dir) else {
         return 0;
@@ -398,6 +387,18 @@ pub fn restore_state_registry(agents_dir: &Path) -> usize {
             );
         }
         jyc_types::state_dir::register(&name, &state);
+        // A spawn's access grant for the parent lives only in memory, so it is
+        // gone by now; the breadcrumb the spawn wrote next to this one is not.
+        // Rebuild the grant from `spawned-from`, on the same dir the spawn
+        // granted on (`topic-path`): a relaunched parent then lists — and
+        // reaches — the topics it spawned again. `grant_subagent` ignores a
+        // duplicate and `forget_subagent` removes the entry when a child closes.
+        if let Ok(parent) = std::fs::read_to_string(state.join("spawned-from")) {
+            let parent = parent.trim();
+            if !parent.is_empty() {
+                jyc_types::access_grants::grant_subagent(parent, &name, topic_path.clone());
+            }
+        }
         restored += 1;
     }
     if restored > 0 {
@@ -445,19 +446,26 @@ mod tests {
 
     // === state dir adoption ===
 
-    /// A spawn's grant for its parent lives only in memory, while its
-    /// `spawned-from` breadcrumb is on disk — so adoption has to rebuild the
-    /// grant, or a restarted parent neither lists nor reaches the topics it
-    /// spawned (and `/close` offers it no names).
+    /// A spawn's grant for its parent lives only in memory, so on the restart it
+    /// has to come back from the breadcrumb the spawn left on disk — otherwise
+    /// the parent neither lists nor reaches the topics it spawned (and `/close`
+    /// offers it no names).
     #[test]
-    fn adoption_restores_a_spawn_grant() {
+    fn restore_state_registry_rebuilds_spawn_grants() {
         let tmp = tempdir().unwrap();
-        let home = tmp.path().join("agents").join("restore-grant-child");
+        let agents = tmp.path().join("agents");
+        let home = agents.join("restore-grant-child");
         let (child_dir, state) = (home.join(".data"), home.join(".jyc"));
         std::fs::create_dir_all(&state).unwrap();
+        std::fs::create_dir_all(&child_dir).unwrap();
+        std::fs::write(
+            state.join("topic-path"),
+            child_dir.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
         std::fs::write(state.join("spawned-from"), "restore-grant-parent").unwrap();
 
-        adopt_state_dir("restore-grant-child", &child_dir, &state).unwrap();
+        restore_state_registry(&agents);
 
         let granted = jyc_types::access_grants::grants_for("restore-grant-parent");
         assert!(
@@ -466,14 +474,20 @@ mod tests {
                     && g.path == child_dir
                     && g.write
             }),
-            "the breadcrumb names the parent, so adoption rebuilds its grant: {granted:?}"
+            "the breadcrumb names the parent, so the startup restore rebuilds its grant: {granted:?}"
         );
-        // Idempotent: a second adoption is still one grant.
-        assert!(!jyc_types::access_grants::grant_subagent(
-            "restore-grant-parent",
-            "restore-grant-child",
-            child_dir.clone()
-        ));
+        // And that is what the readers act on: the parent's subagent list.
+        assert_eq!(
+            crate::command::spawn_handler::subagents_of("restore-grant-parent"),
+            vec![("restore-grant-child".to_string(), child_dir.clone())],
+            "the rebuilt grant is what puts the child back in its parent's list"
+        );
+        // Idempotent: a second startup pass is still one grant.
+        restore_state_registry(&agents);
+        assert_eq!(
+            jyc_types::access_grants::grants_for("restore-grant-parent").len(),
+            1
+        );
         jyc_types::access_grants::ungrant_subagent("restore-grant-parent", "restore-grant-child");
     }
 

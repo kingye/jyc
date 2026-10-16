@@ -601,9 +601,9 @@ fn state_dir_of(name: &str, topic_path: &Path) -> PathBuf {
 /// child after a restart dropped the grants (the documented recovery), and it is
 /// simply the wrong guess for a shared dir — where a re-grant lists nobody.
 ///
-/// A **spawn's** grant outlives the process: `topic_path::adopt_state_dir`
-/// rebuilds it from the child's `spawned-from` breadcrumb when the dir is
-/// adopted, so a restart does not drop this list. A `/grant` is not rebuilt —
+/// A **spawn's** grant outlives the process: `topic_path::restore_state_registry`
+/// rebuilds it from the child's `spawned-from` breadcrumb at serve startup, so a
+/// restart does not drop this list. A `/grant` is not rebuilt —
 /// it stays process-lifetime until `/grant -p` writes it into the topic's
 /// config, which is why the last-component fallback above is what re-lists an
 /// own-dir child after a restart.

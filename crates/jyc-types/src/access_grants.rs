@@ -11,8 +11,8 @@
 //!
 //! One kind is rebuilt instead of persisted: the grant a spawn records for a
 //! child's parent, whose durable half is the child's `spawned-from` breadcrumb.
-//! `topic_path::adopt_state_dir` restores it on adoption, so a relaunched
-//! parent still finds — and can still reach — the topics it spawned.
+//! `topic_path::restore_state_registry` rebuilds it at serve startup, so a
+//! relaunched parent still finds — and can still reach — the topics it spawned.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

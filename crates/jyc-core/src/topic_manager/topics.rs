@@ -1003,6 +1003,10 @@ mode = "agent"
             .map(|t| (t.name, t.topic_path.expect("list_topics sets a path")))
             .collect();
         assert_eq!(pairs, full);
+
+        // The global state-dir registration outlives the TempDir otherwise: a
+        // later test reusing this name would resolve into a deleted directory.
+        jyc_types::state_dir::unregister("pinned-probe");
     }
 
     /// A topic dir holding nothing but `.jyc` still lists: the name scan

@@ -106,7 +106,11 @@ pub async fn read_call_latency(topic_name: &str, topic_path: &Path) -> Option<(u
     let agent_path = resolve_state_dir(topic_name, topic_path).join("agent-session.json");
     let content = tokio::fs::read_to_string(&agent_path).await.ok()?;
     let state = serde_json::from_str::<AgentSessionState>(&content).ok()?;
-    (state.call_count > 0 && state.total_call_duration_ms > 0).then(|| {
+    // `call_count` alone is the guard: `total_call_duration_ms` only ever
+    // grows alongside a count bump, so a non-zero count implies a
+    // non-zero total — and therefore an average of at least 1ms, which is
+    // what keeps the row from ever reading `0ms/call`.
+    (state.call_count > 0).then(|| {
         (
             state.total_call_duration_ms / state.call_count,
             state.call_count,

@@ -652,6 +652,8 @@ Both have the fields below, except `TopicSummary` **omits** `activity`,
 | `total_input_tokens`         | u64?                  | ✓               | ✓                  |
 | `total_cache_hit_tokens`     | u64?                  | ✓               | ✓                  |
 | `total_cache_creation_tokens`| u64?                  | ✓               | ✓                  |
+| `avg_call_ms`                | u64?                  | ✓               | ✓                  |
+| `call_count`                 | u64?                  | ✓               | ✓                  |
 | `last_active_at`             | string? (RFC 3339)    | ✓               | ✓                  |
 | `skills`                     | `Vec<string>`         | ✓               | ✓                  |
 | `available_skills`           | `Vec<SkillMeta>`      | ✓               | —                  |

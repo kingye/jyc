@@ -111,9 +111,10 @@ fn format_topic_info(t: &TopicInfo) -> String {
             format_amount(cost.today, &cost.currency)
         ));
     }
-    // The session's average wall-clock time per LLM call. Same fields and
-    // same words as the dashboard pane's row, through the one duration
-    // formatter, so the two cannot drift apart.
+    // The session's average wall-clock time per LLM call. Same fields,
+    // same words and the same shared duration formatter as the dashboard
+    // panes' row — the sentence itself is spelled out in both places, as
+    // the cost row already was.
     if let (Some(avg), Some(calls)) = (t.avg_call_ms, t.call_count) {
         lines.push(format!(
             "Latency: {}/call (avg of {calls})",

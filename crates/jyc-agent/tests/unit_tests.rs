@@ -967,6 +967,54 @@ mod session {
         );
     }
 
+    /// The latency counters are session-scoped: the auto-reset write —
+    /// which runs after `reset_session` deleted the file — must leave them
+    /// at zero with the token counters rather than resurrect a pair from a
+    /// session the user has forgotten.
+    #[tokio::test]
+    async fn call_latency_zeroes_with_session_reset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "call_latency_zeroes_with_session_reset";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let path = tmp.path();
+
+        // One measured call, so there is a pair to lose.
+        jyc_agent::session::persist_tokens(
+            topic, path, 800, 800, 40, 0, 0, 0, None, 0.95, 0.0, 700,
+        )
+        .await;
+        assert_eq!(
+            jyc_core::session_state::read_call_latency(topic, path).await,
+            Some((700, 1))
+        );
+
+        // Reset: the file goes, and the auto-reset path rebuilds it.
+        tokio::fs::remove_file(path.join(".jyc/agent-session.json"))
+            .await
+            .unwrap();
+        jyc_agent::session::persist_tokens(
+            topic,
+            path,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            Some(200_000),
+            0.95,
+            0.0,
+            0,
+        )
+        .await;
+
+        assert_eq!(
+            jyc_core::session_state::read_call_latency(topic, path).await,
+            None,
+            "the pair must zero with the session"
+        );
+    }
+
     /// Mirrors the actual agent_loop accumulation pattern: per call,
     /// `total_input_tokens += response.input_tokens` and
     /// `total_output_tokens += response.output_tokens`. Verifies that

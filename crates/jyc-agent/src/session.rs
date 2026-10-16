@@ -83,10 +83,10 @@ pub struct SessionState {
     #[serde(default)]
     pub max_input_tokens: u64,
     /// Accumulated cost of this session, in the currency configured for
-    /// the model(s) used. **The only accumulating field on this struct** —
-    /// every other field is assigned from the caller's running total,
-    /// whereas this one is incremented by each call's cost as it happens
-    /// (see `persist_tokens`).
+    /// the model(s) used. **One of this struct's three accumulating
+    /// fields** — with `total_call_duration_ms` and `call_count`, which a
+    /// call increments as it happens — whereas every other field is
+    /// assigned from the caller's running total (see `persist_tokens`).
     ///
     /// Scoped to the session: zeroed on reset along with the token
     /// counters, so it answers "what has this session cost so far". The

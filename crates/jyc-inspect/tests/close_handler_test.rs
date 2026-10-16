@@ -251,3 +251,75 @@ async fn test_close_command_refused_purge_still_closes_topic() {
         result.message
     );
 }
+
+/// `/close <subagent>` stands behind the same guard closing self does: without
+/// `--force` it warns and dispatches nothing, and only a forced call gets as
+/// far as the send (where this unwired manager is the next thing to stop it).
+#[tokio::test]
+async fn test_close_subagent_guards_before_dispatching() {
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+
+    // A child this topic really holds: a grant naming it, and the breadcrumb in
+    // its state dir that says this topic spawned it — exactly the pair
+    // `subagents_of` reads.
+    let child_state = tmp.path().join("close-child-test-state");
+    std::fs::create_dir_all(&child_state).unwrap();
+    std::fs::write(child_state.join("spawned-from"), "close-parent-test").unwrap();
+    jyc_types::state_dir::register("close-child-test", &child_state);
+    assert!(jyc_types::access_grants::grant_subagent(
+        "close-parent-test",
+        "close-child-test",
+        tmp.path().join("close-child-test"),
+    ));
+
+    let handler = CloseCommandHandler::new(make_tm(&tmp, &workspace));
+    let parent_path = tmp.path().join("parent");
+
+    // Unforced: the warning, naming the child and the way through.
+    let plain = handler
+        .execute(test_context_with(
+            &parent_path,
+            &["close-child-test"],
+            "close-parent-test",
+        ))
+        .await
+        .unwrap();
+    assert!(plain.success, "{}", plain.message);
+    assert!(
+        plain.message.contains("close-child-test"),
+        "the warning names the child: {}",
+        plain.message
+    );
+    assert!(
+        plain.message.contains("will close") && plain.message.contains("--force"),
+        "the warning says what would close and how: {}",
+        plain.message
+    );
+    assert_eq!(plain.error, None);
+
+    // Forced: it goes for the send. The manager is unwired here, so the send is
+    // what fails — which is what proves the unforced call never reached it.
+    let forced = handler
+        .execute(test_context_with(
+            &parent_path,
+            &["close-child-test", "--force"],
+            "close-parent-test",
+        ))
+        .await
+        .unwrap();
+    assert!(!forced.success, "{}", forced.message);
+    assert!(
+        forced.message.contains("close-child-test"),
+        "a failure says which child: {}",
+        forced.message
+    );
+    assert_eq!(
+        forced.error.as_deref(),
+        Some(forced.message.as_str()),
+        "the reason rides in `error` too, since that is what a failed reply shows"
+    );
+
+    jyc_types::access_grants::ungrant_subagent("close-parent-test", "close-child-test");
+}

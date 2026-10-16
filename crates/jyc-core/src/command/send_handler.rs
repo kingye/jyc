@@ -561,14 +561,10 @@ impl CommandHandler for SendCommandHandler {
     }
 }
 
-/// A refusal: nothing was sent, and why.
+/// A refusal: nothing was sent, and why (see [`CommandResult::refusal`] for why
+/// the text goes in both fields).
 fn refusal(message: String) -> CommandResult {
-    CommandResult {
-        success: false,
-        message: message.clone(),
-        error: Some(message),
-        append_body: None,
-    }
+    CommandResult::refusal(message)
 }
 
 #[cfg(test)]

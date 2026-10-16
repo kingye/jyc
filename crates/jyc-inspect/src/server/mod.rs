@@ -265,13 +265,7 @@ impl InspectServer {
             cfg_ref,
             jyc_utils::paths::config_dir().as_deref(),
         );
-        // `/send`'s first level, taken from the snapshot already in hand instead of
-        // walking the agents workspace a second time per poll.
-        let agents: Vec<String> = topics
-            .iter()
-            .filter(|t| t.channel == jyc_core::command::send_handler::AGENTS_CHANNEL)
-            .map(|t| t.name.clone())
-            .collect();
+        let agents = agents_of(&topics);
         let mut summaries: Vec<TopicSummary> = topics
             .into_iter()
             .map(|t| {
@@ -390,12 +384,7 @@ impl InspectServer {
             cfg_ref,
             jyc_utils::paths::config_dir().as_deref(),
         );
-        // `/send`'s first level, from the snapshot in hand (see above).
-        let agents: Vec<String> = topics
-            .iter()
-            .filter(|t| t.channel == jyc_core::command::send_handler::AGENTS_CHANNEL)
-            .map(|t| t.name.clone())
-            .collect();
+        let agents = agents_of(&topics);
         let topics: Vec<TopicInfo> = topics
             .into_iter()
             .map(|mut t| {
@@ -501,6 +490,21 @@ pub(crate) fn build_channels(
     channels
 }
 
+/// The agents `/send` can address, by name: the active topics of the agents
+/// channel, read off a snapshot the caller already holds — the payload builder
+/// lists every manager's topics in one pass, and `TopicInfo.channel` is the
+/// manager's own channel name, so this is the same list `list_topics` would
+/// give without walking the workspace again.
+///
+/// Both payload builders go through this so the two lists cannot drift.
+fn agents_of(topics: &[TopicInfo]) -> Vec<String> {
+    topics
+        .iter()
+        .filter(|t| t.channel == jyc_core::command::send_handler::AGENTS_CHANNEL)
+        .map(|t| t.name.clone())
+        .collect()
+}
+
 /// Build the dashboard-visible command list for one topic. Composed
 /// of built-ins + globals + `[[agents.<pattern>.commands]]` for the
 /// topic's pattern; per-agent wins on collision, matching
@@ -520,6 +524,7 @@ pub(crate) fn build_channels(
 /// feeds the `/skill on|off` argument values — deliberately the *available*
 /// names rather than the enabled snapshot in `TopicInfo::skills`, so a skill
 /// the user toggled off can still be completed back on.
+///
 /// `subagent_types` is `/spawn`'s first level, resolved by the caller with
 /// `spawn_handler::type_catalog_pairs` — once per payload rather than once per
 /// topic, since it reads the installed role files and the payload carries a

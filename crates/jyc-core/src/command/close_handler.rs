@@ -79,20 +79,6 @@ impl CloseCommandHandler {
         .await
     }
 
-    /// A refusal: nothing was closed, and why.
-    ///
-    /// Both fields carry the text — `CommandOutput::results_summary` replies
-    /// with `Error: {error}` for a failed result and drops `message`, so a
-    /// reason kept only in `message` would never reach the user.
-    fn refusal(message: String) -> CommandResult {
-        CommandResult {
-            success: false,
-            message: message.clone(),
-            error: Some(message),
-            append_body: None,
-        }
-    }
-
     /// What a subagent is told to run: the very `/close` a user would type in
     /// that topic, forced — the guard on this side has already passed.
     fn close_body(args: &[String]) -> &'static str {
@@ -139,7 +125,7 @@ impl CloseCommandHandler {
         let children = subagents_of(&context.topic_name);
         let names = match Self::subagent_targets(target, &children) {
             Ok(names) => names,
-            Err(message) => return Ok(Self::refusal(message)),
+            Err(message) => return Ok(CommandResult::refusal(message)),
         };
 
         if names.is_empty() {
@@ -189,7 +175,9 @@ impl CloseCommandHandler {
         // What went out, not what it did: the message is dispatched to the child's
         // queue, and the child's own reply lands in its own topic — so this side
         // can only report the dispatch.
-        let mut message = if sent.len() == 1 {
+        let mut message = if sent.is_empty() {
+            format!("Failed to dispatch '{body}' to any subagent.")
+        } else if sent.len() == 1 {
             format!(
                 "Dispatched '{body}' to subagent '{}' — it closes itself on its own queue.",
                 sent[0]

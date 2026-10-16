@@ -240,9 +240,9 @@ impl TopicManager {
     /// Subsequent calls to `topic_path(topic_name)` will return this path
     /// instead of the default `<workspace>/<topic_name>/`. The directory
     /// is created if it does not already exist. `.jyc/topic-name` is also
-    /// written so `list_topics` recognises the entry — without it, the
-    /// `resolve_state_dir(&path).is_dir()` filter in `list_topics` drops the
-    /// entry and `wait_for_topic` times out for fresh ad-hoc topics.
+    /// written so the name scan recognises the entry — without it, the
+    /// `resolve_state_dir(&path).is_dir()` filter in `list_topic_names` drops
+    /// the entry and `wait_for_topic` times out for fresh ad-hoc topics.
     pub async fn set_topic_path(&self, topic_name: &str, path: PathBuf) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&path).await?;
         // Adopt a state dir under the agents root when this pin is the
@@ -576,9 +576,9 @@ impl TopicManager {
 
     /// List all open topics with their info, reading state from disk.
     ///
-    /// Scans the workspace directory for topic directories containing `.jyc/pattern`.
-    /// This includes both actively queued topics and idle topics that have been
-    /// created but have no messages pending.
+    /// Scans the workspace directory for topic directories holding a `.jyc`
+    /// state directory. This includes both actively queued topics and idle
+    /// topics that have been created but have no messages pending.
     ///
     /// This resolves per-topic state for every name it lists — the cost
     /// [`Self::list_topic_names`] documents. A caller that needs only the
@@ -968,6 +968,41 @@ mode = "agent"
         assert!(state_b.is_dir(), "beta state untouched");
         assert!(jyc_types::state_dir::registered_state("co-beta").is_some());
         assert!(repo.exists(), "shared dir is user property, kept");
+    }
+
+    /// A pinned topic resolves to its pinned directory, exactly as the full
+    /// listing reports it: this pair is the path the activity tracker reads a
+    /// topic's activity log from, so a wrong path fails silently.
+    #[tokio::test]
+    async fn list_topic_names_and_paths_matches_pinned_paths() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(workspace.join("bare").join(".jyc"))
+            .await
+            .unwrap();
+        let tm = make_tm(&workspace);
+
+        let pinned = tmp.path().join("elsewhere");
+        tm.set_topic_path("pinned-probe", pinned.clone())
+            .await
+            .unwrap();
+
+        let pairs = tm.list_topic_names_and_paths().await;
+        assert_eq!(
+            pairs,
+            vec![
+                ("bare".to_string(), workspace.join("bare")),
+                ("pinned-probe".to_string(), pinned),
+            ]
+        );
+
+        let full: Vec<(String, PathBuf)> = tm
+            .list_topics()
+            .await
+            .into_iter()
+            .map(|t| (t.name, t.topic_path.expect("list_topics sets a path")))
+            .collect();
+        assert_eq!(pairs, full);
     }
 
     /// A topic dir holding nothing but `.jyc` still lists: the name scan

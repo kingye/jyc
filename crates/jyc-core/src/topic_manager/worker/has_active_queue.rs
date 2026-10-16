@@ -949,7 +949,7 @@ async fn test_custom_topic_paths_empty_initially() {
 /// Regression test for the `jyc open` ad-hoc topic timeout:
 ///
 /// `set_topic_path` must create `.jyc/topic-name` so that the
-/// `resolve_state_dir(&path).is_dir()` filter in `list_topics` keeps the
+/// `resolve_state_dir(&path).is_dir()` filter in `list_topic_names` keeps the
 /// entry. Without it, a freshly-registered ad-hoc topic is dropped
 /// from the overview and `wait_for_topic` in `run_open` times out
 /// with "Timeout waiting for topic ... to be created".

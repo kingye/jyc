@@ -240,9 +240,9 @@ impl TopicManager {
     /// Subsequent calls to `topic_path(topic_name)` will return this path
     /// instead of the default `<workspace>/<topic_name>/`. The directory
     /// is created if it does not already exist. `.jyc/topic-name` is also
-    /// written so `list_topics` recognises the entry — without it, the
-    /// `resolve_state_dir(&path).is_dir()` filter in `list_topics` drops the
-    /// entry and `wait_for_topic` times out for fresh ad-hoc topics.
+    /// written so the name scan recognises the entry — without it, the
+    /// `resolve_state_dir(&path).is_dir()` filter in `list_topic_names` drops
+    /// the entry and `wait_for_topic` times out for fresh ad-hoc topics.
     pub async fn set_topic_path(&self, topic_name: &str, path: PathBuf) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&path).await?;
         // Adopt a state dir under the agents root when this pin is the
@@ -496,20 +496,19 @@ impl TopicManager {
         }
     }
 
-    /// List all open topics with their info, reading state from disk.
+    /// Names of every open topic, without resolving any per-topic state.
     ///
-    /// Scans the workspace directory for topic directories containing `.jyc/pattern`.
-    /// This includes both actively queued topics and idle topics that have been
-    /// created but have no messages pending.
-    pub async fn list_topics(&self) -> Vec<TopicInfo> {
-        use crate::session_state::read_session_cost;
-
-        // Collect names of actively queued topics
-        let queues = self.topic_queues.lock().await;
-        drop(queues);
+    /// The scan half of [`Self::list_topics`]: it reads the workspace
+    /// directory and the pinned `topic_path` overrides and nothing else — no
+    /// session file, no billing ledger, no skills, no `git` probe. Callers
+    /// that only need the names must use this: the system prompt lists them on
+    /// every turn for every channel, and going through `list_topics` there
+    /// costs a `.git/HEAD` read plus up to four `git` invocations per topic per
+    /// channel per turn for a list of names.
+    pub async fn list_topic_names(&self) -> Vec<String> {
+        let mut topic_names: Vec<String> = Vec::new();
 
         // Scan workspace for all topic directories with .jyc/ subdirectory
-        let mut topic_names: Vec<String> = Vec::new();
         if let Ok(mut entries) = tokio::fs::read_dir(&self.workspace_dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
@@ -552,6 +551,42 @@ impl TopicManager {
         }
 
         topic_names.sort();
+        topic_names
+    }
+
+    /// Names of every open topic with the directory each one works in.
+    ///
+    /// The same scan as [`Self::list_topic_names`] plus the path lookup, and
+    /// no per-topic state: the activity tracker polls this every two seconds
+    /// for every channel and needs nothing more than the pair.
+    pub async fn list_topic_names_and_paths(&self) -> Vec<(String, PathBuf)> {
+        let topic_names = self.list_topic_names().await;
+
+        let mut out = Vec::with_capacity(topic_names.len());
+        let paths = self.topic_paths.lock().await;
+        for name in topic_names {
+            let path = paths
+                .get(&name)
+                .cloned()
+                .unwrap_or_else(|| self.workspace_dir.join(&name));
+            out.push((name, path));
+        }
+        out
+    }
+
+    /// List all open topics with their info, reading state from disk.
+    ///
+    /// Scans the workspace directory for topic directories holding a `.jyc`
+    /// state directory. This includes both actively queued topics and idle
+    /// topics that have been created but have no messages pending.
+    ///
+    /// This resolves per-topic state for every name it lists — the cost
+    /// [`Self::list_topic_names`] documents. A caller that needs only the
+    /// names, or the names and paths, wants that method instead.
+    pub async fn list_topics(&self) -> Vec<TopicInfo> {
+        use crate::session_state::read_session_cost;
+
+        let topic_names = self.list_topic_names().await;
 
         let mut topics = Vec::with_capacity(topic_names.len());
 
@@ -933,6 +968,67 @@ mode = "agent"
         assert!(state_b.is_dir(), "beta state untouched");
         assert!(jyc_types::state_dir::registered_state("co-beta").is_some());
         assert!(repo.exists(), "shared dir is user property, kept");
+    }
+
+    /// A pinned topic resolves to its pinned directory, exactly as the full
+    /// listing reports it: this pair is the path the activity tracker reads a
+    /// topic's activity log from, so a wrong path fails silently.
+    #[tokio::test]
+    async fn list_topic_names_and_paths_matches_pinned_paths() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(workspace.join("bare").join(".jyc"))
+            .await
+            .unwrap();
+        let tm = make_tm(&workspace);
+
+        let pinned = tmp.path().join("elsewhere");
+        tm.set_topic_path("pinned-probe", pinned.clone())
+            .await
+            .unwrap();
+
+        let pairs = tm.list_topic_names_and_paths().await;
+        assert_eq!(
+            pairs,
+            vec![
+                ("bare".to_string(), workspace.join("bare")),
+                ("pinned-probe".to_string(), pinned),
+            ]
+        );
+
+        let full: Vec<(String, PathBuf)> = tm
+            .list_topics()
+            .await
+            .into_iter()
+            .map(|t| (t.name, t.topic_path.expect("list_topics sets a path")))
+            .collect();
+        assert_eq!(pairs, full);
+
+        // The global state-dir registration outlives the TempDir otherwise: a
+        // later test reusing this name would resolve into a deleted directory.
+        jyc_types::state_dir::unregister("pinned-probe");
+    }
+
+    /// A topic dir holding nothing but `.jyc` still lists: the name scan
+    /// reads the directory, not any of the state a real topic would have.
+    ///
+    /// This pins the listing behavior, not "no state is resolved" — a
+    /// resolver would pass here too, since every reader tolerates a missing
+    /// file. That property is structural in `list_topic_names`' body.
+    #[tokio::test]
+    async fn list_topic_names_lists_a_dir_with_only_state() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(workspace.join("bare").join(".jyc"))
+            .await
+            .unwrap();
+        let tm = make_tm(&workspace);
+
+        assert_eq!(tm.list_topic_names().await, vec!["bare".to_string()]);
+        assert_eq!(
+            tm.list_topic_names_and_paths().await,
+            vec![("bare".to_string(), workspace.join("bare"))]
+        );
     }
 
     /// #615: a topic whose mode comes from pattern config (no

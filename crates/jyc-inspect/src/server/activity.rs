@@ -185,18 +185,13 @@ impl ActivityTracker {
             let tms = topic_managers.all();
             for tm in tms.iter() {
                 let channel = tm.channel_name().to_string();
-                let topics = tm.list_topics().await;
-                for topic in &topics {
-                    let topic_path = topic.topic_path.clone();
-                    if let Some(ref path) = topic_path
-                        && let Ok(entries) =
-                            ActivityLogStore::load_recent(&topic.name, path, MAX_ACTIVITY_ENTRIES)
+                for (name, path) in tm.list_topic_names_and_paths().await {
+                    if let Ok(entries) =
+                        ActivityLogStore::load_recent(&name, &path, MAX_ACTIVITY_ENTRIES)
                         && !entries.is_empty()
                     {
                         let mut map = activity_map.lock().await;
-                        let state = map
-                            .entry((channel.clone(), topic.name.clone()))
-                            .or_default();
+                        let state = map.entry((channel.clone(), name.clone())).or_default();
                         state.entries = entries.into_iter().collect();
                         state.is_processing = false;
                         if let Some(last) = state.entries.back()
@@ -217,9 +212,8 @@ impl ActivityTracker {
                         let tms = topic_managers.all();
                         for tm in tms.iter() {
                             let channel = tm.channel_name().to_string();
-                            let topics = tm.list_topics().await;
-                            for topic in topics {
-                                let key = (channel.clone(), topic.name.clone());
+                            for (name, topic_path) in tm.list_topic_names_and_paths().await {
+                                let key = (channel.clone(), name.clone());
                                 {
                                     let sub = subscribed.lock().await;
                                     if sub.contains(&key) {
@@ -232,14 +226,14 @@ impl ActivityTracker {
                                 // events. If no active queue, the topic is idle — clear
                                 // any stale `is_processing` flag and mark as subscribed
                                 // to avoid retrying every 2s.
-                                let bus = match tm.get_event_bus(&topic.name).await {
+                                let bus = match tm.get_event_bus(&name).await {
                                     Some(b) => Some(b),
-                                    None if tm.has_active_queue(&topic.name).await => {
+                                    None if tm.has_active_queue(&name).await => {
                                         tracing::info!(
-                                            topic = %topic.name,
+                                            topic = %name,
                                             "Event bus missing but queue active, force-creating event bus"
                                         );
-                                        tm.get_or_create_event_bus(&topic.name).await
+                                        tm.get_or_create_event_bus(&name).await
                                     }
                                     None => {
                                         // Topic is idle (no active queue, no event bus).
@@ -266,9 +260,7 @@ impl ActivityTracker {
                                             sub.insert(key.clone());
                                         }
                                         let map = activity_map.clone();
-                                        let name = topic.name.clone();
                                         let channel_for_task = channel.clone();
-                                        let topic_path = topic.topic_path.clone();
                                         let cancel_inner = cancel.clone();
                                         let subscribed_clone = subscribed.clone();
                                         let key_clone = key.clone();
@@ -355,15 +347,14 @@ impl ActivityTracker {
                                                                         let state = map
                                                                             .entry((channel_for_task.clone(), name.clone()))
                                                                             .or_default();
-                                                                        seed_next_id_from_disk(state, &name, topic_path.as_deref());
+                                                                        seed_next_id_from_disk(state, &name, Some(topic_path.as_path()));
                                                                         if !is_internal {
                                                                             // Assign monotonic per-topic id BEFORE persisting to
                                                                             // disk and pushing to the in-memory buffer, so the log
                                                                             // carries the same ids the dashboard uses for dedup.
                                                                             entry.id = state.next_id;
                                                                             state.next_id = state.next_id.wrapping_add(1);
-                                                                            if let Some(ref path) = topic_path
-                                                                                && let Err(e) = ActivityLogStore::append(&name, path, &entry)
+                                                                            if let Err(e) = ActivityLogStore::append(&name, &topic_path, &entry)
                                                                             {
                                                                                 tracing::warn!(error = %e, topic = %name, "Failed to persist activity entry");
                                                                             }

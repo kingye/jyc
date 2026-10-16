@@ -9,6 +9,7 @@
 //! Kept module-private (`pub(super)`) — these are TUI internals, not part
 //! of the dashboard's public surface.
 
+use jyc_core::duration::{DurationStyle, format_duration_ms};
 use jyc_types::{TopicSummary, format_amount};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
@@ -155,6 +156,28 @@ pub(super) fn push_cost_span(spans: &mut Vec<Span>, t: &TopicSummary) {
     }
 }
 
+/// Append the "Latency: X/call (avg of N)" row to `spans`. Pushes nothing
+/// when the pair is missing — no call measured yet (fresh session, or a
+/// session file written before the fields existed) — so an unmeasured
+/// topic shows no row rather than `0ms`.
+///
+/// The figure is the session's own average wall-clock time per LLM call:
+/// how long one API call takes, not how many tokens per second it
+/// produces. The `/info` command renders the same words from the same two
+/// fields.
+pub(super) fn push_latency_span(spans: &mut Vec<Span>, t: &TopicSummary) {
+    if let (Some(avg), Some(calls)) = (t.avg_call_ms, t.call_count) {
+        spans.push(Span::styled(
+            "Latency: ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(format!(
+            "{}/call (avg of {calls})",
+            format_duration_ms(avg, DurationStyle::Millis),
+        )));
+    }
+}
+
 /// Two-space gap used by the dashboard status line between adjacent
 /// chips. Callers on a flat status line prepend this manually before
 /// each row (the chat info pane stacks rows on separate lines and
@@ -189,6 +212,8 @@ mod tests {
             total_input_tokens: total_input,
             total_cache_hit_tokens: cache_hit,
             total_cache_creation_tokens: cache_creation,
+            avg_call_ms: None,
+            call_count: None,
             last_active_at: None,
             skills: vec![],
             topic_path: None,
@@ -426,5 +451,48 @@ mod tests {
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, "Cache util: ");
         assert_eq!(spans[1].content, "88%");
+    }
+
+    /// No measured call → no row at all, rather than a misleading `0ms`.
+    #[test]
+    fn push_latency_span_omits_when_missing() {
+        let t = summary_with(None, None, None, None, None, None);
+        let mut spans = Vec::new();
+        push_latency_span(&mut spans, &t);
+        assert!(spans.is_empty());
+    }
+
+    /// A sub-second average keeps its milliseconds, and the number of
+    /// calls behind it travels along — an average over one call must not
+    /// read as a settled figure.
+    #[test]
+    fn push_latency_span_writes_millis_and_call_count() {
+        let mut t = summary_with(None, None, None, None, None, None);
+        t.avg_call_ms = Some(820);
+        t.call_count = Some(37);
+        let mut spans = Vec::new();
+        push_latency_span(&mut spans, &t);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content, "Latency: ");
+        assert_eq!(spans[1].content, "820ms/call (avg of 37)");
+    }
+
+    /// A slow average switches to seconds; an average without its count
+    /// (impossible from `list_topics`, which fills both or neither) is
+    /// dropped rather than rendered as "avg of 0".
+    #[test]
+    fn push_latency_span_writes_seconds_and_needs_the_count() {
+        let mut t = summary_with(None, None, None, None, None, None);
+        t.avg_call_ms = Some(4230);
+        t.call_count = Some(2);
+        let mut spans = Vec::new();
+        push_latency_span(&mut spans, &t);
+        assert_eq!(spans[1].content, "4.23s/call (avg of 2)");
+
+        let mut half = summary_with(None, None, None, None, None, None);
+        half.avg_call_ms = Some(4230);
+        let mut spans = Vec::new();
+        push_latency_span(&mut spans, &half);
+        assert!(spans.is_empty());
     }
 }

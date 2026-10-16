@@ -661,6 +661,12 @@ impl TopicManager {
                 }
             };
 
+            // Average wall-clock time of one LLM call in this session,
+            // read from the same file the token counters above come from.
+            // `None` until a call is measured, and the panes then omit the
+            // row rather than claim `0 ms`.
+            let call_latency = crate::session_state::read_call_latency(&name, &topic_path).await;
+
             topics.push(TopicInfo {
                 name: name.clone(),
                 channel: self.channel_name.clone(),
@@ -692,6 +698,8 @@ impl TopicManager {
                 branch: branch_for_topic_path(&topic_path),
                 changed_files: changed_files_for_topic_path(&topic_path),
                 cost,
+                avg_call_ms: call_latency.map(|(avg, _)| avg),
+                call_count: call_latency.map(|(_, count)| count),
                 // Filled by InspectServer from build_overview_state /
                 // build_state using the topic's pattern → per-agent commands.
                 commands: vec![],

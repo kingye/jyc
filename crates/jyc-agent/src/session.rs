@@ -65,6 +65,20 @@ pub struct SessionState {
     /// existed deserialize as `0`.
     #[serde(default)]
     pub total_reasoning_tokens: u64,
+    /// Accumulated wall-clock time of every measured LLM call in this
+    /// session, in milliseconds. Accumulated like `session_cost`: each
+    /// call adds its own duration as it completes, so the file keeps the
+    /// sum across turns. Covers the main-loop calls only — ancillary
+    /// calls (compression, cycle summaries) are billed but not timed.
+    /// Reset to 0 with the token counters. `serde(default)` so session
+    /// files written before the field existed deserialize as `0`.
+    #[serde(default)]
+    pub total_call_duration_ms: u64,
+    /// Number of LLM calls folded into `total_call_duration_ms`. The
+    /// per-call average the dashboard shows is the total divided by this
+    /// count; `0` means no call has been measured yet.
+    #[serde(default)]
+    pub call_count: u64,
     /// Max tokens (context window) for the model.
     #[serde(default)]
     pub max_input_tokens: u64,
@@ -418,6 +432,11 @@ pub async fn ensure_session_file(
 /// `call_cost` is the cost of the single call that just completed and is
 /// **added** to `session_cost` (unlike every other field, which is
 /// assigned). Pass `0.0` when the model has no configured pricing.
+///
+/// `call_ms` is that same call's wall-clock time in milliseconds and is
+/// **added** to `total_call_duration_ms`, incrementing `call_count` with
+/// it. Pass `0` when nothing was measured (the post-loop call, whose
+/// duration was already banked per call).
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_tokens(
     topic_name: &str,
@@ -431,6 +450,7 @@ pub async fn persist_tokens(
     context_window: Option<u64>,
     auto_reset_threshold: f64,
     call_cost: f64,
+    call_ms: u64,
 ) {
     let _ = persist_tokens_returning_state(
         topic_name,
@@ -444,6 +464,7 @@ pub async fn persist_tokens(
         context_window,
         auto_reset_threshold,
         call_cost,
+        call_ms,
     )
     .await;
 }
@@ -464,6 +485,7 @@ async fn persist_tokens_returning_state(
     context_window: Option<u64>,
     auto_reset_threshold: f64,
     call_cost: f64,
+    call_ms: u64,
 ) -> (std::path::PathBuf, SessionState) {
     let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
     let mut state = load_session_state(&session_path).await;
@@ -477,6 +499,14 @@ async fn persist_tokens_returning_state(
     // The one accumulating field: each call's cost adds to the session
     // total rather than replacing it.
     state.session_cost += call_cost;
+    // Accumulated the same way, and for the same reason: the caller passes
+    // one call's duration and the file keeps the running sum, so the
+    // mid-loop persist and the post-loop `update_tokens` (which passes 0)
+    // both leave the average intact.
+    if call_ms > 0 {
+        state.total_call_duration_ms += call_ms;
+        state.call_count += 1;
+    }
 
     if let Some(cw) = context_window {
         state.max_input_tokens = (cw as f64 * auto_reset_threshold) as u64;
@@ -537,7 +567,7 @@ pub async fn add_session_cost(topic_name: &str, topic_path: &Path, cost: f64) {
 ///
 /// Does **not** add to `session_cost`: cost is banked per-call inside the
 /// agent loop via `persist_tokens`, so adding here would double-count the
-/// round.
+/// round. The call-latency counters are left alone for the same reason.
 #[allow(clippy::too_many_arguments)]
 pub async fn update_tokens(
     topic_name: &str,
@@ -570,6 +600,9 @@ pub async fn update_tokens(
         auto_reset_threshold,
         // Cost already banked per-call by the agent loop.
         0.0,
+        // Call duration too — this call runs after the loop, so it must
+        // not count as an LLM call of its own.
+        0,
     )
     .await;
 
@@ -610,6 +643,10 @@ pub async fn update_tokens(
             context_window,
             auto_reset_threshold,
             0.0,
+            // Nothing to time, and nothing to keep: `reset_session` just
+            // deleted the file, so the counters start from zero with the
+            // tokens (they are session-scoped, like `session_cost`).
+            0,
         )
         .await;
     }

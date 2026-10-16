@@ -90,6 +90,30 @@ pub async fn read_session_cost(topic_name: &str, topic_path: &Path) -> Option<f6
     (state.session_cost > 0.0).then_some(state.session_cost)
 }
 
+/// Read the average wall-clock time of one LLM call in the current
+/// session, in milliseconds, together with the number of calls that
+/// average covers.
+///
+/// Returns `None` when the file is missing, malformed, or no call has
+/// been measured yet (fresh session, or a session file written before the
+/// fields existed) — nothing meaningful to show.
+///
+/// Kept separate from `read_token_state` rather than widening its tuple,
+/// mirroring `read_session_cost`: one extra read of an already
+/// page-cached file is cheaper than threading more elements through
+/// every tuple consumer.
+pub async fn read_call_latency(topic_name: &str, topic_path: &Path) -> Option<(u64, u64)> {
+    let agent_path = resolve_state_dir(topic_name, topic_path).join("agent-session.json");
+    let content = tokio::fs::read_to_string(&agent_path).await.ok()?;
+    let state = serde_json::from_str::<AgentSessionState>(&content).ok()?;
+    (state.call_count > 0 && state.total_call_duration_ms > 0).then(|| {
+        (
+            state.total_call_duration_ms / state.call_count,
+            state.call_count,
+        )
+    })
+}
+
 /// Read all six token fields in a single file read.
 /// Returns (current_input_tokens, max_input_tokens, output_tokens,
 /// total_input_tokens, total_cache_hit_tokens,
@@ -160,6 +184,10 @@ struct AgentSessionState {
     max_input_tokens: u64,
     #[serde(default)]
     session_cost: f64,
+    #[serde(default)]
+    total_call_duration_ms: u64,
+    #[serde(default)]
+    call_count: u64,
 }
 
 /// Read the mode override file if it exists.

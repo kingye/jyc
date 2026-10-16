@@ -379,6 +379,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         // "AI thinking" state only on that event).
         let tool_defs = tools.definitions();
 
+        // Wall-clock time of the call about to be made, banked into the
+        // session's per-call average once it returns. Started here rather
+        // than inside `complete_with_retry` so the retries and their
+        // backoff are part of what the user waited.
+        let call_started = Instant::now();
         let mut response = match complete_with_retry(
             provider,
             &send_context,
@@ -400,6 +405,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             }
             Err(e) => return Err(e),
         };
+        let call_ms = call_started.elapsed().as_millis() as u64;
 
         // Track tokens across LLM calls in this round:
         // - `context_input_tokens` = input tokens from the most recent LLM call
@@ -499,6 +505,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             context_window,
             auto_reset_threshold,
             call_cost,
+            call_ms,
         )
         .await;
 

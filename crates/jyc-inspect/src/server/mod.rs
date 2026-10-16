@@ -310,6 +310,8 @@ impl InspectServer {
                     branch: t.branch,
                     changed_files: t.changed_files,
                     cost: t.cost,
+                    avg_call_ms: t.avg_call_ms,
+                    call_count: t.call_count,
                     tasks: t.tasks,
                     commands,
                 }

@@ -160,13 +160,16 @@ const fn toggle_shape() -> Shape {
 ///
 /// A handler reads its command line through the very declaration its popup level
 /// and usage line come from, so it cannot accept a line its own row does not
-/// advertise. A name with no row — a custom command's — takes nothing.
+/// advertise.
+///
+/// A name with no row is a caller's mistake, not a command that takes nothing —
+/// a parameterized handler must hold the shape of what it serves rather than
+/// look its own name up (a wrong name here would otherwise read every argument
+/// as one too many, silently and only at runtime).
 pub fn shape_of(name: &str) -> Shape {
-    BUILTIN_COMMANDS
-        .iter()
-        .find(|spec| spec.name == name)
-        .map(|spec| spec.shape)
-        .unwrap_or(Shape::None)
+    let row = BUILTIN_COMMANDS.iter().find(|spec| spec.name == name);
+    debug_assert!(row.is_some(), "no built-in row for {name}");
+    row.map(|spec| spec.shape).unwrap_or(Shape::None)
 }
 
 /// The usage line `name`'s row declares.

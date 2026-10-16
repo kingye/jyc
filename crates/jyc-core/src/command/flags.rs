@@ -2,7 +2,9 @@
 //! popup offers it with.
 //!
 //! Both sides of a flag read the same table. [`rows`] builds the popup's flag
-//! level, and a handler resolves what it was handed through [`find`], so a flag
+//! level, and a handler resolves what it was handed through [`find_spec`] — the
+//! declaration itself, so nothing has to keep a second copy of what a flag takes
+//! — so a flag
 //! cannot be spelled one way in the popup and another way in a handler, and a
 //! new spelling reaches both.
 //!
@@ -93,19 +95,11 @@ pub fn rows<V>(set: &[(V, FlagSpec)]) -> Vec<CommandArg> {
         .collect()
 }
 
-/// Whether `args` carries `flag`.
-///
-/// This is how a switch is read — the shape `/close`, `/new` and `/reset` read
-/// their guard with — where the handler does not walk the line itself.
-pub fn has<V: Copy + PartialEq>(set: &[(V, FlagSpec)], args: &[String], flag: V) -> bool {
-    args.iter().any(|arg| find(set, arg) == Some(flag))
-}
-
 /// The flag `arg` spells, and how it is declared.
 ///
-/// [`find`] is this without the spec, for readers that only want to know which
-/// flag they were handed; the parser wants the declaration too — whether a value
-/// follows, and whether a repeat of it is refused.
+/// What every reader goes through — the parser wants the declaration (whether a
+/// value follows, whether a repeat of it is refused) and nothing else needs the
+/// flag without it, which is why there is no `find`-without-the-spec beside it.
 pub fn find_spec<'a, V: Copy + PartialEq>(
     set: &'a [(V, FlagSpec)],
     arg: &str,
@@ -113,12 +107,6 @@ pub fn find_spec<'a, V: Copy + PartialEq>(
     set.iter()
         .find(|(_, spec)| spells(spec, arg))
         .map(|(flag, spec)| (*flag, spec))
-}
-
-/// The flag `arg` spells, if any — either spelling, spelled exactly: neither
-/// `--forces` nor `--force=yes` is `--force`.
-pub fn find<V: Copy + PartialEq>(set: &[(V, FlagSpec)], arg: &str) -> Option<V> {
-    find_spec(set, arg).map(|(flag, _)| flag)
 }
 
 /// A typed set's declarations, without their enum keys — what the command table
@@ -336,41 +324,39 @@ pub const GRANT_FLAGS: &[(GrantFlag, FlagSpec)] = &[
 mod tests {
     use super::*;
 
-    fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
-    }
-
     #[test]
-    fn find_reads_both_spellings_exactly() {
-        assert_eq!(find(CLOSE_FLAGS, "--force"), Some(CloseFlag::Force));
-        assert_eq!(find(CLOSE_FLAGS, "-f"), Some(CloseFlag::Force));
-        assert_eq!(find(CLOSE_FLAGS, "--purge"), Some(CloseFlag::Purge));
-        assert_eq!(find(CLOSE_FLAGS, "-p"), Some(CloseFlag::Purge));
+    fn find_spec_reads_both_spellings_exactly() {
+        let flag = |set: &'static [(CloseFlag, FlagSpec)], arg: &str| {
+            find_spec(set, arg).map(|(flag, _)| flag)
+        };
+        assert_eq!(flag(CLOSE_FLAGS, "--force"), Some(CloseFlag::Force));
+        assert_eq!(flag(CLOSE_FLAGS, "-f"), Some(CloseFlag::Force));
+        assert_eq!(flag(CLOSE_FLAGS, "--purge"), Some(CloseFlag::Purge));
+        assert_eq!(flag(CLOSE_FLAGS, "-p"), Some(CloseFlag::Purge));
         // Not a spelling of one: a longer name, a case away, a value bolted on.
-        assert_eq!(find(CLOSE_FLAGS, "--forces"), None);
-        assert_eq!(find(CLOSE_FLAGS, "-F"), None);
-        assert_eq!(find(CLOSE_FLAGS, "--force=yes"), None);
-        assert_eq!(find(CLOSE_FLAGS, "-f=yes"), None);
-        assert_eq!(find(CLOSE_FLAGS, "force"), None);
-        assert_eq!(find(CLOSE_FLAGS, ""), None);
+        assert_eq!(flag(CLOSE_FLAGS, "--forces"), None);
+        assert_eq!(flag(CLOSE_FLAGS, "-F"), None);
+        assert_eq!(flag(CLOSE_FLAGS, "--force=yes"), None);
+        assert_eq!(flag(CLOSE_FLAGS, "-f=yes"), None);
+        assert_eq!(flag(CLOSE_FLAGS, "force"), None);
+        assert_eq!(flag(CLOSE_FLAGS, ""), None);
         // A flag with no short spelling has one spelling, and a lone `-` is
         // not it: `/send joe -` sends a dash, it does not set `--reply`.
-        assert_eq!(find(SEND_FLAGS, "--reply"), Some(SendFlag::Reply));
-        assert_eq!(find(SEND_FLAGS, "-"), None);
-        assert_eq!(find(SEND_FLAGS, "--"), None);
+        let send = |arg: &str| find_spec(SEND_FLAGS, arg).map(|(flag, _)| flag);
+        assert_eq!(send("--reply"), Some(SendFlag::Reply));
+        assert_eq!(send("-"), None);
+        assert_eq!(send("--"), None);
     }
 
+    /// The declaration a match reads is the one the popup shows, spellings and
+    /// all.
     #[test]
-    fn has_reads_a_switch_off_the_line() {
-        assert!(has(CLOSE_FLAGS, &args(&["--force"]), CloseFlag::Force));
-        assert!(has(CLOSE_FLAGS, &args(&["-f"]), CloseFlag::Force));
-        assert!(has(
-            CLOSE_FLAGS,
-            &args(&["subagent", "-f", "-p"]),
-            CloseFlag::Purge
-        ));
-        assert!(!has(CLOSE_FLAGS, &args(&["-f"]), CloseFlag::Purge));
-        assert!(!has(CLOSE_FLAGS, &args(&[]), CloseFlag::Force));
+    fn find_spec_hands_back_the_declaration() {
+        let (flag, spec) = find_spec(SEND_FLAGS, "-t").expect("-t is a spelling");
+        assert_eq!(flag, SendFlag::Topic);
+        assert_eq!(spec.long, "topic");
+        assert_eq!(spec.value, Some("topic"));
+        assert!(!spec.once, "a second -t replaces the first");
     }
 
     #[test]

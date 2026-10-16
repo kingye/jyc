@@ -3753,7 +3753,10 @@ table, not a special case in `jyc-cli`.
 - **Trade-off**: the values are computed per topic on every ~500 ms overview
   poll and serialized per topic, so a long model list is repeated for every
   topic (`topics × models`). Leaf entries omit their empty `description`/`args`
-  on the wire to keep that cheap, but the real fix is the lazy per-topic
+  on the wire to keep that cheap — but `usage` is not empty for any row, so it
+  rides the poll as one more string per command per topic (it is skipped when
+  empty, which only helps an older server: a payload without it leaves the
+  description as it is). The real fix is the lazy per-topic
   command fetch in the `TODO(perf)` in the inspect overview builder — which
   also removes the per-poll recompute.
   `/exchange` (a directory scan) and `/ungrant` (agent runtime state) are

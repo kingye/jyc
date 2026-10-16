@@ -10,11 +10,11 @@
 //! what values, which words were positional, and where the trailing text begins.
 //! Whether a value is valid, what it means, and which arguments a command needs
 //! stay with the command, because those sentences are its user interface. The
-//! one thing this module does word is the four refusals the shape itself can
+//! one thing this module does word is the five refusals the shape itself can
 //! raise: a spelling it does not know, a value that did not arrive, a repeat the
-//! declaration forbids, and a word too many. Those used to be written per
-//! command, and two of them did not exist at all — `/close --froce` was silently
-//! read as "no guard given".
+//! declaration forbids, a value handed to a flag that takes none, and a word too
+//! many. Those used to be written per command, and several of them did not exist
+//! at all — `/close --froce` was silently read as "no guard given".
 //!
 //! [`builtin_commands!`]: super::builtin::builtin_commands
 
@@ -102,8 +102,11 @@ pub enum ArgError {
     UnknownFlag {
         /// The word as it was written.
         spelling: String,
-        /// The flags it could have been, or empty when the command has none.
-        known: String,
+        /// What to add in parentheses: the flags that did exist
+        /// (`known: --force, --purge`), or — for a command that declares none —
+        /// the words its shape expects, since a dash-led typo there is likelier
+        /// a mistyped value than a mistyped flag. Empty when there is neither.
+        hint: String,
     },
     /// A value-taking flag was the last word on the line, or was followed by
     /// another flag — which cannot be its value.
@@ -132,11 +135,11 @@ pub enum ArgError {
 impl fmt::Display for ArgError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownFlag { spelling, known } if known.is_empty() => {
+            Self::UnknownFlag { spelling, hint } if hint.is_empty() => {
                 write!(f, "unknown flag {spelling}")
             }
-            Self::UnknownFlag { spelling, known } => {
-                write!(f, "unknown flag {spelling} (known: {known})")
+            Self::UnknownFlag { spelling, hint } => {
+                write!(f, "unknown flag {spelling} ({hint})")
             }
             Self::NeedsValue { spelling } => write!(f, "{spelling} needs a value"),
             Self::GivenTwice { spelling } => write!(f, "{spelling} given twice"),
@@ -216,10 +219,13 @@ pub fn parse<F: Copy + PartialEq>(
             continue;
         }
 
-        if looks_like_a_flag(arg) {
+        // A lone `-` is a word where the shape keeps text (`/send joe -` sends a
+        // dash, and `/spawn -n -` takes one as a value) and a dash-word
+        // anywhere else — `/grant -` is a typo, not a path.
+        if looks_like_a_flag(arg) || (arg == "-" && !keeps_text) {
             return Err(ArgError::UnknownFlag {
                 spelling: arg.to_string(),
-                known: known_list(flags),
+                hint: unknown_hint(flags, shape),
             });
         }
 
@@ -294,6 +300,9 @@ pub fn usage(name: &str, shape: Shape, specs: &[&FlagSpec]) -> String {
         }
         Shape::ThenBody { label, body } => {
             parts.push(format!("<{label}>"));
+            // The parser takes `--` here to end the flags, for text that starts
+            // with a dash — so the line that advertises the text advertises it.
+            parts.push("[--]".to_string());
             parts.push(format!("<{body}>"));
         }
         Shape::Subcommand {
@@ -304,6 +313,7 @@ pub fn usage(name: &str, shape: Shape, specs: &[&FlagSpec]) -> String {
             parts.push(format!("<{}>", values.join("|")));
             parts.extend(labels.iter().map(|label| format!("[{label}]")));
             if let Some(rest) = rest {
+                parts.push("[--]".to_string());
                 parts.push(format!("[{rest}]"));
             }
         }
@@ -362,6 +372,24 @@ fn known_list<F>(flags: &[(F, FlagSpec)]) -> String {
         .map(|(_, spec)| format!("--{}", spec.long))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// What the refusal for a dash-word appends: the flags that existed, or — for a
+/// command that declares none — the words its shape expects.
+///
+/// Without the second case a dash-led typo at `/thinking` (which has no flags)
+/// would read `unknown flag -x` and say nothing about `show`/`hide`; before this
+/// change that command answered by naming them.
+fn unknown_hint<F>(flags: &[(F, FlagSpec)], shape: Shape) -> String {
+    if !flags.is_empty() {
+        return format!("known: {}", known_list(flags));
+    }
+    let expected = shape.expected();
+    if expected.is_empty() {
+        String::new()
+    } else {
+        format!("expected: {expected}")
+    }
 }
 
 impl Shape {
@@ -443,14 +471,48 @@ mod tests {
     }
 
     #[test]
-    fn a_lone_dash_is_a_word_and_a_double_one_is_not() {
-        let parsed = parse_close(&["-"]).unwrap();
-        assert_eq!(parsed.positionals, ["-"]);
-        // `--` is a dash-word where the shape keeps no text, so it is refused
-        // like any other spelling nobody declared.
+    fn a_lone_dash_is_a_word_only_where_text_is_kept() {
+        // `/send`'s shape keeps text, so there the dash is a message word.
+        const SEND: Shape = Shape::ThenBody {
+            label: "agent",
+            body: "message",
+        };
+        let parsed = parse(SEND, SEND_FLAGS, &args(&["joe", "-"])).unwrap();
+        assert_eq!(parsed.body.as_deref(), Some("-"));
+        // Where the shape keeps none it is a dash-word nobody declared: before
+        // the shape was declared, `/grant -` quietly granted `<topic>/-`.
+        assert_eq!(
+            parse_close(&["-"]).unwrap_err().to_string(),
+            "unknown flag - (known: --force, --purge)"
+        );
+        // `--` is a dash-word everywhere it is not the text separator.
         assert_eq!(
             parse_close(&["--"]).unwrap_err().to_string(),
             "unknown flag -- (known: --force, --purge)"
+        );
+    }
+
+    /// A command that declares no flags names what its shape expects, rather
+    /// than staying silent or listing flags that do not exist.
+    #[test]
+    fn an_unknown_flag_falls_back_to_what_the_shape_expects() {
+        const SHAPE: Shape = Shape::Subcommand {
+            values: &["show", "hide"],
+            labels: &[],
+            rest: None,
+        };
+        assert_eq!(
+            parse::<CloseFlag>(SHAPE, &[], &args(&["-x"]))
+                .unwrap_err()
+                .to_string(),
+            "unknown flag -x (expected: show|hide)"
+        );
+        // With nothing to expect either, it says only what it saw.
+        assert_eq!(
+            parse::<CloseFlag>(Shape::None, &[], &args(&["-x"]))
+                .unwrap_err()
+                .to_string(),
+            "unknown flag -x"
         );
     }
 
@@ -535,35 +597,29 @@ mod tests {
         );
     }
 
+    /// The usage lines the *rows* declare — the same strings the popup and `/?`
+    /// show, so this pins the real declaration rather than a copy of it.
     #[test]
-    fn usage_reads_the_shape_and_the_flags() {
+    fn usage_reads_the_rows_shape_and_flags() {
+        use crate::command::builtin::usage_of;
         assert_eq!(
-            usage("/close", CLOSE_ARGS, &flags::specs_of(CLOSE_FLAGS)),
+            usage_of("/close"),
             "/close [subagent|all] [--force] [--purge]"
         );
         assert_eq!(
-            usage(
-                "/send",
-                Shape::ThenBody {
-                    label: "agent",
-                    body: "message"
-                },
-                &flags::specs_of(SEND_FLAGS)
-            ),
-            "/send [--topic <topic>] [--reply] [--attach <file>] [--recipient <id>] <agent> <message>"
+            usage_of("/send"),
+            "/send [--topic <topic>] [--reply] [--attach <file>] [--recipient <id>] <agent> [--] <message>"
         );
-        assert_eq!(usage("/build", Shape::None, &[]), "/build");
+        assert_eq!(usage_of("/build"), "/build");
+        assert_eq!(usage_of("/skill"), "/skill <on|off|reset> [name]");
         assert_eq!(
-            usage(
-                "/skill",
-                Shape::Subcommand {
-                    values: &["on", "off", "reset"],
-                    labels: &["name"],
-                    rest: None
-                },
-                &[]
-            ),
-            "/skill <on|off|reset> [name]"
+            usage_of("/backlog"),
+            "/backlog <push|list|ls|get|pop|rm|set> [--] [text]"
+        );
+        // A shape is read the same way whatever holds it.
+        assert_eq!(
+            usage("/close", CLOSE_ARGS, &flags::specs_of(CLOSE_FLAGS)),
+            "/close [subagent|all] [--force] [--purge]"
         );
     }
 }

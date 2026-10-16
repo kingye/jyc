@@ -229,19 +229,9 @@ mod tests {
             noun: "thing",
             file,
             known: allow_all,
-            // The line `/skill` and `/mcp` declare, as the test's own command
-            // would: a subcommand, then the name it acts on.
-            shape: test_shape(),
-        }
-    }
-
-    /// The shape this handler serves under `.skill()`/`.mcp()`, written out for
-    /// the test double whose name has no row.
-    const fn test_shape() -> Shape {
-        Shape::Subcommand {
-            values: &["on", "off", "reset"],
-            labels: &["name"],
-            rest: None,
+            // The line this handler serves — taken from the row rather than
+            // copied, so a change to `/skill`'s shape reaches the test.
+            shape: super::super::builtin::shape_of("/skill"),
         }
     }
 
@@ -306,7 +296,7 @@ mod tests {
             noun: "thing",
             file: MCP_OVERRIDE_FILE,
             known: |_, _| false,
-            shape: test_shape(),
+            shape: super::super::builtin::shape_of("/skill"),
         };
         let r = run(&h, &["on", "x"], &context).await;
         assert!(r.success);

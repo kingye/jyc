@@ -227,13 +227,15 @@ impl JycAgentService {
                     "- Channel \"{}\" ({})\n",
                     channel_name, channel_type
                 ));
-                // List active topics for this channel
-                let topics = tm.list_topics().await;
+                // List active topics for this channel — names only, which is
+                // all this list needs; `list_topic_names` documents what
+                // resolving each topic's state would cost.
+                let topics = tm.list_topic_names().await;
                 if topics.is_empty() {
                     prompt.push_str("    (no active topics)\n");
                 } else {
-                    for topic_info in &topics {
-                        prompt.push_str(&format!("  - {}\n", topic_info.name));
+                    for name in &topics {
+                        prompt.push_str(&format!("  - {}\n", name));
                     }
                 }
             }

@@ -291,7 +291,18 @@ impl TopicManager {
     /// topic closes, and a shared subagent's pin names a topic that closes with
     /// this one. Both would keep a purged dir alive forever, so the filter asks
     /// [`pin_still_held_by_another`] rather than trusting the map.
-    async fn other_topic_dirs(&self, self_name: &str) -> Vec<(String, PathBuf)> {
+    ///
+    /// `own_namespace` — this topic's own state dir, resolved — is skipped in
+    /// the workspace listing only: a state namespace is not a dir somebody works
+    /// in, and on the agents channel the workspace **is** the agents dir, so its
+    /// children include a topic's own namespace (`_home_me_repo` for an ad-hoc
+    /// topic on `/home/me/repo`). A *pin* on that same dir is another matter and
+    /// still counts — that is a topic sharing it on purpose.
+    async fn other_topic_dirs(
+        &self,
+        self_name: &str,
+        own_namespace: Option<&Path>,
+    ) -> Vec<(String, PathBuf)> {
         let mut dirs: Vec<(String, PathBuf)> = self
             .custom_topic_paths()
             .await
@@ -303,9 +314,13 @@ impl TopicManager {
         if let Ok(entries) = std::fs::read_dir(self.storage.workspace()) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if name != self_name && entry.path().is_dir() {
-                    dirs.push((name, entry.path()));
+                if name == self_name || !entry.path().is_dir() {
+                    continue;
                 }
+                if Some(crate::topic_path::resolved(&entry.path()).as_path()) == own_namespace {
+                    continue; // this topic's own state namespace
+                }
+                dirs.push((name, entry.path()));
             }
         }
         dirs
@@ -329,11 +344,8 @@ impl TopicManager {
         own_namespace: Option<&Path>,
     ) -> Option<String> {
         let dir = crate::topic_path::resolved(dir);
-        for (name, other) in self.other_topic_dirs(self_name).await {
+        for (name, other) in self.other_topic_dirs(self_name, own_namespace).await {
             let other = crate::topic_path::resolved(&other);
-            if Some(other.as_path()) == own_namespace {
-                continue; // this topic's own state namespace, not a holder
-            }
             if other == dir || path_is_under(&other, &dir).await {
                 return Some(name);
             }
@@ -406,7 +418,7 @@ impl TopicManager {
 
         let mut shared = Vec::new();
         let mut nested = Vec::new();
-        for (name, pin) in self.other_topic_dirs(topic_name).await {
+        for (name, pin) in self.other_topic_dirs(topic_name, None).await {
             if crate::topic_path::resolved(&pin) == path {
                 shared.push(name);
             } else if path_is_under(&pin, &path).await {

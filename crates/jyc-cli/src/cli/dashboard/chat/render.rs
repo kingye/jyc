@@ -44,6 +44,36 @@ pub(super) fn truncate_to_width(s: &str, max_width: usize) -> String {
     out
 }
 
+/// Like [`truncate_to_width`], but keeps the **end** of a long string. A typed
+/// answer is appended to as it is written, so its tail is the part the user
+/// needs to see — the head is what they already said. One column pays for the
+/// leading ellipsis that says text was cut.
+pub(super) fn tail_to_width(s: &str, max_width: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if max_width == 0 {
+        return String::new();
+    }
+    if s.width() <= max_width {
+        return s.to_string();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+    let keep = max_width - 1; // reserve 1 col for the ellipsis
+    let mut kept: Vec<char> = Vec::new();
+    let mut used = 0usize;
+    for ch in s.chars().rev() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > keep {
+            break;
+        }
+        used += w;
+        kept.push(ch);
+    }
+    kept.reverse();
+    format!("…{}", kept.into_iter().collect::<String>())
+}
+
 /// Fingerprint of the message history + pane width used to invalidate
 /// `ChatState::render_cache`. Covers every message mutation in the
 /// codebase (push, last-message streaming append, clear) — messages are

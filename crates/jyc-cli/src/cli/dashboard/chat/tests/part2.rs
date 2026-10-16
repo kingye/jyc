@@ -1090,6 +1090,21 @@ fn truncate_to_width_counts_cjk_as_two_columns() {
     assert_eq!(out, "你…");
 }
 
+/// The mirror image for a typed answer: its end is what is being written, so a
+/// long one loses its head instead of its tail.
+#[test]
+fn tail_to_width_keeps_the_end() {
+    assert_eq!(tail_to_width("hi", 5), "hi");
+    assert_eq!(tail_to_width("hello world", 6), "…world");
+    assert_eq!(tail_to_width("abc", 1), "…");
+    assert_eq!(tail_to_width("abc", 0), "");
+    // Same width accounting as the head-first cut: a wide char that does not
+    // fit beside the ellipsis is dropped, not covered up.
+    let out = tail_to_width("世界你好", 5);
+    assert_eq!(out, "…你好");
+    assert_eq!(out.width(), 5);
+}
+
 #[test]
 fn softbreaks_become_hardbreaks_outside_fences() {
     assert_eq!(
@@ -1371,6 +1386,137 @@ fn skipping_one_question_keeps_the_other_answer() {
     assert_eq!(sent_text(&mut rx), "Q1: (skipped)\nQ2: 2) d");
 }
 
+/// The list ends with the user's own answer: an option set can only offer what
+/// the model thought of, and a decision point sometimes needs words none of the
+/// options hold. Enter on that row types one, and it answers for its question on
+/// its own line - no option number, so the model can tell it from a pick.
+#[test]
+fn a_typed_answer_answers_for_its_question() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
+
+    chat.select_question_next(); // -> b
+    chat.select_question_next(); // -> the ✎ row, the list's last one
+    chat.select_question_next(); // clamped there: it is the end
+    assert_eq!(
+        chat.current_question().expect("q1").selected,
+        2,
+        "the cursor must reach the ✎ row and stop"
+    );
+    chat.confirm_question(); // start typing
+    for c in "it's fine".chars() {
+        chat.push_typed_char(c);
+    }
+    chat.confirm_question(); // keep it and send the batch
+
+    assert_eq!(sent_text(&mut rx), "Q1: it's fine");
+}
+
+/// Esc in the draft hands the box back to the list, draft and all — so the
+/// options still answer, and nothing half-typed rides out with the batch.
+#[test]
+fn escaping_the_draft_lets_the_options_answer_again() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
+
+    chat.select_question_next();
+    chat.select_question_next();
+    chat.confirm_question();
+    chat.push_typed_char('x');
+    chat.cancel_typed_answer();
+    assert!(!chat.question_typing, "Esc must close the draft");
+    assert_eq!(
+        chat.current_question().expect("q1").typed.as_deref(),
+        Some("x"),
+        "the draft is kept, so coming back to it does not mean retyping"
+    );
+    chat.select_question_prev(); // back to an option
+    chat.select_question_prev(); // and to the first one
+    chat.confirm_question(); // which settles the question
+
+    assert_eq!(sent_text(&mut rx), "Q1: 1) a");
+}
+
+/// A typed answer belongs to its question: stepping to the next one and back
+/// finds it again, ready to be edited rather than retyped.
+#[test]
+fn a_typed_answer_waits_for_its_own_question() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
+    chat.handle_question_event(&question_payload("jyc", "q2", &["c", "d"]));
+
+    chat.select_question_next();
+    chat.select_question_next();
+    chat.confirm_question();
+    for c in "mine".chars() {
+        chat.push_typed_char(c);
+    }
+    chat.confirm_question(); // q1 answered, on to q2
+    assert!(
+        !chat.question_typing,
+        "the draft belongs to the question left behind"
+    );
+    chat.step_question(-1); // back to q1
+
+    let q1 = chat.current_question().expect("q1 again");
+    assert_eq!(q1.typed.as_deref(), Some("mine"));
+    assert_eq!(q1.selected, 2, "the cursor comes back to the ✎ row");
+    chat.confirm_question(); // reopen the draft, not a second answer
+    for c in " now".chars() {
+        chat.push_typed_char(c);
+    }
+    chat.confirm_question(); // q1 again, on to q2
+    chat.confirm_question(); // q2's first option
+
+    assert_eq!(sent_text(&mut rx), "Q1: mine now\nQ2: 1) c");
+}
+
+/// Space on the `✎` row opens the draft in a multi-select question too. The row
+/// is not an option, so marking it would put a phantom index in the answer -
+/// invisible on screen, dropped at submit - and would wipe what was typed.
+#[test]
+fn space_on_the_typed_row_opens_the_draft_in_multi() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload_multi("jyc", "q1", &["a", "b"]));
+
+    chat.space_question(); // mark a
+    chat.select_question_next();
+    chat.select_question_next(); // -> the ✎ row
+    chat.space_question(); // opens the draft instead of marking index 2
+    assert!(chat.question_typing, "Space on the ✎ row opens the draft");
+    assert_eq!(
+        chat.current_question().expect("q1").marked,
+        vec![0],
+        "the only mark is the option the user marked"
+    );
+    for c in "both".chars() {
+        chat.push_typed_char(c);
+    }
+    chat.confirm_question(); // the typed answer answers for it
+
+    assert_eq!(sent_text(&mut rx), "Q1: both");
+}
+
+/// A popup or a leader session left over from before the question frame landed
+/// is closed with it. Either one would otherwise take the box's Enter - the
+/// popup's fires the highlighted slash command instead of keeping the answer -
+/// and its Esc, so the question could not be answered at all.
+#[test]
+fn a_question_frame_closes_the_popup_and_the_leader() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.command_popup = Some(CommandPopupState::new());
+    chat.leader = Some(leader::Leader::new(local_commands::CommandScope::Chat));
+
+    chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
+
+    assert!(chat.command_popup.is_none(), "the box owns the keyboard");
+    assert!(chat.leader.is_none(), "and so does the leader session");
+
+    // Which is what Enter then proves: it answers rather than firing a command.
+    chat.confirm_question();
+    assert_eq!(sent_text(&mut rx), "Q1: 1) a");
+}
+
 /// Going back is free precisely because the answer is still buffered: the
 /// earlier question keeps its marks.
 #[test]
@@ -1461,9 +1607,14 @@ fn selection_clamps_at_bounds() {
     chat.select_question_prev(); // already at top
     assert_eq!(chat.current_question().unwrap().selected, 0);
     chat.select_question_next();
+    chat.select_question_next(); // -> the ✎ row
     chat.select_question_next(); // past bottom
     chat.select_question_next();
-    assert_eq!(chat.current_question().unwrap().selected, 1);
+    assert_eq!(
+        chat.current_question().unwrap().selected,
+        2,
+        "the cursor stops on the `✎` row, the list's last one"
+    );
 }
 
 #[test]

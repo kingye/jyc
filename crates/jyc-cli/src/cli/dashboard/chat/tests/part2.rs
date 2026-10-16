@@ -1412,10 +1412,10 @@ fn a_typed_answer_answers_for_its_question() {
     assert_eq!(sent_text(&mut rx), "Q1: it's fine");
 }
 
-/// Esc in the draft leaves the question unanswered as typed, so the options stay
-/// in charge and no empty answer rides out with the batch.
+/// Esc in the draft hands the box back to the list, draft and all — so the
+/// options still answer, and nothing half-typed rides out with the batch.
 #[test]
-fn escaping_the_draft_leaves_the_options_in_charge() {
+fn escaping_the_draft_lets_the_options_answer_again() {
     let (mut chat, mut rx) = chat_for_topic("jyc");
     chat.handle_question_event(&question_payload("jyc", "q1", &["a", "b"]));
 
@@ -1425,7 +1425,13 @@ fn escaping_the_draft_leaves_the_options_in_charge() {
     chat.push_typed_char('x');
     chat.cancel_typed_answer();
     assert!(!chat.question_typing, "Esc must close the draft");
-    chat.confirm_question(); // the highlighted option settles it
+    assert_eq!(
+        chat.current_question().expect("q1").typed.as_deref(),
+        Some("x"),
+        "the draft is kept, so coming back to it does not mean retyping"
+    );
+    chat.select_question_prev(); // back to an option, cursor first
+    chat.confirm_question(); // which settles the question
 
     assert_eq!(sent_text(&mut rx), "Q1: 1) a");
 }
@@ -1554,9 +1560,14 @@ fn selection_clamps_at_bounds() {
     chat.select_question_prev(); // already at top
     assert_eq!(chat.current_question().unwrap().selected, 0);
     chat.select_question_next();
+    chat.select_question_next(); // -> the ✎ row
     chat.select_question_next(); // past bottom
     chat.select_question_next();
-    assert_eq!(chat.current_question().unwrap().selected, 1);
+    assert_eq!(
+        chat.current_question().unwrap().selected,
+        2,
+        "the cursor stops on the `✎` row, the list's last one"
+    );
 }
 
 #[test]

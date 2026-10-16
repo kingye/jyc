@@ -1019,7 +1019,7 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
         // goes back to the options.
         if app.chat.question_typing {
             match key.code {
-                KeyCode::Enter => app.chat.accept_typed_answer(),
+                KeyCode::Enter => app.chat.confirm_question(),
                 KeyCode::Esc => app.chat.cancel_typed_answer(),
                 KeyCode::Backspace => app.chat.pop_typed_char(),
                 KeyCode::Char(c) => app.chat.push_typed_char(c),
@@ -3272,6 +3272,8 @@ impl ChatState {
             }
             if q.multi {
                 toggle_marked(&mut q.marked, idx);
+                // Marking is an answer too, and it replaces a typed one.
+                q.typed = None;
                 return;
             }
             q.selected = idx;
@@ -3293,20 +3295,40 @@ impl ChatState {
         }
         if let Some(q) = self.current_question_mut() {
             toggle_marked(&mut q.marked, q.selected);
+            // Marking is an answer too, and it replaces a typed one.
+            q.typed = None;
         }
     }
 
     /// Enter: settle the current question and step to the next one; on the
     /// last question, send every answer at once. Nothing leaves before that,
-    /// which is what keeps `←/→` able to revisit an answer. On the list's `✎`
-    /// row Enter starts a typed answer instead - that row has no option to
-    /// settle.
+    /// which is what keeps `←/→` able to revisit an answer.
+    ///
+    /// Enter means whatever the row under the cursor means: while a draft is
+    /// open it keeps what was typed, on the list's `✎` row it opens one, on an
+    /// option it settles the question. The key handler routes every Enter here
+    /// so this stays the one place that decides.
     fn confirm_question(&mut self) {
+        if self.question_typing {
+            self.accept_typed_answer();
+            return;
+        }
         if self.on_typed_row() {
             self.begin_typed_answer();
             return;
         }
+        // An option settles this question, so a draft left from an earlier
+        // attempt goes: a pick and a typed answer replace each other, and the
+        // one that stands should be the one the user reached for last.
+        self.discard_typed_answer();
         self.advance_or_submit();
+    }
+
+    /// Drop the current question's typed answer, leaving the list to answer it.
+    fn discard_typed_answer(&mut self) {
+        if let Some(q) = self.current_question_mut() {
+            q.typed = None;
+        }
     }
 
     /// Move on to the next question, or send the batch when this was the last

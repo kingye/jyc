@@ -1392,12 +1392,12 @@ fn long_question_context_fills_ten_rows_on_a_tall_terminal() {
     // A 60-row terminal affords the whole cap, and the layout counts the same
     // rows the box draws.
     assert_eq!(
-        question_context_budget("Which one?", 2, 1, 78, 53, false),
+        question_context_budget("Which one?", 3, 1, 78, 53, false),
         QUESTION_CONTEXT_ROWS
     );
     assert_eq!(
-        question_chrome_rows("Which one?", Some(&long), 2, 1, 78, 53, false),
-        question_chrome_rows("Which one?", None, 2, 1, 78, 53, false) + QUESTION_CONTEXT_ROWS + 1,
+        question_chrome_rows("Which one?", Some(&long), 3, 1, 78, 53, false),
+        question_chrome_rows("Which one?", None, 3, 1, 78, 53, false) + QUESTION_CONTEXT_ROWS + 1,
         "the layout must measure exactly what the box draws"
     );
 }
@@ -1426,8 +1426,10 @@ fn a_short_terminal_shrinks_the_context_not_the_options() {
     );
     // An 18-row screen hands the chat pane 18 rows of body, and that is what
     // the box measured — the same number `input_area_rows` is handed below.
+    // `3` is the list's two options plus the `✎` row closing it: the box draws
+    // that row too, so it is part of what the budget is measured against.
     assert_eq!(
-        question_context_budget("Which one?", 2, 1, 78, 18, false),
+        question_context_budget("Which one?", 3, 1, 78, 18, false),
         drawn,
         "the budget is what the box draws"
     );

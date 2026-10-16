@@ -63,14 +63,18 @@ pub fn has<V: Copy + PartialEq>(set: &[(V, FlagSpec)], args: &[String], flag: V)
     args.iter().any(|arg| find(set, arg) == Some(flag))
 }
 
-/// Whether `arg` is one of `spec`'s spellings.
+/// Whether `arg` is one of `spec`'s spellings, spelled exactly: neither
+/// `--forces` nor `--force=yes` is `--force`.
+///
+/// A flag with no short spelling has exactly one spelling, and a lone `-` is
+/// nobody's: it is a message word (`/send joe -`), not a flag.
 fn spells(spec: &FlagSpec, arg: &str) -> bool {
-    match arg.strip_prefix("--") {
-        Some(long) => long == spec.long,
-        None => match arg.strip_prefix('-') {
-            Some(short) => short.chars().eq(spec.short),
-            None => false,
-        },
+    if let Some(long) = arg.strip_prefix("--") {
+        return long == spec.long;
+    }
+    match (arg.strip_prefix('-'), spec.short) {
+        (Some(short), Some(c)) => short.chars().eq(Some(c)),
+        _ => false,
     }
 }
 
@@ -240,6 +244,11 @@ mod tests {
         assert_eq!(find(CLOSE_FLAGS, "-f=yes"), None);
         assert_eq!(find(CLOSE_FLAGS, "force"), None);
         assert_eq!(find(CLOSE_FLAGS, ""), None);
+        // A flag with no short spelling has one spelling, and a lone `-` is
+        // not it: `/send joe -` sends a dash, it does not set `--reply`.
+        assert_eq!(find(SEND_FLAGS, "--reply"), Some(SendFlag::Reply));
+        assert_eq!(find(SEND_FLAGS, "-"), None);
+        assert_eq!(find(SEND_FLAGS, "--"), None);
     }
 
     #[test]

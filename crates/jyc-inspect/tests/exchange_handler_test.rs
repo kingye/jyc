@@ -1,7 +1,9 @@
-//! End-to-end `/exchange` tests that need a real `TopicManager`.
+//! End-to-end `/exchange` tests.
 //!
-//! The unit tests in `jyc-core` cover formatting; these cover topic-name
-//! resolution, which is the part that can silently emit a 403 link.
+//! The unit tests in `jyc-core` cover formatting; these cover the URL's topic
+//! name — taken from the command context, never from the directory basename,
+//! which for a topic sharing a directory names its parent. That is the part
+//! that can silently emit a 403 link.
 
 use arc_swap::ArcSwap;
 use std::path::{Path, PathBuf};

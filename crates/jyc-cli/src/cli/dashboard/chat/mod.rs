@@ -2297,9 +2297,9 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App, body
 }
 
 /// Zero-alloc snapshot of the data the chat status line needs. All fields
-/// borrow directly from the polled `InspectOverview`. Missing fields
-/// fall back to placeholders so the line still reads as
-/// `build · jyc` before the first poll.
+/// borrow directly from the polled `InspectOverview`. Missing fields are
+/// dropped rather than filled in: with no `state` yet, the line is just the
+/// mode.
 struct ChatHeaderCtx<'a> {
     mode: &'a str,
     topic: Option<&'a str>,
@@ -2636,6 +2636,12 @@ impl ChatState {
         // Replace the old receiver with the new one
         self.ws_rx = event_rx;
 
+        // A channel-less binding is not merely degraded — it cannot talk:
+        // the bare URL is served by the first websocket handler, with no
+        // topic scope, and the frames this session sends carry no topic for
+        // the server to route (it drops them). Its pane, status line and
+        // command list still resolve — which is why the shared topic lookup
+        // tolerates a missing channel.
         let url = match channel {
             Some(ch) => format!("ws://{}/ws/{}/{}", addr, ch, topic),
             None => format!("ws://{}/ws", addr),

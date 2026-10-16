@@ -94,7 +94,11 @@ impl TopicManager {
     ///
     /// The subagents go first, and through [`Self::close_one_topic_under`]:
     /// this method *is* the cascade, so a child must not run it again.
-    async fn close_topic_under(&self, topic_name: &str, agents_dir: &Path) -> Result<()> {
+    pub(crate) async fn close_topic_under(
+        &self,
+        topic_name: &str,
+        agents_dir: &Path,
+    ) -> Result<()> {
         for child in self.subagent_closure(topic_name) {
             if let Err(e) = self.close_one_topic_under(&child, agents_dir).await {
                 tracing::warn!(
@@ -183,36 +187,53 @@ impl TopicManager {
             // of the pipe that owns this dir); the guards mirror
             // `purge_topic_dir_under`'s.
             let home = state.parent();
-            let inside = match home {
+            // Contents are taken only from a home this call can place under an
+            // agents root. One it cannot — `/close` resolves the platform root,
+            // a test works in a root of its own — is treated as it always was:
+            // an emptied dir goes, anything in it stays. No contents on a guess.
+            let known = match home {
                 Some(home) => {
                     path_is_under(home, agents_dir).await
                         || path_is_under(home, &crate::topic_path::agents_dir(&self.data_dir)).await
                 }
                 None => false,
             };
-            if let Some(home) = home.filter(|_| inside) {
-                match self.dir_holder(topic_name, home).await {
-                    Some(holder) => tracing::info!(
+            if let Some(home) = home {
+                if let Some(holder) = self.dir_holder(topic_name, home).await {
+                    tracing::info!(
                         topic = %topic_name,
                         dir = %home.display(),
                         holder = %holder,
                         "Topic home kept: another topic works in it or lives inside it"
-                    ),
-                    None => {
-                        remove_topic_dir(topic_name, home).await?;
+                    );
+                } else if known {
+                    remove_topic_dir(topic_name, home).await?;
+                    tracing::info!(
+                        topic = %topic_name,
+                        dir = %home.display(),
+                        "Topic home deleted with its state"
+                    );
+                } else {
+                    // A home this call cannot place under a root takes no
+                    // contents: an emptied working dir goes with its state, the
+                    // way it always did, and anything else stays.
+                    if state.parent() == Some(crate::topic_path::topic_home(&topic_path)) {
+                        let _ = tokio::fs::remove_dir(&topic_path).await;
+                    }
+                    if tokio::fs::remove_dir(home).await.is_ok() {
                         tracing::info!(
                             topic = %topic_name,
                             dir = %home.display(),
-                            "Topic home deleted with its state"
+                            "Emptied topic dir removed with its state"
+                        );
+                    } else {
+                        tracing::info!(
+                            topic = %topic_name,
+                            dir = %home.display(),
+                            "Topic state dir deleted; topic dir kept (not under a root this call resolved)"
                         );
                     }
                 }
-            } else {
-                tracing::info!(
-                    topic = %topic_name,
-                    state = %state.display(),
-                    "Topic state dir deleted; its directory is outside the agents tree and is kept"
-                );
             }
             self.cleanup_topic_state(topic_name).await;
             return Ok(());
@@ -424,7 +445,10 @@ impl TopicManager {
             );
             return Ok(false);
         }
-        self.close_topic(topic_name).await?;
+        // `close_topic_under`, not `close_topic`: the deletion has to weigh the
+        // home against the root this close was called with, or an auto-close
+        // for one agents dir would take the contents of a dir under another.
+        self.close_topic_under(topic_name, agents_dir).await?;
         Ok(true)
     }
 

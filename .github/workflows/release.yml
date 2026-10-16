@@ -31,7 +31,7 @@ jobs:
             target: aarch64-apple-darwin
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -87,7 +87,7 @@ jobs:
       # workspace's contents, which would otherwise take the downloaded
       # artifacts with it.
       - name: Checkout (for the plugin archive contents)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # The plugin archive: the user-editable collections this repo ships, in
       # the layout `jyc plugins install` expects at an archive (or directory)

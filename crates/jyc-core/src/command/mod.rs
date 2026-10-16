@@ -22,6 +22,7 @@ pub mod reset_handler;
 pub mod send_handler;
 pub mod spawn_common;
 pub mod spawn_handler;
+pub mod spec;
 pub mod template_handler;
 pub mod thinking_handler;
 pub mod toggle_handler;

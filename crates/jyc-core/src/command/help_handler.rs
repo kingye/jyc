@@ -39,7 +39,7 @@ impl CommandHandler for HelpCommandHandler {
             help.push_str(&format!(
                 "  {:width$}  — {}\n",
                 cmd.name,
-                cmd.description,
+                cmd.summary(),
                 width = width
             ));
         }

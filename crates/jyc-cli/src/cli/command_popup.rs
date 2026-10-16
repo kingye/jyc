@@ -152,7 +152,7 @@ fn command_rows(commands: &[CommandInfo], partial: &str) -> Vec<PopupItem> {
         })
         .map(|c| PopupItem {
             text: c.name.clone(),
-            description: c.description.clone(),
+            description: c.summary(),
             has_children: !c.args.is_empty(),
         })
         .collect()

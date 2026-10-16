@@ -2,8 +2,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 
-use super::flags::{self, CONFIRM_FLAGS, ConfirmFlag};
+use super::flags::{CONFIRM_FLAGS, ConfirmFlag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::spec::{self, ArgError, Parsed};
 
 /// /new command — reset session, clear chat history, and clear
 /// exchange-published files (+ token) for this topic.
@@ -50,18 +51,27 @@ async fn delete_glob_files(pattern: &std::path::Path) -> u64 {
 pub struct NewCommandHandler;
 
 impl NewCommandHandler {
-    /// Returns `true` if the args carry the explicit guard flag (`-f`/`--force`).
-    fn is_forced(args: &[String]) -> bool {
-        flags::has(CONFIRM_FLAGS, args, ConfirmFlag::Force)
+    /// Read this command's line through the shape `/new`'s row declares: no
+    /// arguments, and the guard flag the row names.
+    ///
+    /// A word where none belongs is refused rather than ignored, and so is a
+    /// dash-word no one declared.
+    fn parse(args: &[String]) -> Result<Parsed<ConfirmFlag>, ArgError> {
+        spec::parse_command("/new", CONFIRM_FLAGS, args)
     }
 }
 
 #[async_trait]
 impl CommandHandler for NewCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
+        let parsed = match Self::parse(&context.args) {
+            Ok(parsed) => parsed,
+            Err(error) => return Ok(CommandResult::refusal(error.to_string())),
+        };
+
         // Require --force to prevent accidentally wiping the session and
         // chat history. Plain /new returns a warning instead.
-        if !Self::is_forced(&context.args) {
+        if !parsed.has(ConfirmFlag::Force) {
             return Ok(CommandResult {
                 success: true,
                 message: "⚠️  /new will PERMANENTLY delete this topic's session and chat \
@@ -223,9 +233,25 @@ mode = "agent"
     /// `-f` is the same guard `--force` is, off the declaration `/close` reads.
     #[test]
     fn is_forced_reads_the_short_guard_spelling() {
-        assert!(NewCommandHandler::is_forced(&["-f".to_string()]));
-        assert!(NewCommandHandler::is_forced(&["--force".to_string()]));
-        assert!(!NewCommandHandler::is_forced(&[]));
+        let forced = |items: &[&str]| {
+            NewCommandHandler::parse(&items.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                .unwrap()
+                .has(ConfirmFlag::Force)
+        };
+        assert!(forced(&["-f"]));
+        assert!(forced(&["--force"]));
+        assert!(!forced(&[]));
+    }
+
+    /// A word where `/new` takes none is refused rather than ignored.
+    #[test]
+    fn a_stray_argument_is_refused() {
+        assert!(
+            NewCommandHandler::parse(&["joe".to_string()])
+                .unwrap_err()
+                .to_string()
+                .starts_with("too many arguments")
+        );
     }
 
     #[tokio::test]

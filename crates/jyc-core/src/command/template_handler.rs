@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::spec;
 use crate::template_utils::{copy_template_files, overwrite_template_files};
 
 pub struct TemplateCommandHandler;
@@ -10,7 +11,11 @@ pub struct TemplateCommandHandler;
 #[async_trait]
 impl CommandHandler for TemplateCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let subcommand = context.args.first().map(|s| s.as_str());
+        let parsed = match spec::parse_plain("/template", &context.args) {
+            Ok(parsed) => parsed,
+            Err(error) => return Ok(CommandResult::refusal(error.to_string())),
+        };
+        let subcommand = parsed.positionals.first().map(String::as_str);
 
         match subcommand {
             Some("update") => self.execute_update(&context).await,

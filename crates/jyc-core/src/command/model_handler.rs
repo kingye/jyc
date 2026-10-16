@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use jyc_types::{ModelInfo, ProviderDef};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::spec;
 use crate::session_state;
 
 /// /model command — switch AI model for this topic.
@@ -58,7 +59,12 @@ impl CommandHandler for ModelCommandHandler {
         )
         .await;
 
-        if context.args.is_empty() {
+        let parsed = match spec::parse_plain("/model", &context.args) {
+            Ok(parsed) => parsed,
+            Err(error) => return Ok(CommandResult::refusal(error.to_string())),
+        };
+
+        if parsed.positionals.is_empty() {
             // /model — list all available models
             let models = list_available_models(providers);
             if models.is_empty() {
@@ -81,7 +87,7 @@ impl CommandHandler for ModelCommandHandler {
                 error: None,
                 append_body: None,
             })
-        } else if context.args.len() == 1 && context.args[0] == "reset" {
+        } else if parsed.positionals.len() == 1 && parsed.positionals[0] == "reset" {
             // /model reset — remove mode-specific and legacy overrides
             let plan_path = state_dir.join("plan-model-override");
             let build_path = state_dir.join("build-model-override");
@@ -110,7 +116,7 @@ impl CommandHandler for ModelCommandHandler {
             }
         } else {
             // /model <provider/model-id> — switch model
-            let model_id = context.args[0].clone();
+            let model_id = parsed.positionals[0].clone();
 
             // Validate format: must be "provider/model-id"
             match model_id.split_once('/') {

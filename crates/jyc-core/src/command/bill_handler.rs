@@ -17,6 +17,7 @@ use jyc_types::config::{BillingMode, DEFAULT_CURRENCY};
 use jyc_types::{AppConfig, format_amount};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::spec;
 use crate::billing_log_store::BillingLogStore;
 
 pub struct BillCommandHandler;
@@ -24,7 +25,17 @@ pub struct BillCommandHandler;
 #[async_trait]
 impl CommandHandler for BillCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let scope = match parse_scope(&context.args) {
+        let parsed = match spec::parse_plain("/bill", &context.args) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                return Ok(CommandResult {
+                    success: false,
+                    message: error.to_string(),
+                    ..Default::default()
+                });
+            }
+        };
+        let scope = match parse_scope(&parsed.positionals) {
             Ok(scope) => scope,
             Err(message) => {
                 return Ok(CommandResult {

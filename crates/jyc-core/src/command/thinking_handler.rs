@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::spec;
 
 /// `/thinking` command - control whether AI thinking/reasoning content is
 /// sent to the dashboard.
@@ -18,8 +19,12 @@ pub struct ThinkingCommandHandler;
 #[async_trait]
 impl CommandHandler for ThinkingCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
-        let arg = context
-            .args
+        let parsed = match spec::parse_plain("/thinking", &context.args) {
+            Ok(parsed) => parsed,
+            Err(error) => return Ok(CommandResult::refusal(error.to_string())),
+        };
+        let arg = parsed
+            .positionals
             .first()
             .map(|s| s.to_lowercase())
             .unwrap_or_default();

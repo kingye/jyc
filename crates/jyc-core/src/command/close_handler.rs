@@ -3,10 +3,11 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::flags::{self, CLOSE_FLAGS, CloseFlag};
+use super::flags::{CLOSE_FLAGS, CloseFlag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use super::send_handler::{SendRequest, SendSource, send_to_topic};
 use super::spawn_handler::{format_subagent_names, subagents_of};
+use super::spec::{self, ArgError, Parsed};
 use crate::topic_manager::{PurgeOutcome, TopicManager};
 
 /// /close command — close a topic, and with `--purge` delete its directory too.
@@ -19,33 +20,14 @@ impl CloseCommandHandler {
         Self { topic_manager }
     }
 
-    /// Returns `true` if the args carry the explicit guard flag (`-f`/`--force`).
+    /// Read this command's line: the shape `/close`'s row declares, and the
+    /// flags this handler matches on.
     ///
-    /// Plain `/close` (no args) returns `false` so the handler can emit a
-    /// warning instead of deleting (mirrors `/new`).
-    fn is_forced(args: &[String]) -> bool {
-        flags::has(CLOSE_FLAGS, args, CloseFlag::Force)
-    }
-
-    /// Returns `true` if the args ask for the topic directory to go as well
-    /// (`-p`/`--purge`).
-    ///
-    /// Only meaningful together with `--force`: `/close` alone never deletes
-    /// anything, whatever else it is given.
-    fn is_purged(args: &[String]) -> bool {
-        flags::has(CLOSE_FLAGS, args, CloseFlag::Purge)
-    }
-
-    /// The word in the args that names what to close, if any.
-    ///
-    /// `all` is a keyword: a subagent that happens to be called `all` is closed
-    /// as part of the batch rather than by name. Flags are not names, and the
-    /// blank check keeps a stray empty word — which args built with
-    /// `split_whitespace` cannot normally produce — from reading as one.
-    fn target(args: &[String]) -> Option<&str> {
-        args.iter()
-            .map(String::as_str)
-            .find(|a| !a.starts_with('-') && !a.trim().is_empty())
+    /// What to close is the first positional word, so a flag is never read as a
+    /// name: `all` stays a keyword — a subagent that happens to be called `all`
+    /// is closed as part of the batch rather than by name.
+    fn parse(args: &[String]) -> Result<Parsed<CloseFlag>, ArgError> {
+        spec::parse_command("/close", CLOSE_FLAGS, args)
     }
 
     /// Send `body` to a subagent, so that topic's own queue runs it.
@@ -83,8 +65,8 @@ impl CloseCommandHandler {
 
     /// What a subagent is told to run: the very `/close` a user would type in
     /// that topic, forced — the guard on this side has already passed.
-    fn close_body(args: &[String]) -> &'static str {
-        if Self::is_purged(args) {
+    fn close_body(parsed: &Parsed<CloseFlag>) -> &'static str {
+        if parsed.has(CloseFlag::Purge) {
             "/close --force --purge"
         } else {
             "/close --force"
@@ -123,6 +105,7 @@ impl CloseCommandHandler {
         &self,
         context: &CommandContext,
         target: &str,
+        parsed: &Parsed<CloseFlag>,
     ) -> Result<CommandResult> {
         let children = subagents_of(&context.topic_name);
         let names = match Self::subagent_targets(target, &children) {
@@ -143,7 +126,7 @@ impl CloseCommandHandler {
 
         // The same guard closing this topic has: the batch is not fired by a
         // typo, and the warning names what will go.
-        if !Self::is_forced(&context.args) {
+        if !parsed.has(CloseFlag::Force) {
             let what = if names.len() == 1 {
                 format!("subagent '{}'", names[0])
             } else {
@@ -164,7 +147,7 @@ impl CloseCommandHandler {
             });
         }
 
-        let body = Self::close_body(&context.args);
+        let body = Self::close_body(parsed);
         let mut sent: Vec<String> = Vec::new();
         let mut failed: Vec<String> = Vec::new();
         for name in &names {
@@ -228,15 +211,20 @@ impl CommandHandler for CloseCommandHandler {
             });
         }
 
-        // A word in the args names a subagent to close: that topic runs the
+        let parsed = match Self::parse(&context.args) {
+            Ok(parsed) => parsed,
+            Err(error) => return Ok(CommandResult::refusal(error.to_string())),
+        };
+
+        // A positional word names a subagent to close: that topic runs the
         // `/close --force` itself, so nothing here touches a child's directory.
-        if let Some(target) = Self::target(&context.args) {
-            return self.close_subagents(&context, target).await;
+        if let Some(target) = parsed.positionals.first() {
+            return self.close_subagents(&context, target, &parsed).await;
         }
 
         // Require --force to prevent accidental topic deletion. Plain
         // `/close` returns a warning instead of the destructive action.
-        if !Self::is_forced(&context.args) {
+        if !parsed.has(CloseFlag::Force) {
             return Ok(CommandResult {
                 success: true,
                 message: format!(
@@ -254,7 +242,7 @@ impl CommandHandler for CloseCommandHandler {
         // refusal does not block the close: the topic's state goes, only
         // the directory is kept (reported in the final message).
         let mut purge_refused: Option<String> = None;
-        if Self::is_purged(&context.args) {
+        if parsed.has(CloseFlag::Purge) {
             match self.topic_manager.purge_topic_dir(topic_name).await? {
                 PurgeOutcome::Refused(reason) => {
                     tracing::info!(topic = %topic_name, reason = %reason, "Purge refused");
@@ -321,61 +309,95 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
+    /// Whether the line carries the guard, read through the same declaration
+    /// the popup offers it from.
+    fn forced(items: &[&str]) -> bool {
+        CloseCommandHandler::parse(&args(items))
+            .unwrap()
+            .has(CloseFlag::Force)
+    }
+
+    /// Whether the line asks for the directory to go as well.
+    fn purged(items: &[&str]) -> bool {
+        CloseCommandHandler::parse(&args(items))
+            .unwrap()
+            .has(CloseFlag::Purge)
+    }
+
+    /// What the line names to close, if anything.
+    fn target(items: &[&str]) -> Option<String> {
+        CloseCommandHandler::parse(&args(items))
+            .unwrap()
+            .positionals
+            .first()
+            .cloned()
+    }
+
     #[test]
     fn is_forced_accepts_force_flag() {
-        assert!(CloseCommandHandler::is_forced(&args(&["--force"])));
+        assert!(forced(&["--force"]));
     }
 
     /// The guard and the purge flag answer to their short spellings too: both
     /// are read off the declaration the popup offers them from.
     #[test]
     fn is_forced_and_is_purged_read_the_short_spellings() {
-        assert!(CloseCommandHandler::is_forced(&args(&["-f"])));
-        assert!(CloseCommandHandler::is_forced(&args(&["joe", "-f"])));
-        assert!(CloseCommandHandler::is_purged(&args(&["-f", "-p"])));
-        assert!(!CloseCommandHandler::is_forced(&args(&["-p"])));
-        assert!(!CloseCommandHandler::is_purged(&args(&["-f"])));
+        assert!(forced(&["-f"]));
+        assert!(forced(&["joe", "-f"]));
+        assert!(purged(&["-f", "-p"]));
+        assert!(!forced(&["-p"]));
+        assert!(!purged(&["-f"]));
     }
 
+    /// A dash-word nobody declared is a refusal now, not a word to skip: `-y`
+    /// and `--confirm` used to read as "no guard given", so `/close joe -y`
+    /// warned instead of closing and looked like it had been understood.
     #[test]
-    fn is_forced_rejects_old_confirm_tokens() {
-        // `-y`/`--confirm` no longer bypass the guard — only `--force`.
-        assert!(!CloseCommandHandler::is_forced(&args(&["-y"])));
-        assert!(!CloseCommandHandler::is_forced(&args(&["--confirm"])));
-        assert!(!CloseCommandHandler::is_forced(&args(&["--yes"])));
-        assert!(!CloseCommandHandler::is_forced(&args(&["--foo"])));
-    }
-
-    #[test]
-    fn is_forced_rejects_empty_args() {
-        assert!(!CloseCommandHandler::is_forced(&args(&[])));
-    }
-
-    #[test]
-    fn is_forced_accepts_flag_mixed_with_unknown_args() {
-        assert!(CloseCommandHandler::is_forced(&args(&["--foo", "--force"])));
+    fn an_undeclared_dash_word_is_refused_not_skipped() {
+        for line in [
+            &["-y"][..],
+            &["--confirm"][..],
+            &["--yes"][..],
+            &["--foo"][..],
+            &["joe", "--froce"][..],
+        ] {
+            let error = CloseCommandHandler::parse(&args(line)).unwrap_err();
+            assert!(
+                error.to_string().starts_with("unknown flag"),
+                "{line:?}: {error}"
+            );
+        }
+        // Nothing given, nothing asked for.
+        assert!(!forced(&[]));
+        assert!(!purged(&[]));
     }
 
     #[test]
     fn is_purged_only_answers_for_its_own_flag() {
-        assert!(CloseCommandHandler::is_purged(&args(&[
-            "--force", "--purge"
-        ])));
-        assert!(CloseCommandHandler::is_purged(&args(&["--purge"])));
-        assert!(!CloseCommandHandler::is_purged(&args(&["--force"])));
-        assert!(!CloseCommandHandler::is_purged(&args(&[])));
+        assert!(purged(&["--force", "--purge"]));
+        assert!(purged(&["--purge"]));
+        assert!(!purged(&["--force"]));
     }
 
+    /// The word that names what to close, wherever the flags sit around it.
     #[test]
-    fn target_reads_the_first_bare_word() {
-        assert_eq!(CloseCommandHandler::target(&args(&["joe"])), Some("joe"));
+    fn the_target_is_the_positional_word() {
+        assert_eq!(target(&["joe"]).as_deref(), Some("joe"));
         assert_eq!(
-            CloseCommandHandler::target(&args(&["--force", "joe", "--purge"])),
+            target(&["--force", "joe", "--purge"]).as_deref(),
             Some("joe")
         );
-        assert_eq!(CloseCommandHandler::target(&args(&["--force"])), None);
-        assert_eq!(CloseCommandHandler::target(&args(&["--purge"])), None);
-        assert_eq!(CloseCommandHandler::target(&args(&[])), None);
+        assert_eq!(target(&["--force"]), None);
+        assert_eq!(target(&["--purge"]), None);
+        assert_eq!(target(&[]), None);
+        // One target is all it takes, and a second word is a refusal rather
+        // than a silent second guess.
+        assert!(
+            CloseCommandHandler::parse(&args(&["joe", "ann"]))
+                .unwrap_err()
+                .to_string()
+                .starts_with("too many arguments")
+        );
     }
 
     /// `all` is a keyword even when a subagent carries that name — and only
@@ -407,16 +429,13 @@ mod tests {
     /// through when the caller asked for it.
     #[test]
     fn close_body_forwards_purge_and_always_forces() {
+        let body = |items: &[&str]| {
+            CloseCommandHandler::close_body(&CloseCommandHandler::parse(&args(items)).unwrap())
+        };
+        assert_eq!(body(&[]), "/close --force");
+        assert_eq!(body(&["joe", "--force"]), "/close --force");
         assert_eq!(
-            CloseCommandHandler::close_body(&args(&[])),
-            "/close --force"
-        );
-        assert_eq!(
-            CloseCommandHandler::close_body(&args(&["joe", "--force"])),
-            "/close --force"
-        );
-        assert_eq!(
-            CloseCommandHandler::close_body(&args(&["joe", "--force", "--purge"])),
+            body(&["joe", "--force", "--purge"]),
             "/close --force --purge"
         );
     }

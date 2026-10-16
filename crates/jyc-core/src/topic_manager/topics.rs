@@ -503,8 +503,8 @@ impl TopicManager {
     /// session file, no billing ledger, no skills, no `git` probe. Callers
     /// that only need the names must use this: the system prompt lists them on
     /// every turn for every channel, and going through `list_topics` there
-    /// costs two `git diff`s per topic per channel per turn for a list of
-    /// names.
+    /// costs a `.git/HEAD` read plus up to four `git` invocations per topic per
+    /// channel per turn for a list of names.
     pub async fn list_topic_names(&self) -> Vec<String> {
         let mut topic_names: Vec<String> = Vec::new();
 
@@ -554,21 +554,37 @@ impl TopicManager {
         topic_names
     }
 
+    /// Names of every open topic with the directory each one works in.
+    ///
+    /// The same scan as [`Self::list_topic_names`] plus the path lookup, and
+    /// no per-topic state: the activity tracker polls this every two seconds
+    /// for every channel and needs nothing more than the pair.
+    pub async fn list_topic_names_and_paths(&self) -> Vec<(String, PathBuf)> {
+        let topic_names = self.list_topic_names().await;
+
+        let mut out = Vec::with_capacity(topic_names.len());
+        let paths = self.topic_paths.lock().await;
+        for name in topic_names {
+            let path = paths
+                .get(&name)
+                .cloned()
+                .unwrap_or_else(|| self.workspace_dir.join(&name));
+            out.push((name, path));
+        }
+        out
+    }
+
     /// List all open topics with their info, reading state from disk.
     ///
     /// Scans the workspace directory for topic directories containing `.jyc/pattern`.
     /// This includes both actively queued topics and idle topics that have been
     /// created but have no messages pending.
     ///
-    /// This resolves per-topic state for every name it lists — a session file,
-    /// the billing ledger, skills, and two `git diff`s per topic. A caller
-    /// that only needs the names wants [`Self::list_topic_names`] instead.
+    /// This resolves per-topic state for every name it lists — the cost
+    /// [`Self::list_topic_names`] documents. A caller that needs only the
+    /// names, or the names and paths, wants that method instead.
     pub async fn list_topics(&self) -> Vec<TopicInfo> {
         use crate::session_state::read_session_cost;
-
-        // Collect names of actively queued topics
-        let queues = self.topic_queues.lock().await;
-        drop(queues);
 
         let topic_names = self.list_topic_names().await;
 
@@ -954,11 +970,14 @@ mode = "agent"
         assert!(repo.exists(), "shared dir is user property, kept");
     }
 
-    /// The names listing must not need any per-topic state: a topic dir with
-    /// only `.jyc` (no session file, no ledger, no git checkout) still lists,
-    /// and it agrees with what the full listing reports.
+    /// A topic dir holding nothing but `.jyc` still lists: the name scan
+    /// reads the directory, not any of the state a real topic would have.
+    ///
+    /// This pins the listing behavior, not "no state is resolved" — a
+    /// resolver would pass here too, since every reader tolerates a missing
+    /// file. That property is structural in `list_topic_names`' body.
     #[tokio::test]
-    async fn list_topic_names_needs_no_topic_state() {
+    async fn list_topic_names_lists_a_dir_with_only_state() {
         let tmp = tempdir().unwrap();
         let workspace = tmp.path().join("workspace");
         tokio::fs::create_dir_all(workspace.join("bare").join(".jyc"))
@@ -967,14 +986,10 @@ mode = "agent"
         let tm = make_tm(&workspace);
 
         assert_eq!(tm.list_topic_names().await, vec!["bare".to_string()]);
-
-        let full: Vec<String> = tm
-            .list_topics()
-            .await
-            .iter()
-            .map(|t| t.name.clone())
-            .collect();
-        assert_eq!(full, tm.list_topic_names().await);
+        assert_eq!(
+            tm.list_topic_names_and_paths().await,
+            vec![("bare".to_string(), workspace.join("bare"))]
+        );
     }
 
     /// #615: a topic whose mode comes from pattern config (no

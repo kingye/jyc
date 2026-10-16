@@ -1580,7 +1580,7 @@ fn subagent_tree(s: &InspectOverview, root: &jyc_types::TopicSummary) -> Vec<Tre
     let mut seen = HashSet::new();
     // The root draws no row of its own, but a breadcrumb cycle leading back to
     // it must stop here rather than list it as its own descendant.
-    if let Some(i) = jyc_types::topic_index(&s.topics, &root.channel, &root.name) {
+    if let Some(i) = jyc_types::topic_index(&s.topics, &root.name, Some(&root.channel)) {
         seen.insert(i);
     }
     push_subtree(&mut rows, s, &index, root, "", &mut seen);
@@ -1670,15 +1670,16 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
 /// which topic is "selected".
 ///
 /// The screen decides: on the chat screen it is the topic the chat is bound
-/// to, looked up by `(channel, name)` through the shared
-/// [`jyc_types::find_topic`]; on the dashboard it is the row under the
+/// to, looked up through the shared [`jyc_types::find_topic`] by name (the
+/// channel narrows it when the chat knows one — an ad-hoc launch binds a
+/// topic without a channel); on the dashboard it is the row under the
 /// cursor. A *closed* chat keeps its binding — `close()` clears `visible`,
 /// not `topic` — so it must not answer for a screen it is not on.
 fn selected_topic_summary(app: &App) -> Option<&jyc_types::TopicSummary> {
     let state = app.state.as_ref()?;
     if app.chat.visible {
-        let (channel, name) = (app.chat.channel.as_deref()?, app.chat.topic.as_deref()?);
-        return jyc_types::find_topic(&state.topics, channel, name);
+        let name = app.chat.topic.as_deref()?;
+        return jyc_types::find_topic(&state.topics, name, app.chat.channel.as_deref());
     }
     app.table_state.selected().and_then(|i| state.topics.get(i))
 }

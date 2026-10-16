@@ -1,12 +1,15 @@
 //! Finding a topic in a list of topics — one rule, one place.
 //!
-//! A topic's identity is `(channel, name)`. The name is unique
-//! process-wide, so that pair addresses exactly one topic. The
-//! `topic_path` is NOT an identity: a subagent that shares its parent's
-//! directory (`share_topic_path`) carries the same path as its parent, and
-//! so does every other child of that parent. A lookup by path can therefore
-//! only return whichever of them the scan happened to hit first — which is
-//! how `/info` came to report a child topic instead of the one that asked.
+//! A topic is addressed by its **name**, which is unique process-wide. The
+//! channel narrows the match when the caller knows it (the wire address is
+//! `(channel, topic)`, and a caller that opened a chat without one — the
+//! ad-hoc CLI launch passes `None` — still finds its topic by name alone).
+//!
+//! The `topic_path` is NOT an identity: a subagent that shares its parent's
+//! directory (`share_topic_path`) carries the same path as its parent, and so
+//! does every other child of that parent. A lookup by path can therefore only
+//! return whichever of them the scan happened to hit first — which is how
+//! `/info` came to report a child topic instead of the one that asked.
 //!
 //! Both shapes of topic data (`TopicInfo` from a full resolve, `TopicSummary`
 //! from the polled overview) implement [`TopicRef`], so every lookup in the
@@ -14,7 +17,7 @@
 
 use crate::inspect::{TopicInfo, TopicSummary};
 
-/// What identifies a topic in a list: its channel and its name.
+/// What identifies a topic in a list: its name, and the channel it is on.
 pub trait TopicRef {
     /// Channel the topic belongs to.
     fn topic_channel(&self) -> &str;
@@ -40,21 +43,29 @@ impl TopicRef for TopicSummary {
     }
 }
 
-/// Position of `(channel, name)` in `topics`, if this list holds it.
-pub fn topic_index<T: TopicRef>(topics: &[T], channel: &str, name: &str) -> Option<usize> {
-    topics
-        .iter()
-        .position(|t| t.topic_channel() == channel && t.topic_name() == name)
+/// How one entry matches: the name must be equal, and the channel too when
+/// the caller knows which channel it is asking about.
+fn matches<T: TopicRef>(entry: &T, name: &str, channel: Option<&str>) -> bool {
+    entry.topic_name() == name && channel.is_none_or(|c| entry.topic_channel() == c)
 }
 
-/// The topic `(channel, name)` names in `topics`, if this list holds it.
-pub fn find_topic<'a, T: TopicRef>(topics: &'a [T], channel: &str, name: &str) -> Option<&'a T> {
-    topic_index(topics, channel, name).map(|i| &topics[i])
+/// Position of the topic `name` addresses in `topics`, if this list holds it.
+pub fn topic_index<T: TopicRef>(topics: &[T], name: &str, channel: Option<&str>) -> Option<usize> {
+    topics.iter().position(|t| matches(t, name, channel))
 }
 
-/// Whether `topics` holds the topic `(channel, name)` names.
-pub fn has_topic<T: TopicRef>(topics: &[T], channel: &str, name: &str) -> bool {
-    topic_index(topics, channel, name).is_some()
+/// The topic `name` addresses in `topics`, if this list holds it.
+pub fn find_topic<'a, T: TopicRef>(
+    topics: &'a [T],
+    name: &str,
+    channel: Option<&str>,
+) -> Option<&'a T> {
+    topic_index(topics, name, channel).map(|i| &topics[i])
+}
+
+/// Whether `topics` holds the topic `name` addresses.
+pub fn has_topic<T: TopicRef>(topics: &[T], name: &str, channel: Option<&str>) -> bool {
+    topic_index(topics, name, channel).is_some()
 }
 
 #[cfg(test)]
@@ -108,23 +119,26 @@ mod tests {
         let rows = shared_dir_rows();
         // The premise of the regression: one path, three topics.
         assert!(rows.windows(2).all(|w| w[0].topic_path == w[1].topic_path));
+        assert_eq!(find_topic(&rows, "jyc", None).map(|t| t.name), Some("jyc"));
         assert_eq!(
-            find_topic(&rows, "agents", "jyc").map(|t| t.name),
-            Some("jyc")
-        );
-        assert_eq!(
-            find_topic(&rows, "agents", "ci-watch-925").map(|t| t.name),
+            find_topic(&rows, "ci-watch-925", None).map(|t| t.name),
             Some("ci-watch-925")
         );
-        assert_eq!(topic_index(&rows, "agents", "review-prompt-names"), Some(2));
+        assert_eq!(topic_index(&rows, "review-prompt-names", None), Some(2));
     }
 
-    /// The channel is part of the identity.
+    /// A known channel is checked; an unknown one is not required — a chat
+    /// opened by the ad-hoc CLI launch carries no channel and must still find
+    /// its topic.
     #[test]
-    fn channel_is_part_of_the_identity() {
+    fn a_known_channel_narrows_but_is_not_required() {
         let rows = shared_dir_rows();
-        assert!(find_topic(&rows, "feishu", "jyc").is_none());
-        assert!(has_topic(&rows, "agents", "jyc"));
-        assert!(!has_topic(&rows, "agents", "nobody"));
+        assert_eq!(
+            find_topic(&rows, "jyc", Some("agents")).map(|t| t.name),
+            Some("jyc")
+        );
+        assert!(find_topic(&rows, "jyc", Some("feishu")).is_none());
+        assert!(has_topic(&rows, "jyc", None));
+        assert!(!has_topic(&rows, "nobody", None));
     }
 }

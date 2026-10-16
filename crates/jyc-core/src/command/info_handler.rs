@@ -51,14 +51,14 @@ impl CommandHandler for InfoCommandHandler {
     }
 }
 
-/// The topic this command is about: `(context.channel, context.topic_name)`
-/// through the shared lookup.
+/// The topic this command is about: `context.topic_name` through the shared
+/// lookup, narrowed by the channel this command arrived on.
 ///
 /// Never by `topic_path`: children that share their parent's directory
 /// (`share_topic_path`, e.g. `ci-watch-*`) carry the same path as the parent,
 /// and selecting by path reported whichever of them came first in the list.
 fn topic_for<'a>(topics: &'a [TopicInfo], context: &CommandContext) -> Option<&'a TopicInfo> {
-    jyc_types::find_topic(topics, &context.channel, &context.topic_name)
+    jyc_types::find_topic(topics, &context.topic_name, Some(&context.channel))
 }
 
 /// Render the pane's rows as plain text, one per line, with the same

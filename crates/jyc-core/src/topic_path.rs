@@ -393,6 +393,11 @@ pub fn restore_state_registry(agents_dir: &Path) -> usize {
         // granted on (`topic-path`): a relaunched parent then lists — and
         // reaches — the topics it spawned again. `grant_subagent` ignores a
         // duplicate and `forget_subagent` removes the entry when a child closes.
+        //
+        // It follows the registration above, edges included: an entry without a
+        // `topic-path` is skipped here exactly as it always was, and a work dir
+        // that has since vanished keeps its grant — as its registration is kept
+        // for history — so a dir that is only away (a mount) stays reachable.
         if let Ok(parent) = std::fs::read_to_string(state.join("spawned-from")) {
             let parent = parent.trim();
             if !parent.is_empty() {

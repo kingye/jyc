@@ -496,20 +496,19 @@ impl TopicManager {
         }
     }
 
-    /// List all open topics with their info, reading state from disk.
+    /// Names of every open topic, without resolving any per-topic state.
     ///
-    /// Scans the workspace directory for topic directories containing `.jyc/pattern`.
-    /// This includes both actively queued topics and idle topics that have been
-    /// created but have no messages pending.
-    pub async fn list_topics(&self) -> Vec<TopicInfo> {
-        use crate::session_state::read_session_cost;
-
-        // Collect names of actively queued topics
-        let queues = self.topic_queues.lock().await;
-        drop(queues);
+    /// The scan half of [`Self::list_topics`]: it reads the workspace
+    /// directory and the pinned `topic_path` overrides and nothing else — no
+    /// session file, no billing ledger, no skills, no `git` probe. Callers
+    /// that only need the names must use this: the system prompt lists them on
+    /// every turn for every channel, and going through `list_topics` there
+    /// costs two `git diff`s per topic per channel per turn for a list of
+    /// names.
+    pub async fn list_topic_names(&self) -> Vec<String> {
+        let mut topic_names: Vec<String> = Vec::new();
 
         // Scan workspace for all topic directories with .jyc/ subdirectory
-        let mut topic_names: Vec<String> = Vec::new();
         if let Ok(mut entries) = tokio::fs::read_dir(&self.workspace_dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
@@ -552,6 +551,26 @@ impl TopicManager {
         }
 
         topic_names.sort();
+        topic_names
+    }
+
+    /// List all open topics with their info, reading state from disk.
+    ///
+    /// Scans the workspace directory for topic directories containing `.jyc/pattern`.
+    /// This includes both actively queued topics and idle topics that have been
+    /// created but have no messages pending.
+    ///
+    /// This resolves per-topic state for every name it lists — a session file,
+    /// the billing ledger, skills, and two `git diff`s per topic. A caller
+    /// that only needs the names wants [`Self::list_topic_names`] instead.
+    pub async fn list_topics(&self) -> Vec<TopicInfo> {
+        use crate::session_state::read_session_cost;
+
+        // Collect names of actively queued topics
+        let queues = self.topic_queues.lock().await;
+        drop(queues);
+
+        let topic_names = self.list_topic_names().await;
 
         let mut topics = Vec::with_capacity(topic_names.len());
 
@@ -933,6 +952,29 @@ mode = "agent"
         assert!(state_b.is_dir(), "beta state untouched");
         assert!(jyc_types::state_dir::registered_state("co-beta").is_some());
         assert!(repo.exists(), "shared dir is user property, kept");
+    }
+
+    /// The names listing must not need any per-topic state: a topic dir with
+    /// only `.jyc` (no session file, no ledger, no git checkout) still lists,
+    /// and it agrees with what the full listing reports.
+    #[tokio::test]
+    async fn list_topic_names_needs_no_topic_state() {
+        let tmp = tempdir().unwrap();
+        let workspace = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(workspace.join("bare").join(".jyc"))
+            .await
+            .unwrap();
+        let tm = make_tm(&workspace);
+
+        assert_eq!(tm.list_topic_names().await, vec!["bare".to_string()]);
+
+        let full: Vec<String> = tm
+            .list_topics()
+            .await
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert_eq!(full, tm.list_topic_names().await);
     }
 
     /// #615: a topic whose mode comes from pattern config (no

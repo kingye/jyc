@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::spec;
 use crate::topic_manager::TopicManager;
 
 /// /exchange command — show shareable URLs for this topic's published files.
@@ -71,7 +72,11 @@ impl CommandHandler for ExchangeCommandHandler {
             return Ok(ok(NO_FILES.into()));
         }
 
-        if let Some(wanted) = context.args.first() {
+        let parsed = match spec::parse_plain("/exchange", &context.args) {
+            Ok(parsed) => parsed,
+            Err(error) => return Ok(CommandResult::refusal(error.to_string())),
+        };
+        if let Some(wanted) = parsed.positionals.first() {
             if !names.iter().any(|n| n == wanted) {
                 return Ok(CommandResult {
                     success: false,

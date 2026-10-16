@@ -7,15 +7,18 @@ use jyc_types::state_dir::resolve_state_dir;
 use jyc_types::{AppConfig, TopicConfig};
 use tracing::instrument;
 
-use super::flags::{self, SPAWN_FLAGS, SpawnFlag};
+use super::flags::{SPAWN_FLAGS, SpawnFlag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 use super::spawn_common::{fail, invalid_name, next_free_name, seed_start_model, seed_state};
+use super::spec;
 use crate::topic_manager::TopicManager;
 use crate::topic_path::{default_topic_dir, resolve_topic_path, resolved};
 
-/// How to call it, repeated in every refusal so a typo self-corrects.
-const USAGE: &str =
-    "/spawn [type] [-i|--inherit] [-s|--share] [-n|--name <name>] [-d|--dir <path>]";
+/// How to call it, repeated in every refusal so a typo self-corrects: the usage
+/// line `/spawn`'s own row declares, not a copy of it that could drift.
+fn usage() -> String {
+    super::builtin::usage_of("/spawn")
+}
 
 /// Collapse `.` and `..` components lexically — `canonicalize` without
 /// touching the filesystem, for destinations that do not exist yet.
@@ -48,7 +51,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 /// `/spawn` — start a sibling topic that carries this topic's settings into a
 /// directory of its own, or into this one.
 ///
-/// The line is [`USAGE`]: one positional, the role the child starts in, then the
+/// The line is [`usage`]: one positional, the role the child starts in, then the
 /// four flags — `-i/--inherit` for the conversation, `-s/--share` to work in
 /// *this* topic's directory, `-n/--name` for the topic name and `-d/--dir` for
 /// the directory. A name and a directory are flags rather than positionals
@@ -201,7 +204,7 @@ impl SpawnCommandHandler {
         };
 
         if let Some(reason) = invalid_name(&name) {
-            return Ok(fail(format!("/spawn: {reason}. Usage: {USAGE}")));
+            return Ok(fail(format!("/spawn: {reason}. Usage: {}", usage())));
         }
         if name == req.parent_topic {
             return Ok(fail(format!(
@@ -403,7 +406,7 @@ impl CommandHandler for SpawnCommandHandler {
         // can mistake `-n`'s value for a name it read off a shape.
         let parsed = match parse_args(&context.args) {
             Ok(parsed) => parsed,
-            Err(refusal) => return Ok(fail(format!("/spawn: {refusal}. Usage: {USAGE}"))),
+            Err(refusal) => return Ok(fail(format!("/spawn: {refusal}. Usage: {}", usage()))),
         };
         // Which role the child starts in, resolved before anything is created:
         // an unknown or malformed type refuses here, not halfway through a
@@ -936,114 +939,37 @@ struct SpawnArgs {
     share: bool,
 }
 
-/// Read `/spawn`'s arguments: one positional, four flags, either spelling each.
+/// Read `/spawn`'s arguments through the declarations its row holds: one
+/// positional (the type) and the four flags, either spelling each.
 ///
-/// Reading the line as a whole is the point. A flag's value is not a positional
-/// (`/spawn review -n scratch`), so the arguments have to be walked before
-/// anything can be told apart — and once they are, nothing has to guess from a
-/// slash whether an argument was meant as a name or as a directory.
-///
-/// Every refusal here is worded for someone who typed something: an unknown
-/// flag, a value that is missing or that would have swallowed the next flag, a
-/// flag that repeats (`-n a --name b`; the two booleans are idempotent and may
-/// be passed twice), a second positional, and `--type=` — a flag until the type
-/// became the positional, and worth its own sentence rather than
-/// "unknown flag".
+/// Reading the line against the declared shape is the point. A flag's value is
+/// not a positional (`/spawn review -n scratch`), so which word is which comes
+/// from the declaration rather than from guessing at a slash — and the refusals
+/// for a repeated flag, a missing value and a second positional are the shared
+/// ones, worded once for every command.
 fn parse_args(args: &[String]) -> Result<SpawnArgs, String> {
+    // The type used to be a flag: a remembered `/spawn --type=review` gets a
+    // sentence that says so rather than "unknown flag".
+    if args
+        .iter()
+        .any(|arg| arg == "--type" || arg.starts_with("--type="))
+    {
+        return Err("the type is the first argument now, not a flag: /spawn review".to_string());
+    }
+
+    let parsed =
+        spec::parse_command("/spawn", SPAWN_FLAGS, args).map_err(|error| error.to_string())?;
     let mut out = SpawnArgs::default();
-    let mut rest = args.iter();
-    while let Some(raw) = rest.next() {
-        let arg = raw.trim();
-        if arg.is_empty() {
-            continue;
-        }
-        // A value may ride along in the same token (`--name=scratch`, `-n=x`);
-        // that is the one place a flag and its value are one word.
-        let (flag, inline) = match arg.split_once('=') {
-            Some((flag, value)) if flag.starts_with('-') => (flag, Some(value)),
-            _ => (arg, None),
-        };
-        match flags::find(SPAWN_FLAGS, flag) {
-            Some(SpawnFlag::Inherit) => out.inherit = on_off(flag, inline)?,
-            Some(SpawnFlag::Share) => out.share = on_off(flag, inline)?,
-            Some(SpawnFlag::Name) => {
-                let value = flag_value(flag, inline, &mut rest)?;
-                set_once(&mut out.name, value, flag)?;
-            }
-            Some(SpawnFlag::Dir) => {
-                let value = flag_value(flag, inline, &mut rest)?;
-                set_once(&mut out.dir, value, flag)?;
-            }
-            // The type is the first argument now: the old spelling gets a
-            // sentence rather than "unknown flag", because that is what a
-            // remembered `/spawn --type=review` deserves.
-            None if flag == "--type" => {
-                return Err(
-                    "the type is the first argument now, not a flag: /spawn review".to_string(),
-                );
-            }
-            None if flag.starts_with('-') => return Err(format!("unknown flag '{flag}'")),
-            None => {
-                if out.type_name.replace(arg.to_string()).is_some() {
-                    return Err(format!(
-                        "'{arg}' is a second type — a spawn takes one. A topic name goes in \
-                         -n/--name, a directory in -d/--dir"
-                    ));
-                }
-            }
+    for (flag, value) in parsed.flags {
+        match flag {
+            SpawnFlag::Inherit => out.inherit = true,
+            SpawnFlag::Share => out.share = true,
+            SpawnFlag::Name => out.name = value,
+            SpawnFlag::Dir => out.dir = value,
         }
     }
+    out.type_name = parsed.positionals.into_iter().next();
     Ok(out)
-}
-
-/// The value of a value-carrying flag: the token after it, or the one it came in
-/// with (`--name=x`). A missing value is a refusal, never the next positional.
-///
-/// A token that opens with `-` is not a value either, even though the flag wants
-/// one: `/spawn -n -s` is someone reaching for `-s`, and answering "the name must
-/// not start with '-'" would hide the mistake (nothing that starts with `-` can
-/// be a topic name anyway — [`invalid_name`] refuses it). The flag is missing its
-/// value, and says so. `--name=-s` still works: spelling it inline is explicit.
-fn flag_value(
-    flag: &str,
-    inline: Option<&str>,
-    rest: &mut std::slice::Iter<'_, String>,
-) -> Result<String, String> {
-    let value = match inline {
-        Some(value) => value.trim(),
-        None => match rest.next().map(|value| value.trim()) {
-            Some(next) if !next.starts_with('-') || next == "-" => next,
-            _ => return Err(flag_needs_a_value(flag)),
-        },
-    };
-    if value.is_empty() {
-        return Err(flag_needs_a_value(flag));
-    }
-    Ok(value.to_string())
-}
-
-/// `-n needs a value (-n <value>)`.
-fn flag_needs_a_value(flag: &str) -> String {
-    format!("{flag} needs a value ({flag} <value>)")
-}
-
-/// A flag that carries no value. `--inherit=false` is refused rather than read
-/// as "on": the only way to ask for that default is not to pass the flag.
-fn on_off(flag: &str, inline: Option<&str>) -> Result<bool, String> {
-    match inline {
-        Some(_) => Err(format!("{flag} takes no value")),
-        None => Ok(true),
-    }
-}
-
-/// Fill a slot a flag owns, refusing a second one: `-n a -n b` is a mistake, not
-/// a last-one-wins.
-fn set_once(slot: &mut Option<String>, value: String, flag: &str) -> Result<(), String> {
-    if slot.is_some() {
-        return Err(format!("{flag} given twice"));
-    }
-    *slot = Some(value);
-    Ok(())
 }
 
 /// Whether a role names a model of its own — `[ai]` with any of its three keys.
@@ -1818,14 +1744,14 @@ mod tests {
             (args(&["--dir="]), "--dir needs a value"),
             (args(&["--name", ""]), "--name needs a value"),
             (args(&["-n", "a", "--name", "b"]), "--name given twice"),
-            (args(&["-x"]), "unknown flag '-x'"),
+            (args(&["-x"]), "unknown flag -x"),
             (args(&["--inherit=false"]), "--inherit takes no value"),
             (args(&["--type=review"]), "the type is the first argument"),
             (
                 args(&["--type", "review"]),
                 "the type is the first argument",
             ),
-            (args(&["a", "b"]), "a second type"),
+            (args(&["a", "b"]), "too many arguments"),
         ] {
             let err = parse_args(&broken).unwrap_err();
             assert!(err.contains(expected), "{broken:?}: {err}");

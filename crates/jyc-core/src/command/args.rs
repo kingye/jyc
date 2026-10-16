@@ -573,4 +573,37 @@ mod tests {
                 .all(|b| b.is_ascii_digit() || b == b'-')
         );
     }
+
+    /// A command's declared value set and the first level its popup offers are
+    /// the same list — so a value added to one is a red test, not a popup level
+    /// nobody can type (or a word the usage line claims and the popup never
+    /// shows).
+    ///
+    /// One command builds its level from the topic at hand — `/bill` lists the
+    /// months with recorded usage — so there is no fixed list to compare.
+    #[test]
+    fn a_declared_value_set_is_the_one_the_popup_offers() {
+        const BUILT_FROM_THE_TOPIC: &[&str] = &["/bill"];
+        let cfg = AppConfig::default();
+        let skills = ["ponytail".to_string()];
+        let ctx = ctx(&cfg, &skills, &[]);
+        let mut checked = 0;
+        for spec in crate::command::builtin::BUILTIN_COMMANDS {
+            let crate::command::spec::Shape::Subcommand { values, .. } = spec.shape else {
+                continue;
+            };
+            if BUILT_FROM_THE_TOPIC.contains(&spec.name) {
+                continue;
+            }
+            let offered_args = command_args(spec.name, &ctx);
+            let mut offered: Vec<&str> =
+                offered_args.iter().map(|arg| arg.value.as_str()).collect();
+            let mut declared = values.to_vec();
+            offered.sort_unstable();
+            declared.sort_unstable();
+            assert_eq!(offered, declared, "{}: popup vs declaration", spec.name);
+            checked += 1;
+        }
+        assert!(checked > 0, "no command's values were compared");
+    }
 }

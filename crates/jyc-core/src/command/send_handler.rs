@@ -21,8 +21,9 @@ use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use jyc_types::{InboundMessage, MessageAttachment, MessageContent, PatternMatch};
 
-use super::flags::{self, SEND_FLAGS, SendFlag};
+use super::flags::{SEND_FLAGS, SendFlag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::spec;
 use crate::topic_manager::{TopicManager, TopicManagers};
 use crate::topic_path::{topic_home, topic_work_dir};
 
@@ -440,63 +441,46 @@ struct SendArgs {
     require_reply: bool,
 }
 
-/// Usage line, shared by every refusal so the syntax is stated once.
-const USAGE: &str = "Usage: /send <agent> [--topic|-t <topic>] [--reply] \
-                     [--attach <file>] [--recipient <id>] [--] <message>";
+/// Usage line, shared by every refusal so the syntax is stated once — read off
+/// `/send`'s own row instead of kept as a copy beside it.
+fn usage() -> String {
+    super::builtin::usage_of("/send")
+}
 
 /// Parse `/send` arguments: the first bare word is the agent, the flags follow
 /// it, and from the first message word on everything — dashes included — is
 /// message text. `--` ends the flags explicitly, for a message that starts
 /// with one.
+///
+/// The shape is the one `/send`'s row declares: one positional, then text. Which
+/// word is which therefore comes from the declaration, so a message can never be
+/// read as a flag — and a flag can never be read as message text.
 fn parse(args: &[String]) -> Result<SendArgs, String> {
-    let mut agent: Option<String> = None;
-    let mut topic = None;
-    let mut attachments = Vec::new();
-    let mut recipient = None;
-    let mut require_reply = false;
-    let mut message_words: Vec<String> = Vec::new();
-    let mut in_message = false;
-
-    let mut rest = args.iter();
-    while let Some(arg) = rest.next() {
-        // `/send joe /close --force` has to hand joe that message verbatim, so
-        // once the message has started nothing is read as a flag.
-        if in_message {
-            message_words.push(arg.clone());
-            continue;
-        }
-        match flags::find(SEND_FLAGS, arg) {
-            Some(SendFlag::Topic) => topic = Some(flag_value(&mut rest, arg)?),
-            Some(SendFlag::Attach) => attachments.push(flag_value(&mut rest, arg)?),
-            Some(SendFlag::Recipient) => recipient = Some(flag_value(&mut rest, arg)?),
-            Some(SendFlag::Reply) => require_reply = true,
-            None if arg == "--" => in_message = true,
-            // A lone `-` is a message word; anything else starting with a dash
-            // is a flag, and an unknown one is a typo worth refusing rather
-            // than sending as text.
-            None if arg.len() > 1 && arg.starts_with('-') => {
-                return Err(format!("Unknown option '{arg}'. {USAGE}"));
-            }
-            None if agent.is_none() => agent = Some(arg.to_string()),
-            None => {
-                in_message = true;
-                message_words.push(arg.to_string());
-            }
-        }
-    }
-
-    let agent = agent.ok_or_else(|| format!("Missing agent. {USAGE}"))?;
-    let message = unquote(message_words.join(" "));
+    let mut parsed = spec::parse_command("/send", SEND_FLAGS, args)
+        .map_err(|error| format!("{error}. {}", usage()))?;
+    let agent = parsed
+        .positionals
+        .first()
+        .cloned()
+        .ok_or_else(|| format!("Missing agent. {}", usage()))?;
+    let message = unquote(parsed.body.take().unwrap_or_default());
     if message.trim().is_empty() {
-        return Err(format!("Missing message. {USAGE}"));
+        return Err(format!("Missing message. {}", usage()));
     }
     Ok(SendArgs {
         agent,
-        topic,
+        topic: parsed.value(SendFlag::Topic).map(str::to_string),
         message,
-        attachments,
-        recipient,
-        require_reply,
+        // Every `-a`, in the order given: attaching several files is the point
+        // of the flag.
+        attachments: parsed
+            .flags
+            .iter()
+            .filter(|(flag, _)| *flag == SendFlag::Attach)
+            .filter_map(|(_, value)| value.clone())
+            .collect(),
+        recipient: parsed.value(SendFlag::Recipient).map(str::to_string),
+        require_reply: parsed.has(SendFlag::Reply),
     })
 }
 
@@ -513,13 +497,6 @@ fn unquote(message: String) -> String {
         }
     }
     message
-}
-
-/// The value flag `flag` was given, or a refusal naming it.
-fn flag_value(rest: &mut std::slice::Iter<'_, String>, flag: &str) -> Result<String, String> {
-    rest.next()
-        .cloned()
-        .ok_or_else(|| format!("'{flag}' needs a value. {USAGE}"))
 }
 
 #[async_trait]
@@ -667,7 +644,7 @@ mod tests {
         assert!(
             parse(&args(&["invoice", "--nope", "hi"]))
                 .unwrap_err()
-                .contains("Unknown option '--nope'")
+                .contains("unknown flag --nope")
         );
     }
 

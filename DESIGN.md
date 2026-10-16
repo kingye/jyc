@@ -3728,13 +3728,28 @@ table, not a special case in `jyc-cli`.
   popup's position is derived from the input field on every key.
 - **Empty `args` means free text.** `/grant <path>` and `/backlog push <text>`
   complete nothing; the popup closes and the field sends what was typed.
-- **A flag is declared once.** Its spellings and the line the popup offers it
-  with come from one table (`jyc_core::command::flags`), which both the popup's
-  flag level and the handler's own parser read — so the popup cannot offer a
-  spelling a handler does not accept, and a short spelling is not prose in a
-  description. Everything else about a flag (whether it carries a value, what a
-  repeat means, how a refusal is worded) stays with the command, where those
-  rules differ.
+- **A flag is declared once.** Its spellings, the value it takes and whether a
+  repeat of it is refused come from one table (`jyc_core::command::flags`),
+  which both the popup's flag level and the parser read — so the popup cannot
+  offer a spelling a handler does not accept, and a short spelling is not prose
+  in a description. What a value *means* stays with the command.
+- **A command's argument shape is declared once, on its row.** The built-in
+  table (`command/builtin.rs`) already named each command and described it; a
+  row now also declares its `shape` (`command/spec.rs`: no arguments, fixed
+  positionals, one positional then trailing text, or a subcommand) and hands its
+  flags to the table through the projection of the one typed declaration its
+  handler matches on — a projection rather than a second copy, because only that
+  command knows its own flag enum. One parser (`spec::parse`) reads a command
+  line through that shape and **records**: which flags appeared with what values,
+  which words were positional, where the trailing text begins. Which arguments a
+  command *needs*, and what a value means, stay with the command — those
+  sentences are its user interface. The refusals the shape itself can raise (a
+  spelling nobody declared, a value that did not arrive, a repeat the
+  declaration forbids, a value handed to a switch, a word too many) are worded
+  once, in `spec::ArgError`, because they are the same mistake in every command —
+  and where a line used to be quietly ignored, it is now refused. The usage line
+  is derived from the same declaration, so the popup, `/?` and a handler's own
+  refusals cannot advertise a syntax the parser refuses.
 - **Trade-off**: the values are computed per topic on every ~500 ms overview
   poll and serialized per topic, so a long model list is repeated for every
   topic (`topics × models`). Leaf entries omit their empty `description`/`args`

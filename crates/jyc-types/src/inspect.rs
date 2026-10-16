@@ -478,6 +478,13 @@ pub struct CommandInfo {
     pub name: String,
     /// Short description (e.g., "Switch AI model for this topic")
     pub description: String,
+    /// The command's usage line, derived from the shape and flags it declares
+    /// (e.g. "/close [subagent|all] [--force] [--purge]"). The name alone when
+    /// the command takes nothing. `serde(default)` so a payload from a server
+    /// older than the field deserializes — [`Self::summary`] then falls back to
+    /// the description, which is where the usage used to be written by hand.
+    #[serde(default)]
+    pub usage: String,
     /// True if this command continues into an agent run (e.g. it injects
     /// a prompt via `CommandResult::append_body`). False for instant-reply
     /// commands that never reach the agent — those need no progress
@@ -495,6 +502,22 @@ pub struct CommandInfo {
     /// every topic of every overview poll.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<CommandArg>,
+}
+
+impl CommandInfo {
+    /// What the popup and `/?` show for this command on one line: the
+    /// description, followed by the usage when it says more than the name.
+    ///
+    /// A usage the server did not send (an older payload) leaves the
+    /// description as it is, which is where the usage used to be written by
+    /// hand.
+    pub fn summary(&self) -> String {
+        if self.usage.is_empty() || self.usage == self.name {
+            self.description.clone()
+        } else {
+            format!("{}: {}", self.description, self.usage)
+        }
+    }
 }
 
 /// One enumerable argument value of a command (see [`CommandInfo::args`]).

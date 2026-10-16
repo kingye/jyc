@@ -13,6 +13,11 @@
 //! A set is read by the popup and the parser alike where a command has both.
 //! `/grant` completes nothing, so its set is its parser's alone — its hints are
 //! written down for the day it gets a popup level, not rendered anywhere yet.
+//!
+//! What is *not* here: whether a value is valid, what it means, and every
+//! sentence about it other than the two the declaration can answer for itself —
+//! [`ArgError`](super::spec::ArgError) words an unknown spelling, a missing
+//! value and an unwanted repeat once for every command.
 
 use jyc_types::CommandArg;
 
@@ -26,37 +31,66 @@ pub struct FlagSpec {
     pub long: &'static str,
     /// The short spelling, for the commands that take one.
     pub short: Option<char>,
-    /// The popup's one-line hint, without the short spelling: [`rows`] appends
-    /// that, so a spelling is named once, beside the hint it belongs to.
+    /// The value's placeholder when the flag takes one (`--name <name>`), and
+    /// with it the fact that it does: the parser reads the next word, the popup
+    /// shows where it goes.
+    pub value: Option<&'static str>,
+    /// Whether a second occurrence is refused (`/spawn -n a -n b`). False where
+    /// repeating is meaningful (`/send -a one -a two`) or where the last one
+    /// simply wins (`/send -t a -t b`).
+    pub once: bool,
+    /// The popup's one-line hint, without the spellings: [`rows`] appends
+    /// those, so a spelling is named once, beside the hint it belongs to.
     pub hint: &'static str,
 }
 
-/// Declare a flag: `flag("force", Some('f'), "Skip the confirmation guard")`.
+/// Declare a switch: a flag with no value.
+///
+/// `flag("force", Some('f'), "Skip the confirmation guard")`
 const fn flag(long: &'static str, short: Option<char>, hint: &'static str) -> FlagSpec {
-    FlagSpec { long, short, hint }
+    FlagSpec {
+        long,
+        short,
+        value: None,
+        once: false,
+        hint,
+    }
+}
+
+/// Declare a flag that takes a value: the placeholder it shows, and whether a
+/// repeat of it is refused.
+///
+/// `taking("name", Some('n'), "name", "Name the new topic", true)`
+const fn taking(
+    long: &'static str,
+    short: Option<char>,
+    value: &'static str,
+    hint: &'static str,
+    once: bool,
+) -> FlagSpec {
+    FlagSpec {
+        long,
+        short,
+        value: Some(value),
+        once,
+        hint,
+    }
 }
 
 /// The popup rows for `set`: each flag's long spelling — the one the popup
-/// inserts — with its short spelling named in the hint.
+/// inserts — with its short spelling and value named in the hint.
 pub fn rows<V>(set: &[(V, FlagSpec)]) -> Vec<CommandArg> {
     set.iter()
         .map(|(_, spec)| CommandArg {
             value: format!("--{}", spec.long),
-            description: match spec.short {
-                Some(short) => format!("{} (-{short})", spec.hint),
-                None => spec.hint.to_string(),
+            description: match (spec.short, spec.value) {
+                (Some(short), Some(value)) => format!("{} (-{short} <{value}>)", spec.hint),
+                (Some(short), None) => format!("{} (-{short})", spec.hint),
+                (None, _) => spec.hint.to_string(),
             },
             args: Vec::new(),
         })
         .collect()
-}
-
-/// The flag `arg` spells, if any — either spelling, spelled exactly: neither
-/// `--forces` nor `--force=yes` is `--force`.
-pub fn find<V: Copy + PartialEq>(set: &[(V, FlagSpec)], arg: &str) -> Option<V> {
-    set.iter()
-        .find(|(_, spec)| spells(spec, arg))
-        .map(|(flag, _)| *flag)
 }
 
 /// Whether `args` carries `flag`.
@@ -65,6 +99,61 @@ pub fn find<V: Copy + PartialEq>(set: &[(V, FlagSpec)], arg: &str) -> Option<V> 
 /// their guard with — where the handler does not walk the line itself.
 pub fn has<V: Copy + PartialEq>(set: &[(V, FlagSpec)], args: &[String], flag: V) -> bool {
     args.iter().any(|arg| find(set, arg) == Some(flag))
+}
+
+/// The flag `arg` spells, and how it is declared.
+///
+/// [`find`] is this without the spec, for readers that only want to know which
+/// flag they were handed; the parser wants the declaration too — whether a value
+/// follows, and whether a repeat of it is refused.
+pub fn find_spec<'a, V: Copy + PartialEq>(
+    set: &'a [(V, FlagSpec)],
+    arg: &str,
+) -> Option<(V, &'a FlagSpec)> {
+    set.iter()
+        .find(|(_, spec)| spells(spec, arg))
+        .map(|(flag, spec)| (*flag, spec))
+}
+
+/// The flag `arg` spells, if any — either spelling, spelled exactly: neither
+/// `--forces` nor `--force=yes` is `--force`.
+pub fn find<V: Copy + PartialEq>(set: &[(V, FlagSpec)], arg: &str) -> Option<V> {
+    find_spec(set, arg).map(|(flag, _)| flag)
+}
+
+/// A typed set's declarations, without their enum keys — what the command table
+/// can hold, since only a set's own command knows its key type.
+///
+/// This is a projection of the one declaration, not a second copy of it: the
+/// spellings stay beside the enum a handler matches on, and the table reads them
+/// through here for the popup level and the usage line.
+pub fn specs_of<V>(set: &'static [(V, FlagSpec)]) -> Vec<&'static FlagSpec> {
+    set.iter().map(|(_, spec)| spec).collect()
+}
+
+/// [`SPAWN_FLAGS`] as `/spawn`'s table row holds it.
+pub fn spawn_specs() -> Vec<&'static FlagSpec> {
+    specs_of(SPAWN_FLAGS)
+}
+
+/// [`SEND_FLAGS`] as `/send`'s table row holds it.
+pub fn send_specs() -> Vec<&'static FlagSpec> {
+    specs_of(SEND_FLAGS)
+}
+
+/// [`CLOSE_FLAGS`] as `/close`'s table row holds it.
+pub fn close_specs() -> Vec<&'static FlagSpec> {
+    specs_of(CLOSE_FLAGS)
+}
+
+/// [`CONFIRM_FLAGS`] as `/new`'s and `/reset`'s table rows hold it.
+pub fn confirm_specs() -> Vec<&'static FlagSpec> {
+    specs_of(CONFIRM_FLAGS)
+}
+
+/// [`GRANT_FLAGS`] as `/grant`'s table row holds it.
+pub fn grant_specs() -> Vec<&'static FlagSpec> {
+    specs_of(GRANT_FLAGS)
 }
 
 /// Whether `arg` is one of `spec`'s spellings, spelled exactly: neither
@@ -111,18 +200,22 @@ pub const SPAWN_FLAGS: &[(SpawnFlag, FlagSpec)] = &[
     ),
     (
         SpawnFlag::Name,
-        flag(
+        taking(
             "name",
             Some('n'),
+            "name",
             "Name the new topic; defaults to <this>-2",
+            true,
         ),
     ),
     (
         SpawnFlag::Dir,
-        flag(
+        taking(
             "dir",
             Some('d'),
+            "path",
             "Where the child works; defaults to <agents dir>/<name>",
+            true,
         ),
     ),
 ];
@@ -144,7 +237,13 @@ pub enum SendFlag {
 pub const SEND_FLAGS: &[(SendFlag, FlagSpec)] = &[
     (
         SendFlag::Topic,
-        flag("topic", Some('t'), "One of that agent's topics"),
+        taking(
+            "topic",
+            Some('t'),
+            "topic",
+            "One of that agent's topics",
+            false,
+        ),
     ),
     (
         SendFlag::Reply,
@@ -152,15 +251,23 @@ pub const SEND_FLAGS: &[(SendFlag, FlagSpec)] = &[
     ),
     (
         SendFlag::Attach,
-        flag(
+        taking(
             "attach",
             Some('a'),
+            "file",
             "Attach a file from this topic's directory",
+            false,
         ),
     ),
     (
         SendFlag::Recipient,
-        flag("recipient", Some('r'), "Override the recipient address"),
+        taking(
+            "recipient",
+            Some('r'),
+            "id",
+            "Override the recipient address",
+            false,
+        ),
     ),
 ];
 
@@ -273,7 +380,10 @@ mod tests {
             rows.iter().map(|r| r.value.as_str()).collect::<Vec<_>>(),
             ["--topic", "--reply", "--attach", "--recipient"]
         );
-        assert_eq!(rows[0].description, "One of that agent's topics (-t)");
+        assert_eq!(
+            rows[0].description,
+            "One of that agent's topics (-t <topic>)"
+        );
         assert_eq!(
             rows[1].description,
             "Ask the target to send its result back"

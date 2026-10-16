@@ -42,6 +42,7 @@ use super::cancel_handler::CancelCommandHandler;
 use super::close_handler::CloseCommandHandler;
 use super::context_handler::ContextCommandHandler;
 use super::exchange_handler::ExchangeCommandHandler;
+use super::flags::FlagSpec;
 use super::grant_handler::{GrantCommandHandler, UngrantCommandHandler};
 use super::help_handler::HelpCommandHandler;
 use super::info_handler::InfoCommandHandler;
@@ -53,6 +54,7 @@ use super::registry::CommandRegistry;
 use super::reset_handler::ResetCommandHandler;
 use super::send_handler::SendCommandHandler;
 use super::spawn_handler::SpawnCommandHandler;
+use super::spec::{self, Shape};
 use super::template_handler::TemplateCommandHandler;
 use super::thinking_handler::ThinkingCommandHandler;
 use super::toggle_handler::ToggleCommandHandler;
@@ -77,6 +79,29 @@ pub struct CommandSpec {
     ///
     /// [`registry::CommandOutput`]: super::registry::CommandOutput
     pub continues_to_agent: bool,
+    /// How the command's arguments are shaped: what [`spec::parse`] reads the
+    /// line through, and what the popup's argument level and [`Self::usage`]
+    /// are built from. Written here, on the command's one row.
+    pub shape: Shape,
+    /// The command's flag declarations, without their enum keys — the
+    /// projection its own handler reads its typed set through
+    /// ([`super::flags::specs_of`]).
+    ///
+    /// A function rather than a slice because the table is a const of one type
+    /// and each command's flags are keyed by its own enum; the spellings still
+    /// live in exactly one place, beside the enum that handler matches on.
+    pub flags: fn() -> Vec<&'static FlagSpec>,
+}
+
+impl CommandSpec {
+    /// The command's usage line, derived from its shape and its flags.
+    ///
+    /// One writer for `/close [subagent|all] [--force] [--purge]`: the popup,
+    /// `/?` and the command's own refusals all read this, so a line cannot
+    /// advertise what the parser refuses.
+    pub fn usage(&self) -> String {
+        spec::usage(self.name, self.shape, &(self.flags)())
+    }
 }
 
 /// `continues_to_agent` for a table row — omitted means the common case, so 21
@@ -89,6 +114,71 @@ macro_rules! continues_or_false {
     ($v:expr) => {
         $v
     };
+}
+
+/// A row's `shape` — omitted means the command takes no arguments, so the rows
+/// that take none do not each say so.
+macro_rules! shape_or_none {
+    () => {
+        $crate::command::spec::Shape::None
+    };
+    ($shape:expr) => {
+        $shape
+    };
+}
+
+/// A row's `flags` — omitted means the command takes none, and the popup level
+/// and usage line read an empty projection.
+macro_rules! flags_or_none {
+    () => {
+        no_flags
+    };
+    ($flags:expr) => {
+        $flags
+    };
+}
+
+/// The empty projection [`flags_or_none!`] defaults to.
+fn no_flags() -> Vec<&'static FlagSpec> {
+    Vec::new()
+}
+
+/// The shape `/skill` and `/mcp` share: a subcommand and the thing it acts on.
+///
+/// One declaration for both, since a toggle reads the same line whichever list it
+/// toggles — the difference is which names the popup offers, and that comes from
+/// the topic's own skills and MCP servers.
+const fn toggle_shape() -> Shape {
+    Shape::Subcommand {
+        values: &["on", "off", "reset"],
+        labels: &["name"],
+        rest: None,
+    }
+}
+
+/// The shape `name`'s row declares.
+///
+/// A handler reads its command line through the very declaration its popup level
+/// and usage line come from, so it cannot accept a line its own row does not
+/// advertise. A name with no row — a custom command's — takes nothing.
+pub fn shape_of(name: &str) -> Shape {
+    BUILTIN_COMMANDS
+        .iter()
+        .find(|spec| spec.name == name)
+        .map(|spec| spec.shape)
+        .unwrap_or(Shape::None)
+}
+
+/// The usage line `name`'s row declares.
+///
+/// This is what a handler prints in its own refusals, so the syntax it demands is
+/// the syntax its row advertises.
+pub fn usage_of(name: &str) -> String {
+    BUILTIN_COMMANDS
+        .iter()
+        .find(|spec| spec.name == name)
+        .map(CommandSpec::usage)
+        .unwrap_or_else(|| name.to_string())
 }
 
 /// Declare the built-in commands: the spec table, the name list, and the
@@ -106,6 +196,8 @@ macro_rules! builtin_commands {
     ( $( $name:literal => {
             desc: $desc:literal,
             $( continues: $cont:expr, )?
+            $( shape: $shape:expr, )?
+            $( flags: $flags:expr, )?
             make: $make:expr
         },
     )* ) => {
@@ -116,6 +208,8 @@ macro_rules! builtin_commands {
                 name: $name,
                 description: $desc,
                 continues_to_agent: continues_or_false!( $( $cont )? ),
+                shape: shape_or_none!( $( $shape )? ),
+                flags: flags_or_none!( $( $flags )? ),
             },
         )* ];
 
@@ -140,6 +234,7 @@ pub fn builtin_infos() -> Vec<CommandInfo> {
         .map(|s| CommandInfo {
             name: s.name.to_string(),
             description: s.description.to_string(),
+            usage: s.usage(),
             continues_to_agent: s.continues_to_agent,
             ..Default::default()
         })
@@ -152,12 +247,22 @@ builtin_commands! {
         make: |_| Arc::new(HelpCommandHandler)
     },
     "/backlog" => {
-        desc: "Save and replay user messages (push|list|get|pop|rm|set)",
+        desc: "Save and replay user messages",
         continues: true,
+        shape: Shape::Subcommand {
+            values: &["push", "list", "ls", "get", "pop", "rm", "set"],
+            labels: &[],
+            rest: Some("text"),
+        },
         make: |_| Arc::new(BacklogCommandHandler::new())
     },
     "/bill" => {
-        desc: "Usage/cost across topics (today | YYYY-MM | all)",
+        desc: "Usage/cost across topics",
+        shape: Shape::Subcommand {
+            values: &["today", "YYYY-MM", "all"],
+            labels: &[],
+            rest: None,
+        },
         make: |_| Arc::new(BillCommandHandler)
     },
     "/build" => {
@@ -169,19 +274,29 @@ builtin_commands! {
         make: |tm| Arc::new(CancelCommandHandler::new(tm))
     },
     "/close" => {
-        desc: "Close this topic, or one of its subagents (it closes itself): /close [subagent|all] [--force] [--purge]",
+        desc: "Close this topic, or one of its subagents (it closes itself)",
+        shape: Shape::Args { labels: &["subagent|all"] },
+        flags: super::flags::close_specs,
         make: |tm| Arc::new(CloseCommandHandler::new(tm))
     },
     "/context" => {
-        desc: "View or change the context strategy / debug-dump wire payload",
+        desc: "View or change the context strategy, or dump the wire payload",
+        shape: Shape::Subcommand {
+            values: &["full", "sliding", "reset", "dump"],
+            labels: &[],
+            rest: Some("args"),
+        },
         make: |_| Arc::new(ContextCommandHandler)
     },
     "/exchange" => {
         desc: "Show shareable URLs for this topic's published files",
+        shape: Shape::Args { labels: &["file"] },
         make: |tm| Arc::new(ExchangeCommandHandler::new(tm))
     },
     "/grant" => {
-        desc: "Grant agent access to a path (read-only, until restart; -w write, -p persist)",
+        desc: "Grant agent access to a path (read-only, until restart)",
+        shape: Shape::Args { labels: &["path"] },
+        flags: super::flags::grant_specs,
         make: |_| Arc::new(GrantCommandHandler)
     },
     "/info" => {
@@ -189,15 +304,18 @@ builtin_commands! {
         make: |tm| Arc::new(InfoCommandHandler::new(tm))
     },
     "/mcp" => {
-        desc: "Toggle an MCP server for this topic: /mcp on|off|reset <name>",
+        desc: "Toggle an MCP server for this topic",
+        shape: toggle_shape(),
         make: |_| Arc::new(ToggleCommandHandler::mcp())
     },
     "/model" => {
         desc: "Switch AI model for this topic",
+        shape: Shape::Args { labels: &["model|reset"] },
         make: |_| Arc::new(ModelCommandHandler)
     },
     "/new" => {
-        desc: "Reset session and clear chat history (requires --force)",
+        desc: "Reset session and clear chat history",
+        flags: super::flags::confirm_specs,
         make: |_| Arc::new(NewCommandHandler)
     },
     "/pin" => {
@@ -209,31 +327,47 @@ builtin_commands! {
         make: |_| Arc::new(PlanCommandHandler)
     },
     "/reset" => {
-        desc: "Reset session, keep chat history (requires --force)",
+        desc: "Reset session, keep chat history",
+        flags: super::flags::confirm_specs,
         make: |_| Arc::new(ResetCommandHandler)
     },
     "/send" => {
-        desc: "Send a message to any agent, or to one of its topics: /send <agent> [flags] <message> (flags precede the message)",
+        desc: "Send a message to any agent, or to one of its topics",
+        shape: Shape::ThenBody {
+            label: "agent",
+            body: "message",
+        },
+        flags: super::flags::send_specs,
         make: |tm| Arc::new(SendCommandHandler::new(tm))
     },
     "/skill" => {
-        desc: "Toggle a skill for this topic: /skill on|off|reset <name>",
+        desc: "Toggle a skill for this topic",
+        shape: toggle_shape(),
         make: |_| Arc::new(ToggleCommandHandler::skill())
     },
     "/spawn" => {
-        desc: "Start a sibling topic — a new dir by default, this one with -s: [type] [-i] [-s] [-n name] [-d dir]",
+        desc: "Start a sibling topic — a new dir by default, this one with -s",
+        shape: Shape::Args { labels: &["type"] },
+        flags: super::flags::spawn_specs,
         make: |tm| Arc::new(SpawnCommandHandler::new(tm))
     },
     "/template" => {
-        desc: "Apply or re-apply topic template",
+        desc: "Apply or re-apply this topic's template",
+        shape: Shape::Args { labels: &["name|update"] },
         make: |_| Arc::new(TemplateCommandHandler)
     },
     "/thinking" => {
         desc: "Show or hide AI thinking/reasoning content",
+        shape: Shape::Subcommand {
+            values: &["show", "hide"],
+            labels: &[],
+            rest: None,
+        },
         make: |_| Arc::new(ThinkingCommandHandler)
     },
     "/ungrant" => {
         desc: "Revoke a runtime access grant",
+        shape: Shape::Args { labels: &["path"] },
         make: |_| Arc::new(UngrantCommandHandler)
     },
     "/unpin" => {

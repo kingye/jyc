@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
+use super::spec;
 use crate::session_state::{
     MCP_OVERRIDE_FILE, SKILL_OVERRIDE_FILE, clear_toggle_override, read_toggle_override,
     write_toggle_override,
@@ -55,14 +56,20 @@ impl CommandHandler for ToggleCommandHandler {
     async fn execute(&self, context: CommandContext) -> Result<CommandResult> {
         let topic_name = context.topic_name.as_str();
         let topic_path = &context.topic_path;
-        let usage = format!("Usage: {} on|off|reset <name>", self.name);
+        // The line this command declares, rather than a second copy of it.
+        let usage = format!("Usage: {}", super::builtin::usage_of(self.name));
+
+        let parsed = match spec::parse_plain(self.name, &context.args) {
+            Ok(parsed) => parsed,
+            Err(error) => return Ok(CommandResult::refusal(error.to_string())),
+        };
 
         let mut ovr = read_toggle_override(topic_name, topic_path, self.file)
             .await
             .unwrap_or_default();
 
         // No args: show current override state.
-        if context.args.is_empty() {
+        if parsed.positionals.is_empty() {
             return Ok(ok(format!(
                 "{}: on=[{}] off=[{}] (empty means config defaults; {} reset <name> not supported — use `{} reset` to clear all)",
                 self.name,
@@ -73,10 +80,10 @@ impl CommandHandler for ToggleCommandHandler {
             )));
         }
 
-        let sub = context.args[0].to_lowercase();
+        let sub = parsed.positionals[0].to_lowercase();
         match sub.as_str() {
             "on" | "off" => {
-                let Some(target) = context.args.get(1) else {
+                let Some(target) = parsed.positionals.get(1) else {
                     return Err(anyhow::anyhow!("missing <name>. {usage}"));
                 };
                 ovr.set(target, sub == "on");

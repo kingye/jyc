@@ -265,7 +265,13 @@ impl InspectServer {
             cfg_ref,
             jyc_utils::paths::config_dir().as_deref(),
         );
-        let agents = agent_topic_names(context).await;
+        // `/send`'s first level, taken from the snapshot already in hand instead of
+        // walking the agents workspace a second time per poll.
+        let agents: Vec<String> = topics
+            .iter()
+            .filter(|t| t.channel == jyc_core::command::send_handler::AGENTS_CHANNEL)
+            .map(|t| t.name.clone())
+            .collect();
         let mut summaries: Vec<TopicSummary> = topics
             .into_iter()
             .map(|t| {
@@ -373,7 +379,9 @@ impl InspectServer {
         // memoize here keyed by (`cfg_ptr`, pattern) and clear on
         // `AppConfig` reload, or drop the per-topic `commands` from the
         // overview and expose `GET /api/commands?pattern=X` for the TUI
-        // to fetch lazily.
+        // to fetch lazily. `/close`'s per-topic subagent list widens it: every
+        // topic's list reads its children's `spawned-from` breadcrumbs from
+        // disk on that same poll.
         let cfg = context.config.as_ref().map(|c| c.load_full());
         let fallback_cfg = AppConfig::default();
         let cfg_ref = cfg.as_deref().unwrap_or(&fallback_cfg);
@@ -382,7 +390,12 @@ impl InspectServer {
             cfg_ref,
             jyc_utils::paths::config_dir().as_deref(),
         );
-        let agents = agent_topic_names(context).await;
+        // `/send`'s first level, from the snapshot in hand (see above).
+        let agents: Vec<String> = topics
+            .iter()
+            .filter(|t| t.channel == jyc_core::command::send_handler::AGENTS_CHANNEL)
+            .map(|t| t.name.clone())
+            .collect();
         let topics: Vec<TopicInfo> = topics
             .into_iter()
             .map(|mut t| {
@@ -507,20 +520,6 @@ pub(crate) fn build_channels(
 /// feeds the `/skill on|off` argument values — deliberately the *available*
 /// names rather than the enabled snapshot in `TopicInfo::skills`, so a skill
 /// the user toggled off can still be completed back on.
-///
-/// The agents `/send` can address: the active topics of the agents channel —
-/// the same list the prompt shows as "active topics". Read once per payload,
-/// since every topic's command list carries it.
-async fn agent_topic_names(context: &InspectContext) -> Vec<String> {
-    match context
-        .topic_managers
-        .by_channel(jyc_core::command::send_handler::AGENTS_CHANNEL)
-    {
-        Some(tm) => tm.list_topics().await.into_iter().map(|t| t.name).collect(),
-        None => Vec::new(),
-    }
-}
-
 /// `subagent_types` is `/spawn`'s first level, resolved by the caller with
 /// `spawn_handler::type_catalog_pairs` — once per payload rather than once per
 /// topic, since it reads the installed role files and the payload carries a

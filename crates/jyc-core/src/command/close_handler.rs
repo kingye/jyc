@@ -37,8 +37,9 @@ impl CloseCommandHandler {
     /// The word in the args that names what to close, if any.
     ///
     /// `all` is a keyword: a subagent that happens to be called `all` is closed
-    /// as part of the batch rather than by name. Flags are not names, and
-    /// neither is the empty token a bare `/close ` carries.
+    /// as part of the batch rather than by name. Flags are not names, and the
+    /// blank check keeps a stray empty word — which args built with
+    /// `split_whitespace` cannot normally produce — from reading as one.
     fn target(args: &[String]) -> Option<&str> {
         args.iter()
             .map(String::as_str)
@@ -78,6 +79,30 @@ impl CloseCommandHandler {
         .await
     }
 
+    /// A refusal: nothing was closed, and why.
+    ///
+    /// Both fields carry the text — `CommandOutput::results_summary` replies
+    /// with `Error: {error}` for a failed result and drops `message`, so a
+    /// reason kept only in `message` would never reach the user.
+    fn refusal(message: String) -> CommandResult {
+        CommandResult {
+            success: false,
+            message: message.clone(),
+            error: Some(message),
+            append_body: None,
+        }
+    }
+
+    /// What a subagent is told to run: the very `/close` a user would type in
+    /// that topic, forced — the guard on this side has already passed.
+    fn close_body(args: &[String]) -> &'static str {
+        if Self::is_purged(args) {
+            "/close --force --purge"
+        } else {
+            "/close --force"
+        }
+    }
+
     /// The subagent names `target` selects, or the refusal that says why none.
     ///
     /// Split out from the send path so the rule — `all`, or exactly one of this
@@ -89,6 +114,10 @@ impl CloseCommandHandler {
         match target {
             "all" => Ok(children.iter().map(|(name, _)| name.clone()).collect()),
             name if children.iter().any(|(child, _)| child == name) => Ok(vec![name.to_string()]),
+            name if children.is_empty() => Err(format!(
+                "'{name}' is not a subagent of this topic, so `/close` leaves it alone. \
+                 This topic has no subagents."
+            )),
             name => Err(format!(
                 "'{name}' is not a subagent of this topic, so `/close` leaves it alone. \
                  Subagents: {}",
@@ -110,14 +139,7 @@ impl CloseCommandHandler {
         let children = subagents_of(&context.topic_name);
         let names = match Self::subagent_targets(target, &children) {
             Ok(names) => names,
-            Err(message) => {
-                return Ok(CommandResult {
-                    success: false,
-                    message,
-                    error: Some(format!("Not a subagent: {target}")),
-                    append_body: None,
-                });
-            }
+            Err(message) => return Ok(Self::refusal(message)),
         };
 
         if names.is_empty() {
@@ -154,11 +176,7 @@ impl CloseCommandHandler {
             });
         }
 
-        let body = if Self::is_purged(&context.args) {
-            "/close --force --purge"
-        } else {
-            "/close --force"
-        };
+        let body = Self::close_body(&context.args);
         let mut sent: Vec<String> = Vec::new();
         let mut failed: Vec<String> = Vec::new();
         for name in &names {
@@ -168,14 +186,17 @@ impl CloseCommandHandler {
             }
         }
 
+        // What went out, not what it did: the message is dispatched to the child's
+        // queue, and the child's own reply lands in its own topic — so this side
+        // can only report the dispatch.
         let mut message = if sent.len() == 1 {
             format!(
-                "Sent '{body}' to subagent '{}' — it closes itself on its own queue.",
+                "Dispatched '{body}' to subagent '{}' — it closes itself on its own queue.",
                 sent[0]
             )
         } else {
             format!(
-                "Sent '{body}' to {} subagents: {}.",
+                "Dispatched '{body}' to {} subagents: {}.",
                 sent.len(),
                 sent.join(", ")
             )
@@ -191,8 +212,10 @@ impl CloseCommandHandler {
         );
         Ok(CommandResult {
             success: failed.is_empty(),
-            message,
-            error: (!failed.is_empty()).then(|| format!("{} send(s) failed", failed.len())),
+            message: message.clone(),
+            // The reason rides in `error` too, or the reply would show only the
+            // terse summary and drop which child failed (see `refusal`).
+            error: (!failed.is_empty()).then_some(message),
             append_body: None,
         })
     }
@@ -349,10 +372,8 @@ mod tests {
             CloseCommandHandler::target(&args(&["--force", "joe", "--purge"])),
             Some("joe")
         );
-        // What the popup's self row completes to: `/close ` with an extra
-        // space carries no argument, so it still closes this topic.
-        assert_eq!(CloseCommandHandler::target(&args(&["", " "])), None);
         assert_eq!(CloseCommandHandler::target(&args(&["--force"])), None);
+        assert_eq!(CloseCommandHandler::target(&args(&["--purge"])), None);
         assert_eq!(CloseCommandHandler::target(&args(&[])), None);
     }
 
@@ -375,5 +396,27 @@ mod tests {
         let refusal = CloseCommandHandler::subagent_targets("nope", &children).unwrap_err();
         assert!(refusal.contains("is not a subagent"), "{refusal}");
         assert!(refusal.contains("joe, all"), "{refusal}");
+
+        // With no subagents to list, the refusal says so rather than dangling.
+        let refusal = CloseCommandHandler::subagent_targets("nope", &[]).unwrap_err();
+        assert!(refusal.contains("no subagents"), "{refusal}");
+    }
+
+    /// What a subagent is told to run is always forced, and carries `--purge`
+    /// through when the caller asked for it.
+    #[test]
+    fn close_body_forwards_purge_and_always_forces() {
+        assert_eq!(
+            CloseCommandHandler::close_body(&args(&[])),
+            "/close --force"
+        );
+        assert_eq!(
+            CloseCommandHandler::close_body(&args(&["joe", "--force"])),
+            "/close --force"
+        );
+        assert_eq!(
+            CloseCommandHandler::close_body(&args(&["joe", "--force", "--purge"])),
+            "/close --force --purge"
+        );
     }
 }

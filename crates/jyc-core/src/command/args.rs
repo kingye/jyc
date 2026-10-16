@@ -162,10 +162,10 @@ fn send_args(ctx: &ArgCtx) -> Vec<CommandArg> {
 /// The flags `/send` takes before the message.
 fn send_flags() -> Vec<CommandArg> {
     vec![
-        val("--topic", "One of that agent's topics"),
+        val("--topic", "One of that agent's topics (-t)"),
         val("--reply", "Ask the target to send its result back"),
-        val("--attach", "Attach a file from this topic's directory"),
-        val("--recipient", "Override the recipient address"),
+        val("--attach", "Attach a file from this topic's directory (-a)"),
+        val("--recipient", "Override the recipient address (-r)"),
     ]
 }
 

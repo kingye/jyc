@@ -985,7 +985,12 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
 
     // "/" opens the command popup as the first char of an empty input.
     // The slash also lands in the input field — the popup filters off it.
-    let is_slash = key.code == KeyCode::Char('/') && !key.modifiers.contains(KeyModifiers::CONTROL);
+    // A pending question box owns the keyboard (see below), so the shortcut
+    // stays out of its way: with a box up, `/` would go to the box's draft or
+    // be swallowed, and a popup opened behind it would take the next Enter.
+    let is_slash = key.code == KeyCode::Char('/')
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && !app.chat.active_question();
     if is_slash && app.chat.focus == ChatFocus::ChatPane && app.chat.text().trim().is_empty() {
         // Compute commands for the chat topic just-in-time so the popup
         // reflects the topic the user is typing into (not whichever row
@@ -1000,9 +1005,11 @@ pub(super) fn handle_chat_keys<B: ratatui::backend::Backend>(
 
     // "[" on an empty input jumps to the previous user turn: `focus_message_area`
     // resets the cursor past the end of the transcript, so one jump up is the
-    // newest turn. The bracket is not typed.
-    let is_bracket =
-        key.code == KeyCode::Char('[') && !key.modifiers.contains(KeyModifiers::CONTROL);
+    // newest turn. The bracket is not typed. Out of the way of a pending
+    // question for the same reason as `/` above.
+    let is_bracket = key.code == KeyCode::Char('[')
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && !app.chat.active_question();
     if is_bracket && app.chat.focus == ChatFocus::ChatPane && app.chat.text().trim().is_empty() {
         app.chat.focus_message_area();
         section_cursor(app, -1, false);
@@ -2237,12 +2244,19 @@ pub(super) fn render_question_box(frame: &mut Frame, area: Rect, app: &App, body
             // `✎ ` and the `→ `/`  ` gutter take two columns each; one more pays
             // for the cursor block while the draft is open.
             let cursor = usize::from(app.chat.question_typing);
+            // A blank draft the user accepted reads as "no answer" until the
+            // batch goes out, so the row goes back to saying what it offers;
+            // while the draft is open it stays empty, with the cursor on it.
+            let blank = q
+                .typed
+                .as_deref()
+                .is_some_and(|text| text.trim().is_empty());
             let label = match q.typed.as_deref() {
-                Some(text) => format!(
+                Some(text) if !blank || app.chat.question_typing => format!(
                     "\u{270e} {}",
                     tail_to_width(text, (inner.width as usize).saturating_sub(4 + cursor))
                 ),
-                None => truncate_to_width(
+                _ => truncate_to_width(
                     "\u{270e} type your own answer",
                     inner.width.saturating_sub(2) as usize,
                 ),
@@ -3233,8 +3247,9 @@ impl ChatState {
         if total < 2 {
             return;
         }
-        // The draft belongs to the question being left; each keeps its own, so
-        // a typed answer survives stepping away and back.
+        // Step to another question: the draft belongs to the question being
+        // left, and each keeps its own. A backstop only - `←/→` are dispatched
+        // from the list branch, so a draft never gets here.
         self.question_typing = false;
         let current = self.question_index as isize;
         self.question_index = (current + delta).rem_euclid(total) as usize;
@@ -3288,6 +3303,14 @@ impl ChatState {
     /// panel that spells out what the keys do is a bug report waiting to
     /// happen, and confirming is what a user who just tapped Space means.
     fn space_question(&mut self) {
+        // The `✎` row is not an option, in either mode: Space opens the draft
+        // there exactly as Enter does. Marking an index no option has would put
+        // a phantom mark in the answer - invisible on screen, dropped at submit
+        // - and would wipe a draft the user typed.
+        if self.on_typed_row() {
+            self.begin_typed_answer();
+            return;
+        }
         let multi = self.current_question().is_some_and(|q| q.multi);
         if !multi {
             self.confirm_question();

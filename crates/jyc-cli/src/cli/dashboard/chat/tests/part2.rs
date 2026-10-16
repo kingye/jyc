@@ -1430,7 +1430,8 @@ fn escaping_the_draft_lets_the_options_answer_again() {
         Some("x"),
         "the draft is kept, so coming back to it does not mean retyping"
     );
-    chat.select_question_prev(); // back to an option, cursor first
+    chat.select_question_prev(); // back to an option
+    chat.select_question_prev(); // and to the first one
     chat.confirm_question(); // which settles the question
 
     assert_eq!(sent_text(&mut rx), "Q1: 1) a");
@@ -1468,6 +1469,32 @@ fn a_typed_answer_waits_for_its_own_question() {
     chat.confirm_question(); // q2's first option
 
     assert_eq!(sent_text(&mut rx), "Q1: mine now\nQ2: 1) c");
+}
+
+/// Space on the `✎` row opens the draft in a multi-select question too. The row
+/// is not an option, so marking it would put a phantom index in the answer -
+/// invisible on screen, dropped at submit - and would wipe what was typed.
+#[test]
+fn space_on_the_typed_row_opens_the_draft_in_multi() {
+    let (mut chat, mut rx) = chat_for_topic("jyc");
+    chat.handle_question_event(&question_payload_multi("jyc", "q1", &["a", "b"]));
+
+    chat.space_question(); // mark a
+    chat.select_question_next();
+    chat.select_question_next(); // -> the ✎ row
+    chat.space_question(); // opens the draft instead of marking index 2
+    assert!(chat.question_typing, "Space on the ✎ row opens the draft");
+    assert_eq!(
+        chat.current_question().expect("q1").marked,
+        vec![0],
+        "the only mark is the option the user marked"
+    );
+    for c in "both".chars() {
+        chat.push_typed_char(c);
+    }
+    chat.confirm_question(); // the typed answer answers for it
+
+    assert_eq!(sent_text(&mut rx), "Q1: both");
 }
 
 /// Going back is free precisely because the answer is still buffered: the

@@ -1611,6 +1611,44 @@ fn input_area_rows_reserves_the_bottom_rule() {
         + 3)
     .clamp(6, question_box_max_rows(body_height)) as u16;
     assert_eq!(app.chat.input_area_rows(80, body_height), body + 1);
+
+    // The draft's hint is a shorter line than the list's, and the box is sized
+    // from whichever one is showing: at 60 columns the list's hint wraps onto
+    // two rows while the draft's stays on one, so the box comes out a row
+    // shorter. A mismatch here would be a row drawn over or clipped.
+    let question = q.question.clone();
+    let context = q.context.clone();
+    let options = q.options.len();
+    let total = app.chat.questions.len();
+    app.chat.question_typing = true;
+    let typing_chrome = question_chrome_rows(
+        &question,
+        context.as_deref(),
+        options + 1,
+        total,
+        58,
+        body_height,
+        true,
+    );
+    let list_chrome = question_chrome_rows(
+        &question,
+        context.as_deref(),
+        options + 1,
+        total,
+        58,
+        body_height,
+        false,
+    );
+    assert_eq!(
+        list_chrome - typing_chrome,
+        1,
+        "the draft's hint must be measured as itself, not as the list's"
+    );
+    assert_eq!(
+        app.chat.input_area_rows(60, body_height),
+        (typing_chrome + options + 1 + 3 + 1) as u16,
+        "the box's own height follows the hint that is showing"
+    );
 }
 
 /// A polled topic summary so the status line has real content: `plan ·
@@ -3199,6 +3237,46 @@ fn bracket_on_empty_input_focuses_message_area_on_previous_turn() {
     assert_eq!(
         app.chat.cursor_line, turns[2],
         "the focus reset leaves the cursor past the end, so one jump up is the newest turn"
+    );
+}
+
+/// A pending question box owns the keyboard, so the TUI's own shortcuts stay
+/// out of it: `/` must not open the command popup (the popup's next Enter would
+/// answer the question with a slash command) and `[` must not move the focus to
+/// the transcript. Both are guarded on the box being up, draft or not.
+#[test]
+fn question_box_keeps_the_slash_and_bracket_shortcuts_out() {
+    let mut app = chatting_app();
+    app.chat.focus = ChatFocus::ChatPane;
+    app.chat.questions = vec![PendingQuestion {
+        topic: "jyc".to_string(),
+        context: None,
+        question: "Pick one?".to_string(),
+        options: vec!["alpha".to_string(), "beta".to_string()],
+        multi: false,
+        skipped: false,
+        typed: None,
+        selected: 0,
+        marked: Vec::new(),
+    }];
+    assert!(app.chat.active_question(), "the box must be on screen");
+
+    press(&mut app, '/');
+    assert!(
+        app.chat.command_popup.is_none(),
+        "the box owns the keyboard: no command popup over it"
+    );
+    assert_eq!(
+        app.chat.text(),
+        "",
+        "and the slash does not reach the editor"
+    );
+
+    press(&mut app, '[');
+    assert_eq!(
+        app.chat.focus,
+        ChatFocus::ChatPane,
+        "the box owns the keyboard: the bracket does not leave the input"
     );
 }
 

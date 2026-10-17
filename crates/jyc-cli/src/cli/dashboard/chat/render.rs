@@ -1045,7 +1045,7 @@ pub(super) fn entry_activity_text(entry: &jyc_types::ActivityEntry) -> String {
             if event
                 .get("success")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(true)
+                .unwrap_or_default()
             {
                 format!("Completed ({secs}s)")
             } else {
@@ -1118,8 +1118,9 @@ pub(super) fn entry_activity_text(entry: &jyc_types::ActivityEntry) -> String {
                 Some(n) => format!("{label} (attempt #{n})"),
                 None => label.to_string(),
             };
-            let message = str_field("message");
-            if !message.is_empty() {
+            // The old backend appended for any `Some`, even an empty message
+            // ("ERROR: ") — keep that, don't second-guess the writer.
+            if let Some(message) = event.get("message").and_then(|v| v.as_str()) {
                 text.push_str(&format!(": {}", message.replace('\n', " ")));
             }
             text
@@ -1953,7 +1954,14 @@ mod tests {
         // A failing round has to say so on its one line — in this mode the
         // full tail, and its red error row, are off screen.
         let failed = jyc_types::ActivityEntry {
-            event: serde_json::json!({"type": "processing_completed", "success": false, "duration_secs": 30}),
+            event: jyc_core::topic_event::TopicEvent::ProcessingCompleted {
+                topic_name: "t".to_string(),
+                message_id: "m1".to_string(),
+                success: false,
+                duration_secs: 30,
+                timestamp: chrono::Utc::now(),
+            }
+            .to_activity_json(),
             text: None,
             timestamp: None,
             ..entry.clone()
@@ -1968,7 +1976,14 @@ mod tests {
 
         // ...and a failure after tool work still names the tool.
         let failed = jyc_types::ActivityEntry {
-            event: serde_json::json!({"type": "processing_completed", "success": false, "duration_secs": 30}),
+            event: jyc_core::topic_event::TopicEvent::ProcessingCompleted {
+                topic_name: "t".to_string(),
+                message_id: "m1".to_string(),
+                success: false,
+                duration_secs: 30,
+                timestamp: chrono::Utc::now(),
+            }
+            .to_activity_json(),
             text: None,
             timestamp: None,
             ..entry.clone()
@@ -1981,14 +1996,19 @@ mod tests {
         // rebuilds the edit JSON the renderer's diff view parses — reading
         // the state off anything less called a live edit "thinking".
         let raw_json = jyc_types::ActivityEntry {
-            event: serde_json::json!({
-                "type": "tool_completed",
-                "tool_name": "edit",
-                "success": true,
-                "duration_secs": 1,
-                "input": r#"{"file_path":"src/foo.rs","old_string":"old","new_string":"new"}"#,
-                "output": "Edited 'src/foo.rs' at line 42: 1 replacement(s) made",
-            }),
+            event: jyc_core::topic_event::TopicEvent::ToolCompleted {
+                topic_name: "t".to_string(),
+                tool_name: "edit".to_string(),
+                success: true,
+                duration_secs: 1,
+                output: Some("Edited 'src/foo.rs' at line 42: 1 replacement(s) made".to_string()),
+                input: Some(
+                    r#"{"file_path":"src/foo.rs","old_string":"old","new_string":"new"}"#
+                        .to_string(),
+                ),
+                timestamp: chrono::Utc::now(),
+            }
+            .to_activity_json(),
             text: None,
             timestamp: None,
             ..entry.clone()

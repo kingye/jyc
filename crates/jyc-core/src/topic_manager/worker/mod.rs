@@ -69,6 +69,12 @@ pub(crate) async fn process_message(
         "Message stored"
     );
 
+    // Marks for the per-message dispatch path: everything from here to the
+    // first poll of the agent future is otherwise invisible in the log, so a
+    // slow turn cannot be attributed. One summary line below carries the
+    // numbers; drop these marks once the breakdown is known.
+    let t_prelude = std::time::Instant::now();
+
     // ── 1.2. WRITE THREAD ROUTING METADATA ────────────────────────────
     // Persist routing metadata on the first message for a topic so that
     // the dashboard's `TopicProxyHandler` (via /ws/<channel>/<topic>)
@@ -206,6 +212,7 @@ pub(crate) async fn process_message(
             command_registry.register(&key, Arc::new(CustomCommandHandler::new(cmd)));
         }
     }
+    let t_after_prelude = std::time::Instant::now();
 
     // Hook set for this topic: global [[hooks]] + the routed agent's.
     // Built per message (same lifetime as the command registry), so a
@@ -229,6 +236,7 @@ pub(crate) async fn process_message(
     let cmd_output = command_registry
         .process_commands(raw_body, &cmd_context)
         .await?;
+    let t_after_commands = std::time::Instant::now();
 
     // ── 3. REPLY COMMAND RESULTS (always, if commands found) ──────────
     if !cmd_output.results.is_empty() {
@@ -339,6 +347,8 @@ pub(crate) async fn process_message(
         }
     }
 
+    let t_after_hooks = std::time::Instant::now();
+
     // Spawn a background task to watch for pending reply deliveries.
     // When the agent loop cannot deliver directly (no live reply target, or
     // the direct send failed), it writes reply.md + reply-sent.flag. This
@@ -378,6 +388,15 @@ pub(crate) async fn process_message(
     // current AI call completes (same as before).
     let (_dummy_tx, mut dummy_rx) = mpsc::channel::<QueueItem>(1);
     drop(_dummy_tx);
+
+    let t_dispatch = std::time::Instant::now();
+    tracing::info!(
+        prelude_ms = t_after_prelude.duration_since(t_prelude).as_millis() as u64,
+        commands_ms = t_after_commands.duration_since(t_after_prelude).as_millis() as u64,
+        hooks_ms = t_after_hooks.duration_since(t_after_commands).as_millis() as u64,
+        dispatch_ms = t_dispatch.duration_since(t_prelude).as_millis() as u64,
+        "Message dispatch path"
+    );
 
     let agent_fut = agent.process(
         &message,

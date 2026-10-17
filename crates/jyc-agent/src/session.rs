@@ -125,11 +125,21 @@ async fn read_context_values(state_dir: &Path) -> Option<Vec<serde_json::Value>>
     }
     let content = tokio::fs::read_to_string(&legacy_path).await.ok()?;
     match serde_json::from_str::<Vec<serde_json::Value>>(&content) {
-        Ok(values) => {
-            write_journal(state_dir, &values).await;
-            tokio::fs::remove_file(&legacy_path).await.ok();
-            Some(values)
-        }
+        Ok(values) => match write_journal(state_dir, &values).await {
+            Ok(()) => {
+                tokio::fs::remove_file(&legacy_path).await.ok();
+                Some(values)
+            }
+            Err(e) => {
+                // Journal not written — keep the legacy file so the next
+                // load retries the migration instead of losing the context.
+                tracing::warn!(
+                    error = %e,
+                    "auto-migration: journal write failed, legacy kept"
+                );
+                Some(values)
+            }
+        },
         Err(e) => {
             tracing::warn!(
                 error = %e,
@@ -151,7 +161,7 @@ async fn append_journal(
     bytes: &[u8],
     persisted_len: usize,
     new: &[serde_json::Value],
-) {
+) -> std::io::Result<()> {
     let mut offset = 0usize;
     let mut seen = 0usize;
     for (i, &b) in bytes.iter().enumerate() {
@@ -171,31 +181,27 @@ async fn append_journal(
         }
     }
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-    let result = (|| async {
-        let mut f = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            // No truncate: the cut point is the persisted_len-th newline,
-            // applied explicitly via set_len below (a bare truncate would
-            // drop the whole prefix).
-            .truncate(false)
-            .open(journal_path)
-            .await?;
-        f.set_len(offset as u64).await?;
-        f.seek(std::io::SeekFrom::End(0)).await?;
-        f.write_all(buf.as_bytes()).await?;
-        f.sync_data().await?;
-        Ok::<(), std::io::Error>(())
-    })()
-    .await;
-    if let Err(e) = result {
-        tracing::warn!(error = %e, "append_journal: failed, journal may have a torn tail");
-    }
+    let mut f = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        // No truncate: the cut point is the persisted_len-th newline,
+        // applied explicitly via set_len below (a bare truncate would
+        // drop the whole prefix).
+        .truncate(false)
+        .open(journal_path)
+        .await?;
+    f.set_len(offset as u64).await?;
+    f.seek(std::io::SeekFrom::End(0)).await?;
+    f.write_all(buf.as_bytes()).await?;
+    f.sync_data().await?;
+    Ok(())
 }
 
 /// Write the journal in full (one message per line) via tmp file + rename,
 /// so readers never see a partial file. Removes the legacy array file.
-async fn write_journal(state_dir: &Path, new: &[serde_json::Value]) {
+/// On rename failure the tmp file is removed best-effort so no garbage is
+/// left in the state dir; the original error is propagated.
+async fn write_journal(state_dir: &Path, new: &[serde_json::Value]) -> std::io::Result<()> {
     let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
     let tmp_path = journal_path.with_file_name(format!(
         "{}.tmp",
@@ -216,17 +222,15 @@ async fn write_journal(state_dir: &Path, new: &[serde_json::Value]) {
             }
         }
     }
-    if let Err(e) = tokio::fs::write(&tmp_path, buf).await {
-        tracing::warn!(error = %e, "write_journal: failed to write tmp journal");
-        return;
-    }
+    tokio::fs::write(&tmp_path, buf).await?;
     if let Err(e) = tokio::fs::rename(&tmp_path, &journal_path).await {
-        tracing::warn!(error = %e, "write_journal: failed to rename journal into place");
-        return;
+        tokio::fs::remove_file(&tmp_path).await.ok();
+        return Err(e);
     }
     tokio::fs::remove_file(state_dir.join(AGENT_CONTEXT_LEGACY_FILE))
         .await
         .ok();
+    Ok(())
 }
 
 /// The single writer for the raw context journal. Every mutation — turn-end
@@ -238,6 +242,10 @@ async fn write_journal(state_dir: &Path, new: &[serde_json::Value]) {
 /// tail `new[persisted_len..]` is serialized and appended — O(delta). Any
 /// other shape (compaction, external edit, crash residue) rewrites the whole
 /// journal atomically via tmp + rename.
+///
+/// The cache is updated only after a successful write; a failed write drops
+/// the entry so the next load re-reads the journal instead of serving values
+/// that never reached disk.
 async fn replace_raw_context(
     state_dir: &Path,
     topic_name: &str,
@@ -246,24 +254,30 @@ async fn replace_raw_context(
 ) {
     let journal_path = state_dir.join(AGENT_CONTEXT_FILE);
 
-    // Append fast path: the on-disk journal holds exactly `persisted_len`
-    // complete lines and `new` extends that prefix (normal turn-end save).
-    let mut appended = false;
-    if persisted_len <= new.len()
-        && let Ok(bytes) = tokio::fs::read(&journal_path).await
-    {
-        let complete = bytes.iter().filter(|&&b| b == b'\n').count();
-        if complete == persisted_len {
-            append_journal(&journal_path, &bytes, persisted_len, &new[persisted_len..]).await;
-            appended = true;
+    let result = async {
+        // Append fast path: the on-disk journal holds exactly
+        // `persisted_len` complete lines and `new` extends that prefix.
+        if persisted_len <= new.len()
+            && let Ok(bytes) = tokio::fs::read(&journal_path).await
+            && bytes.iter().filter(|&&b| b == b'\n').count() == persisted_len
+        {
+            append_journal(&journal_path, &bytes, persisted_len, &new[persisted_len..]).await
+        } else {
+            write_journal(state_dir, &new).await
         }
     }
+    .await;
 
-    if !appended {
-        write_journal(state_dir, &new).await;
+    match result {
+        Ok(()) => cache_insert(topic_name, &journal_path, new),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "replace_raw_context: journal write failed, cache dropped"
+            );
+            cache_drop(topic_name);
+        }
     }
-
-    cache_insert(topic_name, &journal_path, new);
 }
 
 /// Session state persisted to `.jyc/agent-session.json`.

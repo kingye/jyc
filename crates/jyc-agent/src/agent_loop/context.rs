@@ -85,7 +85,7 @@ fn format_cleaned_message(
 
 /// Build the context to send to the LLM for the next request.
 ///
-/// The full `raw_context` is always persisted to `.jyc/agent-context.json`
+/// The full `raw_context` is always persisted to `.jyc/agent-context.jsonl` (append-only journal)
 /// untouched; this function only shapes what is sent to the LLM.
 ///
 /// * `Full` — borrow the full context (no copy).

@@ -394,6 +394,112 @@ mod session {
     }
 
     #[tokio::test]
+    async fn save_raw_context_rewrites_when_prefix_diverges() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "save_raw_context_rewrites_when_prefix_diverges";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
+        )
+        .await
+        .unwrap();
+
+        let seed = vec![
+            serde_json::json!({"role": "user", "content": "original"}),
+            serde_json::json!({"role": "assistant", "content": "original answer"}),
+        ];
+        write_context_journal(&state_dir, &seed).await;
+
+        // Compaction-shaped content never extends the on-disk prefix; the
+        // writer must rewrite the journal in full, not append after the old
+        // tail (which would interleave compacted and uncompacted content).
+        let compacted = vec![
+            serde_json::json!({"role": "user", "content": "task anchor"}),
+            serde_json::json!({"role": "assistant", "content": "summary of everything"}),
+        ];
+        session::save_raw_context(topic, tmp.path(), compacted.clone(), 0).await;
+        let journal = tokio::fs::read_to_string(state_dir.join("agent-context.jsonl"))
+            .await
+            .unwrap();
+        assert_eq!(
+            journal.lines().count(),
+            compacted.len(),
+            "persisted_len=0 forces a full rewrite"
+        );
+        let parsed: Vec<serde_json::Value> = journal
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(parsed[1]["content"], "summary of everything");
+    }
+
+    #[tokio::test]
+    async fn load_context_detects_external_journal_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "load_context_detects_external_journal_change";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
+        )
+        .await
+        .unwrap();
+
+        let seed = vec![serde_json::json!({"role": "assistant", "content": "one"})];
+        write_context_journal(&state_dir, &seed).await;
+
+        let (_, first) = session::load_context(topic, tmp.path()).await;
+        assert_eq!(first.len(), 1);
+
+        // An out-of-band append (another writer, a restore) must invalidate
+        // the parse cache even though this process never wrote it.
+        let extra = serde_json::json!({"role": "assistant", "content": "two"});
+        let mut body = String::new();
+        for v in &seed {
+            body.push_str(&(serde_json::to_string(v).unwrap() + "\n"));
+        }
+        body.push_str(&(serde_json::to_string(&extra).unwrap() + "\n"));
+        tokio::fs::write(state_dir.join("agent-context.jsonl"), body)
+            .await
+            .unwrap();
+
+        let (_, second) = session::load_context(topic, tmp.path()).await;
+        assert_eq!(second.len(), 2, "external change must miss the cache");
+        assert_eq!(second[1]["content"], "two");
+    }
+
+    #[tokio::test]
+    async fn load_context_deletes_corrupt_legacy_and_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "load_context_deletes_corrupt_legacy_and_returns_empty";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(state_dir.join("agent-context.json"), "this is not json")
+            .await
+            .unwrap();
+
+        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
+        assert!(messages.is_empty());
+        assert!(raw_context.is_empty());
+        assert!(
+            !state_dir.join("agent-context.json").exists(),
+            "corrupt legacy must be deleted"
+        );
+    }
+
+    #[tokio::test]
     async fn load_context_filters_invalid_assistant_messages() {
         let tmp = tempfile::tempdir().unwrap();
         let topic = "load_context_filters_invalid_assistant_messages";

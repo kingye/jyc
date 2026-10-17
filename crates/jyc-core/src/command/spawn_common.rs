@@ -36,7 +36,11 @@ use crate::topic_manager::TopicManager;
 ///   would make the child run the parent's jobs too. Directories are skipped.
 /// - Anything else in the state dir belongs to the user, not to the framework.
 const SEED_FILES: &[&str] = &[
-    CONVERSATION_FILE,     // the running context: the conversation
+    CONVERSATION_FILE, // the running context: the conversation
+    // A parent that has not run since the upgrade may still hold the legacy
+    // array file; inherit it too so an --inherit child's first load migrates
+    // it (same conversation the pre-journal format would have passed on).
+    session_state::AGENT_CONTEXT_LEGACY_FILE,
     "backlog.jsonl",       // the topic's own backlog
     "pattern",             // which agent pattern runs the topic
     "mode-override",       // plan/build mode
@@ -51,8 +55,8 @@ const SEED_FILES: &[&str] = &[
 
 /// The running conversation, as opposed to the settings around it. Aliased to
 /// the shared name so seeding/`fresh` logic follows the authoritative journal
-/// format; the legacy array file is not inherited either way (a stale one is
-/// auto-migrated on the child's first load).
+/// format; the legacy array file is listed separately in `SEED_FILES` so an
+/// `--inherit` child still receives a not-yet-migrated parent conversation.
 const CONVERSATION_FILE: &str = session_state::AGENT_CONTEXT_FILE;
 
 /// Chat history is one file per day, so it is matched by prefix instead of
@@ -163,7 +167,9 @@ pub(super) async fn seed_state(
         }
         let transcript =
             file_name.starts_with(CHAT_HISTORY_PREFIX) && file_name.ends_with(".jsonl");
-        let conversation = transcript || file_name == CONVERSATION_FILE;
+        let conversation = transcript
+            || file_name == CONVERSATION_FILE
+            || file_name == session_state::AGENT_CONTEXT_LEGACY_FILE;
         if fresh && conversation {
             continue;
         }

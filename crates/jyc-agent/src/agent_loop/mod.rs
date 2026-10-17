@@ -121,7 +121,7 @@ pub struct AgentLoopConfig<'a> {
     pub model_label: &'a str,
     /// Context management strategy. Controls how prior conversation history
     /// is shaped before being sent to the LLM. The on-disk
-    /// `.jyc/agent-context.json` is always the full raw context; this
+    /// `.jyc/agent-context.jsonl` is always the full raw context; this
     /// field only affects the wire payload.
     pub context_strategy: ContextStrategyConfig,
     /// Synchronous delivery target for `jyc_reply_message`. Passed through

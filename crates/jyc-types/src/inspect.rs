@@ -135,9 +135,9 @@ pub struct TopicSummary {
     /// Resolved git branch for the topic's working directory, when it is
     /// a git repo.
     ///
-    /// **Not filled by the overview poll**: resolving it invokes `git` once
-    /// per topic, and the poll covers every topic — which is what made the
-    /// round trip expensive. `GET /api/topics/{channel}/{topic}/info` carries
+    /// **Not filled by the overview poll**: resolving it reads the checkout's
+    /// `.git/HEAD` once per topic, and the poll covers every topic — which is
+    /// what made the round trip expensive. `GET /api/topics/{channel}/{topic}/info` carries
     /// it for one topic, and the dashboard stamps it onto the summary it is
     /// showing.
     ///

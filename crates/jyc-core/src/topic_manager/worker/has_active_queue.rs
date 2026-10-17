@@ -1612,6 +1612,63 @@ async fn list_topics_populates_branch_from_dot_git_head() {
     tm.shutdown().await;
 }
 
+/// Regression for the overview poll: `list_topics_without_git` is the same
+/// list with the probe skipped, and `topic_info` resolves one topic to what
+/// `list_topics` gives it. Together they are what lets the overview drop the
+/// per-topic `git` cost without the pane losing its branch and file rows.
+#[tokio::test]
+async fn list_topics_without_git_skips_the_probe_and_topic_info_resolves_one() {
+    let tmp = tempdir().unwrap();
+    let workspace = tmp.path().join("workspace");
+
+    let t1 = workspace.join("br-main");
+    std::fs::create_dir_all(state_dir("br-main", &t1)).unwrap();
+    std::fs::create_dir_all(t1.join(".git")).unwrap();
+    std::fs::write(t1.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+
+    let t2 = workspace.join("br-nogit");
+    std::fs::create_dir_all(state_dir("br-nogit", &t2)).unwrap();
+
+    let tm = make_test_tm(&workspace);
+
+    // The overview's form keeps every topic and resolves neither git field.
+    let without = tm.list_topics_without_git().await;
+    assert_eq!(without.len(), 2);
+    assert!(
+        without
+            .iter()
+            .all(|t| t.branch.is_none() && t.changed_files.is_none()),
+        "list_topics_without_git must not resolve branch or changed_files"
+    );
+
+    // The full list still does, and one topic resolves to the same values.
+    let full = tm.list_topics().await;
+    let expected = full
+        .iter()
+        .find(|t| t.name == "br-main")
+        .expect("br-main missing from list_topics");
+    assert_eq!(expected.branch.as_deref(), Some("main"));
+
+    let one = tm
+        .topic_info("br-main", true)
+        .await
+        .expect("br-main must resolve through topic_info");
+    assert_eq!(one.name, expected.name);
+    assert_eq!(one.channel, expected.channel);
+    assert_eq!(one.branch, expected.branch);
+    assert_eq!(one.changed_files, expected.changed_files);
+    assert_eq!(one.topic_path, expected.topic_path);
+
+    // Skipping the probe for one topic skips both fields, like the list.
+    let cheap = tm.topic_info("br-nogit", false).await.expect("br-nogit");
+    assert!(cheap.branch.is_none() && cheap.changed_files.is_none());
+
+    // A name that is not open resolves to nothing — the endpoint's 404.
+    assert!(tm.topic_info("absent", true).await.is_none());
+
+    tm.shutdown().await;
+}
+
 /// Regression for #220: `TopicManager::list_topics` must populate
 /// `TopicInfo::changed_files` by running the default-branch diff under
 /// each topic's path. Without this test, a

@@ -90,9 +90,10 @@ struct App {
     /// Detail for the one topic the screen shows, fetched by the poll loop
     /// from `GET /api/topics/{channel}/{topic}/info`.
     ///
-    /// The overview poll carries no `branch` and no `changed_files`: the `git`
-    /// probe behind them costs two invocations per topic, which — paid for
-    /// every topic on every poll — dominated the round trip. The renderers
+    /// The overview poll carries no `branch` and no `changed_files`: resolving
+    /// them reads the checkout's `.git/HEAD` and runs up to four `git diff`s
+    /// per topic, which — paid for every topic on every poll — dominated the
+    /// round trip. The renderers
     /// keep reading those two rows off the summary; [`App::apply_topic_detail`]
     /// stamps them onto it from here.
     topic_detail: Option<jyc_types::TopicInfo>,
@@ -684,7 +685,10 @@ pub async fn run(
         // Detail fetches ride the same way, for the one topic the screen shows:
         // `branch` and `changed_files` are the rows the overview no longer
         // carries (the `git` probe per topic per poll was the expensive part),
-        // so they are refreshed on their own slower clock.
+        // so they are refreshed on their own slower clock. A topic closed and
+        // recreated under the same name maps to the same key — identity *is*
+        // the name — so that case shows the old detail for at most one
+        // refresh, and nothing can tell the two apart sooner.
         const DETAIL_REFRESH: Duration = Duration::from_secs(4);
         let (detail_tx, mut detail_rx) = tokio::sync::mpsc::unbounded_channel::<(
             (String, String),
@@ -742,6 +746,11 @@ pub async fn run(
                         }
                     }
                     Err(e) => {
+                        // Drop the detail rather than let a failing fetch keep
+                        // an arbitrarily old branch and file list on screen.
+                        if shown_topic_key(&app) == Some(key) {
+                            app.topic_detail = None;
+                        }
                         tracing::debug!(error = %e, "failed to fetch topic detail");
                     }
                 }
@@ -1596,7 +1605,8 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut info_lines = vec![];
 
-    // Branch is resolved server-side and shipped on TopicSummary.branch.
+    // Branch is stamped onto the row from the per-topic detail for the topic
+    // the screen shows (the overview poll leaves it `None`).
     // Render only when present — most chat-channel topics (feishu/wecom)
     // have a topic_path that isn't a git repo, so an absent row keeps
     // noise down for them.
@@ -2210,8 +2220,10 @@ mod tests {
         App::new(ws_rx, None)
     }
 
-    fn summary(name: &str, channel: &str) -> jyc_types::TopicSummary {
-        jyc_types::TopicSummary {
+    /// A `TopicInfo` as the per-topic info endpoint returns it — the detail
+    /// the poll loop fetches for the topic on screen.
+    fn topic_detail(name: &str, channel: &str, branch: &str) -> jyc_types::TopicInfo {
+        jyc_types::TopicInfo {
             name: name.into(),
             channel: channel.into(),
             pattern: None,
@@ -2224,14 +2236,18 @@ mod tests {
             total_input_tokens: None,
             total_cache_hit_tokens: None,
             total_cache_creation_tokens: None,
+            total_reasoning_tokens: None,
             avg_call_ms: None,
             call_count: None,
+            activity: Vec::new(),
             last_active_at: None,
             skills: Vec::new(),
+            available_skills: Vec::new(),
+            recent_messages: Vec::new(),
+            thinking_text: None,
             topic_path: None,
-            parent: None,
-            branch: None,
-            changed_files: None,
+            branch: Some(branch.into()),
+            changed_files: Some(Vec::new()),
             tasks: Default::default(),
             commands: Vec::new(),
             cost: None,
@@ -2243,10 +2259,9 @@ mod tests {
     #[test]
     fn shown_topic_key_follows_the_screen() {
         let mut app = make_test_app();
-        app.state = Some(InspectOverview {
-            topics: vec![summary("a", "agents"), summary("b", "mail")],
-            ..Default::default()
-        });
+        let mut overview = make_overview_with_topics(&["a", "b"]);
+        overview.topics[1].channel = "mail".to_string();
+        app.state = Some(overview);
 
         // Dashboard: the row under the cursor.
         app.table_state.select(Some(1));
@@ -2263,6 +2278,36 @@ mod tests {
         // falling back to the row under the cursor.
         app.chat.topic = Some("not-polled".to_string());
         assert_eq!(shown_topic_key(&app), None);
+    }
+
+    /// The two rows the overview leaves empty are exactly what the detail
+    /// fills: the stamping must land on the row the fetch was for, and on no
+    /// other.
+    #[test]
+    fn apply_topic_detail_stamps_only_its_own_row() {
+        let mut app = make_test_app();
+        let mut overview = make_overview_with_topics(&["a", "b"]);
+        overview.topics[1].channel = "mail".to_string();
+        app.state = Some(overview);
+        assert!(app.state.as_ref().unwrap().topics[1].branch.is_none());
+
+        app.topic_detail = Some(topic_detail("b", "mail", "feat/x"));
+        app.apply_topic_detail();
+
+        let topics = &app.state.as_ref().unwrap().topics;
+        assert_eq!(topics[1].branch.as_deref(), Some("feat/x"));
+        assert_eq!(topics[1].changed_files, Some(Vec::new()));
+        assert!(
+            topics[0].branch.is_none(),
+            "another topic must not be stamped"
+        );
+
+        // A detail for a topic the poll does not carry stamps nothing.
+        app.topic_detail = Some(topic_detail("gone", "mail", "feat/y"));
+        app.apply_topic_detail();
+        let topics = &app.state.as_ref().unwrap().topics;
+        assert_eq!(topics[1].branch.as_deref(), Some("feat/x"));
+        assert!(topics[0].branch.is_none());
     }
 
     #[tokio::test]

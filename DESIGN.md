@@ -3282,7 +3282,8 @@ ScopedWsHandler (crates/jyc-inspect/src/scoped_ws.rs)
 
 InspectOverview / TopicSummary (crates/jyc-types/src/inspect.rs)
   ├── Slim overview payload — same shape as InspectState but without
-  │   activity / recent_messages / thinking_text per topic
+  │   activity / recent_messages / thinking_text per topic, and with
+  │   branch / changed_files left null (no per-topic, per-poll git probe)
   └── Used by the dashboard's polling loop to keep payloads small
 
 InspectState / TopicInfo (crates/jyc-types/src/inspect.rs)
@@ -3296,6 +3297,7 @@ InspectServer (crates/jyc-inspect/src/server.rs)
   ├── build_overview_state(): slim snapshot (no activity/messages)
   ├── get_topic_activity: read .jyc/activity.jsonl
   ├── get_topic_chat: read chat_history_*.jsonl
+  ├── get_topic_info: one topic's full TopicInfo, git probe included
   ├── get_state_overview / get_state: handled by handle_request
   └── reload_config: handled by handle_request
 
@@ -3304,10 +3306,13 @@ InspectClient (crates/jyc-inspect/src/client.rs)
   ├── get_overview() → InspectOverview (slim, used by dashboard poll)
   ├── get_topic_activity(channel, topic, since, limit) → Vec<ActivityEntry>
   ├── get_topic_chat(channel, topic, since, limit) → Vec<ChatMessageEntry>
+  ├── get_topic_info(channel, topic) → TopicInfo (branch + changed_files)
   └── reload_config() → (bool, String)
 
 Dashboard (crates/jyc-cli/src/cli/dashboard/)
   ├── main poll: client.get_overview() every 500ms (slim payload)
+  ├── detail poll: client.get_topic_info() for the shown topic every 4s, its
+  │   branch/changed_files stamped onto that row of the polled summaries
   ├── on topic selection: REST hydrate (get_topic_activity + get_topic_chat)
   │   + WS connect to /ws/<channel>/<topic>
   ├── ChatState.live_activity / live_chat / live_thinking / live_processing:

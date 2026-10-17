@@ -604,6 +604,11 @@ impl TopicManager {
     ///
     /// `None` when no topic of that name is open. `include_git` as in
     /// [`Self::list_topics_without_git`].
+    ///
+    /// One topic's *state* — not constant work: the name list still comes from
+    /// [`Self::list_topic_names`], which walks the workspace and prunes stale
+    /// pinned paths. That scan is cheap next to a topic's state, and it is the
+    /// same scan the overview pays.
     pub async fn topic_info(&self, name: &str, include_git: bool) -> Option<TopicInfo> {
         self.list_topics_inner(include_git, Some(name))
             .await

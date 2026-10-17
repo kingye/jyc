@@ -310,6 +310,9 @@ impl InspectServer {
                     skills: t.skills,
                     topic_path: t.topic_path,
                     parent,
+                    // Always None on the overview: `collect_topic_snapshot` skips
+                    // the probe there, and the client stamps the shown topic's
+                    // values from the per-topic info endpoint.
                     branch: t.branch,
                     changed_files: t.changed_files,
                     cost: t.cost,

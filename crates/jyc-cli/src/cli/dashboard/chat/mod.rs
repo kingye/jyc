@@ -1792,8 +1792,10 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
             Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(t.mode.as_deref().unwrap_or("build")),
         ]));
-        // Branch is resolved server-side and shipped on TopicSummary.branch.
-        // Skipped when the selected topic's topic_path isn't a git repo
+        // Branch is stamped onto the summary from the per-topic detail
+        // (`App::topic_detail` → `apply_topic_detail`) for the topic the screen
+        // shows; the overview poll leaves it `None`. Skipped when the topic's
+        // topic_path isn't a git repo
         // (most chat-channel topics: feishu/wecom).
         if let Some(branch) = t.branch.as_deref() {
             out.push(Line::from(vec![
@@ -1926,8 +1928,9 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
             out.push(Line::from(thinking_line));
         }
         // Separated section at the end: files changed relative to `main`,
-        // resolved server-side and shipped on `TopicSummary.changed_files`
-        // as `Vec<ChangedFileEntry>`. The whole list is rendered (no
+        // stamped from the per-topic detail (like the branch row above) onto
+        // `TopicSummary.changed_files`, as `Vec<ChangedFileEntry>`. The whole
+        // list is rendered (no
         // cap) — the parent pane scrolls when the list overflows. Each
         // path is plain when only committed on the branch, yellow when
         // currently dirty in the working tree, and followed by that same
@@ -2310,7 +2313,8 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
     ChatHeaderCtx {
         mode: t.and_then(|t| t.mode.as_deref()).unwrap_or("build"),
         topic: t.map(|t| t.name.as_str()),
-        // Server resolves branch per poll — read it straight off the summary.
+        // Stamped per poll from the per-topic detail for the shown topic —
+        // read it straight off the summary.
         branch: t.and_then(|t| t.branch.as_deref()),
         model: t.and_then(|t| t.model.as_deref()),
         pct: t.and_then(input_token_pct),

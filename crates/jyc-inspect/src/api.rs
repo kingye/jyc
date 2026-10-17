@@ -448,8 +448,8 @@ pub async fn get_topic_chat(
 /// `GET /api/topics/{channel}/{topic}/info` — one topic's full info.
 ///
 /// `GET /api/state/overview` leaves `branch` and `changed_files` empty: the
-/// probe behind them costs two `git` invocations per topic, which is what
-/// polling every topic made expensive. A client that shows one topic fetches
+/// former is a `.git/HEAD` read, the latter up to four `git diff` runs per
+/// topic, which is what polling every topic made expensive. A client that shows one topic fetches
 /// those two fields (and everything else on `TopicInfo`) here.
 pub async fn get_topic_info(
     State(ctx): State<Arc<InspectContext>>,

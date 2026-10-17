@@ -1514,6 +1514,7 @@ mode = "agent"
             true,
             None,
             None,
+            None,
             &agents_dir,
         )
         .await

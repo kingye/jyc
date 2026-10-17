@@ -517,11 +517,39 @@ pub(crate) fn is_event_internal(event: &TopicEvent) -> bool {
 /// Rendering (prose, severity, visibility) is each client's job.
 pub(crate) fn event_to_activity(event: &TopicEvent) -> ActivityEntry {
     ActivityEntry {
-        event: serde_json::to_value(event).unwrap_or(serde_json::Value::Null),
+        event: tagged_event_json(event),
         timestamp: Some(event.timestamp().to_rfc3339()),
         id: 0, // assigned by ActivityTracker on push (see fanout step)
         text: None,
     }
+}
+
+/// `TopicEvent`'s serde-default form is externally tagged:
+/// `{"ToolCompleted": {…fields}}`. Stored entries and the API flatten that
+/// to `{"type": "tool_completed", …fields}` — one shape every client can
+/// match on without knowing serde's encoding.
+fn tagged_event_json(event: &TopicEvent) -> serde_json::Value {
+    let kind = match event {
+        TopicEvent::ProcessingStarted { .. } => "processing_started",
+        TopicEvent::ProcessingProgress { .. } => "processing_progress",
+        TopicEvent::ProcessingCompleted { .. } => "processing_completed",
+        TopicEvent::LLMRequestStarted { .. } => "llm_request_started",
+        TopicEvent::ToolStarted { .. } => "tool_started",
+        TopicEvent::ToolCompleted { .. } => "tool_completed",
+        TopicEvent::Thinking { .. } => "thinking",
+        TopicEvent::IncomingMessage { .. } => "incoming_message",
+        TopicEvent::ReplySent { .. } => "reply_sent",
+        TopicEvent::SessionStatus { .. } => "session_status",
+        TopicEvent::LoopTick { .. } => "loop_tick",
+    };
+    let mut tagged = serde_json::json!({ "type": kind });
+    let value = serde_json::to_value(event).unwrap_or_default();
+    if let Some(fields) = value.as_object().and_then(|m| m.values().next()) {
+        if let (Some(map), serde_json::Value::Object(fields)) = (tagged.as_object_mut(), fields) {
+            map.extend(fields.clone());
+        }
+    }
+    tagged
 }
 
 /// Whether a TopicEvent marks the topic as errored (overview red status).

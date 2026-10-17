@@ -420,8 +420,8 @@ pub enum Severity {
 /// to render it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityEntry {
-    /// The raw topic event, as published on the topic's event stream
-    /// (serde-tagged: the variant is in the `type` field).
+    /// The raw topic event, flattened to `{ "type": <variant>, … }`
+    /// (`tool_completed`, `session_status`, …).
     #[serde(default)]
     pub event: serde_json::Value,
     /// RFC 3339 timestamp for ordering and cross-day sorting

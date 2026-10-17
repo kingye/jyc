@@ -14,7 +14,10 @@ pub(super) mod clipboard;
 mod render;
 mod table_wrap;
 
-use render::{RenderFingerprint, render_chat_conversation, tail_to_width, truncate_to_width};
+use render::{
+    RenderFingerprint, entry_activity_text, entry_severity, render_chat_conversation,
+    tail_to_width, truncate_to_width,
+};
 
 /// Inactive color for the input area (header line and bottom rule) when the
 /// chat pane loses focus.
@@ -2399,14 +2402,13 @@ fn build_status_line(width: usize, ctx: &ChatHeaderCtx<'_>) -> Line<'static> {
 /// Truncate `s` to at most `max_width` display columns (per
 /// `unicode-width`); if the input is wider, replace the tail with `…`.
 fn is_user_visible_activity(entry: &jyc_types::ActivityEntry) -> bool {
-    if entry.is_internal {
-        return false;
+    // Heartbeat kinds are dropped by the tracker before they reach the log,
+    // but a live buffer can still hold them — hide by kind. Legacy rows
+    // (no raw event) keep the old prose sniff for pre-rotation log files.
+    if let Some(kind) = entry.event.get("type").and_then(|t| t.as_str()) {
+        return !matches!(kind, "processing_progress" | "loop_tick");
     }
-    // Backward compat for old log files (pre-`is_internal` field).
-    if entry.text.ends_with(" chars)") {
-        return false;
-    }
-    true
+    !entry.text.as_deref().unwrap_or("").ends_with(" chars)")
 }
 
 pub(super) fn render_activity_log(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -2538,7 +2540,7 @@ pub(super) fn render_activity_log_inner(
                     })
                 })
                 .unwrap_or_else(|| "-".to_string());
-            let text_style = match entry.severity {
+            let text_style = match entry_severity(entry) {
                 Severity::Error => Style::default().fg(Color::Red),
                 Severity::Warning => Style::default().fg(Color::Yellow),
                 Severity::Info => Style::default(),
@@ -2548,7 +2550,7 @@ pub(super) fn render_activity_log_inner(
                     format!("  {time_str} "),
                     Style::default().fg(Color::DarkGray),
                 ),
-                Span::styled(&entry.text, text_style),
+                Span::styled(entry_activity_text(entry), text_style),
             ])
         })
         .collect();

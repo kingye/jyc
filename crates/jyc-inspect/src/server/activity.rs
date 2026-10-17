@@ -337,12 +337,12 @@ impl ActivityTracker {
                                                                     // activity pane).
                                                                     if !is_thinking {
                                                                         let mut entry = event_to_activity(&event);
-                                                                        let is_error = entry.severity == Severity::Error;
+                                                                        let is_error = is_error_event(&event);
                                                                         // Internal events (ProcessingProgress heartbeats) are
                                                                         // debug-only: skip persisting to disk and skip the
                                                                         // in-memory log + WS broadcast so they don't flood the
                                                                         // activity pane / chat progress.
-                                                                        let is_internal = entry.is_internal;
+                                                                        let is_internal = is_event_internal(&event);
                                                                         let mut map = map.lock().await;
                                                                         let state = map
                                                                             .entry((channel_for_task.clone(), name.clone()))
@@ -513,246 +513,29 @@ pub(crate) fn is_event_internal(event: &TopicEvent) -> bool {
     )
 }
 
-/// Convert a TopicEvent into a human-readable ActivityEntry.
+/// Convert a TopicEvent into an ActivityEntry that carries the raw event.
+/// Rendering (prose, severity, visibility) is each client's job.
 pub(crate) fn event_to_activity(event: &TopicEvent) -> ActivityEntry {
-    let severity = match event {
-        TopicEvent::SessionStatus { status_type, .. } => match status_type.as_str() {
-            "error" | "timeout" => Severity::Error,
-            "retry" | "rate_limit" | "no_reply" => Severity::Warning,
-            _ => Severity::Info,
-        },
-        TopicEvent::ToolCompleted { success: false, .. } => Severity::Error,
-        TopicEvent::ProcessingCompleted { success: false, .. } => Severity::Error,
-        _ => Severity::Info,
-    };
-
-    let text = match event {
-        TopicEvent::ProcessingStarted { .. } => "Processing started".to_string(),
-        TopicEvent::ProcessingProgress {
-            elapsed_secs,
-            activity,
-            output_length,
-            ..
-        } => {
-            format!("{activity} ({elapsed_secs}s, {output_length} chars)")
-        }
-        TopicEvent::ProcessingCompleted {
-            success,
-            duration_secs,
-            ..
-        } => {
-            if *success {
-                format!("Completed ({duration_secs}s)")
-            } else {
-                format!("Failed ({duration_secs}s)")
-            }
-        }
-        TopicEvent::LLMRequestStarted { iteration, .. } => {
-            format!("Thinking... (iteration {iteration})")
-        }
-        TopicEvent::ToolStarted {
-            tool_name, input, ..
-        } => {
-            if tool_name == "edit" {
-                // Store the full edit data as JSON so consumers can render
-                // differently: activity pane shows the JSON string as-is while
-                // AI progress parses it and renders a full git diff.
-                let parsed: Option<serde_json::Value> =
-                    input.as_deref().and_then(|s| serde_json::from_str(s).ok());
-                let file_path = parsed
-                    .as_ref()
-                    .and_then(|v| v.get("file_path"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                let old_str = parsed
-                    .as_ref()
-                    .and_then(|v| v.get("old_string"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let new_str = parsed
-                    .as_ref()
-                    .and_then(|v| v.get("new_string"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                serde_json::json!({
-                    "type": "edit",
-                    "file_path": file_path,
-                    "old_string": old_str,
-                    "new_string": new_str,
-                })
-                .to_string()
-            } else if tool_name == "write" {
-                // Store write data as JSON for multi-line rendering in AI progress.
-                let parsed: Option<serde_json::Value> =
-                    input.as_deref().and_then(|s| serde_json::from_str(s).ok());
-                let file_path = parsed
-                    .as_ref()
-                    .and_then(|v| v.get("file_path"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                let content = parsed
-                    .as_ref()
-                    .and_then(|v| v.get("content"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                serde_json::json!({
-                    "type": "write",
-                    "file_path": file_path,
-                    "content": content,
-                })
-                .to_string()
-            } else {
-                match input {
-                    Some(inp) => format!("Tool: {tool_name} — {inp}"),
-                    None => format!("Tool: {tool_name} (running)"),
-                }
-            }
-        }
-        TopicEvent::ToolCompleted {
-            tool_name,
-            success,
-            duration_secs,
-            output,
-            input,
-            ..
-        } => {
-            if *success {
-                if tool_name == "edit" {
-                    // Store the full edit data as JSON so consumers can render
-                    // differently: activity pane shows as-is, AI progress shows
-                    // git diff.
-                    let parsed: Option<serde_json::Value> =
-                        input.as_deref().and_then(|s| serde_json::from_str(s).ok());
-                    let file_path = parsed
-                        .as_ref()
-                        .and_then(|v| v.get("file_path"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let old_str = parsed
-                        .as_ref()
-                        .and_then(|v| v.get("old_string"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let new_str = parsed
-                        .as_ref()
-                        .and_then(|v| v.get("new_string"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    // Parse line number from the edit tool's output message
-                    // (format: "Edited 'file' at line N: M replacement(s) made")
-                    let line_no = output.as_deref().and_then(|s| {
-                        s.find("at line ")
-                            .and_then(|pos| {
-                                let rest = &s[pos + 8..];
-                                rest.find(':').map(|end| &rest[..end])
-                            })
-                            .and_then(|n| n.trim().parse::<usize>().ok())
-                    });
-                    serde_json::json!({
-                        "type": "edit",
-                        "file_path": file_path,
-                        "line_no": line_no,
-                        "old_string": old_str,
-                        "new_string": new_str,
-                        "duration_secs": duration_secs,
-                    })
-                    .to_string()
-                } else if tool_name == "write" {
-                    // Store write data as JSON for multi-line rendering in AI progress.
-                    let parsed: Option<serde_json::Value> =
-                        input.as_deref().and_then(|s| serde_json::from_str(s).ok());
-                    let file_path = parsed
-                        .as_ref()
-                        .and_then(|v| v.get("file_path"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let content = parsed
-                        .as_ref()
-                        .and_then(|v| v.get("content"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    serde_json::json!({
-                        "type": "write",
-                        "file_path": file_path,
-                        "content": content,
-                        "duration_secs": duration_secs,
-                    })
-                    .to_string()
-                } else {
-                    match input {
-                        Some(inp) => {
-                            format!("Tool: {tool_name} (done, {duration_secs}s) — {inp}")
-                        }
-                        None => format!("Tool: {tool_name} (done, {duration_secs}s)"),
-                    }
-                }
-            } else {
-                match output {
-                    Some(err) => {
-                        let oneline = err.replace('\n', " ");
-                        format!("Tool: {tool_name} (FAILED, {duration_secs}s) {oneline}")
-                    }
-                    None => format!("Tool: {tool_name} (FAILED, {duration_secs}s)"),
-                }
-            }
-        }
-        TopicEvent::Thinking {
-            text, full_length, ..
-        } => {
-            if *full_length > text.len() {
-                format!("Thinking: {text}...")
-            } else {
-                format!("Thinking: {text}")
-            }
-        }
-        TopicEvent::IncomingMessage { sender, text, .. } => {
-            let oneline = text.replace('\n', " ");
-            format!("Message from {sender}: {oneline}")
-        }
-        TopicEvent::ReplySent { text, .. } => {
-            let oneline = text.replace('\n', " ");
-            let preview: String = oneline.chars().take(100).collect();
-            format!("Reply sent: {preview}")
-        }
-        TopicEvent::SessionStatus {
-            status_type,
-            attempt,
-            message,
-            ..
-        } => {
-            let label = match status_type.as_str() {
-                "retry" => "RETRY",
-                "error" => "ERROR",
-                "rate_limit" => "RATE LIMITED",
-                "timeout" => "TIMEOUT",
-                "no_reply" => "NO REPLY",
-                other => other,
-            };
-            let mut text = match attempt {
-                Some(n) => format!("{label} (attempt #{n})"),
-                None => label.to_string(),
-            };
-            if let Some(msg) = message {
-                let oneline = msg.replace('\n', " ");
-                text.push_str(&format!(": {oneline}"));
-            }
-            text
-        }
-        // LoopTick is `is_internal` so this match arm should never run in
-        // practice, but the match must be exhaustive. Format it as a
-        // short debug string so a future regression doesn't produce a
-        // confusing fall-through.
-        TopicEvent::LoopTick { elapsed_ms, .. } => {
-            format!("LoopTick ({elapsed_ms}ms)")
-        }
-    };
     ActivityEntry {
-        text,
+        event: event.to_activity_json(),
         timestamp: Some(event.timestamp().to_rfc3339()),
-        severity,
         id: 0, // assigned by ActivityTracker on push (see fanout step)
-        is_internal: is_event_internal(event),
+        text: None,
     }
+}
+
+/// Whether a TopicEvent marks the topic as errored (overview red status).
+/// Mirrors the client-side severity mapping for error kinds.
+pub(crate) fn is_error_event(event: &TopicEvent) -> bool {
+    matches!(
+        event,
+        TopicEvent::SessionStatus { status_type, .. }
+            if status_type == "error" || status_type == "timeout"
+    ) || matches!(
+        event,
+        TopicEvent::ToolCompleted { success: false, .. }
+            | TopicEvent::ProcessingCompleted { success: false, .. }
+    )
 }
 
 #[cfg(test)]

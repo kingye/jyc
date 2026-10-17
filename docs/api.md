@@ -177,8 +177,13 @@ this endpoint.
 
 #### 2.4.3 `GET /api/topics/{channel}/{topic}/activity`
 
-Returns recent activity entries from `.jyc/activity.jsonl`. Internal
-heartbeats (`is_internal: true`) are filtered server-side.
+Returns recent activity entries from `.jyc/activity.jsonl`. Each entry
+carries the raw topic event — the variant is the `event.type` field —
+plus its envelope (`timestamp`, `id`); how (and whether) to render it is
+the client's decision. High-frequency heartbeats (`ProcessingProgress`,
+`LoopTick`) are dropped at write time and never appear. Rows written
+before this shape carry `text` (backend-composed prose) instead of
+`event`; clients render that verbatim until the log rotates.
 
 **Query parameters:**
 
@@ -198,9 +203,9 @@ curl -H 'Authorization: Bearer <token>' \
 
 ```json
 [
-  { "text": "tool execution (12s, 348 chars)",
-    "timestamp": "2026-07-31T08:12:34Z",
-    "severity": "info", "id": 142, "is_internal": false }
+  { "event": { "type": "tool_completed", "tool_name": "bash",
+               "success": true, "duration_secs": 12, "output": "…" },
+    "timestamp": "2026-07-31T08:12:34Z", "id": 142 }
 ]
 ```
 
@@ -556,17 +561,18 @@ Server-pushed events are JSON text frames from a shared
   "channel": "feishu_bot",
   "topic":  "issue-42",
   "id": 142,
-  "entry": { "text": "tool execution (12s, 348 chars)",
-             "timestamp": "2026-07-31T08:12:34Z",
-             "severity": "info", "id": 142, "is_internal": false }
+  "entry": { "event": { "type": "tool_completed", "tool_name": "bash",
+                        "success": true, "duration_secs": 12, "output": "…" },
+             "timestamp": "2026-07-31T08:12:34Z", "id": 142 }
 }
 ```
 
-> `is_internal: true` entries (e.g. `ProcessingProgress` heartbeats) are
-> filtered out on **both** surfaces: they are not persisted to
-> `activity.jsonl`, not returned by `GET /api/topics/.../activity`, and
-> not forwarded as an `activity` event on the WebSocket. Only the
-> in-memory `TopicActivityState` buffer keeps them, for debug purposes.
+> Heartbeat events (`ProcessingProgress`, `LoopTick`) are dropped at write
+> time: they are not persisted to `activity.jsonl`, not returned by
+> `GET /api/topics/.../activity`, and not forwarded as an `activity` frame.
+> There is no server-side visibility filter — the entry is the raw event,
+> and rendering is the client's job. Rows written before this shape carry
+> `text` instead of `event`.
 
 #### 3.4.2 `chat_message`
 

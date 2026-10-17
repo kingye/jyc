@@ -221,6 +221,37 @@ impl TopicEvent {
             TopicEvent::SessionStatus { timestamp, .. } => *timestamp,
         }
     }
+
+    /// The activity-entry JSON form of this event: serde's externally
+    /// tagged `{"ToolCompleted": {…fields}}` flattened to
+    /// `{"type": "tool_completed", …fields}`. Stored in
+    /// `ActivityEntry.event` and spoken by the REST/WS activity surfaces —
+    /// one shape every client can match on without knowing serde's
+    /// encoding. (The enum's own serde attributes stay untouched: the
+    /// SSE/WS `topic_event` frame depends on the externally-tagged form.)
+    pub fn to_activity_json(&self) -> serde_json::Value {
+        let kind = match self {
+            TopicEvent::ProcessingStarted { .. } => "processing_started",
+            TopicEvent::ProcessingProgress { .. } => "processing_progress",
+            TopicEvent::ProcessingCompleted { .. } => "processing_completed",
+            TopicEvent::LoopTick { .. } => "loop_tick",
+            TopicEvent::ToolStarted { .. } => "tool_started",
+            TopicEvent::ToolCompleted { .. } => "tool_completed",
+            TopicEvent::LLMRequestStarted { .. } => "llm_request_started",
+            TopicEvent::Thinking { .. } => "thinking",
+            TopicEvent::IncomingMessage { .. } => "incoming_message",
+            TopicEvent::ReplySent { .. } => "reply_sent",
+            TopicEvent::SessionStatus { .. } => "session_status",
+        };
+        let mut tagged = serde_json::json!({ "type": kind });
+        let value = serde_json::to_value(self).unwrap_or_default();
+        if let Some(fields) = value.as_object().and_then(|m| m.values().next())
+            && let (Some(map), serde_json::Value::Object(fields)) = (tagged.as_object_mut(), fields)
+        {
+            map.extend(fields.clone());
+        }
+        tagged
+    }
 }
 
 #[cfg(test)]

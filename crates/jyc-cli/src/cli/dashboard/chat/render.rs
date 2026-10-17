@@ -832,7 +832,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                         entry_severity(e) == jyc_types::Severity::Error
                             && entry_activity_text(e).starts_with("ERROR:")
                     })
-                    .map(|e| entry_activity_text(e))
+                    .map(entry_activity_text)
             })
             .unwrap_or_else(|| "Processing failed".to_string());
         let message = error_text

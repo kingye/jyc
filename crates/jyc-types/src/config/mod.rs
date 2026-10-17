@@ -217,11 +217,19 @@ pub fn derive_agent_config(app: &AppConfig, channel_name: &str) -> AiConfig {
 /// are the two that prompted it, and a topic's own config, a pattern and an
 /// override file all work the same way. The role then runs on whatever the
 /// `[ai]` value in effect is, and changing it in one place moves every role that
-/// asked for it. Only two names resolve — a general config-path language is not
-/// worth its own error surface:
+/// asked for it.
+///
+/// Four fixed names resolve to their top-level key:
 ///
 /// - `${ai.model}` → `[ai].model`
+/// - `${ai.plan_model}` → `[ai].plan_model`
+/// - `${ai.build_model}` → `[ai].build_model`
 /// - `${ai.small_model}` → `[ai].small_model`
+///
+/// and `${ai.models.<name>}` resolves to `[ai].models.<name>` — a user-defined
+/// slot, so any number of named models can be shared without a code change.
+/// The name is restricted to `[A-Za-z0-9_-]+`: a dot would address a nested
+/// table that can never deserialize into a string.
 ///
 /// A value with no reference is returned unchanged. A reference that cannot be
 /// resolved is an error rather than being left as a literal: `expand_env_vars`
@@ -234,13 +242,25 @@ pub fn resolve_model_reference(value: &str, ai: &AiConfig) -> Result<String, Str
     if !value.contains("${") {
         return Ok(value.to_string());
     }
-    let (key, referent) = match value {
-        "${ai.model}" => ("[ai].model", ai.model.as_deref()),
-        "${ai.small_model}" => ("[ai].small_model", ai.small_model.as_deref()),
-        other => {
+    let (key, referent) = if let Some(name) = named_model_slot(value) {
+        let key = format!("[ai].models.{name}");
+        let Some(referent) = ai.models.get(name) else {
             return Err(format!(
-                "unknown model reference `{other}`: the whole value must be `${{ai.model}}` or `${{ai.small_model}}`"
+                "`{value}` is used as a model, but `{key}` is not defined"
             ));
+        };
+        (key, Some(referent.as_str()))
+    } else {
+        match value {
+            "${ai.model}" => ("[ai].model".to_string(), ai.model.as_deref()),
+            "${ai.plan_model}" => ("[ai].plan_model".to_string(), ai.plan_model.as_deref()),
+            "${ai.build_model}" => ("[ai].build_model".to_string(), ai.build_model.as_deref()),
+            "${ai.small_model}" => ("[ai].small_model".to_string(), ai.small_model.as_deref()),
+            other => {
+                return Err(format!(
+                    "unknown model reference `{other}`: the whole value must be `${{ai.model}}`, `${{ai.plan_model}}`, `${{ai.build_model}}`, `${{ai.small_model}}` or `${{ai.models.<name>}}`"
+                ));
+            }
         }
     };
     let Some(referent) = referent.filter(|v| !v.trim().is_empty()) else {
@@ -254,6 +274,22 @@ pub fn resolve_model_reference(value: &str, ai: &AiConfig) -> Result<String, Str
         ));
     }
     Ok(referent.trim().to_string())
+}
+
+/// The `<name>` of a whole-value `${ai.models.<name>}` reference, if the value
+/// has that shape. A malformed slot reference (empty name, a dot in the name,
+/// a missing closing brace) yields `None` and so falls through to the generic
+/// "unknown model reference" error, which lists the accepted forms.
+fn named_model_slot(value: &str) -> Option<&str> {
+    let name = value.strip_prefix("${ai.models.")?.strip_suffix('}')?;
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(name)
 }
 
 /// A user-defined slash command declared in `config.toml` as `[[commands]]`.
@@ -705,6 +741,20 @@ pub struct AiConfig {
     #[serde(default)]
     pub small_model: Option<String>,
 
+    /// User-defined named model slots, keyed by the name used in a reference.
+    ///
+    /// Any model value in the chain may say `"${ai.models.<name>}"` instead of
+    /// repeating an id; the name is looked up here, so several roles can share
+    /// one definition without copying the id to each of them.
+    ///
+    /// ```toml
+    /// [ai.models]
+    /// review = "deepseek/deepseek-v4-flash"
+    /// audit = "anthropic/claude-opus-4-6"
+    /// ```
+    #[serde(default)]
+    pub models: std::collections::BTreeMap<String, String>,
+
     /// System prompt for the AI
     pub system_prompt: Option<String>,
 
@@ -763,6 +813,7 @@ impl Default for AiConfig {
             plan_model: None,
             build_model: None,
             small_model: None,
+            models: std::collections::BTreeMap::new(),
             system_prompt: None,
             max_iterations: default_max_iterations(),
             sse_read_timeout_secs: default_sse_read_timeout(),

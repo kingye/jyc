@@ -301,6 +301,24 @@ impl AgentService for JycAgentService {
             .and_then(|a| a.small_model.as_deref())
             .or(pattern_small_model)
             .or(agent_cfg.small_model.as_deref());
+        // A `small_model` may be a reference to an `[ai]` value like any other
+        // model in the chain; only `tools.rs::create_provider` resolved it
+        // before, and this site builds the provider directly, so without this
+        // the literal text `${ai.models.review}` reached the provider as a model
+        // id — a warning every turn instead of the model asked for.
+        let small_model_resolved = small_model_resolved.and_then(|m| {
+            match jyc_types::resolve_model_reference(m, &agent_cfg) {
+                Ok(m) => Some(m),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        small_model = m,
+                        "small_model is a reference that cannot be resolved; using the main model"
+                    );
+                    None
+                }
+            }
+        });
 
         // Resolve auto_reset_threshold: pattern-level > config-level > default 0.95
         let pattern_threshold = message
@@ -311,7 +329,7 @@ impl AgentService for JycAgentService {
         let auto_reset_threshold = pattern_threshold.unwrap_or(agent_cfg.auto_reset_threshold);
         let small_provider: Option<Box<dyn provider::Provider>> =
             small_model_resolved.and_then(|m| {
-                match provider::create_provider(m, &agent_cfg.providers) {
+                match provider::create_provider(&m, &agent_cfg.providers) {
                     Ok(p) => {
                         tracing::info!(
                             small_provider = %p.name(),
@@ -652,10 +670,26 @@ impl AgentService for JycAgentService {
             &self.channel_name,
             topic_name,
         );
-        // Use the agent config's small_model as the compression provider if available
-        let small_model = agent_cfg.small_model.as_deref();
+        // Use the agent config's small_model as the compression provider if
+        // available. `small_model` may be a reference to an `[ai]` value, so it
+        // is resolved first — this site calls the provider factory directly and
+        // would otherwise hand the literal `${ai.models.<name>}` over as a model.
+        let small_model = agent_cfg
+            .small_model
+            .as_deref()
+            .and_then(|m| match jyc_types::resolve_model_reference(m, &agent_cfg) {
+                Ok(m) => Some(m),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        small_model = m,
+                        "small_model is a reference that cannot be resolved; compressing without a dedicated model"
+                    );
+                    None
+                }
+            });
         let provider: Option<Box<dyn provider::Provider>> =
-            small_model.and_then(|m| provider::create_provider(m, &agent_cfg.providers).ok());
+            small_model.and_then(|m| provider::create_provider(&m, &agent_cfg.providers).ok());
 
         // Resolve compression config: pattern (not available here) -> agent config
         let resolved_config = config.clone();

@@ -1669,19 +1669,16 @@ pub(super) fn render_explorer(frame: &mut Frame, area: Rect, app: &App) {
 /// topic info pane and the chat header so the two views agree on
 /// which topic is "selected".
 ///
-/// The screen decides: on the chat screen it is the topic the chat is bound
-/// to, looked up through the shared [`jyc_types::find_topic`] by name (the
-/// channel narrows it when the chat knows one — `open()` accepts `None`);
-/// otherwise it is the row under the dashboard cursor. Without the gate a
-/// visible chat whose topic has not appeared in the poll yet fell back to that
-/// row and showed another topic's model, mode and branch.
+/// The screen rule itself — the visible chat's own topic, else the row under
+/// the dashboard cursor — lives in [`super::shown_topic_key`], shared with the
+/// detail fetch so the two cannot drift apart. Resolving that key back through
+/// the shared lookup is what keeps a visible chat whose topic has not appeared
+/// in the poll yet from falling back to the cursor row and showing another
+/// topic's model, mode and branch.
 fn selected_topic_summary(app: &App) -> Option<&jyc_types::TopicSummary> {
+    let (channel, name) = super::shown_topic_key(app)?;
     let state = app.state.as_ref()?;
-    if app.chat.visible {
-        let name = app.chat.topic.as_deref()?;
-        return jyc_types::find_topic(&state.topics, name, app.chat.channel.as_deref());
-    }
-    app.table_state.selected().and_then(|i| state.topics.get(i))
+    jyc_types::find_topic(&state.topics, &name, Some(&channel))
 }
 
 /// Render the right-hand topic info pane (always 20% wide when shown).
@@ -1795,8 +1792,10 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
             Span::styled("Mode: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(t.mode.as_deref().unwrap_or("build")),
         ]));
-        // Branch is resolved server-side and shipped on TopicSummary.branch.
-        // Skipped when the selected topic's topic_path isn't a git repo
+        // Branch is stamped onto the summary from the per-topic detail
+        // (`App::topic_detail` → `apply_topic_detail`) for the topic the screen
+        // shows; the overview poll leaves it `None`. Skipped when the topic's
+        // topic_path isn't a git repo
         // (most chat-channel topics: feishu/wecom).
         if let Some(branch) = t.branch.as_deref() {
             out.push(Line::from(vec![
@@ -1929,8 +1928,9 @@ pub(super) fn render_topic_info_pane(frame: &mut Frame, area: Rect, app: &mut Ap
             out.push(Line::from(thinking_line));
         }
         // Separated section at the end: files changed relative to `main`,
-        // resolved server-side and shipped on `TopicSummary.changed_files`
-        // as `Vec<ChangedFileEntry>`. The whole list is rendered (no
+        // stamped from the per-topic detail (like the branch row above) onto
+        // `TopicSummary.changed_files`, as `Vec<ChangedFileEntry>`. The whole
+        // list is rendered (no
         // cap) — the parent pane scrolls when the list overflows. Each
         // path is plain when only committed on the branch, yellow when
         // currently dirty in the working tree, and followed by that same
@@ -2313,7 +2313,8 @@ fn resolve_header_ctx(app: &App) -> ChatHeaderCtx<'_> {
     ChatHeaderCtx {
         mode: t.and_then(|t| t.mode.as_deref()).unwrap_or("build"),
         topic: t.map(|t| t.name.as_str()),
-        // Server resolves branch per poll — read it straight off the summary.
+        // Stamped per poll from the per-topic detail for the shown topic —
+        // read it straight off the summary.
         branch: t.and_then(|t| t.branch.as_deref()),
         model: t.and_then(|t| t.model.as_deref()),
         pct: t.and_then(input_token_pct),

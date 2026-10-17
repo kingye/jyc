@@ -212,6 +212,17 @@ async fn topic_chat_returns_404_for_unknown_topic() {
 }
 
 #[tokio::test]
+async fn topic_info_returns_404_for_unknown_topic() {
+    let addr = start_server(ctx_with_token(None)).await;
+    let res = reqwest::Client::new()
+        .get(format!("http://{addr}/api/topics/ch/issue-1/info"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+}
+
+#[tokio::test]
 async fn create_topic_rejects_traversal() {
     let addr = start_server(ctx_with_token(None)).await;
     let res = reqwest::Client::new()

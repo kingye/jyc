@@ -229,11 +229,14 @@ impl InspectServer {
 
     /// Build a slim overview snapshot — same shape as `build_state` but with
     /// `TopicSummary` instead of `TopicInfo`, dropping `activity`, `recent_messages`,
-    /// and `thinking_text`. Used by the dashboard's polling loop to keep payloads small.
+    /// and `thinking_text`, and skipping the per-topic `git` probe (so `branch`
+    /// and `changed_files` stay `None`). Used by the dashboard's polling loop to keep
+    /// payloads small and the round trip cheap; the topic on screen gets those two
+    /// fields from the per-topic info endpoint.
     pub async fn build_overview_state(context: &InspectContext) -> InspectOverview {
         let uptime = context.start_time.elapsed().as_secs();
         let (mut topics, total_topics, active_workers, max_concurrent, per_channel_workers) =
-            collect_topic_snapshot(context).await;
+            collect_topic_snapshot(context, false).await;
 
         // Override status from activity_map (Processing / Error flags) but skip
         // copying activity/messages/thinking — that's the whole point.
@@ -307,6 +310,9 @@ impl InspectServer {
                     skills: t.skills,
                     topic_path: t.topic_path,
                     parent,
+                    // Always None on the overview: `collect_topic_snapshot` skips
+                    // the probe there, and the client stamps the shown topic's
+                    // values from the per-topic info endpoint.
                     branch: t.branch,
                     changed_files: t.changed_files,
                     cost: t.cost,
@@ -338,7 +344,7 @@ impl InspectServer {
     pub async fn build_state(context: &InspectContext) -> InspectState {
         let uptime = context.start_time.elapsed().as_secs();
         let (mut topics, total_topics, active_workers, max_concurrent, per_channel_workers) =
-            collect_topic_snapshot(context).await;
+            collect_topic_snapshot(context, true).await;
 
         // Merge activity logs and status into topics
         let activity_map = context.activity_map.lock().await;
@@ -416,10 +422,15 @@ impl InspectServer {
 
 /// Collect topics from all topic managers plus aggregate worker statistics.
 ///
+/// `include_git` gates the per-topic `git` probe behind `branch` and
+/// `changed_files`: the overview poll turns it off, every other caller leaves
+/// it on.
+///
 /// Returns `(topics, total_topics, active_workers, max_concurrent,
 /// per_channel_workers)`.
 pub(crate) async fn collect_topic_snapshot(
     context: &InspectContext,
+    include_git: bool,
 ) -> (
     Vec<TopicInfo>,
     usize,
@@ -435,7 +446,11 @@ pub(crate) async fn collect_topic_snapshot(
 
     let tms = context.topic_managers.all();
     for tm in tms.iter() {
-        let tm_topics = tm.list_topics().await;
+        let tm_topics = if include_git {
+            tm.list_topics().await
+        } else {
+            tm.list_topics_without_git().await
+        };
         total_topics += tm_topics.len();
         let stats = tm.get_stats().await;
         active_workers += stats.active_workers;

@@ -120,6 +120,7 @@ users who have no dashboard token.
 | GET    | `/api/state/overview`                         | Slim state (no per-topic activity/messages).      |
 | GET    | `/api/topics/{channel}/{topic}/activity`    | Recent activity entries for a topic.              |
 | GET    | `/api/topics/{channel}/{topic}/chat`        | Recent chat messages for a topic.                 |
+| GET    | `/api/topics/{channel}/{topic}/info`        | One topic's full info, incl. branch/changed files. |
 | GET    | `/api/channels/{channel}/patterns`            | Pattern names configured for a channel.            |
 | GET    | `/api/topics/{channel}/{topic}/files/{file...}` | Topic-local file (bearer-gated; see §2.4.9).     |
 | POST   | `/api/inbound?filename=`                     | Stage an inbound attachment for a pipe (see §2.4.10). |
@@ -168,8 +169,11 @@ curl -H 'Authorization: Bearer <token>' http://127.0.0.1:9876/api/state
 #### 2.4.2 `GET /api/state/overview`
 
 Same shape as `GET /api/state` but `topics` is `Vec<TopicSummary>`
-(no `activity`, `recent_messages`, or `thinking_text` per topic). The
-dashboard's polling loop uses this endpoint.
+(no `activity`, `recent_messages`, or `thinking_text` per topic), and
+`branch` / `changed_files` are `null` for every topic: resolving them probes
+the checkout per topic, which a poll covering every topic does not pay.
+Fetch §2.4.11 for the one topic you show. The dashboard's polling loop uses
+this endpoint.
 
 #### 2.4.3 `GET /api/topics/{channel}/{topic}/activity`
 
@@ -448,6 +452,17 @@ for t in overview["topics"]:
 
 ---
 
+#### 2.4.11 `GET /api/topics/{channel}/{topic}/info`
+
+One topic's full `TopicInfo` — the same shape as an element of
+`GET /api/state`'s `topics`, including `branch` and `changed_files`, which
+`GET /api/state/overview` leaves `null`. `branch` comes from the checkout's
+`.git/HEAD`; `changed_files` runs `git diff` against the repo's default branch
+(up to four invocations) — which is why the overview poll carries neither.
+
+`404` when the channel has no topic manager, or that channel has no topic of
+this name.
+
 ## §3 WebSocket API
 
 ### 3.1 Connection
@@ -630,7 +645,9 @@ All shared types live in `crates/jyc-types/src/inspect.rs`.
 ### 4.2 `InspectOverview` (`GET /api/state/overview`)
 
 Identical to `InspectState` except `topics: Vec<TopicSummary>` — i.e.
-no `activity`, no `recent_messages`, no `thinking_text` per topic.
+no `activity`, no `recent_messages`, no `thinking_text` per topic, and
+`branch` / `changed_files` always `null` (see §2.4.2; fetch §2.4.11 for the
+one topic you show).
 
 ### 4.3 `TopicInfo` vs `TopicSummary`
 
@@ -666,6 +683,11 @@ Both have the fields below, except `TopicSummary` **omits** `activity`,
 | `activity`                   | `Vec<ActivityEntry>`  | ✓               | —                  |
 | `recent_messages`            | `Vec<ChatMessageEntry>`| ✓              | —                  |
 | `thinking_text`              | string?               | ✓               | —                  |
+
+`branch` and `changed_files` are the two fields the overview poll does not
+resolve (see §2.4.2): on `TopicSummary` they are `null` there, for every
+topic. `GET /api/topics/{channel}/{topic}/info` (§2.4.11) carries both for one
+topic.
 
 ### 4.4 Other types
 

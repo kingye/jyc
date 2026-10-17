@@ -144,6 +144,8 @@ pub(crate) async fn process_message(
         }
     }
 
+    let t_meta = std::time::Instant::now();
+
     // ── 1.5. SAVE ATTACHMENTS ─────────────────────────────────────────
     // Save attachments AFTER topic name resolution (not before).
     // This ensures attachments go to the correct topic directory when
@@ -165,6 +167,8 @@ pub(crate) async fn process_message(
     {
         tracing::warn!(error = %e, "Failed to save attachments");
     }
+
+    let t_attach = std::time::Instant::now();
 
     // From here on we only need a shared borrow of the message.
     let message = &item.message;
@@ -316,6 +320,7 @@ pub(crate) async fn process_message(
     // write above (not the dashboard): dashboard-proxy messages never create
     // that file, so keying only on `topic_is_new` would re-fire startup on
     // every dashboard message. A startup is "the first real-channel message".
+    let t_before_hooks = std::time::Instant::now();
     if !hooks.is_empty() {
         let base_ctx = || HookCtx {
             topic: topic_name.to_string(),
@@ -391,9 +396,19 @@ pub(crate) async fn process_message(
 
     let t_dispatch = std::time::Instant::now();
     tracing::info!(
-        prelude_ms = t_after_prelude.duration_since(t_prelude).as_millis() as u64,
+        topic = %topic_name,
+        // Spans: meta_ms = topic-meta backfill, attach_ms = attachment save,
+        // registry_ms = built-in registry + custom + skill commands,
+        // reply_ms = the command result send (`outbound.send_reply`, a real
+        // channel call), hooks_ms = session_start + message_received only,
+        // dispatch_ms = the whole post-store pre-agent path.
+        meta_ms = t_meta.duration_since(t_prelude).as_millis() as u64,
+        attach_ms = t_attach.duration_since(t_meta).as_millis() as u64,
+        registry_ms = t_after_prelude.duration_since(t_attach).as_millis() as u64,
         commands_ms = t_after_commands.duration_since(t_after_prelude).as_millis() as u64,
-        hooks_ms = t_after_hooks.duration_since(t_after_commands).as_millis() as u64,
+        reply_ms = t_before_hooks.duration_since(t_after_commands).as_millis() as u64,
+        hooks_ms = t_after_hooks.duration_since(t_before_hooks).as_millis() as u64,
+        hooks = !hooks.is_empty(),
         dispatch_ms = t_dispatch.duration_since(t_prelude).as_millis() as u64,
         "Message dispatch path"
     );

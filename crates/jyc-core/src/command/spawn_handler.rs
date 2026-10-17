@@ -2229,71 +2229,92 @@ mod tests {
     /// default.
     #[tokio::test]
     async fn a_child_starts_on_the_parents_model_unless_the_role_names_one() {
-        // (the role, the parent's model, the `[ai]` a role's values resolve
-        //  against, `model-override`, `plan-model-override`)
-        let cases: &[(Option<&str>, Option<&str>, &str, Option<&str>, Option<&str>)] = &[
-            (
-                None,
-                Some("provider/parent"),
-                "",
-                Some("provider/parent"),
-                None,
-            ),
-            (
-                Some("mode = \"plan\"\n"),
-                Some("provider/parent"),
-                "",
-                Some("provider/parent"),
-                None,
-            ),
+        /// One row: what the role declares, the model the parent is running, the
+        /// `[ai]` the role's values resolve against, and what the child's two
+        /// model override files should hold afterwards.
+        struct Case<'a> {
+            role: Option<&'a str>,
+            parent_model: Option<&'a str>,
+            ai: &'a str,
+            model_override: Option<&'a str>,
+            plan_override: Option<&'a str>,
+        }
+        let cases = [
+            Case {
+                role: None,
+                parent_model: Some("provider/parent"),
+                ai: "",
+                model_override: Some("provider/parent"),
+                plan_override: None,
+            },
+            Case {
+                role: Some("mode = \"plan\"\n"),
+                parent_model: Some("provider/parent"),
+                ai: "",
+                model_override: Some("provider/parent"),
+                plan_override: None,
+            },
             // A role with a model of its own starts on it — and keeps the
             // parent's model as the floor for the slots it says nothing about.
-            (
-                Some("[ai]\nplan_model = \"provider/role\"\n"),
-                Some("provider/parent"),
-                "",
-                Some("provider/parent"),
-                Some("provider/role"),
-            ),
+            Case {
+                role: Some("[ai]\nplan_model = \"provider/role\"\n"),
+                parent_model: Some("provider/parent"),
+                ai: "",
+                model_override: Some("provider/parent"),
+                plan_override: Some("provider/role"),
+            },
             // A role model written as a reference resolves against `[ai.models]`,
             // so the child starts on the slot's value …
-            (
-                Some("[ai]\nmodel = \"${ai.models.review}\"\n"),
-                Some("provider/parent"),
-                "[ai.models]\nreview = \"provider/review\"\n",
-                Some("provider/review"),
-                None,
-            ),
+            Case {
+                role: Some("[ai]\nmodel = \"${ai.models.review}\"\n"),
+                parent_model: Some("provider/parent"),
+                ai: "[ai.models]\nreview = \"provider/review\"\n",
+                model_override: Some("provider/review"),
+                plan_override: None,
+            },
             // … and one that points at nothing keeps the parent's model, in the
             // plain slot or in a mode slot (nothing is written for that mode,
             // so the chain falls to the floor).
-            (
-                Some("[ai]\nmodel = \"${ai.models.absent}\"\n"),
-                Some("provider/parent"),
-                "",
-                Some("provider/parent"),
-                None,
-            ),
-            (
-                Some("[ai]\nplan_model = \"${ai.models.absent}\"\n"),
-                Some("provider/parent"),
-                "",
-                Some("provider/parent"),
-                None,
-            ),
+            Case {
+                role: Some("[ai]\nmodel = \"${ai.models.absent}\"\n"),
+                parent_model: Some("provider/parent"),
+                ai: "",
+                model_override: Some("provider/parent"),
+                plan_override: None,
+            },
+            Case {
+                role: Some("[ai]\nplan_model = \"${ai.models.absent}\"\n"),
+                parent_model: Some("provider/parent"),
+                ai: "",
+                model_override: Some("provider/parent"),
+                plan_override: None,
+            },
             // An empty value is not a model either: the parent's again.
-            (
-                Some("[ai]\nmodel = \"\"\n"),
-                Some("provider/parent"),
-                "",
-                Some("provider/parent"),
-                None,
-            ),
+            Case {
+                role: Some("[ai]\nmodel = \"\"\n"),
+                parent_model: Some("provider/parent"),
+                ai: "",
+                model_override: Some("provider/parent"),
+                plan_override: None,
+            },
             // Nothing resolved for the parent: nothing written.
-            (None, None, "", None, None),
+            Case {
+                role: None,
+                parent_model: None,
+                ai: "",
+                model_override: None,
+                plan_override: None,
+            },
         ];
 
-        for (role, parent_model, models, expected, expected_plan) in cases {
+        for Case {
+            role,
+            parent_model,
+            ai,
+            model_override,
+            plan_override,
+        } in &cases
+        {
             let (_tmp, dir) =
                 parent_topic("t-a_child_starts_on_the_parents_model_unless_the_role_names_one")
                     .await;
@@ -2304,7 +2325,7 @@ mod tests {
             let handler = SpawnCommandHandler::new(tm.clone());
 
             let types_root = tempdir().unwrap();
-            let config = jyc_types::load_config_from_str(models).unwrap();
+            let config = jyc_types::load_config_from_str(ai).unwrap();
             let subagent_type = role.map(|body| {
                 let type_dir = types_root.path().join("subagents/role");
                 std::fs::create_dir_all(&type_dir).unwrap();
@@ -2332,8 +2353,8 @@ mod tests {
             let dest = resolved(&agents_dir.join("worker-snapshot"));
             let state = resolve_state_dir("worker-snapshot", &dest);
             for (file, want) in [
-                ("model-override", *expected),
-                ("plan-model-override", *expected_plan),
+                ("model-override", *model_override),
+                ("plan-model-override", *plan_override),
             ] {
                 let written = tokio::fs::read_to_string(state.join(file))
                     .await
@@ -2345,7 +2366,7 @@ mod tests {
                     "{file} for role {role:?} with parent model {parent_model:?}"
                 );
             }
-            if let Some(expected) = expected {
+            if let Some(expected) = model_override {
                 // Not just the file: the chain the child then runs reads it,
                 // with no config of its own to fall back on.
                 assert_eq!(

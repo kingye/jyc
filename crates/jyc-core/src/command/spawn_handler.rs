@@ -2232,20 +2232,24 @@ mod tests {
     ///
     /// The parent's model is written to `model-override`, the mode-agnostic
     /// fallback: the chain reads it whenever the mode-specific file for the
-    /// child's own mode is missing, so the child's mode naming cannot hide it —
-    /// a mode-only role makes the child a plan-mode topic (the type's `mode`
-    /// lands in its config, and the type expands by removing the `mode-override`
-    /// that would have said plan). It is written even when the role does name a
+    /// child's own mode is missing. It is written even when the role does name a
     /// model, which is what the floor is for: a role value that resolves replaces
-    /// it in that slot, one that does not leaves it. A mode-only role is the case
-    /// that made the write necessary in the first place — a review-shaped role
-    /// has no `[ai]`, and without it the child fell through to the configured
-    /// default.
+    /// it in that slot, one that does not leaves it. A role that names no model
+    /// at all is the case that made the write necessary in the first place — a
+    /// review-shaped role has no `[ai]`, and without it the child fell through
+    /// to the configured default.
+    ///
+    /// The child of this fixture is a plan-mode topic by default: the parent it
+    /// spawns from is one (its state carries `mode-override`, which `seed_state`
+    /// hands down), and a role says nothing about the mode unless it names one.
+    /// That is why `mode` is a column of its own — the chain reads the file that
+    /// mode picks, so the row's expectation is the mode's file or the floor.
     #[tokio::test]
     async fn a_child_starts_on_the_parents_model_unless_the_role_names_one() {
         /// One row: what the role declares, the model the parent is running, the
-        /// `[ai]` the role's values resolve against, and what each of the child's
-        /// three model override files should hold afterwards.
+        /// `[ai]` the role's values resolve against, what each of the child's
+        /// three model override files should hold afterwards, and the mode the
+        /// child itself ends up running in.
         struct Case<'a> {
             role: Option<&'a str>,
             parent_model: Option<&'a str>,
@@ -2253,6 +2257,7 @@ mod tests {
             model_override: Option<&'a str>,
             plan_override: Option<&'a str>,
             build_override: Option<&'a str>,
+            mode: &'a str,
         }
         let floor = Some("provider/parent");
         // `[ai]` is required in any config, so the rows below spell out the
@@ -2270,6 +2275,7 @@ mod tests {
                 model_override: floor,
                 plan_override: None,
                 build_override: None,
+                mode: "plan",
             },
             Case {
                 role: Some("mode = \"plan\"\n"),
@@ -2278,10 +2284,11 @@ mod tests {
                 model_override: floor,
                 plan_override: None,
                 build_override: None,
+                mode: "plan",
             },
-            // A role with a model of its own starts on it — in the file that
-            // slot is read from, each mode included — and keeps the parent's
-            // model as the floor for the slots it says nothing about.
+            // A role with a model of its own starts on it, in the file its slot
+            // is read from, and keeps the parent's model as the floor for the
+            // slots it says nothing about.
             Case {
                 role: Some("[ai]\nplan_model = \"provider/role\"\n"),
                 parent_model: floor,
@@ -2289,14 +2296,29 @@ mod tests {
                 model_override: floor,
                 plan_override: Some("provider/role"),
                 build_override: None,
+                mode: "plan",
             },
+            // The same for a build-mode child, whose mode the role names: the
+            // build file is what this child reads.
             Case {
-                role: Some("[ai]\nbuild_model = \"provider/role\"\n"),
+                role: Some("[ai]\nbuild_model = \"provider/role\"\nmode = \"build\"\n"),
                 parent_model: floor,
                 ai: AI,
                 model_override: floor,
                 plan_override: None,
                 build_override: Some("provider/role"),
+                mode: "build",
+            },
+            // … and the mirror: a plan value does not reach a build-mode child,
+            // which keeps the floor.
+            Case {
+                role: Some("[ai]\nplan_model = \"provider/role\"\nmode = \"build\"\n"),
+                parent_model: floor,
+                ai: AI,
+                model_override: floor,
+                plan_override: Some("provider/role"),
+                build_override: None,
+                mode: "build",
             },
             // A role model written as a reference resolves against `[ai.models]`,
             // so the child starts on the slot's value — here in both slots at
@@ -2310,6 +2332,7 @@ mod tests {
                 model_override: Some("provider/review"),
                 plan_override: Some("provider/role"),
                 build_override: None,
+                mode: "plan",
             },
             Case {
                 role: Some("[ai]\nmodel = \"${ai.models.review}\"\n"),
@@ -2318,10 +2341,11 @@ mod tests {
                 model_override: Some("provider/review"),
                 plan_override: None,
                 build_override: None,
+                mode: "plan",
             },
             // … and one that points at nothing keeps the parent's model, in the
-            // plain slot or in a mode slot (nothing is written for that mode,
-            // so the chain falls to the floor).
+            // plain slot or in a mode slot (nothing is written for that mode, so
+            // the chain falls to the floor).
             Case {
                 role: Some("[ai]\nmodel = \"${ai.models.absent}\"\n"),
                 parent_model: floor,
@@ -2329,6 +2353,7 @@ mod tests {
                 model_override: floor,
                 plan_override: None,
                 build_override: None,
+                mode: "plan",
             },
             Case {
                 role: Some("[ai]\nplan_model = \"${ai.models.absent}\"\n"),
@@ -2337,6 +2362,7 @@ mod tests {
                 model_override: floor,
                 plan_override: None,
                 build_override: None,
+                mode: "plan",
             },
             // An empty value is not a model either: the parent's again, rather
             // than an empty file the chain would read as a model named "".
@@ -2347,6 +2373,7 @@ mod tests {
                 model_override: floor,
                 plan_override: None,
                 build_override: None,
+                mode: "plan",
             },
             // Nothing resolved for the parent: nothing written.
             Case {
@@ -2356,6 +2383,7 @@ mod tests {
                 model_override: None,
                 plan_override: None,
                 build_override: None,
+                mode: "plan",
             },
         ];
 
@@ -2366,6 +2394,7 @@ mod tests {
             model_override,
             plan_override,
             build_override,
+            mode,
         } in &cases
         {
             let (_tmp, dir) =
@@ -2420,12 +2449,15 @@ mod tests {
                     "{file} for role {role:?} with parent model {parent_model:?}"
                 );
             }
-            if let Some(expected) = (*build_override).or(*model_override) {
-                // Not just the files: the chain the child then runs has to read
-                // them, with no config of its own to fall back on. Its mode comes
-                // from the role too — a `mode = "plan"` row resolves in plan mode
-                // and so reads the plan file, which is what keeps a mode-only
-                // role's other mode pinned to the floor.
+            // Not just the files: the chain the child then runs has to read them,
+            // with no config of its own to fall back on. Its own mode picks the
+            // file, so a role value only counts when it lands in that one.
+            let mode_override = if *mode == "plan" {
+                plan_override
+            } else {
+                build_override
+            };
+            if let Some(expected) = (*mode_override).or(*model_override) {
                 assert_eq!(
                     session_state::resolve_effective_model(
                         "worker-snapshot",
@@ -2436,7 +2468,9 @@ mod tests {
                     .await
                     .as_deref(),
                     Some(expected),
-                    "the child's own chain must read the snapshot"
+                    "the {} child must read the snapshot of a role {role:?} with parent model \
+                     {parent_model:?}",
+                    mode
                 );
             }
         }

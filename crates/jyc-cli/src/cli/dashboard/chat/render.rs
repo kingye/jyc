@@ -2018,4 +2018,211 @@ mod tests {
             "  ⠴  edit"
         );
     }
+
+    #[test]
+    fn entry_activity_text_roundtrips_real_events_to_legacy_prose() {
+        // Parity pin: a real TopicEvent → to_activity_json (what the server
+        // actually stores) → entry_activity_text must reproduce the prose
+        // the old backend composed, word for word.
+        use jyc_core::topic_event::TopicEvent;
+        let ts = chrono::Utc::now();
+        let ev = |event: TopicEvent, expected: &str| {
+            let entry = jyc_types::ActivityEntry {
+                event: event.to_activity_json(),
+                text: None,
+                timestamp: None,
+                id: 0,
+            };
+            assert_eq!(entry_activity_text(&entry), expected);
+        };
+        ev(
+            TopicEvent::ProcessingStarted {
+                topic_name: "t".into(),
+                message_id: "m1".into(),
+                timestamp: ts,
+            },
+            "Processing started",
+        );
+        ev(
+            TopicEvent::ProcessingCompleted {
+                topic_name: "t".into(),
+                message_id: "m1".into(),
+                success: true,
+                duration_secs: 5,
+                timestamp: ts,
+            },
+            "Completed (5s)",
+        );
+        ev(
+            TopicEvent::ProcessingCompleted {
+                topic_name: "t".into(),
+                message_id: "m1".into(),
+                success: false,
+                duration_secs: 5,
+                timestamp: ts,
+            },
+            "Failed (5s)",
+        );
+        ev(
+            TopicEvent::ProcessingProgress {
+                topic_name: "t".into(),
+                elapsed_secs: 10,
+                activity: "tool execution".into(),
+                progress: None,
+                parts_count: 1,
+                output_length: 200,
+                timestamp: ts,
+            },
+            "tool execution (10s, 200 chars)",
+        );
+        ev(
+            TopicEvent::LLMRequestStarted {
+                topic_name: "t".into(),
+                iteration: 2,
+                timestamp: ts,
+            },
+            "Thinking... (iteration 2)",
+        );
+        ev(
+            TopicEvent::ToolStarted {
+                topic_name: "t".into(),
+                tool_name: "bash".into(),
+                input: Some("ls -la".into()),
+                timestamp: ts,
+            },
+            "Tool: bash — ls -la",
+        );
+        ev(
+            TopicEvent::ToolStarted {
+                topic_name: "t".into(),
+                tool_name: "bash".into(),
+                input: None,
+                timestamp: ts,
+            },
+            "Tool: bash (running)",
+        );
+        ev(
+            TopicEvent::ToolCompleted {
+                topic_name: "t".into(),
+                tool_name: "bash".into(),
+                success: true,
+                duration_secs: 3,
+                output: None,
+                input: Some("ls".into()),
+                timestamp: ts,
+            },
+            "Tool: bash (done, 3s) — ls",
+        );
+        ev(
+            TopicEvent::ToolCompleted {
+                topic_name: "t".into(),
+                tool_name: "bash".into(),
+                success: true,
+                duration_secs: 3,
+                output: None,
+                input: None,
+                timestamp: ts,
+            },
+            "Tool: bash (done, 3s)",
+        );
+        ev(
+            TopicEvent::ToolCompleted {
+                topic_name: "t".into(),
+                tool_name: "bash".into(),
+                success: false,
+                duration_secs: 3,
+                output: Some("boom\nfail".into()),
+                input: None,
+                timestamp: ts,
+            },
+            "Tool: bash (FAILED, 3s) boom fail",
+        );
+        ev(
+            TopicEvent::ToolCompleted {
+                topic_name: "t".into(),
+                tool_name: "bash".into(),
+                success: false,
+                duration_secs: 3,
+                output: None,
+                input: None,
+                timestamp: ts,
+            },
+            "Tool: bash (FAILED, 3s)",
+        );
+        ev(
+            TopicEvent::Thinking {
+                topic_name: "t".into(),
+                text: "xyz".into(),
+                full_length: 10,
+                timestamp: ts,
+            },
+            "Thinking: xyz...",
+        );
+        ev(
+            TopicEvent::Thinking {
+                topic_name: "t".into(),
+                text: "xyz".into(),
+                full_length: 3,
+                timestamp: ts,
+            },
+            "Thinking: xyz",
+        );
+        ev(
+            TopicEvent::IncomingMessage {
+                topic_name: "t".into(),
+                sender: "u".into(),
+                text: "hi".into(),
+                timestamp: ts,
+            },
+            "Message from u: hi",
+        );
+        ev(
+            TopicEvent::ReplySent {
+                topic_name: "t".into(),
+                text: "x".repeat(150),
+                timestamp: ts,
+            },
+            &format!("Reply sent: {}", "x".repeat(100)),
+        );
+        ev(
+            TopicEvent::SessionStatus {
+                topic_name: "t".into(),
+                status_type: "retry".into(),
+                attempt: Some(2),
+                message: Some("slow".into()),
+                timestamp: ts,
+            },
+            "RETRY (attempt #2): slow",
+        );
+        // Some("") still produced "ERROR: " (colon + trailing space) in the
+        // old backend — an empty message must not drop the separator.
+        ev(
+            TopicEvent::SessionStatus {
+                topic_name: "t".into(),
+                status_type: "error".into(),
+                attempt: None,
+                message: Some(String::new()),
+                timestamp: ts,
+            },
+            "ERROR: ",
+        );
+        ev(
+            TopicEvent::SessionStatus {
+                topic_name: "t".into(),
+                status_type: "no_reply".into(),
+                attempt: None,
+                message: None,
+                timestamp: ts,
+            },
+            "NO REPLY",
+        );
+        ev(
+            TopicEvent::LoopTick {
+                topic_name: "t".into(),
+                elapsed_ms: 1000,
+                timestamp: ts,
+            },
+            "LoopTick (1000ms)",
+        );
+    }
 }

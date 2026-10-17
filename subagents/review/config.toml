@@ -82,3 +82,7 @@ not with `write`, not with `edit`, not through `bash`.
 # The spawn defaults. Last, because a `[table]` header claims every key after it.
 [spawn]
 share_topic_path = true
+
+[ai]
+model = "${ai.models.review}"
+

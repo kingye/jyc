@@ -69,6 +69,12 @@ pub(crate) async fn process_message(
         "Message stored"
     );
 
+    // Marks for the per-message dispatch path: everything from here to the
+    // first poll of the agent future is otherwise invisible in the log, so a
+    // slow turn cannot be attributed. One summary line below carries the
+    // numbers; drop these marks once the breakdown is known.
+    let t_prelude = std::time::Instant::now();
+
     // ── 1.2. WRITE THREAD ROUTING METADATA ────────────────────────────
     // Persist routing metadata on the first message for a topic so that
     // the dashboard's `TopicProxyHandler` (via /ws/<channel>/<topic>)
@@ -138,6 +144,8 @@ pub(crate) async fn process_message(
         }
     }
 
+    let t_meta = std::time::Instant::now();
+
     // ── 1.5. SAVE ATTACHMENTS ─────────────────────────────────────────
     // Save attachments AFTER topic name resolution (not before).
     // This ensures attachments go to the correct topic directory when
@@ -159,6 +167,8 @@ pub(crate) async fn process_message(
     {
         tracing::warn!(error = %e, "Failed to save attachments");
     }
+
+    let t_attach = std::time::Instant::now();
 
     // From here on we only need a shared borrow of the message.
     let message = &item.message;
@@ -206,6 +216,7 @@ pub(crate) async fn process_message(
             command_registry.register(&key, Arc::new(CustomCommandHandler::new(cmd)));
         }
     }
+    let t_after_prelude = std::time::Instant::now();
 
     // Hook set for this topic: global [[hooks]] + the routed agent's.
     // Built per message (same lifetime as the command registry), so a
@@ -229,6 +240,7 @@ pub(crate) async fn process_message(
     let cmd_output = command_registry
         .process_commands(raw_body, &cmd_context)
         .await?;
+    let t_after_commands = std::time::Instant::now();
 
     // ── 3. REPLY COMMAND RESULTS (always, if commands found) ──────────
     if !cmd_output.results.is_empty() {
@@ -308,6 +320,7 @@ pub(crate) async fn process_message(
     // write above (not the dashboard): dashboard-proxy messages never create
     // that file, so keying only on `topic_is_new` would re-fire startup on
     // every dashboard message. A startup is "the first real-channel message".
+    let t_before_hooks = std::time::Instant::now();
     if !hooks.is_empty() {
         let base_ctx = || HookCtx {
             topic: topic_name.to_string(),
@@ -338,6 +351,8 @@ pub(crate) async fn process_message(
             return Ok(());
         }
     }
+
+    let t_after_hooks = std::time::Instant::now();
 
     // Spawn a background task to watch for pending reply deliveries.
     // When the agent loop cannot deliver directly (no live reply target, or
@@ -378,6 +393,25 @@ pub(crate) async fn process_message(
     // current AI call completes (same as before).
     let (_dummy_tx, mut dummy_rx) = mpsc::channel::<QueueItem>(1);
     drop(_dummy_tx);
+
+    let t_dispatch = std::time::Instant::now();
+    tracing::info!(
+        topic = %topic_name,
+        // Spans: meta_ms = topic-meta backfill, attach_ms = attachment save,
+        // registry_ms = built-in registry + custom + skill commands,
+        // reply_ms = the command result send (`outbound.send_reply`, a real
+        // channel call), hooks_ms = session_start + message_received only,
+        // dispatch_ms = the whole post-store pre-agent path.
+        meta_ms = t_meta.duration_since(t_prelude).as_millis() as u64,
+        attach_ms = t_attach.duration_since(t_meta).as_millis() as u64,
+        registry_ms = t_after_prelude.duration_since(t_attach).as_millis() as u64,
+        commands_ms = t_after_commands.duration_since(t_after_prelude).as_millis() as u64,
+        reply_ms = t_before_hooks.duration_since(t_after_commands).as_millis() as u64,
+        hooks_ms = t_after_hooks.duration_since(t_before_hooks).as_millis() as u64,
+        hooks = !hooks.is_empty(),
+        dispatch_ms = t_dispatch.duration_since(t_prelude).as_millis() as u64,
+        "Message dispatch path"
+    );
 
     let agent_fut = agent.process(
         &message,

@@ -60,7 +60,7 @@ pub struct AgentLoopConfig<'a> {
     /// Prior conversation history (internal format, for logic).
     pub prior_history: Vec<Message>,
     /// Prior raw context (provider-formatted JSON, for API calls).
-    pub prior_raw_context: Vec<serde_json::Value>,
+    pub prior_raw_context: std::sync::Arc<Vec<serde_json::Value>>,
     /// Maximum loop iterations. Defaults to DEFAULT_MAX_ITERATIONS.
     pub max_iterations: Option<usize>,
     /// SSE read timeout — maximum gap between SSE events before the stream
@@ -121,7 +121,7 @@ pub struct AgentLoopConfig<'a> {
     pub model_label: &'a str,
     /// Context management strategy. Controls how prior conversation history
     /// is shaped before being sent to the LLM. The on-disk
-    /// `.jyc/agent-context.json` is always the full raw context; this
+    /// `.jyc/agent-context.jsonl` is always the full raw context; this
     /// field only affects the wire payload.
     pub context_strategy: ContextStrategyConfig,
     /// Synchronous delivery target for `jyc_reply_message`. Passed through
@@ -181,11 +181,14 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
     history.push(Message::user_with_blocks(user_blocks.clone()));
 
     // Build raw context: prior raw + current user message. The full context
-    // is persisted to `.jyc/agent-context.json` unchanged at the end of the
-    // loop; the strategy decides what is sent to the LLM (see
-    // `build_send_context`).
-    let prior_len = prior_raw_context.len();
-    let mut raw_context: Vec<serde_json::Value> = prior_raw_context;
+    // is persisted to the `.jyc/agent-context.jsonl` journal at the end of
+    // the loop (tail-append when the prefix is unchanged); the strategy
+    // decides what is sent to the LLM (see `build_send_context`).
+    let mut prior_len = prior_raw_context.len();
+    // Sole owner when the parse cache did not hand this Arc out elsewhere;
+    // otherwise pay one deep clone here instead of re-parsing on every load.
+    let mut raw_context: Vec<serde_json::Value> =
+        std::sync::Arc::try_unwrap(prior_raw_context).unwrap_or_else(|arc| (*arc).clone());
     raw_context.push(provider.format_user_message(&user_blocks));
 
     let mut context_input_tokens: u64 = 0;
@@ -457,6 +460,9 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
             // (ResetCompressionConfig.keep_pairs), which is used on explicit
             // session resets (/reset, dashboard, between-message auto-reset).
             raw_context = compact_raw_context_heuristic(&raw_context, 3);
+            // The compacted context no longer extends the persisted on-disk
+            // prefix — force a full journal rewrite at save time.
+            prior_len = 0;
             // Also compact internal history to match raw_context
             history = compact_history_heuristic(&history, 3);
 
@@ -681,6 +687,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 total_reasoning_tokens,
                 history,
                 raw_context,
+                persisted_len: prior_len,
             });
         }
 
@@ -875,6 +882,11 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
                 // Remove the assistant message and everything after it
                 // (partial tool results that reference the dangling call).
                 raw_context.truncate(pos);
+                // The truncation never reaches into the persisted prefix in
+                // practice (the dangling message is always from this turn),
+                // but clamp defensively so `persisted_len` never overstates
+                // what is actually on disk.
+                prior_len = prior_len.min(raw_context.len());
             }
             // Also remove from internal history: the last assistant message
             // with a ToolUse block and any subsequent tool results.
@@ -991,6 +1003,7 @@ pub async fn run(config: AgentLoopConfig<'_>) -> Result<AgentLoopResult> {
         total_reasoning_tokens,
         history,
         raw_context,
+        persisted_len: prior_len,
     })
 }
 

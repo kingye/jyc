@@ -370,7 +370,7 @@ impl JycAgentService {
         } else {
             // Build mode: explicitly declare full execution capabilities so the
             // model does not mistakenly inherit stale PLAN constraints from
-            // prior conversation history (agent-context.json).
+            // prior conversation history (agent-context.jsonl).
             prompt.push('\n');
             prompt.push_str("<mode>\n");
             prompt.push_str("Current mode: BUILD (full execution). ");

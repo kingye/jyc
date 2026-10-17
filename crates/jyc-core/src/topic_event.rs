@@ -245,11 +245,10 @@ impl TopicEvent {
         };
         let mut tagged = serde_json::json!({ "type": kind });
         let value = serde_json::to_value(self).unwrap_or_default();
-        if let Some(fields) = value.as_object().and_then(|m| m.values().next()) {
-            if let (Some(map), serde_json::Value::Object(fields)) = (tagged.as_object_mut(), fields)
-            {
-                map.extend(fields.clone());
-            }
+        if let Some(fields) = value.as_object().and_then(|m| m.values().next())
+            && let (Some(map), serde_json::Value::Object(fields)) = (tagged.as_object_mut(), fields)
+        {
+            map.extend(fields.clone());
         }
         tagged
     }

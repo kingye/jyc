@@ -351,14 +351,6 @@ impl AgentService for JycAgentService {
             )
             .await;
         let t_prompt = std::time::Instant::now();
-        tracing::info!(
-            cfg_model_ms = t_before_provider.duration_since(t_turn).as_millis() as u64,
-            provider_ms = t_provider.duration_since(t_before_provider).as_millis() as u64,
-            small_ms = t_small.duration_since(t_provider).as_millis() as u64,
-            prompt_ms = t_prompt.duration_since(t_small).as_millis() as u64,
-            setup_ms = t_prompt.duration_since(t_turn).as_millis() as u64,
-            "Turn setup"
-        );
         tracing::debug!(
             topic = %topic_name,
             prompt_len = system_prompt.len(),
@@ -391,6 +383,24 @@ impl AgentService for JycAgentService {
             )
             .await;
         let tools = &*tools_arc;
+        let t_tools = std::time::Instant::now();
+
+        tracing::info!(
+            topic = %topic_name,
+            // Spans: cfg_model_ms = topic config + mode override + model
+            // resolution, provider_ms / small_ms = the two create_provider
+            // calls, prompt_ms = build_user_blocks + system prompt,
+            // tools_ms = tool registry (MCP spawn + handshake on a cache
+            // miss), setup_ms = the whole turn setup so far.
+            cfg_model_ms = t_before_provider.duration_since(t_turn).as_millis() as u64,
+            provider_ms = t_provider.duration_since(t_before_provider).as_millis() as u64,
+            small_ms = t_small.duration_since(t_provider).as_millis() as u64,
+            small = small_provider.is_some(),
+            prompt_ms = t_prompt.duration_since(t_small).as_millis() as u64,
+            tools_ms = t_tools.duration_since(t_prompt).as_millis() as u64,
+            setup_ms = t_tools.duration_since(t_turn).as_millis() as u64,
+            "Turn setup"
+        );
 
         // 6. Get event bus for this topic
         let event_bus = self.get_event_bus(topic_name).await;

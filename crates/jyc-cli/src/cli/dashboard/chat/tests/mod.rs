@@ -2754,7 +2754,16 @@ fn is_user_visible_activity_filters_heartbeats() {
     use jyc_types::ActivityEntry;
 
     let visible = ActivityEntry {
-        event: serde_json::json!({"type": "tool_completed", "tool_name": "bash", "success": true, "duration_secs": 1}),
+        event: jyc_core::topic_event::TopicEvent::ToolCompleted {
+            topic_name: "t".to_string(),
+            tool_name: "bash".to_string(),
+            success: true,
+            duration_secs: 1,
+            output: None,
+            input: None,
+            timestamp: chrono::Utc::now(),
+        }
+        .to_activity_json(),
         text: None,
         timestamp: Some("2026-01-01T00:00:00Z".to_string()),
         id: 1,
@@ -2764,7 +2773,16 @@ fn is_user_visible_activity_filters_heartbeats() {
     // Heartbeat kinds are dropped by the tracker, but a live buffer may
     // still hold them — hidden by kind.
     let progress = ActivityEntry {
-        event: serde_json::json!({"type": "processing_progress", "elapsed_secs": 10, "activity": "tool execution", "output_length": 200}),
+        event: jyc_core::topic_event::TopicEvent::ProcessingProgress {
+            topic_name: "t".to_string(),
+            elapsed_secs: 10,
+            activity: "tool execution".to_string(),
+            progress: None,
+            parts_count: 1,
+            output_length: 200,
+            timestamp: chrono::Utc::now(),
+        }
+        .to_activity_json(),
         text: None,
         timestamp: Some("2026-01-01T00:00:00Z".to_string()),
         id: 2,
@@ -2772,7 +2790,12 @@ fn is_user_visible_activity_filters_heartbeats() {
     assert!(!is_user_visible_activity(&progress));
 
     let tick = ActivityEntry {
-        event: serde_json::json!({"type": "loop_tick", "elapsed_ms": 1000}),
+        event: jyc_core::topic_event::TopicEvent::LoopTick {
+            topic_name: "t".to_string(),
+            elapsed_ms: 1000,
+            timestamp: chrono::Utc::now(),
+        }
+        .to_activity_json(),
         text: None,
         timestamp: Some("2026-01-01T00:00:00Z".to_string()),
         id: 4,

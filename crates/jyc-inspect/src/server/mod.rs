@@ -695,23 +695,6 @@ pub(crate) fn seed_next_id_from_disk(
 /// Whether an `ActivityEntry` should be shown in user-facing surfaces
 /// (overview activity pane, chat activity pane, chat progress, REST API).
 ///
-/// Filters out:
-/// - New entries marked `is_internal = true` (set by `event_to_activity` for
-///   `ProcessingProgress` heartbeats).
-/// - Legacy entries from old log files (predecessors of the `is_internal`
-///   field) that match the `ProcessingProgress` text shape.
-pub fn is_user_visible_activity(entry: &ActivityEntry) -> bool {
-    if entry.is_internal {
-        return false;
-    }
-    // Backward compat: old log entries predate the field. Detect the
-    // ProcessingProgress output shape: "<activity> (<N>s, <M> chars)".
-    if entry.text.ends_with(" chars)") {
-        return false;
-    }
-    true
-}
-
 /// Filter chat messages by `since` timestamp (RFC 3339 string).
 #[cfg(test)]
 mod no_reply_rendering_tests {
@@ -730,24 +713,20 @@ mod no_reply_rendering_tests {
     }
 
     #[test]
-    fn no_reply_renders_as_warning_no_reply() {
+    fn session_status_entry_carries_raw_event() {
         let entry = event_to_activity(&no_reply_event());
-        assert_eq!(entry.severity, Severity::Warning);
-        assert!(
-            entry.text.starts_with("NO REPLY"),
-            "expected 'NO REPLY' label, got {:?}",
-            entry.text
+        assert_eq!(entry.event["type"], "session_status");
+        assert_eq!(entry.event["status_type"], "no_reply");
+        assert_eq!(
+            entry.event["message"],
+            "AI produced no text and no tool call"
         );
-        assert!(
-            entry.text.contains("AI produced no text and no tool call"),
-            "expected message body in entry text, got {:?}",
-            entry.text
-        );
-        assert!(!entry.is_internal, "no-reply must be user-visible");
+        assert!(entry.text.is_none());
+        assert!(!is_error_event(&no_reply_event()));
     }
 
     #[test]
-    fn other_session_statuses_unchanged() {
+    fn error_event_classification() {
         let retry = TopicEvent::SessionStatus {
             topic_name: "t1".to_string(),
             status_type: "retry".to_string(),
@@ -755,9 +734,15 @@ mod no_reply_rendering_tests {
             message: None,
             timestamp: Utc::now(),
         };
-        let entry = event_to_activity(&retry);
-        assert_eq!(entry.severity, Severity::Warning);
-        assert!(entry.text.starts_with("RETRY"), "got {:?}", entry.text);
+        assert!(!is_error_event(&retry));
+        let err = TopicEvent::SessionStatus {
+            topic_name: "t1".to_string(),
+            status_type: "error".to_string(),
+            attempt: None,
+            message: None,
+            timestamp: Utc::now(),
+        };
+        assert!(is_error_event(&err));
     }
 }
 
@@ -779,10 +764,9 @@ mod next_id_tests {
         let mut state = TopicActivityState::default();
         state.entries.push_back(ActivityEntry {
             id: 42,
-            text: "old".to_string(),
+            event: serde_json::Value::Null,
+            text: Some("old".to_string()),
             timestamp: None,
-            severity: Severity::Info,
-            is_internal: false,
         });
         seed_next_id_from_disk(&mut state, "", None);
         assert_eq!(state.next_id, 43);
@@ -796,10 +780,9 @@ mod next_id_tests {
         fs::create_dir_all(&state_dir).unwrap();
         let entry = ActivityEntry {
             id: 7,
-            text: "disk".to_string(),
+            event: serde_json::Value::Null,
+            text: Some("disk".to_string()),
             timestamp: None,
-            severity: Severity::Info,
-            is_internal: false,
         };
         fs::write(
             state_dir.join("activity.jsonl"),

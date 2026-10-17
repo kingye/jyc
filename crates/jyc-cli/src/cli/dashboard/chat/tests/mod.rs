@@ -2315,11 +2315,10 @@ fn handle_ws_message_routes_activity_events_to_live_buffer() {
     // Simulate hydrate: seed an activity entry, then a WS event with
     // the same id arrives — should be deduped (id <= last_seen_id).
     let entry = jyc_types::ActivityEntry {
-        text: "Tool: bash".to_string(),
+        event: serde_json::Value::Null,
+        text: Some("Tool: bash".to_string()),
         timestamp: Some("2026-01-01T00:00:00Z".to_string()),
-        severity: jyc_types::Severity::Info,
         id: 42,
-        is_internal: false,
     };
     app.chat.seed_live("github", "pr-1", vec![entry], vec![]);
     assert_eq!(app.chat.live_activity_for("github", "pr-1").count(), 1);
@@ -2730,11 +2729,10 @@ fn handle_ws_message_routes_resync_clears_buffer() {
         "github",
         "pr-1",
         vec![jyc_types::ActivityEntry {
-            text: "old".to_string(),
+            event: serde_json::Value::Null,
+            text: Some("old".to_string()),
             timestamp: Some("2026-01-01T00:00:00Z".to_string()),
-            severity: jyc_types::Severity::Info,
             id: 1,
-            is_internal: false,
         }],
         vec![],
     );
@@ -2752,36 +2750,64 @@ fn handle_ws_message_routes_resync_clears_buffer() {
 }
 
 #[test]
-fn is_user_visible_activity_filters_internal_and_thinking() {
+fn is_user_visible_activity_filters_heartbeats() {
     use jyc_types::ActivityEntry;
-    use jyc_types::Severity;
 
     let visible = ActivityEntry {
-        text: "Tool: bash (done, 1s)".to_string(),
+        event: jyc_core::topic_event::TopicEvent::ToolCompleted {
+            topic_name: "t".to_string(),
+            tool_name: "bash".to_string(),
+            success: true,
+            duration_secs: 1,
+            output: None,
+            input: None,
+            timestamp: chrono::Utc::now(),
+        }
+        .to_activity_json(),
+        text: None,
         timestamp: Some("2026-01-01T00:00:00Z".to_string()),
-        severity: Severity::Info,
         id: 1,
-        is_internal: false,
     };
     assert!(is_user_visible_activity(&visible));
 
-    // New flag: ProcessingProgress events (is_internal=true) hidden.
-    let internal = ActivityEntry {
-        text: "tool execution (10s, 200 chars)".to_string(),
+    // Heartbeat kinds are dropped by the tracker, but a live buffer may
+    // still hold them — hidden by kind.
+    let progress = ActivityEntry {
+        event: jyc_core::topic_event::TopicEvent::ProcessingProgress {
+            topic_name: "t".to_string(),
+            elapsed_secs: 10,
+            activity: "tool execution".to_string(),
+            progress: None,
+            parts_count: 1,
+            output_length: 200,
+            timestamp: chrono::Utc::now(),
+        }
+        .to_activity_json(),
+        text: None,
         timestamp: Some("2026-01-01T00:00:00Z".to_string()),
-        severity: Severity::Info,
         id: 2,
-        is_internal: true,
     };
-    assert!(!is_user_visible_activity(&internal));
+    assert!(!is_user_visible_activity(&progress));
 
-    // Legacy: text shape for ProcessingProgress.
-    let legacy = ActivityEntry {
-        text: "tool execution (5s, 120 chars)".to_string(),
+    let tick = ActivityEntry {
+        event: jyc_core::topic_event::TopicEvent::LoopTick {
+            topic_name: "t".to_string(),
+            elapsed_ms: 1000,
+            timestamp: chrono::Utc::now(),
+        }
+        .to_activity_json(),
+        text: None,
         timestamp: Some("2026-01-01T00:00:00Z".to_string()),
-        severity: Severity::Info,
+        id: 4,
+    };
+    assert!(!is_user_visible_activity(&tick));
+
+    // Legacy: prose shape for ProcessingProgress in pre-rotation log files.
+    let legacy = ActivityEntry {
+        event: serde_json::Value::Null,
+        text: Some("tool execution (5s, 120 chars)".to_string()),
+        timestamp: Some("2026-01-01T00:00:00Z".to_string()),
         id: 3,
-        is_internal: false,
     };
     assert!(!is_user_visible_activity(&legacy));
 }

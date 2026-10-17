@@ -415,30 +415,29 @@ pub enum Severity {
 }
 
 /// A single activity event from the topic's SSE stream.
+///
+/// The backend records the raw event; each client decides how (and whether)
+/// to render it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityEntry {
-    /// Human-readable description
-    pub text: String,
+    /// The raw topic event, flattened to `{ "type": <variant>, … }`
+    /// (`tool_completed`, `session_status`, …).
+    #[serde(default)]
+    pub event: serde_json::Value,
     /// RFC 3339 timestamp for ordering and cross-day sorting
     #[serde(default)]
     pub timestamp: Option<String>,
-    /// Severity level (defaults to Info for backward compat)
-    #[serde(default)]
-    pub severity: Severity,
     /// Monotonic per-topic sequence number assigned by the inspect server's
     /// `ActivityTracker` on push. Used by WS clients to drop duplicate events
     /// after a reconnect / Lagged recovery. Defaults to 0 for entries from
     /// `.jyc/activity.jsonl` that predate the seq field.
     #[serde(default)]
     pub id: u64,
-    /// Internal events are useful for debug logs but should NOT be shown in
-    /// user-facing surfaces (overview activity pane, chat activity pane,
-    /// chat progress, REST `get_topic_activity` response). Currently set
-    /// for `ProcessingProgress` heartbeats (e.g. "tool execution (Xs, Y
-    /// chars)"). Defaults to `false` for backward compat with old log
-    /// entries that predate this field.
-    #[serde(default)]
-    pub is_internal: bool,
+    /// Prose carried by entries written before the raw-event shape. `None`
+    /// for new entries; clients render it verbatim when `event` is absent.
+    /// ponytail: delete once existing logs have rotated past the old shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// A chat message entry for live display in the dashboard.
@@ -755,28 +754,30 @@ mod tests {
 
     #[test]
     fn test_activity_entry_backward_compat_old_jsonl() {
-        // Old JSONL entries have `time` field but no `severity` — should deserialize fine
+        // Old JSONL entries have `text` but no `event` — should deserialize
+        // fine, with the prose preserved for legacy rendering.
         let old_json =
             r#"{"time":"12:34:56","text":"Processing started","timestamp":"2025-01-15T12:34:56Z"}"#;
         let entry: ActivityEntry = serde_json::from_str(old_json).unwrap();
-        assert_eq!(entry.text, "Processing started");
-        assert_eq!(entry.severity, Severity::Info);
+        assert_eq!(entry.text.as_deref(), Some("Processing started"));
         assert_eq!(entry.timestamp.as_deref(), Some("2025-01-15T12:34:56Z"));
+        assert!(entry.event.is_null());
     }
 
     #[test]
-    fn test_activity_entry_with_severity() {
+    fn test_activity_entry_roundtrip_with_raw_event() {
         let entry = ActivityEntry {
-            text: "Failed (5s)".to_string(),
+            event: serde_json::json!({"type": "tool_completed", "tool_name": "bash", "success": false}),
             timestamp: Some("2025-01-15T12:34:56Z".to_string()),
-            severity: Severity::Error,
             id: 0,
-            is_internal: false,
+            text: None,
         };
         let json = serde_json::to_string(&entry).unwrap();
-        assert!(json.contains(r#""severity":"error""#));
+        assert!(json.contains(r#""type":"tool_completed""#));
+        assert!(!json.contains("severity"));
         let parsed: ActivityEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.severity, Severity::Error);
+        assert_eq!(parsed.event["tool_name"], "bash");
+        assert_eq!(parsed.text, None);
     }
 
     #[test]
@@ -786,17 +787,16 @@ mod tests {
             r#"{"text":"old entry","timestamp":"2025-01-15T12:00:00Z","severity":"info"}"#;
         let entry: ActivityEntry = serde_json::from_str(old_json).unwrap();
         assert_eq!(entry.id, 0);
-        assert_eq!(entry.text, "old entry");
+        assert_eq!(entry.text.as_deref(), Some("old entry"));
     }
 
     #[test]
     fn test_activity_entry_id_roundtrip() {
         let entry = ActivityEntry {
-            text: "new entry".to_string(),
+            event: serde_json::Value::Null,
+            text: Some("new entry".to_string()),
             timestamp: Some("2025-01-15T12:00:00Z".to_string()),
-            severity: Severity::Info,
             id: 42,
-            is_internal: false,
         };
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains(r#""id":42"#));

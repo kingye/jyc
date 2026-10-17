@@ -447,8 +447,9 @@ fn activity_state(text: &str) -> &str {
 /// one that carries the `Tool: ` prefix even while `ctrl+p T` has the diff
 /// open.
 fn entry_tool_name(entry: &jyc_types::ActivityEntry) -> Option<String> {
-    let formatted = render_activity_entry(&entry.text, false);
-    let text = formatted.first().map(String::as_str).unwrap_or(&entry.text);
+    let line_text = entry_activity_text(entry);
+    let formatted = render_activity_entry(&line_text, false);
+    let text = formatted.first().map(String::as_str).unwrap_or(&line_text);
     let name = activity_state(text);
     (name != "thinking").then(|| name.to_string())
 }
@@ -483,7 +484,7 @@ fn minimal_progress_line(
     let (state, failed, is_tool) = match last {
         // One line has to say when the round is failing: in this mode the
         // full tail — and its red error row — is off screen.
-        Some(entry) if entry.severity == jyc_types::Severity::Error => {
+        Some(entry) if entry_severity(entry) == jyc_types::Severity::Error => {
             ("error".to_string(), true, false)
         }
         Some(entry) => match entry_tool_name(entry) {
@@ -774,7 +775,7 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                 // always miss because the marker sits two columns in.
                 let spinner = spinner_prefix(now);
                 let rendered_lines: Vec<(String, Vec<Span<'static>>)> =
-                    render_activity_entry(&a.text, app.chat.tool_detail_expanded)
+                    render_activity_entry(&entry_activity_text(a), app.chat.tool_detail_expanded)
                         .into_iter()
                         .enumerate()
                         .map(|(line_idx, line)| {
@@ -828,10 +829,10 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
                     .live_activity_for(c, t)
                     .rev()
                     .find(|e| {
-                        matches!(e.severity, jyc_types::Severity::Error)
-                            && e.text.starts_with("ERROR:")
+                        entry_severity(e) == jyc_types::Severity::Error
+                            && entry_activity_text(e).starts_with("ERROR:")
                     })
-                    .map(|e| e.text.clone())
+                    .map(entry_activity_text)
             })
             .unwrap_or_else(|| "Processing failed".to_string());
         let message = error_text
@@ -1017,6 +1018,202 @@ pub(super) fn render_chat_conversation(frame: &mut Frame, area: Rect, app: &mut 
         build_status_line(chunks[3].width as usize, &status_ctx),
         chunks[3],
     );
+}
+
+/// Rebuild the one-line text the backend used to compose, now from the raw
+/// event the entry carries. Wording matches the old server-side formatter
+/// exactly — the render pipeline below (`render_activity_entry`) consumes
+/// these lines unchanged. Legacy rows written before the raw-event shape
+/// have no `event.type`; their prose rides in `text` and passes through.
+pub(super) fn entry_activity_text(entry: &jyc_types::ActivityEntry) -> String {
+    let event = &entry.event;
+    let Some(kind) = event.get("type").and_then(|t| t.as_str()) else {
+        return entry.text.clone().unwrap_or_default();
+    };
+    let str_field = |k: &str| event.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    let u64_field = |k: &str| event.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+    match kind {
+        "processing_started" => "Processing started".to_string(),
+        "processing_progress" => format!(
+            "{} ({}s, {} chars)",
+            str_field("activity"),
+            u64_field("elapsed_secs"),
+            u64_field("output_length")
+        ),
+        "processing_completed" => {
+            let secs = u64_field("duration_secs");
+            if event
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_default()
+            {
+                format!("Completed ({secs}s)")
+            } else {
+                format!("Failed ({secs}s)")
+            }
+        }
+        "llm_request_started" => format!("Thinking... (iteration {})", u64_field("iteration")),
+        "tool_started" => {
+            let name = str_field("tool_name");
+            match name {
+                "edit" | "write" => file_tool_event_text(event, name, None),
+                _ => match event.get("input").and_then(|v| v.as_str()) {
+                    Some(inp) => format!("Tool: {name} — {inp}"),
+                    None => format!("Tool: {name} (running)"),
+                },
+            }
+        }
+        "tool_completed" => {
+            let name = str_field("tool_name");
+            let secs = u64_field("duration_secs");
+            let success = event
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if success {
+                match name {
+                    "edit" | "write" => file_tool_event_text(event, name, Some(secs)),
+                    _ => match event.get("input").and_then(|v| v.as_str()) {
+                        Some(inp) => format!("Tool: {name} (done, {secs}s) — {inp}"),
+                        None => format!("Tool: {name} (done, {secs}s)"),
+                    },
+                }
+            } else {
+                match event.get("output").and_then(|v| v.as_str()) {
+                    Some(err) => {
+                        format!("Tool: {name} (FAILED, {secs}s) {}", err.replace('\n', " "))
+                    }
+                    None => format!("Tool: {name} (FAILED, {secs}s)"),
+                }
+            }
+        }
+        "thinking" => {
+            let text = str_field("text");
+            if (u64_field("full_length") as usize) > text.len() {
+                format!("Thinking: {text}...")
+            } else {
+                format!("Thinking: {text}")
+            }
+        }
+        "incoming_message" => format!(
+            "Message from {}: {}",
+            str_field("sender"),
+            str_field("text").replace('\n', " ")
+        ),
+        "reply_sent" => {
+            let oneline = str_field("text").replace('\n', " ");
+            let preview: String = oneline.chars().take(100).collect();
+            format!("Reply sent: {preview}")
+        }
+        "session_status" => {
+            let label = match str_field("status_type") {
+                "retry" => "RETRY",
+                "error" => "ERROR",
+                "rate_limit" => "RATE LIMITED",
+                "timeout" => "TIMEOUT",
+                "no_reply" => "NO REPLY",
+                other => other,
+            };
+            let mut text = match event.get("attempt").and_then(|v| v.as_u64()) {
+                Some(n) => format!("{label} (attempt #{n})"),
+                None => label.to_string(),
+            };
+            // The old backend appended for any `Some`, even an empty message
+            // ("ERROR: ") — keep that, don't second-guess the writer.
+            if let Some(message) = event.get("message").and_then(|v| v.as_str()) {
+                text.push_str(&format!(": {}", message.replace('\n', " ")));
+            }
+            text
+        }
+        "loop_tick" => format!("LoopTick ({}ms)", u64_field("elapsed_ms")),
+        _ => entry.text.clone().unwrap_or_default(),
+    }
+}
+
+/// Severity for an entry, derived from the raw event — error kinds only,
+/// everything else is Info. Mirrors the mapping the old backend applied at
+/// write time. Legacy rows (no `event.type`) default to Info.
+pub(super) fn entry_severity(entry: &jyc_types::ActivityEntry) -> jyc_types::Severity {
+    match entry.event.get("type").and_then(|t| t.as_str()) {
+        Some("session_status") => match entry.event.get("status_type").and_then(|v| v.as_str()) {
+            Some("error") | Some("timeout") => jyc_types::Severity::Error,
+            Some("retry") | Some("rate_limit") | Some("no_reply") => jyc_types::Severity::Warning,
+            _ => jyc_types::Severity::Info,
+        },
+        Some("tool_completed") | Some("processing_completed")
+            if entry.event.get("success").and_then(|v| v.as_bool()) == Some(false) =>
+        {
+            jyc_types::Severity::Error
+        }
+        _ => jyc_types::Severity::Info,
+    }
+}
+
+/// Reproduce the edit/write JSON blob the old backend embedded in the entry
+/// text (the renderer's diff view parses it back out). `duration` is `Some`
+/// for `tool_completed` — adds `duration_secs`, plus `line_no` parsed from
+/// the tool output for edit — and `None` for `tool_started`.
+fn file_tool_event_text(
+    event: &serde_json::Value,
+    tool_name: &str,
+    duration: Option<u64>,
+) -> String {
+    let parsed: Option<serde_json::Value> = event
+        .get("input")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str(s).ok());
+    let field = |k: &str| {
+        parsed
+            .as_ref()
+            .and_then(|v| v.get(k))
+            .and_then(|v| v.as_str())
+    };
+    let file_path = field("file_path").unwrap_or("?");
+    match (tool_name, duration) {
+        ("edit", Some(secs)) => {
+            // Parse "Edited 'file' at line N: M replacement(s) made" from the
+            // tool output — the same derivation the old backend performed.
+            let line_no = event
+                .get("output")
+                .and_then(|v| v.as_str())
+                .and_then(|s| {
+                    s.find("at line ").and_then(|pos| {
+                        let rest = &s[pos + 8..];
+                        rest.find(':').map(|end| &rest[..end])
+                    })
+                })
+                .and_then(|n| n.trim().parse::<u64>().ok());
+            serde_json::json!({
+                "type": "edit",
+                "file_path": file_path,
+                "line_no": line_no,
+                "old_string": field("old_string").unwrap_or(""),
+                "new_string": field("new_string").unwrap_or(""),
+                "duration_secs": secs,
+            })
+            .to_string()
+        }
+        ("edit", None) => serde_json::json!({
+            "type": "edit",
+            "file_path": file_path,
+            "old_string": field("old_string").unwrap_or(""),
+            "new_string": field("new_string").unwrap_or(""),
+        })
+        .to_string(),
+        ("write", Some(secs)) => serde_json::json!({
+            "type": "write",
+            "file_path": file_path,
+            "content": field("content").unwrap_or(""),
+            "duration_secs": secs,
+        })
+        .to_string(),
+        _ => serde_json::json!({
+            "type": "write",
+            "file_path": file_path,
+            "content": field("content").unwrap_or(""),
+        })
+        .to_string(),
+    }
 }
 
 /// Reformat an activity line of the form `Tool: <name> — <json input>`
@@ -1706,10 +1903,9 @@ mod tests {
     fn minimal_progress_line_is_one_animated_row() {
         let entry = jyc_types::ActivityEntry {
             timestamp: Some("2026-08-13T10:00:00Z".to_string()),
-            severity: jyc_types::Severity::Info,
-            text: "Tool: bash — {\"command\":\"ls\"}".to_string(),
+            event: serde_json::Value::Null,
+            text: Some("Tool: bash — {\"command\":\"ls\"}".to_string()),
             id: 0,
-            is_internal: false,
         };
         let text_of = |line: &Line<'static>| -> String {
             line.spans.iter().map(|sp| sp.content.as_ref()).collect()
@@ -1748,7 +1944,7 @@ mod tests {
         // A thinking streak keeps the most recent tool on the line instead of
         // overwriting it — this row's whole point.
         let thinking = jyc_types::ActivityEntry {
-            text: "Thinking... (iteration 14)".to_string(),
+            text: Some("Thinking... (iteration 14)".to_string()),
             timestamp: Some("2026-08-13T10:00:02Z".to_string()),
             ..entry.clone()
         };
@@ -1758,8 +1954,15 @@ mod tests {
         // A failing round has to say so on its one line — in this mode the
         // full tail, and its red error row, are off screen.
         let failed = jyc_types::ActivityEntry {
-            severity: jyc_types::Severity::Error,
-            text: "call failed: rate limited".to_string(),
+            event: jyc_core::topic_event::TopicEvent::ProcessingCompleted {
+                topic_name: "t".to_string(),
+                message_id: "m1".to_string(),
+                success: false,
+                duration_secs: 30,
+                timestamp: chrono::Utc::now(),
+            }
+            .to_activity_json(),
+            text: None,
             timestamp: None,
             ..entry.clone()
         };
@@ -1773,25 +1976,253 @@ mod tests {
 
         // ...and a failure after tool work still names the tool.
         let failed = jyc_types::ActivityEntry {
-            severity: jyc_types::Severity::Error,
-            text: "call failed: rate limited".to_string(),
+            event: jyc_core::topic_event::TopicEvent::ProcessingCompleted {
+                topic_name: "t".to_string(),
+                message_id: "m1".to_string(),
+                success: false,
+                duration_secs: 30,
+                timestamp: chrono::Utc::now(),
+            }
+            .to_activity_json(),
+            text: None,
             timestamp: None,
             ..entry.clone()
         };
         let line = minimal_progress_line(&[entry.clone(), failed], None, 500);
         assert_eq!(text_of(&line), "  ⠴  error | bash");
 
-        // The shape the server actually sends for an edit: raw JSON, which only
-        // becomes `Tool: edit — foo.rs` further down the tail. Reading the state
-        // off the raw text called a live edit "thinking".
+        // The shape the server actually sends for an edit: a tool_completed
+        // event whose `input` is the tool's own JSON. `entry_activity_text`
+        // rebuilds the edit JSON the renderer's diff view parses — reading
+        // the state off anything less called a live edit "thinking".
         let raw_json = jyc_types::ActivityEntry {
-            text: edit_event("src/foo.rs", Some(42), "old", "new"),
+            event: jyc_core::topic_event::TopicEvent::ToolCompleted {
+                topic_name: "t".to_string(),
+                tool_name: "edit".to_string(),
+                success: true,
+                duration_secs: 1,
+                output: Some("Edited 'src/foo.rs' at line 42: 1 replacement(s) made".to_string()),
+                input: Some(
+                    r#"{"file_path":"src/foo.rs","old_string":"old","new_string":"new"}"#
+                        .to_string(),
+                ),
+                timestamp: chrono::Utc::now(),
+            }
+            .to_activity_json(),
+            text: None,
             timestamp: None,
             ..entry.clone()
         };
         assert_eq!(
             text_of(&minimal_progress_line(&[raw_json], None, 500)),
             "  ⠴  edit"
+        );
+    }
+
+    #[test]
+    fn entry_activity_text_roundtrips_real_events_to_legacy_prose() {
+        // Parity pin: a real TopicEvent → to_activity_json (what the server
+        // actually stores) → entry_activity_text must reproduce the prose
+        // the old backend composed, word for word.
+        use jyc_core::topic_event::TopicEvent;
+        let ts = chrono::Utc::now();
+        let ev = |event: TopicEvent, expected: &str| {
+            let entry = jyc_types::ActivityEntry {
+                event: event.to_activity_json(),
+                text: None,
+                timestamp: None,
+                id: 0,
+            };
+            assert_eq!(entry_activity_text(&entry), expected);
+        };
+        ev(
+            TopicEvent::ProcessingStarted {
+                topic_name: "t".into(),
+                message_id: "m1".into(),
+                timestamp: ts,
+            },
+            "Processing started",
+        );
+        ev(
+            TopicEvent::ProcessingCompleted {
+                topic_name: "t".into(),
+                message_id: "m1".into(),
+                success: true,
+                duration_secs: 5,
+                timestamp: ts,
+            },
+            "Completed (5s)",
+        );
+        ev(
+            TopicEvent::ProcessingCompleted {
+                topic_name: "t".into(),
+                message_id: "m1".into(),
+                success: false,
+                duration_secs: 5,
+                timestamp: ts,
+            },
+            "Failed (5s)",
+        );
+        ev(
+            TopicEvent::ProcessingProgress {
+                topic_name: "t".into(),
+                elapsed_secs: 10,
+                activity: "tool execution".into(),
+                progress: None,
+                parts_count: 1,
+                output_length: 200,
+                timestamp: ts,
+            },
+            "tool execution (10s, 200 chars)",
+        );
+        ev(
+            TopicEvent::LLMRequestStarted {
+                topic_name: "t".into(),
+                iteration: 2,
+                timestamp: ts,
+            },
+            "Thinking... (iteration 2)",
+        );
+        ev(
+            TopicEvent::ToolStarted {
+                topic_name: "t".into(),
+                tool_name: "bash".into(),
+                input: Some("ls -la".into()),
+                timestamp: ts,
+            },
+            "Tool: bash — ls -la",
+        );
+        ev(
+            TopicEvent::ToolStarted {
+                topic_name: "t".into(),
+                tool_name: "bash".into(),
+                input: None,
+                timestamp: ts,
+            },
+            "Tool: bash (running)",
+        );
+        ev(
+            TopicEvent::ToolCompleted {
+                topic_name: "t".into(),
+                tool_name: "bash".into(),
+                success: true,
+                duration_secs: 3,
+                output: None,
+                input: Some("ls".into()),
+                timestamp: ts,
+            },
+            "Tool: bash (done, 3s) — ls",
+        );
+        ev(
+            TopicEvent::ToolCompleted {
+                topic_name: "t".into(),
+                tool_name: "bash".into(),
+                success: true,
+                duration_secs: 3,
+                output: None,
+                input: None,
+                timestamp: ts,
+            },
+            "Tool: bash (done, 3s)",
+        );
+        ev(
+            TopicEvent::ToolCompleted {
+                topic_name: "t".into(),
+                tool_name: "bash".into(),
+                success: false,
+                duration_secs: 3,
+                output: Some("boom\nfail".into()),
+                input: None,
+                timestamp: ts,
+            },
+            "Tool: bash (FAILED, 3s) boom fail",
+        );
+        ev(
+            TopicEvent::ToolCompleted {
+                topic_name: "t".into(),
+                tool_name: "bash".into(),
+                success: false,
+                duration_secs: 3,
+                output: None,
+                input: None,
+                timestamp: ts,
+            },
+            "Tool: bash (FAILED, 3s)",
+        );
+        ev(
+            TopicEvent::Thinking {
+                topic_name: "t".into(),
+                text: "xyz".into(),
+                full_length: 10,
+                timestamp: ts,
+            },
+            "Thinking: xyz...",
+        );
+        ev(
+            TopicEvent::Thinking {
+                topic_name: "t".into(),
+                text: "xyz".into(),
+                full_length: 3,
+                timestamp: ts,
+            },
+            "Thinking: xyz",
+        );
+        ev(
+            TopicEvent::IncomingMessage {
+                topic_name: "t".into(),
+                sender: "u".into(),
+                text: "hi".into(),
+                timestamp: ts,
+            },
+            "Message from u: hi",
+        );
+        ev(
+            TopicEvent::ReplySent {
+                topic_name: "t".into(),
+                text: "x".repeat(150),
+                timestamp: ts,
+            },
+            &format!("Reply sent: {}", "x".repeat(100)),
+        );
+        ev(
+            TopicEvent::SessionStatus {
+                topic_name: "t".into(),
+                status_type: "retry".into(),
+                attempt: Some(2),
+                message: Some("slow".into()),
+                timestamp: ts,
+            },
+            "RETRY (attempt #2): slow",
+        );
+        // Some("") still produced "ERROR: " (colon + trailing space) in the
+        // old backend — an empty message must not drop the separator.
+        ev(
+            TopicEvent::SessionStatus {
+                topic_name: "t".into(),
+                status_type: "error".into(),
+                attempt: None,
+                message: Some(String::new()),
+                timestamp: ts,
+            },
+            "ERROR: ",
+        );
+        ev(
+            TopicEvent::SessionStatus {
+                topic_name: "t".into(),
+                status_type: "no_reply".into(),
+                attempt: None,
+                message: None,
+                timestamp: ts,
+            },
+            "NO REPLY",
+        );
+        ev(
+            TopicEvent::LoopTick {
+                topic_name: "t".into(),
+                elapsed_ms: 1000,
+                timestamp: ts,
+            },
+            "LoopTick (1000ms)",
         );
     }
 }

@@ -208,6 +208,12 @@ impl AgentService for JycAgentService {
             "Processing message with in-process agent"
         );
 
+        // Marks for the turn setup: the same reason as the dispatch marks in
+        // the worker — the steps between the calls below log nothing, so the
+        // summary line at the end of the block is the only place the split
+        // shows. Drop them once the breakdown is known.
+        let t_turn = std::time::Instant::now();
+
         // 0. Snapshot the live agent config once for this request.
         //    Re-reads from the shared `ArcSwap` on every call, so any
         //    config reload (TUI `reload config`) takes effect immediately.
@@ -265,10 +271,13 @@ impl AgentService for JycAgentService {
         )
         .await;
 
+        let t_before_provider = std::time::Instant::now();
+
         // 2. Create provider
         let provider = self
             .create_provider(&agent_cfg, model_override.as_deref())
             .context("Failed to create LLM provider")?;
+        let t_provider = std::time::Instant::now();
 
         tracing::info!(
             provider = %provider.name(),
@@ -322,6 +331,8 @@ impl AgentService for JycAgentService {
                 }
             });
 
+        let t_small = std::time::Instant::now();
+
         // 4. Build prompts (image-injection gated by per-pattern flag and
         //    per-model `supports_images`)
         // Resolve access roots first: the system prompt must describe exactly
@@ -339,6 +350,15 @@ impl AgentService for JycAgentService {
                 &additional_write_roots,
             )
             .await;
+        let t_prompt = std::time::Instant::now();
+        tracing::info!(
+            cfg_model_ms = t_before_provider.duration_since(t_turn).as_millis() as u64,
+            provider_ms = t_provider.duration_since(t_before_provider).as_millis() as u64,
+            small_ms = t_small.duration_since(t_provider).as_millis() as u64,
+            prompt_ms = t_prompt.duration_since(t_small).as_millis() as u64,
+            setup_ms = t_prompt.duration_since(t_turn).as_millis() as u64,
+            "Turn setup"
+        );
         tracing::debug!(
             topic = %topic_name,
             prompt_len = system_prompt.len(),

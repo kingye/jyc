@@ -47,6 +47,37 @@ pub fn format_duration_secs(secs: u64, style: DurationStyle) -> String {
     format_duration_ms(secs.saturating_mul(1000), style)
 }
 
+/// Format the value of the LLM call-latency row: `1.1s/call (3) ·
+/// 820ms/call (37)` — the latest turn's average and the number of calls
+/// it covers first, the session's second.
+///
+/// Each argument pairs an average with the count it was drawn from; a
+/// pair is `None` when that scope has no measured call, and the row
+/// collapses to whichever scope remains (no row at all when neither
+/// has one — better than claiming `0ms`).
+///
+/// Shared by the dashboard status line / chat info pane and `/info` so
+/// the wording cannot drift between them; each caller supplies its own
+/// `Latency: ` label (one styles it, the other writes plain text).
+pub fn format_latency(turn: Option<(u64, u64)>, session: Option<(u64, u64)>) -> Option<String> {
+    let pair = |avg: u64, calls: u64| {
+        format!(
+            "{}/call ({calls})",
+            format_duration_ms(avg, DurationStyle::Millis)
+        )
+    };
+    match (turn, session) {
+        (Some((turn_avg, turn_calls)), Some((avg, calls))) => Some(format!(
+            "{} · {}",
+            pair(turn_avg, turn_calls),
+            pair(avg, calls)
+        )),
+        (Some((turn_avg, turn_calls)), None) => Some(pair(turn_avg, turn_calls)),
+        (None, Some((avg, calls))) => Some(pair(avg, calls)),
+        (None, None) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +133,26 @@ mod tests {
         assert_eq!(f(999), "999ms");
         assert_eq!(f(1000), "1.00s");
         assert_eq!(f(4230), "4.23s");
+    }
+
+    /// The latency row: latest turn first, session second, each figure
+    /// followed by the number of calls it averages over; the row collapses
+    /// to whichever scope has a measured call, and disappears when neither
+    /// does.
+    #[test]
+    fn latency_row() {
+        assert_eq!(
+            format_latency(Some((1100, 3)), Some((820, 37))).as_deref(),
+            Some("1.10s/call (3) · 820ms/call (37)")
+        );
+        assert_eq!(
+            format_latency(Some((1100, 3)), None).as_deref(),
+            Some("1.10s/call (3)")
+        );
+        assert_eq!(
+            format_latency(None, Some((820, 37))).as_deref(),
+            Some("820ms/call (37)")
+        );
+        assert_eq!(format_latency(None, None), None);
     }
 }

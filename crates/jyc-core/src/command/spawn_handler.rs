@@ -4,12 +4,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use jyc_types::state_dir::resolve_state_dir;
-use jyc_types::{AppConfig, TopicConfig};
+use jyc_types::{AiConfig, AppConfig, TopicConfig};
 use tracing::instrument;
 
 use super::flags::{SPAWN_FLAGS, SpawnFlag};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
-use super::spawn_common::{fail, invalid_name, next_free_name, seed_start_model, seed_state};
+use super::spawn_common::{
+    fail, invalid_name, next_free_name, seed_start_model, seed_state, write_model_override,
+};
 use super::spec;
 use crate::topic_manager::TopicManager;
 use crate::topic_path::{default_topic_dir, resolve_topic_path, resolved};
@@ -128,9 +130,17 @@ struct SpawnRequest<'a> {
     subagent_type: Option<&'a SubagentType>,
     /// The model the parent is running, for the child's own starting point —
     /// resolved by whichever trigger holds a config ([`Self::execute`], or the
-    /// tool) and dropped again when the role names a model of its own. `None`
-    /// leaves the child on whatever its inherited state resolves to.
+    /// tool). Seeded as the floor every slot falls back to, role or no role
+    /// ([`seed_start_model`]); a role value that resolves replaces it
+    /// ([`apply_role_models`]). `None` leaves the child on whatever its
+    /// inherited state resolves to.
     start_model: Option<String>,
+    /// The live `[ai]` a role's own model values are resolved against at spawn —
+    /// the same table the chain resolves them against at run time, so a value
+    /// that resolves here is the value the child would have resolved to.
+    /// `None` (a trigger without a config) resolves nothing, which leaves the
+    /// parent's model in place for every slot a role declares.
+    ai: Option<&'a AiConfig>,
 }
 
 impl SpawnCommandHandler {
@@ -327,15 +337,18 @@ impl SpawnCommandHandler {
             })?;
         }
 
-        // The starting model, last: the parent's, unless the role names one of
-        // its own. By now the role's removals have run, so what is left in the
-        // child's state is exactly what a role with no `[ai]` inherits — and
-        // `model-override` is the slot that fills it (`seed_start_model`).
-        let role_has_model = req
-            .subagent_type
-            .is_some_and(|t| declares_a_model(&t.config));
-        if !role_has_model {
-            seed_start_model(&state_dir, req.start_model.as_deref()).await;
+        // The starting model, last: the parent's, as the floor every model slot
+        // falls back to. By now the role's removals have run, so what is left in
+        // the child's state is exactly what a role with no `[ai]` inherits — and
+        // `model-override` is the slot that fills it (`seed_start_model`). It is
+        // written even when the role names a model of its own: that value is
+        // written next, but only the part of it that resolves, and a slot that
+        // does not resolve (`${ai.models.x}` with `[ai.models].x` undefined)
+        // keeps the parent's model instead of falling through to the configured
+        // default in silence.
+        seed_start_model(&state_dir, req.start_model.as_deref()).await;
+        if let Some(subagent_type) = req.subagent_type {
+            apply_role_models(&state_dir, &subagent_type.config, req.ai).await;
         }
 
         // The parent keeps its spawn in sight: this one grant — on the child's
@@ -450,6 +463,7 @@ impl CommandHandler for SpawnCommandHandler {
             share_topic_path,
             subagent_type: subagent_type.as_ref(),
             start_model,
+            ai: Some(&context.config.ai),
         };
         self.spawn_under(req, &parent_state, &agents_dir).await
     }
@@ -483,8 +497,10 @@ impl CommandHandler for SpawnCommandHandler {
 /// `subagent_type` is resolved by the caller ([`resolve_type_arg`]), which has
 /// the live config: this function only needs the answer. `start_model` is the
 /// parent's own model, resolved the same way by the caller that holds a config
-/// ([`crate::session_state::resolve_effective_model`]) — the child starts on it
-/// unless the role names one.
+/// ([`crate::session_state::resolve_effective_model`]) — the child starts on it,
+/// and a role value that resolves to a model takes its place. `ai` is that same
+/// live `[ai]`, which a role's own model references are resolved against
+/// ([`apply_role_models`]); `None` leaves the parent's model in every slot.
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_subagent(
     tm: &Arc<TopicManager>,
@@ -495,6 +511,7 @@ pub async fn spawn_subagent(
     share_topic_path: bool,
     subagent_type: Option<&SubagentType>,
     start_model: Option<&str>,
+    ai: Option<&AiConfig>,
 ) -> Result<String, String> {
     // Production path only, like `/spawn`: `resolve_agents_dir()` resolves
     // the real data home, so a test that reached here would create topics
@@ -514,6 +531,7 @@ pub async fn spawn_subagent(
         share_topic_path,
         subagent_type,
         start_model,
+        ai,
         &agents_dir,
     )
     .await
@@ -533,6 +551,7 @@ pub async fn spawn_subagent_under(
     share_topic_path: bool,
     subagent_type: Option<&SubagentType>,
     start_model: Option<&str>,
+    ai: Option<&AiConfig>,
     agents_dir: &Path,
 ) -> Result<String, String> {
     let parent_state = state_dir_of(parent, parent_dir);
@@ -563,6 +582,7 @@ pub async fn spawn_subagent_under(
         share_topic_path,
         subagent_type,
         start_model: start_model.map(str::to_string),
+        ai,
     };
     let handler = SpawnCommandHandler::new(tm.clone());
     match handler.spawn_under(req, &parent_state, agents_dir).await {
@@ -974,15 +994,63 @@ fn parse_args(args: &[String]) -> Result<SpawnArgs, String> {
 
 /// Whether a role names a model of its own — `[ai]` with any of its three keys.
 ///
-/// The same three keys answer two questions in [`apply_subagent_type`]: which
-/// override files the role supersedes ([`superseded_overrides`]), and whether
-/// the child still takes the parent's model ([`seed_start_model`]). A role that
-/// names one starts on it, not on the parent's.
+/// The same three keys answer one question in [`apply_subagent_type`]: which
+/// override files the role supersedes ([`superseded_overrides`]). A role that
+/// names one starts on it ([`apply_role_models`]), and on the parent's model
+/// where its own value does not resolve.
 fn declares_a_model(config: &TopicConfig) -> bool {
     config
         .ai
         .as_ref()
         .is_some_and(|ai| ai.model.is_some() || ai.plan_model.is_some() || ai.build_model.is_some())
+}
+
+/// Materialize a role's own models into the child's override files.
+///
+/// `apply_subagent_type` has already taken the inherited files out of the way
+/// ([`superseded_overrides`]) and written the role's config verbatim into
+/// `config.toml`, references included. This writes the resolved value beside
+/// it: each declared slot goes through the one resolver the chain itself uses
+/// ([`jyc_types::config::resolve_model_reference`], against the same `[ai]`) and
+/// lands in the file its slot is read from — `[ai].model` in the mode-agnostic
+/// `model-override`, `plan_model` in `plan-model-override`, `build_model` in
+/// `build-model-override`. The child then starts on what the role names without
+/// resolving anything at run time.
+///
+/// A slot that does not resolve keeps the parent's model seeded just above. An
+/// undefined `${ai.models.x}` is a configuration mistake, and running the model
+/// the caller already had beats dropping to the configured default in silence;
+/// the mistake is logged, and the reference stays in the child's `config.toml`,
+/// so what the role asked for is still readable next to what took effect.
+///
+/// Without a config there is nothing to resolve against, which leaves the
+/// parent's model in every slot — the behavior before this existed, for a
+/// trigger that holds no config.
+async fn apply_role_models(state_dir: &Path, config: &TopicConfig, ai: Option<&AiConfig>) {
+    let (Some(ai), Some(role_ai)) = (ai, &config.ai) else {
+        return;
+    };
+    let mut resolved: Vec<(&str, String)> = Vec::new();
+    for (file, value) in [
+        ("model-override", &role_ai.model),
+        ("plan-model-override", &role_ai.plan_model),
+        ("build-model-override", &role_ai.build_model),
+    ] {
+        let Some(value) = value else { continue };
+        match jyc_types::config::resolve_model_reference(value, ai) {
+            Ok(model) => resolved.push((file, model)),
+            Err(error) => tracing::warn!(
+                slot = file,
+                model = value,
+                error,
+                "spawn: a subagent type's model does not resolve — the child keeps the parent's \
+                 model",
+            ),
+        }
+    }
+    for (file, model) in resolved {
+        write_model_override(state_dir, file, &model).await;
+    }
 }
 
 /// The runtime override files a resolved type supersedes.
@@ -1220,6 +1288,7 @@ mod tests {
             share_topic_path,
             subagent_type: None,
             start_model: None,
+            ai: None,
         }
     }
 
@@ -1834,6 +1903,7 @@ mod tests {
                     share_topic_path: share,
                     subagent_type: Some(&subagent_type),
                     start_model: None,
+                    ai: None,
                 },
                 &parent_state,
                 &agents_dir,
@@ -1861,6 +1931,7 @@ mod tests {
                     share_topic_path: share,
                     subagent_type: Some(&subagent_type),
                     start_model: None,
+                    ai: None,
                 },
                 &parent_state,
                 &agents_dir,
@@ -1934,6 +2005,7 @@ mod tests {
             share_topic_path: false,
             subagent_type: Some(&subagent_type),
             start_model: None,
+            ai: None,
         };
         let result = handler
             .spawn_under(req, &parent_state, &agents_dir)
@@ -2111,6 +2183,7 @@ mod tests {
                 share_topic_path: false,
                 subagent_type: Some(&subagent_type),
                 start_model: None,
+                ai: None,
             };
             let result = handler
                 .spawn_under(req, &parent_state, &agents_dir)
@@ -2140,38 +2213,108 @@ mod tests {
         }
     }
 
-    /// A child begins on the model its parent is running, unless the role names
-    /// one of its own.
+    /// A child begins on the model its parent is running; a role that names one
+    /// of its own takes its place, in the file that slot is read from.
     ///
-    /// Written to `model-override`, the mode-agnostic fallback: the chain reads it
-    /// whenever the mode-specific file for the child's own mode is missing, so
-    /// the child's mode naming cannot hide it — a mode-only role makes the child
-    /// a plan-mode topic (the type's `mode` lands in its config, and the type
-    /// expands by removing the `mode-override` that would have said plan). The
-    /// last case is the one that made this necessary — a review-shaped role has
-    /// no `[ai]`, and without the write it fell through to the configured
+    /// The parent's model is written to `model-override`, the mode-agnostic
+    /// fallback: the chain reads it whenever the mode-specific file for the
+    /// child's own mode is missing, so the child's mode naming cannot hide it —
+    /// a mode-only role makes the child a plan-mode topic (the type's `mode`
+    /// lands in its config, and the type expands by removing the `mode-override`
+    /// that would have said plan). It is written even when the role does name a
+    /// model, which is what the floor is for: a role value that resolves replaces
+    /// it in that slot, one that does not leaves it. A mode-only role is the case
+    /// that made the write necessary in the first place — a review-shaped role
+    /// has no `[ai]`, and without it the child fell through to the configured
     /// default.
     #[tokio::test]
     async fn a_child_starts_on_the_parents_model_unless_the_role_names_one() {
-        // (the role, the parent's model, what the child's state should hold)
-        let cases: &[(Option<&str>, Option<&str>, Option<&str>)] = &[
-            (None, Some("provider/parent"), Some("provider/parent")),
-            (
-                Some("mode = \"plan\"\n"),
-                Some("provider/parent"),
-                Some("provider/parent"),
-            ),
-            // A role with a model of its own starts on it.
-            (
-                Some("mode = \"plan\"\n[ai]\nplan_model = \"provider/role\"\n"),
-                Some("provider/parent"),
-                None,
-            ),
+        /// One row: what the role declares, the model the parent is running, the
+        /// `[ai]` the role's values resolve against, and what the child's two
+        /// model override files should hold afterwards.
+        struct Case<'a> {
+            role: Option<&'a str>,
+            parent_model: Option<&'a str>,
+            ai: &'a str,
+            model_override: Option<&'a str>,
+            plan_override: Option<&'a str>,
+        }
+        let cases = [
+            Case {
+                role: None,
+                parent_model: Some("provider/parent"),
+                ai: "",
+                model_override: Some("provider/parent"),
+                plan_override: None,
+            },
+            Case {
+                role: Some("mode = \"plan\"\n"),
+                parent_model: Some("provider/parent"),
+                ai: "",
+                model_override: Some("provider/parent"),
+                plan_override: None,
+            },
+            // A role with a model of its own starts on it — and keeps the
+            // parent's model as the floor for the slots it says nothing about.
+            Case {
+                role: Some("[ai]\nplan_model = \"provider/role\"\n"),
+                parent_model: Some("provider/parent"),
+                ai: "",
+                model_override: Some("provider/parent"),
+                plan_override: Some("provider/role"),
+            },
+            // A role model written as a reference resolves against `[ai.models]`,
+            // so the child starts on the slot's value …
+            Case {
+                role: Some("[ai]\nmodel = \"${ai.models.review}\"\n"),
+                parent_model: Some("provider/parent"),
+                ai: "[ai.models]\nreview = \"provider/review\"\n",
+                model_override: Some("provider/review"),
+                plan_override: None,
+            },
+            // … and one that points at nothing keeps the parent's model, in the
+            // plain slot or in a mode slot (nothing is written for that mode,
+            // so the chain falls to the floor).
+            Case {
+                role: Some("[ai]\nmodel = \"${ai.models.absent}\"\n"),
+                parent_model: Some("provider/parent"),
+                ai: "",
+                model_override: Some("provider/parent"),
+                plan_override: None,
+            },
+            Case {
+                role: Some("[ai]\nplan_model = \"${ai.models.absent}\"\n"),
+                parent_model: Some("provider/parent"),
+                ai: "",
+                model_override: Some("provider/parent"),
+                plan_override: None,
+            },
+            // An empty value is not a model either: the parent's again.
+            Case {
+                role: Some("[ai]\nmodel = \"\"\n"),
+                parent_model: Some("provider/parent"),
+                ai: "",
+                model_override: Some("provider/parent"),
+                plan_override: None,
+            },
             // Nothing resolved for the parent: nothing written.
-            (None, None, None),
+            Case {
+                role: None,
+                parent_model: None,
+                ai: "",
+                model_override: None,
+                plan_override: None,
+            },
         ];
 
-        for (role, parent_model, expected) in cases {
+        for Case {
+            role,
+            parent_model,
+            ai,
+            model_override,
+            plan_override,
+        } in &cases
+        {
             let (_tmp, dir) =
                 parent_topic("t-a_child_starts_on_the_parents_model_unless_the_role_names_one")
                     .await;
@@ -2182,11 +2325,11 @@ mod tests {
             let handler = SpawnCommandHandler::new(tm.clone());
 
             let types_root = tempdir().unwrap();
+            let config = jyc_types::load_config_from_str(ai).unwrap();
             let subagent_type = role.map(|body| {
                 let type_dir = types_root.path().join("subagents/role");
                 std::fs::create_dir_all(&type_dir).unwrap();
                 std::fs::write(type_dir.join("config.toml"), body).unwrap();
-                let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
                 resolve_subagent_type("role", Some(&config), Some(types_root.path())).unwrap()
             });
 
@@ -2199,6 +2342,7 @@ mod tests {
                 share_topic_path: false,
                 subagent_type: subagent_type.as_ref(),
                 start_model: parent_model.map(str::to_string),
+                ai: Some(&config.ai),
             };
             let result = handler
                 .spawn_under(req, &parent_state, &agents_dir)
@@ -2208,16 +2352,21 @@ mod tests {
 
             let dest = resolved(&agents_dir.join("worker-snapshot"));
             let state = resolve_state_dir("worker-snapshot", &dest);
-            let written = tokio::fs::read_to_string(state.join("model-override"))
-                .await
-                .ok()
-                .map(|s| s.trim().to_string());
-            assert_eq!(
-                written.as_deref(),
-                *expected,
-                "role {role:?} with parent model {parent_model:?}"
-            );
-            if let Some(expected) = expected {
+            for (file, want) in [
+                ("model-override", *model_override),
+                ("plan-model-override", *plan_override),
+            ] {
+                let written = tokio::fs::read_to_string(state.join(file))
+                    .await
+                    .ok()
+                    .map(|s| s.trim().to_string());
+                assert_eq!(
+                    written.as_deref(),
+                    want,
+                    "{file} for role {role:?} with parent model {parent_model:?}"
+                );
+            }
+            if let Some(expected) = model_override {
                 // Not just the file: the chain the child then runs reads it,
                 // with no config of its own to fall back on.
                 assert_eq!(
@@ -2234,6 +2383,69 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A trigger without a config resolves nothing, so the parent's model is
+    /// what every slot keeps — and the child's `config.toml` still carries the
+    /// role's own value, reference included: what the role asked for stays
+    /// readable next to what took effect.
+    #[tokio::test]
+    async fn a_role_model_survives_a_spawn_with_no_config_to_resolve_it_against() {
+        let (_tmp, dir) =
+            parent_topic("t-a_role_model_survives_a_spawn_with_no_config_to_resolve_it_against")
+                .await;
+        let parent_state = dir.join(".jyc");
+        let workspace = tempdir().unwrap();
+        let tm = make_topic_manager(workspace.path());
+        let agents_dir = workspace.path().join("agents");
+        let handler = SpawnCommandHandler::new(tm.clone());
+
+        let types_root = tempdir().unwrap();
+        let type_dir = types_root.path().join("subagents/role");
+        std::fs::create_dir_all(&type_dir).unwrap();
+        std::fs::write(
+            type_dir.join("config.toml"),
+            "[ai]\nmodel = \"${ai.models.x}\"\n",
+        )
+        .unwrap();
+        let config = jyc_types::load_config_from_str("[ai]\nenabled = true\n").unwrap();
+        let subagent_type = resolve_subagent_type("role", Some(&config), Some(types_root.path()))
+            .expect("the type resolves");
+
+        let req = SpawnRequest {
+            parent_topic: "t-a_role_model_survives_a_spawn_with_no_config_to_resolve_it_against",
+            parent_topic_path: &dir,
+            name: Some("role-model-unresolved".to_string()),
+            dir: None,
+            inherit: false,
+            share_topic_path: false,
+            subagent_type: Some(&subagent_type),
+            start_model: Some("provider/parent".to_string()),
+            ai: None,
+        };
+        let result = handler
+            .spawn_under(req, &parent_state, &agents_dir)
+            .await
+            .unwrap();
+        assert!(result.success, "{}", result.message);
+
+        let dest = resolved(&agents_dir.join("role-model-unresolved"));
+        let state = resolve_state_dir("role-model-unresolved", &dest);
+        assert_eq!(
+            tokio::fs::read_to_string(state.join("model-override"))
+                .await
+                .unwrap()
+                .trim(),
+            "provider/parent",
+            "nothing to resolve against, so the parent's model stays"
+        );
+        let role_config = tokio::fs::read_to_string(state.join("config.toml"))
+            .await
+            .unwrap();
+        assert!(
+            role_config.contains("${ai.models.x}"),
+            "the role's own value stays readable in {role_config}"
+        );
     }
 
     /// The parent ran `/model` while it was in build mode, so its state carries
@@ -2297,6 +2509,7 @@ mod tests {
             share_topic_path: false,
             subagent_type: Some(&subagent_type),
             start_model: parent_model.clone(),
+            ai: None,
         };
         let result = handler
             .spawn_under(req, &parent_state, &agents_dir)
@@ -2870,6 +3083,7 @@ mod tests {
             false,
             None,
             None,
+            None,
             &agents_dir,
         )
         .await
@@ -2972,6 +3186,7 @@ mod tests {
             true,
             None,
             None,
+            None,
             &agents_dir,
         )
         .await
@@ -3057,6 +3272,7 @@ mod tests {
                 true,
                 None,
                 None,
+                None,
                 &agents_dir,
             )
             .await
@@ -3118,6 +3334,7 @@ mod tests {
             true,
             None,
             None,
+            None,
             &agents_dir,
         )
         .await
@@ -3154,6 +3371,7 @@ mod tests {
                 Some(name),
                 false,
                 share,
+                None,
                 None,
                 None,
                 &agents_dir,
@@ -3206,6 +3424,7 @@ mod tests {
             Some("../evil"),
             false,
             false,
+            None,
             None,
             None,
             &agents_dir,

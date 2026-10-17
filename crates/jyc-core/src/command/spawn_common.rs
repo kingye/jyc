@@ -199,13 +199,20 @@ pub(super) async fn seed_state(
 /// choice for that same mode.
 ///
 /// `model` is [`crate::session_state::resolve_effective_model`]'s answer for the
-/// *parent*; `None` (nothing to resolve, or a role that declares its own model)
-/// writes nothing, which is the behavior a child had before this existed.
+/// *parent*; `None` (nothing to resolve for it) writes nothing, which is the
+/// behavior a child had before this existed.
 pub(super) async fn seed_start_model(state_dir: &Path, model: Option<&str>) -> bool {
     let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) else {
         return false;
     };
-    tokio::fs::write(state_dir.join("model-override"), model)
+    write_model_override(state_dir, "model-override", model).await
+}
+
+/// Write a resolved model into one of the runtime override files — the ones the
+/// resolution chain reads above a topic config (`model-override`,
+/// `plan-model-override`, `build-model-override`).
+pub(super) async fn write_model_override(state_dir: &Path, file: &str, model: &str) -> bool {
+    tokio::fs::write(state_dir.join(file), model.trim())
         .await
         .is_ok()
 }

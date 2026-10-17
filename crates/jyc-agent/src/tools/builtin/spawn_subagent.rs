@@ -20,7 +20,11 @@
 //! (`[subagents.<type>]` in the config, or `<config dir>/subagents/<type>/
 //! config.toml`) whose settings the child starts with — its model, skills,
 //! disabled tools, mode and instructions, written into the child's own state at
-//! spawn time. A role's own file may also state how it is spawned (`[spawn]`,
+//! spawn time. The child's model is the parent's unless the role names one that
+//! resolves: a role model written as `${ai.models.x}` with no `[ai.models].x`
+//! defined is a configuration mistake, and the child keeps running on the
+//! parent's model instead of dropping to the configured default. A role's own
+//! file may also state how it is spawned (`[spawn]`,
 //! defaults for the two flags) and describe itself in one line; both are listed
 //! in this tool's `type` argument, so an agent that was never told about a role
 //! can still recognize when to reach for it — and an explicit argument here
@@ -55,7 +59,8 @@ impl Tool for SpawnSubagentTool {
         "Create a subagent topic — a sibling topic that inherits this topic's settings (mode, \
          pattern, and the runtime overrides you do not pin with `type`), starts on your model for \
          the mode it is in — the one you set for that mode, else the model you are running — \
-         unless `type` names one, starts with an empty task list, and runs on its own \
+         unless `type` names one that resolves to a model, starts with an empty task list, and \
+         runs on its own \
          queue — and grant yourself read+write access to its \
          topic_path, the working directory it runs in. Its conversation starts empty: pass \
          inherit_context=true only when the child must continue this conversation. Pass \
@@ -164,11 +169,15 @@ impl Tool for SpawnSubagentTool {
         );
         // The child starts on this topic's model, unless the role names one of
         // its own: resolved with the same live config the type was, so a
-        // `--config` file and config reloads are honored here too.
+        // `--config` file and config reloads are honored here too. The same
+        // config's `[ai]` resolves the role's own model references against, so
+        // the child starts on those too — and on the parent's model where a
+        // role's value does not resolve.
+        let config = self.config.load();
         let start_model = jyc_core::session_state::resolve_effective_model(
             &parent,
             ctx.working_dir,
-            &self.config.load(),
+            &config,
             &channel,
         )
         .await;
@@ -181,6 +190,7 @@ impl Tool for SpawnSubagentTool {
             share_topic_path,
             subagent_type.as_ref(),
             start_model.as_deref(),
+            Some(&config.ai),
         )
         .await
         {

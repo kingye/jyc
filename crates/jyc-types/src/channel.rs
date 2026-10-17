@@ -674,7 +674,7 @@ pub struct ChannelPattern {
     /// Per-pattern context management strategy.
     ///
     /// Controls how prior conversation history is sent to the LLM. The
-    /// on-disk `.jyc/agent-context.json` always stores the full raw
+    /// on-disk `.jyc/agent-context.jsonl` always stores the full raw
     /// context unchanged; this field only shapes what is sent to the
     /// LLM on each request. Falls back to `[ai].context_strategy` when
     /// unset.
@@ -727,7 +727,7 @@ fn default_keep_pairs() -> usize {
 }
 
 /// Context management strategy controlling how prior conversation history is
-/// sent to the LLM on each request. The on-disk `.jyc/agent-context.json`
+/// sent to the LLM on each request. The on-disk `.jyc/agent-context.jsonl`
 /// always stores the full raw context unchanged; only what is sent to the
 /// LLM is shaped by this strategy.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]

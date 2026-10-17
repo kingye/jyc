@@ -49,8 +49,11 @@ const SEED_FILES: &[&str] = &[
     "skills.json",
 ];
 
-/// The running conversation, as opposed to the settings around it.
-const CONVERSATION_FILE: &str = "agent-context.json";
+/// The running conversation, as opposed to the settings around it. Aliased to
+/// the shared name so seeding/`fresh` logic follows the authoritative journal
+/// format; the legacy array file is not inherited either way (a stale one is
+/// auto-migrated on the child's first load).
+const CONVERSATION_FILE: &str = session_state::AGENT_CONTEXT_FILE;
 
 /// Chat history is one file per day, so it is matched by prefix instead of
 /// listed. Together with [`CONVERSATION_FILE`] this is what `fresh` leaves

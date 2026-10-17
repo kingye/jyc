@@ -291,12 +291,106 @@ mod session {
             serde_json::json!({"role": "user", "content": "hello"}),
             serde_json::json!({"role": "assistant", "content": "Hi there!"}),
         ];
-        session::save_raw_context(topic, tmp.path(), &context).await;
+        session::save_raw_context(topic, tmp.path(), context, 0).await;
 
-        // Load it back
+        // Load it back — twice: the second load is served by the parse cache.
         let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
         assert_eq!(raw_context.len(), 2);
         assert_eq!(messages.len(), 2);
+        let (messages2, raw_context2) = session::load_context(topic, tmp.path()).await;
+        assert_eq!(raw_context2.len(), 2);
+        assert_eq!(messages2.len(), 2);
+        assert_eq!(
+            raw_context[1]["content"], raw_context2[1]["content"],
+            "cache hit must return identical content"
+        );
+    }
+
+    /// Write `context` to the journal in its native line format.
+    async fn write_context_journal(state_dir: &std::path::Path, context: &[serde_json::Value]) {
+        let body: String = context
+            .iter()
+            .map(|v| serde_json::to_string(v).unwrap() + "\n")
+            .collect();
+        tokio::fs::write(state_dir.join("agent-context.jsonl"), body)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn load_context_migrates_legacy_json_array() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "load_context_migrates_legacy_json_array";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
+        )
+        .await
+        .unwrap();
+
+        // Legacy whole-file format: one JSON array.
+        let legacy = vec![
+            serde_json::json!({"role": "user", "content": "hello"}),
+            serde_json::json!({"role": "assistant", "content": "hi"}),
+        ];
+        tokio::fs::write(
+            state_dir.join("agent-context.json"),
+            serde_json::to_string(&legacy).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
+        assert_eq!(raw_context.len(), 2);
+        assert_eq!(messages.len(), 2);
+
+        // Migrated: journal written, legacy removed.
+        let journal = tokio::fs::read_to_string(state_dir.join("agent-context.jsonl"))
+            .await
+            .unwrap();
+        assert_eq!(journal.lines().count(), 2);
+        assert!(!state_dir.join("agent-context.json").exists());
+
+        // The migrated journal round-trips through save (append fast path):
+        // persisting the same prefix plus one new message appends one line.
+        let mut extended = (*raw_context).clone();
+        extended.push(serde_json::json!({"role": "user", "content": "again"}));
+        session::save_raw_context(topic, tmp.path(), extended, raw_context.len()).await;
+        let journal = tokio::fs::read_to_string(state_dir.join("agent-context.jsonl"))
+            .await
+            .unwrap();
+        assert_eq!(journal.lines().count(), 3, "tail append after migration");
+    }
+
+    #[tokio::test]
+    async fn load_context_tolerates_torn_journal_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "load_context_tolerates_torn_journal_tail";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let state_dir = tmp.path().join(".jyc");
+        tokio::fs::create_dir_all(&state_dir).await.unwrap();
+        tokio::fs::write(
+            state_dir.join("agent-session.json"),
+            r#"{"created_at":"2026-01-01T00:00:00Z","context_input_tokens":0,"total_output_tokens":0,"max_input_tokens":0}"#,
+        )
+        .await
+        .unwrap();
+
+        // One complete line + a torn line from a crash mid-append.
+        let good = serde_json::json!({"role": "assistant", "content": "survived"});
+        let mut body = serde_json::to_string(&good).unwrap();
+        body.push_str("\n{\"role\":\"user\",\"content\":\"tor");
+        tokio::fs::write(state_dir.join("agent-context.jsonl"), body)
+            .await
+            .unwrap();
+
+        let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
+        assert_eq!(raw_context.len(), 1, "torn tail dropped");
+        assert_eq!(raw_context[0]["content"], "survived");
+        assert_eq!(messages.len(), 1);
     }
 
     #[tokio::test]
@@ -319,12 +413,7 @@ mod session {
             serde_json::json!({"role": "assistant", "content": null, "reasoning_content": "thinking..."}),
             serde_json::json!({"role": "assistant", "content": "Valid reply"}),
         ];
-        tokio::fs::write(
-            state_dir.join("agent-context.json"),
-            serde_json::to_string(&context).unwrap(),
-        )
-        .await
-        .unwrap();
+        write_context_journal(&state_dir, &context).await;
 
         // Load — should filter out the invalid message
         let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
@@ -351,12 +440,7 @@ mod session {
             serde_json::json!({"role": "user", "content": "hello"}),
             serde_json::json!({"role": "user", "content": "hello again"}),
         ];
-        tokio::fs::write(
-            state_dir.join("agent-context.json"),
-            serde_json::to_string(&context).unwrap(),
-        )
-        .await
-        .unwrap();
+        write_context_journal(&state_dir, &context).await;
 
         // Load — should return empty (no valid assistant messages)
         let (messages, raw_context) = session::load_context(topic, tmp.path()).await;
@@ -485,6 +569,7 @@ mod session {
         assert!(!state_dir.join("agent-session.json").exists());
         // Context should be summarized (empty in this case = deleted)
         assert!(!state_dir.join("agent-context.json").exists());
+        assert!(!state_dir.join("agent-context.jsonl").exists());
     }
 
     /// `update_tokens` post-loop auto-reset now honors `reset_compression.mode = None`.
@@ -589,6 +674,7 @@ mod session {
         // The exact on-disk state depends on whether anyone re-saves the
         // session; reset_session itself deletes it.
         assert!(!state_dir.join("agent-context.json").exists());
+        assert!(!state_dir.join("agent-context.jsonl").exists());
     }
 
     /// Pre-check is a no-op when the loaded session fits the new window.

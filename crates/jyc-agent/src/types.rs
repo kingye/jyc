@@ -227,9 +227,14 @@ pub struct AgentLoopResult {
     pub total_reasoning_tokens: u64,
     /// The full conversation history (internal format for logic).
     pub history: Vec<Message>,
-    /// Raw provider-formatted context (for persistence in agent-context.json).
+    /// Raw provider-formatted context (for persistence in agent-context.jsonl).
     /// This preserves provider-specific fields like DeepSeek's reasoning_content.
     pub raw_context: Vec<serde_json::Value>,
+    /// How many leading messages of `raw_context` were already persisted on
+    /// disk before this run. `0` after an in-loop compaction or a fresh
+    /// session — the caller passes it to `save_raw_context` so the journal
+    /// write can append only the new tail instead of rewriting everything.
+    pub persisted_len: usize,
 }
 
 #[cfg(test)]

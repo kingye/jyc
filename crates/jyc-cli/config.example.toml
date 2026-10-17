@@ -163,6 +163,10 @@ mode = "agent"
 # as a warning, the agent continues).
 # small_model = "deepseek/deepseek-v4-flash"
 
+# User-defined named model slots, referenced as "${ai.models.<name>}".
+# [ai.models]
+# review = "deepseek/deepseek-v4-flash"
+
 system_prompt = "You are an AI assistant. Respond professionally and concisely."
 
 # Maximum iterations per cycle (default: 500)

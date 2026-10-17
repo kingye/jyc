@@ -2072,6 +2072,7 @@ mod skills {
                 plan_model: None,
                 build_model: None,
                 small_model: None,
+                models: Default::default(),
                 system_prompt: None,
                 max_iterations: 500,
                 sse_read_timeout_secs: 120,

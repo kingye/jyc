@@ -1905,8 +1905,22 @@ small_model = "provider/config-small"
         assert!(
             resolve_model_reference("${ai.build_model}", &ai)
                 .unwrap_err()
-                .contains("unknown model reference"),
-            "only the two names resolve"
+                .contains("`[ai].build_model` is not set"),
+            "a fixed name resolves to its own key and is refused when unset"
+        );
+        let mode_specific = AiConfig {
+            model: Some("p/main".to_string()),
+            plan_model: Some("p/plan".to_string()),
+            build_model: Some("p/build".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_model_reference("${ai.plan_model}", &mode_specific).unwrap(),
+            "p/plan"
+        );
+        assert_eq!(
+            resolve_model_reference("${ai.build_model}", &mode_specific).unwrap(),
+            "p/build"
         );
         let chained = AiConfig {
             model: Some("${ai.small_model}".to_string()),
@@ -1939,6 +1953,80 @@ small_model = "provider/config-small"
             resolve_model_reference("${ai.model}", &padded).unwrap(),
             "p/main",
             "the referent is trimmed, so referring to a padded value works"
+        );
+    }
+
+    #[test]
+    fn named_model_slots_resolve_from_the_ai_models_table() {
+        // The table is user-defined: any name works, and one definition can be
+        // shared by every role that references it.
+        let ai: AiConfig = toml::from_str(
+            r#"
+model = "p/main"
+
+[models]
+review = "p/flash"
+audit = "p/opus"
+"#,
+        )
+        .expect("[ai.models] deserializes into a name → model id map");
+        assert_eq!(ai.models.len(), 2);
+        assert_eq!(
+            resolve_model_reference("${ai.models.review}", &ai).unwrap(),
+            "p/flash"
+        );
+        assert_eq!(
+            resolve_model_reference("${ai.models.audit}", &ai).unwrap(),
+            "p/opus"
+        );
+
+        // A name nobody defined is an error naming the missing key, not a
+        // literal model id that fails at provider construction.
+        assert!(
+            resolve_model_reference("${ai.models.typo}", &ai)
+                .unwrap_err()
+                .contains("`[ai].models.typo` is not defined"),
+            "an unknown slot name is refused with the key it looked for"
+        );
+
+        // An empty slot is treated like an unset fixed name.
+        let mut blank = ai.clone();
+        blank.models.insert("blank".to_string(), "   ".to_string());
+        assert!(
+            resolve_model_reference("${ai.models.blank}", &blank)
+                .unwrap_err()
+                .contains("`[ai].models.blank` is not set"),
+            "an empty slot value is refused, not handed to the provider"
+        );
+
+        // The no-recursion guard covers slots too.
+        let mut chained = ai.clone();
+        chained
+            .models
+            .insert("loop".to_string(), "${ai.model}".to_string());
+        assert!(
+            resolve_model_reference("${ai.models.loop}", &chained)
+                .unwrap_err()
+                .contains("cannot point at another reference"),
+            "a slot whose value is itself a reference is refused"
+        );
+
+        // A slot name is a single key: a dot would address a nested table that
+        // cannot deserialize into a string, and an empty name is meaningless.
+        // Both fall through to the generic error listing the accepted forms.
+        for malformed in ["${ai.models.}", "${ai.models.a.b}"] {
+            assert!(
+                resolve_model_reference(malformed, &ai)
+                    .unwrap_err()
+                    .contains("the whole value must be"),
+                "{malformed} must be rejected as an unknown reference"
+            );
+        }
+        assert!(
+            resolve_model_reference("anthropic/${ai.models.review}", &ai)
+                .unwrap_err()
+                .contains("the whole value must be"),
+            "a slot reference is not interpolated into a larger value"
         );
     }
 

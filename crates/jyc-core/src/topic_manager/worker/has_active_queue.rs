@@ -1621,13 +1621,17 @@ async fn list_topics_without_git_skips_the_probe_and_topic_info_resolves_one() {
     let tmp = tempdir().unwrap();
     let workspace = tmp.path().join("workspace");
 
-    let t1 = workspace.join("br-main");
-    std::fs::create_dir_all(state_dir("br-main", &t1)).unwrap();
+    // Names unique to this test: a topic name is a process-global state-dir
+    // key (`state_dir::register_if_absent` keeps the first registration) and
+    // this binary's tests run in parallel, so reusing another test's names
+    // makes the loser's workspace scan find nothing.
+    let t1 = workspace.join("ov-br-main");
+    std::fs::create_dir_all(state_dir("ov-br-main", &t1)).unwrap();
     std::fs::create_dir_all(t1.join(".git")).unwrap();
     std::fs::write(t1.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
 
-    let t2 = workspace.join("br-nogit");
-    std::fs::create_dir_all(state_dir("br-nogit", &t2)).unwrap();
+    let t2 = workspace.join("ov-br-nogit");
+    std::fs::create_dir_all(state_dir("ov-br-nogit", &t2)).unwrap();
 
     let tm = make_test_tm(&workspace);
 
@@ -1645,14 +1649,14 @@ async fn list_topics_without_git_skips_the_probe_and_topic_info_resolves_one() {
     let full = tm.list_topics().await;
     let expected = full
         .iter()
-        .find(|t| t.name == "br-main")
-        .expect("br-main missing from list_topics");
+        .find(|t| t.name == "ov-br-main")
+        .expect("ov-br-main missing from list_topics");
     assert_eq!(expected.branch.as_deref(), Some("main"));
 
     let one = tm
-        .topic_info("br-main", true)
+        .topic_info("ov-br-main", true)
         .await
-        .expect("br-main must resolve through topic_info");
+        .expect("ov-br-main must resolve through topic_info");
     assert_eq!(one.name, expected.name);
     assert_eq!(one.channel, expected.channel);
     assert_eq!(one.branch, expected.branch);
@@ -1660,11 +1664,14 @@ async fn list_topics_without_git_skips_the_probe_and_topic_info_resolves_one() {
     assert_eq!(one.topic_path, expected.topic_path);
 
     // Skipping the probe for one topic skips both fields, like the list.
-    let cheap = tm.topic_info("br-nogit", false).await.expect("br-nogit");
+    let cheap = tm
+        .topic_info("ov-br-nogit", false)
+        .await
+        .expect("ov-br-nogit");
     assert!(cheap.branch.is_none() && cheap.changed_files.is_none());
 
     // A name that is not open resolves to nothing — the endpoint's 404.
-    assert!(tm.topic_info("absent", true).await.is_none());
+    assert!(tm.topic_info("ov-absent", true).await.is_none());
 
     tm.shutdown().await;
 }

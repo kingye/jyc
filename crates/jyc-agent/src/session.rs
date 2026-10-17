@@ -175,6 +175,10 @@ async fn append_journal(
         let mut f = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
+            // No truncate: the cut point is the persisted_len-th newline,
+            // applied explicitly via set_len below (a bare truncate would
+            // drop the whole prefix).
+            .truncate(false)
             .open(journal_path)
             .await?;
         f.set_len(offset as u64).await?;
@@ -245,13 +249,13 @@ async fn replace_raw_context(
     // Append fast path: the on-disk journal holds exactly `persisted_len`
     // complete lines and `new` extends that prefix (normal turn-end save).
     let mut appended = false;
-    if persisted_len <= new.len() {
-        if let Ok(bytes) = tokio::fs::read(&journal_path).await {
-            let complete = bytes.iter().filter(|&&b| b == b'\n').count();
-            if complete == persisted_len {
-                append_journal(&journal_path, &bytes, persisted_len, &new[persisted_len..]).await;
-                appended = true;
-            }
+    if persisted_len <= new.len()
+        && let Ok(bytes) = tokio::fs::read(&journal_path).await
+    {
+        let complete = bytes.iter().filter(|&&b| b == b'\n').count();
+        if complete == persisted_len {
+            append_journal(&journal_path, &bytes, persisted_len, &new[persisted_len..]).await;
+            appended = true;
         }
     }
 

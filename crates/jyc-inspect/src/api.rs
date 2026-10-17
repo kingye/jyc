@@ -48,9 +48,7 @@ use jyc_utils::helpers::sanitize_for_filesystem;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::server::{
-    InspectContext, filter_by_since, filter_chat_by_since, is_user_visible_activity,
-};
+use crate::server::{InspectContext, filter_by_since, filter_chat_by_since};
 
 /// Query parameters for the activity / chat endpoints.
 #[derive(Debug, Default, Deserialize)]
@@ -425,10 +423,8 @@ pub async fn get_topic_activity(
     let topic_path = resolve_topic_path(&ctx, &channel, &topic).await?;
     let entries = ActivityLogStore::load_recent(&topic, &topic_path, limit)
         .map_err(|e| ApiError::internal(format!("failed to load activity: {e}")))?;
-    let entries: Vec<ActivityEntry> = entries
-        .into_iter()
-        .filter(is_user_visible_activity)
-        .collect();
+    // No server-side visibility filter: the log stores raw events (plus
+    // legacy prose), and each client decides what to render.
     let entries = filter_by_since(entries, q.since.as_deref());
     Ok(Json(entries))
 }

@@ -115,11 +115,10 @@ mod tests {
 
     fn make_entry(text: &str) -> ActivityEntry {
         ActivityEntry {
-            text: text.to_string(),
+            event: serde_json::Value::Null,
             timestamp: Some(Utc::now().to_rfc3339()),
-            severity: jyc_types::Severity::Info,
             id: 0,
-            is_internal: false,
+            text: Some(text.to_string()),
         }
     }
 
@@ -166,9 +165,9 @@ mod tests {
 
         let loaded = ActivityLogStore::load_recent(topic, &topic_path, 3).unwrap();
         assert_eq!(loaded.len(), 3);
-        assert!(loaded[0].text.contains("entry 2"));
-        assert!(loaded[1].text.contains("entry 3"));
-        assert!(loaded[2].text.contains("entry 4"));
+        assert!(loaded[0].text.as_deref().unwrap().contains("entry 2"));
+        assert!(loaded[1].text.as_deref().unwrap().contains("entry 3"));
+        assert!(loaded[2].text.as_deref().unwrap().contains("entry 4"));
     }
 
     #[test]
@@ -197,6 +196,6 @@ mod tests {
         ActivityLogStore::rotate_if_needed_with_max(topic, &topic_path, 200).unwrap();
         let loaded = ActivityLogStore::load_recent(topic, &topic_path, 1000).unwrap();
         assert_eq!(loaded.len(), 200);
-        assert!(loaded[0].text.contains("entry 100"));
+        assert!(loaded[0].text.as_deref().unwrap().contains("entry 100"));
     }
 }

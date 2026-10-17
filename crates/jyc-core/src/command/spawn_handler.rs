@@ -2387,15 +2387,18 @@ mod tests {
             },
         ];
 
-        for Case {
-            role,
-            parent_model,
-            ai,
-            model_override,
-            plan_override,
-            build_override,
-            mode,
-        } in &cases
+        for (
+            index,
+            Case {
+                role,
+                parent_model,
+                ai,
+                model_override,
+                plan_override,
+                build_override,
+                mode,
+            },
+        ) in cases.iter().enumerate()
         {
             let (_tmp, dir) =
                 parent_topic("t-a_child_starts_on_the_parents_model_unless_the_role_names_one")
@@ -2415,10 +2418,16 @@ mod tests {
                 resolve_subagent_type("role", Some(&config), Some(types_root.path())).unwrap()
             });
 
+            // A name per row: the state dir a topic adopts is settled once and
+            // never moved (`adopt_state_dir` keeps the first registration), so
+            // rows sharing a name would share one state dir and inherit each
+            // other's files — the next row's floor would then be the row before
+            // it, and its "this file must be absent" assertions meaningless.
+            let child = format!("worker-snapshot-{index}");
             let req = SpawnRequest {
                 parent_topic: "t-a_child_starts_on_the_parents_model_unless_the_role_names_one",
                 parent_topic_path: &dir,
-                name: Some("worker-snapshot".to_string()),
+                name: Some(child.clone()),
                 dir: None,
                 inherit: false,
                 share_topic_path: false,
@@ -2434,8 +2443,8 @@ mod tests {
                 .unwrap();
             assert!(result.success, "{}", result.message);
 
-            let dest = resolved(&agents_dir.join("worker-snapshot"));
-            let state = resolve_state_dir("worker-snapshot", &dest);
+            let dest = resolved(&agents_dir.join(&child));
+            let state = resolve_state_dir(&child, &dest);
             for (file, want) in [
                 ("model-override", *model_override),
                 ("plan-model-override", *plan_override),
@@ -2448,7 +2457,7 @@ mod tests {
                 assert_eq!(
                     written.as_deref(),
                     want,
-                    "{file} for role {role:?} with parent model {parent_model:?}"
+                    "{file} of {child} for role {role:?} with parent model {parent_model:?}"
                 );
             }
             // Not just the files: the chain the child then runs has to read them,
@@ -2462,7 +2471,7 @@ mod tests {
             if let Some(expected) = (*mode_override).or(*model_override) {
                 assert_eq!(
                     session_state::resolve_effective_model(
-                        "worker-snapshot",
+                        &child,
                         &dest,
                         &AppConfig::default(),
                         "x"
@@ -2470,8 +2479,8 @@ mod tests {
                     .await
                     .as_deref(),
                     Some(expected),
-                    "the {} child must read the snapshot of a role {role:?} with parent model \
-                     {parent_model:?}",
+                    "the {} child {child} must read the snapshot of a role {role:?} with parent \
+                     model {parent_model:?}",
                     mode
                 );
             }

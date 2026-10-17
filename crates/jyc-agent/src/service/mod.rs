@@ -677,7 +677,17 @@ impl AgentService for JycAgentService {
         let small_model = agent_cfg
             .small_model
             .as_deref()
-            .and_then(|m| jyc_types::resolve_model_reference(m, &agent_cfg).ok());
+            .and_then(|m| match jyc_types::resolve_model_reference(m, &agent_cfg) {
+                Ok(m) => Some(m),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        small_model = m,
+                        "small_model is a reference that cannot be resolved; compressing without a dedicated model"
+                    );
+                    None
+                }
+            });
         let provider: Option<Box<dyn provider::Provider>> =
             small_model.and_then(|m| provider::create_provider(&m, &agent_cfg.providers).ok());
 

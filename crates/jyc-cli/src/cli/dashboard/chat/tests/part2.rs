@@ -2017,11 +2017,10 @@ fn tail_screen_mode(text: &str, expanded: bool, minimal: bool) -> (Vec<String>, 
         "github",
         "pr-1",
         vec![jyc_types::ActivityEntry {
-            text: text.into(),
+            event: serde_json::Value::Null,
+            text: Some(text.into()),
             timestamp: None,
-            severity: jyc_types::Severity::Info,
             id: 1,
-            is_internal: false,
         }],
         vec![],
     );
@@ -2366,11 +2365,10 @@ fn activity_rows_render_the_same_instant_identically() {
 
     let draw = |timestamp: &str| {
         let entry = jyc_types::ActivityEntry {
-            text: "Tool: bash".to_string(),
+            event: serde_json::Value::Null,
+            text: Some("Tool: bash".to_string()),
             timestamp: Some(timestamp.to_string()),
-            severity: jyc_types::Severity::Info,
             id: 0,
-            is_internal: false,
         };
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
         terminal

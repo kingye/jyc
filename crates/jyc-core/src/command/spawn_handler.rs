@@ -2255,11 +2255,18 @@ mod tests {
             build_override: Option<&'a str>,
         }
         let floor = Some("provider/parent");
+        // `[ai]` is required in any config, so the rows below spell out the
+        // default a child without a snapshot used to fall through to. The
+        // child's own chain runs against an empty config further down, so no row
+        // depends on this value.
+        const AI: &str = "[ai]\nmodel = \"provider/default\"\n";
+        const AI_WITH_REVIEW: &str =
+            "[ai]\nmodel = \"provider/default\"\n[ai.models]\nreview = \"provider/review\"\n";
         let cases = [
             Case {
                 role: None,
                 parent_model: floor,
-                ai: "",
+                ai: AI,
                 model_override: floor,
                 plan_override: None,
                 build_override: None,
@@ -2267,7 +2274,7 @@ mod tests {
             Case {
                 role: Some("mode = \"plan\"\n"),
                 parent_model: floor,
-                ai: "",
+                ai: AI,
                 model_override: floor,
                 plan_override: None,
                 build_override: None,
@@ -2278,7 +2285,7 @@ mod tests {
             Case {
                 role: Some("[ai]\nplan_model = \"provider/role\"\n"),
                 parent_model: floor,
-                ai: "",
+                ai: AI,
                 model_override: floor,
                 plan_override: Some("provider/role"),
                 build_override: None,
@@ -2286,7 +2293,7 @@ mod tests {
             Case {
                 role: Some("[ai]\nbuild_model = \"provider/role\"\n"),
                 parent_model: floor,
-                ai: "",
+                ai: AI,
                 model_override: floor,
                 plan_override: None,
                 build_override: Some("provider/role"),
@@ -2299,7 +2306,7 @@ mod tests {
                     "[ai]\nmodel = \"${ai.models.review}\"\nplan_model = \"provider/role\"\n",
                 ),
                 parent_model: floor,
-                ai: "[ai.models]\nreview = \"provider/review\"\n",
+                ai: AI_WITH_REVIEW,
                 model_override: Some("provider/review"),
                 plan_override: Some("provider/role"),
                 build_override: None,
@@ -2307,7 +2314,7 @@ mod tests {
             Case {
                 role: Some("[ai]\nmodel = \"${ai.models.review}\"\n"),
                 parent_model: floor,
-                ai: "[ai.models]\nreview = \"provider/review\"\n",
+                ai: AI_WITH_REVIEW,
                 model_override: Some("provider/review"),
                 plan_override: None,
                 build_override: None,
@@ -2318,7 +2325,7 @@ mod tests {
             Case {
                 role: Some("[ai]\nmodel = \"${ai.models.absent}\"\n"),
                 parent_model: floor,
-                ai: "",
+                ai: AI,
                 model_override: floor,
                 plan_override: None,
                 build_override: None,
@@ -2326,7 +2333,7 @@ mod tests {
             Case {
                 role: Some("[ai]\nplan_model = \"${ai.models.absent}\"\n"),
                 parent_model: floor,
-                ai: "",
+                ai: AI,
                 model_override: floor,
                 plan_override: None,
                 build_override: None,
@@ -2336,7 +2343,7 @@ mod tests {
             Case {
                 role: Some("[ai]\nmodel = \"\"\n"),
                 parent_model: floor,
-                ai: "",
+                ai: AI,
                 model_override: floor,
                 plan_override: None,
                 build_override: None,
@@ -2345,7 +2352,7 @@ mod tests {
             Case {
                 role: None,
                 parent_model: None,
-                ai: "",
+                ai: AI,
                 model_override: None,
                 plan_override: None,
                 build_override: None,

@@ -2424,7 +2424,9 @@ mod tests {
                 share_topic_path: false,
                 subagent_type: subagent_type.as_ref(),
                 start_model: parent_model.map(str::to_string),
-                ai: Some(&config.ai),
+                // Derived like both production triggers do, so a row that adds a
+                // channel-level `model` resolves the way a real spawn would.
+                ai: Some(&jyc_types::derive_agent_config(&config, "x")),
             };
             let result = handler
                 .spawn_under(req, &parent_state, &agents_dir)

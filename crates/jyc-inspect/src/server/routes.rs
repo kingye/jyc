@@ -32,6 +32,10 @@ pub fn build_router(context: Arc<InspectContext>) -> Router {
             get(api::get_topic_activity),
         )
         .route(
+            "/api/topics/{channel}/{topic}/info",
+            get(api::get_topic_info),
+        )
+        .route(
             "/api/topics/{channel}/{topic}/chat",
             get(api::get_topic_chat),
         )

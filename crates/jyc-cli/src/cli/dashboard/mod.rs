@@ -87,6 +87,15 @@ pub struct OpenArgs {
 /// Application state for the TUI.
 struct App {
     state: Option<InspectOverview>,
+    /// Detail for the one topic the screen shows, fetched by the poll loop
+    /// from `GET /api/topics/{channel}/{topic}/info`.
+    ///
+    /// The overview poll carries no `branch` and no `changed_files`: the `git`
+    /// probe behind them costs two invocations per topic, which — paid for
+    /// every topic on every poll — dominated the round trip. The renderers
+    /// keep reading those two rows off the summary; [`App::apply_topic_detail`]
+    /// stamps them onto it from here.
+    topic_detail: Option<jyc_types::TopicInfo>,
     error: Option<String>,
     table_state: TableState,
     should_quit: bool,
@@ -139,6 +148,25 @@ struct App {
     link_regions: hyperlink::LinkRegions,
 }
 
+/// The topic the current screen shows, as `(channel, name)`.
+///
+/// The one screen rule — the chat screen answers for the topic its visible
+/// chat is bound to, looked up through the shared
+/// [`jyc_types::find_topic`] by name (the channel narrows it when the chat
+/// knows one); otherwise it is the row under the dashboard cursor. Both the
+/// renderers (`chat::selected_topic_summary`) and the detail fetch go through
+/// this, so they cannot disagree about which topic is on screen.
+fn shown_topic_key(app: &App) -> Option<(String, String)> {
+    let state = app.state.as_ref()?;
+    let summary = if app.chat.visible {
+        let name = app.chat.topic.as_deref()?;
+        jyc_types::find_topic(&state.topics, name, app.chat.channel.as_deref())?
+    } else {
+        state.topics.get(app.table_state.selected()?)?
+    };
+    Some((summary.channel.clone(), summary.name.clone()))
+}
+
 impl App {
     fn new(ws_rx: tokio::sync::mpsc::UnboundedReceiver<WsEvent>, token: Option<String>) -> Self {
         // The overview WS keeps its cmd_tx alive so the spawned task can
@@ -151,6 +179,7 @@ impl App {
         let _ = overview_ws_evt_tx; // unused; just for pairing
         Self {
             state: None,
+            topic_detail: None,
             error: None,
             table_state: TableState::default(),
             should_quit: false,
@@ -167,6 +196,27 @@ impl App {
             chat: ChatState::new(ws_rx),
             link_regions: Rc::new(RefCell::new(Vec::new())),
         }
+    }
+
+    /// Stamp the fetched detail's `git`-derived rows onto the matching polled
+    /// summary.
+    ///
+    /// The overview leaves `branch` and `changed_files` empty, and every new
+    /// poll replaces the summaries, so this runs again on every poll result.
+    /// A detail for a topic the poll does not carry (yet) stamps nothing.
+    fn apply_topic_detail(&mut self) {
+        let Some(detail) = self.topic_detail.as_ref() else {
+            return;
+        };
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
+        let Some(i) = jyc_types::topic_index(&state.topics, &detail.name, Some(&detail.channel))
+        else {
+            return;
+        };
+        state.topics[i].branch = detail.branch.clone();
+        state.topics[i].changed_files = detail.changed_files.clone();
     }
 
     fn set_status(&mut self, msg: String) {
@@ -631,6 +681,19 @@ pub async fn run(
             tokio::sync::mpsc::unbounded_channel::<Result<InspectOverview>>();
         let mut poll_in_flight = false;
 
+        // Detail fetches ride the same way, for the one topic the screen shows:
+        // `branch` and `changed_files` are the rows the overview no longer
+        // carries (the `git` probe per topic per poll was the expensive part),
+        // so they are refreshed on their own slower clock.
+        const DETAIL_REFRESH: Duration = Duration::from_secs(4);
+        let (detail_tx, mut detail_rx) = tokio::sync::mpsc::unbounded_channel::<(
+            (String, String),
+            Result<jyc_types::TopicInfo>,
+        )>();
+        let mut detail_in_flight = false;
+        let mut detail_key: Option<(String, String)> = None;
+        let mut last_detail = std::time::Instant::now() - DETAIL_REFRESH;
+
         // If a topic was requested on the CLI, open chat directly.
         if let Some(topic) = initial_topic {
             let channel = initial_channel.unwrap_or("");
@@ -649,6 +712,39 @@ pub async fn run(
                 tokio::spawn(async move {
                     let _ = tx.send(client.get_overview().await);
                 });
+            }
+            // Detail for the topic on screen: fetched when the shown topic
+            // changes, and re-fetched on a slower clock so its branch and
+            // changed files stay roughly current.
+            let shown = shown_topic_key(&app);
+            let needs_detail = !detail_in_flight
+                && shown.is_some()
+                && (shown != detail_key || last_detail.elapsed() >= DETAIL_REFRESH);
+            if needs_detail && let Some(key) = shown {
+                detail_in_flight = true;
+                let client = client.clone();
+                let tx = detail_tx.clone();
+                tokio::spawn(async move {
+                    let result = client.get_topic_info(&key.0, &key.1).await;
+                    let _ = tx.send((key, result));
+                });
+            }
+            if let Ok((key, result)) = detail_rx.try_recv() {
+                detail_in_flight = false;
+                detail_key = Some(key.clone());
+                last_detail = std::time::Instant::now();
+                match result {
+                    Ok(info) => {
+                        // Drop a detail the screen has already moved away from.
+                        if shown_topic_key(&app) == Some(key) {
+                            app.topic_detail = Some(info);
+                            app.apply_topic_detail();
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "failed to fetch topic detail");
+                    }
+                }
             }
             if let Ok(result) = poll_rx.try_recv() {
                 poll_in_flight = false;
@@ -691,6 +787,7 @@ pub async fn run(
                         }
 
                         app.state = Some(overview);
+                        app.apply_topic_detail();
                         // Auto-select the first topic on initial load so the
                         // activity pane is populated immediately via the existing
                         // hydrate + ensure_overview_ws paths. The user can still
@@ -2111,6 +2208,61 @@ mod tests {
     fn make_test_app() -> App {
         let (_, ws_rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
         App::new(ws_rx, None)
+    }
+
+    fn summary(name: &str, channel: &str) -> jyc_types::TopicSummary {
+        jyc_types::TopicSummary {
+            name: name.into(),
+            channel: channel.into(),
+            pattern: None,
+            status: jyc_types::TopicStatus::Idle,
+            model: None,
+            mode: None,
+            context_input_tokens: None,
+            max_tokens: None,
+            output_tokens: None,
+            total_input_tokens: None,
+            total_cache_hit_tokens: None,
+            total_cache_creation_tokens: None,
+            avg_call_ms: None,
+            call_count: None,
+            last_active_at: None,
+            skills: Vec::new(),
+            topic_path: None,
+            parent: None,
+            branch: None,
+            changed_files: None,
+            tasks: Default::default(),
+            commands: Vec::new(),
+            cost: None,
+        }
+    }
+
+    /// The detail fetch and the renderers must agree on which topic is on
+    /// screen — the screen rule lives in `shown_topic_key` for exactly that.
+    #[test]
+    fn shown_topic_key_follows_the_screen() {
+        let mut app = make_test_app();
+        app.state = Some(InspectOverview {
+            topics: vec![summary("a", "agents"), summary("b", "mail")],
+            ..Default::default()
+        });
+
+        // Dashboard: the row under the cursor.
+        app.table_state.select(Some(1));
+        assert_eq!(shown_topic_key(&app), Some(("mail".into(), "b".into())));
+
+        // Chat screen: the visible chat's own topic, cursor elsewhere, and
+        // resolved by name alone when the chat carries no channel.
+        app.table_state.select(Some(0));
+        app.chat.visible = true;
+        app.chat.topic = Some("b".to_string());
+        assert_eq!(shown_topic_key(&app), Some(("mail".into(), "b".into())));
+
+        // A chat whose topic is not in the poll yet names nothing, rather than
+        // falling back to the row under the cursor.
+        app.chat.topic = Some("not-polled".to_string());
+        assert_eq!(shown_topic_key(&app), None);
     }
 
     #[tokio::test]

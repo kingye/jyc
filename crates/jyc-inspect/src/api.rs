@@ -41,6 +41,7 @@ use jyc_core::{
 };
 use jyc_types::{
     ActivityEntry, ChatMessageEntry, InboundAttachmentConfig, InspectOverview, InspectState,
+    TopicInfo,
 };
 use jyc_utils::attachment_validator::validate_inbound_file;
 use jyc_utils::helpers::sanitize_for_filesystem;
@@ -442,6 +443,24 @@ pub async fn get_topic_chat(
     let mut entries = load_recent_chat_history(&topic, &topic_path, limit);
     entries = filter_chat_by_since(entries, q.since.as_deref());
     Ok(Json(entries))
+}
+
+/// `GET /api/topics/{channel}/{topic}/info` — one topic's full info.
+///
+/// `GET /api/state/overview` leaves `branch` and `changed_files` empty: the
+/// probe behind them costs two `git` invocations per topic, which is what
+/// polling every topic made expensive. A client that shows one topic fetches
+/// those two fields (and everything else on `TopicInfo`) here.
+pub async fn get_topic_info(
+    State(ctx): State<Arc<InspectContext>>,
+    Path((channel, topic)): Path<(String, String)>,
+) -> Result<Json<TopicInfo>, ApiError> {
+    let tm = ctx.topic_managers.by_channel(&channel).ok_or_else(|| {
+        ApiError::not_found(format!("no topic manager found for channel '{channel}'"))
+    })?;
+    tm.topic_info(&topic, true).await.map(Json).ok_or_else(|| {
+        ApiError::not_found(format!("topic '{topic}' not found in channel '{channel}'"))
+    })
 }
 
 pub async fn get_patterns(

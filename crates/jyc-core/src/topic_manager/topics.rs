@@ -582,8 +582,38 @@ impl TopicManager {
     ///
     /// This resolves per-topic state for every name it lists — the cost
     /// [`Self::list_topic_names`] documents. A caller that needs only the
-    /// names, or the names and paths, wants that method instead.
+    /// names, or the names and paths, wants that method instead; one that
+    /// also skips the `git` probe wants
+    /// [`Self::list_topics_without_git`].
     pub async fn list_topics(&self) -> Vec<TopicInfo> {
+        self.list_topics_inner(true, None).await
+    }
+
+    /// [`Self::list_topics`] with the `git` probe skipped: `branch` and
+    /// `changed_files` come back `None`.
+    ///
+    /// The dashboard polls this once per second for every topic, and the probe
+    /// is a `.git/HEAD` read plus up to four `git` invocations per topic — for
+    /// every topic per poll, that dominated the round trip. The topic actually
+    /// on screen gets those two fields from [`Self::topic_info`] instead.
+    pub async fn list_topics_without_git(&self) -> Vec<TopicInfo> {
+        self.list_topics_inner(false, None).await
+    }
+
+    /// One topic's info, for the per-topic endpoint.
+    ///
+    /// `None` when no topic of that name is open. `include_git` as in
+    /// [`Self::list_topics_without_git`].
+    pub async fn topic_info(&self, name: &str, include_git: bool) -> Option<TopicInfo> {
+        self.list_topics_inner(include_git, Some(name))
+            .await
+            .into_iter()
+            .next()
+    }
+
+    /// The body of [`Self::list_topics`], over every topic or — with `only` —
+    /// just the one of that name.
+    async fn list_topics_inner(&self, include_git: bool, only: Option<&str>) -> Vec<TopicInfo> {
         use crate::session_state::read_session_cost;
 
         let topic_names = self.list_topic_names().await;
@@ -594,6 +624,12 @@ impl TopicManager {
         let billing_dir = self.billing_dir();
 
         for name in topic_names {
+            if let Some(only) = only
+                && name != only
+            {
+                continue;
+            }
+
             // Check for custom topic_path from pattern override first
             let paths = self.topic_paths.lock().await;
             let topic_path = paths
@@ -730,8 +766,16 @@ impl TopicManager {
                 recent_messages: vec![], // Filled by InspectServer from event bus
                 thinking_text: None,     // Filled by InspectServer from event bus
                 topic_path: Some(topic_path.clone()),
-                branch: branch_for_topic_path(&topic_path),
-                changed_files: changed_files_for_topic_path(&topic_path),
+                branch: if include_git {
+                    branch_for_topic_path(&topic_path)
+                } else {
+                    None
+                },
+                changed_files: if include_git {
+                    changed_files_for_topic_path(&topic_path)
+                } else {
+                    None
+                },
                 cost,
                 avg_call_ms: call_latency.map(|(avg, _)| avg),
                 call_count: call_latency.map(|(_, count)| count),

@@ -89,7 +89,8 @@ impl CommandHandler for NewCommandHandler {
         let state =
             jyc_types::state_dir::resolve_state_dir(&context.topic_name, &context.topic_path);
         let agent_path = state.join("agent-session.json");
-        let context_path = state.join("agent-context.json");
+        let context_path = state.join(crate::session_state::AGENT_CONTEXT_FILE);
+        let context_legacy_path = state.join(crate::session_state::AGENT_CONTEXT_LEGACY_FILE);
         let activity_path = state.join("activity.jsonl");
 
         let mut deleted_session = false;
@@ -99,6 +100,10 @@ impl CommandHandler for NewCommandHandler {
         }
         if context_path.exists() {
             tokio::fs::remove_file(&context_path).await?;
+            deleted_session = true;
+        }
+        if context_legacy_path.exists() {
+            tokio::fs::remove_file(&context_legacy_path).await?;
             deleted_session = true;
         }
         if activity_path.exists() {

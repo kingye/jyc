@@ -65,7 +65,7 @@ use crate::vision::VisionClient;
 
 /// Maximum image size accepted by the tool (in bytes). Conservative cap to
 /// avoid blowing past per-request size limits on most vision providers and
-/// to keep `agent-context.json` from inflating uncontrollably. The existing
+/// to keep `agent-context.jsonl` from inflating uncontrollably. The existing
 /// `[attachments.inbound].max_size_per_attachment` config caps inbound
 /// attachments at download time; this is the equivalent inner cap for
 /// agent-driven loads.

@@ -432,7 +432,7 @@ these names loosely, so they are fixed here.
 | **subagent type** | A named **role** a spawn hands its child: a topic config selected by name (`type = "review"`), defined by `[subagents.<type>]` in the config or by `<config dir>/subagents/<type>/config.toml`, and expanded into the child's own `.jyc/config.toml` at spawn time. Not a topic, not a channel, not a pattern: nothing routes to it, and nothing about it is inherited by anything else. Only the L1 config dir is scanned — unlike skills, a type is not layered. Resolution happens in the entry points, against the config the instance is *running* with (never a fresh read of the default path), and an installed type may also carry a `description` (one line of "when to spawn me", listed in the spawn tool's `type` argument and as `/spawn`'s popup row for the type, with its declared start defaults appended) and `[spawn]` (its defaults for the two start flags). The repo ships three at `subagents/review/`, `subagents/ci-watch/` and `subagents/develop/` (`cp -r subagents/<type> <config dir>/subagents/`) | `[subagents.<type>]`; `<config dir>/subagents/<type>/config.toml` | `jyc_types::load_subagent_type`, `spawn_handler::{resolve_type_arg, resolve_subagent_type, SubagentType}` |
 | **subagent** | An agent `/spawn` (or `jyc_spawn_subagent`) created: an agent with its own default topic, not a second kind of topic | `<agents dir>/<subagent>/`, its state dir as any default topic's — or the parent's dir when the spawn was asked to share it (`/spawn -s/--share`, the tool's `share_topic_path`, or a role's own `[spawn]` default) | `spawn_handler` |
 | **topic_path** | A topic's **working directory**: where the agent runs, what `read`/`write`/`bash` see, and what a parent is granted when it spawns a subagent. **Any** directory — a pin, a checkout, a `/spawn -d <dir>` child — not necessarily under the agents dir | its home's `.data` by default (`<agents dir>/<agent>/.data`, `<agents dir>/<agent>/<topic>/.data`); a pin is the working dir itself | `TopicManager::topic_path(name)` |
-| **state dir** | A topic's `.jyc`: transcript, `agent-context.json`, `tasks`, `pattern`, `mode-override`, the lineage `spawned-from`, … — always under the agents dir, located by **topic name**, and always the home's `.jyc`: never inside a `topic_path` (which is the home's `.data`, a sibling) and never inside a pinned dir | see the table below | `jyc_types::state_dir::resolve_state_dir(name, topic_dir)` |
+| **state dir** | A topic's `.jyc`: transcript, `agent-context.jsonl` (append-only raw context journal; legacy `agent-context.json` migrates once), `tasks`, `pattern`, `mode-override`, the lineage `spawned-from`, … — always under the agents dir, located by **topic name**, and always the home's `.jyc`: never inside a `topic_path` (which is the home's `.data`, a sibling) and never inside a pinned dir | see the table below | `jyc_types::state_dir::resolve_state_dir(name, topic_dir)` |
 | **inbound dir** | Where the hub stages inbound attachment bytes between their upload and the message announcing them, deliberately outside every topic and channel dir | `<data dir>/.inbound` | `topic_path::inbound_dir()` |
 | **L1 / L2 / L3** | Override layers only, not ownership | L1 = config dir; L2 = data dir; L3 = one topic (`topic_path` + state dir) | — |
 
@@ -662,7 +662,7 @@ only turn the defaults on, never off (see `AGENTS.md` on that asymmetry).
    `mode-override`, model/context/MCP/skill overrides; the task list is never
    inherited, so a child plans its own work), never `jobs/`
    or `agent-session.json`, and never the workspace. The conversation
-   (`agent-context.json`) and the transcript (`chat_history_*.jsonl`) are copied
+   (`agent-context.jsonl`) and the transcript (`chat_history_*.jsonl`) are copied
    only when they were asked for: a child starting on a task of its own would
    otherwise pay for the parent's whole train of thought, in tokens, on every
    turn — and arrive anchored to it, which is the opposite of the independent
@@ -2307,14 +2307,14 @@ JYC uses the following subset of the agent service API:
    - Used by `build_full_reply_text()` for quoted history in reply emails
    - NOT loaded into the AI prompt
 
-8. **Wire Payload Shaping (Context Strategy)** — How the prior `agent-context.json`
+8. **Wire Payload Shaping (Context Strategy)** — How the prior `agent-context.jsonl`
    is shaped into the wire payload on each LLM request. The on-disk
    file always stores the full raw context unchanged; only the request
    payload is shaped. Configured per-pattern / per-agent / globally
    (`context_strategy`), overridable at runtime via `.jyc/context-strategy.json`
    (written by `/context full | sliding [N] | reset`).
 
-   * `full` (default) — send the entire `agent-context.json`.
+   * `full` (default) — send the entire `agent-context.jsonl`.
    * `sliding_window` — emits two parts in order:
      1. The last N user+assistant text pairs from the prior context,
         reformatted in provider wire format via the active
@@ -2858,7 +2858,7 @@ resolver**), every step keyed by the mode the topic is in:
 └── agents/<agent>/<topic>/                 # Topic home (agents dir)
     ├── .jyc/                               # State dir — never inside the working dir
     │   ├── agent-session.json              # AI session state
-    │   ├── agent-context.json              # Reply routing context (disk-based)
+    │   ├── agent-context.jsonl             # Raw context journal, one message per line (legacy .json auto-migrates)
     │   ├── chat_history_2026-03-19.jsonl   # Daily chat log (messages + replies)
     │   ├── model-override                  # /model command override
     │   └── mode-override                   # /plan command override

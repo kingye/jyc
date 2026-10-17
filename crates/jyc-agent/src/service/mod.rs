@@ -507,7 +507,7 @@ impl AgentService for JycAgentService {
         // Load session and prior raw context AFTER the pre-loop pre-check
         // above: if the pre-check just reset the session (e.g. the active
         // model switched to a smaller context window), this must read the
-        // freshly compacted agent-context.json — not the stale pre-reset
+        // freshly compacted agent-context.jsonl — not the stale pre-reset
         // contents, which would be sent verbatim on the first LLM call and
         // immediately re-inflate the wire context.
         let (prior_history, prior_raw_context) =
@@ -573,7 +573,13 @@ impl AgentService for JycAgentService {
         );
 
         // 8. Save raw context (preserves provider-specific fields for round-tripping)
-        session::save_raw_context(topic_name, topic_path, &result.raw_context).await;
+        session::save_raw_context(
+            topic_name,
+            topic_path,
+            result.raw_context,
+            result.persisted_len,
+        )
+        .await;
 
         // 9. Update session token tracking
         // Provider used for the between-message context-reset summary (when

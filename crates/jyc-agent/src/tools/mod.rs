@@ -203,7 +203,7 @@ pub struct ToolContext<'a> {
     /// at the start of the current tool batch. Injected by the agent loop;
     /// lets tools read back turns that are outside the model's sliding
     /// window (e.g. `context_browse`). Read from memory, never from disk —
-    /// the persisted `agent-context.json` goes stale mid-loop. Empty when
+    /// the persisted `agent-context.jsonl` goes stale mid-loop. Empty when
     /// not injected (unit tests, synthetic progress replies).
     pub raw_context: Vec<serde_json::Value>,
     /// The assistant's own text for the current tool batch, when that batch

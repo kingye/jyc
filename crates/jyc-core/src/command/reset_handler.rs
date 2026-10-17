@@ -96,9 +96,7 @@ impl CommandHandler for ResetCommandHandler {
             tokio::fs::remove_file(state_dir.join("agent-session.json"))
                 .await
                 .ok();
-            tokio::fs::remove_file(state_dir.join("agent-context.json"))
-                .await
-                .ok();
+            crate::session_state::remove_raw_context_files(&state_dir).await;
             context.session_start_hook("reset").await;
             Ok(CommandResult {
                 success: true,

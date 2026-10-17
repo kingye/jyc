@@ -9,6 +9,25 @@ use std::path::Path;
 /// setting is configured. Mirrors the constant in `jyc-agent::service`.
 pub const DEFAULT_CONTEXT_WINDOW: u64 = 128000;
 
+/// Raw provider context store inside a topic's state dir: an append-only
+/// journal, one message per line. This is the authoritative format;
+/// `jyc-agent::session` writes it incrementally (append tail lines after a
+/// normal turn, rewrite after compaction) and tolerates a torn tail line.
+pub const AGENT_CONTEXT_FILE: &str = "agent-context.jsonl";
+
+/// Legacy raw context store: the whole context as a single JSON array.
+/// Superseded by [`AGENT_CONTEXT_FILE`]; `jyc-agent::session` migrates it
+/// once on load. The name survives only so cleanup sites remove both.
+pub const AGENT_CONTEXT_LEGACY_FILE: &str = "agent-context.json";
+
+/// Best-effort removal of the raw context store (journal + legacy). Missing
+/// files are ignored; used by reset paths where absence means "no context".
+pub async fn remove_raw_context_files(state_dir: &Path) {
+    for name in [AGENT_CONTEXT_FILE, AGENT_CONTEXT_LEGACY_FILE] {
+        tokio::fs::remove_file(state_dir.join(name)).await.ok();
+    }
+}
+
 /// Read input tokens from the agent session state file.
 /// Returns (current_tokens, max_tokens).
 pub async fn read_input_tokens(topic_name: &str, topic_path: &Path) -> (Option<u64>, Option<u64>) {

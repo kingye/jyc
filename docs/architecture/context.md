@@ -9,7 +9,7 @@ prevent context overflow.
 Three core principles govern the whole system:
 
 1. **The raw context is the source of truth.**
-   `.jyc/agent-context.json` stores the full conversation (including tool
+   `.jyc/agent-context.jsonl` (append-only journal, one message per line; the legacy `.json` array migrates once on load) stores the full conversation (including tool
    calls and results) exactly as recorded. Strategies never reshape this
    file — only a session reset (manual `/reset`, auto-reset, or the
    mid-loop safety net) compacts it, using the same turn-pairing logic
@@ -26,7 +26,7 @@ Three core principles govern the whole system:
 ```mermaid
 flowchart TD
     subgraph Disk["On disk — source of truth"]
-        F[".jyc/agent-context.json<br/>FULL raw context"]
+        F[".jyc/agent-context.jsonl<br/>FULL raw context (journal)"]
     end
     subgraph Mem["In memory — per incoming message"]
         RC["raw_context: Vec&lt;serde_json::Value&gt;<br/>provider wire format"]
@@ -313,7 +313,7 @@ flowchart TD
     LLM["LLM response received<br/>(input_tokens from SSE step-finish)"]
     Q{"input_tokens ≥<br/>context_window × auto_reset_threshold ?"}
     subgraph Mid["Mid-loop compression — agent_loop/mod.rs"]
-        MID["Shrinks raw_context + history IN MEMORY<br/>to last 3 turns (keep_pairs=3, hard-coded)<br/>Persists at loop end → agent-context.json<br/>Publishes 'session_reset' status event"]
+        MID["Shrinks raw_context + history IN MEMORY<br/>to last 3 turns (keep_pairs=3, hard-coded)<br/>Persists at loop end → agent-context.jsonl<br/>(tail-append; full rewrite after compaction)<br/>Publishes 'session_reset' status event"]
     end
     subgraph Pre["Between messages / at loop end — service/mod.rs"]
         PRE["Pre-loop pre-check:<br/>if model context window shrank below<br/>loaded session, reset BEFORE first LLM call"]

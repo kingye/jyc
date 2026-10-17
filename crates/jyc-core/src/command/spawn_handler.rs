@@ -1168,7 +1168,10 @@ mod tests {
             .unwrap();
         for (name, body) in [
             ("pattern", "jyc"),
-            ("agent-context.json", "{\"messages\":[]}"),
+            (
+                "agent-context.jsonl",
+                "{\"role\":\"user\",\"content\":\"hi\"}",
+            ),
             ("agent-session.json", "{\"current_input_tokens\":900}"),
             (
                 session_state::TASKS_FILE,
@@ -2389,7 +2392,7 @@ mod tests {
             "agent-session.json",
             "activity.jsonl",
             "notes.md",
-            "agent-context.json",
+            "agent-context.jsonl",
             "chat_history_2026-09-24.jsonl",
         ] {
             assert!(
@@ -2473,7 +2476,7 @@ mod tests {
         );
         let state = resolve_state_dir("with-context", &dest);
         for kept in [
-            "agent-context.json",
+            "agent-context.jsonl",
             "chat_history_2026-09-24.jsonl",
             "mode-override",
         ] {
@@ -2845,7 +2848,10 @@ mod tests {
         std::fs::create_dir_all(&parent_state).unwrap();
         for (name, body) in [
             ("pattern", "jyc"),
-            ("agent-context.json", "{\"messages\":[]}"),
+            (
+                "agent-context.jsonl",
+                "{\"role\":\"user\",\"content\":\"hi\"}",
+            ),
             ("chat_history_2026-09-24.jsonl", "{}"),
             ("mode-override", "plan"),
             ("agent-session.json", "{\"current_input_tokens\":900}"),
@@ -2892,7 +2898,7 @@ mod tests {
         // parent's working tree (that is `-s/--share`).
         for keep in [
             "pattern",
-            "agent-context.json",
+            "agent-context.jsonl",
             "chat_history_2026-09-24.jsonl",
             "mode-override",
         ] {
@@ -2989,7 +2995,7 @@ mod tests {
             parent
         );
         assert!(
-            state.join("pattern").exists() && !state.join("agent-context.json").exists(),
+            state.join("pattern").exists() && !state.join("agent-context.jsonl").exists(),
             "settings copied, the parent's conversation left behind"
         );
         assert_eq!(

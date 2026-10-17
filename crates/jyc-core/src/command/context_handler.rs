@@ -7,7 +7,7 @@ use jyc_types::channel::{ContextStrategy, ContextStrategyConfig};
 use super::handler::{CommandContext, CommandHandler, CommandResult};
 
 /// `/context` command — view or change the context management strategy for
-/// this topic. The on-disk `.jyc/agent-context.json` always stores the
+/// this topic. The on-disk `.jyc/agent-context.jsonl` always stores the
 /// full raw context; this command only changes what is sent to the LLM.
 ///
 /// Usage:

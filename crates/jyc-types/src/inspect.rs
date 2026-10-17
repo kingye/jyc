@@ -110,6 +110,18 @@ pub struct TopicSummary {
     /// call is not read as a settled one.
     #[serde(default)]
     pub call_count: Option<u64>,
+    /// Average wall-clock time of one LLM call in the latest turn, in
+    /// milliseconds — the turn-scoped counterpart of `avg_call_ms`,
+    /// accumulated by the agent loop and cleared at the start of every
+    /// turn. `None` while the latest turn has made no measured call yet
+    /// (fresh session, or the turn window was just cleared), in which
+    /// case the panes fall back to the session average alone.
+    #[serde(default)]
+    pub avg_turn_call_ms: Option<u64>,
+    /// Number of LLM calls `avg_turn_call_ms` averages over. `None`
+    /// alongside it.
+    #[serde(default)]
+    pub turn_call_count: Option<u64>,
     /// Last activity timestamp (RFC 3339), if known
     #[serde(default)]
     pub last_active_at: Option<String>,
@@ -353,6 +365,15 @@ pub struct TopicInfo {
     /// `TopicSummary::call_count` for the full description.
     #[serde(default)]
     pub call_count: Option<u64>,
+    /// Average wall-clock time of one LLM call in the latest turn, in
+    /// milliseconds. See `TopicSummary::avg_turn_call_ms` for the full
+    /// description.
+    #[serde(default)]
+    pub avg_turn_call_ms: Option<u64>,
+    /// Number of LLM calls the latest-turn average covers. See
+    /// `TopicSummary::turn_call_count` for the full description.
+    #[serde(default)]
+    pub turn_call_count: Option<u64>,
     /// Recent activity events (newest first, max ~20)
     #[serde(default)]
     pub activity: Vec<ActivityEntry>,
@@ -655,6 +676,8 @@ mod tests {
                 total_cache_creation_tokens: None,
                 avg_call_ms: None,
                 call_count: None,
+                avg_turn_call_ms: None,
+                turn_call_count: None,
                 total_reasoning_tokens: None,
                 activity: vec![],
                 last_active_at: None,
@@ -839,6 +862,8 @@ mod tests {
             total_cache_creation_tokens: None,
             avg_call_ms: None,
             call_count: None,
+            avg_turn_call_ms: None,
+            turn_call_count: None,
             last_active_at: Some("2026-01-01T00:00:00Z".to_string()),
             skills: vec![],
             topic_path: None,

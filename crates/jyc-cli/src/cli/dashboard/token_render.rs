@@ -9,7 +9,7 @@
 //! Kept module-private (`pub(super)`) — these are TUI internals, not part
 //! of the dashboard's public surface.
 
-use jyc_core::duration::{DurationStyle, format_duration_ms};
+use jyc_core::duration::format_latency;
 use jyc_types::{TopicSummary, format_amount};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
@@ -156,25 +156,27 @@ pub(super) fn push_cost_span(spans: &mut Vec<Span>, t: &TopicSummary) {
     }
 }
 
-/// Append the "Latency: X/call (avg of N)" row to `spans`. Pushes nothing
-/// when the pair is missing — no call measured yet (fresh session, or a
-/// session file written before the fields existed) — so an unmeasured
-/// topic shows no row rather than `0ms`.
+/// Append the "Latency: 1.1s/call (3) · 820ms/call (37)" row to `spans`.
+/// Pushes nothing when neither pair is present — no call measured yet
+/// (fresh session, or a session file written before the fields existed) —
+/// so an unmeasured topic shows no row rather than `0ms`.
 ///
-/// The figure is the session's own average wall-clock time per LLM call:
-/// how long one API call takes, not how many tokens per second it
-/// produces. The `/info` command renders the same words from the same two
-/// fields.
+/// The left figure is the latest turn's average wall-clock time per LLM
+/// call and how many calls it covers; the right is the session's. A turn
+/// with no measured call yet (just started, or the session was reset)
+/// collapses the row to the session figure. Both answer "how long one API
+/// call takes", not how many tokens per second it produces. The `/info`
+/// command renders the same words from the same four fields, both through
+/// [`format_latency`].
 pub(super) fn push_latency_span(spans: &mut Vec<Span>, t: &TopicSummary) {
-    if let (Some(avg), Some(calls)) = (t.avg_call_ms, t.call_count) {
+    let turn = t.avg_turn_call_ms.zip(t.turn_call_count);
+    let session = t.avg_call_ms.zip(t.call_count);
+    if let Some(latency) = format_latency(turn, session) {
         spans.push(Span::styled(
             "Latency: ",
             Style::default().add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::raw(format!(
-            "{}/call (avg of {calls})",
-            format_duration_ms(avg, DurationStyle::Millis),
-        )));
+        spans.push(Span::raw(latency));
     }
 }
 
@@ -214,6 +216,8 @@ mod tests {
             total_cache_creation_tokens: cache_creation,
             avg_call_ms: None,
             call_count: None,
+            avg_turn_call_ms: None,
+            turn_call_count: None,
             last_active_at: None,
             skills: vec![],
             topic_path: None,
@@ -474,7 +478,33 @@ mod tests {
         push_latency_span(&mut spans, &t);
         assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content, "Latency: ");
-        assert_eq!(spans[1].content, "820ms/call (avg of 37)");
+        assert_eq!(spans[1].content, "820ms/call (37)");
+    }
+
+    /// Both scopes present: the latest turn leads, the session follows.
+    #[test]
+    fn push_latency_span_puts_latest_turn_first() {
+        let mut t = summary_with(None, None, None, None, None, None);
+        t.avg_call_ms = Some(820);
+        t.call_count = Some(37);
+        t.avg_turn_call_ms = Some(1100);
+        t.turn_call_count = Some(3);
+        let mut spans = Vec::new();
+        push_latency_span(&mut spans, &t);
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[1].content, "1.10s/call (3) · 820ms/call (37)");
+    }
+
+    /// A turn with no measured call yet leaves the session figure alone.
+    #[test]
+    fn push_latency_span_falls_back_to_session_only() {
+        let mut t = summary_with(None, None, None, None, None, None);
+        t.avg_call_ms = Some(820);
+        t.call_count = Some(37);
+        t.avg_turn_call_ms = Some(1100);
+        let mut spans = Vec::new();
+        push_latency_span(&mut spans, &t);
+        assert_eq!(spans[1].content, "820ms/call (37)");
     }
 
     /// A slow average switches to seconds; an average without its count
@@ -487,7 +517,7 @@ mod tests {
         t.call_count = Some(2);
         let mut spans = Vec::new();
         push_latency_span(&mut spans, &t);
-        assert_eq!(spans[1].content, "4.23s/call (avg of 2)");
+        assert_eq!(spans[1].content, "4.23s/call (2)");
 
         let mut half = summary_with(None, None, None, None, None, None);
         half.avg_call_ms = Some(4230);

@@ -133,7 +133,15 @@ pub struct TopicSummary {
     #[serde(default)]
     pub parent: Option<String>,
     /// Resolved git branch for the topic's working directory, when it is
-    /// a git repo. `None` when the path isn't a git repo, or the server
+    /// a git repo.
+    ///
+    /// **Not filled by the overview poll**: resolving it reads the checkout's
+    /// `.git/HEAD` once per topic, and the poll covers every topic — which is
+    /// what made the round trip expensive. `GET /api/topics/{channel}/{topic}/info` carries
+    /// it for one topic, and the dashboard stamps it onto the summary it is
+    /// showing.
+    ///
+    /// `None` when the path isn't a git repo, or the server
     /// couldn't read `.git/HEAD` (perms, etc.). When the agent clones into
     /// `repo/`, `.git/HEAD` is read under `<topic_path>/repo/`.
     /// `"(detached)"` is returned when HEAD is a raw SHA (no symbolic ref).
@@ -142,7 +150,12 @@ pub struct TopicSummary {
     pub branch: Option<String>,
     /// Files changed relative to the repo's default branch (resolved
     /// server-side: `origin/HEAD`, falling back to `main`, then
-    /// `master`). Each path appears at most once,
+    /// `master`).
+    ///
+    /// **Not filled by the overview poll** — see [`Self::branch`] for why; the
+    /// per-topic info endpoint carries it.
+    ///
+    /// Each path appears at most once,
     /// even when it is both committed on the branch and dirty in the
     /// working tree — when both, `uncommitted` is `true` (the more-noisy
     /// state wins, matches the yellow-render rule in the chat info pane).

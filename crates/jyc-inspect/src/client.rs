@@ -10,7 +10,7 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::de::DeserializeOwned;
 use url::Url;
 
-use jyc_types::{ActivityEntry, ChatMessageEntry, InspectOverview, InspectState};
+use jyc_types::{ActivityEntry, ChatMessageEntry, InspectOverview, InspectState, TopicInfo};
 
 /// HTTP client for the inspect server.
 #[derive(Clone)]
@@ -56,6 +56,13 @@ impl InspectClient {
     /// Slim state snapshot (no per-topic activity/messages).
     pub async fn get_overview(&self) -> Result<InspectOverview> {
         self.get_json("/api/state/overview").await
+    }
+
+    /// One topic's full info — including `branch` and `changed_files`, which
+    /// the overview poll leaves empty.
+    pub async fn get_topic_info(&self, channel: &str, topic: &str) -> Result<TopicInfo> {
+        let path = format!("/api/topics/{}/{}/info", channel, topic);
+        self.get_json(&path).await
     }
 
     /// Recent activity entries for a topic. Filters internal entries

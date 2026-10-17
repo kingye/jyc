@@ -2301,7 +2301,7 @@ mod tests {
             // The same for a build-mode child, whose mode the role names: the
             // build file is what this child reads.
             Case {
-                role: Some("[ai]\nbuild_model = \"provider/role\"\nmode = \"build\"\n"),
+                role: Some("mode = \"build\"\n[ai]\nbuild_model = \"provider/role\"\n"),
                 parent_model: floor,
                 ai: AI,
                 model_override: floor,
@@ -2312,7 +2312,7 @@ mod tests {
             // … and the mirror: a plan value does not reach a build-mode child,
             // which keeps the floor.
             Case {
-                role: Some("[ai]\nplan_model = \"provider/role\"\nmode = \"build\"\n"),
+                role: Some("mode = \"build\"\n[ai]\nplan_model = \"provider/role\"\n"),
                 parent_model: floor,
                 ai: AI,
                 model_override: floor,
@@ -2460,6 +2460,18 @@ mod tests {
                     "{file} of {child} for role {role:?} with parent model {parent_model:?}"
                 );
             }
+            // Pin the premise before asserting on it: the child's own mode picks
+            // the file the chain reads, and a role's `mode` has to be a
+            // top-level key to land — after an `[ai]` header TOML reads it as
+            // `ai.mode`, a field no config has, so the child silently stays in
+            // the mode it inherited.
+            assert_eq!(
+                session_state::resolve_effective_mode(&child, &dest, &AppConfig::default(), "x")
+                    .await
+                    .as_deref(),
+                Some(*mode),
+                "{child} must run in {mode:?}"
+            );
             // Not just the files: the chain the child then runs has to read them,
             // with no config of its own to fall back on. Its own mode picks the
             // file, so a role value only counts when it lands in that one.

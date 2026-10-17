@@ -135,12 +135,17 @@ impl Tool for SpawnSubagentTool {
         // The role is resolved first, and against the live config: an unknown or
         // malformed type is refused before a directory exists, and before this
         // context is asked for anything else it may lack.
+        // One snapshot of the live config for all three reads below — a reload
+        // in between would resolve the type against one config and the models
+        // against another. Holding the guard across the awaits defers a reload
+        // to the next spawn rather than dropping it.
+        let config = self.config.load();
         let type_name = input
             .get("type")
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|v| !v.is_empty());
-        let subagent_type = match spawn_handler::resolve_type_arg(type_name, &self.config.load()) {
+        let subagent_type = match spawn_handler::resolve_type_arg(type_name, &config) {
             Ok(resolved) => resolved,
             Err(refusal) => return Ok(ToolOutput::error(format!("jyc_spawn_subagent: {refusal}"))),
         };
@@ -170,10 +175,10 @@ impl Tool for SpawnSubagentTool {
         // The child starts on this topic's model, unless the role names one of
         // its own: resolved with the same live config the type was, so a
         // `--config` file and config reloads are honored here too. The same
-        // config's `[ai]` resolves the role's own model references against, so
-        // the child starts on those too — and on the parent's model where a
-        // role's value does not resolve.
-        let config = self.config.load();
+        // snapshot, plus this channel's own model layer, resolves the role's
+        // model references — so the child starts on those too, and on the
+        // parent's model where a role's value does not resolve.
+        let role_ai = jyc_types::derive_agent_config(&config, &channel);
         let start_model = jyc_core::session_state::resolve_effective_model(
             &parent,
             ctx.working_dir,
@@ -190,7 +195,7 @@ impl Tool for SpawnSubagentTool {
             share_topic_path,
             subagent_type.as_ref(),
             start_model.as_deref(),
-            Some(&config.ai),
+            Some(&role_ai),
         )
         .await
         {

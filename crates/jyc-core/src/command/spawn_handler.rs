@@ -135,9 +135,10 @@ struct SpawnRequest<'a> {
     /// ([`apply_role_models`]). `None` leaves the child on whatever its
     /// inherited state resolves to.
     start_model: Option<String>,
-    /// The live `[ai]` a role's own model values are resolved against at spawn —
-    /// the same table the chain resolves them against at run time, so a value
-    /// that resolves here is the value the child would have resolved to.
+    /// The model config a role's own values are resolved against at spawn — the
+    /// one the chain itself resolves a reference against: `[ai]` with the
+    /// channel's own model layer applied ([`jyc_types::derive_agent_config`]),
+    /// so `${ai.model}` means here what it would mean in the child's own chain.
     /// `None` (a trigger without a config) resolves nothing, which leaves the
     /// parent's model in place for every slot a role declares.
     ai: Option<&'a AiConfig>,
@@ -454,6 +455,11 @@ impl CommandHandler for SpawnCommandHandler {
             parsed.inherit.then_some(true),
             parsed.share.then_some(true),
         );
+        // A role's own model references resolve against the same config the
+        // chain resolves them against: `[ai]` with this channel's model layer on
+        // top (`derive_agent_config`), so `${ai.model}` lands on what it would
+        // have meant in the child's own chain.
+        let role_ai = jyc_types::derive_agent_config(&context.config, &context.channel);
         let req = SpawnRequest {
             parent_topic: &context.topic_name,
             parent_topic_path: &context.topic_path,
@@ -463,7 +469,7 @@ impl CommandHandler for SpawnCommandHandler {
             share_topic_path,
             subagent_type: subagent_type.as_ref(),
             start_model,
-            ai: Some(&context.config.ai),
+            ai: Some(&role_ai),
         };
         self.spawn_under(req, &parent_state, &agents_dir).await
     }
@@ -1038,7 +1044,15 @@ async fn apply_role_models(state_dir: &Path, config: &TopicConfig, ai: Option<&A
     ] {
         let Some(value) = value else { continue };
         match jyc_types::config::resolve_model_reference(value, ai) {
-            Ok(model) => resolved.push((file, model)),
+            // An empty value resolves to itself — which is not a model. Written
+            // out, it would replace the floor with an empty file the chain reads
+            // as a model named "".
+            Ok(model) if !model.trim().is_empty() => resolved.push((file, model)),
+            Ok(_) => tracing::warn!(
+                slot = file,
+                model = value,
+                "spawn: a subagent type's model is empty — the child keeps the parent's model",
+            ),
             Err(error) => tracing::warn!(
                 slot = file,
                 model = value,
@@ -2230,72 +2244,102 @@ mod tests {
     #[tokio::test]
     async fn a_child_starts_on_the_parents_model_unless_the_role_names_one() {
         /// One row: what the role declares, the model the parent is running, the
-        /// `[ai]` the role's values resolve against, and what the child's two
-        /// model override files should hold afterwards.
+        /// `[ai]` the role's values resolve against, and what each of the child's
+        /// three model override files should hold afterwards.
         struct Case<'a> {
             role: Option<&'a str>,
             parent_model: Option<&'a str>,
             ai: &'a str,
             model_override: Option<&'a str>,
             plan_override: Option<&'a str>,
+            build_override: Option<&'a str>,
         }
+        let floor = Some("provider/parent");
         let cases = [
             Case {
                 role: None,
-                parent_model: Some("provider/parent"),
+                parent_model: floor,
                 ai: "",
-                model_override: Some("provider/parent"),
+                model_override: floor,
                 plan_override: None,
+                build_override: None,
             },
             Case {
                 role: Some("mode = \"plan\"\n"),
-                parent_model: Some("provider/parent"),
+                parent_model: floor,
                 ai: "",
-                model_override: Some("provider/parent"),
+                model_override: floor,
                 plan_override: None,
+                build_override: None,
             },
-            // A role with a model of its own starts on it — and keeps the
-            // parent's model as the floor for the slots it says nothing about.
+            // A role with a model of its own starts on it — in the file that
+            // slot is read from, each mode included — and keeps the parent's
+            // model as the floor for the slots it says nothing about.
             Case {
                 role: Some("[ai]\nplan_model = \"provider/role\"\n"),
-                parent_model: Some("provider/parent"),
+                parent_model: floor,
                 ai: "",
-                model_override: Some("provider/parent"),
+                model_override: floor,
                 plan_override: Some("provider/role"),
+                build_override: None,
+            },
+            Case {
+                role: Some("[ai]\nbuild_model = \"provider/role\"\n"),
+                parent_model: floor,
+                ai: "",
+                model_override: floor,
+                plan_override: None,
+                build_override: Some("provider/role"),
             },
             // A role model written as a reference resolves against `[ai.models]`,
-            // so the child starts on the slot's value …
+            // so the child starts on the slot's value — here in both slots at
+            // once, one resolved and one plain.
+            Case {
+                role: Some(
+                    "[ai]\nmodel = \"${ai.models.review}\"\nplan_model = \"provider/role\"\n",
+                ),
+                parent_model: floor,
+                ai: "[ai.models]\nreview = \"provider/review\"\n",
+                model_override: Some("provider/review"),
+                plan_override: Some("provider/role"),
+                build_override: None,
+            },
             Case {
                 role: Some("[ai]\nmodel = \"${ai.models.review}\"\n"),
-                parent_model: Some("provider/parent"),
+                parent_model: floor,
                 ai: "[ai.models]\nreview = \"provider/review\"\n",
                 model_override: Some("provider/review"),
                 plan_override: None,
+                build_override: None,
             },
             // … and one that points at nothing keeps the parent's model, in the
             // plain slot or in a mode slot (nothing is written for that mode,
             // so the chain falls to the floor).
             Case {
                 role: Some("[ai]\nmodel = \"${ai.models.absent}\"\n"),
-                parent_model: Some("provider/parent"),
+                parent_model: floor,
                 ai: "",
-                model_override: Some("provider/parent"),
+                model_override: floor,
                 plan_override: None,
+                build_override: None,
             },
             Case {
                 role: Some("[ai]\nplan_model = \"${ai.models.absent}\"\n"),
-                parent_model: Some("provider/parent"),
+                parent_model: floor,
                 ai: "",
-                model_override: Some("provider/parent"),
+                model_override: floor,
                 plan_override: None,
+                build_override: None,
             },
-            // An empty value is not a model either: the parent's again.
+            // An empty value is not a model either: the parent's again, rather
+            // than an empty file the chain would read as a model named "".
             Case {
                 role: Some("[ai]\nmodel = \"\"\n"),
-                parent_model: Some("provider/parent"),
+                parent_model: floor,
                 ai: "",
-                model_override: Some("provider/parent"),
+                model_override: floor,
                 plan_override: None,
+                build_override: None,
             },
             // Nothing resolved for the parent: nothing written.
             Case {
@@ -2304,6 +2348,7 @@ mod tests {
                 ai: "",
                 model_override: None,
                 plan_override: None,
+                build_override: None,
             },
         ];
 
@@ -2313,6 +2358,7 @@ mod tests {
             ai,
             model_override,
             plan_override,
+            build_override,
         } in &cases
         {
             let (_tmp, dir) =
@@ -2355,6 +2401,7 @@ mod tests {
             for (file, want) in [
                 ("model-override", *model_override),
                 ("plan-model-override", *plan_override),
+                ("build-model-override", *build_override),
             ] {
                 let written = tokio::fs::read_to_string(state.join(file))
                     .await
@@ -2366,9 +2413,12 @@ mod tests {
                     "{file} for role {role:?} with parent model {parent_model:?}"
                 );
             }
-            if let Some(expected) = model_override {
-                // Not just the file: the chain the child then runs reads it,
-                // with no config of its own to fall back on.
+            if let Some(expected) = (*build_override).or(*model_override) {
+                // Not just the files: the chain the child then runs has to read
+                // them, with no config of its own to fall back on. Its mode comes
+                // from the role too — a `mode = "plan"` row resolves in plan mode
+                // and so reads the plan file, which is what keeps a mode-only
+                // role's other mode pinned to the floor.
                 assert_eq!(
                     session_state::resolve_effective_model(
                         "worker-snapshot",
@@ -2378,7 +2428,7 @@ mod tests {
                     )
                     .await
                     .as_deref(),
-                    Some(*expected),
+                    Some(expected),
                     "the child's own chain must read the snapshot"
                 );
             }

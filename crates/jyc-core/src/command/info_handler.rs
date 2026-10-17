@@ -314,6 +314,8 @@ Files (2):
         t.cost = None;
         t.avg_call_ms = None;
         t.call_count = None;
+        t.avg_turn_call_ms = None;
+        t.turn_call_count = None;
         t.pattern = None;
         t.tasks = TaskList::default();
         let text = format_topic_info(&t);
@@ -321,6 +323,18 @@ Files (2):
             text,
             "Topic: issue-42\nChannel: feishu\nPattern: -\nMode: build\nStatus: Idle"
         );
+    }
+
+    /// The session-only fallback through the real wiring: a turn that has
+    /// measured no call yet (just started, or the session was reset) leaves
+    /// one row, with no turn figure in it.
+    #[test]
+    fn latency_row_falls_back_to_session_with_no_turn_figure() {
+        let mut t = full_info();
+        t.avg_turn_call_ms = None;
+        t.turn_call_count = None;
+        let text = format_topic_info(&t);
+        assert!(text.contains("Latency: 820ms/call (37)\n"));
     }
 
     #[test]

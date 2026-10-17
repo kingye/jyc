@@ -215,9 +215,11 @@ pub fn derive_agent_config(app: &AppConfig, channel_name: &str) -> AiConfig {
 /// Any model value the chain picks may say `"${ai.small_model}"` instead of
 /// repeating an id — `[agents.<name>].model` and a subagent type's `[ai].model`
 /// are the two that prompted it, and a topic's own config, a pattern and an
-/// override file all work the same way. The role then runs on whatever the
-/// `[ai]` value in effect is, and changing it in one place moves every role that
-/// asked for it.
+/// override file all work the same way. The reference is resolved when the
+/// value is written — at spawn for a subagent type, which lands on the child's
+/// own override file — so the role runs on what the `[ai]` value was in effect
+/// then, and moving the global value later moves topics that ask for it per
+/// turn, not children already spawned.
 ///
 /// Four fixed names resolve to their top-level key:
 ///

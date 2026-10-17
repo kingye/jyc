@@ -504,6 +504,12 @@ impl AgentService for JycAgentService {
         session::ensure_session_file(topic_name, topic_path, context_window, auto_reset_threshold)
             .await;
 
+        // Start this turn's latency window: the dashboard's "latest turn"
+        // figure must describe this turn, not the previous one. Placed
+        // after `ensure_session_file` so the file (and a reset session
+        // rebuilt by the pre-check) is already settled.
+        session::begin_turn_latency(topic_name, topic_path).await;
+
         // Load session and prior raw context AFTER the pre-loop pre-check
         // above: if the pre-check just reset the session (e.g. the active
         // model switched to a smaller context window), this must read the

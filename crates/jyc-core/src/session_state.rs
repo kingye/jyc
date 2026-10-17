@@ -109,32 +109,50 @@ pub async fn read_session_cost(topic_name: &str, topic_path: &Path) -> Option<f6
     (state.session_cost > 0.0).then_some(state.session_cost)
 }
 
-/// Read the average wall-clock time of one LLM call in the current
-/// session, in milliseconds, together with the number of calls that
-/// average covers.
+/// Call-latency figures for a topic: the session-wide average and the
+/// latest turn's average, each as `(average_ms, call_count)`.
 ///
-/// Returns `None` when the file is missing, malformed, or no call has
-/// been measured yet (fresh session, or a session file written before the
-/// fields existed) — nothing meaningful to show.
+/// A pair is `None` when there is nothing to average in that scope — no
+/// measured call yet (fresh session, a session file written before the
+/// fields existed), or the turn counters were just cleared at the start
+/// of a turn. Pairing the average with its count structurally keeps a
+/// figure drawn from a single call from being rendered as a settled one,
+/// and keeps the count guard (`count > 0`, which is what prevents an
+/// average of `0ms`) attached to the figure it protects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CallLatency {
+    /// Average wall-clock time per LLM call across the session, with the
+    /// number of calls it covers.
+    pub session: Option<(u64, u64)>,
+    /// Average wall-clock time per LLM call in the latest turn, with the
+    /// number of calls it covers.
+    pub turn: Option<(u64, u64)>,
+}
+
+/// Read the session-wide and latest-turn call latency from the topic's
+/// session file.
 ///
+/// Returns default (no figures) when the file is missing or malformed.
 /// Kept separate from `read_token_state` rather than widening its tuple,
 /// mirroring `read_session_cost`: one extra read of an already
 /// page-cached file is cheaper than threading more elements through
 /// every tuple consumer.
-pub async fn read_call_latency(topic_name: &str, topic_path: &Path) -> Option<(u64, u64)> {
+pub async fn read_call_latency(topic_name: &str, topic_path: &Path) -> CallLatency {
     let agent_path = resolve_state_dir(topic_name, topic_path).join("agent-session.json");
-    let content = tokio::fs::read_to_string(&agent_path).await.ok()?;
-    let state = serde_json::from_str::<AgentSessionState>(&content).ok()?;
-    // `call_count` alone is the guard: `total_call_duration_ms` only ever
-    // grows alongside a count bump, so a non-zero count implies a
-    // non-zero total — and therefore an average of at least 1ms, which is
-    // what keeps the row from ever reading `0ms/call`.
-    (state.call_count > 0).then(|| {
-        (
-            state.total_call_duration_ms / state.call_count,
-            state.call_count,
-        )
-    })
+    let Ok(content) = tokio::fs::read_to_string(&agent_path).await else {
+        return CallLatency::default();
+    };
+    let Ok(state) = serde_json::from_str::<AgentSessionState>(&content) else {
+        return CallLatency::default();
+    };
+    // `count` alone is the guard: the total only ever grows alongside a
+    // count bump, so a non-zero count implies an average of at least 1ms,
+    // which is what keeps the row from ever reading `0ms/call`.
+    let average = |total: u64, count: u64| (count > 0).then(|| (total / count, count));
+    CallLatency {
+        session: average(state.total_call_duration_ms, state.call_count),
+        turn: average(state.turn_total_call_duration_ms, state.turn_call_count),
+    }
 }
 
 /// Read all six token fields in a single file read.
@@ -211,6 +229,10 @@ struct AgentSessionState {
     total_call_duration_ms: u64,
     #[serde(default)]
     call_count: u64,
+    #[serde(default)]
+    turn_total_call_duration_ms: u64,
+    #[serde(default)]
+    turn_call_count: u64,
 }
 
 /// Read the mode override file if it exists.

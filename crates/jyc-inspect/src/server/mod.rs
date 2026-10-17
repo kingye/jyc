@@ -318,6 +318,8 @@ impl InspectServer {
                     cost: t.cost,
                     avg_call_ms: t.avg_call_ms,
                     call_count: t.call_count,
+                    avg_turn_call_ms: t.avg_turn_call_ms,
+                    turn_call_count: t.turn_call_count,
                     tasks: t.tasks,
                     commands,
                 }

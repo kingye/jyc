@@ -5,7 +5,7 @@ use std::sync::Arc;
 use jyc_types::{ChangeKind, TopicInfo, format_amount};
 
 use super::handler::{CommandContext, CommandHandler, CommandResult};
-use crate::duration::{DurationStyle, format_duration_ms};
+use crate::duration::format_latency;
 use crate::topic_manager::TopicManager;
 
 /// /info command — show this topic's info, mirroring the dashboard chat
@@ -110,15 +110,14 @@ fn format_topic_info(t: &TopicInfo) -> String {
             format_amount(cost.today, &cost.currency)
         ));
     }
-    // The session's average wall-clock time per LLM call. Same fields,
-    // same words and the same shared duration formatter as the dashboard
-    // panes' row — the sentence itself is spelled out in both places, as
-    // the cost row already was.
-    if let (Some(avg), Some(calls)) = (t.avg_call_ms, t.call_count) {
-        lines.push(format!(
-            "Latency: {}/call (avg of {calls})",
-            format_duration_ms(avg, DurationStyle::Millis),
-        ));
+    // Wall-clock time per LLM call: the latest turn's average first, the
+    // session's second — same fields, same words and the same shared
+    // formatter as the dashboard panes' row (`format_latency`), so the two
+    // surfaces cannot drift.
+    let turn = t.avg_turn_call_ms.zip(t.turn_call_count);
+    let session = t.avg_call_ms.zip(t.call_count);
+    if let Some(latency) = format_latency(turn, session) {
+        lines.push(format!("Latency: {latency}"));
     }
     // Agent task list, through the same renderer the tools return, so the ids
     // the model prints are the ids the user reads. Omitted when there is none.
@@ -226,6 +225,8 @@ mod tests {
             }),
             avg_call_ms: Some(820),
             call_count: Some(37),
+            avg_turn_call_ms: Some(1100),
+            turn_call_count: Some(3),
             commands: vec![],
         }
     }
@@ -285,7 +286,7 @@ Cache hits: 987654
 Cache create: 111
 Reasoning: 4096
 Cost: $0.4200 session · $1.2300 today
-Latency: 820ms/call (avg of 37)
+Latency: 1.10s/call (3) · 820ms/call (37)
 Tasks (1/3):
   [✓] 1. inspect list_topics
   [~] 2. wire the pane
@@ -313,6 +314,8 @@ Files (2):
         t.cost = None;
         t.avg_call_ms = None;
         t.call_count = None;
+        t.avg_turn_call_ms = None;
+        t.turn_call_count = None;
         t.pattern = None;
         t.tasks = TaskList::default();
         let text = format_topic_info(&t);
@@ -320,6 +323,18 @@ Files (2):
             text,
             "Topic: issue-42\nChannel: feishu\nPattern: -\nMode: build\nStatus: Idle"
         );
+    }
+
+    /// The session-only fallback through the real wiring: a turn that has
+    /// measured no call yet (just started, or the session was reset) leaves
+    /// one row, with no turn figure in it.
+    #[test]
+    fn latency_row_falls_back_to_session_with_no_turn_figure() {
+        let mut t = full_info();
+        t.avg_turn_call_ms = None;
+        t.turn_call_count = None;
+        let text = format_topic_info(&t);
+        assert!(text.contains("Latency: 820ms/call (37)\n"));
     }
 
     #[test]

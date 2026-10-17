@@ -1152,11 +1152,52 @@ mod session {
         assert_eq!(state["total_call_duration_ms"], 2000);
         assert_eq!(state["call_count"], 2);
 
-        // The dashboard reads the same pair through the core reader.
+        // The dashboard reads the same pair through the core reader, and
+        // the turn-scoped twin accumulated in lockstep (nothing has
+        // started a new turn here).
+        let latency = jyc_core::session_state::read_call_latency(topic, tmp.path()).await;
+        assert_eq!(latency.session, Some((1000, 2)));
+        assert_eq!(latency.turn, Some((1000, 2)));
+    }
+
+    /// A new turn starts with an empty latency window: the previous turn's
+    /// pair is cleared while the session pair stays put, so "latest turn"
+    /// can never point at a turn that already ended. A first-ever turn
+    /// creates no file (nothing to clear).
+    #[tokio::test]
+    async fn begin_turn_latency_clears_previous_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let topic = "begin_turn_latency_clears_previous_turn";
+        jyc_types::state_dir::register(topic, &tmp.path().join(".jyc"));
+        let path = tmp.path();
+
+        jyc_agent::session::begin_turn_latency(topic, path).await;
         assert_eq!(
-            jyc_core::session_state::read_call_latency(topic, tmp.path()).await,
-            Some((1000, 2)),
+            jyc_core::session_state::read_call_latency(topic, path).await,
+            jyc_core::session_state::CallLatency::default(),
+            "no session file yet: nothing to show"
         );
+        assert!(
+            !path.join(".jyc/agent-session.json").exists(),
+            "a zero-counter turn start must not create the file"
+        );
+
+        // Two calls in this turn: 600ms and 400ms.
+        for ms in [600u64, 400u64] {
+            jyc_agent::session::persist_tokens(
+                topic, path, 100, 100, 0, 0, 0, 0, None, 0.95, 0.0, ms,
+            )
+            .await;
+        }
+        let latency = jyc_core::session_state::read_call_latency(topic, path).await;
+        assert_eq!(latency.turn, Some((500, 2)));
+
+        // The next turn starts: the turn pair clears, the session pair
+        // survives.
+        jyc_agent::session::begin_turn_latency(topic, path).await;
+        let latency = jyc_core::session_state::read_call_latency(topic, path).await;
+        assert_eq!(latency.turn, None);
+        assert_eq!(latency.session, Some((500, 2)));
     }
 
     /// The latency counters are session-scoped: the auto-reset write —
@@ -1176,7 +1217,9 @@ mod session {
         )
         .await;
         assert_eq!(
-            jyc_core::session_state::read_call_latency(topic, path).await,
+            jyc_core::session_state::read_call_latency(topic, path)
+                .await
+                .session,
             Some((700, 1))
         );
 
@@ -1202,7 +1245,7 @@ mod session {
 
         assert_eq!(
             jyc_core::session_state::read_call_latency(topic, path).await,
-            None,
+            jyc_core::session_state::CallLatency::default(),
             "the pair must zero with the session"
         );
     }

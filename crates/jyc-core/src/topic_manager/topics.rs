@@ -782,8 +782,10 @@ impl TopicManager {
                     None
                 },
                 cost,
-                avg_call_ms: call_latency.map(|(avg, _)| avg),
-                call_count: call_latency.map(|(_, count)| count),
+                avg_call_ms: call_latency.session.map(|(avg, _)| avg),
+                call_count: call_latency.session.map(|(_, count)| count),
+                avg_turn_call_ms: call_latency.turn.map(|(avg, _)| avg),
+                turn_call_count: call_latency.turn.map(|(_, count)| count),
                 // Filled by InspectServer from build_overview_state /
                 // build_state using the topic's pattern → per-agent commands.
                 commands: vec![],

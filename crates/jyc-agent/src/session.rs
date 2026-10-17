@@ -341,6 +341,18 @@ pub struct SessionState {
     /// count; `0` means no call has been measured yet.
     #[serde(default)]
     pub call_count: u64,
+    /// Accumulated wall-clock time of the LLM calls in the latest turn,
+    /// in milliseconds — the turn-scoped twin of
+    /// `total_call_duration_ms`. Zeroed by [`begin_turn_latency`] at every
+    /// turn start, so it never carries data across turns.
+    /// `serde(default)` so session files written before the field existed
+    /// deserialize as `0`.
+    #[serde(default)]
+    pub turn_total_call_duration_ms: u64,
+    /// Number of LLM calls folded into `turn_total_call_duration_ms`.
+    /// `0` while the current turn has not completed a measured call yet.
+    #[serde(default)]
+    pub turn_call_count: u64,
     /// Max tokens (context window) for the model.
     #[serde(default)]
     pub max_input_tokens: u64,
@@ -675,6 +687,30 @@ pub async fn ensure_session_file(
     );
 }
 
+/// Clear the previous turn's latency counters so the "latest turn"
+/// figures describe the turn that is starting.
+///
+/// Called once per turn, right after [`ensure_session_file`]. Skips the
+/// write when both counters are already zero (a brand-new session), so a
+/// turn pays one small file write only when there is something to clear.
+///
+/// The session-wide counters (`total_call_duration_ms` / `call_count`)
+/// are deliberately untouched: they answer a different question and
+/// outlive the turn. Session reset does clear the turn pair as a side
+/// effect of rebuilding the file — a reset session is a fresh slate, and
+/// the "latest turn" row reappears once the next turn makes its first
+/// call.
+pub async fn begin_turn_latency(topic_name: &str, topic_path: &Path) {
+    let session_path = resolve_state_dir(topic_name, topic_path).join(SESSION_FILE);
+    let mut state = load_session_state(&session_path).await;
+    if state.turn_call_count == 0 && state.turn_total_call_duration_ms == 0 {
+        return;
+    }
+    state.turn_call_count = 0;
+    state.turn_total_call_duration_ms = 0;
+    save_session_state(&session_path, &state).await;
+}
+
 /// Persist the latest input/output token counts to disk without triggering
 /// auto-reset. Called from the agent loop after every LLM response so the
 /// dashboard polls see fresh data mid-round. The post-loop `update_tokens`
@@ -692,9 +728,10 @@ pub async fn ensure_session_file(
 /// assigned). Pass `0.0` when the model has no configured pricing.
 ///
 /// `call_ms` is that same call's wall-clock time in milliseconds and is
-/// **added** to `total_call_duration_ms`, incrementing `call_count` with
-/// it. Pass `0` when nothing was measured (the post-loop call, whose
-/// duration was already banked per call).
+/// **added** to `total_call_duration_ms` and `turn_total_call_duration_ms`
+/// (each incrementing its count with it). Pass `0` when nothing was
+/// measured (the post-loop call, whose duration was already banked per
+/// call).
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_tokens(
     topic_name: &str,
@@ -760,10 +797,14 @@ async fn persist_tokens_returning_state(
     // Accumulated the same way, and for the same reason: the caller passes
     // one call's duration and the file keeps the running sum, so the
     // mid-loop persist and the post-loop `update_tokens` (which passes 0)
-    // both leave the average intact.
+    // both leave the average intact. The turn-scoped pair (reset by
+    // `begin_turn_latency` at each turn start) accumulates in lockstep, so
+    // "latest turn" always covers exactly this turn's measured calls.
     if call_ms > 0 {
         state.total_call_duration_ms += call_ms;
         state.call_count += 1;
+        state.turn_total_call_duration_ms += call_ms;
+        state.turn_call_count += 1;
     }
 
     if let Some(cw) = context_window {

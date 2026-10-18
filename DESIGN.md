@@ -2390,7 +2390,7 @@ tokens ↓
 ┌─ tools ───────────────────────────────── ~2-3k ─┐
 │  ~20 内建工具 + MCP 工具的 schema，按名排序      │ ◇断点1  跨 topic 全进程一致
 ├─ system prompt ──────────────────────── ~6-9k ─┤
-│  · File access boundaries                        │ ◇断点2  ★字节全稳定★
+│  · File access boundaries                        │ ◇断点2  ★稳态¹
 │  · Skills 清单 + AGENTS.md(项目指令)             │
 │  · Reply instructions / History format / VCS     │
 ├─ messages ──────────────────────────────────────┤
@@ -2412,6 +2412,8 @@ tokens ↓
 ```
 
 `◇` = Anthropic `cache_control` breakpoint; `★` = 本次改动的位置。
+¹ 稳态是指"不随运行时变动"，access boundary 的 grant 行除外——它对应
+  工具层强制的 roots，spawn/close 与 `/grant` 会移动它(见上文)。
 参考块虽易变，但落在 region ③ 最前——这个位置反正每轮都是新的，
 所以它的易变性对缓存的损失为零，这正是选这个注入点的原因。
 

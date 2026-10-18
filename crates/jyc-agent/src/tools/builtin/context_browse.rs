@@ -24,12 +24,10 @@ impl Tool for ContextBrowseTool {
     }
 
     fn description(&self) -> &str {
-        "Browse the current conversation transcript — user/assistant text \
-         pairs, including turns outside your sliding context window. Pair \
-         numbers count from the oldest pair (1 = first). `offset` is the \
-         number of pairs to skip from the newest end (0 = the most recent \
-         pairs); `limit` is the max number of pairs to return (default 10, \
-         capped at 50). Returns a page of oldest→newest pairs."
+        "Browse the conversation transcript — user/assistant text pairs, including \
+         turns outside your sliding context window. Pair numbers count from the oldest \
+         (1 = first); `offset` skips pairs from the newest end and `limit` caps the \
+         count. Returns oldest→newest."
     }
 
     fn input_schema(&self) -> Value {

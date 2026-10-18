@@ -108,13 +108,12 @@ impl Tool for ReadImageTool {
     }
 
     fn description(&self) -> &str {
-        "Load an image into the next user turn so the model can see it, \
-         or (for text-only models) analyze it via a vision model and return text. \
-         Provide either `path` (an absolute path inside the working directory \
-         or the configured attachments directory) OR `url` (an http/https URL). \
-         Supported MIME types: image/png, image/jpeg, image/gif, image/webp. \
-         Maximum size: 10 MB. The image content rides on the next user message; \
-         the tool result itself is a small JSON confirmation."
+        "Load an image into the next user turn so the model can see it, or (for \
+         text-only models) analyze it via a vision model and return text. Provide \
+         either `path` (absolute, inside the working directory or the configured \
+         attachments directory) or `url` (http/https). Types: png, jpeg, gif, webp; \
+         max 10 MB. The image rides on the next user message; the result itself is a \
+         small JSON confirmation."
     }
 
     fn input_schema(&self) -> Value {

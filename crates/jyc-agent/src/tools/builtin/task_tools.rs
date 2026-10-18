@@ -45,7 +45,7 @@ impl Tool for TaskListTool {
     }
 
     fn description(&self) -> &str {
-        "Show this topic's task list: the plan for the work in progress, one \
+        "Show this topic's task list: the plan in progress, one \
          line per item with the id `task_update` takes. Read it before updating \
          an item you did not just create, and again after a context reset. Says \
          so when there is no list yet — create one with `task_create`."
@@ -163,11 +163,10 @@ impl Tool for TaskUpdateTool {
 
     fn description(&self) -> &str {
         "Set one item's status in this topic's task list: `pending`, \
-         `in_progress`, or `completed`. Mark an item `in_progress` when you \
-         start it and `completed` only once it is genuinely done — never \
-         optimistically, and never with validation still failing. `task_list` \
-         shows the ids; `task_create` replaces the whole list. Returns the \
-         rendered list."
+         `in_progress` or `completed`. Mark `in_progress` when you start it, \
+         `completed` only once it is genuinely done — never optimistically, never \
+         with validation still failing. `task_list` shows the ids; `task_create` \
+         replaces the list. Returns the rendered list."
     }
 
     fn input_schema(&self) -> Value {

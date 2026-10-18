@@ -187,14 +187,12 @@ impl Tool for AskUserTool {
     }
 
     fn description(&self) -> &str {
-        "Ask the user one or more questions with selectable options. The questions \
-         are delivered to the user and this call returns at once: the turn ends \
-         then, and the answer arrives as the user's next message. Use at genuine \
-         decision points where the user's input changes what you do next. To settle \
-         several decisions at once, pass a `questions` array instead of calling this \
-         tool repeatedly - the user answers them in one flow. Anything you write \
-         alongside the call reaches the user before the questions, so keep it to \
-         context they need to decide; do not repeat the questions themselves."
+        "Ask the user one or more questions with selectable options. The call \
+         returns at once: the turn ends and the answer arrives as the user's next \
+         message. Use it where the user's input changes what you do next; to settle \
+         several decisions at once pass a `questions` array instead of calling again. \
+         Text written alongside the call reaches the user before the questions — keep it \
+         to context they need, not a repeat of the questions."
     }
 
     fn input_schema(&self) -> Value {
@@ -219,11 +217,8 @@ impl Tool for AskUserTool {
                 "questions": {
                     "type": "array",
                     "maxItems": MAX_QUESTIONS as i32,
-                    "description": "Several questions asked at once, answered as one set \
-                                    and arriving together as Q1/A1, Q2/A2... \
-                                    When present, `question`/`options`/`allow_multiple` \
-                                    below are ignored. Prefer this over calling ask_user \
-                                    repeatedly in the same turn.",
+                    "description": "Several questions asked at once, answered as one set. When \
+                                    present, `question`/`options`/`allow_multiple` are ignored.",
                     "items": {
                         "type": "object",
                         "properties": {

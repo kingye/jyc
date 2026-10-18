@@ -39,8 +39,8 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a bash command in the working directory. Use for running tests, builds, git commands, \
-         file operations, and any system commands. Commands run with a 2-minute timeout by default."
+        "Execute a bash command in the working directory. Use for tests, builds, git, \
+         file operations and any system command. Commands run with a 2-minute timeout by default."
     }
 
     fn input_schema(&self) -> Value {

@@ -1618,8 +1618,8 @@ mod render_raw_context_tests {
         assert!(!is_wide_char(' '));
         assert_eq!(
             est_text_tokens("！\u{FF61}"),
-            1,
-            "one wide + one narrow byte"
+            2,
+            "！ is one wide char; half-width katakana is 3 bytes, which still rounds up to a token"
         );
     }
 
@@ -1864,8 +1864,8 @@ mod render_raw_context_tests {
             .collect();
         assert_eq!(
             expected.len(),
-            5,
-            "marker + the newest verbatim turn (3) + the current turn: {expected:?}"
+            6,
+            "marker (1) + the newest verbatim turn (user, tool call, tool result, final = 4) + the current turn (1): {expected:?}"
         );
         let budget: usize = expected.iter().map(est_message_tokens).sum();
 

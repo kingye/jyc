@@ -1171,9 +1171,9 @@ fn transformed_message_renders_on_two_lines() {
 }
 
 #[test]
-fn code_fence_renders_with_highlight_colors() {
-    // Pin: chat render options keep syntect highlighting active (24-bit
-    // colors come through as Rgb spans).
+fn code_fence_renders_without_highlight_colors() {
+    // Pin: tui-markdown is built without `highlight-code`, so a code fence
+    // renders as plain text — no Rgb foreground spans reach the TUI.
     let text = tui_markdown::from_str_with_options(
         "```rust\nfn main() {}\n```\n",
         &chat_markdown_options(),
@@ -1183,7 +1183,7 @@ fn code_fence_renders_with_highlight_colors() {
         .iter()
         .flat_map(|line| line.spans.iter())
         .any(|span| matches!(span.style.fg, Some(Color::Rgb(..))));
-    assert!(has_rgb_fg, "code fence produced no highlighted spans");
+    assert!(!has_rgb_fg, "code fence still produced highlighted spans");
 }
 // Tests for the `ask_user` question box flow in the chat pane.
 //

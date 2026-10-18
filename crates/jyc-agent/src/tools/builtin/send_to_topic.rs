@@ -26,10 +26,10 @@ impl Tool for SendToThreadTool {
     }
 
     fn description(&self) -> &str {
-        "Send a message to another agent: its own topic by default, or one of \
-         its topics with 'topic'. An agent's own topic is created if it doesn't \
-         exist yet. Set require_reply=true to request the target agent to send \
-         results back to the source topic."
+        "Send a message to another agent: its own topic by default, or one of its \
+         topics with 'topic' — a name an existing topic holds goes there, a name no topic \
+         owns becomes that agent's own topic, created on demand. Set require_reply=true to \
+         have the target send its results back to this topic."
     }
 
     fn input_schema(&self) -> Value {
@@ -38,11 +38,11 @@ impl Tool for SendToThreadTool {
             "properties": {
                 "agent": {
                     "type": "string",
-                    "description": "The agent to reach, e.g. \"invoice\" or \"mail-bot\". The name is matched against topic names first: a name an existing topic holds goes there, and only a name no topic owns becomes this agent's own topic, created when it does not exist yet."
+                    "description": "The agent to reach, e.g. \"invoice\". Matched against topic names first: a name an existing topic holds goes there; a name no topic owns becomes that agent's own topic."
                 },
                 "topic": {
                     "type": "string",
-                    "description": "One of that agent's topics, when it has more than one, e.g. \"invoice_processing\". A topic's name is its address and is unique process-wide, so it identifies its agent too."
+                    "description": "One of that agent's topics, when it has more than one; a topic name is unique process-wide."
                 },
                 "message": {
                     "type": "string",
@@ -55,11 +55,11 @@ impl Tool for SendToThreadTool {
                 },
                 "recipient": {
                     "type": "string",
-                    "description": "Optional recipient address/ID. Sets the sender_address on the injected message, enabling channel-appropriate reply routing"
+                    "description": "Optional recipient address/ID; sets the sender_address for channel-appropriate reply routing."
                 },
                 "require_reply": {
                     "type": "boolean",
-                    "description": "Whether to request the target agent to reply back with results. When true, the target agent will be instructed to use jyc_send_to_topic to send results back to the source topic. Default: false."
+                    "description": "Ask the target agent to send its results back to this topic; it then uses jyc_send_to_topic to do so. Default false."
                 }
             },
             "required": ["agent", "message"]

@@ -1,0 +1,189 @@
+//! The in-process tool schemas ride in every request's stable prompt prefix —
+//! #935 is what made that prefix byte-stable — so their text is a standing
+//! per-call cost and their shape is a standing contract with the model.
+//!
+//! Two things are pinned here:
+//!
+//! * **the tool set, by name** — a rename or a drop changes what the model may
+//!   call, and it invalidates every provider prefix cache;
+//! * **the description text, by budget** — the 2026-10-18 slimming pass took the
+//!   in-process natural language from 10,108 to 8,349 chars (-17.4%) without
+//!   touching a single name, parameter, type or required list. The budgets
+//!   carry ~8% slack, so an ordinary wording fix does not have to bump them.
+//!
+//! Editing a description is therefore a deliberate act that costs one round of
+//! prefix cache misses. Keep such an edit in its own change, where the diff
+//! shows it on its own.
+
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+use jyc_agent::tools::Tool;
+use jyc_agent::tools::builtin::ask_user::AskUserTool;
+use jyc_agent::tools::builtin::bash::BashTool;
+use jyc_agent::tools::builtin::context_browse::ContextBrowseTool;
+use jyc_agent::tools::builtin::edit::EditTool;
+use jyc_agent::tools::builtin::glob_tool::GlobTool;
+use jyc_agent::tools::builtin::grep::GrepTool;
+use jyc_agent::tools::builtin::job_tools::{
+    JobCreateTool, JobDeleteTool, JobListTool, JobToggleTool,
+};
+use jyc_agent::tools::builtin::publish_file::PublishFileTool;
+use jyc_agent::tools::builtin::read::ReadTool;
+use jyc_agent::tools::builtin::read_image::ReadImageTool;
+use jyc_agent::tools::builtin::send_to_topic::SendToThreadTool;
+use jyc_agent::tools::builtin::spawn_subagent::SpawnSubagentTool;
+use jyc_agent::tools::builtin::task_tools::{TaskCreateTool, TaskListTool, TaskUpdateTool};
+use jyc_agent::tools::builtin::webfetch::WebfetchTool;
+use jyc_agent::tools::builtin::write::WriteTool;
+use jyc_types::AppConfig;
+
+/// Every in-process tool. The registry picks these per topic by allow-list, so
+/// a typical request carries a subset — the schema text is a per-call cost even
+/// so, which is why it is budgeted.
+fn in_process_tools() -> Vec<Box<dyn Tool>> {
+    vec![
+        Box::new(AskUserTool),
+        Box::new(BashTool),
+        Box::new(ContextBrowseTool),
+        Box::new(EditTool),
+        Box::new(GlobTool),
+        Box::new(GrepTool),
+        Box::new(JobListTool),
+        Box::new(JobCreateTool),
+        Box::new(JobDeleteTool),
+        Box::new(JobToggleTool),
+        Box::new(PublishFileTool::new("http://127.0.0.1:8080".to_string())),
+        Box::new(ReadTool),
+        Box::new(ReadImageTool::new(false, None)),
+        Box::new(SendToThreadTool),
+        Box::new(SpawnSubagentTool {
+            config: Arc::new(ArcSwap::from_pointee(AppConfig::default())),
+        }),
+        Box::new(TaskListTool),
+        Box::new(TaskCreateTool),
+        Box::new(TaskUpdateTool),
+        Box::new(WebfetchTool),
+        Box::new(WriteTool),
+    ]
+}
+
+/// Per tool: `(name, description budget, parameter-description budget)` in
+/// characters. Measured against the 2026-10-18 slimming pass and rounded up
+/// with slack; a tool added or removed shows up as a failure here rather than
+/// as a silent change in what every prompt carries.
+const BUDGETS: &[(&str, usize, usize)] = &[
+    ("ask_user", 465, 250),
+    ("bash", 180, 75),
+    ("context_browse", 280, 100),
+    ("edit", 235, 125),
+    ("glob", 100, 125),
+    ("grep", 165, 145),
+    ("job_list", 175, 0),
+    ("job_create", 385, 275),
+    ("job_delete", 135, 30),
+    ("job_toggle", 95, 95),
+    ("jyc_publish_file", 250, 225),
+    ("read", 185, 200),
+    ("read_image", 425, 195),
+    ("jyc_send_to_topic", 315, 630),
+    ("jyc_spawn_subagent", 1140, 515),
+    ("task_list", 280, 0),
+    ("task_create", 425, 60),
+    ("task_update", 345, 80),
+    ("webfetch", 140, 55),
+    ("write", 140, 115),
+];
+
+/// The whole in-process set, in characters — 8,349 when the budgets above were
+/// set, plus whatever `task_create`'s `format!` template contributes at runtime.
+const TOTAL_BUDGET: usize = 9_100;
+
+/// `jyc_spawn_subagent`'s `type` description ends with the catalog of roles
+/// configured *on this machine*, so its length is configuration rather than
+/// something a test may pin.
+fn is_machine_dependent(tool: &str, property: &str) -> bool {
+    tool == "jyc_spawn_subagent" && property == "type"
+}
+
+/// Characters of parameter descriptions, minus the machine-dependent ones.
+fn param_text(tool: &dyn Tool) -> usize {
+    tool.input_schema()
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .map(|props| {
+            props
+                .iter()
+                .filter(|(name, _)| !is_machine_dependent(tool.name(), name))
+                .filter_map(|(_, schema)| schema.get("description").and_then(|d| d.as_str()))
+                .map(str::chars)
+                .flatten()
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[test]
+fn the_in_process_tool_set_is_stable() {
+    let tools = in_process_tools();
+    let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+    let expected: Vec<&str> = BUDGETS.iter().map(|(name, _, _)| *name).collect();
+    assert_eq!(
+        names, expected,
+        "the in-process tool set changed: a rename or a drop is an API change, and \
+         it invalidates every provider prefix cache. Update BUDGETS deliberately."
+    );
+}
+
+#[test]
+fn descriptions_stay_within_budget() {
+    for tool in in_process_tools() {
+        let (_, desc_budget, param_budget) = BUDGETS
+            .iter()
+            .find(|(name, _, _)| *name == tool.name())
+            .unwrap_or_else(|| panic!("{} has no budget", tool.name()));
+
+        let desc = tool.description().chars().count();
+        assert!(
+            desc <= *desc_budget,
+            "{}: description is {desc} chars, over its {desc_budget} budget — schema text \
+             rides in every prompt's cached prefix, so growth is a standing cost",
+            tool.name()
+        );
+
+        let params = param_text(tool.as_ref());
+        assert!(
+            params <= *param_budget,
+            "{}: parameter descriptions total {params} chars, over their {param_budget} budget",
+            tool.name()
+        );
+    }
+}
+
+#[test]
+fn schema_text_total_stays_within_budget() {
+    let total: usize = in_process_tools()
+        .iter()
+        .map(|t| t.description().chars().count() + param_text(t.as_ref()))
+        .sum();
+    assert!(
+        total <= TOTAL_BUDGET,
+        "in-process schema text is {total} chars, over the {TOTAL_BUDGET} budget \
+         (10,108 before the 2026-10-18 slimming pass)"
+    );
+}
+
+#[test]
+fn every_tool_says_what_it_is_for() {
+    // A budget is only safe while the text still carries its load: a description
+    // that says nothing about when to reach for the tool is a bug the byte count
+    // cannot see.
+    for tool in in_process_tools() {
+        let desc = tool.description();
+        assert!(
+            desc.chars().count() > 40,
+            "{}: description is too thin to guide a call: {desc:?}",
+            tool.name()
+        );
+    }
+}

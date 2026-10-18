@@ -56,28 +56,19 @@ impl Tool for SpawnSubagentTool {
     }
 
     fn description(&self) -> &str {
-        "Create a subagent topic — a sibling topic that inherits this topic's settings (mode, \
-         pattern, and the runtime overrides you do not pin with `type`), starts on your model for \
-         the mode it is in — the one you set for that mode, else the model you are running — \
-         unless `type` names one that resolves to a model, starts with an empty task list, and \
-         runs on its own \
-         queue — and grant yourself read+write access to its \
-         topic_path, the working directory it runs in. Its conversation starts empty: pass \
-         inherit_context=true only when the child must continue this conversation. Pass \
-         share_topic_path=true to have it work in *your* directory (a reviewer of uncommitted \
-         work needs that; its own state still goes to its own state dir). Pass type=\"<name>\" to \
-         start it as a configured role — the settings under that name (its model, skill \
-         allow-list, disabled tools, mode, instructions) are written into the child's state, so \
-         e.g. the `review` type starts a child in plan mode with only the review skills and \
-         without `write`/`edit`; the types you can pass are listed in this tool's `type` \
-         argument, and a role may bring its own defaults for the two flags above (the `review` \
-         role shares your directory without being asked). Put whatever it needs into that \
-         directory with `write`, then send \
-         the task with `jyc_send_to_topic` (require_reply=true). To reconfigure it, send it a \
-         command body (`/build`, `/plan`, `/model`, …), which runs without spending one of its \
-         turns. When the subagent \
-         list in your system prompt already holds one that fits, continue it instead of spawning \
-         another."
+        "Create a subagent topic — a sibling inheriting this topic's settings (mode, pattern, \
+         and the runtime overrides you do not pin with `type`), on your model for its mode \
+         unless `type` names one that resolves, with an empty task list and its own queue. You \
+         get read+write access to its topic_path. Its conversation starts empty: \
+         inherit_context=true copies this conversation in; share_topic_path=true works it in \
+         *your* directory, for a review of uncommitted changes (its state still goes to its own \
+         state dir). Pass type=\"<name>\" to start it as a configured role — its model, skills, \
+         disabled tools, mode and instructions go into the child's state, and the role may set \
+         defaults for the two flags. The types you can pass are listed in this tool's `type` \
+         argument. Seed its directory with `write`, then send the task with \
+         `jyc_send_to_topic` (require_reply=true); reconfigure it by sending a command body \
+         (`/build`, `/plan`, `/model`, …), which spends none of its turns. When the subagent \
+         list in your system prompt already holds one that fits, continue it."
     }
 
     fn input_schema(&self) -> Value {
@@ -114,11 +105,10 @@ impl Tool for SpawnSubagentTool {
                     "type": "string",
                     "description": format!(
                         "Optional subagent type: the child starts with that role's \
-                         settings (model, skills, disabled tools, mode, instructions), taken \
-                         from [subagents.<type>] in the config or \
-                         <config dir>/subagents/<type>/config.toml — and, when that file says \
-                         so, its own defaults for the two flags above. Default: no type — the \
-                         child inherits this topic's settings. {type_line}"
+                         settings, taken from [subagents.<type>] in the config or \
+                         <config dir>/subagents/<type>/config.toml, and that file may set \
+                         defaults for the two flags above. Default: none — the child \
+                         inherits this topic's settings. {type_line}"
                     )
                 }
             }

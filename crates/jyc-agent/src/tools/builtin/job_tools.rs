@@ -37,10 +37,9 @@ impl Tool for JobListTool {
     }
 
     fn description(&self) -> &str {
-        "List all scheduled jobs in this topic. Returns a JSON array of job \
-         configurations including id, cron/at schedule, enabled status, prompt, \
-         and next fire time. Use this to see what jobs exist before creating or \
-         modifying them."
+        "List this topic's scheduled jobs: a JSON array with id, cron/at \
+         schedule, enabled status, prompt and next fire time. Use it before creating \
+         or modifying jobs."
     }
 
     fn input_schema(&self) -> Value {
@@ -90,12 +89,10 @@ impl Tool for JobCreateTool {
 
     fn description(&self) -> &str {
         "Create a new scheduled job. Exactly one of 'cron' or 'at' is required — \
-         providing both or neither is an error. 'cron' is a 7-field expression for \
-         recurring jobs ('sec min hour dom mon dow year', e.g. '0 0 8 * * * *' for \
-         daily at 8 AM); 'at' is an ISO 8601 timestamp for one-time jobs (e.g. \
-         '2026-06-22T08:00:00Z'). The job fires by injecting the provided prompt \
-         into the originating topic. Returns the created job ID. Stop a job later \
-         with job_delete (remove) or job_toggle (pause/keep)."
+         both or neither is an error. 'cron' is a 7-field expression (sec min hour \
+         dom mon dow year) for recurring jobs; 'at' an ISO 8601 timestamp for a \
+         one-time one. It fires by injecting the prompt into the originating topic. \
+         Returns the job ID; stop it later with job_delete or job_toggle."
     }
 
     fn input_schema(&self) -> Value {
@@ -104,11 +101,11 @@ impl Tool for JobCreateTool {
             "properties": {
                 "cron": {
                     "type": "string",
-                    "description": "Cron expression for a RECURRING job (7-field format: 'sec min hour dom mon dow year', e.g. '0 0 8 * * * *'). Provide either this or 'at', never both."
+                    "description": "Cron expression for a RECURRING job (7-field: 'sec min hour dom mon dow year'). Provide either this or 'at', never both."
                 },
                 "at": {
                     "type": "string",
-                    "description": "ISO 8601 timestamp for a ONE-TIME job (e.g. '2026-06-22T08:00:00Z'). Provide either this or 'cron', never both."
+                    "description": "ISO 8601 timestamp for a ONE-TIME job. Provide either this or 'cron', never both."
                 },
                 "prompt": {
                     "type": "string",
@@ -218,9 +215,8 @@ impl Tool for JobDeleteTool {
     }
 
     fn description(&self) -> &str {
-        "Delete a scheduled job by ID from this topic. The job will no longer \
-         fire. Returns success or an error if the job doesn't exist. \
-         Use 'job_list' to find job IDs."
+        "Delete a scheduled job by ID from this topic; it will no longer fire. \
+         Returns success or an error if the job does not exist."
     }
 
     fn input_schema(&self) -> Value {
@@ -261,9 +257,8 @@ impl Tool for JobToggleTool {
     }
 
     fn description(&self) -> &str {
-        "Enable or disable a scheduled job by ID. When disabled, the job \
-         will not fire until re-enabled. Use 'job_list' to find job IDs \
-         and see their current enabled status."
+        "Enable or disable a scheduled job by ID. A disabled job does not fire \
+         until re-enabled."
     }
 
     fn input_schema(&self) -> Value {

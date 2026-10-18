@@ -2397,6 +2397,24 @@ JYC uses the following subset of the agent service API:
    spawn or close behind it means volatile state leaked back into the
    system prompt and is paying for cache misses.
 
+   **Tool schemas sit in that same prefix, so their text is
+   budgeted.** The `tools` array is sent on every call, which makes
+   every character of a tool description a standing per-call cost
+   even for a tool the topic never invokes.
+   `crates/jyc-agent/tests/tool_schema_budget.rs` pins the
+   in-process set **by name** (a rename or a drop is an API change,
+   and it moves the prefix too) and **budgets** its description
+   text: the 2026-10-18 slimming pass took the natural language
+   from 10,108 to 8,349 chars (-17.4%) by cutting examples and
+   redundant prose while leaving every name, parameter, type and
+   `required` list untouched. Editing a description thus costs one
+   round of prefix-cache misses — make such an edit its own change,
+   where the diff shows it on its own. One description is
+   deliberately *not* budgeted:
+   `jyc_spawn_subagent`'s `type` ends with the role catalog of the
+   machine it runs on, so its length is configuration. MCP server
+   tools are passed through as their server describes them.
+
 **Payload Layout After The Change:**
 
 ```

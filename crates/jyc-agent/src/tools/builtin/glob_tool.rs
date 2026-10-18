@@ -16,8 +16,8 @@ impl Tool for GlobTool {
     }
 
     fn description(&self) -> &str {
-        "Find files matching a glob pattern. Supports patterns like '**/*.rs', 'src/**/*.ts', etc. \
-         Returns matching file paths sorted by modification time."
+        "Find files matching a glob pattern. Returns matching file paths sorted by \
+         modification time."
     }
 
     fn input_schema(&self) -> Value {

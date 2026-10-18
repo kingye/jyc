@@ -2406,7 +2406,9 @@ JYC uses the following subset of the agent service API:
    `JycAgentService::build_tool_registry` makes (so registering a
    tool without budgeting it fails the test) and **budgets** its
    description text: the 2026-10-18 slimming pass took the natural
-   language from 10,108 to 8,349 chars (-17.4%) by cutting examples
+   language from 10,108 to 8,349 chars (-17.4%) across those 20 tool
+   files — the 21 tools the budget covers, bridge tool included, run
+   about 9,000 — by cutting examples
    and redundant prose while leaving every name, parameter, type and
    `required` list untouched. Editing a description thus costs one
    round of prefix-cache misses — make such an edit its own change,

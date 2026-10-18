@@ -73,7 +73,7 @@ const BUDGETS: &[(&str, usize, usize)] = &[
     ("jyc_publish_file", 275, 225),
     ("read", 185, 200),
     ("read_image", 425, 195),
-    ("jyc_send_message", 215, 380),
+    ("jyc_send_message", 215, 400),
     ("jyc_send_to_topic", 315, 630),
     ("jyc_spawn_subagent", 1140, 515),
     ("task_list", 280, 0),

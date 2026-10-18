@@ -236,10 +236,13 @@ mod tests {
 
     #[test]
     fn empty_path_entries_are_skipped_not_resolved_to_the_cwd() {
-        let entries = path_entries(OsStr::new("/a::/b:"));
+        // Built with `join_paths` so the separators are the platform's own:
+        // this module is not unix-gated, and a hardcoded ":" would arrive as one
+        // unsplit entry on Windows.
+        let path = std::env::join_paths(["/a", "", "/b", ""]).expect("join_paths");
 
         assert_eq!(
-            entries,
+            path_entries(&path),
             vec![PathBuf::from("/a"), PathBuf::from("/b")],
             "an empty entry means the cwd to a shell; it is dropped"
         );
@@ -247,7 +250,9 @@ mod tests {
 
     #[test]
     fn a_path_of_only_empty_entries_yields_nothing_to_search() {
-        assert!(path_entries(OsStr::new("::")).is_empty());
+        let path = std::env::join_paths(["", "", ""]).expect("join_paths");
+
+        assert!(path_entries(&path).is_empty());
     }
 
     #[test]

@@ -13,7 +13,7 @@
 //! that is not there.
 
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// A command-line helper worth telling the agent about.
@@ -71,12 +71,22 @@ pub fn detect(path: Option<&OsStr>) -> Vec<&'static Helper> {
 
 /// True when `name` resolves to an executable file under any `PATH` entry.
 fn is_on_path(path: &OsStr, name: &str) -> bool {
-    std::env::split_paths(path)
-        // An empty PATH entry means "the current directory" to a shell. We
-        // report nothing rather than probing the cwd, so a process started
-        // without PATH cannot pick helpers up out of the working tree.
-        .filter(|dir| !dir.as_os_str().is_empty())
+    path_entries(path)
+        .into_iter()
         .any(|dir| is_executable(&dir.join(name)))
+}
+
+/// The `PATH` directories to search, empty entries dropped.
+///
+/// A shell resolves an empty entry to the working directory; we deliberately do
+/// not, so a file named `rg` in the topic's own tree can never be announced as
+/// an installed tool. Returns a `Vec` rather than a lazy iterator so this rule
+/// can be asserted on its own — proving it through `detect` would mean
+/// planting a file in the process-wide cwd, which tests must not touch.
+fn path_entries(path: &OsStr) -> Vec<PathBuf> {
+    std::env::split_paths(path)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .collect()
 }
 
 /// True when `path` is a file this process is allowed to execute.
@@ -210,7 +220,9 @@ mod tests {
             let second = tempfile::tempdir().expect("tempdir");
             fake(first.path(), "rg", 0o755);
             fake(second.path(), "jq", 0o755);
-            let joined = format!("{}:{}", first.path().display(), second.path().display());
+            // Empty entries interspersed with real ones: dropping the empties
+            // must not cost us a directory.
+            let joined = format!(":{}::{}:", first.path().display(), second.path().display());
 
             let found = detect(Some(OsStr::new(&joined)));
 
@@ -220,20 +232,22 @@ mod tests {
                 "a helper is found wherever on PATH it sits"
             );
         }
+    }
 
-        #[test]
-        fn detect_ignores_empty_path_entries() {
-            // An empty entry means the cwd to a shell; a stray `rg` in the
-            // working directory must not be announced as an installed tool.
-            let dir = tempfile::tempdir().expect("tempdir");
-            fake(dir.path(), "rg", 0o755);
-            let joined = format!(":{}", dir.path().display());
+    #[test]
+    fn empty_path_entries_are_skipped_not_resolved_to_the_cwd() {
+        let entries = path_entries(OsStr::new("/a::/b:"));
 
-            assert!(
-                detect(Some(OsStr::new(&joined))).is_empty(),
-                "an empty PATH entry is skipped rather than resolved to the cwd"
-            );
-        }
+        assert_eq!(
+            entries,
+            vec![PathBuf::from("/a"), PathBuf::from("/b")],
+            "an empty entry means the cwd to a shell; it is dropped"
+        );
+    }
+
+    #[test]
+    fn a_path_of_only_empty_entries_yields_nothing_to_search() {
+        assert!(path_entries(OsStr::new("::")).is_empty());
     }
 
     #[test]

@@ -1283,6 +1283,12 @@ fn cli_helpers_section_is_injected_only_when_there_are_helpers() {
 async fn cli_helper_section_lists_exactly_what_is_installed() {
     let tmp = tempfile::tempdir().unwrap();
     let topic = "cli_helper_section_lists_exactly_what_is_installed";
+    // build_system_prompt reads the topic's toggle overrides, and every topic
+    // must have its state dir registered before state is touched — there is
+    // deliberately no `topic_dir/.jyc` fallback (#825).
+    let state = tmp.path().join(".jyc");
+    std::fs::create_dir_all(&state).unwrap();
+    jyc_types::state_dir::register(topic, &state);
 
     let svc = service_with_skills(vec![], None, None);
     let prompt = svc
